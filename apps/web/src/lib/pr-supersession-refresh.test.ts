@@ -116,6 +116,23 @@ describe('verifyRefreshSuperseded', () => {
     expect((v as any).reason).toContain('migration');
   });
 
+  // drizzle v1 folders (`drizzle/<ts>_<slug>/migration.sql` + `snapshot.json`) matched neither
+  // migration pattern before, so a regenerated folder migration was never twin-checked by SQL.
+  it('matches a regenerated drizzle v1 folder migration by identical SQL, and refuses a different one', async () => {
+    const folder = (slug: string, sqlSha: string, snap: string) => [
+      file(`packages/core/drizzle/${slug}/migration.sql`, sqlSha, lines('ALTER TABLE x ADD COLUMN y text;')),
+      file(`packages/core/drizzle/${slug}/snapshot.json`, snap, lines(`"id": "${snap}"`)),
+    ];
+    w.olderDelta = [w.olderDelta![0], ...folder('20261020000000_add_y', sqlBody, 'snapOld')];
+    w.branchDelta = [w.branchDelta![0], ...folder('20261022000000_add_y', sqlBody, 'snapNew')];
+    expect(await verifyRefreshSuperseded({ installationId: 1, older: OLDER, newer: NEWER, api })).toMatchObject({ ok: true, migrationsMatched: 1 });
+
+    w.branchDelta = [w.branchDelta![0], ...folder('20261022000000_add_y', 'other-sql', 'snapNew')];
+    const v = await verifyRefreshSuperseded({ installationId: 1, older: OLDER, newer: NEWER, api });
+    expect(v.ok).toBe(false);
+    expect((v as any).reason).toContain('20261020000000_add_y/migration.sql');
+  });
+
   it('refuses when trunk or mission head from the older refresh is not an ancestor of the branch', async () => {
     w.ancestors.delete('trunk4275');
     const v = await verifyRefreshSuperseded({ installationId: 1, older: OLDER, newer: NEWER, api });

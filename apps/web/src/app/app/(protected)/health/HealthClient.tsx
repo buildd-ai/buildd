@@ -43,7 +43,7 @@ import {
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
 import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
-import { strandHeadline } from '@/lib/strand-headline';
+import { strandHeadline, STRAND_FIX } from '@/lib/strand-headline';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import RunnerSlotsControl from '@/components/RunnerSlotsControl';
 import { describeRunnerRoute } from '@/lib/runner-route';
@@ -543,7 +543,13 @@ export function HealthClient({
               monthly: budgetForecast?.monthly
                 ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
                 : null,
-              pausedProviders: (budgetForecast?.codex?.isExhausted ? 1 : 0) + (budgetForecast?.claudeTenant?.isExhausted ? 1 : 0),
+              paused: [
+                { label: 'Codex', forecast: budgetForecast?.codex },
+                { label: 'Claude', forecast: budgetForecast?.claudeTenant },
+              ].filter(p => p.forecast?.isExhausted).map(p => ({
+                label: p.label,
+                resetsInMs: p.forecast?.resetsAt ? Date.parse(p.forecast.resetsAt) - now : null,
+              })),
             },
           },
           { hideOfflineRunners: offlineRunners.length > 0 },
@@ -636,10 +642,10 @@ export function HealthClient({
                       )}
                     </div>
                     <a
-                      href="/app/settings/runners"
+                      href={STRAND_FIX.href}
                       className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
                     >
-                      Fix in Settings
+                      {STRAND_FIX.label}
                     </a>
                   </div>
                 </div>
@@ -665,7 +671,6 @@ export function HealthClient({
                     </div>
                     <p className="text-xs text-text-muted mt-0.5">
                       {h.detail}
-                      {b.enabledForTeam ? '. Connect it, or disable it team-wide to reroute' : ''}.
                     </p>
                     {b.sampleTasks.length > 0 && (
                       <p className="text-xs text-text-muted mt-0.5 truncate">
@@ -684,10 +689,10 @@ export function HealthClient({
                     )}
                   </div>
                   <a
-                    href="/app/settings/runners"
+                    href={STRAND_FIX.href}
                     className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
                   >
-                    Fix in Settings
+                    {STRAND_FIX.label}
                   </a>
                 </div>
               </div>
@@ -1639,12 +1644,6 @@ function ErrorPatternSection({
 
 // ── Budget Forecast ───────────────────────────────────────────────────────────
 
-function confidenceClass(c: string | null): string {
-  if (c === 'high') return 'text-status-success';
-  // low/medium confidence is noise, not a warning — keep it muted
-  return 'text-text-muted';
-}
-
 function timeUntilShort(iso: string, now: number): string {
   const ms = new Date(iso).getTime() - now;
   if (ms <= 0) return 'now';
@@ -1685,7 +1684,6 @@ function ProviderWallRow({ label, state, resetsAt, now }: {
 
 function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; now: number }) {
   const hasAny =
-    forecast.oauthSessions.length > 0 ||
     // Wall rows only render while exhausted; an elapsed pause alone must not
     // leave an empty card.
     !!forecast.codex?.isExhausted ||
@@ -1693,9 +1691,6 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
     forecast.missions.length > 0;
 
   if (!hasAny) return null;
-
-  const activeSessions = forecast.oauthSessions.filter(s => s.state === 'active');
-  const learningSessions = forecast.oauthSessions.filter(s => s.state === 'learning');
 
   return (
     <div data-testid="health-section-budget-forecast" className="mb-6">
@@ -1706,59 +1701,6 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         <span className="text-[11px] text-text-muted text-right">provider usage limits</span>
       </div>
       <div className="border-y border-border-default divide-y divide-border-default">
-
-        {/* Active OAuth session rows — labeled by account name */}
-        {activeSessions.map((s) => (
-          <div key={s.accountId} className="px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
-              <span className="text-sm text-text-primary">{s.accountName || 'Claude session'}</span>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-                <span
-                  className="tabular-nums font-medium text-text-primary"
-                  title="Measured against a low estimate of your limit. You usually have more left."
-                >
-                  {s.pressurePct}% of usual limit
-                </span>
-                <span className="text-text-muted">·</span>
-                <span>{formatReset(s.windowEndsAt, now)}</span>
-                {s.confidence && s.confidence !== 'low' && (
-                  <>
-                    <span className="text-text-muted">·</span>
-                    <span
-                      className={confidenceClass(s.confidence)}
-                      title={
-                        s.confidence === 'high'
-                          ? `Conservative floor estimate from ${s.episodes} exhaustion episode${s.episodes !== 1 ? 's' : ''}${s.limiter === 'tokens' ? '. OAuth often underreports token data' : ''}`
-                          : undefined
-                      }
-                    >
-                      {s.confidence === 'high' ? 'floor est.' : `confidence: ${s.confidence}`}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  s.pressurePct >= 90 ? 'bg-status-error' :
-                  s.pressurePct >= 70 ? 'bg-status-warning' :
-                  'bg-primary'
-                }`}
-                style={{ width: `${Math.min(100, s.pressurePct)}%` }}
-              />
-            </div>
-          </div>
-        ))}
-
-        {/* Collapsed learning sessions — one summary line instead of per-row cards */}
-        {learningSessions.length > 0 && (
-          <div className="px-4 py-2.5">
-            <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
-              {countOf(learningSessions.length, 'Claude sign-in')} · no usage limit hit so far
-            </span>
-          </div>
-        )}
 
         {/* Provider walls (only shown while exhausted — for reset-time visibility).
             Codex comes from its own pause log; the Dispatch-tenant row is a

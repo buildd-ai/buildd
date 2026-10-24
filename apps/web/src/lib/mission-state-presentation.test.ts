@@ -41,7 +41,7 @@ const SCENARIOS: Scenario[] = [
     state: 'waiting',
     cause: 'dependency',
   },
-  { name: 'capacity: the workspace has no free slot', ac: 'AC-18', input: { ...stalled, openTasks: [{ id: 'a', status: 'pending', holdReason: 'workspace_cap' }] }, state: 'queued', cause: 'capacity' },
+  { name: 'capacity: the mission is at its cap', ac: 'AC-18', input: { ...stalled, openTasks: [{ id: 'a', status: 'pending', holdReason: 'mission_concurrent' }] }, state: 'queued', cause: 'capacity' },
   { name: 'budget: the mission budget is spent', ac: 'AC-18', input: { ...stalled, openTasks: [{ id: 'a', status: 'pending', holdReason: 'mission_budget' }] }, state: 'queued', cause: 'budget' },
   {
     name: 'local session: claimable work and a quiet session',

@@ -146,7 +146,7 @@ export async function copySpecToWorkspace(caller: SpecCaller, specId: string, in
       const r = await reviseSpecDraft(caller, existing.id, {
         expectedVersion: existing.version, body,
         changeSummary: `Copied from spec ${specId} revision ${n} (sha256 ${rev.contentHash.slice(0, 12)})`,
-      });
+      }, { duplicates: false });
       if (!r.ok) return fail(r.status, `The copy ${existing.id} is there but could not be brought to revision ${n}: ${r.error}`, { code: r.code ?? 'spec_copy_failed' });
     }
     // Provenance names the source revision the head now is (also repairs one a

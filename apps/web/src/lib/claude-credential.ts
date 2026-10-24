@@ -224,8 +224,8 @@ export async function storeClaudeCredential(
     updatedAt: now,
   });
 
-  // Propagate the Anthropic user ID (JWT sub) to all OAuth accounts in the team so
-  // groupOauthAccountsBySeatId can group them correctly. This is the primary write path.
+  // Propagate the Anthropic user ID (JWT sub) to all OAuth accounts in the team.
+  // This is the primary write path.
   const seatId = extractJwtSub(credential.access_token);
   if (seatId) {
     await db
@@ -730,7 +730,7 @@ export async function resolveAnthropicAuth(opts: {
   }>;
   if (rows.length === 0) return null;
 
-  // An API key in either storage is one class (0); then the setup token, then the managed seat.
+  // An API key in either storage is one class (0); then the setup token, then the Claude credential.
   const isKey = (r: { purpose: string; label?: string | null }) => isAgentKeyRow(r, 'anthropic');
   const rank = (r: { purpose: string; label?: string | null }) =>
     isKey(r) ? 0 : (ANTHROPIC_KEY_PURPOSES as readonly string[]).includes(r.purpose) ? -1 : ANTHROPIC_AUTH_PURPOSES.indexOf(r.purpose as never);

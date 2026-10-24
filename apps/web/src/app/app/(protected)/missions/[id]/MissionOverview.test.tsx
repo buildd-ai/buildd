@@ -40,7 +40,8 @@ describe('MissionOverview', () => {
     expect(html).not.toMatch(/aria-label="\d\d /);
     expect(html).toMatch(/aria-label="feat: task A: merged"/);
     const list = html.slice(html.indexOf('data-testid="mission-task-list"'));
-    expect(list).toContain('feat: task B');
+    expect(list).toContain('Task B');
+    expect(list).not.toContain('feat: task B');
     expect(list).not.toMatch(/>0\d</);
   });
 
@@ -78,7 +79,10 @@ describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
     const card = out.slice(out.indexOf('data-testid="decision-card"'), out.indexOf('data-testid="task-strip"'));
     expect(card).toContain('Mirror the runner image to Docker Hub');
     expect(card).toContain('The release publishes an image digest');
-    expect(card).toMatch(/The release publishes an image digest waits on this\./);
+    // What waits comes from the projection (spec 1b257609), as a link, with each option's effect and the expiry.
+    expect(card).toMatch(/Waits on this: <\/span><a [^>]*href="\/app\/tasks\/[^"]+"[^>]*>The release publishes an image digest<\/a>/);
+    expect(card).toContain('Finishes the task: The release publishes an image digest starts');
+    expect(card).toContain('Expires in 3 hours 59 minutes, then the task starts again and the agent goes with Provide a token.');
     expect(card).toContain('How should Docker Hub credentials be set up?');
     expect((card.match(/data-testid="decision-option-effect"/g) ?? []).length).toBe(2);
     expect(card).toContain('Answer differently');
@@ -268,5 +272,106 @@ describe('History raised (Navigation R-6, AC-8)', () => {
     expect(raised).toContain('layout=feed');
     expect(html.indexOf('data-testid="mission-history-raised"')).toBeLessThan(html.indexOf('data-testid="mission-task-list"'));
     expect((html.match(/data-testid="mission-history-raised"/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('Decision subject on the mission page', () => {
+  it('leaves out a subject that names the page\'s own mission, and names the topic instead', () => {
+    const model = dagBoard(spec);
+    const mission = { id: 'mission-1', title: 'Spec page: readable on a phone', href: '/app/missions/mission-1' };
+    const notes = [{ id: 'n1', type: 'question', status: 'open', title: 'Keep the legacy export?', body: null, createdAt: Date.UTC(2026, 0, 1) }];
+    const decisions = missionDecisions({ model, notes, mission, hrefFor: id => `/app/tasks/${id}` });
+    const own = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" decisions={decisions} />);
+    const subject = own.match(/data-testid="question-subject"[^>]*>[\s\S]*?<\/p>/)?.[0] ?? '';
+    expect(subject).not.toContain(mission.title);
+    expect(subject).not.toContain('href="/app/missions/mission-1"');
+    // Another mission's page still names it.
+    const other = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-2" decisions={decisions} />);
+    expect(other).toContain('href="/app/missions/mission-1"');
+  });
+});
+
+describe('A visual review waiting on a person (Navigation R-16, R-18)', () => {
+  const { buildVisualReviewModel } = require('@/lib/visual-review-model') as typeof import('@/lib/visual-review-model');
+  const { recaptureFixtureInput } = require('@/lib/visual-review-model.fixtures') as typeof import('@/lib/visual-review-model.fixtures');
+  const { visualReviewDecision } = require('@/lib/visual-review-decision') as typeof import('@/lib/visual-review-decision');
+  const base = { now: Date.UTC(2026, 9, 14, 12), missionCreatedAt: Date.UTC(2026, 9, 14, 11), missionStatus: 'active' as const };
+  const f = handoffFixture('handoff-repairing', base);
+  const visual = buildVisualReviewModel(recaptureFixtureInput('recapture-decide'));
+  const decision = visualReviewDecision(visual, { id: 'mission-1', title: 'A mission', href: '/app/missions/mission-1' })!;
+  const out = renderToStaticMarkup(
+    <MissionOverview model={f.model} missionId="mission-1" executor={f.executor} checks={f.checks} planTasks={f.planTasks} held={f.held} visual={visual} decisions={[decision]} />,
+  );
+
+  it('is one decision card, with no separate ask and no Checks panel', () => {
+    expect((out.match(/data-testid="decision-card"/g) ?? []).length).toBe(1);
+    expect(out).not.toContain('data-testid="visual-review-ask"');
+    expect(out).not.toContain('Fixed screens to check');
+    expect(out).not.toContain('Review the screens');
+    expect(out).not.toContain('data-kind="visual"');
+    expect(out).not.toContain('data-testid="mission-check-repairs"');
+    expect(out).not.toContain('blocks finish');
+    expect(out).not.toMatch(/\b[0-9a-f]{7}\b(?=[^<]*<\/span>)/);
+  });
+
+  it('asks the question with the count the summary gives', () => {
+    const n = decision.summary!.match(/^(\d+) fix/)![1];
+    expect(out).toContain(`Are these ${n} screens fixed?`);
+    expect(decision.summary).toBe(`${n} fixes merged and no new screenshot will be taken.`);
+    expect(out).toContain('Mark all fixed');
+    expect(out).toContain('Review screens');
+    expect(out).not.toContain('→');
+  });
+});
+
+describe('MissionOverview build stage: one failed task and a goal-criteria escalation (Navigation R-14, R-16 to R-20)', () => {
+  const { criteriaEscalationDecision } = require('@/lib/mission-decisions') as typeof import('@/lib/mission-decisions');
+  const board = dagBoard({ tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'failed' } });
+  const decision = criteriaEscalationDecision({
+    missionId: 'mission-1',
+    reading: 'Check not verified: Spec "Cloud runner: deploy from Settings in one step" revision 1.',
+    criterion: 'Spec "Cloud runner: deploy from Settings in one step" revision 1',
+    fileWorkHref: '/app/tasks/new?from=mission-1',
+    mission: { id: 'mission-1', title: 'Cloud runner', href: '/app/missions/mission-1' },
+    askedAt: null,
+  });
+  const out = renderToStaticMarkup(<MissionOverview model={board} missionId="mission-1" decisions={[decision]} />);
+
+  it('draws no `A task failed` banner, no Open button and no verification link', () => {
+    expect(out).not.toContain('A task failed');
+    expect(out).not.toContain('Open the failed task');
+    expect(out).not.toContain('run verification');
+    expect(out).not.toContain('Goal criteria');
+    expect(out).not.toContain('Waive and complete</p>');
+  });
+
+  it('the failed task leads the list as `Failed ·` with Retry and Cancel', () => {
+    const list = out.slice(out.indexOf('data-testid="mission-task-list"'));
+    expect(list.indexOf('data-state="failed"')).toBeGreaterThanOrEqual(0);
+    expect(list.indexOf('data-state="failed"')).toBeLessThan(list.indexOf('data-state="waiting"') === -1 ? Infinity : list.indexOf('data-state="waiting"'));
+    expect(list).toMatch(/Failed/);
+    expect(list).toContain('data-testid="task-row-retry"');
+    expect(list).toContain('data-testid="task-row-cancel"');
+  });
+
+  it('the escalation is a DecisionCard with a question and two options, each with its effect', () => {
+    const card = out.slice(out.indexOf('data-testid="decision-card"'));
+    expect(card).toContain('Ship without the &quot;Cloud runner: deploy from Settings in one step&quot; check?');
+    expect(card).toContain('File the work');
+    expect(card).toContain('Waive and complete');
+    expect((card.match(/data-testid="decision-option-effect"/g) ?? []).length).toBe(2);
+    expect(card).toContain('data-testid="decision-not-now"');
+  });
+});
+
+describe('MissionOverview design placement (Navigation R-3)', () => {
+  it('renders the design slot once, last, after the stage content', () => {
+    const out = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" design={<div data-testid="design-slot" />} />);
+    expect(out.match(/data-testid="design-slot"/g)?.length).toBe(1);
+    expect(out.indexOf('data-testid="design-slot"')).toBeGreaterThan(out.indexOf('data-testid="mission-task-list"'));
+    expect(out.trimEnd().endsWith('<div data-testid="design-slot"></div></div>')).toBe(true);
+  });
+  it('renders nothing when there is no design', () => {
+    expect(html).not.toContain('design-slot');
   });
 });

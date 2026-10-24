@@ -1,69 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { learnOauthCapacity, oauthBudgetPressure, oauthParallelismCap } from '@buildd/core/oauth-budget';
-import { groupOauthAccountsBySeatId, computeBurnRateConfidence, oauthEpisodeConfidence, computeMissionBudgetForecast } from './budget-forecast';
-
-describe('groupOauthAccountsBySeatId', () => {
-  const makeAccount = (id: string, seatId: string | null, name = id) => ({
-    id,
-    name,
-    seatId,
-    budgetResetsAt: null as Date | null,
-  });
-
-  it('groups two accounts with the same seatId into one entry', () => {
-    const accounts = [
-      makeAccount('acc1', 'seat-A', 'laptop'),
-      makeAccount('acc2', 'seat-A', 'desktop'),
-    ];
-    const groups = groupOauthAccountsBySeatId(accounts);
-    expect(groups.size).toBe(1);
-    const [group] = [...groups.values()];
-    expect(group.map(a => a.id).sort()).toEqual(['acc1', 'acc2'].sort());
-  });
-
-  it('keeps accounts with different seatIds in separate groups', () => {
-    const accounts = [
-      makeAccount('acc1', 'seat-A'),
-      makeAccount('acc2', 'seat-B'),
-    ];
-    const groups = groupOauthAccountsBySeatId(accounts);
-    expect(groups.size).toBe(2);
-  });
-
-  it('treats null seatId accounts as individual groups', () => {
-    const accounts = [
-      makeAccount('acc1', null),
-      makeAccount('acc2', null),
-      makeAccount('acc3', 'seat-A'),
-    ];
-    const groups = groupOauthAccountsBySeatId(accounts);
-    // acc1 and acc2 are individual (null seatId), acc3 is its own group
-    expect(groups.size).toBe(3);
-  });
-
-  it('mixes null and shared seatId correctly', () => {
-    const accounts = [
-      makeAccount('acc1', 'seat-A', 'coder-workspace'),
-      makeAccount('acc2', 'seat-A', 'sibling-app'),
-      makeAccount('acc3', null, 'standalone'),
-    ];
-    const groups = groupOauthAccountsBySeatId(accounts);
-    // seat-A group + standalone individual
-    expect(groups.size).toBe(2);
-    const seatAGroup = groups.get('seat-A');
-    expect(seatAGroup).toBeDefined();
-    expect(seatAGroup!.map(a => a.id).sort()).toEqual(['acc1', 'acc2'].sort());
-    // standalone uses its own id as key
-    const standaloneGroup = groups.get('acc3');
-    expect(standaloneGroup).toBeDefined();
-    expect(standaloneGroup!).toHaveLength(1);
-  });
-
-  it('handles empty accounts list', () => {
-    const groups = groupOauthAccountsBySeatId([]);
-    expect(groups.size).toBe(0);
-  });
-});
+import { computeBurnRateConfidence, computeMissionBudgetForecast } from './budget-forecast';
 
 describe('computeBurnRateConfidence', () => {
   it('returns low for fewer than 5 samples', () => {
@@ -89,52 +25,6 @@ describe('computeBurnRateConfidence', () => {
     // Very spread values → high coefficient of variation
     const noisy = [0.01, 100, 0.01, 100, 0.01, 100];
     expect(computeBurnRateConfidence(noisy)).toBe('low');
-  });
-});
-
-describe('oauthEpisodeConfidence', () => {
-  it('maps contradictory learned capacity to low forecast confidence even at saturated pressure', () => {
-    const now = new Date('2026-09-01T12:00:00Z');
-    const observedAt = new Date('2026-09-01T11:00:00Z');
-    const episodes = [10, 10, 1000, 1000, 1000].map(turns => ({
-      exhaustedAt: observedAt,
-      workerCount: 10,
-      turns,
-      inputTokens: 0,
-      outputTokens: 0,
-    }));
-    const capacity = learnOauthCapacity(episodes);
-    const pressure = oauthBudgetPressure({
-      capacity,
-      usage: { workerCount: 1, turns: 100, tokens: 0, weightedTurns: 100, weightedTokens: 0 },
-      now,
-      observedAt,
-      windowStartedAt: observedAt,
-    });
-
-    // Five episodes alone cannot make a widely dispersed p25 floor reliable.
-    expect(capacity.samples).toBe(5);
-    expect(capacity.turns).toBe(10);
-    expect(pressure.limiter).toBe('turns');
-    expect(pressure.pct).toBe(1);
-    expect(oauthEpisodeConfidence(pressure.confidence)).toBe('low');
-    expect(oauthParallelismCap({ pressure, baseMax: 10 })).toBeNull();
-
-    // The same sample count with consistent capacity still earns confidence.
-    const stable = learnOauthCapacity(episodes.map(episode => ({ ...episode, turns: 1000 })));
-    expect(oauthEpisodeConfidence(stable.confidence)).toBe('high');
-  });
-
-  it('returns null for none — learning state, no calibration yet', () => {
-    expect(oauthEpisodeConfidence('none')).toBeNull();
-  });
-
-  it('returns low for low', () => {
-    expect(oauthEpisodeConfidence('low')).toBe('low');
-  });
-
-  it('returns high for high — displayed as calibrated in UI', () => {
-    expect(oauthEpisodeConfidence('high')).toBe('high');
   });
 });
 

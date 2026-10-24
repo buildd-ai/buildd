@@ -3,7 +3,7 @@
  * refused "Run now" in the mission task sheet.
  *
  * - a bypassable 422 shows Force start, and pressing it posts forceOverride once;
- * - a refusal that cannot be forced (capability, workspace cap, canForce false)
+ * - a refusal that cannot be forced (capability, canForce false)
  *   shows its error and no Force start;
  * - the runner fleet is fetched only after a bypassable refusal, and the
  *   zero-runner line carries the role caveat.
@@ -141,7 +141,6 @@ describe('TaskActionZone — inline Force start', () => {
 
   it.each([
     ['capability gate', { gateReason: 'capability_mismatch', canForce: true, blockClass: 'capability', error: 'No credential' }],
-    ['workspace cap', { gateReason: 'workspace_cap_reached', canForce: true, blockClass: 'policy', error: 'Workspace is full' }],
     ['not forceable', { gateReason: 'subject_dead', canForce: false, error: 'Subject closed' }],
   ])('%s shows one reason and no Force start', async (_name, body) => {
     stubFetch({ status: 422, body });
@@ -202,71 +201,21 @@ describe('TaskActionZone — inline Force start', () => {
   });
 });
 
-describe('TaskActionZone — raise workspace cap stepper', () => {
-  const gatedCapBody = { gateReason: 'workspace_cap_reached', canForce: true, canExempt: true, canRaiseCap: true, blockClass: 'policy', cap: 3, active: 3, error: 'Workspace is full' };
-
-  it('hides raising the limit from someone who cannot change workspace settings; Start anyway stays', async () => {
-    stubFetch({ status: 422, body: { ...gatedCapBody, canRaiseCap: false } });
+describe('TaskActionZone — no workspace concurrency cap controls', () => {
+  // The workspace cap is gone: a refused start never offers to raise a limit,
+  // start past one, or leave the task queued behind one.
+  it('a refused start offers no cap stepper, no start-past-the-cap and no Leave queued', async () => {
+    stubFetch({ status: 422, body: { gateReason: 'mission_local', canForce: true, blockClass: 'policy' } });
     await mount();
     await act(async () => { button('Run now')!.click(); });
     await flush();
     expect(container.querySelector('[data-action="raise_cap"]')).toBeNull();
-    expect(container.textContent).not.toContain('Raise the workspace limit');
-    expect(container.querySelector('[data-action="cap_exempt"]')).not.toBeNull();
-  });
-
-  it('keeps −/value/+ in their own group, separate from the label and Save & start, so they never split across lines', async () => {
-    stubFetch({ status: 422, body: gatedCapBody });
-    await mount();
-    await act(async () => { button('Run now')!.click(); });
-    await flush();
-    const lower = button('−')!;
-    const raise = button('+')!;
-    expect(lower.parentElement).toBe(raise.parentElement);
-    const group = lower.parentElement!;
-    expect(group.contains(container.querySelector('.tabular-nums'))).toBe(true);
-    expect(group.contains(button('Save & start')!)).toBe(false);
-  });
-
-  it('steps the target between cap+1 and 20, then raising saves the workspace cap and restarts the task', async () => {
-    // A dedicated stub: the shared stubFetch's "first /start call" heuristic
-    // can't also distinguish the PATCH /api/workspaces/[id] raiseCapAndStart
-    // makes, since that call doesn't end in "/start" either.
-    calls = [];
-    let startCallCount = 0;
-    globalThis.fetch = (async (url: string, init?: RequestInit) => {
-      const u = String(url);
-      calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-      if (u === '/api/tasks/t1/start') {
-        startCallCount += 1;
-        if (startCallCount === 1) return { ok: false, status: 422, json: async () => gatedCapBody } as Response;
-        return { ok: true, status: 200, json: async () => ({}) } as Response;
-      }
-      if (u === '/api/workspaces/ws1') {
-        return { ok: true, status: 200, json: async () => ({ maxConcurrentTasks: 5 }) } as Response;
-      }
-      return { ok: true, status: 200, json: async () => ({}) } as Response;
-    }) as unknown as typeof fetch;
-
-    await mount();
-    await act(async () => { button('Run now')!.click(); });
-    await flush();
-    const value = () => container.querySelector('.tabular-nums')!.textContent;
-    expect(value()).toBe('4'); // cap (3) + 1
-
-    await act(async () => { button('−')!.click(); }); // floor is cap+1: no-op
-    await flush();
-    expect(value()).toBe('4');
-
-    await act(async () => { button('+')!.click(); });
-    await flush();
-    expect(value()).toBe('5');
-
-    await act(async () => { button('Save & start')!.click(); });
-    await flush();
-    const patch = calls.find(c => c.url === '/api/workspaces/ws1');
-    expect(patch?.body).toEqual({ maxConcurrentTasks: 5 });
-    expect(startCallCount).toBe(2);
+    expect(container.querySelector('[data-action="cap_exempt"]')).toBeNull();
+    expect(button('Save & start')).toBeUndefined();
+    expect(button('Start anyway')).toBeUndefined();
+    expect(button('Leave queued')).toBeUndefined();
+    expect(container.textContent).not.toMatch(/workspace limit/i);
+    expect(button('Cancel')).toBeDefined();
   });
 });
 
@@ -334,8 +283,8 @@ describe('TaskActionZone — a failed task offers only a backend that can run it
 });
 
 describe('TaskActionZone — overrides carry through a chain of refusals', () => {
-  // The start route checks the local-mission gate, then the workspace cap. Each
-  // override clears one gate, so a start that needs both must send both.
+  // A forced start can be refused again on a gate no force lifts; closing that
+  // refusal must drop the override it collected.
   function stubTwoGates() {
     calls = [];
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
@@ -344,40 +293,22 @@ describe('TaskActionZone — overrides carry through a chain of refusals', () =>
       calls.push({ url: u, body });
       if (u === '/api/workers/active') return { ok: true, status: 200, json: async () => ({ activeLocalUis: [] }) } as Response;
       if (!u.endsWith('/start')) return { ok: true, status: 200, json: async () => ({}) } as Response;
-      const reply = !body?.capExempt
-        ? { gateReason: 'workspace_cap_reached', canForce: true, blockClass: 'policy', canExempt: true, cap: 10, error: 'Workspace is full' }
-        : !body?.forceOverride
-          ? { gateReason: 'mission_local', canForce: true, blockClass: 'policy' }
-          : null;
-      return reply
-        ? { ok: false, status: 422, json: async () => reply } as Response
-        : { ok: true, status: 200, json: async () => ({}) } as Response;
+      const reply = !body?.forceOverride
+        ? { gateReason: 'mission_local', canForce: true, blockClass: 'policy' }
+        : { gateReason: 'subject_dead', canForce: false, error: 'Subject closed' };
+      return { ok: false, status: 422, json: async () => reply } as Response;
     }) as unknown as typeof fetch;
   }
-
-  it('Start anyway, then Force start, sends both and the start lands', async () => {
-    stubTwoGates();
-    await mount({ missionExecutor: 'local' });
-    await act(async () => { button('Run now')!.click(); });
-    await flush();
-    await act(async () => { button('Start anyway')!.click(); });
-    await flush();
-    expect(container.textContent).toContain('Runs from your session');
-    await act(async () => { button('Force start')!.click(); });
-    await flush();
-    expect(startCalls().at(-1)!.body).toEqual({ forceOverride: true, capExempt: true });
-    expect(container.querySelector('[data-testid="task-start-refusal"]')).toBeNull();
-    expect(container.querySelector('[data-testid="task-start-status"]')).not.toBeNull();
-  });
 
   it('dismissing a refusal drops the overrides it collected', async () => {
     stubTwoGates();
     await mount({ missionExecutor: 'local' });
     await act(async () => { button('Run now')!.click(); });
     await flush();
-    await act(async () => { button('Start anyway')!.click(); });
+    await act(async () => { button('Force start')!.click(); });
     await flush();
-    await act(async () => { button('Cancel')!.click(); });
+    expect(startCalls().at(-1)!.body).toEqual({ forceOverride: true });
+    await act(async () => { button('Close')!.click(); });
     await act(async () => { button('Run now')!.click(); });
     await flush();
     expect(startCalls().at(-1)!.body).toEqual({});
@@ -411,16 +342,6 @@ describe('TaskActionZone — managed-runner plan limit', () => {
     await act(async () => { button('Leave queued')!.click(); });
     expect(container.querySelector('[data-testid="entitlement-blocked"]')).toBeNull();
     expect(button('Run now')).toBeDefined();
-  });
-
-  it('the workspace cap refusal is unchanged: an operational limit keeps its own controls', async () => {
-    stubFetch({ status: 422, body: { gateReason: 'workspace_cap_reached', blockClass: 'policy', active: 3, cap: 3, canExempt: true, canRaiseCap: true } });
-    await mount();
-    await act(async () => { button('Run now')!.click(); });
-    await flush();
-    expect(container.querySelector('[data-testid="entitlement-blocked"]')).toBeNull();
-    expect(container.querySelector('[data-gate="workspace_cap_reached"]')).not.toBeNull();
-    expect(button('Save & start')).toBeDefined();
   });
 });
 

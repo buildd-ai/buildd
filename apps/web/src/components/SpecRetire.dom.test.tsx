@@ -47,6 +47,15 @@ describe('SpecRetire', () => {
     expect(calls).toEqual([{ url: '/api/specs/s/retire', method: 'DELETE', body: {} }]);
   });
 
+  it('names the open PR on its repo file (R-78), linked to GitHub, and nothing once there is none', () => {
+    const repoLine = { text: 'PR #12 marks docs/specs/a.md superseded in the repo. It lands when a person merges it.', href: 'https://github.com/acme/app/pull/12' };
+    act(() => root.render(<SpecRetire specId="s" retirement={retired({ repoLine })} canRetire />));
+    expect(q('spec-retired-repo-pr')?.textContent).toBe(repoLine.text);
+    expect(q('spec-retired-repo-pr')?.querySelector('a')?.getAttribute('href')).toBe(repoLine.href);
+    act(() => root.render(<SpecRetire specId="s" retirement={retired({ repoLine: null })} canRetire />));
+    expect(q('spec-retired-repo-pr')).toBeNull();
+  });
+
   it('a superseded spec links its replacement; a reader without the right gets no Restore', () => {
     act(() => root.render(<SpecRetire specId="s" retirement={retired({ status: 'superseded', supersededBy: { id: 'n', title: 'Checkout v2' } })} canRetire={false} />));
     expect(q('spec-retired-line')?.textContent).toContain('Replaced by Checkout v2');

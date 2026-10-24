@@ -8,13 +8,8 @@
  * role X"). That sends an operator to look at runners and roles when the actual
  * answer is spend.
  *
- * Learned OAuth pressure is deliberately NOT a pause input any more: it only
- * narrows per-seat parallelism (`oauthParallelismCap` in
- * packages/core/oauth-budget.ts), so it is never the reason a task sits unclaimed
- * on an idle seat. It CAN hold a task behind a busy capped seat (claim deferral
- * `oauth_parallelism`), and this probe does not report that yet — such a task
- * may still read as `no_gate_identified`. Known gap, tracked as a follow-up:
- * teach the stall ladder `oauthParallelismCap` + `countLiveSeatWorkers`.
+ * buildd keeps no model of a subscription, so a Claude login is never a pause
+ * input here: only API-key spend is.
  *
  * This probe answers the same question from the same inputs. It deliberately
  * calls the *same* pure router (`resolveEffectiveModel`) rather than
@@ -33,16 +28,14 @@ import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
  * team: the watchdog runs inside a 40s gate budget and a team's pressure does
  * not vary between tasks in one sweep.
  */
-async function teamPressurePct(teamId: string): Promise<number | null> {
+async function teamSpendShare(teamId: string): Promise<number | null> {
   // The claim route derives `dailyBudgetPct` for the *claiming* account from
   // API-key spend against the daily cap. The watchdog cannot know which account
   // will claim, so it takes the max across the team and words its verdict
   // conditionally rather than asserting causation — see the gate detail line.
   const teamAccounts = await db.query.accounts.findMany({
     where: sqlWhere(eq(accounts.teamId, teamId)),
-    columns: { id: true, teamId: true, seatId: true, authType: true, totalCost: true, maxCostPerDay: true },
-    // Deterministic: `findFirst` with no ordering meant the reported window
-    // could come from a different seat group on each run.
+    columns: { id: true, teamId: true, authType: true, totalCost: true, maxCostPerDay: true },
     orderBy: sqlOrderByFn((a, { asc }) => [asc(a.createdAt)]),
   });
   if (teamAccounts.length === 0) return null;
@@ -103,7 +96,7 @@ export function createPacingProbe() {
       let pct: number | null;
       try {
         if (!pressureCache.has(task.teamId)) {
-          pressureCache.set(task.teamId, teamPressurePct(task.teamId));
+          pressureCache.set(task.teamId, teamSpendShare(task.teamId));
         }
         pct = await pressureCache.get(task.teamId)!;
       } catch {

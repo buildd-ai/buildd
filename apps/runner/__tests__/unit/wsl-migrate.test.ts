@@ -3,16 +3,21 @@ import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveServicePaths, type CommandResult } from '../../src/service';
+import * as migrateModule from '../../src/wsl-migrate';
 import {
-  LOGON_TASK_NAME,
   WSL_MIGRATE_PREFLIGHT,
   WSL_SERVICE_CHECK,
   WSL_SERVICE_INSTALL,
   generateLogonTaskXml,
   parseMigrateArgs,
+  listPendingPinned,
   runWslMigrate,
   type MigrateDeps,
 } from '../../src/wsl-migrate';
+
+// Namespace access so a missing per-distribution name fails the logon-task checks, not the whole file.
+const logonTaskName: (distro: string) => string =
+  (migrateModule as { logonTaskName?: (distro: string) => string }).logonTaskName ?? (() => 'buildd wsl');
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -91,13 +96,15 @@ function machine(over: Partial<Machine> = {}) {
         if (verb === '/End') { events.push('windows-task-end'); if (!m.windowsForeground) m.windowsLive = false; return ok(); }
         if (verb === '/Delete') { events.push('windows-task-delete'); m.winTask = false; return ok(); }
       }
-      if (name === LOGON_TASK_NAME) {
-        if (verb === '/Query') return m.logonTask === 'absent' ? fail('not found') : ok(`TaskName: \\${LOGON_TASK_NAME}\nStatus: ${m.logonTask}\n`);
+      if (name === logonTaskName('Ubuntu')) {
+        if (verb === '/Query' && args.includes('/XML')) return m.logonTask === 'absent' ? fail('not found') : ok(generateLogonTaskXml('Ubuntu', 'PC\\me'));
+        if (verb === '/Query') return m.logonTask === 'absent' ? fail('not found') : ok(`TaskName: \\${logonTaskName('Ubuntu')}\nStatus: ${m.logonTask}\n`);
         if (verb === '/Create') { events.push('logon-create'); if (m.logonCreateFails) return fail('Access is denied.'); m.logonTask = 'Ready'; return ok(); }
         if (verb === '/Run') { events.push('logon-run'); m.logonTask = 'Running'; return ok(); }
         if (verb === '/End') return ok();
         if (verb === '/Delete') { events.push('logon-delete'); m.logonTask = 'absent'; return ok(); }
       }
+      if (verb === '/Query') return fail('not found'); // e.g. the legacy fixed-name task
     }
     throw new Error(`unexpected command: ${file} ${args.join(' ')}`);
   };
@@ -131,6 +138,7 @@ function machine(over: Partial<Machine> = {}) {
         events.push(`active:${now.length}`);
         return now;
       },
+      pendingPinned: async () => [],
     },
   });
   return { m, calls, events, lines, deps, sleeps: () => sleeps, out: () => lines.join('\n') };
@@ -294,7 +302,7 @@ describe('the logon task (R-18)', () => {
     expect(xml).not.toContain('buildd.cmd');
     expect(xml).toContain('<RunLevel>LeastPrivilege</RunLevel>');
     expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
-    expect(LOGON_TASK_NAME).not.toBe('buildd runner');
+    expect(logonTaskName('Ubuntu-22.04')).not.toBe('buildd runner');
   });
 
   test('distribution names that are not plain words are refused before any command', async () => {
@@ -320,5 +328,194 @@ describe('the Windows launcher', () => {
     const branch = launcher.match(/if \/i "%SUBCMD%"=="wsl" \(([\s\S]*?)\n\)/)?.[1] ?? '';
     expect(branch).toContain('apps\\runner\\src\\wsl.ts" !REST!');
     expect(launcher.indexOf('=="wsl"')).toBeLessThan(launcher.indexOf(':runloop'));
+  });
+});
+
+// Acceptance criteria (Living Spec a0b82b5d, part 3): one test per check id.
+//
+// AC-18 (docs repo) and AC-20 (real machine) have no unit test by design.
+describe('acceptance criteria', () => {
+  test('AC-10: an active task blocks the handover; the Scheduled Task is removed only once it finishes, never stopped', async () => {
+    const t = machine({ active: [[{ title: 'Ship the thing', status: 'working' }], []] });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
+    const busy = t.events.indexOf('active:1');
+    const end = t.events.indexOf('windows-task-end');
+    expect(busy).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(busy);
+    expect(t.calls.filter(c => c.includes('/End'))).toEqual(['schtasks.exe /End /TN buildd runner']);
+    expect(t.m.winTask).toBe(false);
+  });
+
+  test('AC-11: a WSL runner failing --verify-wsl is refused; the Windows runner stays off hold with its task in place', async () => {
+    const t = machine({ verify: 'fail' });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(1);
+    expect(t.m.held).toBe(false);
+    expect(t.m.winTask).toBe(true);
+    expect(mutating(t.calls)).toEqual([]);
+  });
+
+  test('AC-12: the logon task starts the distribution at logon and never runs the native Windows runner', () => {
+    const xml = generateLogonTaskXml('Ubuntu-22.04', 'PC\\me');
+    expect(xml).toContain('<LogonTrigger>');
+    expect(xml).toContain('wsl.exe');
+    expect(xml).toContain('Ubuntu-22.04');
+    expect(xml).not.toMatch(/buildd(\.exe|\.cmd)?\s+(start|run)\b|runner[\\/]src/i);
+  });
+
+  test('AC-13: running migrate a second time reports each step as already done and registers or installs nothing', async () => {
+    const t = machine({ winTask: false, windowsLive: false, service: 'yes', linger: 'yes', logonTask: 'Running' });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
+    expect(mutating(t.calls)).toEqual([]);
+    expect(t.calls.filter(c => c.includes('/Create'))).toEqual([]);
+    expect(t.out()).toMatch(/already/i);
+  });
+
+  // Not yet built (bug eb029481): the logon task only has a LogonTrigger, so
+  // once WSL stops the distribution outside of a logon (the observed
+  // failure: it stayed down for hours) nothing brings it back. Fails now.
+  test('R-18 (bug eb029481): the logon task also brings the distribution back if WSL stops it, not only at the next sign-in', () => {
+    const xml = generateLogonTaskXml('Ubuntu-22.04', 'PC\\me');
+    const triggers = xml.match(/<Triggers>([\s\S]*?)<\/Triggers>/)?.[1] ?? '';
+    const triggerKinds = triggers.match(/<(\w+Trigger)>/g) ?? [];
+    // A trigger besides LogonTrigger that can re-fire without a fresh sign-in
+    // (e.g. a repeating time trigger), so the action restarts the
+    // distribution if WSL already shut it down.
+    expect(triggerKinds.some(t => t !== '<LogonTrigger>')).toBe(true);
+    expect(triggers).toContain('<Repetition>');
+  });
+
+  // Not yet built (bug eb029481): LOGON_TASK_NAME is one fixed name for every
+  // distribution. On one real machine, migrating a second distribution finds
+  // the first one's task already registered (same name) and reports it as
+  // already done instead of making its own. Fails now: `created` ends up
+  // with one entry, not two.
+  test('R-18 (bug eb029481): migrating a second distribution on one machine registers its own logon task, not the first one\'s', async () => {
+    const tasks = new Map<string, 'Ready' | 'Running'>();
+    const created: string[] = [];
+    const preflightOk = 'BUILDD_WSL_MIGRATE=ok systemd=yes service=no linger=yes foreground=no verify=pass\n';
+    const run = (file: string, args: string[]): CommandResult => {
+      if (file === 'wsl.exe' && args[0] === '--list') return ok('  NAME STATE VERSION\n* Ubuntu Running 2\n  Debian Running 2\n');
+      if (file === 'wsl.exe' && args[0] === '--distribution') {
+        const script = args[5];
+        if (script === WSL_MIGRATE_PREFLIGHT) return ok(preflightOk);
+        if (script === WSL_SERVICE_INSTALL) return ok('Installed');
+        if (script === WSL_SERVICE_CHECK) return ok('BUILDD_WSL_MIGRATE=running\n');
+      }
+      if (file === 'schtasks.exe') {
+        const name = args[args.indexOf('/TN') + 1];
+        const verb = args[0];
+        if (name === 'buildd runner') return fail('not found'); // already gone on this machine
+        if (verb === '/Query' && args.includes('/XML')) return tasks.has(name) ? ok(generateLogonTaskXml(name.slice('buildd WSL ('.length, -1), 'PC\\me')) : fail('not found');
+        if (verb === '/Query') return tasks.has(name) ? ok(`TaskName: \\${name}\nStatus: ${tasks.get(name)}\n`) : fail('not found');
+        if (verb === '/Create') { created.push(name); tasks.set(name, 'Ready'); return ok(); }
+        if (verb === '/Run') { tasks.set(name, 'Running'); return ok(); }
+        if (verb === '/End' || verb === '/Delete') return ok();
+      }
+      throw new Error(`unexpected command: ${file} ${args.join(' ')}`);
+    };
+    const home = mkdtempSync(join(tmpdir(), 'wsl-migrate-ac13-'));
+    dirs.push(home);
+    const deps = (): MigrateDeps => ({
+      platform: 'win32',
+      paths: resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'win32', windowsUser: 'PC\\me' }),
+      run,
+      runInteractive: () => 0,
+      log: () => {},
+      confirm: null,
+      sleep: async () => {},
+      pollMs: 1,
+      windows: { live: async () => false, hold: async () => ({ ok: true, message: '' }), activeWork: async () => [] },
+    });
+    expect(await runWslMigrate({ undo: false, distro: 'Ubuntu' }, deps())).toBe(0);
+    expect(await runWslMigrate({ undo: false, distro: 'Debian' }, deps())).toBe(0);
+    // One logon task per distribution: migrating Debian is not a no-op
+    // against Ubuntu's task.
+    expect(created.length).toBe(2);
+    expect(new Set(created).size).toBe(2);
+  });
+
+  test('AC-14: a distribution without systemd stops with the enable-systemd step; the Windows runner is never removed without a WSL service', async () => {
+    const t = machine({ systemd: 'no' });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(1);
+    expect(t.m.winTask).toBe(true);
+    expect(t.out()).toContain('learn.microsoft.com/windows/wsl/systemd');
+    expect(mutating(t.calls)).toEqual([]);
+  });
+
+  // Looks up tasks pinned to the Windows runner before removing it (R-25, R-16).
+  test('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => [{ title: 'Ship the invoice fix' }];
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.out()).toContain('Ship the invoice fix');
+    expect(t.out()).toMatch(/wait(s|ing)? for (the )?(windows )?runner/i);
+  });
+
+  test('AC-16: no pending tasks pinned to the Windows runner means the list is empty', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => [];
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.out()).not.toMatch(/wait(s|ing)? for/i);
+  });
+
+  test('AC-16: a failed pending task lookup does not crash the migration', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => { throw new Error('API unreachable'); };
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.m.winTask).toBe(false);
+  });
+
+  describe('AC-16: listPendingPinned (the lookup main() wires in)', () => {
+    const PIN = 'runner:headless://WIN-BOX';
+    const task = (title: string, status: string, caps: string[]) => ({ title, status, requiredCapabilities: caps });
+    const run = async (respond: (url: string) => Response | Promise<Response>) => {
+      const urls: string[] = [];
+      const lines: string[] = [];
+      const result = await listPendingPinned({
+        configFile: '/nonexistent/config.json',
+        log: (l) => lines.push(l),
+        apiKey: 'bld_test',
+        baseUrl: 'https://example.test/',
+        runnerKey: 'headless://WIN-BOX',
+        fetchFn: (async (u: string) => { urls.push(u); return respond(u); }) as unknown as typeof fetch,
+      });
+      return { result, urls, lines };
+    };
+
+    test('asks for an accepted status and keeps only pending tasks pinned to this runner', async () => {
+      const { result, urls, lines } = await run(() => Response.json({ tasks: [
+        task('pinned pending', 'pending', [PIN]),
+        task('pinned running', 'in_progress', [PIN]),
+        task('other host', 'pending', ['runner:headless://OTHER']),
+        task('unpinned', 'pending', []),
+      ], hasMore: false, nextCursor: null }));
+      expect(urls).toEqual(['https://example.test/api/tasks?status=active']);
+      expect(result).toEqual([{ title: 'pinned pending' }]);
+      expect(lines).toEqual([]);
+    });
+
+    test('follows nextCursor so a later page is not hidden', async () => {
+      const { result, urls } = await run((u) => u.includes('cursor=c1')
+        ? Response.json({ tasks: [task('second page', 'pending', [PIN])], hasMore: false, nextCursor: null })
+        : Response.json({ tasks: [task('first page', 'pending', [PIN])], hasMore: true, nextCursor: 'c1' }));
+      expect(urls[1]).toBe('https://example.test/api/tasks?status=active&cursor=c1');
+      expect(result.map(r => r.title)).toEqual(['first page', 'second page']);
+    });
+
+    test('a non-ok response is reported in one line, not swallowed', async () => {
+      const { result, lines } = await run(() => new Response('nope', { status: 400 }));
+      expect(result).toEqual([]);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/could not check/i);
+    });
+
+    test('a thrown fetch is reported in one line', async () => {
+      const { result, lines } = await run(() => { throw new Error('offline'); });
+      expect(result).toEqual([]);
+      expect(lines).toHaveLength(1);
+    });
   });
 });

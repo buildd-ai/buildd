@@ -19,7 +19,9 @@
  * them. A row carries `missionTaskAnchorId`, so a `#t-<id>` link lands on it.
  */
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
+import { requestTaskCancel, requestTaskRetry } from '@/lib/task-actions';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { missionFinishClause } from '@/lib/flow-timeline';
 import { buildStage, mergedFoldLine, type BuildStageRow } from '@/lib/mission-build-stage';
@@ -116,7 +118,32 @@ function Row({ row }: { row: BuildStageRow }) {
         </span>
         {row.age && <span className="hidden shrink-0 font-mono text-meta text-text-muted md:block">{row.age}</span>}
       </Link>
+      {row.state === 'failed' && <FailedRowActions taskId={row.id} />}
     </li>
+  );
+}
+
+/** A failure a person must fix leads the list with its two moves (Navigation R-14, R-20). Outside the row's link. */
+function FailedRowActions({ taskId }: { taskId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState<'retry' | 'cancel' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (which: 'retry' | 'cancel') => {
+    if (busy) return;
+    setBusy(which);
+    setError(null);
+    const out = await (which === 'retry' ? requestTaskRetry(taskId) : requestTaskCancel(taskId));
+    setBusy(null);
+    if (out.ok) router.refresh();
+    else setError(out.error);
+  };
+  const BTN = 'inline-flex min-h-11 items-center text-body text-text-secondary underline-offset-4 hover:text-text-primary hover:underline disabled:opacity-50 md:min-h-0';
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 pb-2 pl-4">
+      <button type="button" data-testid="task-row-retry" disabled={!!busy} onClick={() => run('retry')} className={`${BTN} font-semibold text-text-primary`}>{busy === 'retry' ? 'Retrying…' : 'Retry'}</button>
+      <button type="button" data-testid="task-row-cancel" disabled={!!busy} onClick={() => run('cancel')} className={BTN}>{busy === 'cancel' ? 'Cancelling…' : 'Cancel'}</button>
+      {error && <span role="alert" className="text-meta text-status-error [overflow-wrap:anywhere]">{error}</span>}
+    </div>
   );
 }
 

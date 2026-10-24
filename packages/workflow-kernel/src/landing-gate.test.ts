@@ -57,7 +57,7 @@ describe('reviewGate (§13.13 rule 6)', () => {
 });
 
 describe('landingStatusOf: the buildd/landing status (§4)', () => {
-  test('the context is Buildd / Review approval, also published under the legacy name', () => {
+  test('the context is Buildd / Review approval; readers still skip the retired buildd/landing on older heads', () => {
     expect(LANDING_STATUS_CONTEXT).toBe('Buildd / Review approval');
     expect(LANDING_STATUS_CONTEXTS).toEqual(['buildd/landing', 'Buildd / Review approval']);
   });

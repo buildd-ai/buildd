@@ -1301,9 +1301,7 @@ export const EXCLUSION_WORDS: Record<string, string> = {
   task_reserved: 'taken by your session',
   already_claimed: 'another runner has it',
   active_worker: 'another runner has it',
-  workspace_cap: 'workspace is at its task limit',
   mission_concurrent: 'mission is at its task limit',
-  mission_paced: 'mission is paced',
   mission_budget: 'mission budget is spent',
   codex_single_flight: 'one Codex run per workspace at a time',
   path_overlap: 'waits for work on the same files',
@@ -1392,7 +1390,6 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
 export const DEFERRAL_WORDS: Record<string, string> = {
   ...EXCLUSION_WORDS,
   budget_paused: TERMS['wait.usage_limit'].short,
-  oauth_parallelism: 'the plan allows only a few sessions at once',
   duplicate_worker: 'an agent already has it',
   sibling_retry_open: 'a retry of it is already open',
   awaiting_owner_answer: 'it is waiting on your answer',

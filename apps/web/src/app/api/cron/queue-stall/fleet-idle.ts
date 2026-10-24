@@ -48,6 +48,7 @@
  * completed end to end.
  */
 
+import { startAnywayAdmits } from '@/lib/start-anyway';
 import { db } from '@buildd/core/db';
 import {
   accountWorkspaces,
@@ -62,7 +63,6 @@ import {
   DEP_SATISFYING_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
 } from '@/lib/dep-gate-contract';
-import { hasBypassFlag, BYPASS_DEPS_GATE_KEY } from '@/lib/bypass-flags';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { missionNotHeld, missionNotLocal, taskNotHeld } from '@/app/api/workers/claim/held-gate';
 import { RUNNER_RECENTLY_SEEN_MS, isOnceRunnerUrl } from '@buildd/shared';
@@ -290,7 +290,7 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
   const depIds = [
     ...new Set(
       waited
-        .filter(t => !hasBypassFlag(t.context ?? {}, BYPASS_DEPS_GATE_KEY))
+        .filter(t => !startAnywayAdmits(t.context ?? {}))
         .flatMap(t => (t.dependsOn ?? []) as string[]),
     ),
   ];
@@ -317,7 +317,7 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
   );
 
   return waited.filter(t => {
-    if (hasBypassFlag(t.context ?? {}, BYPASS_DEPS_GATE_KEY)) return true;
+    if (startAnywayAdmits(t.context ?? {})) return true;
     for (const depId of t.dependsOn ?? []) {
       const status = depStatus.get(depId);
       // A dangling dep id can never be satisfied; an unsatisfying status still

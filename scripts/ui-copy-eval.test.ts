@@ -43,7 +43,7 @@ let dir = '';
 const fresh = () => (dir = mkdtempSync(join(tmpdir(), 'ui-copy-eval-')));
 afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = ''; });
 const quiet = { out: () => {}, err: () => {} };
-const env = { DATABASE_URL: 'postgres://fixture.invalid/none' };
+const env = {};
 const readReport = (path: string): UiCopyBenchmarkReport => JSON.parse(readFileSync(path, 'utf8'));
 
 describe('ui-copy eval command', () => {
@@ -57,13 +57,20 @@ describe('ui-copy eval command', () => {
     expect(lines.join('\n')).toContain('status: INCOMPLETE');
   });
 
-  it('refuses a network run without a team or without the scoped resolver\'s database', async () => {
+  it('a network run with no server route is INCOMPLETE, makes no call and does not fall back or need a database', async () => {
     fresh();
     const errors: string[] = [];
-    expect(await runUiCopyEval(['--network'], { env, err: e => errors.push(e), out: () => {} })).toBe(1);
-    expect(await runUiCopyEval(['--network', '--team', 'team-fixture'], { env: {}, err: e => errors.push(e), out: () => {} })).toBe(1);
-    expect(errors.join('\n')).toMatch(/--team/);
-    expect(errors.join('\n')).toMatch(/DATABASE_URL/);
+    const lines: string[] = [];
+    const fetched: unknown[] = [];
+    const code = await runUiCopyEval(['--network', '--case', 'dev-clean-ready', '--cache', join(dir, 'c.json')], {
+      env: {}, deps: { fetch: (async (...a: unknown[]) => { fetched.push(a); throw new Error('must not be called'); }) as unknown as typeof fetch },
+      err: e => errors.push(e), out: l => lines.push(l),
+    });
+    expect(code).toBe(1);
+    expect(fetched).toHaveLength(0);
+    expect(lines.join('\n')).toContain('status: INCOMPLETE');
+    expect(errors.join('\n')).toMatch(/BUILDD_SERVER/);
+    expect(errors.join('\n')).not.toMatch(/DATABASE_URL|--team/);
   });
 
   it('a bounded network run then an offline replay: same accepted verdicts, same applied threshold, zero calls', async () => {
@@ -71,7 +78,7 @@ describe('ui-copy eval command', () => {
     const cache = join(dir, 'cache.json');
     const calls: unknown[] = [];
     const live = await runUiCopyEval(
-      ['--network', '--team', 'team-fixture', '--max-decisions', '60', '--max-cost-usd', '0.1', '--cache', cache, '--json', join(dir, 'live.json')],
+      ['--network', '--max-decisions', '60', '--max-cost-usd', '0.1', '--cache', cache, '--json', join(dir, 'live.json')],
       { env, deps: fixtureDeps(calls), ...quiet },
     );
     expect(live).toBe(0);
@@ -100,7 +107,7 @@ describe('ui-copy eval command', () => {
   it('refuses to replay under a measurement policy the cache never recorded', async () => {
     fresh();
     const cache = join(dir, 'cache.json');
-    await runUiCopyEval(['--network', '--team', 'team-fixture', '--case', 'dev-clean-ready', '--cache', cache], { env, deps: fixtureDeps(), ...quiet });
+    await runUiCopyEval(['--network', '--case', 'dev-clean-ready', '--cache', cache], { env, deps: fixtureDeps(), ...quiet });
     const errors: string[] = [];
     expect(await runUiCopyEval(['--cache', cache, '--measurement-policy', 'ffff'], { env: {}, out: () => {}, err: e => errors.push(e) })).toBe(1);
     expect(errors.join('\n')).toContain('not recorded');

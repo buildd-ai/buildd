@@ -2184,13 +2184,16 @@ describe('S15 disjoint-delta rule (88318f31, #4283): an approved head on a busy 
   });
 
   // 92a439a6 (#5179): a migration only the base carries is not a reason to page a person.
-  test('a migration or schema change is risky on the base side only against the PR\'s own', () => {
+  // #5522: a PR's own migration was refused against every gap, so it landed only on a still base.
+  test('a migration or schema change is risky on either side only against one on the other', () => {
     for (const risky of ['packages/core/drizzle/0300_x.sql', 'packages/core/db/schema.ts']) {
       expectResult(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky] })), 'rejected', 'behind_tolerated');
       expect(applied(land(approved(spent), delta({ baseFiles: ['src/x.ts', risky] }))).toState).toBe('LANDING');
       const both = applied(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky], prFiles: ['src/a.ts', 'packages/core/drizzle/0301_mine.sql'] })));
       expect(both.evidence).toMatchObject({ cause: 'refresh_unsafe', deltaBasis: 'risky_path' });
-      expectResult(land(approved(spent), delta({ prFiles: ['src/a.ts', risky] })), 'rejected', 'behind_not_tolerated');
+      expectResult(land(approved(spent), delta({ baseFiles: ['src/x.ts', risky], prFiles: ['src/a.ts', 'packages/core/drizzle/0301_mine.sql'] })), 'rejected', 'behind_not_tolerated');
+      expectResult(behind(approved(spent), delta({ prFiles: ['src/a.ts', risky] })), 'rejected', 'behind_tolerated');
+      expect(applied(land(approved(spent), delta({ prFiles: ['src/a.ts', risky] }))).toState).toBe('LANDING');
     }
   });
 

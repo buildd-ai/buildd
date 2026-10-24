@@ -78,8 +78,11 @@ export type RefreshSupersessionVerdict =
   | { ok: true; branch: string; trunk: string; filesChecked: number; migrationsMatched: number; closedOnGitHub: boolean }
   | { ok: false; reason: string; transient: boolean };
 
-const MIGRATION_SQL = /(^|\/)drizzle\/[^/]+\.sql$/;
-const MIGRATION_META = /(^|\/)drizzle\/meta\//;
+// Both layouts: drizzle v1 folders (`drizzle/<ts>_<slug>/migration.sql` + `snapshot.json`) and the
+// older flat files (`drizzle/NNNN_slug.sql` + `drizzle/meta/`). A folder-layout migration used to
+// match neither, so its SQL was never twin-checked and a regenerated one could not match.
+const MIGRATION_SQL = /(^|\/)drizzle\/([^/]+\.sql|[^/]+\/migration\.sql)$/;
+const MIGRATION_META = /(^|\/)drizzle\/(meta\/|[^/]+\/snapshot\.json$)/;
 
 function toDiff(f: DeltaFile & { sha?: string | null }): DiffFile {
   return { filename: f.filename, status: f.status, sha: f.sha ?? null, patch: f.patch ?? null };
@@ -120,9 +123,37 @@ export async function verifyRefreshSuperseded(opts: {
   const olderHead: string | undefined = o?.head?.sha;
   if (!olderHead) return { ok: false, reason: 'the older PR has no head sha', transient: true };
 
+  const inBranch = await verifyRefreshInBranch({ installationId, repo, branch, trunk, refresh: older.refresh, prHeadSha: olderHead, api });
+  if (!inBranch.ok) return inBranch;
+  return { ...inBranch, closedOnGitHub: o?.state !== 'open' };
+}
+
+export type RefreshInBranchVerdict =
+  | { ok: true; branch: string; trunk: string; filesChecked: number; migrationsMatched: number }
+  | { ok: false; reason: string; transient: boolean };
+
+/**
+ * Is everything one refresh PR set out to do already in its integration branch, whoever put it
+ * there (a newer refresh, a direct push)? Steps 2 and 3 of the header: ancestry
+ * (`verifyRefreshLanded`), then every migration (by identical SQL) and every added line of its
+ * delta over trunk found in the branch's own delta over trunk. Reads only; fails closed.
+ * Also the closed-refresh door of lib/pr-supersession-detect.ts.
+ */
+export async function verifyRefreshInBranch(opts: {
+  installationId: number;
+  repo: string;
+  branch: string;
+  trunk: string;
+  refresh: IntegrationRefreshContext;
+  prHeadSha: string;
+  api?: Api;
+}): Promise<RefreshInBranchVerdict> {
+  const api = opts.api ?? githubApi;
+  const { installationId, repo, branch, trunk, prHeadSha: olderHead } = opts;
+
   // (2) Ancestry: what the older refresh set out to do is already in the branch.
   const landed = await verifyRefreshLanded({
-    installationId, repoFullName: repo, branch, trunk, refresh: older.refresh, prHeadSha: olderHead, api,
+    installationId, repoFullName: repo, branch, trunk, refresh: opts.refresh, prHeadSha: olderHead, api,
   });
   if (!landed.ok) return { ok: false, reason: landed.reason, transient: landed.transient };
 
@@ -155,11 +186,7 @@ export async function verifyRefreshSuperseded(opts: {
     };
   }
 
-  return {
-    ok: true, branch, trunk,
-    filesChecked: compared.length, migrationsMatched: sqlTwins.length,
-    closedOnGitHub: o?.state !== 'open',
-  };
+  return { ok: true, branch, trunk, filesChecked: compared.length, migrationsMatched: sqlTwins.length };
 }
 
 export type RetireOutcome =

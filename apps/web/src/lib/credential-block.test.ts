@@ -24,7 +24,7 @@ describe('credentialBlockFromDeferral', () => {
     expect(src).toContain('delete (patchedContext as Record<string, unknown>)[CREDENTIAL_BLOCK_CONTEXT_KEY]');
   });
   it('ignores unrelated deferrals', () => {
-    expect(credentialBlockFromDeferral('workspace_cap', {})).toBeNull();
+    expect(credentialBlockFromDeferral('mission_concurrent', {})).toBeNull();
     expect(credentialBlockFromDeferral('provider_unavailable', { backend: 'claude', reason: 'pinned' })).toBeNull();
   });
 });

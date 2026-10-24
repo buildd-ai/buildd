@@ -201,9 +201,6 @@ export const relations = defineRelations(schema, (r) => ({
     team: r.one.teams({ from: r.backendPauses.teamId, to: r.teams.id, optional: false }),
     workspace: r.one.workspaces({ from: r.backendPauses.workspaceId, to: r.workspaces.id }),
   },
-  oauthBudgetEpisodes: {
-    account: r.one.accounts({ from: r.oauthBudgetEpisodes.accountId, to: r.accounts.id, optional: false }),
-  },
   connectors: {
     team: r.one.teams({ from: r.connectors.teamId, to: r.teams.id, optional: false }),
     connectorWorkspaces: r.many.connectorWorkspaces({ from: r.connectors.id, to: r.connectorWorkspaces.connectorId }),
