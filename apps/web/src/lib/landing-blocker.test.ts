@@ -172,26 +172,25 @@ describe('deriveLandingBlocker — conflict takes precedence over review states'
     expect(blocker?.owner).toBe('platform');
     expect(blocker?.label).toContain('repair is running');
   });
+});
 
-  it('210caad3: a behind refresh waiting for its lane slot names the wait, not "a repair is running"', () => {
-    const blocker = deriveLandingBlocker({
-      ...base,
-      delivery: {
-        state: 'REPAIRING',
-        stateReason: 'behind',
-        headline: 'Waiting to update branch',
-        prState: 'open' as const,
-        headSha: 'abc123def456',
-        detail: 'PR #41 is merging into dev first',
-        // The newest attempt task is the finished reviewer, not anything working on the branch.
-        currentAttempt: { status: 'completed' },
-        owner: 'platform',
-      },
-      repairs: [],
-    });
+// e07ee9cf: approved PRs parked in the landing lane read as "a repair is running" with no worker or repair.
+describe('deriveLandingBlocker — a behind refresh is not a repair', () => {
+  const base = { taskId: 'task-1', prNumber: 5660, prUrl: 'https://github.com/org/repo/pull/5660' };
+  const behind = (o: Record<string, unknown> = {}) => ({
+    state: 'REPAIRING' as const, stateReason: 'behind', headline: 'Updating branch', prState: 'awaiting_ci' as const,
+    headSha: 'abc123def456', detail: null, currentAttempt: { taskId: 'task-1', role: 'owner', status: 'completed', createdAt: '2026-10-24T15:00:00Z' }, owner: 'landing' as const, ...o,
+  });
 
-    expect(blocker?.cause).toBe('repair_queued');
-    expect(blocker?.label).toBe('PR #42: Waiting to update branch (PR #41 is merging into dev first)');
-    expect(blocker?.label).not.toContain('running');
+  it('parked in the lane: queued behind the PR landing first, owned by the platform', () => {
+    const b = deriveLandingBlocker({ ...base, delivery: behind({ laneWait: { behindPr: 5657, position: 2 } }) });
+    expect(b).toMatchObject({ cause: 'lane_queued', owner: 'platform', label: 'PR #5660 is queued to land behind PR #5657, position 2' });
+    expect(`${b?.label} ${b?.nextAction}`).not.toMatch(/repair/i);
+  });
+
+  it('refreshing: the platform updates the branch, never "a repair is running"', () => {
+    const b = deriveLandingBlocker({ ...base, delivery: behind() });
+    expect(b).toMatchObject({ cause: 'branch_updating', owner: 'platform' });
+    expect(b?.label).not.toMatch(/repair/i);
   });
 });

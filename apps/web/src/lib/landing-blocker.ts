@@ -39,6 +39,10 @@ export type LandingBlockCause =
   | 'review_pending'
   | 'fix_pending'
   | 'push_pending'
+  /** A behind refresh parked in the landing lane, waiting for another PR on the same base. */
+  | 'lane_queued'
+  /** The platform is updating a behind branch from its base (no agent, no fix). */
+  | 'branch_updating'
   /** The mission PR's visual review is owed or open (spec 072de598 I-12, AC-10). */
   | 'visual_review';
 
@@ -90,7 +94,8 @@ export function deriveLandingBlocker(p: {
   taskId: string;
   prNumber: number | null;
   prUrl: string | null;
-  delivery?: (Pick<DeliveryView, 'state' | 'headSha' | 'prState' | 'headline' | 'detail' | 'currentAttempt' | 'owner'> & Partial<Pick<DeliveryView, 'stateReason'>>) | null;
+  delivery?: Pick<DeliveryView, 'state' | 'headSha' | 'prState' | 'headline' | 'detail' | 'currentAttempt' | 'owner'>
+    & Partial<Pick<DeliveryView, 'stateReason' | 'laneWait'>> | null;
   /** Newest `pr_landing` row for the task whose outcome refused the landing. */
   landing?: LandingGateRow | null;
   prLifecycleStatus?: string | null;
@@ -160,16 +165,26 @@ export function deriveLandingBlocker(p: {
     if (d.state === 'AWAITING_PUSH') {
       return { ...base, cause: 'push_pending', owner: 'platform', label: `${pr} is waiting for a push to reach GitHub`, nextAction: 'Nothing to do yet: it is reviewed once the push lands.', derivedFrom: 'workflow_deliveries' };
     }
-    // 210caad3: a behind refresh is the platform updating the branch, often parked behind another
-    // PR's landing; no worker runs it, so "a repair is running" would describe the newest attempt
-    // task (a reviewer, the owner) instead. The delivery's own line names the wait.
+    // e07ee9cf: parked in the landing lane is a queue, not a repair: no worker runs and nothing is being fixed.
+    if (d.state === 'REPAIRING' && d.laneWait) {
+      const behind = d.laneWait.behindPr != null ? `PR #${d.laneWait.behindPr}` : 'another PR';
+      const place = d.laneWait.position != null && d.laneWait.position > 0 ? `, position ${d.laneWait.position}` : '';
+      return {
+        ...base,
+        cause: 'lane_queued',
+        owner: 'platform',
+        label: `${pr} is queued to land behind ${behind}${place}`,
+        nextAction: `Nothing to do: buildd updates the branch and merges it once ${behind} has landed.`,
+        derivedFrom: 'workflow_deliveries',
+      };
+    }
     if (d.state === 'REPAIRING' && d.stateReason === 'behind') {
       return {
         ...base,
-        cause: 'repair_queued',
+        cause: 'branch_updating',
         owner: 'platform',
-        label: `${pr}: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
-        nextAction: 'Nothing to do yet: buildd updates the branch from its base. Red CI or a conflict on this head replaces the wait with a repair.',
+        label: `${pr}: buildd is updating the branch from its base`,
+        nextAction: 'Nothing to do yet: it is re-checked once the updated branch reaches GitHub.',
         derivedFrom: 'workflow_deliveries',
       };
     }
