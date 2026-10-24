@@ -91,6 +91,12 @@ describe('buildReleaseCandidateFixTask', () => {
     expect(built.description).not.toContain('--allow-escape-sequences');
   });
 
+  it('cannot complete without a PR and routes to a tier that can diagnose', () => {
+    expect(built.outputRequirement).toBe('pr_required');
+    expect(built.tier).toBe('premium');
+    expect(built.description).toContain('alreadyShippedIn');
+  });
+
   it('the refusal text names the source branch and the amendment', () => {
     const t = releaseCandidateBranchPushRefusal(76, 'dev');
     expect(t).toContain('#76');
