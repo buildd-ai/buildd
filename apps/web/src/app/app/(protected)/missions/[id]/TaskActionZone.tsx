@@ -269,7 +269,7 @@ export default function TaskActionZone({
   // Parked on its prerequisite: the status line already says what and why.
   const parked = saPhase === 'blocked';
   const offerLabel = (r: GateRefusal | null | undefined) =>
-    startsAnyway(r) ? (parked ? 'Try start anyway again…' : 'Start anyway…') : 'Force start…';
+    startsAnyway(r) ? (parked ? 'Retry start anyway…' : 'Start anyway…') : 'Force start…';
   const queuedHeld = start.status === 'queued' && start.waiting ? refusalFromWaiting(start.waiting) : null;
 
   const refusal = start.refusal;

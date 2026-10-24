@@ -162,6 +162,6 @@ describe('TaskActionZone: Start anyway', () => {
     await render({ isBlocked: true, blockedByCount: 1 });
     expect(q('[data-testid="task-waiting-line"]')).toBeNull();
     expect(container.textContent?.match(/Build the schema/g)).toHaveLength(1);
-    expect(q('[data-action="force_start_offer"]')!.textContent).toBe('Try start anyway again…');
+    expect(q('[data-action="force_start_offer"]')!.textContent).toBe('Retry start anyway…');
   });
 });
