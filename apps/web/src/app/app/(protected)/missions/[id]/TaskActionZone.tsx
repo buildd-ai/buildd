@@ -404,6 +404,13 @@ export default function TaskActionZone({
         </div>
       )}
 
+      {/* Start anyway: the observed phase of an accepted request (requested / blocked on its prerequisite) */}
+      {waiting?.startAnyway && start.status === 'idle' && (
+        <p data-testid="task-start-anyway-status" data-phase={waiting.startAnyway.phase} role="status" className="font-mono text-eyebrow text-text-secondary [overflow-wrap:anywhere]">
+          {waiting.startAnyway.label}
+        </p>
+      )}
+
       {/* Blocked — what holds it: declared dependencies vs coordination-only ordering */}
       {has('blocked') && start.status === 'idle' && held?.waitingReasons && (
         <div data-testid="task-blocked-waiting">
@@ -412,7 +419,7 @@ export default function TaskActionZone({
               <ForcePending />
             ) : held.canForce && (
               <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
-                Force start…
+                {startsAnyway(held) ? 'Start anyway…' : 'Force start…'}
               </button>
             )}
           </WaitingLine>
@@ -489,7 +496,7 @@ export default function TaskActionZone({
                 <ForcePending />
               ) : held.canForce && (
                 <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
-                  Force start…
+                  {startsAnyway(held) ? 'Start anyway…' : 'Force start…'}
                 </button>
               )}
             </WaitingLine>
@@ -528,7 +535,7 @@ export default function TaskActionZone({
         <WaitingLine reasons={queuedHeld.waitingReasons}>
           {queuedHeld.canForce && !start.forced && (
             <button type="button" data-action="force_start_offer" onClick={() => start.present(queuedHeld)} disabled={starting} className={QUIET_BTN}>
-              Force start…
+              {startsAnyway(queuedHeld) ? 'Start anyway…' : 'Force start…'}
             </button>
           )}
         </WaitingLine>
@@ -542,13 +549,15 @@ export default function TaskActionZone({
               : <Spinner size="sm" className={start.status === 'queued' ? 'text-status-warning' : 'text-status-success'} aria-label="Start requested" />}
             <div className="font-mono">
               <p className="text-meta font-medium text-text-primary">
-                {start.status === 'accepted' ? 'Task started' : start.forced ? 'Force start requested' : start.status === 'queued' ? 'Queued at front' : 'Start requested'}
+                {start.status === 'accepted' ? 'Task started' : start.forced ? (start.forced.gates.includes('Declared dependency') ? 'Start anyway requested' : 'Force start requested') : start.status === 'queued' ? 'Queued at front' : 'Start requested'}
               </p>
               <p className="text-eyebrow text-text-secondary">
                 {start.status === 'accepted'
                   ? 'A runner picked it up.'
                   : start.forced
-                    ? `Skipping: ${start.forced.gates.join(', ')}. Starts next.`
+                    ? (start.forced.gates.includes('Declared dependency')
+                      ? 'The agent assesses what can proceed before building. The dependency stays in place.'
+                      : `Skipping: ${start.forced.gates.join(', ')}. Starts next.`)
                     : start.status === 'queued'
                       ? 'No runner has responded. It’s next in the queue.'
                       : 'Waiting for a runner.'}
@@ -573,7 +582,7 @@ export default function TaskActionZone({
           refusal={refusal}
           pending={start.pending}
           taskTitle={taskTitle}
-          onForce={(kinds) => refusal.reasonsDigest && start.start({ force: { kinds, reasonsDigest: refusal.reasonsDigest }, targetLocalUiUrl: target || undefined })}
+          onForce={(kinds) => refusal.reasonsDigest && start.start({ force: { kinds, reasonsDigest: refusal.reasonsDigest, ...seenDeclared(refusal) }, targetLocalUiUrl: target || undefined })}
           onCancel={start.dismiss}
         />
       )}
@@ -658,6 +667,17 @@ export default function TaskActionZone({
   );
 }
 
+/** The refusal's forceable set includes a declared dependency: the action is Start anyway (spec 36df686b). */
+function startsAnyway(refusal: GateRefusal | null | undefined): boolean {
+  return !!refusal?.force?.kinds?.includes('dep_declared');
+}
+
+/** The declared blockers the person saw: a prerequisite that clears meanwhile is not a reason to confirm again. */
+function seenDeclared(refusal: GateRefusal): { seenBlockers?: string[] } {
+  const ids = (refusal.waitingReasons ?? []).filter(r => r.kind === 'dep_declared' && r.blocker).map(r => r.blocker!.id);
+  return ids.length > 0 ? { seenBlockers: ids } : {};
+}
+
 /** An unexpired Force start awaiting its runner claim. */
 function ForcePending() {
   return (
@@ -701,6 +721,7 @@ export function CoordinationRefusal({ refusal, pending, onForce, onCancel, taskT
   const kinds = items.length > 0
     ? [...new Set(items.filter((_, i) => !unticked.has(i)).map(c => c.kind))]
     : (offer?.kinds ?? []);
+  const anyway = startsAnyway(refusal);
   return (
     <div data-testid="task-start-refusal" data-gate="coordination_hold" className="space-y-3">
       {refusal.reasonsChanged && (
@@ -710,7 +731,7 @@ export function CoordinationRefusal({ refusal, pending, onForce, onCancel, taskT
       {canOfferForce(refusal) && offer ? (
         <div data-testid="task-force-confirm" className="space-y-2 border border-status-warning p-3 font-mono text-eyebrow">
           <p className="text-meta font-medium text-text-primary [overflow-wrap:anywhere]">
-            Force start{taskTitle ? ` “${taskTitle}”` : ''}?
+            {anyway ? `Start${taskTitle ? ` “${taskTitle}”` : ''} anyway?` : `Force start${taskTitle ? ` “${taskTitle}”` : ''}?`}
           </p>
           {items.length > 1 ? (
             <fieldset className="space-y-1">
@@ -749,7 +770,7 @@ export function CoordinationRefusal({ refusal, pending, onForce, onCancel, taskT
               disabled={busy || !refusal.reasonsDigest || kinds.length === 0}
               className="min-h-11 border-2 border-status-warning bg-status-warning px-3 font-mono text-meta font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
-              {pending === 'force' ? 'Force starting…' : 'Force start'}
+              {anyway ? (pending === 'force' ? 'Starting…' : 'Start anyway') : (pending === 'force' ? 'Force starting…' : 'Force start')}
             </button>
             <button type="button" onClick={onCancel} disabled={busy} className={QUIET_BTN}>Keep waiting</button>
           </div>

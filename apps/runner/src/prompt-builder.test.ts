@@ -269,6 +269,7 @@ describe('buildPromptWithComposition — per-section byte accounting', () => {
       'retry-context',
       'answered-question',
       'unanswered-question',
+      'start-anyway',
       'communication',
       'task-metadata',
     ]);

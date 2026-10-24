@@ -54,7 +54,7 @@ describe('loadMissionGateFacts: release arms match the claim gate', () => {
     expect(await claimGateOpen(revoked)).toBe(false);
   });
 
-  test('the bypass flag releases every edge; a held task reads held', async () => {
+  test('the retired bypass flag releases nothing; a held task reads held', async () => {
     const missionId = await seedMission(teamId, workspaceId);
     const up = await seedTask(workspaceId, { status: 'in_progress', missionId });
     const bypassed = await seedTask(workspaceId, { dependsOn: [up], missionId });
@@ -63,9 +63,9 @@ describe('loadMissionGateFacts: release arms match the claim gate', () => {
     await q(sql`UPDATE tasks SET context = '{"heldBy":{"at":"2026-01-01T00:00:00Z"}}'::jsonb WHERE id = ${held}::uuid`);
 
     const facts = await loadMissionGateFacts(missionId, FREE);
-    expect(facts.releasedEdges).toEqual([{ dependentId: bypassed, dependencyId: up, arm: 'bypass' }]);
+    expect(facts.releasedEdges).toEqual([]);
     expect(facts.waitingKinds[held]).toBe('task_held');
-    expect(await claimGateOpen(bypassed)).toBe(true);
+    expect(await claimGateOpen(bypassed)).toBe(false);
   });
 
   test('a surface audit ignores a dependency outside its mission, as the claim does', async () => {

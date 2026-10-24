@@ -1688,15 +1688,15 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     expect(body.waitingReasons ?? []).toEqual([]);
   });
 
-  it('a non-forceable reason (declared dependency) offers no Force start and refuses one', async () => {
-    mockProbe.mockResolvedValue([migrationEdge('a'), declaredEdge('z')]);
+  it('a non-forceable reason (task hold) offers no Force start and refuses one', async () => {
+    mockProbe.mockResolvedValue([migrationEdge('a'), makeWaitingReason('task_held', { because: 'paused', provenance: { source: 'probe', derivedFrom: 't' } })]);
     const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
     expect(refused.canForce).toBe(false);
     expect(refused.force).toBeNull();
-    expect(refused.notForceable).toEqual(['Declared dependency']);
+    expect(refused.notForceable).toEqual(['Task paused']);
 
     const res = await callHandler(createMockRequest({
-      body: { force: { kinds: ['dep_inferred', 'dep_declared'], reasonsDigest: refused.reasonsDigest } },
+      body: { force: { kinds: ['dep_inferred', 'task_held'], reasonsDigest: refused.reasonsDigest } },
     }), 'task-123');
     expect(res.status).toBe(422);
     expect(mockDbUpdate.set).not.toHaveBeenCalled();
