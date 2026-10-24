@@ -361,7 +361,7 @@ export function overviewWavesInput(n: number): { tasks: BoardTaskInput[]; gateFa
       waitingKinds[id] = 'dep_declared';
     } else {
       tasks.push(task(i, title(i)));
-      if (kind === 'slot') waitingKinds[id] = 'workspace_cap';
+      if (kind === 'slot') waitingKinds[id] = 'mission_concurrent';
       if (kind === 'hold') waitingKinds[id] = 'mission_budget';
       if (kind === 'unknown') waitingKinds[id] = 'unknown';
     }

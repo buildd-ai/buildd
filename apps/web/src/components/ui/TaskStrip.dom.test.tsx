@@ -69,3 +69,37 @@ describe('Segmented', () => {
     expect(checked()).toBe('State');
   });
 });
+
+describe('TaskStrip grouped phone cell width (R-4)', () => {
+  const realRO = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+  const origWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+  beforeEach(() => {
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class { observe() {} disconnect() {} unobserve() {} };
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 358 });
+    window.matchMedia = (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  });
+  afterEach(() => {
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = realRO;
+    if (origWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', origWidth);
+  });
+
+  for (const [count, split] of [[15, [10, 5]], [23, [10, 10, 3]]] as const) {
+    it(`${count} cells: every row uses the same fixed cell track`, () => {
+      const cells = Array.from({ length: count }, (_, i) => ({ id: `c${i}`, state: (i < count - 3 ? 'landed' : 'queued') as 'landed' | 'queued' }));
+      const groups = [{ key: 'done', ids: cells.slice(0, count - 3).map(c => c.id) }, { key: 'rest', ids: cells.slice(count - 3).map(c => c.id) }];
+      act(() => root.render(<TaskStrip cells={cells} groups={groups} ticks={false} />));
+      const rows = [...container.querySelectorAll('[data-testid="task-strip-cells"]')] as HTMLElement[];
+      expect(rows.length).toBeGreaterThan(1);
+      const widths = new Set<string>();
+      for (const r of rows) {
+        const cell = r.style.getPropertyValue('--cell');
+        expect(cell).toMatch(/^\d+(\.\d+)?px$/);
+        widths.add(cell);
+        expect(r.style.gridTemplateColumns).toContain('var(--cell)');
+      }
+      expect(widths.size).toBe(1);
+      expect(rows.map(r => r.querySelectorAll('button').length).reduce((a, b) => a + b, 0)).toBe(count);
+      void split;
+    });
+  }
+});

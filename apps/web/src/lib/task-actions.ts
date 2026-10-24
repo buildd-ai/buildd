@@ -20,16 +20,9 @@ export interface GateRefusal {
   blockClass?: 'policy' | 'capability' | 'entitlement';
   error?: string;
   canForce?: boolean;
-  /** workspace_cap_reached: the person may start this one task past the cap. */
-  canExempt?: boolean;
-  /** workspace_cap_reached: the person holds manage_workspace_settings, so raising the cap would be accepted. */
-  canRaiseCap?: boolean;
   backend?: string;
   /** capability_mismatch: backends the team does hold a credential for. */
   availableBackends?: string[];
-  active?: number;
-  cap?: number;
-  queuePosition?: number;
   missingConnectors?: string[];
   /** connector_routing_mismatch: the connectors the role needs and cannot reach. */
   connectorFailures?: Array<{ connectorName: string }>;
@@ -197,7 +190,6 @@ export function claimTaskCommand(taskId: string): string {
 
 export interface StartRequest {
   forceOverride?: boolean;
-  capExempt?: boolean;
   /**
    * Force start past a `coordination_hold` (docs/specs/force-start.md): the
    * ticked kinds and the digest of the reasons the refusal showed.
@@ -220,7 +212,6 @@ export async function requestTaskStart(taskId: string, req: StartRequest = {}): 
       body: JSON.stringify({
         ...(req.targetLocalUiUrl ? { targetLocalUiUrl: req.targetLocalUiUrl } : {}),
         ...(req.forceOverride ? { forceOverride: true } : {}),
-        ...(req.capExempt ? { capExempt: true } : {}),
         ...(req.force ? { force: req.force } : {}),
       }),
     });
@@ -361,7 +352,7 @@ export function refusalFromWaiting(w: TaskWaiting): GateRefusal | null {
 
 /** Force start is offered only for refusals a person can legitimately bypass. */
 export function canOfferForce(refusal: Pick<GateRefusal, 'canForce' | 'blockClass' | 'gateReason'> | null | undefined): boolean {
-  return !!refusal?.canForce && refusal.blockClass !== 'capability' && refusal.gateReason !== 'workspace_cap_reached';
+  return !!refusal?.canForce && refusal.blockClass !== 'capability';
 }
 
 /** A mission_held refusal's copy; a server that predates the state meant never started. */
@@ -398,8 +389,6 @@ export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = 
       return 'Blocked: mission budget exhausted';
     case 'capability_mismatch':
       return `Blocked: no ${refusal.backend ?? 'backend'} credential available`;
-    case 'workspace_cap_reached':
-      return `Workspace full (${refusal.active}/${refusal.cap} running)`;
     case 'entitlement_blocked':
       return 'Queued: plan limit reached';
     case 'coordination_hold':
@@ -437,8 +426,6 @@ export function getGateReasonSubtitle(refusal: GateRefusal, ctx: GateCopyContext
           ? 'It starts by itself when its prerequisite finishes. Start anyway lets its agent assess what can proceed first; the dependency stays.'
           : 'It starts by itself when this clears. Force start skips only the gate named below.')
         : 'It starts by itself when this clears. This wait cannot be forced.';
-    case 'workspace_cap_reached':
-      return `Queued. The task starts when a slot opens.${typeof refusal.queuePosition === 'number' && refusal.queuePosition > 0 ? ` ${refusal.queuePosition} other pending task${refusal.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`;
     default:
       return refusal.error || "This task can't start yet.";
   }

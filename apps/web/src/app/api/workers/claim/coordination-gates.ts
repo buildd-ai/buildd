@@ -6,7 +6,7 @@
  * the "Queued at front · No runner has responded" failure — or the reverse.
  *
  * Covered: path overlap layer 1 (open PR) and layer 2 (live path claim),
- * mission concurrency, mission pacing, and planner order (`ordered_behind`,
+ * mission concurrency, and planner order (`ordered_behind`,
  * from the ledger). A task that declares no files is not held for that alone.
  */
 import { pathsOverlap, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -14,7 +14,7 @@ import { makeWaitingReason, overlapAreas, orderWaitingReasons, type WaitingReaso
 import { isDispatchedReview } from '@/lib/read-only-task';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { splitOwnOpenPrs } from './claim-plan-input';
-import { checkMissionConcurrencyGate, checkMissionPacingGate } from './pacing-gate';
+import { checkMissionConcurrencyGate } from './concurrency-gate';
 import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from './overlap-policy';
 
 /**
@@ -72,9 +72,6 @@ export function findActiveClaimBlocker(
 export interface MissionCoordination {
   status: string;
   maxConcurrentTasks: number | null;
-  pacingMode: 'eager' | 'paced';
-  pacingMaxPerHour: number | null;
-  lastTaskStartedAt: Date | null;
 }
 
 export interface CoordinationSnapshot {
@@ -151,7 +148,7 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
 
   const missionId = task.missionId as string | null;
   if (missionId && s.mission) {
-    // Reviews are exempt from the mission's concurrency cap and pacing.
+    // Reviews are exempt from the mission's concurrency cap.
     const isReview = isDispatchedReview(task.category, task.context);
     const conc = !isReview && checkMissionConcurrencyGate(s.mission.maxConcurrentTasks, s.missionActiveCount);
     if (conc) {
@@ -159,14 +156,6 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
         because: `the mission runs at most ${conc.cap} task${conc.cap === 1 ? '' : 's'} at once and ${conc.active} ${conc.active === 1 ? 'is' : 'are'} running`,
         blocker: { type: 'mission', id: missionId, label: 'the mission limit', href: `/app/missions/${missionId}` },
         provenance: { source: 'probe', derivedFrom: 'missions.maxConcurrentTasks' },
-      }));
-    }
-    const paced = !isReview && checkMissionPacingGate(s.mission, s.now);
-    if (paced) {
-      out.push(makeWaitingReason('mission_paced', {
-        because: `the mission starts a task at most every ${Math.round(paced.intervalSec / 60)} min; next at ${paced.nextEligibleAt.toISOString()}`,
-        blocker: { type: 'mission', id: missionId, label: 'mission pacing', href: `/app/missions/${missionId}` },
-        provenance: { source: 'probe', derivedFrom: 'missions.pacingMode' },
       }));
     }
   }

@@ -230,17 +230,13 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(data.success).toBe(true);
   });
 
-  it('updates maxConcurrentTasks, clamping below 1 up to 1', async () => {
+  it('never writes a workspace cap: maxConcurrentTasks is not a workspace field', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
 
-    const req = createMockRequest({ method: 'PATCH', body: { maxConcurrentTasks: 5 } });
+    const req = createMockRequest({ method: 'PATCH', body: { name: 'renamed', maxConcurrentTasks: 5 } });
     const res = await PATCH(req, { params: mockParams });
     expect(res.status).toBe(200);
-    expect(capturedUpdates.maxConcurrentTasks).toBe(5);
-
-    const req2 = createMockRequest({ method: 'PATCH', body: { maxConcurrentTasks: 0 } });
-    await PATCH(req2, { params: mockParams });
-    expect(capturedUpdates.maxConcurrentTasks).toBe(1);
+    expect(capturedUpdates).not.toHaveProperty('maxConcurrentTasks');
   });
 
   // ── connectorAdvisoryMode ──────────────────────────────────────────────────
@@ -944,7 +940,7 @@ describe('PATCH /api/workspaces/[id]', () => {
 });
 
 describe('PATCH /api/workspaces/[id] — privilege gates', () => {
-  // Merge policy / git config, access mode, data class, the concurrency cap and the connector claim
+  // Merge policy / git config, access mode, data class and the connector claim
   // gate are workspace-admin settings: a session caller needs owner or admin in
   // the workspace's team, an API key needs admin level.
   const PRIVILEGED_BODIES: Array<[string, Record<string, unknown>]> = [
@@ -954,7 +950,6 @@ describe('PATCH /api/workspaces/[id] — privilege gates', () => {
     ['connectorAdvisoryMode', { connectorAdvisoryMode: true }],
     ['webhookConfig', { webhookConfig: { url: 'https://runner.example/dispatch', token: 't', enabled: true } }],
     ['webhookConfig (clear)', { webhookConfig: null }],
-    ['maxConcurrentTasks', { maxConcurrentTasks: 8 }],
   ];
 
   let updateCalled = false;

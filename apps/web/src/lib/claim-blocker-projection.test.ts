@@ -16,19 +16,19 @@ describe('projectClaimBlocker (spec 97b1bd0b R-10)', () => {
     expect(b.evaluatedAt).toBe(ago(60_000).toISOString());
   });
   it('an old refusal is stale, not blocked', () => {
-    const b = projectClaimBlocker({ reason: 'workspace_cap', occurredAt: ago(DEFERRAL_FRESHNESS_MS + 1) }, NOW);
+    const b = projectClaimBlocker({ reason: 'mission_concurrent', occurredAt: ago(DEFERRAL_FRESHNESS_MS + 1) }, NOW);
     expect(b.state).toBe('stale');
-    expect(b.reason).toBe('workspace_cap');
+    expect(b.reason).toBe('mission_concurrent');
   });
   it('an unrecognised reason keeps the state but has no phrase', () => {
     expect(projectClaimBlocker({ reason: 'made_up', occurredAt: ago(1000) }, NOW).phrase).toBeNull();
   });
   it('takes the newest row per task and gives unknown to tasks with none', () => {
     const m = projectClaimBlockers(['a', 'b'], [
-      { taskId: 'a', reason: 'workspace_cap', occurredAt: ago(1000) },
+      { taskId: 'a', reason: 'mission_concurrent', occurredAt: ago(1000) },
       { taskId: 'a', reason: 'codex_single_flight', occurredAt: ago(5000) },
     ], NOW);
-    expect(m.get('a')!.reason).toBe('workspace_cap');
+    expect(m.get('a')!.reason).toBe('mission_concurrent');
     expect(m.get('b')!.state).toBe('unknown');
   });
 });
@@ -50,7 +50,7 @@ describe('claimBlockerKind (spec 97b1bd0b AC-8)', () => {
     expect(projectClaimBlocker({ reason: 'codex_single_flight', occurredAt: ago(1000) }, NOW, 'codex').state).toBe('blocked');
   });
   it('a backend-neutral refusal is unaffected by the effective backend', () => {
-    expect(projectClaimBlocker({ reason: 'workspace_cap', occurredAt: ago(1000) }, NOW, 'claude').state).toBe('blocked');
+    expect(projectClaimBlocker({ reason: 'mission_concurrent', occurredAt: ago(1000) }, NOW, 'claude').state).toBe('blocked');
   });
   it('projectClaimBlockers applies each task\'s effective backend', () => {
     const m = projectClaimBlockers(['a', 'b'], [

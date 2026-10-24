@@ -249,18 +249,21 @@ describe('DecisionCard', () => {
       askedAt: T0 - 60_000, summary: '24 fixes merged with no new screenshot.', question: 'Are the 24 fixed screens fixed?',
       options: [
         { label: 'Mark all fixed', effect: 'Clears the review for these screens', tip: null, recommended: true },
-        { label: 'Review screens →', effect: 'Look at each before opening the merge', tip: null, recommended: false },
-        { label: 'Skip the review', effect: 'Merge without a visual check', tip: null, recommended: false },
+        { label: 'Review screens', effect: 'Look at each before opening the merge', tip: null, recommended: false },
       ],
       dependents: [], diffHref: null, shortcut: false,
-      answer: { kind: 'visual', missionId: 'm1', reviewHref: '/app/missions/m1', markFixed: [{ artifactIds: ['a1', 'a2'], expected: { a1: 'issue', a2: 'issue' } }], startKey: null },
+      answer: { kind: 'visual', missionId: 'm1', reviewHref: '/app/missions/m1', markFixed: [{ artifactIds: ['a1', 'a2'], expected: { a1: 'issue', a2: 'issue' } }], startKey: null, skips: ['The review is wrong or stuck', 'Ship it anyway'] },
     };
     const acted: string[] = [];
     act(() => root.render(<DecisionCard view={view} now={T0} pageMissionId="m1" visualAct={async l => { acted.push(l); }} />));
     expect(q('[data-testid="question-subject"]')!.textContent).toBe('●Visual review· asked 1m ago');
     expect(q('[data-testid="question-subject"] a')).toBeNull();
-    expect(qa('[data-testid="decision-option"]').map(o => o.textContent?.split('Clears')[0].split('Look')[0].split('Merge')[0])).toEqual(['Mark all fixed', 'Review screens →', 'Skip the review']);
-    expect(q('[data-testid="decision-answer-differently"]')).toBeNull();
+    expect(qa('[data-testid="decision-option"]').map(o => o.textContent?.split('Clears')[0].split('Look')[0].split('Merge')[0])).toEqual(['Mark all fixed', 'Review screens']);
+    // The two Skip choices sit under Answer differently, never as a typed reason or a bare Skip.
+    expect(q('[data-testid="decision-skips"]')).toBeNull();
+    await act(async () => { q('[data-testid="decision-answer-differently"]')!.click(); });
+    expect(qa('[data-testid="decision-skip"]').map(b => b.textContent)).toEqual(['The review is wrong or stuck', 'Ship it anyway']);
+    expect(q('[data-testid="decision-answer-form"]')).toBeNull();
     await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
     await flush();
     expect(acted).toEqual(['Mark all fixed']);
