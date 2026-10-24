@@ -585,6 +585,21 @@ describe('cleanupStuckWaitingInput', () => {
     expect(patch.resumeBranch).toBe('buildd/task-1-slug');
   });
 
+  it('carries the agent\'s recommended option as the default the person was told about (spec 1b257609 R-3)', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate,
+        waitingFor: { type: 'question', prompt: 'Ship it?', options: [{ label: 'Hold' }, { label: 'Ship', recommended: true }] } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue(plainTask());
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
+
+    await cleanupStuckWaitingInput('account-1');
+
+    expect(requeuedPatch(taskSets[0]).unansweredQuestion).toMatchObject({ options: ['Hold', 'Ship'], recommended: 'Ship' });
+  });
+
   it('a requeue guarded out (the task closed in the window) is not counted and wakes nothing', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([

@@ -805,13 +805,16 @@ function renderAnsweredQuestions(raw: unknown): string | null {
  */
 export function renderUnansweredQuestion(raw: unknown): string | null {
   if (!raw || typeof raw !== 'object') return null;
-  const e = raw as { prompt?: unknown; options?: unknown };
+  const e = raw as { prompt?: unknown; options?: unknown; recommended?: unknown };
   const prompt = typeof e.prompt === 'string' && e.prompt ? e.prompt : null;
   const options = Array.isArray(e.options) ? e.options.filter((o): o is string => typeof o === 'string' && !!o) : [];
+  // The person was told the task takes this option when nobody answers (spec 1b257609 R-3).
+  const recommended = typeof e.recommended === 'string' && e.recommended.trim() ? e.recommended.trim() : null;
   const parts = ['## Unanswered Question',
     prompt
       ? `An earlier attempt of this task stopped waiting for input and nobody answered: "${prompt}"${options.length ? ` (options: ${options.join(', ')})` : ''}`
       : 'An earlier attempt of this task stopped waiting for input and nobody answered.',
+    ...(recommended ? [`Go with "${recommended}", the option the earlier attempt recommended, unless the task description rules it out.`] : []),
     'Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.'];
   return parts.join('\n\n');
 }
