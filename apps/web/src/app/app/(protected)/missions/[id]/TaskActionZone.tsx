@@ -264,6 +264,12 @@ export default function TaskActionZone({
   // local session": the one-line note says that, not a Held line beside it.
   const localOnly = !!probed?.waitingReasons?.length && probed.waitingReasons.every(r => r.kind === 'mission_local');
   const held = localOnly && local ? null : probed;
+  const saPhase = waiting?.startAnyway?.phase;
+  const requestedOrAssessing = saPhase === 'requested' || saPhase === 'assessing';
+  // Parked on its prerequisite: the status line already says what and why.
+  const parked = saPhase === 'blocked';
+  const offerLabel = (r: GateRefusal | null | undefined) =>
+    startsAnyway(r) ? (parked ? 'Try start anyway again…' : 'Start anyway…') : 'Force start…';
   const queuedHeld = start.status === 'queued' && start.waiting ? refusalFromWaiting(start.waiting) : null;
 
   const refusal = start.refusal;
@@ -414,18 +420,25 @@ export default function TaskActionZone({
       {/* Blocked — what holds it: declared dependencies vs coordination-only ordering */}
       {has('blocked') && start.status === 'idle' && held?.waitingReasons && (
         <div data-testid="task-blocked-waiting">
-          <WaitingLine reasons={held.waitingReasons}>
+          {parked ? (
+            // The status line above already names the blocker and why it parked: show it once.
+            held.canForce && !waiting?.forceStart && (
+              <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
+                {offerLabel(held)}
+              </button>
+            )
+          ) : <WaitingLine reasons={held.waitingReasons}>
             {waiting?.forceStart ? (
               <ForcePending />
             ) : held.canForce && (
               <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
-                {startsAnyway(held) ? 'Start anyway…' : 'Force start…'}
+                {offerLabel(held)}
               </button>
             )}
-          </WaitingLine>
+          </WaitingLine>}
         </div>
       )}
-      {has('blocked') && start.status === 'idle' && !held?.waitingReasons && (
+      {has('blocked') && start.status === 'idle' && !held?.waitingReasons && !requestedOrAssessing && (
         <div data-testid="task-blocked" className={framed ? 'border border-status-warning p-4' : undefined}>
           <p className="font-mono text-[12px] font-medium text-status-warning">
             Blocked · waiting on {blockedByCount} {blockedByCount === 1 ? 'dependency' : 'dependencies'}
@@ -490,13 +503,19 @@ export default function TaskActionZone({
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
         <div data-testid="task-run-now" className={framed ? 'space-y-3 border border-border-default p-4' : 'space-y-2'}>
-          {held?.waitingReasons ? (
+          {held?.waitingReasons && parked ? (
+            held.canForce && !waiting?.forceStart && (
+              <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
+                {offerLabel(held)}
+              </button>
+            )
+          ) : held?.waitingReasons ? (
             <WaitingLine reasons={held.waitingReasons}>
               {waiting?.forceStart ? (
                 <ForcePending />
               ) : held.canForce && (
                 <button type="button" data-action="force_start_offer" onClick={() => start.present(held)} disabled={starting} className={QUIET_BTN}>
-                  {startsAnyway(held) ? 'Start anyway…' : 'Force start…'}
+                  {offerLabel(held)}
                 </button>
               )}
             </WaitingLine>
