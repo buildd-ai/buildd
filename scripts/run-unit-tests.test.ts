@@ -934,3 +934,17 @@ describe('start gate', () => {
     expect(startGateWaitMs('abc')).toBe(60_000);
   });
 });
+
+describe('contention triage rerun', () => {
+  it('rerunFailedLimit is off unless a positive number is set', () => {
+    const { rerunFailedLimit } = require('./run-unit-tests');
+    expect(rerunFailedLimit(undefined)).toBe(0);
+    expect(rerunFailedLimit('')).toBe(0);
+    expect(rerunFailedLimit('abc')).toBe(0);
+    expect(rerunFailedLimit('5')).toBe(5);
+  });
+  it('classifyRerun separates files that pass alone from deterministic failures', () => {
+    const { classifyRerun } = require('./run-unit-tests');
+    expect(classifyRerun([{ file: 'b', exitCode: 0 }, { file: 'a', exitCode: 1 }])).toEqual({ contention: ['b'], deterministic: ['a'] });
+  });
+});
