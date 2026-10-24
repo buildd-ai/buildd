@@ -474,6 +474,38 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       }
     }
 
+    case 'verify': {
+      if (Object.keys(params).some(key => params[key] !== undefined && !['action', 'taskId', 'evidenceRef'].includes(key))) {
+        return errorResult('verify accepts only taskId and optional evidenceRef (a stored artifact id); policy, head and verdict are resolved by the server.');
+      }
+      if (typeof params.taskId !== 'string' || !params.taskId.trim()) return errorResult('taskId is required');
+      if (params.evidenceRef !== undefined && (typeof params.evidenceRef !== 'string' || !params.evidenceRef.trim())) {
+        return errorResult('evidenceRef must be a stored artifact id');
+      }
+      try {
+        const r = await api(`/api/specs/outcomes/${encodeURIComponent(params.taskId.trim())}/verify`, {
+          method: 'POST', body: JSON.stringify(params.evidenceRef !== undefined ? { evidenceRef: params.evidenceRef } : {}),
+        });
+        const verification = r.verification as {
+          reason?: string;
+          results: Array<{ criterionId: string; verdict: string; method: string; cached: boolean; recorded: boolean; reason?: string }>;
+          coverage: Array<{ status: string }>;
+          refused?: Array<{ ref: string; reason: string }>;
+        };
+        return text([
+          'Registered verification:',
+          ...(verification.reason ? [verification.reason] : []),
+          ...verification.results.map(result => `  ${result.criterionId}: ${result.verdict} (${result.method}${result.cached ? ', cached' : ''}; ${result.recorded ? 'recorded' : `not recorded${result.reason ? `: ${result.reason}` : ''}`})`),
+          ...(verification.refused ?? []).map(x => `  refused capture ${x.ref}: ${x.reason}`),
+          `Coverage: ${verification.coverage.filter(criterion => criterion.status === 'declared').length}/${verification.coverage.length} criteria declare checks.`,
+        ].join('\n'));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
     case 'outcome':
     case 'verdict': {
       if (params.missionId !== undefined && params.taskId === undefined) {
