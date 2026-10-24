@@ -16,6 +16,7 @@
  * Illustrative rows only (made-up ids and titles) through the real
  * `buildMissionBoard`, so the bar, the list and the cards read what the page reads.
  */
+import { optionOutcomes, type QuestionWaits } from '@buildd/core/question-waits';
 import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardModel } from '@/lib/mission-board';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 import type { MissionChecksSource } from '@/app/app/(protected)/missions/[id]/MissionOverview';
@@ -224,6 +225,22 @@ function buildingRows(now: number): BoardTaskInput[] {
 
 const MISSION_ID = stripFixtureId(950);
 
+/**
+ * What the projection (lib/question-waits.ts) returns for the building
+ * mission's open decision: the release task waits on it, the question
+ * expires four hours after it was asked. Literal fixture data, as the
+ * projection would return it; the card never derives it.
+ */
+function buildingDecisionWaits(now: number): QuestionWaits {
+  const base: QuestionWaits = {
+    taskId: BUILDING_DECISION_TASK, mission: { id: MISSION_ID, title: BUILDING_TITLE }, hiddenCount: 0, beyondCount: 0, lanes: [], criteria: null,
+    waiting: [{ id: stripFixtureId(15), title: 'The release publishes an image digest', depth: 1, missionId: MISSION_ID, missionTitle: BUILDING_TITLE, workspaceName: null, after: null, alsoWaitsOnOther: false }],
+    askedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now - 60_000 + 4 * 3_600_000).toISOString(),
+    onExpiry: { action: 'default', option: 'Provide a token' }, options: [],
+  };
+  return { ...base, options: optionOutcomes([{ label: 'Provide a token', outcome: 'finishes', recommended: true }, { label: "I'll set them myself", outcome: 'continues' }], base) };
+}
+
 export function missionDetailCompactFixture(variant: MissionDetailCompactVariant, select: string | null, now = T0 + 60 * 60_000): MissionDetailCompactFixture {
   const opened = now - 60 * 60_000;
   const base = { now, missionCreatedAt: opened };
@@ -241,7 +258,7 @@ export function missionDetailCompactFixture(variant: MissionDetailCompactVariant
     return {
       ...empty, variant, title: BUILDING_TITLE, goal: BUILDING_GOAL, model, checks,
       specTitles: { [BUILDING_SPEC_ID]: BUILDING_SPEC_TITLE },
-      decisions: missionDecisions({ model, notes: [], mission, hrefFor }),
+      decisions: missionDecisions({ model, notes: [], mission, hrefFor, waitsByTask: new Map([[BUILDING_DECISION_TASK, buildingDecisionWaits(now)]]) }),
       history: historyRaised(model, []),
       // Every unmerged task estimated, so the summary names what sets the finish (AC-18).
       expectedMinutes: { [stripFixtureId(12)]: 40, [stripFixtureId(13)]: 30, [stripFixtureId(14)]: 25, [stripFixtureId(15)]: 35, [stripFixtureId(16)]: 20 },

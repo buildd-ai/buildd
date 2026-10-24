@@ -589,7 +589,7 @@ class Ctx {
     findings?: FindingOp[];
     evidence?: Record<string, unknown>; bypass?: Record<string, unknown> | null;
     create?: ApplyDecision['create'];
-    /** What the `buildd/landing` status should name for this version (a lasting rail's refusal). */
+    /** What the `Buildd / Review approval` status should name for this version (a lasting rail's refusal). */
     statusDetail?: string;
   } = {}): ApplyDecision {
     const d = this.d;
@@ -618,7 +618,7 @@ class Ctx {
       // §12.1: the activity comment is regenerated from canonical state; one
       // render per version, the handler drops all but the newest.
       effects.push({ kind: 'render_activity', dedupeKey: `render:${this.did}:${version + 1}`, payload: { version: version + 1 } });
-      // §4: the `buildd/landing` status follows every version of a PR delivery (a head change, a
+      // §4: the `Buildd / Review approval` status follows every version of a PR delivery (a head change, a
       // base refresh, a verdict, a waiver, an owner replacement are all transitions); the handler
       // publishes the newest version's answer and drops the rest.
       effects.push({ kind: 'publish_landing_status', dedupeKey: `landing_status:${this.did}:${version + 1}`, payload: { version: version + 1, ...(o.statusDetail ? { detail: o.statusDetail } : {}) } });

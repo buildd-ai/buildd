@@ -37,7 +37,16 @@ const UNIT_TEST_ROOTS = [
   'apps/web/tests/integration/start-commit-gate.test.ts', // pure decision; same reason
 ] as const;
 
+/**
+ * Test-first acceptance files for spec "Registered requirement verification in
+ * Build, Verify and Deliver" r1. They fail until the build lands, by design, so
+ * the unit gate must not collect them; scripts/run-acceptance-tests.ts runs them
+ * per criterion. The build task removes each entry once its file passes.
+ */
+export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [];
+
 export function isUnitTestFile(path: string): boolean {
+  if (ACCEPTANCE_ONLY_TESTS.includes(path)) return false;
   return (
     UNIT_TEST_ROOTS.some(root => path.startsWith(root)) &&
     (path.endsWith('.test.ts') || path.endsWith('.test.tsx'))
@@ -66,9 +75,11 @@ export function selectTestFiles(named: readonly string[], discovered: readonly s
   const explicit = named.filter(arg => arg !== ALL_SENTINEL);
   if (explicit.length === 0) return [...discovered];
   const selected = new Set<string>();
+  const dropped: string[] = [];
   for (const arg of explicit) {
     if (isTestFileName(arg)) {
       if (isUnitTestFile(arg)) selected.add(arg);
+      else dropped.push(arg);
       continue;
     }
     // Anything else is a directory: every discovered file under it. A package's
@@ -80,6 +91,12 @@ export function selectTestFiles(named: readonly string[], discovered: readonly s
       throw new Error(`no unit test files under '${arg}' (is it under UNIT_TEST_ROOTS in scripts/run-unit-tests.ts?)`);
     }
     for (const file of under) selected.add(file);
+  }
+  // Every named file dropped (non-unit, or ACCEPTANCE_ONLY_TESTS): exiting 0
+  // here would let a spec `check:` line pass without running a test. CI's
+  // affected list is already filtered by isUnitTestFile, so it never trips this.
+  if (selected.size === 0 && dropped.length > 0) {
+    throw new Error(`named test files selected none: ${dropped.join(', ')} (not unit tests, or listed in ACCEPTANCE_ONLY_TESTS; run those with scripts/run-acceptance-tests.ts)`);
   }
   return [...selected].sort();
 }
@@ -1012,6 +1029,28 @@ export function formatFailureSummary(
   return out.join('\n');
 }
 
+/**
+ * Opt-in contention triage: `BUILDD_TEST_RERUN_FAILED=<n>` reruns up to n failed
+ * files one at a time once the parallel pass ends. A file that fails under load
+ * and passes alone is contention (a timeout on an oversubscribed shared host); a
+ * file that fails alone too is deterministic. Only the latter keeps the run red.
+ * 0 / unset disables it, so CI behaviour is unchanged.
+ */
+export function rerunFailedLimit(configured: string | undefined): number {
+  const n = Number(configured);
+  return configured === undefined || configured.trim() === '' || !Number.isFinite(n) || n < 1 ? 0 : Math.floor(n);
+}
+
+/** Splits first-pass failures by their serial-rerun outcome. */
+export function classifyRerun(
+  rerun: ReadonlyArray<{ file: string; exitCode: number }>,
+): { contention: string[]; deterministic: string[] } {
+  return {
+    contention: rerun.filter(r => r.exitCode === 0).map(r => r.file).sort(),
+    deterministic: rerun.filter(r => r.exitCode !== 0).map(r => r.file).sort(),
+  };
+}
+
 async function main(): Promise<void> {
   // Every file runs in its OWN process. That is load-bearing, not an
   // optimisation: `mock.module` replaces a module globally for the life of a
@@ -1033,7 +1072,15 @@ async function main(): Promise<void> {
   const { named, updateDurations, shard } = parseRunnerArgs(Bun.argv.slice(2));
   const discovered = await discoverUnitTests();
   const hints = readDurationHints();
-  const selected = selectTestFiles(named, discovered);
+  let selected: string[];
+  try {
+    selected = selectTestFiles(named, discovered);
+  } catch (err) {
+    // Named files that select nothing are a failure, not an empty pass.
+    console.error(`run-unit-tests: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+    return;
+  }
   const sliced = shard ? shardFiles(selected, hints, shard.index, shard.count) : selected;
   if (shard) {
     console.log(`Shard ${shard.index}/${shard.count}: ${sliced.length} of ${selected.length} selected files.`);
@@ -1142,6 +1189,19 @@ async function main(): Promise<void> {
       process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
     }
   }, admission);
+  const rerunLimit = rerunFailedLimit(process.env.BUILDD_TEST_RERUN_FAILED);
+  if (rerunLimit > 0 && failures.length > 0) {
+    const candidates = failures.slice(0, rerunLimit);
+    console.log(`[rerun] retrying ${candidates.length} failed file(s) serially to separate contention from real failures`);
+    const rerun: TestResult[] = [];
+    for (const candidate of candidates) rerun.push(await runTestFile(candidate.file));
+    const { contention, deterministic } = classifyRerun(rerun);
+    for (const file of contention) console.log(`[rerun] passed alone (host contention, not a regression): ${file}`);
+    for (const file of deterministic) console.log(`[rerun] failed alone too (deterministic): ${file}`);
+    const cleared = new Set(contention);
+    passed += cleared.size;
+    for (let i = failures.length - 1; i >= 0; i--) if (cleared.has(failures[i]!.file)) failures.splice(i, 1);
+  }
   if (heartbeat) clearInterval(heartbeat);
   if (process.stdout.isTTY) process.stdout.write('\n');
   process.off('SIGTERM', onKill);

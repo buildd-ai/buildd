@@ -146,3 +146,6 @@ apps/runner/__tests__/unit/codex-instructions.test.ts
 scripts/mission-state-copy-guard.test.ts
 # Inventories .github/workflows/ — a workflow added or removed elsewhere is a change nowhere near this test.
 scripts/workflow-inventory.test.ts
+# Scans every surface for its own list of work waiting on a question (spec 1b257609 AC-9).
+# A new surface is a change nowhere near this test.
+scripts/question-waits-single-source.test.ts

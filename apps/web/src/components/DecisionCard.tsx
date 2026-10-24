@@ -7,12 +7,19 @@
  * ```
  * ● Mirror the runner image to Docker Hub · asked 4m ago
  * CI has no Docker Hub secrets, so every release skips the image mirror.
- * The release publishes an image digest and A runner bundle wait on this.
+ * Waits on this: The release publishes an image digest, then A runner bundle.
  * How should Docker Hub credentials be set up?
  * [Provide a token ⌘⏎            ] [I'll set them myself        ]
  *  Stored as a team secret          Resumes when CI sees them
+ *  Finishes the task: The release…  Keeps working: The release…
  * Answer differently                                     Not now
+ * Expires in 3 hours 30 minutes, then the task starts again and the agent goes with Provide a token.
  * ```
+ *
+ * What waits on the answer (Living Spec 1b257609) fills three of these lines
+ * and adds none: the summary's `Waits on this:` clause, each option's effect
+ * under its consequence, and the footer's expiry. All three come from the
+ * view's `waits` (the projection) through packages/core/question-waits.ts.
  *
  * The view is data (`lib/needs-you-card.ts`); this draws it and records the
  * answer: a parked worker through the one answer path every surface shares
@@ -28,6 +35,8 @@ import { Kbd } from '@/components/KeyHints';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
 import { askedAgo, type DecisionOption, type DecisionView } from '@/lib/needs-you-card';
+import { waitsFooter, waitsSummary } from '@buildd/core/question-waits';
+import WaitsParts from '@/components/WaitsParts';
 
 export interface DecisionCardProps {
   view: DecisionView;
@@ -69,6 +78,7 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
       </span>
       {/* The effect inherits the button's own ink (on-ink on the primary), so both themes keep it readable. */}
       {option.effect && <span data-testid="decision-option-effect" className={`text-meta font-normal [overflow-wrap:anywhere] ${primary ? 'opacity-80' : 'text-text-muted'}`}>{option.effect}</span>}
+      {option.downstream && <span data-testid="decision-option-downstream" className={`text-meta font-normal [overflow-wrap:anywhere] ${primary ? 'opacity-80' : 'text-text-muted'}`}>{option.downstream}</span>}
     </>
   );
   // Fills its share of the row: two options side by side when they fit, stacked at 320.
@@ -171,6 +181,8 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
       ? <Link href={view.mission.href} className="underline-offset-4 hover:underline">{view.mission.title}</Link>
       : null;
   const age = askedAgo(view.askedAt, now);
+  const waitsParts = view.waits ? waitsSummary(view.waits) : [];
+  const footer = view.waits ? waitsFooter(view.waits, now) : null;
 
   // Collapsed: answered, or set aside.
   const chosen = submit.outcome
@@ -213,10 +225,13 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
         {subject}
         {age && <span className="text-text-muted">· {age}</span>}
       </p>
-      {view.summary && (
+      {(view.summary || waitsParts.length > 0) && (
         <p data-testid="decision-summary" className="min-w-0 text-body text-text-secondary [overflow-wrap:anywhere]">
           <span className={more ? '' : 'line-clamp-2 md:line-clamp-none'}>
             {view.summary}
+            {waitsParts.length > 0 && (
+              <span data-testid="decision-waits">{view.summary ? ' ' : ''}<WaitsParts parts={waitsParts} /></span>
+            )}
             {view.diffHref && <> <a href={view.diffHref} data-testid="decision-diff" className="whitespace-nowrap text-text-primary underline-offset-4 hover:underline">View diff ↗</a></>}
           </span>
           {!more && (
@@ -267,6 +282,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
             : <span />}
         <button type="button" data-testid="decision-not-now" onClick={() => (onNotNow ? onNotNow() : setLater(true))} className={TEXT_BUTTON}>Not now</button>
       </div>
+      {footer && <p data-testid="decision-expiry" className="text-meta text-text-muted [overflow-wrap:anywhere]" suppressHydrationWarning>{footer}</p>}
       {error && <p role="alert" className="text-meta text-status-error [overflow-wrap:anywhere]">{error}</p>}
     </article>
   );

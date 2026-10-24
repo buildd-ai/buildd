@@ -12,6 +12,7 @@ import { ObjectStoreProvider } from '@/components/chat/objects/ObjectStoreProvid
 import { QuestionCard } from '@/components/chat/objects/QuestionObject';
 import type { ReactNode } from 'react';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
+import { WAITS_FIXTURE_QUESTION, WAITS_FIXTURE_TASK, waitsFixture } from './question-waits-fixture';
 import AnswerRecorded, { AnswerOutcomeText } from '@/components/AnswerRecorded';
 import TaskQuestionFeed from '../../(protected)/tasks/[id]/TaskQuestionFeed';
 import RealTimeWorkerView from '../../(protected)/tasks/[id]/RealTimeWorkerView';
@@ -67,6 +68,9 @@ export default function AnswerStatesFixture() {
               ] as any} />
             <RealTimeWorkerView taskId="fixture-finished-task" taskStatus="completed"
               initialWorker={{ ...mockWorkers['waiting-input'], status: 'completed', prLifecycleStatus: 'closed' } as any} />
+          </Panel>
+          <Panel label="What waits on the answer">
+            <TaskQuestion taskId={WAITS_FIXTURE_TASK} workerId="w1" role="tester" variant="full" waitingFor={WAITS_FIXTURE_QUESTION} waits={waitsFixture(Date.now())} testId="fixture-question-waits" />
           </Panel>
           <Panel label="Tapped, sending">
             <TaskQuestion taskId="fixture-task" workerId="w1" role="builder" waitingFor={ASK} answer={state({ sending: OPTIONS[0] })} />

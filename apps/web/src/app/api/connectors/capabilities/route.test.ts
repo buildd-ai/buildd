@@ -115,6 +115,32 @@ describe('GET /api/connectors/capabilities', () => {
     mockResolveTeamDecisionRoute.mockResolvedValue(null);
     const body = await (await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'model.inference' }))).json();
     expect(body.routeConfigured).toBe(false);
+    expect(body.grantable).toBe(false);
+    expect(body.requestWith.params.provider).toBe('openrouter | litellm');
+  });
+
+  it('names the exact request for the team route, and only a provider a grant can name', async () => {
+    mockResolveTeamDecisionRoute.mockResolvedValue({ provider: 'openrouter', model: 'm-1', apiKey: 'k' });
+    const body = await (await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'model.inference' }))).json();
+    expect(body.grantable).toBe(true);
+    expect(body.requestWith.params.provider).toBe('openrouter');
+    expect(body.requestWith.params.models).toEqual(['m-1']);
+    expect(JSON.stringify(body.requestWith)).not.toContain('cloudflare');
+  });
+
+  it('says a route no grant can name is not requestable, instead of advertising a request that is refused', async () => {
+    mockResolveTeamDecisionRoute.mockResolvedValue({ provider: 'cloudflare', model: 'clef-1', apiKey: 'k' });
+    const body = await (await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'model.inference' }))).json();
+    expect(body.routeConfigured).toBe(true);
+    expect(body.grantable).toBe(false);
+    expect(body.requestWith).toBeNull();
+    expect(body.message).toMatch(/cloudflare/);
+  });
+
+  it('points the agent at the MCP action that spends a grant', async () => {
+    mockResolveTeamDecisionRoute.mockResolvedValue({ provider: 'openrouter', model: 'm-1', apiKey: 'k' });
+    const body = await (await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'model.inference' }))).json();
+    expect(body.invoke.tool).toBe('invoke_model_inference');
   });
 
   it('400s a malformed roleSlug before any read', async () => {

@@ -2052,7 +2052,7 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
  * AskUserQuestion options as objects; older rows and hand-written callers still
  * send bare strings, so readers must accept both.
  */
-export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string };
+export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string; outcome?: 'continues' | 'finishes' | 'stops' | 'changes' };
 
 /**
  * `context`, `recommended` and `where` are the question brief

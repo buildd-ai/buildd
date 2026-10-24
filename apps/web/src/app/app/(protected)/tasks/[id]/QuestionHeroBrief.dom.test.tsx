@@ -11,10 +11,12 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: QuestionHero } = await import('./QuestionHero');
 const { unifyWorkerQuestion } = await import('./question-hero');
+const { optionOutcomes } = await import('@buildd/core/question-waits');
+type QuestionWaits = import('@buildd/core/question-waits').QuestionWaits;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-async function render(waitingFor: Parameters<typeof unifyWorkerQuestion>[0]) {
+async function render(waitingFor: Parameters<typeof unifyWorkerQuestion>[0], waits: QuestionWaits | null = null) {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -26,6 +28,7 @@ async function render(waitingFor: Parameters<typeof unifyWorkerQuestion>[0]) {
         askerLabel="The builder asks"
         onAnswer={(a) => { answers.push(a); }}
         sending={null}
+        waits={waits}
       />,
     );
   });
@@ -65,6 +68,38 @@ describe('QuestionHero with a question brief', () => {
     expect(host.querySelector('[data-testid="question-brief-context"]')).toBeNull();
     expect(host.querySelector('[data-testid="question-brief-where"]')).toBeNull();
     expect(host.querySelectorAll('[data-testid="question-option"]')).toHaveLength(2);
+    await unmount();
+  });
+
+  // Living Spec 1b257609 r2 (task page): the projection fills the summary, the option lines and the footer.
+  it('names what waits on the answer, each option\'s effect and the expiry, recommended option first', async () => {
+    const base: QuestionWaits = {
+      taskId: 't1', mission: null, hiddenCount: 0, beyondCount: 0, lanes: [], criteria: { specId: 's1', specTitle: 'Billing totals', affected: ['R-1', 'R-2'], total: 4 },
+      waiting: [{ id: 'b1', title: 'Invoice rounding', depth: 1, missionId: null, missionTitle: null, workspaceName: null, after: null, alsoWaitsOnOther: false }],
+      askedAt: null, expiresAt: new Date(Date.now() + 90 * 60_000 + 20_000).toISOString(), onExpiry: { action: 'default', option: 'Local time' }, options: [],
+    };
+    const waits = { ...base, options: optionOutcomes([{ label: 'UTC', outcome: 'changes' }, { label: 'Local time', outcome: 'finishes', recommended: true }], base) };
+    const { host, unmount } = await render({
+      type: 'question', prompt: 'Should it use local time or UTC?',
+      options: [{ label: 'UTC', consequence: 'Simpler.' }, { label: 'Local time', consequence: 'Own calendar.', recommended: true }],
+    }, waits);
+    const summary = host.querySelector('[data-testid="question-waits"]')!;
+    expect(summary.textContent).toBe('Waits on this: Invoice rounding. Affects the evidence for 2 of 4 criteria in Billing totals.');
+    expect([...summary.querySelectorAll('a')].map(a => a.getAttribute('href'))).toEqual(['/app/tasks/b1', '/app/specs/s1']);
+    const opts = [...host.querySelectorAll('[data-testid="question-option"]')];
+    expect(opts[0].textContent).toContain('Local time');
+    expect([...host.querySelectorAll('[data-testid="question-option-downstream"]')].map(e => e.textContent)).toEqual([
+      'Finishes the task: Invoice rounding starts',
+      'Changes what it delivers: Invoice rounding starts on the changed result',
+    ]);
+    expect(host.querySelector('[data-testid="question-expiry"]')!.textContent).toBe('Expires in 1 hour 30 minutes, then the task starts again and the agent goes with Local time.');
+    await unmount();
+  });
+
+  it('without the projection, only the agent\'s lines', async () => {
+    const { host, unmount } = await render({ type: 'question', prompt: 'Tabs or spaces?', options: ['Tabs', 'Spaces'] });
+    expect(host.querySelector('[data-testid="question-waits"]')).toBeNull();
+    expect(host.querySelector('[data-testid="question-expiry"]')).toBeNull();
     await unmount();
   });
 });

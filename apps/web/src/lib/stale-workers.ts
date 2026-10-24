@@ -30,6 +30,7 @@ import {
 } from '@/lib/answer-resume';
 import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
+import { recommendedOf } from '@buildd/core/question-brief';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { noteWorkChanged } from '@/lib/work-changed';
 import { heldForRunnerUpdate, loadRunnerBeats, runnerLiveness, UNVOUCHED_GRACE_MS } from '@/lib/runner-offline';
@@ -1602,6 +1603,7 @@ export async function cleanupStuckWaitingInput(
       workerId: worker.id,
       prompt: waitingFor?.prompt,
       options: waitingForOptionLabels(waitingFor?.options),
+      recommended: recommendedOf({ prompt: waitingFor?.prompt ?? '', options: waitingFor?.options as never, recommended: waitingFor?.recommended })?.label ?? null,
       branchContext: requeueBranchContext(originalTask.context, worker.branch),
       failureContext: worker.error || 'Worker stalled in waiting_input',
     });

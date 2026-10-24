@@ -311,6 +311,33 @@ describe('refreshMcpConnectorCredential', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  // The 60-minute window alone held a provider with short-lived access tokens
+  // (minutes, not an hour) on a dead token for most of every hour: the token
+  // expired, every caller got 'locked', and the gateway kept sending it.
+  it('lets an already-expired token re-claim the lock after a short guard, not only after 60 minutes', async () => {
+    const where = mock((_cond: any) => ({ returning: mock(() => Promise.resolve([])) }));
+    mockDbUpdate.mockReturnValue({ set: mock(() => ({ where })) });
+    mockDbFindFirst.mockResolvedValue({ id: 's-1' });
+
+    await refreshMcpConnectorCredential('s-1');
+
+    const nodes: any[] = [];
+    const walk = (n: any) => {
+      if (!n || typeof n !== 'object') return;
+      nodes.push(n);
+      for (const v of Object.values(n)) Array.isArray(v) ? v.forEach(walk) : walk(v);
+    };
+    walk(where.mock.calls[0][0]);
+    const sqlText = (n: any) => (n?.__sql ? n.strings.join('') : '');
+    const expiredBranch = nodes.find(n => n.__and
+      && n.conds.some((c: any) => c.__lt && c.field === 'token_expires_at' && sqlText(c.value) === 'NOW()')
+      && n.conds.some((c: any) => c.__lt && c.field === 'last_refreshed_at' && /INTERVAL '2 minutes'/.test(sqlText(c.value))));
+    expect(expiredBranch).toBeDefined();
+    // The hourly throttle still covers a credential that is not expired (or whose
+    // refresh token is dead: the failure path nulls tokenExpiresAt).
+    expect(nodes.some(n => n.__lt && n.field === 'last_refreshed_at' && /INTERVAL '60 minutes'/.test(sqlText(n.value)))).toBe(true);
+  });
+
   it('returns no_credential when the secret row does not exist', async () => {
     const where = mock(() => ({ returning: mock(() => Promise.resolve([])) }));
     mockDbUpdate.mockReturnValue({ set: mock(() => ({ where })) });

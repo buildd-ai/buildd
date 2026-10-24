@@ -70,6 +70,10 @@ export type ResolvedMcpConnector = {
   // with the agent's own buildd token. No provider credential is in the entry.
   gateway?: true;
   gatewayPath?: string;
+  // Mounted for every role rather than opted into via connectorRefs (a gateway
+  // connector the role does not list): the runner drops it when it is down
+  // instead of failing a task that never asked for it.
+  optional?: true;
 };
 
 /**
@@ -291,7 +295,14 @@ export async function resolveMcpConnectorsForTask(
 
     // Brokered: the credential stays on the server; nothing is decrypted here.
     if (usesGateway(connector, slugOf(connector), mode)) {
-      mcpConnectors.push({ id: connector.id, name, transport: 'http', gateway: true, gatewayPath: gatewayPath(connector.id) });
+      mcpConnectors.push({
+        id: connector.id,
+        name,
+        transport: 'http',
+        gateway: true,
+        gatewayPath: gatewayPath(connector.id),
+        ...(connectorRefs.includes(connector.id) ? {} : { optional: true as const }),
+      });
       continue;
     }
 

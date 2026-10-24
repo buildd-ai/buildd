@@ -11,7 +11,7 @@ import { criterionLines } from './check-lines';
  * A criterion's words are its defining line (the id and its punctuation
  * dropped, as requirementIds reads it) and the lines under it, up to a blank
  * line, the next id, a heading, a fence or (for a list item) the next item at
- * its level. Labelled lines (`check:`, `screen:`, `replaces:`) are not words:
+ * its level. Labelled lines (`check:`, `screen:`, `verify:`, `replaces:`) are not words:
  * they are kept apart, so a changed check is not a changed criterion. A table
  * row's words are its other cells. Each line is trimmed, so re-indenting
  * changes nothing.
@@ -39,7 +39,7 @@ export interface CriterionRecord {
 
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const FENCE = /^\s*(```|~~~)/;
-const LABEL = /^\s*(?:[-*+]\s+)?(?:\*\*|__)?(?:check|screens?|replaces)(?:\*\*|__)?\s*:/i;
+const LABEL = /^\s*(?:[-*+]\s+)?(?:\*\*|__)?(?:check|screens?|verify|replaces)(?:\*\*|__)?\s*:/i;
 const LIST_ITEM = /^(\s*)(?:[-*+]|\d+\.)\s+/;
 const PLAIN_ID = /^(R|AC)-(\d+)$/;
 
@@ -138,7 +138,7 @@ export function criterionRecords(body: string): CriterionRecord[] {
 /**
  * Each section's text outside its criteria, by heading path: what "Other
  * text" compares (R-3). A criterion's words are left out; its labelled lines
- * (check, screen, replaces) stay, so a changed check line shows here.
+ * (check, screen, verify, replaces) stay, so a changed check line shows here.
  */
 export function otherTextBySection(body: string): Map<string, string> {
   const lines = body.split('\n');

@@ -132,6 +132,39 @@ describe('a re-run supersedes the run it replaced (6900a317)', () => {
   });
 });
 
+describe('ciGreen: an installed app that never reports does not hold the head', () => {
+  // Every head in a repo with an assistant or dependency-bot app installed carries that app's
+  // suite, `queued` with no runs, forever. Read as "not finished", the head never reads green,
+  // and an escalated PR waits on CI that already passed instead of reaching a person.
+  const run = (id: number, name: string, suite: number) =>
+    ({ id, name, status: 'completed', conclusion: 'success', check_suite: { id: suite }, started_at: new Date(1_000_000 + id).toISOString() });
+  const suite = (id: number, slug: string, status: string, conclusion: string | null, runs: number) =>
+    ({ id, status, conclusion, app: { slug }, latest_check_runs_count: runs });
+  const api = (runs: unknown[], suites: unknown[]) => (async (_i: number, path: string) => {
+    if (path.includes('/check-runs')) return { total_count: runs.length, check_runs: runs };
+    if (path.includes('/check-suites')) return { total_count: suites.length, check_suites: suites };
+    if (path.includes('/actions/runs')) return { total_count: 0, workflow_runs: [] };
+    throw new Error(`unexpected ${path}`);
+  }) as never;
+  const actions = suite(10, 'github-actions', 'completed', 'success', 1);
+
+  test('a queued suite with no runs from another app is skipped', async () => {
+    const suites = [actions, suite(20, 'claude', 'queued', null, 0), suite(30, 'renovate', 'queued', null, 0)];
+    expect(await githubReader(1, api([run(1, 'build', 10)], suites)).ciGreen!('acme/widgets', 'H1')).toBe(true);
+  });
+  test('a queued github-actions suite still holds the head: its runs may not have registered yet', async () => {
+    const suites = [actions, suite(20, 'github-actions', 'queued', null, 0)];
+    expect(await githubReader(1, api([run(1, 'build', 10)], suites)).ciGreen!('acme/widgets', 'H1')).toBeNull();
+  });
+  test('another app\'s suite with runs still counts', async () => {
+    const suites = [actions, suite(20, 'vercel', 'in_progress', null, 1)];
+    expect(await githubReader(1, api([run(1, 'build', 10)], suites)).ciGreen!('acme/widgets', 'H1')).toBeNull();
+  });
+  test('only phantom suites is no reading, not green', async () => {
+    expect(await githubReader(1, api([], [suite(20, 'claude', 'queued', null, 0)])).ciGreen!('acme/widgets', 'H1')).toBeNull();
+  });
+});
+
 describe('statusOf (the review status the kernel last published)', () => {
   test('reports the link it carries, so a status published before it had one is written again', async () => {
     const reader = githubReader(1, (async () => ({ statuses: [
