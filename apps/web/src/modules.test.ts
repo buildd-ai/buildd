@@ -25,6 +25,7 @@ describe('composition root', () => {
       'missions:mission-completion-attempt',
       'missions:subject-anchor-sweep',
       'reviews:spec-check-outcome',
+      'visual-qa:registered-checks-on-captures',
     ]);
   });
 

@@ -8,6 +8,7 @@ import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { requirementIds, type RequirementRef } from '@buildd/spec-contract/requirements';
+import { verificationDeclarationError } from '@buildd/spec-contract/verification-bindings';
 import { newRepoRefs, normalizeRepoPath, parseRepoRefs, sameRepoRefs, type RepoRef } from './repo-refs';
 import { specScopeRefusal } from './scopes';
 import { ArtifactReadError, AUTO_FULL_MAX_CHARS, readArtifactBody, type ArtifactReadResult, type ArtifactReadSelector } from '@buildd/core/artifact-read';
@@ -92,6 +93,9 @@ export const MAX_SPEC_BODY_CHARS = 400_000;
 function checkBody(body: unknown): string | SpecError {
   if (typeof body !== 'string' || !body.trim()) return fail(400, 'body (the spec text, Markdown) is required');
   if (body.length > MAX_SPEC_BODY_CHARS) return fail(400, `body is at most ${MAX_SPEC_BODY_CHARS} characters`);
+  // A registered check that cannot be read would drop out of the outcome it governs: refuse it when written.
+  const declaration = verificationDeclarationError(body);
+  if (declaration) return fail(400, `Invalid verification declaration: ${declaration}. Nothing was written.`, { code: 'invalid_verification_declaration' });
   return body;
 }
 
