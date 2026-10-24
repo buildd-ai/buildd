@@ -2728,6 +2728,8 @@ export async function PUT(req: NextRequest) {
           ? `PR #${prNumber} has merge conflicts. Conflict-resolution task dispatched (${dispatchResult.taskId}).`
           : dispatchResult.superseded
           ? `PR #${prNumber} appears superseded — its changes are already in base. Escalated for human review.`
+          : dispatchResult.releaseCandidate
+          ? dispatchResult.releaseCandidate
           : dispatchResult.exhausted
           ? `PR #${prNumber} has merge conflicts and conflict-resolution retries are exhausted. Human action required.`
           : result.message;
