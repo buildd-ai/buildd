@@ -788,6 +788,8 @@ export async function attemptEnded(p: {
   reviewFailure?: 'prose_verdict' | 'no_verdict' | 'infra' | 'human_takeover';
   /** §13.13 rule 4: a review fix's verified no-op claim (`noopEvidenceOf`). */
   noopEvidence?: { findingIds: string[]; evidence: string } | null;
+  /** A CI fixer's report that the failure is the base's (`blockedOnBaseOf`). */
+  blockedOnBase?: boolean;
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
@@ -901,6 +903,17 @@ export async function attemptEnded(p: {
     if (d.state === 'REPAIRING' && d.approvalBasis && d.approvalBasis !== 'policy') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
     if (!carryForward && deltaApprovalSource(view)) delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
   }
+  // A CI fixer that reports the failure is upstream: open or join the trunk incident for the
+  // delivery's signature; the kernel takes T25 with it (only for a CI repair on its bound head).
+  let blockedOnBase: { incidentId: string; signature: string } | null = null;
+  if (p.blockedOnBase && ciAttempt?.family === 'ci' && ciAttempt.triggerReason && d.state === 'REPAIRING' && d.repoFullName && (live?.baseRef ?? d.baseRef)) {
+    const signature = ciAttempt.triggerReason;
+    const row = ((await (deps.exec ?? seamExec)(openOrJoinIncidentSql({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: (live?.baseRef ?? d.baseRef)!, signature, deliveryId }))).rows ?? [])[0] as { id: string } | undefined;
+    if (row) {
+      await scheduleTrunkRecheck(String(row.id));
+      blockedOnBase = { incidentId: String(row.id), signature };
+    }
+  }
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
@@ -921,6 +934,7 @@ export async function attemptEnded(p: {
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
     ...(baseOnly ? { baseOnly: true } : {}),
+    ...(blockedOnBase ? { blockedOnBase } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (attemptKind !== 'owner' && result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence?.carryForward && live) {
@@ -1088,6 +1102,11 @@ export function noopEvidenceOf(output: unknown): { findingIds: string[]; evidenc
   const ids = Array.isArray(o.findingIds) ? o.findingIds.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
   const evidence = typeof o.evidence === 'string' ? o.evidence.trim() : '';
   return ids.length && evidence ? { findingIds: ids, evidence } : null;
+}
+
+/** A CI fixer's `structuredOutput.blockedOnBase: true`: the failure is the base branch's, not this PR's. */
+export function blockedOnBaseOf(output: unknown): boolean {
+  return !!output && typeof output === 'object' && (output as Record<string, unknown>).blockedOnBase === true;
 }
 
 /**

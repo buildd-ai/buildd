@@ -63,17 +63,44 @@ async function resolveBaseSha(
   repoFullName: string,
   prNumber: number,
   baseRef: string | null | undefined,
-): Promise<string | undefined> {
+): Promise<{ ref?: string; sha?: string }> {
+  let ref = baseRef ?? undefined;
   try {
-    let ref = baseRef ?? undefined;
     if (!ref) {
       const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
       ref = typeof pr?.base?.ref === 'string' ? pr.base.ref : undefined;
     }
-    if (!ref) return undefined;
-    const encodedRef = ref.split('/').map(encodeURIComponent).join('/');
-    const data = await githubApi(installationId, `/repos/${repoFullName}/git/ref/heads/${encodedRef}`);
-    return typeof data?.object?.sha === 'string' ? data.object.sha : undefined;
+    return { ref, sha: ref ? await branchTip(installationId, repoFullName, ref) : undefined };
+  } catch {
+    return { ref };
+  }
+}
+
+async function branchTip(installationId: number, repoFullName: string, ref: string): Promise<string | undefined> {
+  const encodedRef = ref.split('/').map(encodeURIComponent).join('/');
+  const data = await githubApi(installationId, `/repos/${repoFullName}/git/ref/heads/${encodedRef}`);
+  return typeof data?.object?.sha === 'string' ? data.object.sha : undefined;
+}
+
+/**
+ * Trunk's current tip, when the PR targets some other branch (a mission
+ * integration branch). Trunk is `trunkRef`, else the repo's default branch.
+ * Undefined when the PR targets trunk itself or trunk can't be read.
+ */
+async function resolveTrunkSha(
+  installationId: number,
+  repoFullName: string,
+  trunkRef: string | null | undefined,
+  baseRef: string | undefined,
+): Promise<string | undefined> {
+  try {
+    let ref = trunkRef ?? undefined;
+    if (!ref) {
+      const repo = await githubApi(installationId, `/repos/${repoFullName}`);
+      ref = typeof repo?.default_branch === 'string' ? repo.default_branch : undefined;
+    }
+    if (!ref || !baseRef || ref === baseRef) return undefined;
+    return await branchTip(installationId, repoFullName, ref);
   } catch {
     return undefined;
   }
@@ -201,6 +228,14 @@ async function inspectOnce(params: {
    */
   deltaBase?: string | null;
   /**
+   * The workspace's trunk (e.g. `dev`); the repo's default branch when
+   * omitted. On a PR into any other branch, a migration whose post-image
+   * trunk already carries byte-for-byte (including a folder rename trunk
+   * made) arrived by merging trunk into a branch whose base is behind it,
+   * so it is inherited, not this PR's to classify.
+   */
+  trunkRef?: string | null;
+  /**
    * Open PRs this PR replaces (`predecessorPrNumbers`): their migration slots
    * are not collisions. A successor must never be told to renumber around
    * the PR it supersedes (spec workflow-state-kernel §13.11 rule 5).
@@ -256,13 +291,34 @@ async function inspectOnce(params: {
     }
   }
 
-  const baseSha = allMigrationFiles.length > 0
+  const base = allMigrationFiles.length > 0
     ? await resolveBaseSha(params.installationId, params.repoFullName, params.prNumber, usedDelta ? params.deltaBase : params.baseRef)
-    : undefined;
+    : {};
+  const baseSha = base.sha;
   const readOnBase = (path: string) =>
     baseSha
       ? readFileAtRef(params.installationId, params.repoFullName, path, baseSha).catch(() => undefined)
       : Promise.resolve(undefined);
+  // Trunk is read only for a migration the base does not already explain.
+  let trunkSha: Promise<string | undefined> | null = null;
+  const trunkTip = () =>
+    (trunkSha ??= resolveTrunkSha(params.installationId, params.repoFullName, params.trunkRef, base.ref));
+  const readOnTrunk = async (path: string) => {
+    const sha = await trunkTip();
+    return sha ? readFileAtRef(params.installationId, params.repoFullName, path, sha).catch(() => undefined) : undefined;
+  };
+  // Absence is proven by a listing that read, never by a read that failed.
+  const goneFromTrunk = async (path: string) => {
+    const sha = await trunkTip();
+    if (!sha || !isGeneratedMigrationPath(path)) return false;
+    const legacy = isLegacyMigrationPath(path);
+    const parts = path.split('/');
+    const listing = await migrationNamesAt(
+      params.installationId, params.repoFullName, parts.slice(0, legacy ? -1 : -2).join('/'), sha,
+    );
+    if (!listing) return false;
+    return legacy ? !listing.legacy.includes(parts.at(-1)!) : !listing.v1Folders.includes(parts.at(-2)!);
+  };
 
   // An integration refresh whose merge moved the mission's own migration to a
   // free index past trunk's (`bun run migrations:regenerate`, legacy layout only) shows a deletion
@@ -283,6 +339,22 @@ async function inspectOnce(params: {
     const own = filesWithContent.find((file) => file.filename === migration.filename)!;
     if (own.content === undefined) continue;
     if ((await readOnBase(migration.filename)) === own.content) inherited.add(migration.filename);
+  }
+  // A PR into a mission branch that is behind trunk lists whatever merging
+  // trunk brought in, a trunk-side folder rename included. Trunk holding the
+  // same bytes at the same path is the proof; a rename also needs trunk to
+  // have dropped the old path, or the PR deleted a migration trunk still runs.
+  if (!params.deltaBase) {
+    for (const migration of allMigrationFiles) {
+      if (inherited.has(migration.filename) || migration.status === 'removed') continue;
+      const own = filesWithContent.find((file) => file.filename === migration.filename)!;
+      if (own.content === undefined || (await readOnTrunk(migration.filename)) !== own.content) continue;
+      if (migration.status === 'renamed') {
+        const from = migration.previous_filename;
+        if (!from || !(await goneFromTrunk(from))) continue;
+      }
+      inherited.add(migration.filename);
+    }
   }
 
   const changedExistingMigration = allMigrationFiles.find(
@@ -376,6 +448,7 @@ async function inspectOnce(params: {
         // A path alone cannot prove inheritance: changed SQL in the same file
         // still occupies the same slot.
         if (own?.content !== undefined && (await readOnBase(path)) === own.content) continue;
+        if (inherited.has(path)) continue;
         openPullRequestMigrations.push({ path, prNumber: pull.number as number });
       }
     }

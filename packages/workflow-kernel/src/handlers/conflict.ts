@@ -18,15 +18,17 @@
 import { applyCommandOn } from '../command-runner';
 import type { Command, LivePr } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
+import { landingStatusOf } from '../landing-gate';
 import { acquireLaneOn, laneOutcome, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME } from '../landing-lane';
-import { githubOf, type ClaimedEffect, type GithubFactReader, type KernelPorts } from '../ports';
+import { laneQueuedWords, publishLandingStatusIfChanged } from './landing';
+import { githubOf, type ClaimedEffect, type GithubFactReader, type GithubFacts, type KernelPorts } from '../ports';
 import type { AttemptSnapshot, DeliverySnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
 import { attemptOrdinal } from '../reducer';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
 
-interface Bound { d: WithPr; attempt: AttemptSnapshot & { boundHeadSha: string }; reader: GithubFactReader; live: LivePr }
+interface Bound { d: WithPr; attempt: AttemptSnapshot & { boundHeadSha: string }; reader: GithubFacts; live: LivePr }
 
 export function conflictHandlers(ports: KernelPorts): EffectHandlers {
   const apply = (deliveryId: string, cmd: Command) => applyCommandOn(ports.store, cmd, { ref: { deliveryId }, newId: ports.newId });
@@ -85,6 +87,13 @@ export function conflictHandlers(ports: KernelPorts): EffectHandlers {
     return { outcome: `ok:escalated:${reason.slice(0, 60)}` };
   };
 
+  /** A parked refresh's `Buildd / Review approval`: approved, queued behind the PR holding the lane (e07ee9cf). */
+  const announceParked = async (b: Bound, holder: { prNumber: number | null } | null) => {
+    const view = await ports.store.loadView({ deliveryId: b.d.id });
+    const status = landingStatusOf(view, { detail: laneQueuedWords(holder?.prNumber ?? null, b.d.baseRef) });
+    if (status && view.delivery) await publishLandingStatusIfChanged(ports, b.reader, view.delivery, status);
+  };
+
   const refreshBranch: EffectHandler = async (e) => {
     const source = 'effect:refresh_branch';
     const conflicts = need(ports, 'conflicts', e.kind);
@@ -115,7 +124,11 @@ export function conflictHandlers(ports: KernelPorts): EffectHandlers {
     if (laneMode !== 'off') {
       const lane = await acquireLaneOn(ports.store, { repoFullName: b.d.repoFullName, baseRef: b.d.baseRef!, deliveryId: b.d.id, headSha: b.attempt.boundHeadSha });
       if (!lane.acquired) {
-        if (laneMode === 'enforce') return { outcome: laneOutcome(LANE_PARKED_OUTCOME, lane.holder), park: { delayMs: LANE_PARK_BACKSTOP_MS } };
+        if (laneMode === 'enforce') {
+          // Say on GitHub that it is queued, not "Branch update in progress": nothing runs until the lane frees.
+          await announceParked(b, lane.holder).catch((err) => console.warn('[workflow] parked status not published:', err instanceof Error ? err.message : err));
+          return { outcome: laneOutcome(LANE_PARKED_OUTCOME, lane.holder), park: { delayMs: LANE_PARK_BACKSTOP_MS } };
+        }
         laneNote = `(${laneOutcome('lane:would_wait', lane.holder)})`;
       }
     }

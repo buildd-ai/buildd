@@ -450,6 +450,7 @@ function queueKey(state: TopState, key: Key, now: number): KeyResult | null {
     const row = selectedQueueRow(state, now);
     if (!row) return { state: refuse(state, 'Nothing in the queue to pick.'), effects: [] };
     if (key.ch === 'o') return { state: info(state, `Opening "${row.title}" on buildd…`), effects: [{ type: 'open', taskId: row.taskId }] };
+    if (row.status === 'running') return { state: refuse(state, 'An agent on this runner is already working on it.'), effects: [] };
     if (row.position === null && !row.held) {
       return { state: refuse(state, row.exclusion === 'local_session' ? LOCAL_CLAIM_WORDS : `Not for this runner: ${row.reason}.`), effects: [] };
     }
