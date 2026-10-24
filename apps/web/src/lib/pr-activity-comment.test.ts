@@ -700,3 +700,19 @@ describe('state words come from the terms catalog', () => {
     expect(headerOf(renderPrActivityComment([reviewing, { kind: 'closed_unmerged', at: at(5) }]))).toContain(`**${TERMS['pr.closed'].word}**`);
   });
 });
+
+describe('queued fix rows are marked moot by a later push', () => {
+  it('a ci_fixing row before a push reads as superseded, a trailing one does not', () => {
+    const at = (m: number) => new Date(Date.UTC(2026, 9, 24, 12, m)).toISOString();
+    const moot = renderPrActivityComment([
+      { kind: 'ci_fixing', at: at(0) },
+      { kind: 'changes_pushed', sha: '284ce78', at: at(5) },
+    ]);
+    expect(moot).toMatch(/fix queued · superseded by the push at `284ce78`/);
+    const live = renderPrActivityComment([
+      { kind: 'changes_pushed', sha: '284ce78', at: at(0) },
+      { kind: 'ci_fixing', at: at(5) },
+    ]);
+    expect(live).not.toContain('superseded by the push');
+  });
+});

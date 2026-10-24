@@ -222,9 +222,13 @@ never described as released.
 - The Lifecycle track reads "repair" only for `FIXING` or an agent-mode
   `REPAIRING`; `REPAIRING(behind)` reads "updating branch".
 - `DeliveryView.headline` for `REPAIRING(behind)` is "Updating branch", or
-  "Waiting to update branch" while its refresh is parked in the landing lane,
-  with the detail naming the PR landing on that base first
-  (workflow-state-kernel §13.7). For a
+  while its refresh is parked in the landing lane "Approved · queued to land
+  behind PR #N" (approved head) or "Waiting to update branch", with the detail
+  naming the PR landing on that base first and this PR's position in the queue
+  (workflow-state-kernel §13.7). A parked refresh's owner is `landing`, never
+  `worker`: no worker or repair runs on it, and nothing on the page, in
+  `explain` or in `Buildd / Review approval` ("Approved, queued to merge") calls
+  it a repair. For a
   plain `APPROVED` delivery is "Approved · awaiting merge"; the GitHub comment
   header is that headline (workflow-state-kernel §12.1 rule 4).
 - A structured result is never rendered as serialized JSON outside the Raw
