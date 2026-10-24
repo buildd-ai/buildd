@@ -1,10 +1,12 @@
 import { githubApi } from '@/lib/github';
 import {
   classifyPullRequestMigrations,
+  definedDbObjects,
   getMigrationNumber,
   isGeneratedMigrationPath,
   isLegacyMigrationPath,
   type MigrationCollision,
+  type KnownDbObjects,
   type MigrationSafety,
   type OpenPullRequestMigration,
   type PullRequestMigrationFile,
@@ -181,8 +183,48 @@ async function migrationNamesAt(
   }
 }
 
+/** SQL that only the base's function/trigger catalogue can classify (see `classifyMigrationSql`). */
+const ROUTINE_REDEFINITION = /\bCREATE\s+OR\s+REPLACE\s+(?:FUNCTION|TRIGGER)\b|\bDROP\s+TRIGGER\b/i;
+/** Past this many base migrations the catalogue is not read, and the classifier fails closed. */
+const MAX_BASE_MIGRATIONS_READ = 400;
+
+/**
+ * The functions and triggers the base's migrations leave defined, read only
+ * when a novel migration replaces a routine or drops a trigger. Undefined when
+ * any file cannot be read: the classifier then fails closed, as it did before.
+ */
+async function baseDbObjects(
+  installationId: number,
+  repoFullName: string,
+  dir: string,
+  baseSha: string,
+): Promise<KnownDbObjects | undefined> {
+  const listing = await migrationNamesAt(installationId, repoFullName, dir, baseSha);
+  if (!listing) return undefined;
+  const paths = [
+    ...[...listing.legacy].sort().map((name) => `${dir}/${name}`),
+    ...[...listing.v1Folders].sort().map((folder) => `${dir}/${folder}/migration.sql`),
+  ];
+  if (paths.length > MAX_BASE_MIGRATIONS_READ) return undefined;
+  const sqls: string[] = [];
+  for (let i = 0; i < paths.length; i += 8) {
+    const batch = await Promise.all(
+      paths.slice(i, i + 8).map((path) => readFileAtRef(installationId, repoFullName, path, baseSha).catch(() => undefined)),
+    );
+    if (batch.some((sql) => sql === undefined)) return undefined;
+    sqls.push(...(batch as string[]));
+  }
+  return definedDbObjects(sqls);
+}
+
 function basenameOf(path: string): string {
   return path.split('/').at(-1) ?? path;
+}
+
+/** `drizzle/0001_x.sql` and `drizzle/<ts>_x/migration.sql` both live in `drizzle`. */
+function migrationsDirOf(path: string): string {
+  const parts = path.split('/');
+  return parts.slice(0, isLegacyMigrationPath(path) ? -1 : -2).join('/');
 }
 
 function numberOf(name: string): number {
@@ -456,11 +498,12 @@ async function inspectOnce(params: {
     return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions', kind: 'uninspectable' };
   }
 
-  const verdict = classifyPullRequestMigrations(
-    filesWithContent.filter((file) => !inherited.has(file.filename) && !removed.has(file.filename)),
-    openPullRequestMigrations,
-    params.prNumber,
-  );
+  const own = filesWithContent.filter((file) => !inherited.has(file.filename) && !removed.has(file.filename));
+  const redefines = own.find((file) => file.content !== undefined && ROUTINE_REDEFINITION.test(file.content));
+  const existing = redefines && baseSha
+    ? await baseDbObjects(params.installationId, params.repoFullName, migrationsDirOf(redefines.filename), baseSha)
+    : undefined;
+  const verdict = classifyPullRequestMigrations(own, openPullRequestMigrations, params.prNumber, existing);
   // Destructive SQL, a mixed PR or unreadable SQL outranks a slot already
   // taken on the base: those still need their own handling.
   if (!verdict.safe && verdict.kind !== 'collision') return verdict;

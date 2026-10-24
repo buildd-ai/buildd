@@ -843,3 +843,47 @@ describe('inspectPullRequestMigrations — a refresh PR that renumbers the missi
     });
   });
 });
+
+describe('inspectPullRequestMigrations — functions and triggers', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  const OWN = `${DIR}/20261024130028_explanation_immutable/migration.sql`;
+  const BASE_TRIGGER = `${DIR}/20261010170119_artifact_revisions_trigger/migration.sql`;
+  const trigger = (fn: string, table: string) => [
+    `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$;`,
+    `DROP TRIGGER IF EXISTS ${fn} ON ${table};`,
+    `CREATE TRIGGER ${fn} BEFORE UPDATE ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}();`,
+  ].join('\n--> statement-breakpoint\n');
+
+  it('a new trigger is EXPAND once the base is read and does not define it', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('spec_revisions_explanation_immutable', 'spec_revisions') },
+      base: { [BASE_TRIGGER]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('redefining a trigger the base defines stays CONTRACT', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      base: { [BASE_TRIGGER]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toMatchObject({
+      safe: false,
+      reason: 'replaces function artifact_revisions_immutable, which the base already defines',
+    });
+  });
+
+  it('fails closed when a base migration cannot be read', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('spec_revisions_explanation_immutable', 'spec_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toMatchObject({ safe: false, operationClass: 'CONTRACT' });
+  });
+});
