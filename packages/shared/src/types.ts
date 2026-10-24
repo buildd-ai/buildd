@@ -1858,6 +1858,13 @@ export interface ClaimTaskExclusion {
   holderTaskId?: string;
 }
 
+/** A task a claim turned away: the dispatch-loop code that held it and when the hold lifts, when known. */
+export interface ClaimDeferredTask {
+  taskId: string;
+  code: string;
+  until?: string;
+}
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
@@ -1894,6 +1901,7 @@ export interface ClaimDiagnostics {
    * Populated when reason=all_candidates_deferred: per-reason breakdown of why
    * every candidate in the window was skipped without a claim attempt.
    */
+  deferredTasks?: ClaimDeferredTask[];
   deferrals?: {
     connector_mismatch?: number;
     subject_dead?: number;

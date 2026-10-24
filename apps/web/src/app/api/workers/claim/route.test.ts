@@ -9775,6 +9775,22 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(deferred?.detail).toEqual({ roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] });
   });
 
+  it('a broad claim returns every turned-away task with its reason code', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ id: 'task-1', roleSlug: 'mailer' }), task({ id: 'task-2', roleSlug: 'mailer' })]);
+    mockRunRoleEnvPreFilter.mockResolvedValueOnce(new Map([
+      ['task-1', { roleSlug: 'mailer', missing: ['SERVICE_API_KEY'] }],
+      ['task-2', { roleSlug: 'mailer', missing: ['SERVICE_API_KEY'] }],
+    ]));
+
+    const data = await (await claim({ runner: 'mcp', taskId: undefined })).json();
+    expect(data.diagnostics.deferrals.role_env_unsatisfied).toBe(2);
+    expect(data.diagnostics.deferredTasks).toEqual([
+      { taskId: 'task-1', code: 'role_env_unsatisfied' },
+      { taskId: 'task-2', code: 'role_env_unsatisfied' },
+    ]);
+  });
+
   it('a task whose cross-workspace need its token would not carry is held before any agent turn, with the named reason', async () => {
     const gaps = [{ workspaceId: 'ws-target', capability: 'tasks:create', reason: 'not_granted' }];
     mockCheckDelegationGate.mockResolvedValueOnce({ gaps, detail: 'tasks:create on workspace ws-target: it declares it will file tasks there, but no delegation grants tasks:create on it' });
