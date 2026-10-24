@@ -9,14 +9,15 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { desc, inArray } from 'drizzle-orm';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { readForceStart, FORCE_START_HISTORY_KEY, type ForceStartIntent } from '@buildd/core/waiting-reason';
-import { buildAssessmentBrief, startAnywayPhase, type PrerequisiteInput, type StartAnywayPhase } from '@buildd/core/start-anyway';
+import { START_ANYWAY_BRIEF_KEY, buildAssessmentBrief, startAnywayPhase, type PrerequisiteInput, type StartAnywayPhase } from '@buildd/core/start-anyway';
 
 /** An accepted, unconsumed request that admits declared edges for assessment. */
 export function startAnywayAdmits(context: Record<string, unknown> | null | undefined, now: Date = new Date()): boolean {
   return (readForceStart(context, now)?.assessDependsOn?.length ?? 0) > 0;
 }
 
-export const START_ANYWAY_ASSESSMENT_KEY = 'startAnywayAssessment' as const;
+/** The claim-time brief. Its literal lives in core beside the keys that read it. */
+export const START_ANYWAY_ASSESSMENT_KEY = START_ANYWAY_BRIEF_KEY;
 export const START_ANYWAY_PARKS_KEY = 'startAnywayParks' as const;
 
 /** The consumed intent of this task's newest Start anyway, when it admitted declared edges. */

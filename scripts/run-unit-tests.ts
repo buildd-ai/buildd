@@ -43,13 +43,7 @@ const UNIT_TEST_ROOTS = [
  * the unit gate must not collect them; scripts/run-acceptance-tests.ts runs them
  * per criterion. The build task removes each entry once its file passes.
  */
-export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
-  'apps/web/src/app/api/tasks/[id]/start/start-anyway.test.ts',
-  'apps/web/src/app/api/workers/claim/start-anyway-gate.test.ts',
-  'apps/web/src/lib/force-start-assess.test.ts',
-  'packages/core/__tests__/start-anyway.test.ts',
-  'packages/core/__tests__/start-anyway-waiting-reason.test.ts',
-];
+export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [];
 
 export function isUnitTestFile(path: string): boolean {
   if (ACCEPTANCE_ONLY_TESTS.includes(path)) return false;

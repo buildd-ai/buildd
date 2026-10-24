@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/tasks/[id]/start/route.ts, packages/core/waiting-reason.ts, apps/web/src/lib/force-start.ts, apps/web/src/lib/coordination-probe.ts]
 related: [claim-ordering, mission-task-lifecycle, orchestration-decisions-shadow]
 keywords: [run now, force start, forceStart, forceStartHistory, reasons_changed, reasonsDigest, coordination_hold, WaitingReason, inferred dependency, migration slot, human_force_start]
-verified_by: [apps/web/src/app/api/tasks/[id]/start/start-anyway.test.ts, apps/web/src/lib/force-start-assess.test.ts, apps/web/src/app/api/workers/claim/start-anyway-gate.test.ts, packages/core/__tests__/start-anyway.test.ts, packages/core/__tests__/start-anyway-waiting-reason.test.ts, packages/core/__tests__/start-anyway-queue.test.ts, apps/web/src/lib/start-anyway.test.ts, apps/web/src/lib/task-wait-exit.test.ts, apps/web/tests/db/start-anyway-gate.test.ts, apps/runner/__tests__/unit/start-anyway-prompt.test.ts, apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/lib/force-start.test.ts, apps/web/src/lib/coordination-probe.test.ts, packages/core/__tests__/waiting-reason.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.coordination.dom.test.tsx, packages/core/__tests__/start-outcome-grade.test.ts]
+verified_by: [apps/web/src/app/api/tasks/[id]/start/start-anyway.test.ts, apps/web/tests/db/start-anyway-lifecycle.test.ts, packages/core/__tests__/start-anyway-assessment.test.ts, apps/web/src/lib/path-claim-check.test.ts, apps/web/src/lib/force-start-assess.test.ts, apps/web/src/app/api/workers/claim/start-anyway-gate.test.ts, packages/core/__tests__/start-anyway.test.ts, packages/core/__tests__/start-anyway-waiting-reason.test.ts, packages/core/__tests__/start-anyway-queue.test.ts, apps/web/src/lib/start-anyway.test.ts, apps/web/src/lib/task-wait-exit.test.ts, apps/web/tests/db/start-anyway-gate.test.ts, apps/runner/__tests__/unit/start-anyway-prompt.test.ts, apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/lib/force-start.test.ts, apps/web/src/lib/coordination-probe.test.ts, packages/core/__tests__/waiting-reason.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.coordination.dom.test.tsx, packages/core/__tests__/start-outcome-grade.test.ts]
 assertions:
   - id: start-route
     type: route
@@ -114,15 +114,25 @@ kind `dep_declared`:
 - **Claim.** The claim consumes the intent once into `forceStartHistory` and stores
   `context.startAnywayAssessment`: the assessment instruction with each prerequisite's task,
   worker and PR state as of the claim. The runner prompt carries it (`start-anyway` section).
-- **Assess, coordinate, work or park.** The agent records its assessment with `update_progress`
-  before editing, messages the running upstream agent once through `send_worker_message`, and
+- **Assess, coordinate, work or park.** The agent records its assessment with
+  `update_progress { assessment: { needs, canProceed, uncertainty, nextStep } }`
+  (`context.startAnywayAssessed`, `lib/start-anyway-assessment.ts`) before editing: until an
+  assessment newer than the claim's brief is recorded (or a park carried one),
+  `POST /api/tasks/[id]/path-claim` refuses with `assessment_required` and leases nothing
+  (`startAnywayEditRefusal`). Reads need no ownership, so assessment never displaces a writer.
+  It messages the running upstream agent once through `send_worker_message`, and
   either works within its own path ownership or parks with `complete_task { blockedOnTaskId }`
   (the wait exit, `lib/task-wait-exit.ts`). For a task started this way the workspace
   `waitOnTask` flag does not gate the park; a merged or cancelled prerequisite is refused (the
   recheck that stops a race stranding it), a cycle is refused, and at most
   `START_ANYWAY_MAX_PARKS` parks are allowed so a dead prerequisite cannot loop. The park
   returns the same task to `pending`, keeps its branch (`requeueBranchContext`), completes the
-  worker (no executing slot) and releases its path claims.
+  worker (no executing slot) and releases its path claims. It records
+  `context.startAnywayPark`: the assessment (`complete_task { blockedOnTaskId, summary,
+  assessment }`) and the exact wake condition (`task.completed+merged`, the prerequisite, the
+  version of it the park observed). After the write it reads the claim's dependency gate once
+  more and wakes the task if the gate already passes (an edge released while the agent was
+  still running), so a release that races the park cannot strand it.
 - **Resume.** The existing dependency wake (`dependency.satisfied`, outbox) runs the same task
   when the prerequisite merges; the next attempt's prompt carries the saved assessment
   (`resumeInstruction`).

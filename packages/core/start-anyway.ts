@@ -127,9 +127,9 @@ export function buildAssessmentBrief(i: {
     '',
     'Before making any edits:',
     '1. Read your pinned spec, the relevant knowledge and code, and what each prerequisite has produced so far (its task, worker, branch and PR). Missing evidence is unknown: an assigned status or an age alone shows neither progress nor a stall.',
-    '2. Establish what you need from the prerequisite, what can proceed without it, and the uncertainty. Record needs, canProceed, uncertainty and nextStep with `update_progress` before your first edit.',
+    '2. Establish what you need from the prerequisite, what can proceed without it, and the uncertainty. Record it with `update_progress { assessment: { needs, canProceed, uncertainty, nextStep } }` before your first edit: file claims are refused until it is recorded.',
     '3. If an agent is working on the prerequisite and an interface, branch or ownership boundary needs agreeing, send ONE concrete request with `send_worker_message` and record the answer. Do not start another worker or task, repeat the request, or rewrite its scope.',
-    '4. Then either do the useful work that does not need the unfinished prerequisite (normal file ownership: path claims for what you edit), or, if nothing useful can proceed, park: call `complete_task` with `blockedOnTaskId` set to the prerequisite and a `summary` stating your assessment and the next step. The task returns to the queue holding no slot and resumes by itself on the same branch when that prerequisite merges.',
+    '4. Then either do the useful work that does not need the unfinished prerequisite (normal file ownership: path claims for what you edit), or, if nothing useful can proceed, park: call `complete_task` with `blockedOnTaskId` set to the prerequisite, a `summary` stating your assessment and the next step, and the same `assessment`. The task returns to the queue holding no slot and resumes by itself on the same branch when that prerequisite merges.',
     '',
     'This start admits your assessment only. It does not grant file or lane ownership another agent holds, does not unlock migration generation or any existing data-preservation precondition, and does not authorise release, merge, credentials or destructive work. Scope or requirement changes follow the normal spec and approval rules.',
   ].join('\n');
@@ -137,11 +137,12 @@ export function buildAssessmentBrief(i: {
 }
 
 /** The resume section after a park: what was assessed and what was waited on. */
-export function resumeInstruction(wait: { blockerTaskId: string; reason: string; at?: string }): string {
+export function resumeInstruction(wait: { blockerTaskId: string; reason: string; at?: string; assessment?: AssessmentFields | null }): string {
   return [
     '## Start anyway: resuming',
     `This task parked on prerequisite ${wait.blockerTaskId}${wait.at ? ` at ${wait.at}` : ''} and was woken because it resolved. Your earlier assessment:`,
     wait.reason,
+    ...(wait.assessment ? REQUIRED_ASSESSMENT_FIELDS.map(k => `- ${k}: ${wait.assessment![k]}`) : []),
     "Continue on the existing branch with that assessment. Re-check the prerequisite's merged result before building on it.",
   ].join('\n');
 }
@@ -314,4 +315,54 @@ export function queueRowAction(kind: QueueRowKind): QueueRowAction {
     case 'limit': return { action: 'force_start', label: 'Force start' };
     default: return { action: 'fix', label: 'Fix' };
   }
+}
+
+// ── The agent's recorded assessment and the park record ─────────────────────
+
+/** Context key of the claim-time brief `{ at, text, facts }` (written by the claim, lib/start-anyway.ts). */
+export const START_ANYWAY_BRIEF_KEY = 'startAnywayAssessment' as const;
+/** Context key of the assessment the agent recorded `{ assessment, at, workerId }` (update_progress { assessment }). */
+export const START_ANYWAY_ASSESSED_KEY = 'startAnywayAssessed' as const;
+/** Context key of the last park `{ assessment, wake, at }` (the wait exit, R-8). */
+export const START_ANYWAY_PARK_KEY = 'startAnywayPark' as const;
+
+const ASSESSMENT_FIELD_MAX = 1000;
+
+/** A well-formed assessment from untrusted input, or the first problem with it. */
+export function parseAssessment(raw: unknown): { ok: true; assessment: AssessmentFields } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object') return { ok: false, error: 'assessment must be { needs, canProceed, uncertainty, nextStep }' };
+  const out: Partial<AssessmentFields> = {};
+  for (const k of REQUIRED_ASSESSMENT_FIELDS) {
+    const v = (raw as Record<string, unknown>)[k];
+    if (typeof v !== 'string' || !v.trim()) return { ok: false, error: `assessment.${k} is required: say "unknown" when nothing tells you` };
+    out[k] = v.trim().slice(0, ASSESSMENT_FIELD_MAX);
+  }
+  return { ok: true, assessment: out as AssessmentFields };
+}
+
+const atOf = (v: unknown): string | null => {
+  const at = (v as { at?: unknown } | null | undefined)?.at;
+  return typeof at === 'string' ? at : null;
+};
+
+/**
+ * True while a task a person started anyway has its claim-time brief but has
+ * recorded no assessment since: neither `update_progress { assessment }` nor a
+ * park (whose summary is the assessment it resumes with). Edits wait on it
+ * (R-4, AC-9); reads never do.
+ */
+export function needsAssessmentBeforeEdit(context: Record<string, unknown> | null | undefined): boolean {
+  const briefAt = atOf(context?.[START_ANYWAY_BRIEF_KEY]);
+  if (!briefAt) return false;
+  const recorded = [atOf(context?.[START_ANYWAY_ASSESSED_KEY]), atOf(context?.[START_ANYWAY_PARK_KEY]), atOf(context?.waitExit)];
+  return !recorded.some(at => at !== null && at >= briefAt);
+}
+
+/** The path-claim refusal while `needsAssessmentBeforeEdit`, else null. */
+export function startAnywayEditRefusal(context: Record<string, unknown> | null | undefined): { code: string; message: string } | null {
+  if (!needsAssessmentBeforeEdit(context)) return null;
+  return {
+    code: 'assessment_required',
+    message: 'This task was started before its prerequisites finished. Record your assessment first (update_progress { assessment: { needs, canProceed, uncertainty, nextStep } }), then claim the files you will edit.',
+  };
 }
