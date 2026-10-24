@@ -31,7 +31,6 @@ export const CLAIM_HOLD_PHRASES: Readonly<Record<ClaimHoldReason, string>> = {
   kernel_refused: 'the workflow control plane refused to check its fix',
   runner_capability: 'no online runner has what it needs',
   codex_single_flight: 'Codex runs one task at a time and is busy',
-  oauth_parallelism: 'the subscription is at its session limit',
   role_env_unsatisfied: 'its role needs settings the runner does not have',
   delegation_unmet: 'it needs access to another workspace that nobody has granted yet',
   ordered_behind: 'it waits for earlier work in the queue',

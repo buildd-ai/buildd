@@ -12,7 +12,7 @@ import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { deferredReplyWork } from '@/lib/deferred-reply-work';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
@@ -47,9 +47,8 @@ import { combineCostBasis, costBasisWrite, parseCostBasis, type CostBasis } from
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
-import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
+import { isMachineLoginWallError, parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
@@ -1772,8 +1771,7 @@ async function patchWorker(
 
         if (effectiveCost > 0 && countsTowardPool) {
           // Aggregate budget is tracked at the team level so all token-accounts
-          // under the same owner share one monthly cap (the Claude Agent SDK
-          // credit pool is a single pool per subscription).
+          // under the same owner share one monthly cap.
           //
           // Optimistic locking: read the team budget, compute the next state, then
           // commit only if the row is unchanged since we read it (CAS on cost+month).
@@ -3305,20 +3303,14 @@ async function patchWorker(
       workspaceId: taskForBudget?.workspaceId,
       tenantId: tenantCtx?.tenantId,
     };
-    // A Claude limit on the runner's OWN machine login (lib/runner-seat-wall.ts)
-    // is that runner's wall, not the account's or the team's: other runners on
-    // the account run on their own logins. It is recorded under the runner's
-    // seat key and holds only that runner's claims. A wall whose login cannot
-    // be identified comes back with no key and is recorded as before.
-    const seatWall = await resolveRunnerSeatWallKey({
+    // A Claude subscription limit belongs to the login that hit it
+    // (lib/runner-seat-wall.ts): it is recorded under that runner's seat key
+    // and holds only that runner's claims. A team never shares one.
+    const seatWall = resolveRunnerSeatWallKey({
       backend: walledBackend,
       error,
       runner: worker.runner,
-      claimedByCloud: worker.claimedByCloud,
       tenantId: tenantCtx?.tenantId,
-      accountId: account.id,
-      teamId,
-      workspaceId: taskForBudget?.workspaceId,
       // Which Claude login this run used, as its runner reports it (newer
       // runners): a machine login walls only that runner.
       loginUsed: parseRunLoginUsed(body.claudeLoginUsed),
@@ -3331,20 +3323,25 @@ async function patchWorker(
       console.log(`[workers PATCH] Claude wall on worker ${id} is its runner's own login (${seatWall.reason}): holding that runner only`);
     }
 
-    await recordBackendPause({
-      backend: walledBackend,
-      scope: budgetScope,
-      resetsAt: budgetResetsAt,
-      reason: 'budget',
-      sourceWorkerId: id,
-      seatKey: runnerSeatWall,
-    });
+    // A subscription wall no runner can be named for still writes no
+    // team-wide pause: that would hold every runner of the team on one login.
+    // The account flag below is its narrowest record.
+    const subscriptionWallWithoutSeat = walledBackend === 'claude' && !runnerSeatWall
+      && !tenantCtx?.tenantId && isMachineLoginWallError(error);
+    if (!subscriptionWallWithoutSeat) {
+      await recordBackendPause({
+        backend: walledBackend,
+        scope: budgetScope,
+        resetsAt: budgetResetsAt,
+        reason: 'budget',
+        sourceWorkerId: id,
+        seatKey: runnerSeatWall,
+      });
+    }
 
-    // The account/tenant flags and the OAuth pacing episode describe Claude
-    // session capacity only, so they are written for Claude walls exclusively.
-    // A runner-scoped wall writes neither: the account flag would hold every
-    // runner on the account, and the account's pacing episode would book one
-    // machine's login as the account's capacity.
+    // The account/tenant flags describe Claude session capacity only, so they
+    // are written for Claude walls exclusively. A runner-scoped wall writes
+    // neither: the account flag would hold every runner on the account.
     const isClaudePoolWall = walledBackend === 'claude' && !runnerSeatWall;
     if (isClaudePoolWall && tenantCtx?.tenantId && teamId) {
       // Tenant-level budget exhaustion: upsert into tenantBudgets
@@ -3365,85 +3362,15 @@ async function patchWorker(
           },
         });
     } else if (isClaudePoolWall && account.authType === 'oauth') {
-      // Account-level budget exhaustion: set flag (first-writer wins)
-      const exhaustedAt = new Date();
-      const flipped = await db
+      // Account-level budget exhaustion: set flag (first-writer wins). It is
+      // this account's alone; no other account sharing a login is touched.
+      await db
         .update(accounts)
-        .set({
-          budgetExhaustedAt: exhaustedAt,
-          budgetResetsAt,
-        })
+        .set({ budgetExhaustedAt: new Date(), budgetResetsAt })
         .where(and(
           eq(accounts.id, account.id),
           isNull(accounts.budgetExhaustedAt),
-        ))
-        .returning({ id: accounts.id });
-
-      // Propagate exhaustion to all sibling accounts sharing the same seatId so
-      // pacing engages for every registration, not just the one that hit the wall.
-      if (flipped.length > 0 && account.seatId && account.teamId) {
-        await db
-          .update(accounts)
-          .set({ budgetExhaustedAt: exhaustedAt, budgetResetsAt })
-          .where(and(
-            eq(accounts.teamId, account.teamId),
-            eq(accounts.seatId, account.seatId),
-            eq(accounts.authType, 'oauth'),
-            isNull(accounts.budgetExhaustedAt),
-          ));
-      }
-
-      // Only the request that actually flipped the flag records the episode, so
-      // N concurrent budget failures in the same window yield exactly one row.
-      // Seat auth has no cost signal, so this measured usage is the only way to
-      // learn where the wall is — see packages/core/oauth-budget.ts.
-      if (flipped.length > 0) {
-        try {
-          // Measure across the full seatId group so the episode reflects the
-          // combined window usage, not just this account's slice.
-          const accountIds = await resolveSeatIdPeers({
-            id: account.id,
-            teamId: account.teamId ?? '',
-            seatId: account.seatId ?? null,
-          });
-          const prior = await db.query.oauthBudgetEpisodes.findFirst({
-            where: sqlWhere(inArray(oauthBudgetEpisodes.accountId, accountIds)),
-            orderBy: sqlOrderByFn((t, { desc }) => [desc(t.exhaustedAt)]),
-            columns: { resetsAt: true },
-          });
-          // Same measurement the claim route paces against: window start inferred
-          // by sessionizing worker history, usage weighted per model.
-          const { windowStartedAt, usage } = await measureOauthWindow({
-            accountIds,
-            now: exhaustedAt,
-            lastResetsAt: prior?.resetsAt ?? null,
-          });
-
-          await db.insert(oauthBudgetEpisodes).values({
-            accountId: account.id,
-            windowStartedAt,
-            exhaustedAt,
-            resetsAt: budgetResetsAt,
-            workerCount: usage.workerCount,
-            turns: usage.turns,
-            // Raw token split is not recoverable per-direction from the window
-            // aggregate; the combined total is what the learner uses.
-            inputTokens: usage.tokens,
-            outputTokens: 0,
-            weightedTurns: usage.weightedTurns,
-            weightedTokens: usage.weightedTokens,
-          });
-          console.log(
-            `[workers PATCH] Recorded OAuth budget episode for account ${account.id}: ` +
-            `${usage.workerCount} workers / ${usage.turns} turns ` +
-            `(${usage.weightedTurns} sonnet-equivalent) since ${windowStartedAt.toISOString()}`,
-          );
-        } catch (err) {
-          // Non-fatal: losing an episode only slows learning, it must never break
-          // the budget-exhaustion path that re-queues the task.
-          console.warn(`[workers PATCH] Failed to record OAuth budget episode for account ${account.id}:`, err);
-        }
-      }
+        ));
     }
 
     // Provider failover, either direction: move the task to any other enabled,
@@ -3554,7 +3481,7 @@ async function patchWorker(
       message: failoverBackend
         ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
         : runnerSeatWall
-          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: one runner's own ${walledLabel} login hit its limit. That runner waits; other runners can take the task now.`
+          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: one runner's ${walledLabel} login is at its limit until ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. That runner waits; other runners can take the task now.`
           : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
       url: `https://buildd.dev/app/tasks/${worker.taskId}`,
       urlTitle: 'View task',

@@ -190,7 +190,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
   });
 
   test('deferral codes are said in words, never as the raw code', () => {
-    for (const code of ['budget_paused', 'oauth_parallelism', 'duplicate_worker', 'sibling_retry_open', 'fix_not_needed', 'a_code_from_the_future']) {
+    for (const code of ['budget_paused', 'duplicate_worker', 'sibling_retry_open', 'fix_not_needed', 'a_code_from_the_future']) {
       const s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { [code]: 3 } });
       const got = waitingReason(loose(), s, NOW);
       expect(got).not.toContain('_');

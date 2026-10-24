@@ -5,7 +5,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp, parseRunnerLoginUse, pickLoginBackend } from '@buildd/shared';
@@ -33,16 +33,6 @@ import { pickRoleRowForTask, resolveClaimModelInputs, roleFloorTier, type RoleMo
 import { codingPolicyLoader } from '@buildd/core/coding-policy-store';
 import { codingPolicyAudit, decideCodingPolicy } from './coding-policy-gate';
 import { lazyRequester, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
-import {
-  describeOauthPressure,
-  learnOauthCapacity,
-  oauthBudgetPressure,
-  oauthParallelismCap,
-  readPacingConfig,
-  windowEndsAt,
-  type OauthBudgetPressure,
-} from '@buildd/core/oauth-budget';
-import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
 import { isTaskTier, readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
 import { bandExceedsLabel, claimTierRequest, enforceModelCeiling, enforceTierCeiling } from '@buildd/core/model-tier-ceiling';
@@ -1107,63 +1097,6 @@ export async function POST(req: NextRequest) {
     ? Math.min(1, parseFloat(account.totalCost.toString()) / parseFloat(account.maxCostPerDay.toString()))
     : 0;
 
-  // OAuth budget pacing. Seat auth reports no cost, so the pressure signal is
-  // learned from past exhaustion episodes instead: how many workers/turns/tokens
-  // this account's 5h window has historically held (p25, conservative), versus
-  // what the current window has already consumed. The 5h-wall forecast is not
-  // reliable enough to delay work on, so it does NOT feed `dailyBudgetPct` (the
-  // router would pause priority-0 work at 95%). Its only effect is a lower
-  // per-seat session cap — `oauthSeatSlotsLeft`, retaining at least half the slots,
-  // restored when the window resets, off entirely at low confidence.
-  // Failures here never block claiming.
-  //
-  // Two hard exemptions, both deliberate:
-  //  • `taskId` present — this is an explicit start (dashboard Start button or a
-  //    Pusher assignment for one task). A human asking for this task now always
-  //    wins over pacing; pacing only governs autonomous background claiming.
-  //    Without this, pacing would reintroduce the silent no-op Start that
-  //    /api/tasks/[id]/start already suffers from.
-  //  • OAUTH_BUDGET_PACING=off — operational kill switch, no redeploy of logic
-  //    needed, no settings row, no UI.
-  const pacingConfig = readPacingConfig(process.env);
-  // An interactive session runs on the person's own credentials, not a seat.
-  const pacingApplies = pacingConfig.enabled && !taskId && !interactiveSession;
-  let oauthPressure: OauthBudgetPressure | null = null;
-  let oauthSeatSlotsLeft: number | null = null; // null = uncapped
-  if (account.authType === 'oauth' && pacingApplies) {
-    try {
-      const accountIds = await resolveSeatIdPeers({
-        id: account.id,
-        teamId: account.teamId ?? '',
-        seatId: account.seatId ?? null,
-      });
-      const episodes = await loadOauthEpisodes(accountIds, undefined, now);
-      const capacity = learnOauthCapacity(episodes, { quantile: pacingConfig.quantile });
-
-      if (capacity.confidence !== 'none') {
-        const { windowStartedAt, usage } = await measureOauthWindow({
-          accountIds,
-          now,
-          lastResetsAt: episodes[0]?.resetsAt ?? null,
-        });
-
-        oauthPressure = oauthBudgetPressure({ usage, capacity, now, windowStartedAt, observedAt: episodes[0]?.exhaustedAt });
-        const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: workerSlotLimit });
-        if (seatCap !== null) {
-          oauthSeatSlotsLeft = Math.max(0, seatCap - await countLiveSeatWorkers(accountIds));
-        }
-        if (oauthPressure.pct >= 0.5) {
-          console.log(
-            `[claim] ${describeOauthPressure(oauthPressure)} seat cap ${seatCap ?? 'none'} ` +
-            `window opened ${windowStartedAt.toISOString()}, ends ${windowEndsAt(windowStartedAt).toISOString()}`,
-          );
-        }
-      }
-    } catch (err) {
-      console.warn(`[claim] OAuth budget pacing unavailable for account ${account.id}:`, err);
-    }
-  }
-
   const tenMinAgo = new Date(now.getTime() - 10 * 60 * 1000);
   const recentClaims = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -1243,7 +1176,6 @@ export async function POST(req: NextRequest) {
     kernel_refused: 0,
     runner_capability: 0,
     codex_single_flight: 0,
-    oauth_parallelism: 0,
     role_env_unsatisfied: 0,
     delegation_unmet: 0,
     ordered_behind: 0,
@@ -1611,7 +1543,7 @@ export async function POST(req: NextRequest) {
       missionInFlightRows,
       claimedThisBatch: claimed,
       capacity,
-      pressure: { dailyBudgetPct, oauthPressure: oauthPressure?.pct ?? null, confidence: oauthPressure?.confidence ?? null },
+      pressure: { dailyBudgetPct },
       thresholds: plannerThresholdsFor(cands),
       signals: plannerSignals,
     });
@@ -2189,7 +2121,7 @@ export async function POST(req: NextRequest) {
     // agent endpoint, a metered Anthropic key, the runner's own provider or
     // cloud egress carries spends that budget, not the seat's. A tenant task
     // runs on its tenant's own seat, whose wall is the tenant budget above.
-    // Resolved lazily — only a walled pool or an active seat cap needs it.
+    // Resolved lazily — only a walled pool needs it.
     const isTenantTask = !!tenantCtx?.tenantId;
     const claudeRunUsesSeat = async (): Promise<boolean> =>
       isTenantTask || routeUsesOauthSeat(await claudeRouteFor(taskTeamId, task.workspaceId));
@@ -2275,17 +2207,6 @@ export async function POST(req: NextRequest) {
       if (await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'runner_login_mode')) {
         console.log(`[claim] Login mode: task ${task.id} → Codex (runner ${loginUse.mode}, ${loginRunning.codex} on Codex, ${loginRunning.claude} on Claude)`);
       }
-    }
-
-    // Learned OAuth pressure narrows the seat's Claude parallelism (see above).
-    // Codex, tenant work and non-seat Claude routes draw on other pools, so they
-    // are never held by it. Read the backend fresh: `isCodexTask` was captured
-    // before the budget failover above, which may just have flipped this task to Codex.
-    const usesOauthSeat = (task as any).backend !== 'codex' && !isTenantTask
-      && (oauthSeatSlotsLeft === null || await claudeRunUsesSeat());
-    if (usesOauthSeat && oauthSeatSlotsLeft !== null && oauthSeatSlotsLeft <= 0) {
-      deferTask(task, 'oauth_parallelism', { pct: oauthPressure?.pct ?? null });
-      continue;
     }
 
     // Workspace/project mismatch guard. If a task is pinned to a project name
@@ -3225,7 +3146,6 @@ export async function POST(req: NextRequest) {
         now,
       });
     }
-    if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
   }
 
   // Planner bookkeeping. Under 'apply', every planned task never attempted is
@@ -3341,19 +3261,6 @@ export async function POST(req: NextRequest) {
         ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
         ...(firstBlockingPr ? { blockedByPr: firstBlockingPr } : {}),
         ...(explicitTaskExclusion ? { taskExclusion: explicitTaskExclusion } : {}),
-        // Surface learned OAuth pressure so an `oauth_parallelism` deferral is
-        // attributable ("seat capped at 97% of the learned window") instead of
-        // looking like an unexplained stall.
-        ...(oauthPressure && oauthPressure.confidence !== 'none'
-          ? {
-              budgetPressure: {
-                pct: oauthPressure.pct,
-                limiter: oauthPressure.limiter,
-                confidence: oauthPressure.confidence,
-                samples: oauthPressure.samples,
-              },
-            }
-          : {}),
       } satisfies ClaimDiagnostics,
     });
   }
