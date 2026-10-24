@@ -259,6 +259,20 @@ wsl_logins() {
       echo "  Skipped. Later: buildd login${device}"
     fi
   fi
+  # R-23: the name this runner shows in the dashboard; empty keeps the default.
+  local default_name name=""
+  default_name="$(uname -n 2>/dev/null || echo wsl)-wsl"
+  if wsl_ask "  Give this runner a name (buildd name <name>; default ${default_name})?"; then
+    printf "  Name (empty keeps %s): " "$default_name"
+    read -r name < "${BUILDD_TTY:-/dev/tty}" || name=""
+    if [ -z "$name" ]; then
+      echo "  Kept ${default_name}."
+    else
+      "$buildd" name "$name" || echo -e "${YELLOW}  buildd name did not finish. Run: buildd name <name>${NC}"
+    fi
+  else
+    echo "  Skipped, name stays ${default_name}. Later: buildd name <name>"
+  fi
 }
 
 # The WSL confinement check with the installed runner, in words. Returns its
