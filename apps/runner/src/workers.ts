@@ -2698,14 +2698,10 @@ export class WorkerManager {
     const claudeAvailable = this.modelAuth.source !== 'none';
     const codexAvailable = this.codexAuth !== 'none';
 
-    // If credentials are detected, use those. If neither is detected but hasCredentials is true,
-    // assume Claude is available (test setup compatibility when detection isn't fully configured).
-    const effectiveClaudeAvailable = claudeAvailable || (this.hasCredentials && !claudeAvailable && !codexAvailable);
-    const effectiveCodexAvailable = codexAvailable;
-
-    if (!effectiveClaudeAvailable && !effectiveCodexAvailable) return false;
-    if (effectiveClaudeAvailable && !this.providerLimits.isHeld('claude')) return false;
-    if (effectiveCodexAvailable && !this.providerLimits.isHeld('codex')) return false;
+    // A runner with no detected provider has nothing to hold, so it never pauses on a provider limit.
+    if (!claudeAvailable && !codexAvailable) return false;
+    if (claudeAvailable && !this.providerLimits.isHeld('claude')) return false;
+    if (codexAvailable && !this.providerLimits.isHeld('codex')) return false;
     return true;
   }
 
