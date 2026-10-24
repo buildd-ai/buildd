@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import {
   classifyRecoverableBlocker,
+  decisionTitleAdvisory,
   fallbackQuestionContext,
   isContextFree,
+  isGenericDecisionTitle,
   recoveredAnswerText,
   repairTaskSpec,
 } from '../human-attention';
@@ -89,5 +91,25 @@ describe('isContextFree', () => {
   test('context, a recommendation or explained options are enough', () => {
     expect(isContextFree({ prompt: 'How?', context: 'Visual QA cannot boot.', options: [] })).toBe(false);
     expect(isContextFree({ prompt: 'How?', options: [{ label: 'Skip', description: 'Ships without screenshots', recommended: true }] })).toBe(false);
+  });
+});
+
+describe('generic decision titles (Navigation R-16)', () => {
+  test('a request for direction that names no decision is generic', () => {
+    for (const t of ['How should I proceed?', 'How do you want me to proceed here?', 'What should I do next?', 'Should I continue?', 'Next steps?', 'Thoughts?', 'Which option do you prefer?', 'What’s your call?', 'Please advise.']) {
+      expect(isGenericDecisionTitle(t)).toBe(true);
+    }
+  });
+
+  test('a question that names its decision is not', () => {
+    for (const t of ['How should Docker Hub credentials be set up?', 'How should I proceed with the Docker Hub credentials?', 'Should the billing helpers use UTC?', '']) {
+      expect(isGenericDecisionTitle(t)).toBe(false);
+    }
+  });
+
+  test('the advisory reads the question after its framing, and is absent for a named decision', () => {
+    expect(decisionTitleAdvisory('The deploy task needs a registry login. How should I proceed?')).toContain('How should Docker Hub credentials be set up?');
+    expect(decisionTitleAdvisory('The deploy task needs a registry login. How should Docker Hub credentials be set up?')).toBeUndefined();
+    expect(decisionTitleAdvisory(null)).toBeUndefined();
   });
 });

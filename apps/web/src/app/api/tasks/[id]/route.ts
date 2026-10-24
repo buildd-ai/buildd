@@ -37,6 +37,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyWaitExit, parseWaitOn } from '@/lib/task-wait-exit';
 import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated, endLiveWorkersForRequeue } from '@/lib/task-cancel';
+import { checkDependencyCycle, checkDependencyReach, dependencyViewerOf } from '@/lib/task-dependency-reach';
 import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -408,6 +409,40 @@ export async function PATCH(
       return NextResponse.json({ id, status: 'pending', waitingOn: out.blocker, dependsOn: out.dependsOn, workerId: out.workerId });
     }
 
+    // removeDependency: a person drops one declared dependency, saying why
+    // (spec "Health › Queue", R-11). Its own request: the edge goes, and who
+    // removed it, when and why is kept on the task (context.dependencyRemovals).
+    if (body?.removeDependency !== undefined) {
+      if (Object.keys(body).some(k => k !== 'removeDependency')) {
+        return NextResponse.json({ error: 'removeDependency is sent on its own, with no other fields' }, { status: 400 });
+      }
+      const person = requestingPerson(user, apiAccount);
+      if (!person) {
+        return NextResponse.json({ error: 'Only a person can remove a dependency.' }, { status: 403 });
+      }
+      const raw = (body.removeDependency ?? {}) as { taskId?: unknown; reason?: unknown };
+      const dependencyId = typeof raw.taskId === 'string' ? raw.taskId.trim() : '';
+      const reason = typeof raw.reason === 'string' ? raw.reason.trim().slice(0, 500) : '';
+      if (!dependencyId) return NextResponse.json({ error: 'removeDependency.taskId is required' }, { status: 400 });
+      if (!reason) return NextResponse.json({ error: 'Say why the dependency is removed.' }, { status: 400 });
+      const current = (task.dependsOn as string[] | null) ?? [];
+      if (!current.includes(dependencyId)) {
+        return NextResponse.json({ error: 'That task is not a dependency of this one.' }, { status: 404 });
+      }
+      const ctx = (task.context ?? {}) as Record<string, unknown>;
+      const prior = Array.isArray(ctx.dependencyRemovals) ? ctx.dependencyRemovals : [];
+      const record = { dependencyId, reason, userId: person, at: new Date().toISOString() };
+      const next = current.filter(d => d !== dependencyId);
+      const [updated] = await db.update(tasks)
+        .set({ dependsOn: next, context: { ...ctx, dependencyRemovals: [...prior, record].slice(-20) }, updatedAt: new Date() })
+        .where(eq(tasks.id, id))
+        .returning();
+      if (updated?.status === 'pending') await wakeIfDependenciesSatisfied(updated).catch(() => {});
+      noteWorkChanged({ missionIds: [task.missionId] });
+      await emitTaskUpdated({ id, workspaceId: task.workspaceId, missionId: task.missionId ?? null, status: task.status });
+      return NextResponse.json({ id, dependsOn: next, removed: record });
+    }
+
     // pause: true pauses the agent working on this task instead of cancelling
     // it (lib/worker-pause.ts): the session is kept and Resume continues it.
     // It is its own request, never mixed with other edits.
@@ -554,25 +589,23 @@ export async function PATCH(
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
       }
-      // Same rule as POST /api/tasks: every dependency is a task in THIS task's
-      // workspace, and never the task itself. An edge into another workspace
-      // would gate the claim on a row the caller may not be able to see.
+      // Same rule as POST /api/tasks (spec e28018c2): a dependency is a task
+      // of this task's team the caller sees, and never the task itself. Only
+      // the ids being added are checked (R-4): one already on the task is kept
+      // as is, so a caller who cannot see it can still edit or remove it.
       if (dependsOn.includes(task.id)) {
         return NextResponse.json({ error: 'A task cannot depend on itself' }, { status: 400 });
       }
-      if (dependsOn.length > 0) {
-        const found = await db.query.tasks.findMany({
-          where: sqlWhere(and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, task.workspaceId))),
-          columns: { id: true },
-        });
-        const foundIds = new Set(found.map(t => t.id));
-        const missing = dependsOn.filter((id: string) => !foundIds.has(id));
-        if (missing.length > 0) {
-          return NextResponse.json(
-            { error: `dependsOn references unknown tasks in this workspace: ${missing.join(', ')}` },
-            { status: 400 },
-          );
-        }
+      const existingDeps = new Set((task.dependsOn as string[] | null) ?? []);
+      const added = [...new Set(dependsOn as string[])].filter(d => !existingDeps.has(d));
+      if (added.length > 0) {
+        const teamId = task.workspace?.teamId ?? null;
+        const viewer = dependencyViewerOf(user, apiAccount);
+        const reach = await checkDependencyReach({ viewer, teamId, ids: added });
+        if (!reach.ok) return NextResponse.json({ error: reach.error }, { status: 400 });
+        // R-16: only a new edge can close a cycle; the walk follows the team's edges.
+        const cycle = await checkDependencyCycle({ viewer, teamId, taskId: task.id, dependsOn: added });
+        if (!cycle.ok) return NextResponse.json({ error: cycle.error }, { status: 400 });
       }
       updateData.dependsOn = dependsOn;
     }

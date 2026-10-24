@@ -3,7 +3,7 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
-import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { releaseCrossWorkspaceDependentsOf, resolveCompletedTask } from '@/lib/task-dependencies';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleSessionlessWorkersOfTask } from '@/lib/sessionless-worker-settle';
@@ -190,8 +190,11 @@ export async function applyTaskDeleteSideEffects(taskId: string): Promise<void> 
   const results = await Promise.allSettled([
     settleSessionlessWorkersOfTask(taskId, 'task_deleted').then(abort),
     releaseAndNotify(taskId, 'abandoned'),
+    // A dependent in another workspace stops waiting on a row that is about
+    // to vanish (spec e28018c2 R-14).
+    releaseCrossWorkspaceDependentsOf(taskId),
   ]);
-  const labels = ['settle and abort', 'path-claim release'];
+  const labels = ['settle and abort', 'path-claim release', 'cross-workspace dependents'];
   results.forEach((r, i) => {
     if (r.status === 'rejected') console.error(`[task-delete] ${labels[i]} failed for ${taskId}:`, r.reason);
   });

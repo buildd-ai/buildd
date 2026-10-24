@@ -72,6 +72,9 @@ export function summarizeDeferralRows(
   const byTask = new Map<string, MissionDeferral>();
   for (const row of rows) {
     if (!row.taskId) continue;
+    // A dependency wait is recorded every poll so its length is measurable,
+    // but it is the dependency's pace, not the claim loop refusing the task.
+    if (row.reason === 'deps_blocked') continue;
     const detail = (row.detail ?? null) as Record<string, unknown> | null;
     const consecutiveDeferrals = typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : 1;
     const firstDeferredAt = typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null;

@@ -145,12 +145,23 @@ describe('SpecPage', () => {
   });
 
   it('names the design the revision is built to, and says when it changed since approval', () => {
-    const design = { label: 'Cart prototype', href: '/app/artifacts/a1', version: '3', screens: ['Empty cart'], changedSince: null };
+    const design = {
+      label: 'Cart prototype', href: '/app/artifacts/a1', version: '3', changedSince: null,
+      screens: [
+        { name: 'Empty cart', href: '/app/artifacts/a1?screen=cart-empty&revision=3' },
+        { name: 'Checkout', href: null },
+      ],
+    };
     act(() => root.render(<SpecPage view={{ ...base, design }} />));
     const d = q('spec-page-design')!;
     expect(d.textContent).toContain('Built to the design Cart prototype, version 3.');
     expect(d.querySelector('a')!.getAttribute('href')).toBe('/app/artifacts/a1');
-    expect(d.textContent).toContain('Screens: Empty cart');
+    expect(d.textContent).toContain('Screens: Empty cart, Checkout');
+    // A screen name opens that screen in the design preview, at the pinned revision.
+    const screenLinks = Array.from(q('spec-page-design-screens')!.querySelectorAll('a'));
+    expect(screenLinks.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['Empty cart', '/app/artifacts/a1?screen=cart-empty&revision=3'],
+    ]);
     expect(q('spec-page-design-changed')).toBeNull();
     act(() => root.render(<SpecPage view={{ ...base, design: { ...design, changedSince: { pinned: '3', current: '5' } } }} />));
     expect(q('spec-page-design-changed')!.textContent).toBe('The design changed since approval: it is at version 5, and revision 1 was approved with version 3.');

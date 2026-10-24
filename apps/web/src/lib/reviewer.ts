@@ -33,6 +33,9 @@ import {
 } from './workspace-policy';
 import { inheritPhaseFromParent } from './mission-phase';
 import { DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
+import { renderDesignGuidance, screenNamedCriteria, type DesignScreenCriterion, type PinnedDesignRef } from './reviewer-design';
+// Re-exported so the worker route reaches the design gate through this module, which it already imports.
+export { applyDesignGate, parseDesignChecks } from './reviewer-design';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
@@ -49,6 +52,13 @@ import {
   renderMissionCriteriaGuidance,
   type ReviewerCriterionRef,
 } from './criteria-reviewer-findings';
+import {
+  REMEDY_CLASSES,
+  REVIEWER_REMEDY_DOCTRINE,
+  REVIEWER_REMEDY_PROMPT_ID,
+  type RemedyClass,
+  type RemedyEvidence,
+} from './reviewer-remedy';
 import type { CriterionReviewerFinding } from '@buildd/shared';
 import { compareAgainstBase, COMPARE_FILE_LIMIT } from './pr-content-equivalence';
 import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
@@ -123,7 +133,7 @@ export interface ReviewerTaskOutput {
    * prompt listed as still open. They survive every push and completion until
    * a later round lists them in `resolvedFindings`.
    */
-  findings?: Array<{ id?: string; path?: string; line?: number; title: string; required?: boolean }>;
+  findings?: Array<{ id?: string; path?: string; line?: number; title: string; required?: boolean; remedyClass?: RemedyClass; remedyEvidence?: RemedyEvidence }>;
   /** The ids of the listed open findings this review verified as fixed at this head. */
   resolvedFindings?: string[];
   /** Listed open findings handed to another task, with why (`taskId` when one exists). */
@@ -134,6 +144,12 @@ export interface ReviewerTaskOutput {
    * head it was asked about (or with none reported) is inconclusive and never approves.
    */
   checkoutSha?: string;
+  /**
+   * One entry per screen a criterion names (lib/reviewer-design.ts): the route
+   * compared, the shots of it at the head, and whether it matches. An approve
+   * on a task whose criteria name screens needs them.
+   */
+  designChecks?: Array<{ criterionId: string; screen: string; route: string; shotIds: string[]; matches: boolean; fixtureReason?: string }>;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -200,6 +216,22 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
           line: { type: 'number' },
           title: { type: 'string' },
           required: { type: 'boolean' },
+          remedyClass: {
+            type: 'string',
+            enum: [...REMEDY_CLASSES],
+            description: 'Required on every finding of an escalation. capability_gap and operational_run also need remedyEvidence.',
+          },
+          remedyEvidence: {
+            type: 'object',
+            required: ['resolveCapabilityResult', 'contradictsPinnedCriterion', 'existingCapabilityCovers'],
+            properties: {
+              resolveCapabilityResult: { type: 'string' },
+              contradictsPinnedCriterion: { type: 'boolean' },
+              existingCapabilityCovers: { type: 'boolean' },
+              capability: { type: 'string' },
+            },
+            additionalProperties: false,
+          },
         },
         additionalProperties: false,
       },
@@ -223,6 +255,24 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
       type: 'string',
       description:
         'The full commit SHA `git rev-parse HEAD` prints in your worktree after you checked out the head you were asked to review. A verdict read at any other commit is discarded.',
+    },
+    designChecks: {
+      type: 'array',
+      description:
+        'ONLY when the prompt has a "Design screens to judge" section: one entry per criterion and screen you compared with the build on the REAL route at the head. shotIds are screenshot artifact ids of that route (the builder\'s or your own capture). A dev fixture route needs fixtureReason (the state the real route cannot reach).',
+      items: {
+        type: 'object',
+        required: ['criterionId', 'screen', 'route', 'shotIds', 'matches'],
+        properties: {
+          criterionId: { type: 'string' },
+          screen: { type: 'string' },
+          route: { type: 'string' },
+          shotIds: { type: 'array', items: { type: 'string' } },
+          matches: { type: 'boolean' },
+          fixtureReason: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
     },
     copyFindings: {
       type: 'array',
@@ -479,6 +529,23 @@ export function enforceServerSideEscalation(params: {
   return { verdict: 'approve', overrideReason: null };
 }
 
+/**
+ * The files a composition delta review's verdict is judged on (release-flow.md
+ * AC-25 to AC-27): the novel paths buildd computed when it dispatched the
+ * review (`context.compositionDelta`, written only by `createReviewerTask`),
+ * never the whole PR, whose other changes were each approved on their own PR.
+ * The PR's own entry is kept where it was read (status, patch); a delta path
+ * past GitHub's file-list cap still counts, by name. Any other review keeps the
+ * PR's file list as read, null (unreadable) included.
+ */
+export function scopeToCompositionDelta<T extends { filename: string }>(prFiles: T[] | null, reviewerContext: unknown): Array<T | { filename: string }> | null {
+  const delta = (reviewerContext as { compositionDelta?: { novelDeltaPaths?: unknown } } | null)?.compositionDelta;
+  const paths = Array.isArray(delta?.novelDeltaPaths) ? delta.novelDeltaPaths.filter((p): p is string => typeof p === 'string') : null;
+  if (!paths) return prFiles;
+  const read = new Map((prFiles ?? []).map((f) => [f.filename, f]));
+  return paths.map((p) => read.get(p) ?? { filename: p });
+}
+
 // ── Reviewer task creation ────────────────────────────────────────────────────
 
 export interface CreateReviewerTaskParams {
@@ -562,7 +629,7 @@ export interface CreateReviewerTaskParams {
    * change in it was already reviewed at its own head and mechanically
    * attested, so this review covers ONLY these novel paths.
    */
-  compositionScope?: { novelDeltaPaths: string[] };
+  compositionScope?: CompositionScope;
   /**
    * Set by the kernel: the delivery's findings still open (§5), and, for a
    * verification round, the ones this round exists to verify.
@@ -596,6 +663,8 @@ export function findingsSection(brief: FindingsBrief | null | undefined): string
     'issue you can find in this one review, so the fix is one round, not one issue per round; an approval is a claim that',
     'you looked for these and found none. A new issue you find later in code you already approved is still a finding:',
     'say that it is new, and that the earlier approval was wrong about it.',
+    '',
+    resolvePrompt(REVIEWER_REMEDY_PROMPT_ID, REVIEWER_REMEDY_DOCTRINE),
   ];
   const open = brief?.open ?? [];
   if (open.length) {
@@ -613,19 +682,34 @@ export function findingsSection(brief: FindingsBrief | null | undefined): string
   return lines.join('\n');
 }
 
+export interface CompositionScope {
+  novelDeltaPaths: string[];
+  /** A release candidate's delta (release-flow.md AC-26): the commits no earlier review covered. */
+  novelCommits?: Array<{ sha: string; reason: string; paths: string[] }>;
+}
+
 /** The prompt section that scopes a composition delta review to its novel paths. */
-export function compositionScopeSection(scope: { novelDeltaPaths: string[] }): string {
+export function compositionScopeSection(scope: CompositionScope): string {
+  const commits = scope.novelCommits ?? [];
   return [
     '',
     '## Composition verified: review only the novel delta',
     '',
     'This PR is composed of changes that were each already reviewed and approved at their own head;',
     'buildd checked that mechanically (composition attestation). Those changes are NOT yours to re-review,',
-    'and the release-PR escalation rule does not apply to them. Review ONLY these paths, which no prior',
+    'and the release-PR escalation rule does not apply to them. Neither does the size of the whole PR, nor a',
+    'workspace path class that only those reviewed changes touch. Review ONLY these paths, which no prior',
     'review covers, under the normal policy (escalate or request changes on them exactly as you would on any PR):',
     '',
     ...scope.novelDeltaPaths.map((p) => `- \`${p}\``),
     '',
+    ...(commits.length ? [
+      'They come from these commits, each with no reviewed PR behind it. Read each one on its own',
+      '(`git show <sha>`), not the whole PR diff:',
+      '',
+      ...commits.map((c) => `- \`${c.sha}\` (${c.reason.replace(/_/g, ' ')}): ${c.paths.map((p) => `\`${p}\``).join(', ')}`),
+      '',
+    ] : []),
     'If this PR merges its base branch in (a mission branch refresh), these are the paths the merge decided:',
     'check that each one keeps both sides\' changes, and that nothing either side added was dropped.',
     '',
@@ -939,7 +1023,12 @@ export async function createReviewerTask(
         // that index.
         ...(missionCriteria.length > 0 ? { [REVIEWER_CRITERIA_CONTEXT_KEY]: missionCriteria } : {}),
         ...(params.workflowRound ? { workflowRoundId: params.workflowRound.roundId } : {}),
-        ...(params.compositionScope ? { compositionDelta: { novelDeltaPaths: params.compositionScope.novelDeltaPaths } } : {}),
+        ...(params.compositionScope ? {
+          compositionDelta: {
+            novelDeltaPaths: params.compositionScope.novelDeltaPaths,
+            ...(params.compositionScope.novelCommits ? { commits: params.compositionScope.novelCommits.map((c) => c.sha) } : {}),
+          },
+        } : {}),
         ...(policySuggestions.length > 0 ? { policySuggestions } : {}),
       },
       ...(params.workflowRound ? { deliveryId: params.workflowRound.deliveryId, deliveryRole: 'review' as const } : {}),
@@ -1415,6 +1504,30 @@ export function specVerdictInstruction(taskId: string, criteriaIds: readonly str
   ].join('\n');
 }
 
+/**
+ * The screen-named criteria the reviewed task answers for, and the design they
+ * point at, read from its pinned spec revision. Empty when the task is pinned
+ * to no spec, the revision has no design, or no criterion names a screen.
+ */
+export async function loadDesignRequirement(originalTaskId: string): Promise<{ design: PinnedDesignRef | null; criteria: DesignScreenCriterion[] }> {
+  const none = { design: null, criteria: [] as DesignScreenCriterion[] };
+  const specSource = await loadTaskSpecSource(originalTaskId);
+  if (!specSource?.specId) return none;
+  try {
+    const { readPinnedSpecRevision } = await import('@/lib/specs/pin');
+    const pinned = await readPinnedSpecRevision(specSource as Record<string, unknown>);
+    if (!pinned.ok || !pinned.design) return none;
+    const { specCriteria } = await import('@buildd/spec-contract/requirements');
+    const { inScope } = await import('@buildd/spec-contract/scope');
+    const ids = inScope(specSource as Record<string, unknown>, specCriteria(pinned.body)).map((c) => c.id);
+    const design = pinned.design as PinnedDesignRef;
+    return { design, criteria: screenNamedCriteria({ body: pinned.body, design, inScopeIds: ids }) };
+  } catch (err) {
+    console.warn(`[reviewer] Failed to read the design requirement for task ${originalTaskId}:`, err);
+    return none;
+  }
+}
+
 export async function renderSpecConformanceGuidance(params: {
   specSource: SpecSourceRef | null | undefined;
   installationId: number;
@@ -1430,6 +1543,7 @@ export async function renderSpecConformanceGuidance(params: {
   let specText: string | undefined;
   let unavailable: string | undefined;
   let criteriaIds: string[] = [];
+  let designGuidance = '';
   if (specSource.specId) {
     const { readPinnedSpecRevision } = await import('@/lib/specs/pin');
     const pinned = await readPinnedSpecRevision(specSource as Record<string, unknown>).catch((err: unknown) => {
@@ -1442,6 +1556,8 @@ export async function renderSpecConformanceGuidance(params: {
       const { specCriteria } = await import('@buildd/spec-contract/requirements');
       const { inScope } = await import('@buildd/spec-contract/scope');
       criteriaIds = inScope(specSource as Record<string, unknown>, specCriteria(pinned.body)).map((c) => c.id);
+      const design = pinned.design as PinnedDesignRef | null | undefined;
+      designGuidance = renderDesignGuidance({ design, criteria: screenNamedCriteria({ body: pinned.body, design, inScopeIds: criteriaIds }) });
     } else {
       label = `Living Spec ${specSource.specId}`;
       unavailable = pinned.reason;
@@ -1480,6 +1596,7 @@ export async function renderSpecConformanceGuidance(params: {
       ? `\nThis task builds part of the spec: it answers for ${criteriaIds.join(', ')}. The other criteria are context for what it must not break, not work it owes; do not request changes for them.`
       : '',
     criteriaIds.length > 0 && params.taskId ? specVerdictInstruction(params.taskId, criteriaIds, headSha) : '',
+    designGuidance ? `\n${designGuidance}` : '',
   ].join('\n');
 
   return { doctrine, section };
@@ -2230,5 +2347,6 @@ registerTextPrompt(REVIEWER_MANIFEST_DOCTRINE_PROMPT_IDS.undeclared, UNDECLARED_
 registerTextPrompt(REVIEWER_MANIFEST_DOCTRINE_PROMPT_IDS.concrete, CONCRETE_MANIFEST_DOCTRINE);
 registerTextPrompt(REVIEWER_SECURITY_RULES_PROMPT_ID, SECURITY_ESCALATION_RULES_DEFAULT);
 registerTextPrompt(REVIEWER_SPEC_DOCTRINE_PROMPT_ID, SPEC_DOCTRINE);
+registerTextPrompt(REVIEWER_REMEDY_PROMPT_ID, REVIEWER_REMEDY_DOCTRINE);
 registerTemplatePrompt(REVIEWER_CONTEXT_PROMPT_ID, REVIEWER_CONTEXT_TEMPLATE);
 registerTemplatePrompt(DELTA_REVIEWER_CONTEXT_PROMPT_ID, DELTA_REVIEWER_CONTEXT_TEMPLATE);

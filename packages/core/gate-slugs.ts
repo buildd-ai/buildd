@@ -183,6 +183,13 @@ export const GATE_SLUGS = {
    */
   SURFACE_ORDERING: 'surface_ordering',
   /**
+   * A person skipped a mission's visual review (spec 072de598 I-7, I-19). Always
+   * `bypassed`; `detail.skipReason` is the button (`wrong_or_stuck` / `ship_anyway`,
+   * null for free text), with the person, commit, cause and open findings.
+   * Visual review's reliability is read from these rows.
+   */
+  VISUAL_REVIEW_SKIP: 'visual_review_skip',
+  /**
    * Path declaration outcomes and manifest provenance (§3 denominators):
    * `accepted` = declared/acquired, `deferred` = denied by a live holder,
    * `warned` = degraded (coordination unavailable, edits proceeded). `detail.provenance`
@@ -288,6 +295,15 @@ export const GATE_SLUGS = {
    * re-check. The only gate pruned (180 days).
    */
   INCIDENT_RECOVERY: 'incident_recovery',
+  /**
+   * Serial lanes (Living Spec "Overlap scheduling: serial lanes and file
+   * locks", I-7). `bypassed` = a person released a stuck lane's holder
+   * (POST /api/workspaces/[id]/lanes/release): its open PR stops holding the
+   * lane and position 1 may claim. `detail` names the lane, the released
+   * holder, the person and why. Claim-time lane waits are `claim_loop_deferral`
+   * with reason `path_overlap` and `detail.lane`.
+   */
+  SERIAL_LANE: 'serial_lane',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

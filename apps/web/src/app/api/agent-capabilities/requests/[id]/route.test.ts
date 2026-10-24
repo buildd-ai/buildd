@@ -90,6 +90,16 @@ describe('POST /api/agent-capabilities/requests/[id]', () => {
     expect((await conflict.json()).code).toBe('already_granted');
   });
 
+  it('says closed when nobody can decide the request any more, so a card drops its buttons', async () => {
+    mockDecide.mockResolvedValue({ ok: false, status: 409, code: 'task_terminal', error: 'The task has ended; the request was closed.' });
+    const ended = await (await POST(req({ decision: 'approve' }), ctx)).json();
+    expect(ended).toMatchObject({ code: 'task_terminal', closed: true, error: 'The task has ended; the request was closed.' });
+    mockDecide.mockResolvedValue({ ok: false, status: 409, code: 'already_denied', error: 'This request is already denied.', grant: { id: GRANT_ID, status: 'denied' } });
+    expect((await (await POST(req({ decision: 'approve' }), ctx)).json()).closed).toBe(true);
+    mockDecide.mockResolvedValue({ ok: false, status: 409, code: 'policy_forbidden', error: 'Team capability policy forbids this access. Change the policy first.' });
+    expect((await (await POST(req({ decision: 'approve' }), ctx)).json()).closed).toBe(false);
+  });
+
   it('401 without a session', async () => {
     mockUser.mockResolvedValue(null);
     expect((await POST(req({ decision: 'approve' }), ctx)).status).toBe(401);

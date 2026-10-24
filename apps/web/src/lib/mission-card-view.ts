@@ -22,6 +22,7 @@
  */
 import { openCriteriaChecks, type MissionVisualReviewSummary } from './mission-open-checks';
 import type { ClaimHoldFacts } from './mission-claim-deferrals';
+import type { QueueWait } from '@buildd/shared';
 import { derivePendingTaskHold, holderFacts, type PendingHolderFacts, type PendingTaskHold, type PendingTaskHoldInput } from './mission-task-hold';
 import { isBuildComplete } from './mission-checks';
 import { isMissionAuditTask } from '@buildd/core/surface-audit';
@@ -323,6 +324,8 @@ export const MISSION_CARD_VIEW_CAP = 30;
  */
 export interface MissionCardHoldFacts {
   claimHolds?: ReadonlyMap<string, ClaimHoldFacts> | null;
+  /** Each pending row's one wait from the claim route's own query and gates (lib/queue-wait-load.ts); decides when present. */
+  queueWaits?: ReadonlyMap<string, QueueWait> | null;
   holders?: ReadonlyMap<string, PendingHolderFacts> | null;
   dependencies?: ReadonlyMap<string, DependencyRow> | null;
 }
@@ -341,9 +344,12 @@ function cardRowHoldFacts(
   byId: ReadonlyMap<string, DependencyRow>,
   holders: ReadonlyMap<string, PendingHolderFacts>,
   facts: MissionCardHoldFacts,
-): Pick<PendingTaskHoldInput, 'deferral' | 'dependencies' | 'createdAt' | 'startAt' | 'budgetExhausted'> {
+): Pick<PendingTaskHoldInput, 'deferral' | 'dependencies' | 'createdAt' | 'startAt' | 'budgetExhausted' | 'wait'> & { queueWait?: QueueWait | null } {
   const h = facts.claimHolds?.get(t.id);
+  const w = facts.queueWaits?.get(t.id) ?? null;
   return {
+    wait: w,
+    queueWait: w,
     deferral: h ? { reason: h.reason, firstDeferredAt: h.firstDeferredAt, detail: h.detail } : null,
     dependencies: unmetDependencyIds(t, byId).map(id => holders.get(id)).filter((f): f is PendingHolderFacts => !!f),
     createdAt: t.createdAt ?? null,
@@ -643,7 +649,7 @@ function deriveCardState(
     // (they read as no fact, same as before) and keeps this in step with
     // `deriveMissionIntegrationPr`'s real state rather than re-deriving it.
     missionPr: integrationPr && integrationPr.state !== 'merged'
-      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl, ...(integrationPr.ciRed ? { ciRed: true } : {}) }
       : null,
     unmergedPrs,
     ciRed: deriveCiRedChains(unmergedPrs, tasks),

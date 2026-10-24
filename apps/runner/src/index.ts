@@ -1,3 +1,4 @@
+import { slotsOriginLine, readSlotsMeta } from './runner-slots';
 import { createPeriodicSelfHeal } from './self-heal';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
@@ -27,10 +28,9 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
   reapChild, withTimeout, TRACKED_BRANCH, setRunnerUpdateSnapshotProvider, type RunnerUpdateSnapshot } from './updater';
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
-import { initUpdateDrain, getUpdateDrain } from './update-drain';
+import { initUpdateDrain, getUpdateDrain, planDrain, resumingSnapshot } from './update-drain';
 import { initRunnerHold, currentRunnerHold } from './runner-hold';
-import { installRunnerShutdown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
-import { saveWorker } from './worker-store';
+import { installRunnerShutdown, NO_LAUNCHER_WARNING, restartLauncherKnown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -195,7 +195,7 @@ if (process.argv.includes('--doctor')) {
   // Find the runner the way `buildd top` does: through its socket.
   const { probeRunnerSocket: probe, runnerSocketPath: socketPathFor, runnerProcessFromProbe } = await import('./runner-socket');
   const socketPath = socketPathFor(BUILDD_DIR);
-  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath) });
+  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath, doctor.isRunnerNeverStarted()) });
 
   const RED = '\x1b[31m';
   const GREEN = '\x1b[32m';
@@ -441,6 +441,9 @@ interface SavedConfig {
   serverless?: boolean;
   model?: string;
   maxConcurrent?: number; // Max concurrent workers (default: 3)
+  slotsSetAt?: number; // Epoch ms of the last change of maxConcurrent (runner-slots.ts SlotsMeta)
+  slotsOrigin?: string; // 'dashboard' | 'machine'
+  slotsSetBy?: string | null;
   loginMode?: string; // How this runner's own logins share its slots (runner-logins.ts; default balanced)
   acceptRemoteTasks?: boolean; // Accept task assignments from dashboard (default: true)
   bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
@@ -476,6 +479,9 @@ function loadSavedConfig(): SavedConfig {
         serverless: data.serverless,
         model: data.model,
         maxConcurrent: data.maxConcurrent,
+        slotsSetAt: data.slotsSetAt,
+        slotsOrigin: data.slotsOrigin,
+        slotsSetBy: data.slotsSetBy,
         loginMode: data.loginMode,
         acceptRemoteTasks: data.acceptRemoteTasks,
         bypassPermissions: data.bypassPermissions,
@@ -711,6 +717,11 @@ const config: LocalUIConfig = {
   builddServer: resolveBuilddServer({ env: process.env, saved: savedConfig.builddServer }),
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
+  // Who set it and when, so the heartbeat can say and the later change wins (spec 34a48877 R-21).
+  slotsChangedAt: savedConfig.maxConcurrent && typeof savedConfig.slotsSetAt === 'number' ? savedConfig.slotsSetAt : undefined,
+  slotsOrigin: savedConfig.slotsOrigin === 'dashboard' ? 'dashboard' : savedConfig.slotsSetAt ? 'machine' : undefined,
+  slotsSetBy: savedConfig.slotsSetBy ?? null,
+  slotsConfigFile: CONFIG_FILE,
   // How this runner's own logins share its slots (spec 34a48877 R-14).
   loginMode: parseLoginMode(savedConfig.loginMode) ?? DEFAULT_LOGIN_MODE,
   model: process.env.MODEL || savedConfig.model || bundledTierEntry('standard').model,
@@ -780,6 +791,17 @@ const runnerHold = ONCE_TASK_ID === null ? initRunnerHold({ configFile: CONFIG_F
 if (runnerHold?.isHeld()) {
   const h = runnerHold.current()!;
   console.log(`[runner-hold] Started on hold since ${h.since}${h.until ? `, until ${h.until}` : ''}: nothing new starts until buildd resume`);
+}
+
+// The self-update drain (update-drain.ts), set up BEFORE any WorkerManager for
+// the same reason as the hold above: the constructor's startup claim poll
+// consults it. A fresh start claims nothing until the first version answer
+// says whether an update waits (setLatestCommit), or for the boot hold's bound,
+// so it never starts work on the old build only to pause it a minute later.
+const updateDrain = initUpdateDrain();
+if (config.apiKey && ONCE_TASK_ID === null && !isAutoUpdateDisabled()) {
+  updateDrain.holdForBoot(Date.now());
+  if (!restartLauncherKnown()) console.warn(`[update] ${NO_LAUNCHER_WARNING}`);
 }
 
 // Initialize clients (null if no API key - will show setup UI)
@@ -876,6 +898,14 @@ initCurrentCommit().then(() => {
   updateState.currentCommit = getCurrentCommit();
 });
 
+/** What the heartbeat says about an update in progress (spec 47c97f48, R-5), or null. */
+function updateDrainReport() {
+  const paused = workerManager?.pausedForUpdate() ?? [];
+  const drain = getUpdateDrain();
+  const open = drain?.snapshot({ targetVersion: updateState.latestCommit?.slice(0, 7) ?? null, paused });
+  return open ?? resumingSnapshot(paused, Date.now(), `v${PKG_VERSION}`);
+}
+
 // Registered once so workers.ts can read a live snapshot on every heartbeat
 // tick without a circular import — see setRunnerUpdateSnapshotProvider's doc.
 setRunnerUpdateSnapshotProvider((): RunnerUpdateSnapshot => {
@@ -886,7 +916,9 @@ setRunnerUpdateSnapshotProvider((): RunnerUpdateSnapshot => {
     commitDrift: hasCommitDrift(diskCommit, updateState.currentCommit),
     updating: updateState.updating,
     updateAvailable: updateState.updateAvailable,
-    updateDrain: getUpdateDrain()?.snapshot() ?? null,
+    // R-5: "updating", with the target and the agents paused for it, while a
+    // drain is open, while it applies, and after the restart until they continue.
+    updateDrain: updateDrainReport(),
     trackedBranch: TRACKED_BRANCH,
   };
 });
@@ -932,8 +964,10 @@ updateCanary.setTripHandler((trip) => {
         null,
       );
     },
+    // Running agents only: one paused for an update (R-8) waits for this very
+    // rollback, and a parked one survives the restart as it is.
     waitForIdle: async () => {
-      while (getActiveWorkerCount() > 0) {
+      while (getDrainBlockingWorkers().length > 0) {
         await new Promise((r) => setTimeout(r, 5_000));
       }
     },
@@ -1020,6 +1054,18 @@ async function getTrackedBranchHead(): Promise<string | null> {
 }
 
 async function setLatestCommit(sha: string) {
+  try {
+    await adoptLatestCommit(sha);
+  } finally {
+    // The version is known now: decide the update first (the drain's tick
+    // runs before its first await, so an update found here halts claims
+    // synchronously), then lift the boot hold.
+    void updateTick();
+    updateDrain.releaseBootHold(updateState.updateAvailable ? 'an update is waiting' : 'version known, no update waiting');
+  }
+}
+
+async function adoptLatestCommit(sha: string) {
   if (updateState.latestCommit === sha) return;
   updateState.latestCommit = sha;
   if (updateCanary.isSkipped(sha)) {
@@ -1314,8 +1360,9 @@ async function runHealthProbeInner(): Promise<{ ok: boolean; detail: string }> {
 // restart-resume.ts), so the start that follows continues each in its own
 // session instead of failing it as "Process restarted". Bounded by
 // SHUTDOWN_DEADLINE_MS, inside the failsafe.
-function scheduleGracefulRestart(reason: string) {
+function scheduleGracefulRestart(reason: string, opts: { pauseCause?: 'shutdown' | 'update' } = {}) {
   console.log(`[restart] scheduling graceful restart (${reason})`);
+  if (!restartLauncherKnown()) console.warn(`[restart] ${NO_LAUNCHER_WARNING}`);
   setUpdating(true);
   // So the start that follows knows it is a restart and does not open a browser.
   writeRestartMarker(BUILDD_DIR);
@@ -1326,7 +1373,7 @@ function scheduleGracefulRestart(reason: string) {
   }, failsafeMs);
   try {
     const pausing: Promise<unknown> = Promise.race([
-      (workerManager?.pauseAllForShutdown() ?? Promise.resolve()).catch((err) => {
+      (workerManager?.pauseAllForShutdown({ cause: opts.pauseCause }) ?? Promise.resolve()).catch((err) => {
         console.error(`[restart] pausing agents failed (${reason}): ${err?.message ?? err} — restarting anyway`);
       }),
       new Promise(r => setTimeout(r, SHUTDOWN_DEADLINE_MS)),
@@ -1631,6 +1678,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         ...routeStatus,
         model: config.model,
         maxConcurrent: config.maxConcurrent,
+        // Where N came from and when (spec 34a48877 R-22); top's header says it.
+        slotsNote: slotsOriginLine(readSlotsMeta(CONFIG_FILE)),
         // How this runner's own logins share its slots (spec 34a48877 R-14); top's header says it (c7410e76 R-60).
         loginMode: config.loginMode,
         // What confines each backend here and where its tasks go (isolationVerdict); top's header says it.
@@ -2195,6 +2244,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         slots: config.maxConcurrent,
         running: liveAgentCount(),
         source: slotsSource(loadSavedConfig(), process.env),
+        // Where N came from and when (spec 34a48877 R-22): "set on buildd.dev by Max, 14:02".
+        origin: slotsOriginLine(readSlotsMeta(CONFIG_FILE)),
         paused: workerManager?.slotPauses.size ?? 0,
       }, { headers: corsHeaders });
     }
@@ -2205,9 +2256,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       const client = buildd;
       const result = await applySlots(body, {
         setSlots: (n) => {
-          saveConfig({ maxConcurrent: n });
-          if (wm) wm.setSlots(n);
-          else config.maxConcurrent = n;
+          // A change on this machine: the later change wins over one from buildd.dev (R-21).
+          const meta = { changedAt: Date.now(), origin: 'machine' as const, setBy: null };
+          saveConfig({ maxConcurrent: n, slotsSetAt: meta.changedAt, slotsOrigin: meta.origin, slotsSetBy: null });
+          if (wm) wm.setSlots(n, meta);
+          else { config.maxConcurrent = n; config.slotsChangedAt = meta.changedAt; config.slotsOrigin = meta.origin; config.slotsSetBy = null; }
         },
         agents: () => (wm?.getWorkers() ?? []).map((w: LocalWorker) => ({ id: w.id, title: w.taskTitle || w.id, status: w.status, startedAt: w.startedAt ?? 0 })),
         // The same server path as p and x in top, so the dashboard sees the same thing.
@@ -2221,6 +2274,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       });
       // Without a worker manager nothing else says it; with one, setSlots did.
       if (result.status === 200 && !wm) broadcast({ type: 'slots', maxConcurrent: config.maxConcurrent });
+      if (result.status === 200) result.body.origin = slotsOriginLine(readSlotsMeta(CONFIG_FILE));
       return Response.json(result.body, { status: result.status, headers: corsHeaders });
     }
 
@@ -3298,7 +3352,7 @@ function markBrowserOpened() {
 // drain window expires, whichever comes first.
 // =============================================================================
 
-const updateDrain = initUpdateDrain();
+// `updateDrain` is created near the top, before any WorkerManager (boot hold).
 
 function getActiveWorkerCount(): number {
   if (!workerManager) return 0;
@@ -3323,7 +3377,68 @@ if (isAutoUpdateDisabled()) {
   );
 }
 
-setInterval(async () => {
+/**
+ * R-2: the window just opened. Each running agent whose task estimate says it
+ * finishes inside the window may finish; every other one (and one with no
+ * estimate, or when the estimates cannot be read) is paused now, at its next
+ * safe point.
+ */
+async function planUpdateDrain(running: LocalWorker[]): Promise<void> {
+  const wm = workerManager;
+  if (!wm || running.length === 0) return;
+  let estimates: Record<string, number | null> = {};
+  try {
+    estimates = await withTimeout(buildd?.getWorkerEstimates(running.map(w => w.id)) ?? Promise.resolve({}), 10_000, {});
+  } catch (err: any) {
+    console.warn(`[update-drain] task estimates unavailable (${err?.message ?? err}): pausing every running agent`);
+  }
+  const now = Date.now();
+  const plan = planDrain(
+    running.map(w => ({ workerId: w.id, startedAt: w.startedAt ?? null, estimateMinutes: estimates[w.id] ?? null })),
+    now,
+    updateDrain.config.windowMs,
+  );
+  for (const id of plan.finish) console.log(`[update-drain] ${id} finishes before the update (${plan.why[id]})`);
+  for (const id of plan.pause) console.log(`[update-drain] pausing ${id} for the update (${plan.why[id]})`);
+  await wm.pauseForUpdate(plan.pause);
+  wm.sendHeartbeatNow().catch(() => {});
+}
+
+/**
+ * R-3, R-4: right before the update applies. Pauses anything still running
+ * (within the stop grace, a checkpoint commit for one mid-tool), then commits
+ * and pushes every paused agent's branch. Bounded: the pushes run in parallel,
+ * each within its own budget.
+ */
+async function prepareAgentsForUpdate(reason: string): Promise<void> {
+  const wm = workerManager;
+  if (!wm) return;
+  for (const w of getDrainBlockingWorkers()) {
+    console.warn(`[update-drain] pausing in-flight worker ${w.id} for the update (${reason}; task ${w.taskId}: ${w.taskTitle})`);
+  }
+  try {
+    await wm.prepareForUpdate();
+  } catch (err: any) {
+    console.error(`[update-drain] preparing agents for the update failed: ${err?.message ?? err} (the stop pause still runs before the restart)`);
+  }
+  // The server hears "updating" with the paused agents before the process goes.
+  await withTimeout(wm.sendHeartbeatNow(), 5_000, undefined).catch(() => {});
+}
+
+let updateTickRunning = false;
+
+/** One self-update tick (drift check, then the drain). Every 60s, every 10s while draining, and when the version arrives. */
+async function updateTick(): Promise<void> {
+  if (updateTickRunning) return;
+  updateTickRunning = true;
+  try {
+    await updateTickBody();
+  } finally {
+    updateTickRunning = false;
+  }
+}
+
+async function updateTickBody(): Promise<void> {
   const activeCount = getActiveWorkerCount();
   updateCanary.tick();
 
@@ -3398,16 +3513,11 @@ setInterval(async () => {
     busy: drainBlocking.length,
     now,
   });
+  if (decision.action === 'wait' && decision.started) {
+    await planUpdateDrain(drainBlocking);
+    return;
+  }
   if (decision.action === 'apply') {
-    if (decision.reason === 'timeout') {
-      // scheduleGracefulRestart pauses these first (R-37); persist their latest
-      // state now too, so even a restart the pause cannot finish leaves each on
-      // disk for the next boot to continue (or, with its session gone, retry).
-      for (const w of drainBlocking) {
-        console.warn(`[update-drain] restarting over in-flight worker ${w.id} (task ${w.taskId}: ${w.taskTitle})`);
-        try { saveWorker(w); } catch { /* best effort — the last periodic save still stands */ }
-      }
-    }
     const target = updateState.latestCommit;
     // A new target gets a fresh budget. Previously the counter was only reset
     // on the updateAvailable false -> true edge, which a runner that is already
@@ -3428,6 +3538,9 @@ setInterval(async () => {
     // try/finally — not the watchdog, which only limits the damage of a wedge
     // rather than preventing one.
     let restartScheduled = false;
+    // Set once the agents were paused for this update: an apply that does not
+    // restart continues them here, on the version they paused on.
+    let pausedForThisUpdate = false;
     // applyUpdate already put code and packages back (task c08b35ae): a second
     // rollback would reinstall for nothing.
     let alreadyRolledBack = false;
@@ -3450,6 +3563,11 @@ setInterval(async () => {
         broadcast({ type: 'update_failed', error: `Auto-update refused — ${detail}` });
         return;
       }
+
+      // Nothing is killed by an update: pause what still runs, push every
+      // paused agent's checkpoint, then apply (R-3, R-4).
+      pausedForThisUpdate = true;
+      await prepareAgentsForUpdate(decision.reason);
 
       // Same clean-reinstall the manual endpoints use (fetches again — cheap
       // and idempotent — then resets to origin/$BRANCH and reinstalls).
@@ -3506,7 +3624,7 @@ setInterval(async () => {
       broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
 
       restartScheduled = true;
-      scheduleGracefulRestart('idle auto-update');
+      scheduleGracefulRestart('idle auto-update', { pauseCause: 'update' });
     } catch (err: any) {
       if (prevCommit && !alreadyRolledBack) {
         try {
@@ -3525,10 +3643,18 @@ setInterval(async () => {
       if (!restartScheduled) {
         setUpdating(false);
         updateDrain.applyFailed('see the auto-update log line above');
+        if (pausedForThisUpdate) {
+          void workerManager?.continueRestoredAgents().catch((err) => console.warn('[update-drain] continuing the paused agents failed:', err));
+        }
       }
     }
   }
-}, 60_000); // Check every 60 seconds
+}
+
+setInterval(() => { void updateTick(); }, 60_000); // Check every 60 seconds
+// While a drain is open, notice within seconds that every agent has finished
+// or paused, so the update applies then and not up to a minute later.
+setInterval(() => { if (updateDrain.isDraining()) void updateTick(); }, 10_000);
 
 // Periodic self-heal: run doctor checks every 30 minutes and auto-fix silently
 // Doctor uses synchronous git and filesystem checks. Run it in a child so

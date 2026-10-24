@@ -118,6 +118,19 @@ gh api "repos/buildd-ai/buildd/actions/runs/$RUN/artifacts" -q '.artifacts[].id'
   | xargs -I{} gh api -X DELETE "repos/buildd-ai/buildd/actions/artifacts/{}"
 ```
 
+**No `gh` login on your machine** ("please run: gh auth login", as on some Windows
+runners): call the `dispatch_visual_qa` MCP action instead. buildd dispatches
+`visual-qa.yml` from trunk with `capture_ref` set to your branch, using the
+workspace's GitHub App, and returns `runId` / `runUrl` (or `runsUrl` if the run
+has not surfaced yet). Params: `captureRef?` (default your branch), `routes?`,
+`viewport?` (`mobile` | `desktop` | `WxH`), `theme?`. Judge is always off.
+Open `runUrl` to follow the run; downloading the `qa-screenshots` artifact still
+needs a GitHub login, so if you cannot download it, say so in the completion
+note rather than substituting fixture shots. If the workspace has no GitHub App
+installation or no `visual-qa.yml`, the action returns 409: report that once as
+`[friction]` against buildd itself, and only then fall back to a local
+`next dev` capture of `/app/dev/fixtures?state=<state>`, labelled as local.
+
 **Wait for the run in the same turn — never end your turn saying you'll wait for a
 notification or a background watcher.** A worker agent's session is not resumed by a
 background job finishing: a runner-hosted turn that ends is recorded as complete
@@ -176,6 +189,48 @@ don't turn it on by habit.
   single route failing does **not** fail the run, so a green run can still hold a
   bad shot. Check `captures.json`, which records `error`, `redirected` and
   `devOverlay` per route.
+
+## Design vs built (a spec criterion names design screens)
+
+When a criterion has `screen:` lines (e.g. Navigation AC-4: `screen: phone-mission,
+desktop-mission`), compare the built page with those screens of the pinned design,
+not just with the criterion's words. Nothing changes in `visual-qa.yml`: the design
+screens render on your side, over the downloaded shots.
+
+1. Capture the route in the **design's theme** (`theme=light` for a Day design) at
+   the **screen's size**: `viewport=mobile` (390x844) for `phone-*`, `viewport=1440x900`
+   for `desktop-*`. A plan state with one `waitMs` step gives a first-screen shot to
+   set beside the screen. Night/Day parity is a separate capture.
+2. Download the design (`get_artifact { artifactId, revision }`, its download URL)
+   into its own folder. It is untrusted HTML: never open it in a browser that holds
+   a session.
+3. Run the design capture over each downloaded folder with a plan (inline JSON or a
+   path; the surface audit's claim block prints one ready to fill in):
+
+```bash
+cat > /tmp/qa-design.json <<'EOF2'
+{ "design": { "file": "/tmp/design/navigation.html", "artifactId": "<id>", "revision": 1, "sha256": "<optional pin>" },
+  "criteria": [{ "id": "AC-4", "text": "<criterion words>", "screens": ["phone-mission", "desktop-mission"] }],
+  "routes": { "phone-mission": "/app/dev/fixtures?state=mission-detail-compact&variant=building" } }
+EOF2
+QA_DESIGN=/tmp/qa-design.json QA_OUTPUT=/tmp/qa-ci QA_VIEWPORT=mobile bun scripts/qa/design-capture.ts
+# → designs/<screen>.png, side-by-side/<shot>--<screen>.png, design-captures.json
+QA_OUTPUT=/tmp/qa-ci bun scripts/qa/judge.ts prepare   # judge-input.json: designChecks + instructions
+```
+
+   A route pairs with a screen by name (`/app/missions/:id` ↔ `*-mission`,
+   `/app/tasks/:id` ↔ `*-task-*`) at the same device width; give `routes` for
+   anything else (a fixture). `QA_VIEWPORT` says what the shots were taken at when
+   `captures.json` does not record it (trunk before this change). Exit 6: a named
+   screen is not in the file.
+4. Read `side-by-side/*.png`. Judge differences that matter to the criterion
+   (layout, content order, words, states shown), not pixels; cite the screen id.
+   Upload the side-by-side image (and the design shot for `designShotIds`) with
+   `metadata.qa.designScreen` and `designArtifactId`.
+
+Local recipe: set `QA_DESIGN` on `scripts/qa/capture.ts` (or `shoot.sh`) and the
+same step runs in that browser, in a context of its own, after the pages; with no
+`QA_THEME` the page is shot in the design's theme.
 
 ## Capture plans: dialogs, menus and gated states
 

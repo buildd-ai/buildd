@@ -8,12 +8,15 @@
  * waiting rows group by what they wait on.
  *
  * Reads the board model only (the same rows the bar draws, so the list and
- * the bar never disagree) and the Overview's status words. Pure.
+ * the bar never disagree) and the Overview's status words. Pure. What sets
+ * the finish (R-22) comes in as `finish`, from the Flow timeline's one
+ * computation (`missionFinishClause`), so Flow and the summary agree.
  */
 import { termWord } from '@buildd/shared';
 import { BOARD_LANDED, formatAge, type BoardTask, type MissionBoardModel } from './mission-board';
 import { formatCountdown, isClosedUnshipped, overviewCellState, overviewStatus, overviewWaitCause } from './mission-overview';
 import { stripOrder } from './mission-task-strip';
+import { whenLabel } from './mission-task-hold';
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks'>;
 
@@ -50,7 +53,7 @@ export interface BuildStage {
   /** Build tasks only (checks never count, R-12). */
   total: number;
   merged: { count: number; ids: string[] };
-  /** `11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting`. */
+  /** `11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting`, then `· finish depends on <task>` (R-22). */
   summary: string;
   rows: BuildStageRow[];
   /** Set from WAITING_GROUP_FROM waiting tasks: these replace the waiting rows. */
@@ -61,6 +64,11 @@ export interface BuildStageOptions {
   hrefFor: (id: string) => string;
   /** A clock time for `resumes 05:26`; defaults to UTC HH:MM. */
   clock?: (ts: number) => string;
+  /**
+   * What sets the finish (R-22): `finish depends on <task>, then …`, from
+   * `missionFinishClause`. Ends the summary line while a build task is unmerged.
+   */
+  finish?: string | null;
 }
 
 const YOUR_DECISION = termWord('decision.your_decision');
@@ -147,7 +155,9 @@ export function buildRowLine(model: Model, id: string, state: BuildRowState, now
       const age = formatAge(now - (t.waitStartedAt ?? t.createdAt));
       const wait = overviewWaitCause(model, id);
       // The hold's cause, when the claim gate recorded one that is not another task (R-14).
-      const hold = wait === 'hold' && s.cause ? lower(s.cause) : null;
+      // A start time names when it starts, not that it is scheduled.
+      const startsAt = t.waitingKind === 'start_deferred' && t.startAt != null && t.startAt > now ? t.startAt : null;
+      const hold = startsAt != null ? `starts ${whenLabel(startsAt, now)}` : wait === 'hold' && s.cause ? lower(s.cause) : null;
       return { line: `Queued ${age}${hold ? ` · ${hold}` : ''}`, detail: null, age: null };
     }
     default:
@@ -213,7 +223,9 @@ export function buildStage(model: Model, now: number, opts: BuildStageOptions): 
       return { blockerId: key, blockerTitle: title, ids: members, line: `Waiting on ${title} · ${members.length} ›` };
     });
   }
-  return { total: ids.length, merged: { count: mergedIds.length, ids: mergedIds }, summary: buildSummaryLine(counts), rows, waitingGroups };
+  const summary = buildSummaryLine(counts);
+  const finish = open.length > 0 && opts.finish ? ` · ${opts.finish}` : '';
+  return { total: ids.length, merged: { count: mergedIds.length, ids: mergedIds }, summary: `${summary}${finish}`, rows, waitingGroups };
 }
 
 /** `16 tasks merged ›`: the folded Build stage once every build task landed (R-15). */

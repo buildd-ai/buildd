@@ -174,37 +174,48 @@ describe('RealTimeWorkerView — running', () => {
     ],
   });
 
-  test('renders the Now strip hero with the latest progress, the stat row and the activity', () => {
+  test('one live block: the Now line, the stats, the activity and its milestones', () => {
     const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
-    expect(html).toContain('worker-now-strip');
+    const block = html.indexOf('data-testid="worker-live-block"');
+    expect(block).toBeGreaterThanOrEqual(0);
+    expect(html).toContain('aria-label="Live"');
+    expect(html.indexOf('data-testid="worker-now-strip"')).toBeGreaterThan(block);
     expect(html).toContain('PDF footnote: base amount and the rate used');
-    expect(html).toContain('run-evidence-rail');
-    expect(html).not.toContain('worker-progress-bar');
-    expect(html).not.toContain('worker-now-pct');
     expect(html).toContain('worker-current-action');
     expect(html).toContain('worker-stats');
     expect(html).toContain('4:21');
-    expect(html).toContain('197.6');
     expect(html).toContain('worker-activity-timeline');
     expect(html).toContain('Footnote.tsx');
+    // The track lives under the title as the status line, not in the block.
+    expect(html).not.toContain('run-evidence-rail');
+    expect(html).not.toContain('worker-progress-bar');
+    expect(html).not.toContain('worker-now-pct');
   });
 
-  test('no cost tile, even on an API-key account with a cost', () => {
+  test('the Now line is body text on one line, not a heading', () => {
+    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
+    const headline = html.match(/<p[^>]*data-testid="worker-now-headline"[^>]*>/)?.[0] ?? '';
+    expect(headline).toContain('truncate');
+    expect(headline).toContain('text-body');
+    expect(headline).not.toContain('text-heading');
+    expect(headline).not.toContain('line-clamp-3');
+  });
+
+  test('stats inline: elapsed, turns, files and lines; no tokens, cost or PR tile', () => {
     const html = renderToStaticMarkup(
-      <RealTimeWorkerView initialWorker={{ ...running, costUsd: '0.71', account: { authType: 'api' } } as any} taskId="task-1" nowMs={T0 + 261_000} />,
+      <RealTimeWorkerView initialWorker={{ ...running, costUsd: '0.71', filesChanged: 4, linesAdded: 142, linesRemoved: 27, prUrl: 'https://example.test/pull/7', prNumber: 7 } as any} taskId="task-1" nowMs={T0 + 261_000} />,
     );
+    const stats = html.slice(html.indexOf('data-testid="worker-stats"'));
+    expect(stats).toMatch(/>elapsed</);
+    expect(stats).toMatch(/>turns</);
+    expect(stats).toMatch(/>files</);
+    expect(stats).toMatch(/>lines</);
+    expect(html).toContain('+142');
+    expect(html).toContain('\u2212' + '27');
+    expect(html).not.toContain('worker-stat-tokens');
     expect(html).not.toContain('0.71');
-    expect(html).not.toMatch(/>Cost</i);
-  });
-
-  test('the PR tile replaces files touched once a PR exists and keeps worker-pr-link', () => {
-    const html = renderToStaticMarkup(
-      <RealTimeWorkerView initialWorker={{ ...running, prUrl: 'https://example.test/pull/7', prNumber: 7, prLifecycleStatus: 'ci_running' } as any} taskId="task-1" nowMs={T0 + 261_000} />,
-    );
-    expect(html).toContain('worker-pr-link');
-    expect(html).toContain('#7');
-    expect(html).toContain('CI running');
-    expect(html).not.toContain('worker-stat-files');
+    expect(html).not.toContain('worker-stat-pr');
+    expect(html).not.toMatch(/>Tokens</);
   });
 
   test('no Touched list: the tape is the heartbeat, the log the record', () => {
@@ -213,16 +224,32 @@ describe('RealTimeWorkerView — running', () => {
     expect(html).not.toContain('worker-touched');
   });
 
-  test('top to bottom: Now strip and evidence rail, then results, then the log', () => {
-    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
+  test('top to bottom inside the block: Now, stats, activity, then Steer, Pause and Stop', () => {
+    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} controls={<button>Steer Pause Stop</button>} />);
+    const block = html.indexOf('data-testid="worker-live-block"');
     const now = html.indexOf('data-testid="worker-now-strip"');
-    const rail = html.indexOf('data-testid="run-evidence-rail"');
     const stats = html.indexOf('data-testid="worker-stats"');
     const log = html.indexOf('data-testid="worker-activity-log"');
-    expect(now).toBeGreaterThanOrEqual(0);
-    expect(now).toBeLessThan(rail);
-    expect(rail).toBeLessThan(stats);
+    const controls = html.indexOf('data-testid="worker-live-controls"');
+    const end = html.indexOf('</section>', controls);
+    expect(block).toBeLessThan(now);
+    expect(now).toBeLessThan(stats);
     expect(stats).toBeLessThan(log);
+    expect(log).toBeLessThan(controls);
+    expect(html.indexOf('Steer Pause Stop')).toBeGreaterThan(controls);
+    expect(html.indexOf('Steer Pause Stop')).toBeLessThan(end);
+  });
+
+  test('the latest three milestones show, the rest one tap away', () => {
+    const many = { ...running, milestones: [
+      { type: 'checkpoint', event: 'session_started', label: 'Session started', ts: T0 },
+      ...[1, 2, 3, 4, 5].map(i => ({ type: 'status', label: `Milestone ${i}`, progress: 10 * i, ts: T0 + i * 30_000 })),
+    ] };
+    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={many as any} taskId="task-1" nowMs={T0 + 200_000} />);
+    expect(html.match(/data-testid="worker-log-entry"/g)?.length).toBe(3);
+    expect(html).toContain('Milestone 5');
+    expect(html).not.toContain('>Milestone 2<');
+    expect(html).toMatch(/Show \d+ more/);
   });
 
   test('the log shows durations, not "just now"', () => {
@@ -231,20 +258,6 @@ describe('RealTimeWorkerView — running', () => {
     // Session started → progress milestone: 200s.
     expect(html).toContain('3m');
     expect(html).toContain('running 1m');
-  });
-
-  test('hides the tokens figure when it is 0 after real turns', () => {
-    const html = renderToStaticMarkup(
-      <RealTimeWorkerView initialWorker={{ ...running, inputTokens: 0, outputTokens: 0 } as any} taskId="task-1" nowMs={T0 + 261_000} />,
-    );
-    expect(html).toContain('worker-stats');
-    expect(html).not.toContain('worker-stat-tokens');
-    expect(html).not.toMatch(/>Tokens</);
-  });
-
-  test('shows the tokens figure when it was reported', () => {
-    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
-    expect(html).toContain('worker-stat-tokens');
   });
 
   test('the paused bar drops a 0 tokens figure too', () => {
@@ -257,29 +270,19 @@ describe('RealTimeWorkerView — running', () => {
 
   // U1 audit (task fcaae6e3): a worker that has not started measuring read
   // "0 Elapsed · 0 Turns · 0 Tokens · 0 Lines so far". Unmeasured is not 0.
-  test('a run that has measured nothing shows no zero tiles', () => {
+  test('a run that has measured nothing shows no zero figures and no empty stats', () => {
     const html = render(baseWorker({ status: 'running', turns: 0, prUrl: 'https://example.test/pull/7', prNumber: 7, prLifecycleStatus: 'pr_open' }));
-    expect(html).toContain('worker-pr-link');
-    expect(html).not.toMatch(/>Elapsed</);
-    expect(html).not.toMatch(/>Turns</);
-    expect(html).not.toMatch(/>Tokens</);
-    expect(html).not.toMatch(/>Lines so far</);
-    expect(html).not.toMatch(/>0</);
-  });
-
-  test('no PR and no files touched yet: no files tile, and no empty strip', () => {
-    const html = render(baseWorker({ status: 'running', turns: 0 }));
-    expect(html).not.toContain('worker-stat-files');
     expect(html).not.toContain('data-testid="worker-stats"');
+    expect(html).not.toMatch(/>0</);
   });
 
   test('measured figures still show', () => {
     const html = renderToStaticMarkup(
       <RealTimeWorkerView initialWorker={{ ...running, linesAdded: 12, linesRemoved: 0 } as any} taskId="task-1" nowMs={T0 + 261_000} />,
     );
-    expect(html).toMatch(/>Elapsed</);
-    expect(html).toMatch(/>Turns</);
-    expect(html).toMatch(/>Lines so far</);
+    expect(html).toMatch(/>elapsed</);
+    expect(html).toMatch(/>turns</);
+    expect(html).toMatch(/>lines</);
     expect(html).toContain('+12');
   });
 
@@ -353,4 +356,10 @@ describe('RealTimeWorkerView — kernel DeliveryView owner of the next move', ()
     expect(renderWith({ headline: 'Needs a decision', owner: 'human', needsYou: true, detail: null })).toContain('worker-needs-input-banner');
     expect(renderWith(null)).toContain('worker-needs-input-banner');
   });
+});
+
+test('steering controls sit in the live block, after the stats and the activity', () => {
+  const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={baseWorker({ status: 'running', turns: 4 }) as never} taskId="task-1" controls={<button>Steer Pause Stop</button>} />);
+  expect(html).toContain('Steer Pause Stop');
+  expect(html.indexOf('Steer Pause Stop')).toBeGreaterThan(html.indexOf('>turns<'));
 });

@@ -2,13 +2,13 @@
 title: Workflow Kernel Library and Single Host
 status: draft
 owner: max
-last_verified: 2026-10-18
+last_verified: 2026-10-23
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
 surfaces: [apps/web/src/lib/override-permission.ts, apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [apps/web/tests/db/epoch-effects.test.ts, apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
+verified_by: [apps/web/src/lib/workflow/trunk-recheck.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/workflow-probe-killswitch.test.ts, apps/web/tests/db/epoch-effects.test.ts, apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -568,6 +568,41 @@ the control plane, authenticated as the caller).
   review with no reviewer task id yet. Review callbacks travel with the round
   and are installed when the dispatch effect files the reviewer. A floor replay
   without a request lifetime schedules the effect timer instead.
+- Trunk recovery (T26) does not wait for the hourly floor. Every unresolved
+  trunk incident is on a recheck queue (`apps/web/src/lib/workflow/trunk-recheck.ts`,
+  a Redis sorted set `buildd:due:trunk-incidents`, like the effect timer's), due
+  at most `TRUNK_RECHECK_FALLBACK_MS` (5 minutes) after it was opened, joined or
+  last rechecked. A completed check suite on a branch that has unresolved
+  incidents makes them due now (the GitHub webhook, on whichever host received
+  it; it only marks the queue, earliest wins). The control plane's per-minute
+  tick (`runScheduledEffectTick`), after the due effects, rechecks at most
+  `TRUNK_RECHECK_BATCH` (10) due incidents (seam `recheckTrunkIncidents`) and
+  recovers the deliveries blocked on those that resolved. The latency target:
+  the next minute's tick after the suite that makes the base readable as
+  recovered, so ordinarily within 2 minutes of that evidence; a lost event costs
+  at most one fallback period. Only the host that drains effects rechecks (own
+  mode: the control plane; in shadow nothing runs per minute and the floor
+  alone recovers). An idle tick reads Redis only: no Postgres and no GitHub
+  read while nothing is due. The hourly floor still sweeps every incident and
+  puts each one it leaves unresolved back on the queue, so a lost queue costs at
+  most one floor period. The tick clears a member before it reads the base and
+  re-queues it earliest-wins after, so a suite completing during the read keeps
+  the incident due now.
+- A recheck applies the floor's own reading (`trunkRecoveredOnRuns`) to the
+  base branch's current head: recovered only when none of the incident's
+  entries fails there and the incident's checks have finished there. Unknown
+  (an unreadable head or runs) is never recovered, and an older green commit
+  never stands in for a newer head that fails or is still running the
+  incident's checks. Unrelated checks still running do not hold it.
+- Recovery is idempotent under concurrent and replayed triggers: resolving is
+  one conditional update, T26 applies only to a delivery still
+  `BLOCKED_ON_TRUNK` on that incident (`trunkok:{incident}:{delivery}`), and
+  its mechanical refresh is an effect under its own dedupe key, so an event,
+  the per-minute recheck and the floor racing apply one recovery and one
+  refresh. Each delivery's authority is resolved first (the kill switch
+  releases it), and T26's resume rules are unchanged: a head no approval
+  covers resumes `AWAITING_REVIEW`, and a refreshed head needs its own review
+  and CI before it lands.
 - A sweep's time on the control plane is bounded. `/api/cron/pr-reconcile`
   runs each pass (merge-state, landing, red-PR) inside one control-plane
   budget, `withControlPlaneBudget` (kernel-client.ts), of 30 s for all of its
@@ -677,6 +712,30 @@ the web host.
   later THEN it takes the claim over and runs, while a live command's renewed
   claim is never taken over (`command-api.test.ts`,
   `kernel-command-host.test.ts`).
+- AC-83: GIVEN a delivery BLOCKED_ON_TRUNK and its base turning green between
+  hourly floors WHEN a check suite completes on the base THEN the incident is
+  due at once and the next per-minute tick on the control plane resolves it and
+  re-enters the delivery's resume state, without waiting for the floor
+  (`trunk-recheck.test.ts`, `kernel-floor.test.ts`,
+  `apps/web/tests/db/workflow-matrix.test.ts` S24 (prompt)).
+- AC-84 (failure): GIVEN the suite's webhook lost WHEN the fallback period
+  passes THEN the tick rechecks the incident anyway; GIVEN the queue lost WHEN
+  the hourly floor runs THEN it recovers the incident and re-queues each one it
+  leaves unresolved (`trunk-recheck.test.ts`).
+- AC-85: GIVEN an event, the per-minute recheck and the floor racing on one
+  recovered base WHEN they all run THEN each blocked delivery gets one
+  TrunkRecovered transition, one `refresh_branch` effect and one review round,
+  and a replay changes nothing (`workflow-matrix.test.ts` S24 (prompt)).
+- AC-86 (failure): GIVEN the base head unreadable, the incident's own check
+  still running there, or a newer base head failing the incident's check after
+  an earlier green one WHEN the incident is rechecked THEN it stays unresolved
+  and the delivery stays BLOCKED_ON_TRUNK; GIVEN only unrelated checks still
+  running THEN it recovers (`workflow-matrix.test.ts` S24 (prompt)).
+- AC-87: GIVEN shadow mode, no command key, or the web host WHEN the minute
+  tick fires THEN no recheck runs and the queue is left for the owning host;
+  GIVEN the workspace's kill switch off WHEN its incident is rechecked THEN no
+  TrunkRecovered and no branch refresh (`kernel-floor.test.ts`,
+  `apps/web/tests/db/workflow-probe-killswitch.test.ts`).
 - AC-74 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
   unreachable for a door's whole budget WHEN an attempt end, a reviewer's
   verdict or a CI green is submitted THEN it is parked under its idempotency key, and once the control

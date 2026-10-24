@@ -279,7 +279,7 @@ describe('a provider limit, said once in the header (R-25, AC-11)', () => {
       outcome: { at: NOW - 5_000, reason: 'budget_exhausted', walls: [{ kind: 'runner_seat', backend: 'claude', resetsAt: new Date(resetMs).toISOString() }] },
     });
     const t = text(frame(own, 120, 24)).split('\n');
-    expect(t[2]).toContain(`This machine's Claude login waits for its limit: resumes ${localLiftTime(new Date(resetMs).toISOString(), NOW)} (in 9h) · other runners can take Claude work`);
+    expect(t[2]).toContain(`This runner's Claude login is at its limit until ${localLiftTime(new Date(resetMs).toISOString(), NOW)} (in 9h) · other runners can take Claude work`);
     expect(text(frame(own, 120, 24))).not.toContain('rate limit');
   });
 

@@ -13,14 +13,17 @@
  *   wait, and lasts its expected size (or a constant).
  * - Gates are the stored dependencies plus the same-files edges Buildd adds
  *   (`pathDeclaration.softOverlaps`).
- * - The critical path is the longest path through the gates: from the task
- *   that finishes last, back through whichever gate finishes last.
+ * - The critical path is the longest path through the declared dependencies
+ *   (not the same-files waits): from the task that finishes last, back
+ *   through whichever gate finishes last. Flow's sentence and the Build
+ *   summary's `finish depends on` clause both read it.
  * - Everything horizontal is a percentage of the window and everything
  *   vertical is a row index, so nothing here knows how wide the screen is.
  */
 import { readSoftOverlaps } from '@buildd/core/path-overlap';
 import { BOARD_LANDED, type MissionBoardModel } from './mission-board';
 import { stripMarks, stripOrder, stripState, stripTick, type StripState } from './mission-task-strip';
+import { displayTaskTitle } from './task-title';
 
 type FlowModel = Pick<MissionBoardModel, 'tasks' | 'phases' | 'now' | 'startedAt' | 'bars' | 'merges'>;
 
@@ -66,6 +69,8 @@ export interface FlowTask {
   p80End: number | null;
   /** Gates into this task (its blockers). */
   gates: FlowGate[];
+  /** Its duration is a real expected size, not `FLOW_DEFAULT_TASK_MS`. */
+  estimated: boolean;
 }
 
 export interface FlowTimeline {
@@ -144,8 +149,30 @@ export function buildFlowTimeline(input: FlowTimelineInput): FlowTimeline {
   const { model } = input;
   const now = input.now ?? model.now;
   const order = stripOrder(model);
-  const gatesOf = flowGates(model, input.sameFiles);
-  const expected = (id: string) => minutes(input.expectedMinutes?.[id]) ?? FLOW_DEFAULT_TASK_MS;
+  const tasks = placeFlowTasks(input, order, now, flowGates(model, input.sameFiles));
+  // The critical path runs through declared dependencies only (Navigation
+  // d25d923d R-22): a same-files wait holds a bar's start but never sets the
+  // finish, so Flow and the Build summary name the same task whether or not
+  // they were given the same-files waits.
+  const hasSameFiles = Object.values(tasks).some(t => t.gates.some(g => g.kind === 'same_files'));
+  const declared = hasSameFiles ? placeFlowTasks(input, order, now, flowGates(model)) : tasks;
+  const critical = criticalPath(order, declared);
+
+  const gates = order.flatMap(id => tasks[id].gates);
+  const starts = order.map(id => tasks[id].start);
+  const ends = order.map(id => Math.max(tasks[id].end, tasks[id].p80End ?? 0));
+  const from = Math.min(model.startedAt, ...starts);
+  const last = Math.max(now, ...ends);
+  // A little air past the last finish, and never a window under 30 minutes.
+  const to = Math.max(from + 30 * 60_000, from + (last - from) * 1.02);
+  return { order, tasks, gates, critical, from, to, now };
+}
+
+/** Every task's bar (R-2), with `gatesOf` deciding what holds an unstarted task's start. */
+function placeFlowTasks(input: FlowTimelineInput, order: readonly string[], now: number, gatesOf: Map<string, FlowGate[]>): Record<string, FlowTask> {
+  const { model } = input;
+  const sized = (id: string) => minutes(input.expectedMinutes?.[id]);
+  const expected = (id: string) => sized(id) ?? FLOW_DEFAULT_TASK_MS;
 
   // A task's first run (a retry keeps the bar's start), and its merge.
   const firstRun = new Map<string, number>();
@@ -166,43 +193,35 @@ export function buildFlowTimeline(input: FlowTimelineInput): FlowTimeline {
     const tick = stripTick(order.indexOf(id));
     const ran = firstRun.get(id) ?? t.startedAt;
     const est = expected(id);
+    const estimated = sized(id) != null;
     const p80 = minutes(input.p80Minutes?.[id]);
     let x: FlowTask;
     if (BOARD_LANDED.has(t.status)) {
       const end = mergedAt.get(id) ?? t.endedAt ?? now;
       const start = Math.min(ran ?? end - est, end);
-      x = { id, tick, state, kind: 'done', start, solidEnd: end, end, p80End: null, gates };
+      x = { id, tick, state, kind: 'done', start, solidEnd: end, end, p80End: null, gates, estimated };
     } else if (state === 'ready' || state === 'blocked' || state === 'queued') {
       // A cycle can't be scheduled through; a gate already being placed is skipped.
       visiting.add(id);
       const after = gates.filter(g => !visiting.has(g.from)).map(g => place(g.from).end + FLOW_AUDIT_WAIT_MS);
       visiting.delete(id);
       const start = Math.max(now, ...after);
-      x = { id, tick, state, kind: 'plan', start, solidEnd: null, end: start + est, p80End: p80 != null ? start + p80 : null, gates };
+      x = { id, tick, state, kind: 'plan', start, solidEnd: null, end: start + est, p80End: p80 != null ? start + p80 : null, gates, estimated };
     } else if (state === 'failed') {
       // Stopped: solid to where it ended, nothing drawn as still to come.
       const end = Math.min(t.endedAt ?? now, now);
       const start = Math.min(ran ?? end, end);
-      x = { id, tick, state, kind: 'run', start, solidEnd: end, end, p80End: null, gates };
+      x = { id, tick, state, kind: 'run', start, solidEnd: end, end, p80End: null, gates, estimated };
     } else {
       const start = Math.min(ran ?? now, now);
       const left = Math.max(est - (now - start), est * MIN_REMAINING_SHARE);
-      x = { id, tick, state, kind: 'run', start, solidEnd: now, end: now + left, p80End: p80 != null ? Math.max(start + p80, now + left) : null, gates };
+      x = { id, tick, state, kind: 'run', start, solidEnd: now, end: now + left, p80End: p80 != null ? Math.max(start + p80, now + left) : null, gates, estimated };
     }
     tasks[id] = x;
     return x;
   };
   for (const id of order) place(id);
-
-  const gates = order.flatMap(id => tasks[id].gates);
-  const critical = criticalPath(order, tasks);
-  const starts = order.map(id => tasks[id].start);
-  const ends = order.map(id => Math.max(tasks[id].end, tasks[id].p80End ?? 0));
-  const from = Math.min(model.startedAt, ...starts);
-  const last = Math.max(now, ...ends);
-  // A little air past the last finish, and never a window under 30 minutes.
-  const to = Math.max(from + 30 * 60_000, from + (last - from) * 1.02);
-  return { order, tasks, gates, critical, from, to, now };
+  return tasks;
 }
 
 /**
@@ -237,12 +256,50 @@ export function finishSetBy(timeline: Pick<FlowTimeline, 'critical' | 'tasks'>):
   return { head: rest[0], then: rest.slice(1) };
 }
 
-/** `Finish is set by 04 (building), then 06 → 07.` — `word` is the state's display word. */
-export function criticalPathLine(timeline: Pick<FlowTimeline, 'critical' | 'tasks'>, word: (s: StripState) => string): string | null {
+/** A finish line names at most this many tasks; the rest of the path is `+N`. */
+export const FINISH_NAMES_MAX = 3;
+
+/** `<first>, then <second> → <third> +N`: the unlanded critical path by name. */
+function finishPathWords(f: { head: FlowTask; then: FlowTask[] }, name: (id: string) => string, head: string): string {
+  const shown = f.then.slice(0, FINISH_NAMES_MAX - 1);
+  const more = f.then.length - shown.length;
+  const then = shown.length ? `, then ${shown.map(t => name(t.id)).join(' → ')}${more > 0 ? ` +${more}` : ''}` : '';
+  return `${head}${then}`;
+}
+
+/**
+ * Flow's sentence: `Finish is set by <name> (building), then <name> → <name>.`
+ * `word` is the state's display word, `name` the task's display name.
+ */
+export function criticalPathLine(timeline: Pick<FlowTimeline, 'critical' | 'tasks'>, word: (s: StripState) => string, name: (id: string) => string): string | null {
   const f = finishSetBy(timeline);
   if (!f) return null;
-  const then = f.then.length ? `, then ${f.then.map(t => t.tick).join(' → ')}` : '';
-  return `Finish is set by ${f.head.tick} (${word(f.head.state).toLowerCase()})${then}.`;
+  return `${finishPathWords(f, name, `Finish is set by ${name(f.head.id)} (${word(f.head.state).toLowerCase()})`)}.`;
+}
+
+/**
+ * The Build summary's clause (Navigation d25d923d R-22):
+ * `finish depends on <name>, then <name> → <name>`. Null once the path has
+ * landed, or when any unlanded task on it has no expected size: a default
+ * duration never names what sets the finish. Same path as `criticalPathLine`.
+ */
+export function finishDependsOn(timeline: Pick<FlowTimeline, 'critical' | 'tasks'>, name: (id: string) => string): string | null {
+  const f = finishSetBy(timeline);
+  if (!f || ![f.head, ...f.then].every(t => t.estimated)) return null;
+  return finishPathWords(f, name, `finish depends on ${name(f.head.id)}`);
+}
+
+/** A task's name in a finish line: its display title, as the task list shows it. */
+export function flowTaskName(model: Pick<MissionBoardModel, 'tasks'>): (id: string) => string {
+  return id => displayTaskTitle(model.tasks[id]?.title);
+}
+
+/**
+ * The Build summary's clause for a live board: the Flow timeline over the
+ * declared dependencies and real expected sizes, then `finishDependsOn`.
+ */
+export function missionFinishClause(model: FlowModel, now: number, expectedMinutes: FlowTimelineInput['expectedMinutes']): string | null {
+  return finishDependsOn(buildFlowTimeline({ model, now, expectedMinutes }), flowTaskName(model));
 }
 
 /** The selection a Flow tab opens on: the task setting the finish, else the last row. */

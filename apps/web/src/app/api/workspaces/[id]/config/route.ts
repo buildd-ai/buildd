@@ -1,8 +1,9 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
-import { releaseCandidateConfigError } from '@buildd/core/release-config-shape';
+import { amendContractCapabilityError, releaseCandidateConfigError } from '@buildd/core/release-config-shape';
+import { readWorkflowDispatchInputs } from '@/lib/workflow-dispatch-inputs';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy, type BranchStrategy } from '@buildd/core/db/schema';
+import { workspaces, githubRepos, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy, type BranchStrategy } from '@buildd/core/db/schema';
 import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -104,6 +105,8 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
             branches: (c.branches as string[]).map((b) => b.trim()).filter(Boolean),
             sourceBranch: c.sourceBranch.trim(),
             authors: (c.authors as string[]).map((a) => a.trim()).filter(Boolean),
+            // Shape-checked by releaseCandidateConfigError below; checked against the workflow file by amendContractSaveError.
+            ...(c.amend !== undefined && c.amend !== null ? { amend: trimAmend(c.amend) } : {}),
         };
     }
 
@@ -133,6 +136,39 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
     if (candidateError) return { ok: false, error: candidateError, status: 422 };
 
     return { ok: true, config };
+}
+
+function trimAmend(a: unknown): NonNullable<WorkspaceReleaseConfig['candidate']>['amend'] {
+    if (!a || typeof a !== 'object') return a as never;
+    const o = a as Record<string, unknown>;
+    const t = (v: unknown) => (typeof v === 'string' ? v.trim() : v);
+    if (o.mode !== 'inputs') return { ...o } as never;
+    const confirm = t(o.confirmInput);
+    return { mode: 'inputs', versionInput: t(o.versionInput), ...(confirm ? { confirmInput: confirm } : {}) } as never;
+}
+
+/**
+ * A declared amend contract must be one the release workflow takes: read the
+ * workflow file at `ref` and refuse the save when it does not declare the
+ * mapped inputs (or cannot be read). The same check runs again before every
+ * dispatch (lib/release/candidate-amend.ts), so a later edit to the workflow
+ * cannot make buildd send inputs it ignores.
+ */
+async function amendContractSaveError(workspaceId: string, config: WorkspaceReleaseConfig): Promise<string | null> {
+    const amend = config.candidate?.amend;
+    if (!amend) return null;
+    const workflowFile = config.workflowFile?.trim();
+    const ref = config.ref?.trim();
+    if (!workflowFile || !ref) return 'candidate.amend needs workflowFile and ref, to check the workflow declares its inputs';
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { githubRepoId: true } });
+    const repo = ws?.githubRepoId
+        ? await db.query.githubRepos.findFirst({ where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)), with: { installation: true } })
+        : undefined;
+    if (!repo?.installation) return 'candidate.amend needs a linked GitHub repo with the buildd app installed, to check the workflow declares its inputs';
+    const read = await readWorkflowDispatchInputs({ installationId: repo.installation.installationId, repoFullName: repo.fullName, workflowFile, ref });
+    if (!read.ok) return `candidate.amend: ${read.error}`;
+    const err = amendContractCapabilityError(amend, read.inputs, `${read.path} at ${ref}`);
+    return err ? `candidate.amend: ${err}` : null;
 }
 
 // Resolve the requesting account for write operations.
@@ -375,6 +411,8 @@ async function savePost(
                 if (!parsed.ok) {
                     return NextResponse.json({ error: parsed.error }, { status: parsed.status });
                 }
+                const amendError = await amendContractSaveError(id, parsed.config);
+                if (amendError) return NextResponse.json({ error: amendError, field: 'candidate.amend' }, { status: 422 });
                 releaseConfig = parsed.config;
             }
             await db
@@ -724,6 +762,8 @@ async function savePatch(
                 if (!parsed.ok) {
                     return NextResponse.json({ error: parsed.error }, { status: parsed.status });
                 }
+                const amendError = await amendContractSaveError(id, parsed.config);
+                if (amendError) return NextResponse.json({ error: amendError, field: 'candidate.amend' }, { status: 422 });
 
                 await db
                     .update(workspaces)

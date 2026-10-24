@@ -13,8 +13,8 @@ the sub-action in `params.action`. On the group tools it is
 `buildd_artifacts` action `manage_specs`, listed on that tool's `More:` line.
 
 A read-only session (a `tasks:read` grant) can call the reads: `list`, `get`,
-`diff`, `history`, `read_ref`, `outcome`, `comments`, `attachments`, and
-`metadata` without `changes`. Every other sub-action needs write access and is refused
+`diff`, `history`, `read_ref`, `outcome`, `comments`, `attachments`,
+`awaiting_approval`, and `metadata` without `changes`. Every other sub-action needs write access and is refused
 with `requiredScope`.
 
 This is not the `spec-sync` skill. `spec-sync` keeps a repo's own spec files
@@ -77,6 +77,10 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    override: only they can, on the confirm page, with a reason that is
    recorded on the approval with how it was approved (`mcp`, `chat` or
    `dashboard`).
+   Several revisions waiting? `buildd action=manage_specs params={ action: "awaiting_approval" }`
+   (read-only) gives the count and the person's inbox link, where they
+   review and approve each one with a click. Hand that link on too. An API
+   key's 403 names the same link.
 5. **Pin:** file work with `create_task` and
    `context: { specSource: { specId, criteria, revision } }`. The server pins
    the approved revision itself. `criteria` (optional, 1 to 50 `R-n`/`AC-n`
@@ -247,6 +251,49 @@ say so and stop.
   HTML prototype or images, pinned to its current revision), `url` or
   `figma`; `url` and `figma` need `version`. Figma is one kind among several,
   not the default.
+- Pin a design as a buildd design artifact at a revision:
+  `design: { kind: "artifact", ref: <artifactId>, version: <revision> }`.
+  Every runner can read that. A claude.ai canvas URL (`kind: "url"`) can be
+  read only by a session signed in to claude.ai: store the canvas as a design
+  (below) and keep its URL in the artifact's `metadata.source`.
+
+### Storing a design
+
+A design (an HTML export, a prototype, images) is a file artifact. Store it
+with `upload_artifact`, never by pasting it into `create_artifact`: a large
+export is far too many tokens for a tool call. One call, no worker needed:
+
+```
+buildd action=upload_artifact params={ filename: "nav.html", mimeType: "text/html",
+  sizeBytes, missionId (or specId / initiativeId),
+  metadata: { kind: "design", screens: [{ id: "home", name: "Home", viewport: "1440x900" }] },
+  attach: [{ subjectKind: "mission", subjectId }] }
+```
+
+Run the `curl` PUT it returns, then `upload_artifact { artifactId }` to
+verify the bytes; the `attach` links (a design reference unless `relation`
+says otherwise) are written then. Screen ids are letters,
+digits and `. _ / : # -`; `viewport` is `WIDTHxHEIGHT`. Bad screens are
+refused with the field named. You need write access to the scope: an owner or
+admin session, or a worker whose task is in it.
+
+A re-export is a new revision of the same artifact, not a new artifact:
+`upload_artifact { artifactId, filename, mimeType, sizeBytes }`, the PUT, then
+`upload_artifact { artifactId }`. Links that follow the current body move to
+it; pinned links and a spec's `design` with a `version` stay. Read an earlier
+one with `get_artifact { artifactId, revision }`.
+
+### From a Claude Design canvas
+
+In the buildd repo, `scripts/design/export-canvas.ts` turns a canvas's files
+into one design: every board a screen with an id and viewport, links between
+boards working, `metadata.screens` filled in. Get the files with the Artifact
+tool (an owner session, or a worker given `claudeAiArtifacts: 'read'`):
+`list scope=files`, then `read path=project/canvas.json` and each
+`project/<Board>.dc.html`, into a temp dir. A worker with no Artifact tool
+asks a person to copy them in. Pass `--source <canvas url>`; `--upload
+--mission <id>` stores it (`--artifact <id>` for a new revision).
+Steps: `scripts/design/README.md`.
 
 ## Attachments
 
@@ -360,7 +407,11 @@ approval and moves neither the version nor the approved hash.
 
 A spec is retired, never deleted. Retiring is a person's act: from an agent
 run or API key it is a 403, so say what should be retired and why, and let
-the person do it on the spec page or from their own session.
+the person do it on the spec page. From the person's own OAuth session,
+retire and restore change nothing, like approve: the reply is a confirm link
+pinned to the spec, its version, its status and the reason. Hand it on and
+stop; the person confirms it on buildd.dev, and a spec that moved since is
+refused as stale.
 
 - Retire: `buildd action=manage_specs params={ action: "retire", specId, reason }`.
   Add `supersededBy` (a live spec in the same workspace) when another spec

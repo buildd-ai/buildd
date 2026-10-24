@@ -31,6 +31,10 @@ type Selectable = { select: (...args: any[]) => any };
 
 export interface WaitingInputRow {
   taskId: string;
+  /** The waiting worker: where an answer is posted. */
+  workerId?: string;
+  /** When the worker last changed, read as when it asked (as Home's own question loader does). */
+  askedAt?: Date | string | null;
   waitingFor: unknown;
   title: string;
   status: string;
@@ -48,6 +52,8 @@ export function waitingInputQuery(userId: string, q: Selectable = db) {
   return q
     .select({
       taskId: tasks.id,
+      workerId: workers.id,
+      askedAt: workers.updatedAt,
       waitingFor: workers.waitingFor,
       title: tasks.title,
       status: tasks.status,
@@ -69,6 +75,8 @@ export function teamWaitingInputQuery(teamId: string, q: Selectable = db) {
   return q
     .select({
       taskId: tasks.id,
+      workerId: workers.id,
+      askedAt: workers.updatedAt,
       waitingFor: workers.waitingFor,
       title: tasks.title,
       status: tasks.status,
@@ -87,6 +95,9 @@ export function teamWaitingInputQuery(teamId: string, q: Selectable = db) {
 
 export interface WaitingTaskView {
   id: string;
+  /** The worker holding the question, so a card can answer it in place. */
+  workerId: string | null;
+  askedAt: string | null;
   title: string;
   workspaceId: string;
   missionId: string | null;
@@ -119,6 +130,8 @@ export function waitingTaskViews(rows: WaitingInputRow[], superseded: ReadonlySe
     const row = mine.find(r => r.waitingFor) ?? mine[0];
     return {
       id: row.taskId,
+      workerId: row.workerId ?? null,
+      askedAt: row.askedAt ? new Date(row.askedAt).toISOString() : null,
       title: row.title,
       workspaceId: row.workspaceId,
       // Lets the banner open the task in its mission (mission-task-href.ts).

@@ -1,10 +1,12 @@
 /**
- * Claim-time overlap policy (spec: Claim Overlap Scheduling, Capability 6).
+ * Claim-time overlap policy (spec: Overlap scheduling: serial lanes and file
+ * locks). At claim time only lane paths are checked (I-10).
  *
  * Overlapping work starts by default: two tasks sharing a file or a directory
  * both start, and the merge settles it (runner pre-merge + mergiraf, mission
- * refresh, the conflict resolver). An overlap holds a claim only when the
- * shared paths touch
+ * refresh, the conflict resolver). The edit-time lease stops two agents
+ * editing one file at once. An overlap holds a claim only when the shared
+ * paths touch a lane path:
  *
  *  - a migration namespace or schema in any repo (`isMigrationPath`),
  *  - the unmergeable-surface list (`@buildd/core/unmergeable-surfaces`), or
@@ -15,14 +17,13 @@
  * held mission: `holderCannotStart`) holds nobody, whatever the overlap kind:
  * pass its id in `idle` and the open-PR and lease checks skip it.
  *
- * The soft-overlap gate and the open-PR gate both ask `overlapHolds`. A
- * model's HOLD/START verdict is still recorded by the hold/start collector,
- * but it never decides here. Pure, no DB.
+ * The open-PR and live-lease checks both ask `overlapHolds`; no model is
+ * asked (R-3). Pure, no DB.
  */
 import { classifyManifestOverlap, findBlockingPr, intersectPaths, isMigrationPath, REPO_WIDE_SENTINEL, type ManifestOverlapKind } from '@buildd/core/path-overlap';
 import { unmergeablePaths } from '@buildd/core/unmergeable-surfaces';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { touchesHardOverlapSurface } from './hold-start-shadow';
+import { overlapIsHard, resolveSerializedSurfaces } from '@/lib/hard-overlap-surfaces';
 
 export type HardSurfaceCheck = (paths: string[], kind: ManifestOverlapKind) => boolean;
 
@@ -44,22 +45,45 @@ function sharedPaths(a: string[], b: string[]): { kind: ManifestOverlapKind; pat
   return { kind: 'prefix', paths: [...new Set([...intersectPaths(a, b), ...intersectPaths(b, a)])] };
 }
 
+/**
+ * Do these paths touch a workspace hard surface (serialized namespace,
+ * generated file, explicit hotspot)? Fails closed (true) on a malformed config.
+ */
+export function touchesHardOverlapSurface(paths: string[], kind: ManifestOverlapKind, gitConfig: WorkspaceGitConfig | null | undefined): boolean {
+  return overlapIsHard(paths, kind, gitConfig, resolveSerializedSurfaces);
+}
+
 /** The workspace half of `overlapHolds`: its serialized surfaces, generated files and hotspots. */
 export function workspaceHardSurface(gitConfig: WorkspaceGitConfig | null | undefined): HardSurfaceCheck {
   return (paths, kind) => touchesHardOverlapSurface(paths, kind, gitConfig ?? null);
 }
 
 /**
- * A workspace in `pathClaimEnforcement: 'enforce'` denies an edit on a file a
- * live holder leases, so starting a task onto a leased file only parks it
- * mid-run: there, every live lease overlap still holds at claim.
+ * Does a live lease on these shared paths hold the claim? Only on a lane path.
+ * A lease on any other file is the edit-time lock: it denies the second
+ * agent's edit (409 + waiter, under `pathClaimEnforcement: 'enforce'` too),
+ * never its start.
  */
 export function leaseOverlapHolds(
   paths: readonly string[],
   gitConfig: WorkspaceGitConfig | null | undefined,
 ): boolean {
-  if ((gitConfig as { pathClaimEnforcement?: unknown } | null | undefined)?.pathClaimEnforcement === 'enforce') return true;
   return overlapHolds(paths, 'prefix', workspaceHardSurface(gitConfig)) || overlapHolds(paths, 'exact_file', workspaceHardSurface(gitConfig));
+}
+
+/**
+ * The first open PR (in the order given) whose declared paths overlap
+ * `manifest` at all, lane or not, with the shared paths. Null when none does.
+ * The repo-wide sentinel on either side overlaps nothing.
+ */
+export function findOverlappingOpenPr<T extends { pathManifest?: string[] | null; prNumber?: number | null; prUrl?: string | null }>(
+  manifest: string[],
+  openPrs: readonly T[],
+): { pr: T; paths: string[] } | null {
+  for (const pr of openPrs) {
+    if (findBlockingPr(manifest, [pr])) return { pr, paths: intersectPaths(manifest, pr.pathManifest ?? []) };
+  }
+  return null;
 }
 
 /**

@@ -119,6 +119,16 @@ mock.module('@/lib/task-token', () => ({
   missingTaskTokenScopes: () => [],
 }));
 
+// The dependency reach rules are covered in lib/task-dependency-reach.test.ts;
+// here only which ids the route asks about and what it does with the answer.
+const mockCheckDependencyReach = mock(async (_i: any): Promise<any> => ({ ok: true }));
+const mockCheckDependencyCycle = mock(async (_i: any): Promise<any> => ({ ok: true }));
+mock.module('@/lib/task-dependency-reach', () => ({
+  checkDependencyReach: mockCheckDependencyReach,
+  checkDependencyCycle: mockCheckDependencyCycle,
+  dependencyViewerOf: (user: any, account: any) => (account ? { kind: 'account', account } : user ? { kind: 'person', userId: user.id } : { kind: 'member' }),
+}));
+
 // Mock team-access
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
@@ -844,42 +854,71 @@ describe('PATCH /api/tasks/[id]', () => {
     });
   });
 
-  // Review of #3053: a dependsOn edge may only name tasks in the task's own
-  // workspace (POST already enforces this); PATCH accepted any string.
-  describe('dependsOn workspace scope', () => {
+  // Spec e28018c2: an edge may name a task in another workspace of the team
+  // the caller sees (R-2, R-3); only the ids being added are checked (R-4);
+  // an edge that closes a cycle is refused (R-16).
+  describe('dependsOn reach and cycles', () => {
     const task = {
-      id: TASK_ID, title: 'T', status: 'pending', mode: 'execution', missionId: null,
-      dependsOn: [], workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+      id: TASK_ID, title: 'B', status: 'pending', mode: 'execution', missionId: null,
+      dependsOn: ['up-a'], workspaceId: 'ws-2', workspace: { id: 'ws-2', teamId: 'team-1', name: 'App' },
     };
+    let setCalls: any[] = [];
     function setup() {
+      setCalls = [];
+      mockCheckDependencyReach.mockReset();
+      mockCheckDependencyReach.mockResolvedValue({ ok: true });
+      mockCheckDependencyCycle.mockReset();
+      mockCheckDependencyCycle.mockResolvedValue({ ok: true });
       mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
       mockTasksFindFirst.mockResolvedValue(task);
-      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [task]) })) })) });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { setCalls.push(v); return { where: mock(() => ({ returning: mock(() => [task]) })) }; }),
+      });
     }
+    const patch = (dependsOn: unknown) => callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { dependsOn } }), TASK_ID);
 
-    it('refuses a dependency outside the task\'s workspace and writes nothing', async () => {
+    it('AC-5: adding an id checks only that id; the kept cross-workspace upstream is not re-checked', async () => {
       setup();
-      mockTasksFindMany.mockResolvedValueOnce([{ id: 'dep-own' }]);
-      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { dependsOn: ['dep-own', 'dep-elsewhere'] } }), TASK_ID);
-      expect(res.status).toBe(400);
-      expect((await res.json()).error).toContain('dep-elsewhere');
-      expect(mockTasksUpdate).not.toHaveBeenCalled();
-      const where = (mockTasksFindMany.mock.calls.at(-1) as any[])[0].where;
-      expect(JSON.stringify(where)).toContain('ws-1');
+      const res = await patch(['up-a', 'c-own']);
+      expect(res.status).toBe(200);
+      expect(mockCheckDependencyReach).toHaveBeenCalledTimes(1);
+      expect(mockCheckDependencyReach.mock.calls[0][0]).toMatchObject({ teamId: 'team-1', ids: ['c-own'], viewer: { kind: 'person', userId: 'user-123' } });
+      expect(setCalls[0].dependsOn).toEqual(['up-a', 'c-own']);
     });
 
-    it('accepts dependencies that are all in the workspace', async () => {
+    it('AC-5: removing an upstream the caller cannot see needs no check', async () => {
       setup();
-      mockTasksFindMany.mockResolvedValueOnce([{ id: 'dep-own' }]);
-      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { dependsOn: ['dep-own'] } }), TASK_ID);
+      mockTasksFindFirst.mockResolvedValue({ ...task, dependsOn: ['up-a', 'c-own'] });
+      const res = await patch(['c-own']);
       expect(res.status).toBe(200);
+      expect(mockCheckDependencyReach).not.toHaveBeenCalled();
+      expect(setCalls[0].dependsOn).toEqual(['c-own']);
+    });
+
+    it('refuses an id the caller cannot reach and writes nothing', async () => {
+      setup();
+      mockCheckDependencyReach.mockResolvedValue({ ok: false, error: 'dependsOn references tasks you cannot reach in this team: dep-x', ids: ['dep-x'] });
+      const res = await patch(['up-a', 'dep-x']);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('dependsOn references tasks you cannot reach in this team: dep-x');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('AC-12: an edge that closes a cycle is refused and dependsOn is unchanged', async () => {
+      setup();
+      mockCheckDependencyCycle.mockResolvedValue({ ok: false, error: 'would create a dependency cycle through "A"' });
+      const res = await patch(['up-a', 'dep-a']);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('would create a dependency cycle through "A"');
+      expect(mockCheckDependencyCycle.mock.calls[0][0]).toMatchObject({ taskId: TASK_ID, teamId: 'team-1', dependsOn: ['dep-a'] });
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
     });
 
     it('a task cannot depend on itself', async () => {
       setup();
-      mockTasksFindMany.mockResolvedValueOnce([{ id: TASK_ID }]);
-      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { dependsOn: [TASK_ID] } }), TASK_ID);
+      const res = await patch([TASK_ID]);
       expect(res.status).toBe(400);
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
     });
   });
 
@@ -2261,6 +2300,69 @@ describe('PATCH /api/tasks/[id]', () => {
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toContain('existing looped task');
+  });
+
+  describe('remove a dependency (removeDependency, Health › Queue R-11)', () => {
+    const DEP = '33333333-3333-4333-8333-333333333333';
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    const waiting = (context: Record<string, unknown> = { model: 'x' }) => ({
+      id: TASK_ID, title: 'needs A', status: 'pending', workspaceId: 'ws-1', missionId: null,
+      workspace: { id: 'ws-1', teamId: 'team-1' }, dependsOn: [DEP, OTHER], context,
+    });
+    function capture() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ ...waiting(), ...v }]) })) }; }),
+      });
+      return sets;
+    }
+    const patch = (body: Record<string, unknown>) => callHandler(PATCH, createMockRequest({ method: 'PATCH', body }), TASK_ID);
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+    });
+
+    it('drops that one edge and records who removed it and why', async () => {
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const sets = capture();
+      const res = await patch({ removeDependency: { taskId: DEP, reason: 'A was split; B no longer needs it' } });
+      expect(res.status).toBe(200);
+      expect(sets[0].dependsOn).toEqual([OTHER]);
+      expect(sets[0].context.model).toBe('x');
+      expect(sets[0].context.dependencyRemovals).toHaveLength(1);
+      expect(sets[0].context.dependencyRemovals[0]).toMatchObject({ dependencyId: DEP, reason: 'A was split; B no longer needs it', userId: 'user-123' });
+    });
+
+    it('a reason is required', async () => {
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const sets = capture();
+      const res = await patch({ removeDependency: { taskId: DEP, reason: '   ' } });
+      expect(res.status).toBe(400);
+      expect(sets).toHaveLength(0);
+    });
+
+    it('404 for a task that is not one of its dependencies', async () => {
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const sets = capture();
+      const res = await patch({ removeDependency: { taskId: '55555555-5555-4555-8555-555555555555', reason: 'r' } });
+      expect(res.status).toBe(404);
+      expect(sets).toHaveLength(0);
+    });
+
+    it('is sent on its own', async () => {
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const res = await patch({ removeDependency: { taskId: DEP, reason: 'r' }, title: 'x' });
+      expect(res.status).toBe(400);
+    });
+
+    it('an API key is not a person: refused', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const sets = capture();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { removeDependency: { taskId: DEP, reason: 'r' } }, headers: { Authorization: 'Bearer bld_test' } }), TASK_ID);
+      expect([401, 403]).toContain(res.status);
+      expect(sets).toHaveLength(0);
+    });
   });
 
   describe('hold / resume (held)', () => {

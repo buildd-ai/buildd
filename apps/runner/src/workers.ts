@@ -54,7 +54,7 @@ import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memor
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
-import { startScopedGitHubSession, type ScopedGitHubSession } from './agent-github-credentials';
+import { startScopedGitHubSession, hostHasGitHubCredentials, type ScopedGitHubSession } from './agent-github-credentials';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -66,6 +66,7 @@ import {
   ContextBreaker,
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
+import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit } from './provider-limit';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
@@ -90,11 +91,11 @@ import { runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
-import { claimsHaltedForUpdate } from './update-drain';
+import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
 import { claimsHeldByPerson, currentRunnerHold, withRunnerHold } from './runner-hold';
-import { SlotPauseQueue, slotResumes } from './runner-slots';
+import { SlotPauseQueue, slotResumes, saveSlotsToConfig, serverSlotsToApply } from './runner-slots';
 import { ClaimRefusalBackoff } from './claim-refusal-backoff';
-import { RESTART_CONTINUE_MESSAGE, SHUTDOWN_CHECKPOINT_MS, SHUTDOWN_SAFE_POINT_MS, commitShutdownCheckpoint } from './restart-resume';
+import { RESTART_CONTINUE_MESSAGE, SHUTDOWN_CHECKPOINT_MS, SHUTDOWN_SAFE_POINT_MS, UPDATE_CONTINUE_MESSAGE, UPDATE_CONTINUE_PROBE_MS, commitShutdownCheckpoint, pushUpdateCheckpoint } from './restart-resume';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { IdlePollTracker } from './idle-poll-tracker';
@@ -690,7 +691,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
-import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
+import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSED_FOR_UPDATE_ERROR, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
 // Cache key for the per-team server-managed credential cache. Prefer the
@@ -857,6 +858,8 @@ export class WorkerManager {
   // Per-auth-context breaker — scoped errors (quota, auth, billing) pause only
   // the affected account or tenant so other contexts keep claiming.
   private contextBreaker = new ContextBreaker();
+  /** Providers this runner's login is at its limit on (provider-limit.ts): new work waits, running work finishes. */
+  private providerLimits = new ProviderLimitHolds();
   // Distinct role-env gaps this runner has started workers with — one warning
   // per gap, and listed in getInternalState (/api/debug/internals).
   private roleEnvGapLog = new RoleEnvGapLog();
@@ -1395,15 +1398,42 @@ export class WorkerManager {
    * The caller saves it in config.json. The next heartbeat reports it; a raise
    * claims for the new free slots straight away.
    */
-  setSlots(slots: number): void {
+  setSlots(slots: number, meta: { changedAt: number; origin: 'dashboard' | 'machine'; setBy: string | null } = { changedAt: Date.now(), origin: 'machine', setBy: null }): void {
     const raised = slots > this.config.maxConcurrent;
     this.config.maxConcurrent = slots;
+    this.config.slotsChangedAt = meta.changedAt;
+    this.config.slotsOrigin = meta.origin;
+    this.config.slotsSetBy = meta.setBy;
     this.emit({ type: 'slots', maxConcurrent: slots });
     void this.sendHeartbeat();
     if (raised) {
       this.refusalBackoff.reset();
       this.claimPendingTasks().catch(() => {});
     }
+  }
+
+  /**
+   * Take the slots a team owner or admin set on buildd.dev (the heartbeat reply
+   * carries them, a Pusher nudge makes that beat happen now). Applied the way
+   * `buildd slots` applies: a raise claims at once, a lower lets running agents
+   * finish; saved to config.json so a restart keeps it. A local change made
+   * after the dashboard one is not overwritten (R-20, R-21).
+   */
+  applyServerSlots(reply: unknown): boolean {
+    const next = serverSlotsToApply(reply, { slots: this.config.maxConcurrent, changedAt: this.config.slotsChangedAt ?? null });
+    if (!next) return false;
+    const meta = { changedAt: next.setAt, origin: 'dashboard' as const, setBy: next.setBy };
+    if (this.config.slotsConfigFile) {
+      try {
+        saveSlotsToConfig(this.config.slotsConfigFile, next.slots, meta);
+      } catch (err) {
+        // An unreadable config.json holds the API key: leave it alone and keep the number for this run only.
+        console.warn('[slots] could not save the dashboard-set slots:', err instanceof Error ? err.message : err);
+      }
+    }
+    console.log(`[slots] ${next.slots} slots, set on buildd.dev${next.setBy ? ` by ${next.setBy}` : ''}`);
+    this.setSlots(next.slots, meta);
+    return true;
   }
 
   /**
@@ -1491,7 +1521,9 @@ export class WorkerManager {
       // whether Claude is confined here, not whether bwrap is installed, so a
       // macOS runner on Seatbelt no longer reads as "user namespaces denied".
       const sandboxEnabled = probeAt !== null ? isConfined(getIsolationRecord().claude) : null;
-      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
+      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent, this.config.singleTask ? undefined : this.config.slotsChangedAt);
+      // A slot change made on buildd.dev, newer than this runner's own (spec 34a48877 R-20).
+      if (!this.config.singleTask) this.applyServerSlots(desiredSlots);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1783,12 +1815,21 @@ export class WorkerManager {
    * waiting_input with waitingFor.type 'pause' so answering it resumes the same
    * session. Refused, with a milestone saying why, where it could not resume.
    */
-  async pauseWorker(workerId: string): Promise<'apply' | 'defer' | 'refuse'> {
+  async pauseWorker(workerId: string, cause: 'person' | 'update' = 'person'): Promise<'apply' | 'defer' | 'refuse'> {
     const worker = this.workers.get(workerId);
     if (!worker) return 'refuse';
     // Already stopping: the session is being torn down (the server repeats the
-    // request on every sync until it sees the park).
-    if (worker.status === 'working' && worker.error?.startsWith(PAUSED_ERROR_PREFIX)) return 'apply';
+    // request on every sync until it sees the park). A person asking while the
+    // runner pauses it for an update makes it theirs: not continued after.
+    if (worker.status === 'working' && worker.error?.startsWith(PAUSED_ERROR_PREFIX)) {
+      if (cause === 'person' && worker.resumeOnStart === 'update') {
+        worker.resumeOnStart = undefined;
+        worker.error = PAUSED_ERROR;
+        worker.waitingFor = pausedWaitingFor('person');
+        try { storeSaveWorker(worker); } catch { /* the park saves it */ }
+      }
+      return 'apply';
+    }
     const decide = () => decidePause({
       mode: this.pauseMode(),
       status: worker.status,
@@ -1812,10 +1853,18 @@ export class WorkerManager {
       return 'refuse';
     }
     if (decision.action === 'defer') {
-      if (worker.pauseRequestedAt) return 'defer';
+      if (worker.pauseRequestedAt) {
+        // A person's request turns a pending update pause into theirs.
+        if (cause === 'person' && worker.pauseRequestedFor === 'update') {
+          worker.pauseRequestedFor = undefined;
+          try { storeSaveWorker(worker); } catch { /* the next save covers it */ }
+        }
+        return 'defer';
+      }
       worker.pauseRequestedAt = Date.now();
-      worker.currentAction = 'Pausing after the current step';
-      this.addMilestone(worker, { type: 'status', label: 'Pause requested: stopping after the current step', ts: Date.now() });
+      worker.pauseRequestedFor = cause === 'update' ? 'update' : undefined;
+      worker.currentAction = cause === 'update' ? 'Pausing for an update after the current step' : 'Pausing after the current step';
+      this.addMilestone(worker, { type: 'status', label: cause === 'update' ? 'Pausing for a runner update: stopping after the current step' : 'Pause requested: stopping after the current step', ts: Date.now() });
       // Persisted: a SIGKILL before the tool ends must still read as a person's pause.
       try { storeSaveWorker(worker); } catch { /* the next save covers it */ }
       this.emit({ type: 'worker_update', worker });
@@ -1824,24 +1873,29 @@ export class WorkerManager {
         const next = decide();
         if (next.action === 'defer') return;
         clearInterval(timer);
+        const pendingCause = worker.pauseRequestedFor === 'update' ? 'update' : 'person';
         worker.pauseRequestedAt = undefined;
-        if (next.action === 'apply') void this.applyPause(worker);
+        worker.pauseRequestedFor = undefined;
+        if (next.action === 'apply') void this.applyPause(worker, pendingCause);
       }, 1000);
       (timer as { unref?: () => void }).unref?.();
       return 'defer';
     }
-    await this.applyPause(worker);
+    await this.applyPause(worker, cause);
     return 'apply';
   }
 
   /** Same shape as parkQuestion's inputAsRetry branch: report the park, then abort; the catch path parks it. */
-  private async applyPause(worker: LocalWorker): Promise<void> {
+  private async applyPause(worker: LocalWorker, cause: 'person' | 'update' = 'person'): Promise<void> {
     worker.pauseRequestedAt = undefined;
-    worker.error = PAUSED_ERROR;
-    worker.waitingFor = pausedWaitingFor();
-    worker.currentAction = 'Paused';
-    this.addMilestone(worker, { type: 'status', label: 'Paused', ts: Date.now() });
-    sessionLog(worker.id, 'info', 'paused', 'session stopped between tool calls; resumable by session id', worker.taskId);
+    worker.pauseRequestedFor = undefined;
+    worker.error = cause === 'update' ? PAUSED_FOR_UPDATE_ERROR : PAUSED_ERROR;
+    worker.waitingFor = pausedWaitingFor(cause);
+    // Set before the abort, so the park and a restart both read it as the runner's.
+    if (cause === 'update') worker.resumeOnStart = 'update';
+    worker.currentAction = cause === 'update' ? 'Paused for update' : 'Paused';
+    this.addMilestone(worker, { type: 'status', label: cause === 'update' ? 'Paused for update' : 'Paused', ts: Date.now() });
+    sessionLog(worker.id, 'info', 'paused', `session stopped between tool calls${cause === 'update' ? ' to apply a runner update' : ''}; resumable by session id`, worker.taskId);
     try {
       await this.buildd.updateWorker(worker.id, {
         status: 'waiting_input',
@@ -1876,28 +1930,36 @@ export class WorkerManager {
    *
    * Never throws and never waits past safePointMs + checkpointMs + a second.
    */
-  async pauseAllForShutdown(opts: { safePointMs?: number; checkpointMs?: number; pollMs?: number } = {}): Promise<{ paused: string[]; checkpointed: string[] }> {
-    this.shuttingDown = true;
+  async pauseAllForShutdown(opts: { safePointMs?: number; checkpointMs?: number; pollMs?: number; cause?: 'shutdown' | 'update' } = {}): Promise<{ paused: string[]; checkpointed: string[] }> {
+    const runnerCause = opts.cause ?? 'shutdown';
+    // An update pauses before it applies and may still not restart (a failed
+    // apply continues the agents here); only a real stop starts nothing new.
+    if (runnerCause === 'shutdown') this.shuttingDown = true;
     const safePointMs = opts.safePointMs ?? SHUTDOWN_SAFE_POINT_MS;
     const checkpointMs = opts.checkpointMs ?? SHUTDOWN_CHECKPOINT_MS;
     const pollMs = opts.pollMs ?? 200;
     const targets = [...this.workers.values()].filter(w => w.status === 'working' || w.status === 'stale');
     if (targets.length === 0) return { paused: [], checkpointed: [] };
-    console.log(`[shutdown] pausing ${targets.length} running agent(s)`);
+    console.log(`[shutdown] pausing ${targets.length} running agent(s)${runnerCause === 'update' ? ' for an update' : ''}`);
 
     const now = Date.now();
     // A pause a person already asked for (waiting on a tool, or being applied)
     // stays theirs: paused for a person, never continued by the next start.
-    const byPerson = new Set(targets.filter(w => !!w.pauseRequestedAt || !!w.error?.startsWith(PAUSED_ERROR_PREFIX)).map(w => w.id));
-    const causeOf = (w: LocalWorker) => (byPerson.has(w.id) ? 'person' : 'shutdown') as 'person' | 'shutdown';
+    // One the runner itself asked for to apply an update stays the runner's.
+    const forUpdate = (w: LocalWorker) => w.pauseRequestedFor === 'update' || (w.resumeOnStart === 'update' && !!w.error?.startsWith(PAUSED_ERROR_PREFIX));
+    const byPerson = new Set(targets.filter(w => !forUpdate(w) && (!!w.pauseRequestedAt || !!w.error?.startsWith(PAUSED_ERROR_PREFIX))).map(w => w.id));
+    const causeOf = (w: LocalWorker): 'person' | 'shutdown' | 'update' => (byPerson.has(w.id) ? 'person' : forUpdate(w) ? 'update' : runnerCause);
+    const label = runnerCause === 'update' ? 'Pausing for a runner update' : 'Pausing: the runner is stopping';
     for (const w of targets) {
+      const cause = causeOf(w);
       w.pauseRequestedAt = undefined;
-      w.error = PAUSED_ERROR;
-      w.waitingFor = pausedWaitingFor(causeOf(w), now);
-      w.resumeOnStart = byPerson.has(w.id) ? undefined : 'shutdown';
-      w.currentAction = 'Pausing: the runner is stopping';
-      this.addMilestone(w, { type: 'status', label: 'Pausing: the runner is stopping', ts: now });
-      sessionLog(w.id, 'info', 'shutdown_pause', 'runner stopping; pausing at the next safe point', w.taskId);
+      w.pauseRequestedFor = undefined;
+      w.error = cause === 'update' ? PAUSED_FOR_UPDATE_ERROR : PAUSED_ERROR;
+      w.waitingFor = pausedWaitingFor(cause, now);
+      w.resumeOnStart = cause === 'person' ? undefined : cause;
+      w.currentAction = label;
+      this.addMilestone(w, { type: 'status', label, ts: now });
+      sessionLog(w.id, 'info', 'shutdown_pause', `runner ${runnerCause === 'update' ? 'updating' : 'stopping'}; pausing at the next safe point`, w.taskId);
       try { storeSaveWorker(w); } catch { /* the next save, or the crash restore, covers it */ }
     }
 
@@ -1941,16 +2003,17 @@ export class WorkerManager {
     const reports: Promise<unknown>[] = [];
     for (const w of targets) {
       if (w.status === 'done' || w.status === 'error') continue; // it finished on its own meanwhile
+      const cause = byPerson.has(w.id) ? 'person' : w.resumeOnStart === 'update' ? 'update' : runnerCause;
       w.status = 'waiting';
-      w.error = PAUSED_ERROR;
-      w.waitingFor = w.waitingFor?.type === 'pause' ? w.waitingFor : pausedWaitingFor(causeOf(w), now);
-      w.resumeOnStart = byPerson.has(w.id) ? undefined : 'shutdown';
-      w.currentAction = 'Paused';
+      w.error = cause === 'update' ? PAUSED_FOR_UPDATE_ERROR : PAUSED_ERROR;
+      w.waitingFor = w.waitingFor?.type === 'pause' ? w.waitingFor : pausedWaitingFor(cause, now);
+      w.resumeOnStart = cause === 'person' ? undefined : cause;
+      w.currentAction = cause === 'update' ? 'Paused for update' : 'Paused';
       try { storeSaveWorker(w); } catch (err) { console.warn(`[shutdown] could not save ${w.id}:`, err); }
       this.emit({ type: 'worker_update', worker: w });
       reports.push(this.buildd.updateWorker(w.id, {
         status: 'waiting_input',
-        currentAction: 'Paused',
+        currentAction: w.currentAction,
         waitingFor: w.waitingFor as any,
       }).catch(() => {}));
     }
@@ -1968,10 +2031,12 @@ export class WorkerManager {
    * (R-37, R-34). An agent the server ended while the runner was down (its
    * runner looked offline, a person stopped it) is not continued.
    */
-  async continueRestoredAgents(): Promise<{ continued: string[]; held: string[]; ended: string[] }> {
+  async continueRestoredAgents(opts: { updateProbeMs?: number } = {}): Promise<{ continued: string[]; held: string[]; ended: string[] }> {
     const out = { continued: [] as string[], held: [] as string[], ended: [] as string[] };
     if (this.shuttingDown || this.config?.singleTask) return out;
     const due = [...this.workers.values()].filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause' && !!w.resumeOnStart);
+    // Paused for an update: read before continuing clears the mark (R-8).
+    const forUpdate = due.filter(w => w.resumeOnStart === 'update' && !this.continuing.has(w.id)).map(w => w.id);
     for (const w of due) {
       // One continue per worker at a time: a hold lifting while the startup
       // pass still waits on the server must not send the carry-on twice.
@@ -1984,7 +2049,102 @@ export class WorkerManager {
       }
     }
     if (out.held.length > 0) console.log(`[runner-hold] ${out.held.length} paused agent(s) wait for buildd resume`);
+    const tried = forUpdate.filter(id => !out.held.includes(id) && !out.ended.includes(id));
+    if (tried.length > 0) {
+      void this.watchUpdateContinues(tried, out.continued, opts.updateProbeMs ?? UPDATE_CONTINUE_PROBE_MS)
+        .catch(err => console.warn('[update] watching the continued agents failed:', err));
+    }
     return out;
+  }
+
+  /**
+   * R-8: if not one agent paused for the update could continue on the new
+   * version (none was sent on, or each ended in error within `probeMs`), put
+   * them back as paused for the update and hand off to the post-update canary,
+   * which rolls the runner back so they continue on the old version. Any one
+   * that continues means the new version can run them: nothing to do.
+   */
+  private async watchUpdateContinues(ids: string[], sent: string[], probeMs: number): Promise<void> {
+    if (ids.some(id => sent.includes(id))) await new Promise(r => setTimeout(r, probeMs));
+    const failed = ids.filter(id => {
+      const w = this.workers.get(id);
+      return !!w && (!sent.includes(id) || w.status === 'error');
+    });
+    if (failed.length < ids.length) return;
+    const errors: string[] = [];
+    let workspaceId: string | null = null;
+    for (const id of failed) {
+      const w = this.workers.get(id)!;
+      if (w.error && !w.error.startsWith(PAUSED_ERROR_PREFIX)) errors.push(w.error);
+      workspaceId = workspaceId ?? w.workspaceId ?? null;
+      w.status = 'waiting';
+      w.error = PAUSED_FOR_UPDATE_ERROR;
+      w.waitingFor = pausedWaitingFor('update');
+      w.resumeOnStart = 'update';
+      w.completedAt = undefined;
+      w.currentAction = 'Paused for update';
+      this.addMilestone(w, { type: 'status', label: 'Could not continue on the new version: paused for the rollback', ts: Date.now() });
+      try { storeSaveWorker(w); } catch { /* the next save covers it */ }
+      this.emit({ type: 'worker_update', worker: w });
+      // Undo a failure the session may already have reported, then say paused.
+      void this.buildd.updateWorker(w.id, { status: 'running', currentAction: 'Paused for update', reactivate: true })
+        .catch(() => {})
+        .then(() => this.buildd.updateWorker(w.id, { status: 'waiting_input', currentAction: 'Paused for update', waitingFor: w.waitingFor as any }))
+        .catch(() => {});
+    }
+    const excerpt = (errors[0] ?? 'the session could not be resumed').split('\n')[0].slice(0, 300);
+    console.error(`[update] none of the ${failed.length} agent(s) paused for the update could continue on this version (${excerpt}) — handing off to the update canary`);
+    getUpdateCanary()?.tripOnUpdateContinueFailure({ agents: failed.length, excerpt, workspaceId });
+  }
+
+  /** Agents paused so an update can apply, for the heartbeat (spec 47c97f48, R-5). */
+  pausedForUpdate(): PausedForUpdateReport[] {
+    return [...this.workers.values()]
+      .filter(w => w.resumeOnStart === 'update' && (w.status === 'waiting' || w.status === 'working' || w.status === 'stale'))
+      .map(w => ({
+        workerId: w.id,
+        taskId: w.taskId ?? null,
+        title: w.taskTitle ?? null,
+        since: Date.parse(w.waitingFor?.type === 'pause' ? String(w.waitingFor.since ?? '') : '') || null,
+      }));
+  }
+
+  /**
+   * R-2: pause these agents for the update, each at its next safe point (a
+   * running tool finishes first), the way a person's pause does.
+   */
+  async pauseForUpdate(workerIds: string[]): Promise<Record<string, 'apply' | 'defer' | 'refuse'>> {
+    const out: Record<string, 'apply' | 'defer' | 'refuse'> = {};
+    for (const id of workerIds) out[id] = await this.pauseWorker(id, 'update').catch(() => 'refuse' as const);
+    return out;
+  }
+
+  /**
+   * R-3, R-4: right before the update applies. Any agent still running is
+   * paused within the stop grace (a checkpoint commit for one mid-tool), never
+   * killed; then every agent paused for the update has its edits committed and
+   * its branch pushed, so its work is safe off this machine.
+   */
+  async prepareForUpdate(opts: { safePointMs?: number; checkpointMs?: number; pollMs?: number; pushMs?: number } = {}): Promise<{ paused: string[]; pushed: string[]; notPushed: Record<string, string> }> {
+    const { paused } = await this.pauseAllForShutdown({ ...opts, cause: 'update' });
+    const due = [...this.workers.values()].filter(w => w.status === 'waiting' && w.resumeOnStart === 'update');
+    const pushed: string[] = [];
+    const notPushed: Record<string, string> = {};
+    await Promise.all(due.map(async (w) => {
+      if (!w.worktreePath || !existsSync(w.worktreePath)) { notPushed[w.id] = 'its worktree is gone'; return; }
+      const cp = await pushUpdateCheckpoint(w.worktreePath, w.id, w.branch, opts.pushMs);
+      if (cp.committed && cp.sha) w.commits.push({ sha: cp.sha, message: 'wip: checkpoint before the runner update' });
+      if (cp.pushed) {
+        pushed.push(w.id);
+        this.addMilestone(w, { type: 'status', label: `Checkpoint pushed to ${w.branch} before the update`, ts: Date.now() });
+      } else {
+        notPushed[w.id] = cp.reason ?? 'not pushed';
+        console.warn(`[update] checkpoint of ${w.id} not pushed (${notPushed[w.id]}); its work stays in the worktree on this machine`);
+      }
+      try { storeSaveWorker(w); } catch { /* the next save covers it */ }
+    }));
+    console.log(`[update] ${due.length} agent(s) paused for the update, ${pushed.length} checkpoint(s) pushed`);
+    return { paused, pushed, notPushed };
   }
 
   /** Workers continueRestoredAgents is continuing right now. */
@@ -2019,8 +2179,8 @@ export class WorkerManager {
         out.held.push(w.id);
         return;
       }
-      console.log(`[Worker ${w.id}] Continuing in its own session after the restart`);
-      if (await this.sendMessage(w.id, RESTART_CONTINUE_MESSAGE)) out.continued.push(w.id);
+      console.log(`[Worker ${w.id}] Continuing in its own session after the ${w.resumeOnStart === 'update' ? 'update' : 'restart'}`);
+      if (await this.sendMessage(w.id, w.resumeOnStart === 'update' ? UPDATE_CONTINUE_MESSAGE : RESTART_CONTINUE_MESSAGE)) out.continued.push(w.id);
     }
   }
 
@@ -2109,6 +2269,13 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
+    // Every provider this runner can start on is at its login limit: poll when the first lifts.
+    if (this.providerLimits.allHeld()) {
+      const lift = this.providerLimits.nextLift();
+      if (lift !== null) this.scheduleResumeAt(lift, 'provider limit reset');
+      return [];
+    }
+
     let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
     // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
@@ -2137,7 +2304,7 @@ export class WorkerManager {
       this.lookingForWork = (this.lookingForWork || 0) + 1;
       this.emit({ type: 'claim_loop', looking: true });
       try {
-        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.claimEnvironment(withRunnerHold(this.environment, currentRunnerHold())), { claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse() }));
+        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.claimEnvironment(withRunnerHold(this.environment, currentRunnerHold())), { claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse(), limitWalls: this.providerLimits.report() }));
       } catch (err: any) {
         this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
         const { status, reason } = parseClaimError(err);
@@ -2237,6 +2404,21 @@ export class WorkerManager {
         // started_at NULL until the reaper killed them ~12 min later and booked
         // them as infra failures (2026-08-28: 3 rows minted in 53ms, 1 started).
         try {
+          // The broad poll is provider-blind, so the server may hand back a row for
+          // a provider this runner's login holds. Do not start it: give it back.
+          const rowProvider = providerOfBackend(claimedWorker.task?.backend ?? claimedWorker.backend);
+          const heldUntil = this.providerLimits.heldUntil(rowProvider);
+          if (heldUntil !== null) {
+            const until = new Date(heldUntil).toISOString();
+            console.log(`[WorkerManager] ${rowProvider} login at its limit until ${until} — releasing claimed worker ${claimedWorker.id}`);
+            this.buildd.updateWorker(claimedWorker.id, {
+              status: 'failed',
+              error: `Runner holds new ${rowProvider} work until ${until}`,
+            }).catch(() => {});
+            if (claimedWorker.taskId) this.noteClaimOutcome(claimedWorker.taskId, { at: Date.now(), reason: 'budget_exhausted', until, walls: [{ kind: 'runner_seat', backend: rowProvider, resetsAt: until }] });
+            this.scheduleResumeAt(heldUntil, 'provider limit reset');
+            continue;
+          }
           const worker = await this.startClaimedWorker(claimedWorker);
           if (worker) started.push(worker);
         } catch (err: any) {
@@ -2482,6 +2664,36 @@ export class WorkerManager {
   }
 
   /**
+   * Hold new work on one provider until its reset time (spec 0dc7c6de R-18).
+   * Memory only: the reset time is the whole state, and it lapses by itself.
+   */
+  private holdProvider(limit: ProviderLimit, worker: LocalWorker): void {
+    const was = this.providerLimits.heldUntil(limit.provider);
+    this.providerLimits.hold(limit);
+    const untilMs = this.providerLimits.heldUntil(limit.provider) ?? limit.untilMs;
+    if (was !== untilMs) {
+      const until = new Date(untilMs).toISOString();
+      console.warn(`[WorkerManager] ${limit.provider} login ${limit.status === 'rejected' ? 'rejected' : 'warned'} (${limit.kind}) — no new ${limit.provider} work until ${until}`);
+      sessionLog(worker.id, 'warn', 'provider_limit_hold', `${limit.provider} ${limit.status} (${limit.kind}): no new ${limit.provider} work until ${until}`, worker.taskId);
+    }
+    this.noteProviderLimitOutcome();
+    this.scheduleResumeAt(untilMs, 'provider limit reset');
+    // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
+    if (this.providerLimits.allHeld()) {
+      this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
+    } else {
+      this.emit({ type: 'provider_limit', provider: limit.provider, pausedUntil: untilMs, kind: limit.kind });
+    }
+  }
+
+  /** `buildd top` reads the runner's own holds as login walls on the last broad claim. */
+  private noteProviderLimitOutcome(): void {
+    const walls = this.providerLimits.report().map(w => ({ kind: 'runner_seat', backend: w.provider, resetsAt: w.resetsAt }));
+    if (walls.length === 0) return;
+    this.noteClaimOutcome(null, { at: Date.now(), reason: 'budget_exhausted', walls });
+  }
+
+  /**
    * Arm the resume timer for the soonest context pause still in force.
    *
    * Without this a context pause had no wake-up at all: the nudge that would
@@ -2575,6 +2787,16 @@ export class WorkerManager {
       return null;
     }
 
+    // This runner's login is at its limit on the task's provider (provider-limit.ts).
+    const taskProvider = providerOfBackend(task.backend);
+    const providerUntil = this.providerLimits.heldUntil(taskProvider);
+    if (providerUntil !== null) {
+      console.log(`[WorkerManager] ${taskProvider} login at its limit until ${new Date(providerUntil).toISOString()} — not claiming task ${task.id}`);
+      this.noteClaimOutcome(task.id, { at: Date.now(), reason: 'budget_exhausted', until: new Date(providerUntil).toISOString(), walls: [{ kind: 'runner_seat', backend: taskProvider, resetsAt: new Date(providerUntil).toISOString() }] });
+      this.scheduleResumeAt(providerUntil, 'provider limit reset');
+      return null;
+    }
+
     // Warn if no credentials found (but let SDK handle actual auth)
     if (!this.hasCredentials && !this.config.serverless) {
       console.warn(`Model auth: ${describeModelAuthSource('none')} (the task fails unless its claim brings a credential)`);
@@ -2589,7 +2811,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.claimEnvironment(this.environment), { byPerson: !!opts.byPerson, claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse() }));
+      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.claimEnvironment(this.environment), { byPerson: !!opts.byPerson, claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse(), limitWalls: this.providerLimits.report() }));
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -4313,7 +4535,11 @@ export class WorkerManager {
       // installation token minted for its task's repo — the operator's
       // GITHUB_TOKEN/GH_TOKEN and host git/gh credentials are withheld. See
       // agent-github-credentials.ts. Absent or `runner`: unchanged.
-      if (worker.githubCredentials?.mode === 'scoped') {
+      // A claim with no marker (rollout off) on a host that holds no GitHub
+      // credential at all (fresh WSL, no helper, no gh, no key) would fail
+      // every push, so it gets the scoped token too: nothing is withheld.
+      const bareHost = !worker.githubCredentials?.mode && !hostHasGitHubCredentials();
+      if (worker.githubCredentials?.mode === 'scoped' || bareHost) {
         githubTokenRefresher = await this.startScopedGitHubCredentials(worker, cleanEnv, agentRunnerHome);
         if (!githubTokenRefresher.ok) {
           promptText += '\n\n' + [
@@ -5026,6 +5252,12 @@ export class WorkerManager {
       // becomes the task summary instead of actual results. Agents should not use
       // run_in_background; they should poll synchronously or wait for results.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
+
+      // Process kill policy: the runner is a bun process, so a kill by name
+      // (`Get-Process bun | Stop-Process`, `taskkill /IM bun.exe`) ends it and
+      // every agent on the machine. The permission hook refuses those
+      // (kill-guard.ts); this tells the agent how to stop its own work instead.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Process Kill Policy\nNever kill processes by name (`Stop-Process -Name`, `Get-Process bun | Stop-Process`, `taskkill /IM`, `pkill`, `killall`). The buildd runner and other agents run as bun, node and git on this machine, so a kill by name ends them and your own session. Record the PID of anything you start (`Start-Process -PassThru`, `$!`) and stop it with `Stop-Process -Id <pid>` or `kill <pid>`.';
 
       // Narration policy: a text block right before a tool call becomes an
       // Activity milestone, so "Now let me check X…" filler stacked up as rows.
@@ -6927,23 +7159,11 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Rate limit event: ${label}`);
 
-      // Circuit breaker: if rejected, pause claims until reset
-      if (info?.status === 'rejected') {
-        const resetDelay = info.resetsAt ? info.resetsAt - Date.now() : undefined;
-        const pauseMs = resetDelay && resetDelay > 0
-          ? Math.min(resetDelay, 24 * 60 * 60 * 1000) // cap at 24h
-          : info.rateLimitType === 'five_hour' ? 60 * 60 * 1000 // 1h fallback
-          : 5 * 60 * 1000; // 5 min fallback
-
-        this.claimsPaused = true;
-        this.claimsPausedUntil = Date.now() + pauseMs;
-        const reason = info.overageDisabledReason
-          ? `${info.rateLimitType} (${info.overageDisabledReason})`
-          : info.rateLimitType || 'unknown';
-        console.warn(`[WorkerManager] Rate limit rejected (${reason}) — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
-        sessionLog(worker.id, 'warn', 'rate_limit_pause', `Pausing claims: ${reason}, ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
-        this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason });
-      }
+      // The provider's own word about this login (provider-limit.ts): on a
+      // warning or a rejection, start no new work on that provider until its
+      // resetsAt. Running sessions finish; the other provider keeps starting.
+      const limit = limitFromEvent(event, providerOfBackend(worker.taskBackend), Date.now());
+      if (limit) this.holdProvider(limit, worker);
 
       this.emit({ type: 'worker_update', worker });
       return;

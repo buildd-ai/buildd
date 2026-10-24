@@ -10,6 +10,7 @@
  */
 
 import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
+import { DECISION_OPTIONS_GUIDANCE, DECISION_TITLE_GUIDANCE } from '@buildd/core/question-brief';
 
 export const MISSION_PROMPT_IDS = {
   criteriaRearm: 'buildd.mission.criteria_rearm',
@@ -25,6 +26,7 @@ export const MISSION_PROMPT_IDS = {
   budgetWait: 'buildd.mission.budget_wait',
   sequencingIntegration: 'buildd.mission.sequencing_integration',
   sequencingDirect: 'buildd.mission.sequencing_direct',
+  decisionQuestions: 'buildd.mission.decision_questions',
 } as const;
 
 /** Placeholders: overall, reason, blockReason, verdictBlock. */
@@ -112,6 +114,13 @@ export const MISSION_PROMPT_DEFAULTS = {
     + 'in `pathManifest`: schema, migrations and configured hard surfaces use serial lanes, '
     + 'one at a time, first come. Everything else runs in parallel. Take the edit-time '
     + 'file lock before editing so two agents cannot edit the same file at once.',
+  // Navigation spec R-16: one decision card, the same on every surface.
+  decisionQuestions:
+    '**Asking the owner a decision** (`post_note` type=question): ' + DECISION_TITLE_GUIDANCE + ' '
+    + 'When it is about one task, pass `subjectTaskId` with that task\'s id (same mission), so the card names the task and what waits on it; '
+    + 'otherwise it falls back to the mission. '
+    + 'Pass `options` as `[{ label, consequence, recommended }]`, each consequence saying what happens next and what stays blocked, in one to three sentences. '
+    + DECISION_OPTIONS_GUIDANCE,
 
 } as const satisfies Record<Exclude<keyof typeof MISSION_PROMPT_IDS, 'criteriaRearm'>, string>;
 

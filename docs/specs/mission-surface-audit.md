@@ -93,6 +93,20 @@ and `reference` (an approved design reference findings compare against); both
 are off when absent. The audit task files defects as tasks in the **same mission** (not friction
 reports) and completes with an artifact.
 
+**Design vs built**: when the audit has a design (the mission's `design_reference`,
+else the design the dependency's pinned spec revision names), the claim block
+(`visual-audit-spec-criteria.ts`) hands the auditor a `QA_DESIGN` plan holding every
+criterion that names screens on `screen:` lines. `scripts/qa/design-capture.ts`
+renders each named screen at `#<screen-id>` at its own viewport, from memory in a
+fresh browser context with no buildd session and no network beyond web fonts, pairs
+it with the captured route (by name, or an explicit `routes` entry) at the same
+device width, and writes `designs/`, `side-by-side/` (design | built) and
+`design-captures.json`. The judge gets both images per screen and is asked for
+differences that matter to the criterion (layout, content order, words, states
+shown), not pixels; its verdict cites the screen id. The page is shot in the
+design's theme; Night/Day parity stays its own check. A criterion with no screen
+is judged as before.
+
 **Idempotency**: Re-running decomposition (the organizer creating tasks again)
 never creates a second audit task — the existing-task lookup is by title prefix
 within the mission, so a repeat pass only extends `dependsOn`. Best-effort under
@@ -362,6 +376,31 @@ takes it) and reads as "Waiting for a browser", a system wait that raises no
 Needs You and no "Report a Buildd problem" (see Known limits). A product finding is never a retry:
 it is a `[surface fix]`, and the fix merging moves the head, which re-files the
 review before the merge. Under `ask` and `off` nothing is filed.
+
+**A merged fix waiting for a screenshot (spec 072de598 I-15).** A finding
+whose fix merged is re-checked only by a shot of the same route, viewport and
+known state (`qa.state`); a shot of another state, or a finding with no known
+state, resolves nothing (AC-15). `buildVisualReviewModel` lists every such
+finding in `model.recapture` and says who takes the next step:
+
+- `queued`: an audit that has not finished will take them. Its prompt gets the
+  exact list at claim (`attachVisualAuditRecapture`), from the model rather
+  than the auditor's own reading of the fix's route.
+- `capture`: the last audit finished without them and rounds are left (below
+  `MAX_TOTAL_SURFACE_AUDIT_ROUNDS`, and the last audit was not itself a
+  recapture). The state reads `needed` and the scheduler files one audit with
+  reason `recapture`, naming each route, viewport and state, depending on
+  nothing (the fixes already merged). A completed audit on the same head is not
+  the answer to a recapture.
+- `decide`: the round-cap question is open, or a recapture already missed them.
+  The cells read `fixCheck.state = 'decide'` and join the deck queue with
+  Fixed / Still broken; the state reads findings with `exhausted`, so the owner
+  is asked (or skips, I-7). Still broken files a new repair.
+
+No surface reads "no action needed" while one of these holds the merge, and the
+mission PR never reads "ready to merge" while its visual review or its CI
+holds it (I-12, AC-10): `mergeFact` reports it as `landing_blocked` (cause
+`visual_review`) or `ci_red`, and `get_pr` names the merge gate's reason.
 
 **Capture.** The review captures the integration branch by `capture_ref`
 (`visual-qa.yml`, dispatched from trunk) or its preview deployment; the page

@@ -38,6 +38,7 @@ const webSrc = join(__dirname, '..');
  */
 const RUNNER_CONSUMED_EVENTS: Record<string, string> = {
   'task:assigned': 'runner claim routing; the UI learns via task:updated',
+  'runner:slots': 'nudges the runner to heartbeat so it reads its new slots; the UI already has the value',
 };
 
 const SERVER_ONLY_EVENTS: Record<string, string> = {

@@ -75,7 +75,7 @@ const flush = async () => { await act(async () => { await new Promise(r => setTi
 describe('DecisionCard', () => {
   it('reads top to bottom: the task and its age, the why and who waits, the question, two options with effects, then the text buttons', () => {
     act(() => root.render(<DecisionCard view={decision()} now={T0} />));
-    const subject = q('[data-testid="decision-subject"]')!;
+    const subject = q('[data-testid="question-subject"]')!;
     expect(subject.textContent).toBe('●Mirror the runner image to Docker Hub· asked 4m ago');
     expect(subject.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/t1');
     expect(q('[data-testid="decision-summary"]')!.textContent).toContain('The release publishes an image digest and A runner bundle on every release wait on this.');
@@ -87,7 +87,7 @@ describe('DecisionCard', () => {
     // The order on screen: subject, summary, question, options, then Answer differently and Not now.
     const html = container.innerHTML;
     const at = (s: string) => html.indexOf(s);
-    expect(at('decision-subject')).toBeLessThan(at('decision-summary'));
+    expect(at('question-subject')).toBeLessThan(at('decision-summary'));
     expect(at('decision-summary')).toBeLessThan(at('decision-question'));
     expect(at('decision-question')).toBeLessThan(at('decision-option'));
     expect(at('decision-option')).toBeLessThan(at('decision-answer-differently'));
@@ -143,6 +143,33 @@ describe('DecisionCard', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('an option label wraps inside the card instead of running past it (no sideways scroll at 320)', () => {
+    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    for (const o of qa('[data-testid="decision-option"]')) {
+      expect(o.className).toContain('whitespace-normal');
+      expect(o.className).toContain('h-auto');
+      expect(o.className).toContain('[overflow-wrap:anywhere]');
+      expect(o.className).toContain('w-full');
+    }
+    // Side by side when they fit, each growing to share the row.
+    expect(q('[data-testid="decision-options"]')!.className).toContain('flex-wrap');
+  });
+
+  it('with no structured options the card is the question and Answer differently, no dark bar', async () => {
+    const view = decisionFromQuestion({
+      key: 'note:n2', question: { headline: 'Keep the legacy export?', body: null, noteId: 'n2', options: [{ label: 'Kept the export since two teams still read it', recommended: true }] },
+      task: null, mission: { id: 'm1', title: 'Billing exports', href: '/app/missions/m1' }, askedAt: T0,
+      answer: { kind: 'note', missionId: 'm1', noteId: 'n2' },
+    });
+    act(() => root.render(<DecisionCard view={view} now={T0} />));
+    expect(qa('[data-testid="decision-option"]')).toHaveLength(0);
+    expect(container.querySelector('.btn-ink')).toBeNull();
+    expect(q('[data-testid="decision-question"]')!.textContent).toBe('Keep the legacy export?');
+    expect(q('[data-testid="decision-answer-form"]')).toBeNull();
+    await act(async () => { q('[data-testid="decision-answer-differently"]')!.click(); });
+    expect(q('[data-testid="decision-answer-form"] input')).not.toBeNull();
+  });
+
   it('an approval is Approve and Request changes as links to the diff, with no keyboard shortcut', async () => {
     const view = approvalView({
       key: 'a:t2', task: { id: 't2', title: 'Requester trigger and backfill', href: '/app/tasks/t2' }, askedAt: T0 - 60_000,
@@ -170,7 +197,7 @@ describe('DecisionCard', () => {
       answer: { kind: 'note', missionId: 'm1', noteId: 'n1' },
     });
     act(() => root.render(<DecisionCard view={view} now={T0} />));
-    expect(q('[data-testid="decision-subject"]')!.textContent).toContain('Billing exports');
+    expect(q('[data-testid="question-subject"]')!.textContent).toContain('Billing exports');
     await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
     await flush();
     expect(calls[0].url).toBe('/api/missions/m1/notes/n1/reply');

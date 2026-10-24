@@ -6,6 +6,7 @@ import Disclosure from '@/components/ui/Disclosure';
 import Lifecycle from '@/components/ui/Lifecycle';
 import type { StateKey } from '@/components/ui/states';
 import { collapseWorkspacePath, ageLabel } from './WorkerActivityTimeline';
+import type { RunStall } from '@/lib/run-stall';
 
 type Phase = NowState['evidence']['phases'][number];
 
@@ -212,8 +213,36 @@ function Headline({ text }: { text: string }) {
 
 /**
  * The live hero: what the agent is doing right now, which lifecycle facts have been observed.
+ *
+ * `inline` is the task page's Now line inside its one live block (design
+ * 6356e80d `phone-task-running`): its age, then one line of body text and the
+ * file path. No card and no track: the status line under the title says where
+ * the run is.
  */
-export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number }) {
+export default function NowStrip({ now, nowMs, stall = null, variant = 'card' }: { now: NowState; nowMs: number; stall?: RunStall | null; variant?: 'card' | 'inline' }) {
+  if (variant === 'inline') {
+    const headline = now.headline ? collapseWorkspacePath(now.headline) : 'Waiting for the first update';
+    return (
+      <div data-testid="worker-now-strip" className="min-w-0 flex-1 basis-[360px]">
+        <div data-testid="worker-current-action" className="flex flex-col gap-1">
+          <p className={`text-meta ${stall ? 'text-status-warning' : 'text-text-muted'}`} suppressHydrationWarning>
+            Now{now.updatedTs != null && ` · updated ${ageLabel(nowMs - now.updatedTs)} ago`}
+          </p>
+          {stall && (
+            <p data-testid="worker-stall" className="text-meta text-status-warning" suppressHydrationWarning>{stall.label}</p>
+          )}
+          <p data-testid="worker-now-headline" title={headline} className="truncate text-body text-text-primary">
+            {headline}
+          </p>
+          {now.detail && (
+            <p data-testid="worker-now-path" className="font-mono text-meta text-text-secondary [overflow-wrap:anywhere]">
+              {collapseWorkspacePath(now.detail.target)}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
   return (
     <section
       data-testid="worker-now-strip"
@@ -225,11 +254,16 @@ export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number 
             <span className="w-[9px] h-[9px] rounded-sm bg-accent animate-status-pulse motion-reduce:animate-none" aria-hidden="true" />
             Now
             {now.updatedTs != null && (
-              <span className="font-normal text-text-muted" suppressHydrationWarning>
+              <span className={`font-normal ${stall ? 'text-status-warning' : 'text-text-muted'}`} suppressHydrationWarning>
                 · updated {ageLabel(nowMs - now.updatedTs)} ago
               </span>
             )}
           </div>
+          {stall && (
+            <p data-testid="worker-stall" className="mt-1 font-mono text-meta text-status-warning" suppressHydrationWarning>
+              {stall.label}
+            </p>
+          )}
           <Headline text={now.headline ? collapseWorkspacePath(now.headline) : 'Waiting for the first update'} />
           {now.detail && (
             <p className="mt-1.5 font-mono text-meta text-text-secondary truncate">

@@ -111,6 +111,7 @@ import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thre
 import { quietLabel } from './local-strand';
 import type { LandingBlocker, LandingBlockCause } from './landing-blocker';
 import { BROWSER_RUNNER_MISSING, claimHoldPhrase } from './claim-hold-phrase';
+import type { QueueWait } from '@buildd/shared';
 import { derivePendingTaskHold, type PendingDeferralFacts, type PendingHoldKind, type PendingHolderFacts, type PendingTaskHold } from './mission-task-hold';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
@@ -136,7 +137,9 @@ export type MissionStateSource =
   | 'workers.prUrl + workers.mergedAt'
   | 'workers.prLifecycleStatus + tasks.parentTaskId'
   | 'tasks.parentTaskId + tasks.taskClass'
-  | 'deriveLandingBlocker';
+  | 'deriveLandingBlocker'
+  | 'getMissionVisualReviewState'
+  | 'workers.prLifecycleStatus';
 
 export interface MissionStateProvenance {
   /** What produced `kind`. */
@@ -632,6 +635,13 @@ export interface MissionStateInput {
     budgetExhausted?: boolean | null;
     /** A visual-auditor row no online browser runner can take: that is its one cause. */
     missingBrowser?: boolean;
+    /**
+     * The one reason a pending row waits, read live from the claim route's own
+     * query and gates (lib/queue-wait-load.ts). When present it decides: a
+     * declared wait is the dependency hold, a slot wait is claimable whatever
+     * `waitingOnTaskIds` says, and only a slot wait is "next in line".
+     */
+    queueWait?: QueueWait | null;
   }>;
   /** Holder rows by id, for naming the task an overlap deferral recorded (`detail.blockingTaskId`). */
   holders?: ReadonlyMap<string, PendingHolderFacts> | null;
@@ -642,7 +652,7 @@ export interface MissionStateInput {
    * caller read it: the header follows it rather than the audit task row, so a
    * waiver or a blocked review reads the same here as on the check row.
    */
-  visualReview?: { status: string; blockedDetail?: string | null } | null;
+  visualReview?: { status: string; blockedDetail?: string | null; blocksMerge?: boolean; label?: string; needsOwner?: boolean } | null;
   /**
    * Required goal criteria the Checks rail shows as not yet passed, the
    * selected outcome spec included (`openCriteriaChecks`). Names what is left
@@ -699,7 +709,7 @@ export interface MissionStateInput {
    * merge the mission PR" into an affordance when there is. A caller that
    * has not loaded the row omits this rather than guessing.
    */
-  missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null } | null;
+  missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null; ciRed?: boolean } | null;
   /**
    * The escalation gate verdict for the mission PR, read from the decision
    * ledger. Used to determine if the mission should be marked as needs-you
@@ -1271,7 +1281,8 @@ function fixLabel(a: { iteration: number | null; maxIterations: number | null; k
 }
 
 function ciRedPhrase(d: { attempts: number; failing: string[]; prNumbers: number[] }): string {
-  const after = `CI red after ${d.attempts} fix attempt${d.attempts === 1 ? '' : 's'}`;
+  // The mission PR's own red CI has no fix chain counted: say red, never "after 0 fix attempts".
+  const after = d.attempts > 0 ? `CI red after ${d.attempts} fix attempt${d.attempts === 1 ? '' : 's'}` : 'CI red';
   if (d.failing.length > 0) return `${after}: ${d.failing.join(', ')}`;
   return d.prNumbers.length === 1 ? `${after} on PR #${d.prNumbers[0]}` : after;
 }
@@ -1349,6 +1360,46 @@ function landingFact(
     displayState: person ? 'blocked' : 'active',
     source: 'deriveLandingBlocker',
   };
+}
+
+/**
+ * The open mission PR is not ready to merge (spec 072de598 I-12, AC-10): its
+ * visual review holds the merge, or its CI is red. "Ready to merge" over
+ * either sends the owner to a merge every door refuses. The visual review
+ * outranks CI: its refusal is the one a merge door gives first.
+ */
+function missionPrHoldFact(input: MissionStateInput, prNumbers: number[], prUrls: string[], taskIds: string[]): Resolution | null {
+  const ref = prNumbers.length === 1 ? ` #${prNumbers[0]}` : '';
+  const vr = input.visualReview;
+  if (vr?.blocksMerge) {
+    const person = vr.needsOwner === true;
+    return {
+      kind: person ? 'blocked' : 'waiting',
+      waitingOn: {
+        kind: 'landing_blocked',
+        tone: person ? 'warning' : 'info',
+        label: `Mission PR${ref} waits on the visual review: ${lowerFirst(vr.label ?? 'not finished')}`,
+        count: 1,
+        cause: 'visual_review',
+        owner: person ? 'person' : 'platform',
+        nextAction: person ? 'Open the visual review and decide, or skip it.' : 'It merges once the visual review passes.',
+        prNumbers, prUrls, taskIds,
+      },
+      displayState: person ? 'blocked' : 'active',
+      source: 'getMissionVisualReviewState',
+    };
+  }
+  if (input.missionPr?.ciRed) {
+    return {
+      kind: 'blocked',
+      waitingOn: {
+        kind: 'ci_red', tone: 'error', label: `CI red on mission PR${ref}`, count: 1, attempts: 0, failing: [], prNumbers, prUrls, taskIds,
+      },
+      displayState: 'blocked',
+      source: 'workers.prLifecycleStatus',
+    };
+  }
+  return null;
 }
 
 /** Rule 7 — the work is done and has not reached trunk. */
@@ -1451,6 +1502,9 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       if (landing) return landing;
       const red = ciRedFact(input.ciRed, details);
       if (red) return red;
+    } else {
+      const hold = missionPrHoldFact(input, prNumbers, prUrls, details.map(d => d.taskId));
+      if (hold) return hold;
     }
 
     return {
@@ -1507,6 +1561,14 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       if (landing) return landing;
       const red = ciRedFact(input.ciRed, rowPrs);
       if (red) return red;
+    } else {
+      const hold = missionPrHoldFact(
+        input,
+        openMissionPr!.prNumber != null ? [openMissionPr!.prNumber] : [],
+        openMissionPr!.prUrl ? [openMissionPr!.prUrl] : [],
+        [],
+      );
+      if (hold) return hold;
     }
     return {
       kind: 'awaiting_merge',
@@ -1555,7 +1617,7 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   // Every open row waiting on its dependencies is a fact whatever the health
   // signal says (it reads NOMINAL for exactly this case), so a card with no
   // completion decision names the wait the same way `explain` does.
-  const allDepBlocked = openTasks.length > 0 && openTasks.every(t => (t.waitingOnTaskIds?.length ?? 0) > 0);
+  const allDepBlocked = openTasks.length > 0 && openTasks.every(depHeld);
   const qualifies = live
     ? pendingCount > 0
     : allDepBlocked || input.health === 'STALLED' || (completion?.code === 'pending_deliverables' && pendingCount > 0);
@@ -1579,17 +1641,21 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   // claimed, so it is not what is holding the mission. Claimable rows lead;
   // when there are none, the unmet dependencies are the honest answer, and
   // the reading is a wait on the DAG rather than a stall.
-  const claimable = openTasks.filter(t => !(t.waitingOnTaskIds?.length));
+  const claimable = openTasks.filter(t => !depHeld(t));
   const depOnly = !live && openTasks.length > 0 && claimable.length === 0;
   if (depOnly) {
-    const depIds = [...new Set(openTasks.flatMap(t => t.waitingOnTaskIds ?? []))];
+    const depIds = [...new Set(openTasks.flatMap(depIdsOf))];
     const prByDep = new Map<string, number>();
     for (const t of openTasks) for (const [dep, pr] of Object.entries(t.waitingOnPrs ?? {})) prByDep.set(dep, pr);
     const prNumbers = [...new Set(depIds.map(id => prByDep.get(id)).filter((n): n is number => typeof n === 'number'))];
     const unfinished = depIds.filter(id => !prByDep.has(id)).length;
     // R-14: the dependencies by name, when every one was loaded; a dead one says so.
     const facts = new Map<string, PendingHolderFacts>();
-    for (const t of openTasks) for (const d of t.dependencies ?? []) facts.set(d.id, d);
+    for (const t of openTasks) {
+      const w = t.queueWait;
+      if (w?.kind === 'declared' && w.blockerId && w.blockerTitle) facts.set(w.blockerId, { id: w.blockerId, title: w.blockerTitle, status: w.blockerStatus ?? null });
+      for (const d of t.dependencies ?? []) facts.set(d.id, d);
+    }
     const names = depIds.every(id => facts.has(id))
       ? depIds.map(id => derivePendingTaskHold({ now: nowOf(input), dependencies: [facts.get(id)!] }).word.replace(/^Waiting on /, ''))
       : undefined;
@@ -1726,6 +1792,19 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   };
 }
 
+type OpenTaskRow = NonNullable<MissionStateInput['openTasks']>[number];
+
+/** A row the dependency gate holds: by the live queue wait when read, else by its unmet `dependsOn`. */
+function depHeld(t: OpenTaskRow): boolean {
+  return t.queueWait ? t.queueWait.kind === 'declared' : !!t.waitingOnTaskIds?.length;
+}
+
+/** The dependencies holding a row: its unmet `dependsOn`, else the one its queue wait names. */
+function depIdsOf(t: OpenTaskRow): string[] {
+  if (t.waitingOnTaskIds?.length) return t.waitingOnTaskIds;
+  return t.queueWait?.kind === 'declared' && t.queueWait.blockerId ? [t.queueWait.blockerId] : [];
+}
+
 /** The clock the hold reads: the caller's, else now. */
 function nowOf(input: MissionStateInput): number {
   return input.now ?? Date.now();
@@ -1753,6 +1832,7 @@ function pendingHoldOf(input: MissionStateInput, t: NonNullable<MissionStateInpu
     runnerOnline: isLocal(input) ? null : input.runnerOnline ?? null,
     missingBrowser: t.missingBrowser ?? false,
     trunkRed: input.trunkRed ?? null,
+    wait: t.queueWait ?? null,
   });
 }
 

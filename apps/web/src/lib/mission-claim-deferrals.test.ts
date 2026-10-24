@@ -106,3 +106,13 @@ describe('latestHoldByTask (spec f7f67f1a R-33)', () => {
     expect([...out]).toEqual([['t1', 'budget_paused'], ['t2', 'path_overlap']]);
   });
 });
+
+describe('summarizeDeferralRows: dependency waits', () => {
+  it('leaves out deps_blocked rows: a dependency wait is not the claim loop refusing the task', () => {
+    const out = summarizeDeferralRows([
+      { taskId: 'a', reason: 'deps_blocked', detail: { consecutiveDeferrals: 400, firstDeferredAt: '2026-10-21T00:00:00Z' } },
+      { taskId: 'b', reason: 'workspace_cap', detail: { consecutiveDeferrals: 3 } },
+    ]);
+    expect(out.map(d => d.taskId)).toEqual(['b']);
+  });
+});

@@ -266,6 +266,9 @@ is recorded only when the content verifies.
 |---|---|---|---|---|
 | 61a | `pr-supersession-detect.ts:recordVerified` | `auto_pr_supersession` | accepted | candidate's merged diff carries the closed PR's changes; edge recorded with `detail.method` (patch-id or content) and `detail.confidence` |
 | 61b | `pr-supersession-detect.ts:detectPrSupersession` | `auto_pr_supersession` | deferred | candidate found but not content-verified: suggestion stored for the mission card, no edge |
+| 61c | `dead-pr-shutdown.ts:closePrWithComment` | `auto_pr_supersession` | accepted | a subject-anchored loser PR closed because the merged winner provably carries its content (`verifyPrCarriedBy`: `detail.method` patch-id or content, `detail.confidence`); edge recorded in the same flow as the close |
+| 61d | `dead-pr-shutdown.ts:leftOpen` | `auto_pr_supersession` | rejected | the pre-filters (subject, mission, base, idle time) nominated a loser but the winner does not carry its content (`detail.verdict` unverified) or could not be checked (unavailable): left open, no comment, no edge |
+| 61g | `dead-pr-shutdown.ts:edgeNotRecorded` | `auto_pr_supersession` | warned | closed on verified content but `recordPrSupersession` refused or failed: closed-unsuperseded until the close-time scan or hourly sweep records the same proof |
 
 ### Supersession reconciler (`lib/supersession.ts`, `lib/supersession-store.ts`)
 
@@ -359,6 +362,12 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |------|------|---------|---------|
 | `apps/web/src/lib/failure-incident-recovery.ts:assessIncident` (via `failure-incident-recovery-events.ts`) | `incident_recovery` | accepted / rejected | One row per repair action key, written after the repair's existing writer ran (`accepted`) or threw (`rejected`). Not a refusal: the audit trail the operator recovery queue counts attempts from. `detail` is fixed-shape: `actionKey`, `incidentId`, `causeKey`, `capability` (a RepairKind), `generation`, `attempt`, `subject`, `actor`, `verify { predicate, passed, evidenceRevision }`, `costUsd`. `verify.passed` is null until the next assessment re-checks the repair, then set in place once. Pruned after 180 days, the only gate that is. |
 
+### Serial lanes (Living Spec "Overlap scheduling: serial lanes and file locks", I-7)
+
+| Site | Gate | Outcome | Meaning |
+|------|------|---------|---------|
+| `apps/web/src/app/api/workspaces/[id]/lanes/release/route.ts:POST` | `serial_lane` | bypassed | A person released a stuck lane's holder: its row ends `released` with who did it, its open PR stops holding the lane, and position 1 may claim. `detail`: `lane`, `holderTaskId`, `userId`, `reason`. Claim-time lane waits are `claim_loop_deferral` reason `path_overlap` with `detail.lane` and `detail.position`. |
+
 ### Early release of dependents (`docs/design/early-release.md`)
 
 | Site | Gate | Outcome | Meaning |
@@ -372,6 +381,7 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |------|------|---------|---------|
 | `apps/web/src/lib/change-intent.ts:postConflictNote` | `change_intent` | warned | One delivered conflict warning note per affected task, including both sides; task/workspace/mission attribution and overlapping surfaces are retained; `detail.advisory: true` — it never gates a merge. |
 | `apps/web/src/lib/surface-ordering.ts:guardSurfaceOrdering` | `surface_ordering` | deferred / warned / bypassed | Opt-in surface merge ordering (conflict-aware-orchestration §3). `deferred` = an enforcing wait behind an earlier open PR on a serialized surface (`detail.kind: ordering`, with `counterpartPrNumber`, `surface`, `headSha`, `baseSha`) or unverifiable intent/diff state (`kind: unverified`); repeats coalesce. `warned` = shadow would-defer, or a reported cross-surface order inversion (`kind: cross_surface_cycle`). `bypassed` = `merge_pr force`. |
+| `apps/web/src/lib/visual-review-skip-record.ts:recordVisualReviewSkip` (fired from `PATCH /api/missions/[id]`) | `visual_review_skip` | bypassed | A person skipped a mission's visual review (spec 072de598 I-7, I-19). `detail.skipReason` = `wrong_or_stuck` / `ship_anyway` (null for a free-text waiver), plus `actor`, `commit`, `cause`, `openFindings` and the first findings with their screenshots; `wrong_or_stuck` also carries `bugTaskId` (the `[friction]` bug filed or appended to). Visual review reliability (`lib/visual-review-reliability.ts`) is read from these rows. |
 | `apps/web/src/lib/surface-ordering.ts:acquireMergeSlot` | `surface_ordering` | accepted / deferred | `accepted` = a merge reservation was taken (the denominator for the waits above); `deferred` = another PR holds the surface reservation, or the post-reserve recheck found a newly earlier PR. |
 | `apps/web/src/lib/base-refresh.ts:refreshBehindPr` | `base_refresh` | accepted / deferred / warned / rejected | Deterministic refresh of a behind-only PR (conflict-aware-orchestration §4). `accepted` = GitHub update-branch merged the base in, no agent. `deferred` = an operational update failure (`detail.failure`: rate_limit / auth / transient / unknown, with `attempts`), an enforcing semantic check whose symbol coverage is unknown (bounded rechecks), or a verified same-symbol edit sent to semantic review (`detail.verdict`, `evidence`); repeats coalesce. `warned` = shadow semantic verdict or a moved head. `rejected` = attempts or rechecks exhausted, with one diagnostic note posted. A textual conflict is not recorded here; it goes to the conflict agent. |
 | `apps/web/src/lib/derived-merge-gate.ts:derivedMergeGateEvent` (fired from `PATCH /api/workers/[id]`) | `base_refresh` | accepted | A conflict retry the runner finished with no agent session: every conflict was in a derived file (`gitConfig.derivedFiles`), so it merged the base, regenerated, ran the task's `verificationCommand` if set, pushed and completed (`apps/runner/src/merge-drivers.ts:finishDerivedMerge`). `detail.stage: derived_merge` separates these from GitHub update-branch merges; `detail.regenerated`, `verification`, `headSha`. Written only once the completion landed. |

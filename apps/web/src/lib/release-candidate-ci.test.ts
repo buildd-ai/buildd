@@ -83,7 +83,9 @@ describe('buildReleaseCandidateFixTask', () => {
     expect(built.title).toContain('v1.2.3');
     expect(built.description).toContain('Do not push to `release/v1.2.3`');
     expect(built.description).toContain('into `dev`');
-    expect(built.description).toContain('amend: v1.2.3');
+    expect(built.description).toContain('v1.2.3 (PR #76) needs an amendment or a re-cut once this merges');
+    // Pipeline-neutral: no input names from buildd's own release workflow.
+    expect(built.description).not.toContain('amend_confirm');
     expect(built.description).toContain('Integration: 4 tests failed');
     expect(built.description).toContain('/repos/acme/app/actions/jobs/9/logs');
     expect(built.description).not.toContain('--allow-escape-sequences');

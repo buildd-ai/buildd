@@ -21,27 +21,28 @@ import {
 const r = (kind: WaitingKind, id = 'x') =>
   makeWaitingReason(kind, { because: 'b', blocker: { type: 'task', id, label: id }, provenance: { source: 'probe', derivedFrom: 't' } });
 
-/** A creation-time overlap edge on a migration path (the shape of a schema task queued behind others). */
-const migrationEdge = (id: string) => makeWaitingReason('dep_inferred', {
+/** A migration-lane wait behind another task's open PR (the shape of a schema task queued behind others). */
+const migrationEdge = (id: string) => makeWaitingReason('lane', {
   because: 'both change migrations in core/db',
   blocker: { type: 'task', id, label: `“holder ${id}”` },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
-  provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
+  lane: { lane: 'migration', holderTaskId: id, position: null },
+  provenance: { source: 'probe', derivedFrom: 'workers.prUrl ∩ tasks.pathManifest (claim layer 1)' },
 });
 
 describe('waiting-reason', () => {
   it('orders capability first, then hard intentional, hard incidental, soft', () => {
-    const out = orderWaitingReasons([r('ordered_behind'), r('account_slots'), r('pr_overlap_live'), r('role_unavailable')]);
-    expect(out.map(x => x.kind)).toEqual(['role_unavailable', 'pr_overlap_live', 'account_slots', 'ordered_behind']);
+    const out = orderWaitingReasons([r('ordered_behind'), r('account_slots'), r('lane'), r('role_unavailable')]);
+    expect(out.map(x => x.kind)).toEqual(['role_unavailable', 'lane', 'account_slots', 'ordered_behind']);
   });
 
   it('forceable only when every blocking reason is lifted through the start context', () => {
-    expect(canForceStart([r('pr_overlap_live'), r('mission_concurrent')])).toBe(true);
-    // Human force lifts the scope-undeclared mutex and planner order (§7.2).
-    expect(canForceStart([r('pr_overlap_live'), r('scope_undeclared_mutex')])).toBe(true);
+    expect(canForceStart([r('mission_paced'), r('mission_concurrent')])).toBe(true);
     // One non-forceable reason: the task still would not start.
-    expect(canForceStart([r('pr_overlap_live'), r('dep_declared')])).toBe(false);
-    expect(canForceStart([migrationEdge('a'), r('mission_local')])).toBe(true);
+    expect(canForceStart([r('mission_concurrent'), r('dep_declared')])).toBe(false);
+    // A lane is never forced (Health › Queue R-10): its place is first come.
+    expect(canForceStart([migrationEdge('a'), r('mission_local')])).toBe(false);
+    expect(canForceStart([r('mission_local')])).toBe(true);
     expect(canForceStart([r('role_unavailable')])).toBe(false);
     expect(canForceStart([r('task_held')])).toBe(false);
     // Soft only: nothing to force.
@@ -52,18 +53,17 @@ describe('waiting-reason', () => {
   it('capability, budget, seat, hold and unknown kinds are never forceable', () => {
     for (const k of ['task_held', 'account_slots', 'oauth_parallelism', 'codex_single_flight', 'managed_entitlement',
       'budget_paused', 'provider_unavailable', 'role_unavailable', 'capability_mismatch', 'runner_cooldown',
-      'lease_stale', 'dep_declared', 'unknown'] as WaitingKind[]) {
+      'lease_stale', 'dep_declared', 'unknown', 'lane', 'ordered_behind', 'serialized_surface', 'workspace_paused'] as WaitingKind[]) {
       expect(WAITING_KIND_SPEC[k].force).toBeNull();
       expect(isStartForceable(k)).toBe(false);
     }
   });
 
   it('maps kinds to exactly the claim-loop keys they lift', () => {
-    expect(claimLoopKeysFor(['pr_overlap_live', 'lease_overlap', 'mission_paced']).sort()).toEqual(['mission_paced', 'path_overlap']);
-    expect(claimLoopKeysFor(['scope_undeclared_mutex', 'ordered_behind', 'serialized_surface', 'soft_overlap']).sort())
-      .toEqual(['advisory_manifest', 'ordered_behind', 'soft_overlap']);
+    expect(claimLoopKeysFor(['lane', 'mission_paced', 'mission_concurrent']).sort()).toEqual(['mission_concurrent', 'mission_paced']);
+    expect(claimLoopKeysFor(['ordered_behind', 'serialized_surface'])).toEqual([]);
     expect(claimLoopKeysFor(['mission_budget', 'task_held', 'dep_declared'])).toEqual([]);
-    expect(prefilterLiftsFor(['dep_inferred', 'mission_local', 'dep_declared']).sort()).toEqual(['inferred_deps', 'local_mission']);
+    expect(prefilterLiftsFor(['mission_local', 'dep_declared'])).toEqual(['local_mission']);
   });
 
   it('summary keeps declared dependencies apart from coordination-only ordering', () => {
@@ -75,39 +75,40 @@ describe('waiting-reason', () => {
     expect(mixed.coordination).toBe(5);
     // A local mission leads by itself; the overlap edges are listed after it.
     expect(waitingSummary([r('mission_local', 'm'), ...edges]).summarised).toBe(false);
-    expect(waitingSummary(edges).lead?.kind).toBe('dep_inferred');
+    expect(waitingSummary(edges).lead?.kind).toBe('lane');
   });
 
-  it('force dialog: one checklist line per gate, the migration red line, rails with the file count', () => {
-    const d = forceDialog([migrationEdge('a'), migrationEdge('b'), r('mission_local', 'm')]);
-    expect(d.checklist.map(c => c.kind)).toEqual(['dep_inferred', 'dep_inferred', 'mission_local']);
-    expect(d.redLines).toHaveLength(1);
-    expect(d.redLines[0]).toContain('Migration numbering stays serialized');
-    expect(d.stillEnforced[0]).toContain('2 files in core/db');
-    expect(d.risk).toBe('core/db overlap · declared files');
+  it('force dialog: one checklist line per limit it lifts; a lane is not on it', () => {
+    const d = forceDialog([migrationEdge('a'), r('mission_concurrent', 'm'), r('mission_local', 'm')]);
+    expect(d.checklist.map(c => c.kind)).toEqual(['mission_concurrent', 'mission_local']);
+    expect(d.redLines).toEqual([]);
+    expect(d.risk).toBeNull();
   });
 
   it('refusal body: a declared dependency in the set means no force is offered and says why', () => {
     const body = coordinationHoldBody([migrationEdge('a'), r('dep_declared', 'z')]);
     expect(body.canForce).toBe(false);
     expect(body.force).toBeNull();
-    expect(body.notForceable).toEqual(['Declared dependency']);
-    const ok = coordinationHoldBody([migrationEdge('a'), r('mission_local', 'm')]);
+    expect(body.notForceable).toEqual(['Serial lane', 'Declared dependency']);
+    const ok = coordinationHoldBody([r('mission_paced', 'm'), r('mission_local', 'm')]);
     expect(ok.canForce).toBe(true);
-    expect(ok.force?.kinds?.sort()).toEqual(['dep_inferred', 'mission_local']);
+    expect(ok.force?.kinds?.sort()).toEqual(['mission_local', 'mission_paced']);
+    const lane = coordinationHoldBody([migrationEdge('a')]);
+    expect(lane.canForce).toBe(false);
+    expect(lane.notForceable).toEqual(['Serial lane']);
   });
 
   it('digest is order-insensitive and changes with the blocker', () => {
-    const a = waitingReasonsDigest([r('pr_overlap_live', '1234'), r('mission_concurrent', 'm')]);
-    expect(waitingReasonsDigest([r('mission_concurrent', 'm'), r('pr_overlap_live', '1234')])).toBe(a);
-    expect(waitingReasonsDigest([r('pr_overlap_live', '1240'), r('mission_concurrent', 'm')])).not.toBe(a);
+    const a = waitingReasonsDigest([r('lane', '1234'), r('mission_concurrent', 'm')]);
+    expect(waitingReasonsDigest([r('mission_concurrent', 'm'), r('lane', '1234')])).toBe(a);
+    expect(waitingReasonsDigest([r('lane', '1240'), r('mission_concurrent', 'm')])).not.toBe(a);
   });
 
   it('chip: held for coordination, ready for no runner, can\'t run for capability', () => {
-    expect(waitingChip([r('pr_overlap_live')])).toBe('held');
+    expect(waitingChip([r('lane')])).toBe('held');
     expect(waitingChip([r('eligible_no_runner')])).toBe('ready');
     expect(waitingChip([])).toBe('ready');
-    expect(waitingChip([r('pr_overlap_live'), r('role_unavailable')])).toBe('cant_run');
+    expect(waitingChip([r('lane'), r('role_unavailable')])).toBe('cant_run');
     expect(waitingChip([r('dep_declared')])).toBe('blocked');
   });
 

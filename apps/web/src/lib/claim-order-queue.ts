@@ -12,9 +12,13 @@
  * that lifts on its own (a start time, a dependency, a hold, a cooldown) stays
  * in the queue and is named as a hold. The claim route itself is unchanged.
  *
- * In-loop deferrals the claim makes after reading the window (plan and rate
- * limits, path overlap, mission pacing) are not visible to a read: the runner
- * adds them from its last claim outcome for the task (R-25).
+ * Each queued task also carries its one wait (`wait`, lib/queue-wait-load.ts:
+ * spec "Overlap scheduling", AC-10): the same reason explain, the task page
+ * and the web Queue give, read from the claim route's own query and gates,
+ * the lane order, mission pacing and caps, and the loop's fresh limits. A
+ * task the claim would refuse is never "now" in the terminal. What only one
+ * runner's claim saw (its own cooldown, a provider wall on its login) the
+ * runner still adds from its last claim outcome for the task (R-25).
  */
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
@@ -30,6 +34,9 @@ import { findBlockingPr, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from '@/app/api/workers/claim/overlap-policy';
 import type { OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
+import { lanesOf, laneVerdict, stuckSince } from '@/lib/serial-lanes';
+import { loadLanes, type LaneRead } from '@/lib/serial-lanes-store';
+import type { QueueWait } from '@buildd/shared';
 
 /** At most this many waiting tasks are read, in claim order. */
 export const RUNNER_QUEUE_LIMIT = 300;
@@ -221,6 +228,37 @@ export interface RunnerQueueDeps {
   estimates?: (teamId: string, taskIds: string[]) => Promise<EstimateRow[] | null>;
   workspaceConfigs?: (workspaceIds: string[]) => Promise<Array<{ id: string; gitConfig: unknown }>>;
   overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
+  /** The serial lanes, in the claim route's stored order (lib/serial-lanes-store loadLanes). */
+  lanes?: (workspaceIds: string[], now: Date) => Promise<LaneRead>;
+  /** Each task's one wait (lib/queue-wait-load.ts loadQueueWaitMap). */
+  waits?: (taskIds: string[], now: Date) => Promise<Map<string, QueueWait>>;
+}
+
+async function readWaits(taskIds: string[], now: Date): Promise<Map<string, QueueWait>> {
+  const { loadQueueWaitMap } = await import('@/lib/queue-wait-load');
+  return loadQueueWaitMap(taskIds, now);
+}
+
+/**
+ * A queued task's place in its serial lanes (spec: Overlap scheduling, I-3):
+ * the first lane that would refuse it now, held or behind someone who came
+ * first. The claim route asks the same `laneVerdict` of the same read.
+ */
+export function queueLane(
+  task: { id: string; workspaceId: string; pathManifest?: string[] | null; gitConfig?: unknown },
+  read: LaneRead,
+  now: Date,
+): NonNullable<RunnerQueueTask['lane']> | null {
+  for (const lane of lanesOf({ id: task.id, workspaceId: task.workspaceId, pathManifest: task.pathManifest, workspace: { gitConfig: (task.gitConfig ?? null) as WorkspaceGitConfig | null } })) {
+    const view = read.lanes.get(task.workspaceId)?.get(lane) ?? { workspaceId: task.workspaceId, lane, members: [] };
+    const v = laneVerdict(view, task.id);
+    if (v.kind === 'held') {
+      const stuck = stuckSince(v.holder, now);
+      return { lane, position: v.position, holderTaskId: v.holder.taskId, stuckSince: stuck ? stuck.toISOString() : null };
+    }
+    if (v.kind === 'behind') return { lane, position: v.position, holderTaskId: null, aheadTaskId: v.ahead.taskId };
+  }
+  return null;
 }
 
 /**
@@ -263,8 +301,12 @@ const ownerUser = alias(users, 'owner_user');
 /** Who owns a task: who filed it, else its mission's creator, else its schedule's. */
 const taskOwnerId = sql<string | null>`coalesce(${tasks.createdByUserId}, ${missions.createdByUserId}, ${taskSchedules.createdByUserId})`;
 
-/** The read, on any select builder (the db, or a QueryBuilder to render it in a test). */
-export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) {
+/**
+ * The read, on any select builder (the db, or a QueryBuilder to render it in a test).
+ * `limit` widens the bound for Health › Queue (lib/health-queue.ts), which
+ * reads the team's queue, not one runner's.
+ */
+export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>>; limit?: number }) {
   return builder
     .select({
       id: tasks.id,
@@ -299,7 +341,7 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
     .where(runnerQueueWhere(opts.workspaceIds))
     // The claim candidate query's own ORDER BY.
     .orderBy(...claimOrderBy(tasks, { desc, asc }))
-    .limit(RUNNER_QUEUE_LIMIT + 1);
+    .limit((opts.limit ?? RUNNER_QUEUE_LIMIT) + 1);
 }
 
 async function readWorkspaceConfigs(workspaceIds: string[]) {
@@ -377,6 +419,25 @@ export async function loadRunnerQueue(
         if (a) t.alongside = a;
       }
     }
+    // Lane positions: only for rows whose manifest is in a lane; a failed read leaves none.
+    const inLane = configs ? declaring.filter(r => lanesOf({ id: r.id, workspaceId: r.workspaceId, pathManifest: r.pathManifest, workspace: { gitConfig: (r.gitConfig ?? null) as WorkspaceGitConfig | null } }).length > 0) : [];
+    if (inLane.length > 0) {
+      const read = await (deps.lanes ?? loadLanes)([...new Set(inLane.map(r => r.workspaceId))], now).catch(() => null);
+      if (read) {
+        const byId = new Map(inLane.map(r => [r.id, r]));
+        for (const team of teamsOut) for (const t of team.queue) {
+          const r = byId.get(t.id);
+          const lane = r ? queueLane(r, read, now) : null;
+          if (lane) { t.lane = lane; if (!t.holds.includes('serial_lane')) t.holds.push('serial_lane'); }
+        }
+      }
+    }
+  }
+  // The one wait per queued task: the reason every surface gives. A failed read leaves none.
+  const queuedIds = teamsOut.flatMap(team => team.queue.map(t => t.id));
+  if (queuedIds.length > 0) {
+    const waits = await (deps.waits ?? readWaits)(queuedIds, now).catch(() => null);
+    if (waits) for (const team of teamsOut) for (const t of team.queue) if (waits.has(t.id)) t.wait = waits.get(t.id)!;
   }
   const estimates = deps.estimates ?? readEstimates;
   await Promise.all(teamsOut.map(async (team) => {

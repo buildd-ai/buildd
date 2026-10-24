@@ -119,3 +119,14 @@ describe('resolveCiGate', () => {
     });
   });
 });
+
+// surface-ia §11: the card's reading of the red head and the approval travel on the blocked gate.
+describe('resolveCiGate red-check facts', () => {
+  const red = { checks: ['Runner unit tests (windows)'], cause: 'failure' as const, sentence: 'Runner unit tests (windows) failed: a > b.', primary: 'fix' as const };
+  it('carries the red-check view and the approval onto a blocked gate', () => {
+    expect(resolveCiGate({ prLifecycleStatus: 'ci_failed', red, reviewApproved: true })).toEqual({ kind: 'blocked', reason: 'CI failing — no fix in flight', recommendation: null, red, reviewApproved: true });
+  });
+  it('a live fix outranks them', () => {
+    expect(resolveCiGate({ prLifecycleStatus: 'ci_failed', liveFixTaskId: 't', red })?.kind).toBe('fixing');
+  });
+});

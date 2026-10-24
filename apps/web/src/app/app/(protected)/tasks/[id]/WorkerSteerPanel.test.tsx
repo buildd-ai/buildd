@@ -125,3 +125,79 @@ describe('WorkerSteerPanel', () => {
     expect(render({ runner: 'mcp', status: 'idle' })).toContain('worker-release-slot-btn');
   });
 });
+
+test('the task page can hide the separate Communication section while keeping steering', () => {
+  const html = render({ showHistory: false, instructionHistory: [{ id: 'sent', type: 'instruction', message: 'a sent message', timestamp: 1 }] });
+  expect(html).not.toContain('Communication');
+  expect(html).not.toContain('a sent message');
+  expect(html).toContain('worker-instruct-form');
+});
+
+describe('WorkerSteerPanel — stalled run (Navigation R-7, AC-15)', () => {
+  const stalled = async (props: Partial<Parameters<typeof WorkerSteerPanel>[0]>) => {
+    const { RunStallContext } = await import('./run-stall-context');
+    return renderToStaticMarkup(
+      <RunStallContext.Provider value={{ quietMs: 48 * 60_000, label: 'Running 1h 12m · no progress for 48m' }}>
+        <WorkerSteerPanel workerId="w1" status="running" hasUnansweredQuestion={false} instructionHistory={[]} {...props} />
+      </RunStallContext.Provider>,
+    );
+  };
+
+  test('offers Restart and Stop and keeps Steer; Pause is gone', async () => {
+    const html = await stalled({ taskId: 't1' });
+    expect(html).toContain('data-testid="worker-restart-btn"');
+    expect(html).toContain('data-testid="worker-abort-btn"');
+    expect(html).not.toContain('data-testid="worker-pause-btn"');
+    expect(html).toContain('Steer this agent');
+  });
+
+  test('a run making progress keeps Pause and has no Restart', () => {
+    const html = render({ taskId: 't1' });
+    expect(html).toContain('data-testid="worker-pause-btn"');
+    expect(html).not.toContain('data-testid="worker-restart-btn"');
+  });
+});
+
+// Surface fix 59a6dec1 (design 6356e80d `phone-task-running`): in the live
+// block Steer, Pause and Stop sit together as one row; Steer opens the box.
+describe('WorkerSteerPanel — row layout in the live block', () => {
+  test('Steer, Pause and Stop together, in that order, and the box closed', () => {
+    const html = render({ layout: 'row' });
+    const row = html.match(/<div data-testid="worker-control-row"[^>]*>/)?.[0] ?? '';
+    expect(row).toContain('grid-cols-3');
+    const steer = html.indexOf('data-testid="worker-steer-toggle"');
+    const pause = html.indexOf('data-testid="worker-pause-btn"');
+    const stop = html.indexOf('data-testid="worker-abort-btn"');
+    expect(steer).toBeGreaterThan(-1);
+    expect(steer).toBeLessThan(pause);
+    expect(pause).toBeLessThan(stop);
+    expect(html).toMatch(/data-testid="worker-steer-toggle"[^>]*aria-expanded="false"/);
+    expect(html).not.toContain('worker-instruct-form');
+    expect(html).toMatch(/data-testid="worker-abort-btn"[^>]*>Stop</);
+  });
+
+  test('every control is a 44px target at every width', () => {
+    const html = render({ layout: 'row' });
+    for (const id of ['worker-steer-toggle', 'worker-pause-btn', 'worker-abort-btn']) {
+      const tag = html.match(new RegExp(`<button[^>]*data-testid="${id}"[^>]*>`))?.[0] ?? '';
+      expect(tag).toContain('min-h-11');
+      expect(tag).not.toContain('md:min-h-9');
+    }
+  });
+
+  test('a stalled run: Steer, Restart and Stop', async () => {
+    const { RunStallContext } = await import('./run-stall-context');
+    const html = renderToStaticMarkup(
+      <RunStallContext.Provider value={{ quietMs: 48 * 60_000, label: 'x' }}>
+        <WorkerSteerPanel workerId="w1" status="running" hasUnansweredQuestion={false} instructionHistory={[]} taskId="t1" layout="row" />
+      </RunStallContext.Provider>,
+    );
+    expect(html.indexOf('worker-steer-toggle')).toBeLessThan(html.indexOf('worker-restart-btn'));
+    expect(html.indexOf('worker-restart-btn')).toBeLessThan(html.indexOf('worker-abort-btn'));
+    expect(html).not.toContain('worker-pause-btn');
+  });
+
+  test('an open question hides Steer in the row too', () => {
+    expect(render({ layout: 'row', status: 'waiting_input', hasUnansweredQuestion: true })).not.toContain('worker-steer-toggle');
+  });
+});

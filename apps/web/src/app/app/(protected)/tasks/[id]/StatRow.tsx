@@ -106,3 +106,37 @@ export default function StatRow({
     </div>
   );
 }
+
+/**
+ * The live block's figures, inline beside the Now line (design 6356e80d
+ * `phone-task-running`): elapsed, turns, files, lines. Four across on a
+ * phone, a row to the right of Now from md. As in StatRow, a figure the run
+ * has not measured is left out, and with none there is nothing.
+ */
+export function LiveStats({ elapsed, turns, files, added, removed }: {
+  elapsed: string | null;
+  turns: number;
+  files: number;
+  added: number | null;
+  removed: number | null;
+}) {
+  const hasDiff = (added ?? 0) > 0 || (removed ?? 0) > 0;
+  type Item = { key: string; testId?: string; value: React.ReactNode; label: string };
+  const items = ([
+    elapsed != null && { key: 'elapsed', value: <span suppressHydrationWarning>{elapsed}</span>, label: 'elapsed' },
+    turns > 0 && { key: 'turns', value: turns, label: 'turns' },
+    files > 0 && { key: 'files', testId: 'worker-stat-files', value: files, label: files === 1 ? 'file' : 'files' },
+    hasDiff && { key: 'diff', testId: 'worker-stat-diff', value: <>+{added ?? 0} &minus;{removed ?? 0}</>, label: 'lines' },
+  ] as Array<Item | false>).filter((x): x is Item => !!x);
+  if (items.length === 0) return null;
+  return (
+    <div data-testid="worker-stats" className="grid w-full grid-cols-4 gap-2 md:flex md:w-auto md:gap-7 text-meta text-text-muted">
+      {items.map(i => (
+        <div key={i.key} data-testid={i.testId} className="min-w-0">
+          <div className="truncate text-body text-text-primary tabular-nums">{i.value}</div>
+          <div>{i.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}

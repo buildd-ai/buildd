@@ -96,6 +96,25 @@ export function isReleaseArtifactCommit(c: Pick<CommitFacts, 'message' | 'parent
   return RELEASE_ARTIFACT_SUBJECTS.some((re) => re.test(subject)) && c.files.every(isReleaseArtifactPath);
 }
 
+const VERSION_LINE = /^[+-]\s*"version"\s*:\s*"[^"]*"\s*,?\s*$/;
+
+/**
+ * The merge of the prod branch back into the source branch after a release
+ * (sync-dev.yml): every parent but the first is already in the base, and what it
+ * brings is only the previous release's artifacts, the CHANGELOG and package
+ * versions. A `package.json` counts only when every line its patch adds or
+ * removes is the `"version"` field, so a dependency change cannot ride along.
+ */
+export function isReleaseArtifactMerge(c: Pick<CommitFacts, 'parents' | 'diff' | 'mergeParentsInBase'>): boolean {
+  if (c.parents.length < 2 || !c.mergeParentsInBase || !c.diff || c.diff.length === 0) return false;
+  return c.diff.every((f) => {
+    if (f.filename === 'CHANGELOG.md') return true;
+    if (!(f.filename === 'package.json' || f.filename.endsWith('/package.json')) || typeof f.patch !== 'string') return false;
+    const changed = f.patch.split('\n').filter((l) => (l.startsWith('+') || l.startsWith('-')) && !l.startsWith('+++') && !l.startsWith('---'));
+    return changed.length > 0 && changed.every((l) => VERSION_LINE.test(l));
+  });
+}
+
 // ── Pure builder ────────────────────────────────────────────────────────────
 
 /** One file of a diff as GitHub returns it in a commit's or a compare's `files[]`. */
@@ -179,6 +198,12 @@ export interface CommitFacts {
    * was unreadable or truncated; absent = not such a merge.
    */
   refreshMerge?: RefreshMergeTrees | null;
+  /**
+   * A commit of a PR that landed through a merge commit (not a squash): that
+   * merge's sha, set only when this commit is an ancestor of the PR's merged
+   * head. It is covered when that merge is proven to be the reviewed change.
+   */
+  landedVia?: string | null;
 }
 
 /** path → `${mode} ${sha}` of one commit's whole tree (blobs and submodules). */
@@ -279,6 +304,13 @@ export interface CompositionInput {
    * owed a review.
    */
   refresh?: { trunk: string } | null;
+  /**
+   * A release candidate: when the aggregate diff is past GitHub's file cap, the
+   * complete commit list stands for it (the aggregate is exactly their sum), so
+   * every path any commit touched counts. That can only widen what is owed a
+   * review (a novel edit a later commit reverted stays listed), never narrow it.
+   */
+  aggregateFromCommits?: boolean;
   verifier?: string;
   now?: string;
 }
@@ -288,6 +320,8 @@ export interface CompositionResult {
   constituentsEvidence: ConstituentEvidence[];
   /** Why each non-constituent commit counted as novel (for the reviewer and the activity trail). */
   novelCommits: Array<{ sha: string; reason: string; paths: string[] }>;
+  /** Each novel commit's own diff, limited to its novel paths, as read (absent when unreadable). */
+  novelDiffs?: Record<string, FileDiff[]>;
 }
 
 /** The decided approve round that covers `head` in a constituent's delivery. */
@@ -323,7 +357,86 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
   let unverifiable: string | null = null;
 
   if (!input.commits) unverifiable = 'commit_list_truncated';
-  if (!input.aggregateFiles) unverifiable = unverifiable ?? 'aggregate_diff_truncated';
+  // Past the file cap a candidate stands its complete commit list in for the aggregate.
+  const fromCommits = !input.aggregateFiles && input.aggregateFromCommits && input.commits && input.commits.every((c) => c.files)
+    ? [...new Set(input.commits.flatMap((c) => c.files!))]
+    : null;
+  const aggregateFiles = input.aggregateFiles ?? fromCommits;
+  if (!aggregateFiles) unverifiable = unverifiable ?? 'aggregate_diff_truncated';
+  const aggregate = new Set(aggregateFiles ?? []);
+
+  // The proof that a landed change is the reviewed one, for a squash commit and
+  // for a PR's merge commit alike.
+  type Proof = { kind: 'constituent'; constituent: CompositionConstituent; evidence: ConstituentEvidence } | { kind: 'novel'; reason: string; paths: string[] } | { kind: 'unverifiable'; reason: string };
+  const prove = (c: CommitFacts & { files: string[] }, pr: ConstituentPr): Proof => {
+    const cov = pr.delivery ? coveringRound(pr.delivery, pr.mergedHeadSha) : null;
+    if (!pr.delivery || !cov) {
+      return { kind: 'novel', reason: pr.delivery ? `pr_${pr.prNumber}_not_approved_at_merged_head` : `pr_${pr.prNumber}_no_kernel_review`, paths: c.files };
+    }
+    // The proof: what this commit actually changed must be what was reviewed.
+    // GitHub's commit→PR association only says which PR to compare against.
+    const reviewedDiff = input.reviewedDiffs?.[c.sha] ?? null;
+    if (!c.diff) return { kind: 'unverifiable', reason: `landed_patch_unreadable:${c.sha.slice(0, 12)}` };
+    if (!reviewedDiff) return { kind: 'unverifiable', reason: `reviewed_patch_unreadable:${c.sha.slice(0, 12)}` };
+    const landed = patchIdOf(c.diff);
+    const reviewed = patchIdOf(reviewedDiff);
+    if (landed.unreadable.length || reviewed.unreadable.length) {
+      return { kind: 'unverifiable', reason: `patch_unreadable:${c.sha.slice(0, 12)}:${[...landed.unreadable, ...reviewed.unreadable][0]}` };
+    }
+    if (!landed.id || landed.id !== reviewed.id) {
+      // Owed a review: the files whose landed change differs from the reviewed
+      // one (a conflict resolved while merging, a hand edit in the squash). A
+      // file the reviewed head changed but that never landed still means this
+      // commit is not the reviewed change, so the whole commit is novel then.
+      const differ = differingPaths(landed, reviewed);
+      const landedDiffer = differ.filter((p) => landed.perFile.has(p));
+      return { kind: 'novel', reason: `pr_${pr.prNumber}_landed_patch_differs`, paths: landedDiffer.length ? landedDiffer : c.files };
+    }
+    return {
+      kind: 'constituent',
+      constituent: {
+        deliveryId: pr.delivery.deliveryId,
+        roundId: cov.round.id,
+        prNumber: pr.prNumber,
+        reviewedHeadSha: cov.round.headSha,
+        equivalentHeadShas: cov.equivalent,
+        mergedHeadSha: pr.mergedHeadSha,
+        landedSha: c.sha,
+        landedPatchId: landed.id,
+        reviewedPatchId: reviewed.id,
+      },
+      evidence: {
+        roundId: cov.round.id,
+        deliveryId: pr.delivery.deliveryId,
+        prNumber: pr.prNumber,
+        repoFullName: input.repoFullName,
+        roundHeadSha: cov.round.headSha,
+        roundStatus: cov.round.status,
+        effectiveVerdict: cov.round.effectiveVerdict,
+        deliveryApprovedHeads: pr.delivery.approvedHeads,
+        latestDecidedVerdictAtHead: latestDecidedVerdict(pr.delivery, cov.round.headSha),
+        deliveryState: pr.delivery.state ?? null,
+        deliveryHeadSha: pr.delivery.currentHeadSha ?? null,
+        openFindings: pr.delivery.openFindings ?? 0,
+      },
+    };
+  };
+
+  // A PR merged with a merge commit (not squashed): the merge, against its first
+  // parent, is the PR's whole change, proven like a squash. Its own commits then
+  // landed through it and are not owed anything of their own. Proven first,
+  // since those commits come before their merge in the list.
+  const mergeProofs = new Map<string, Proof>();
+  for (const c of input.commits ?? []) {
+    const pr = input.constituentsByCommit[c.sha] ?? null;
+    if (c.parents.length !== 2 || !c.files || c.mergeParentsInBase || input.refresh || !pr || pr.mergedHeadSha !== c.parents[1]) continue;
+    mergeProofs.set(c.sha, prove(c as CommitFacts & { files: string[] }, pr));
+  }
+  const accept = (p: Proof, sha: string) => {
+    if (p.kind === 'unverifiable') unverifiable = unverifiable ?? p.reason;
+    else if (p.kind === 'novel') { if (p.paths.length) novel.push({ sha, reason: p.reason, paths: p.paths }); }
+    else { constituents.push(p.constituent); evidence.push(p.evidence); }
+  };
 
   const covered = new Set<string>();
   // What a refresh's merge decided is owed a review even where the aggregate
@@ -342,68 +455,22 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
       continue;
     }
     if (c.parents.length > 1) {
+      const proof = mergeProofs.get(c.sha);
+      if (proof) { accept(proof, c.sha); continue; }
+      // The prod branch merged back after a release brings only that release's artifacts.
+      if (isReleaseArtifactMerge(c)) continue;
       // A merge commit. Bringing the base in adds nothing of its own except a
       // conflict resolution, which shows only in files both sides changed: those
       // are novel. A merge of anything not already in the base is wholly novel.
-      const aggregate = new Set(input.aggregateFiles ?? []);
       const paths = c.mergeParentsInBase ? c.files.filter((f) => aggregate.has(f)) : c.files;
       if (paths.length) novel.push({ sha: c.sha, reason: c.mergeParentsInBase ? 'merge_resolution' : 'merge_of_unreviewed_history', paths });
       continue;
     }
     if (isReleaseArtifactCommit(c)) continue;
+    if (c.landedVia && mergeProofs.get(c.landedVia)?.kind === 'constituent') continue;
     const pr = input.constituentsByCommit[c.sha] ?? null;
     if (!pr) { if (c.files.length) novel.push({ sha: c.sha, reason: 'direct_commit', paths: c.files }); continue; }
-    const cov = pr.delivery ? coveringRound(pr.delivery, pr.mergedHeadSha) : null;
-    if (!pr.delivery || !cov) {
-      if (c.files.length) novel.push({ sha: c.sha, reason: pr.delivery ? `pr_${pr.prNumber}_not_approved_at_merged_head` : `pr_${pr.prNumber}_no_kernel_review`, paths: c.files });
-      continue;
-    }
-    // The proof: what this commit actually changed must be what was reviewed.
-    // GitHub's commit→PR association only says which PR to compare against.
-    const reviewedDiff = input.reviewedDiffs?.[c.sha] ?? null;
-    if (!c.diff) { unverifiable = unverifiable ?? `landed_patch_unreadable:${c.sha.slice(0, 12)}`; continue; }
-    if (!reviewedDiff) { unverifiable = unverifiable ?? `reviewed_patch_unreadable:${c.sha.slice(0, 12)}`; continue; }
-    const landed = patchIdOf(c.diff);
-    const reviewed = patchIdOf(reviewedDiff);
-    if (landed.unreadable.length || reviewed.unreadable.length) {
-      unverifiable = unverifiable ?? `patch_unreadable:${c.sha.slice(0, 12)}:${[...landed.unreadable, ...reviewed.unreadable][0]}`;
-      continue;
-    }
-    if (!landed.id || landed.id !== reviewed.id) {
-      // Owed a review: the files whose landed change differs from the reviewed
-      // one (a conflict resolved while merging, a hand edit in the squash). A
-      // file the reviewed head changed but that never landed still means this
-      // commit is not the reviewed change, so the whole commit is novel then.
-      const differ = differingPaths(landed, reviewed);
-      const landedDiffer = differ.filter((p) => landed.perFile.has(p));
-      novel.push({ sha: c.sha, reason: `pr_${pr.prNumber}_landed_patch_differs`, paths: landedDiffer.length ? landedDiffer : c.files });
-      continue;
-    }
-    constituents.push({
-      deliveryId: pr.delivery.deliveryId,
-      roundId: cov.round.id,
-      prNumber: pr.prNumber,
-      reviewedHeadSha: cov.round.headSha,
-      equivalentHeadShas: cov.equivalent,
-      mergedHeadSha: pr.mergedHeadSha,
-      landedSha: c.sha,
-      landedPatchId: landed.id,
-      reviewedPatchId: reviewed.id,
-    });
-    evidence.push({
-      roundId: cov.round.id,
-      deliveryId: pr.delivery.deliveryId,
-      prNumber: pr.prNumber,
-      repoFullName: input.repoFullName,
-      roundHeadSha: cov.round.headSha,
-      roundStatus: cov.round.status,
-      effectiveVerdict: cov.round.effectiveVerdict,
-      deliveryApprovedHeads: pr.delivery.approvedHeads,
-      latestDecidedVerdictAtHead: latestDecidedVerdict(pr.delivery, cov.round.headSha),
-      deliveryState: pr.delivery.state ?? null,
-      deliveryHeadSha: pr.delivery.currentHeadSha ?? null,
-      openFindings: pr.delivery.openFindings ?? 0,
-    });
+    accept(prove(c as CommitFacts & { files: string[] }, pr), c.sha);
   }
 
   // The aggregate must be explained by its commits: a path in the aggregate
@@ -413,7 +480,6 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
 
   // Only paths still present in the aggregate diff are owed a review (a novel
   // edit later reverted by a constituent leaves nothing to look at).
-  const aggregate = new Set(input.aggregateFiles ?? []);
   const novelPaths = [...new Set(novel.flatMap((n) => n.paths))].filter((p) => aggregate.has(p) || resolutionPaths.has(p)).sort();
   const novelDelta: NovelDelta = unverifiable
     ? { result: 'unverifiable', reason: unverifiable }
@@ -433,6 +499,10 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
     },
     constituentsEvidence: evidence,
     novelCommits: novel,
+    novelDiffs: Object.fromEntries(novel.flatMap((n) => {
+      const diff = input.commits?.find((c) => c.sha === n.sha)?.diff;
+      return diff ? [[n.sha, diff.filter((f) => n.paths.includes(f.filename))]] : [];
+    })),
   };
 }
 
@@ -490,6 +560,8 @@ export async function collectComposition(p: {
    * through PRs into dev, and the candidate branch itself never had a PR.
    */
   constituentBase?: string | null;
+  /** A release candidate: past the file cap, the complete commit list stands in for the aggregate (see `CompositionInput`). */
+  aggregateFromCommits?: boolean;
 }): Promise<CompositionResult> {
   const { api, installationId: inst, repoFullName: repo } = p;
   const cmp = (await api(inst, `/repos/${repo}/compare/${encodeURIComponent(p.baseRef)}...${p.aggregateHeadSha}?per_page=${COMPARE_COMMIT_CAP}`)) as GhCompare | null;
@@ -505,6 +577,13 @@ export async function collectComposition(p: {
   const constituentBase = refreshTrunk ?? (p.constituentBase?.trim() || p.headRef);
   const commits: CommitFacts[] = [];
   const prsByCommit: Record<string, { prNumber: number; mergedHeadSha: string } | null> = {};
+  const mergedPrOf = async (sha: string) => {
+    try {
+      const pulls = (await api(inst, `/repos/${repo}/commits/${sha}/pulls`)) as Array<{ number: number; merged_at?: string | null; base?: { ref?: string }; head?: { sha?: string } }> | null;
+      const hit = (pulls ?? []).find((x) => x.merged_at && x.base?.ref === constituentBase && x.head?.sha);
+      return hit ? { prNumber: hit.number, mergedHeadSha: hit.head!.sha! } : null;
+    } catch { return null; }
+  };
   for (const c of rawCommits) {
     const parents = (c.parents ?? []).map((x) => x.sha);
     let diff: FileDiff[] | null = null;
@@ -525,14 +604,26 @@ export async function collectComposition(p: {
         commits.push({ sha: c.sha, parents, message: c.commit?.message ?? '', files, diff, mergeParentsInBase, refreshMerge: await readRefreshMerge(api, inst, repo, parents[0], parents[1], c.sha) });
         continue;
       }
+      // A PR landed with a merge commit: the merge is associated with it, and its second parent is the PR's head.
+      if (!refreshTrunk && !mergeParentsInBase && parents.length === 2) {
+        const pr = await mergedPrOf(c.sha);
+        if (pr && pr.mergedHeadSha === parents[1]) prsByCommit[c.sha] = pr;
+      }
     } else {
-      try {
-        const pulls = (await api(inst, `/repos/${repo}/commits/${c.sha}/pulls`)) as Array<{ number: number; merged_at?: string | null; base?: { ref?: string }; head?: { sha?: string } }> | null;
-        const hit = (pulls ?? []).find((x) => x.merged_at && x.base?.ref === constituentBase && x.head?.sha);
-        prsByCommit[c.sha] = hit ? { prNumber: hit.number, mergedHeadSha: hit.head!.sha! } : null;
-      } catch { prsByCommit[c.sha] = null; }
+      prsByCommit[c.sha] = await mergedPrOf(c.sha);
     }
     commits.push({ sha: c.sha, parents, message: c.commit?.message ?? '', files, diff, mergeParentsInBase });
+  }
+
+  // That PR's own commits landed through its merge, but only those the PR's head
+  // actually contains: GitHub's association alone never excuses a commit.
+  for (const m of commits) {
+    const pr = m.parents.length === 2 ? prsByCommit[m.sha] : null;
+    if (!pr) continue;
+    for (const c of commits) {
+      if (c.parents.length !== 1 || prsByCommit[c.sha]?.prNumber !== pr.prNumber) continue;
+      if (await onRef(api, inst, repo, c.sha, m.parents[1])) c.landedVia = m.sha;
+    }
   }
 
   const prNumbers = [...new Set(Object.values(prsByCommit).filter(Boolean).map((x) => x!.prNumber))];
@@ -564,7 +655,8 @@ export async function collectComposition(p: {
   for (const c of commits) {
     const pr = constituentsByCommit[c.sha];
     const cov = pr?.delivery ? coveringRound(pr.delivery, pr.mergedHeadSha) : null;
-    if (!cov || c.parents.length !== 1) continue;
+    // A squash against its parent; a PR's merge commit against its first parent (the PR's own commits need none).
+    if (!cov || c.landedVia || (c.parents.length !== 1 && !(c.parents.length === 2 && pr!.mergedHeadSha === c.parents[1]))) continue;
     try {
       reviewedDiffs[c.sha] = toFileDiffs((await api(inst, `/repos/${repo}/compare/${c.parents[0]}...${cov.round.headSha}`)) as GhFiles | null);
     } catch { reviewedDiffs[c.sha] = null; }
@@ -580,6 +672,7 @@ export async function collectComposition(p: {
     constituentsByCommit,
     reviewedDiffs,
     refresh: refreshTrunk ? { trunk: refreshTrunk } : null,
+    aggregateFromCommits: p.aggregateFromCommits ?? false,
   });
 }
 

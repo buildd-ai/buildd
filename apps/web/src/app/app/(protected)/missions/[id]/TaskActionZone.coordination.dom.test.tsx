@@ -32,21 +32,35 @@ const { default: TaskActionZone } = await import('./TaskActionZone');
 const { makeWaitingReason, coordinationHoldBody } = await import('@buildd/core/waiting-reason');
 type Props = import('./TaskActionZone').TaskActionZoneProps;
 
-const prHold = makeWaitingReason('pr_overlap_ended', {
+// A lane wait behind an open PR: named, never forced (Health › Queue R-10).
+const laneHold = makeWaitingReason('lane', {
   because: 'both edit packages/core/db/schema.ts',
   blocker: { type: 'pr', id: '1234', label: 'PR #1234', href: 'https://github.com/o/r/pull/1234', live: false },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared' },
+  lane: { lane: 'migration', holderTaskId: 'h', position: null },
   provenance: { source: 'probe', derivedFrom: 'claim layer 1' },
+});
+// A limit: what Force start is for.
+const prHold = makeWaitingReason('mission_paced', {
+  because: 'the mission starts a task at most every 10 min',
+  blocker: { type: 'mission', id: 'm1', label: 'mission pacing', href: '/app/missions/m1' },
+  provenance: { source: 'probe', derivedFrom: 'missions.pacingMode' },
+});
+const capHold = makeWaitingReason('mission_concurrent', {
+  because: 'the mission runs at most 2 tasks at once and 2 are running',
+  blocker: { type: 'mission', id: 'm1', label: 'the mission limit', href: '/app/missions/m1' },
+  provenance: { source: 'probe', derivedFrom: 'missions.maxConcurrentTasks' },
 });
 const roleHold = makeWaitingReason('role_unavailable', {
   because: 'no online runner offers the builder role',
   provenance: { source: 'runner_fleet', derivedFrom: 'fleet skills' },
 });
-const migrationEdge = (id: string) => makeWaitingReason('dep_inferred', {
+const migrationEdge = (id: string) => makeWaitingReason('lane', {
   because: 'both change migrations in core/db',
   blocker: { type: 'task', id, label: `“holder ${id}”`, href: `/app/tasks/${id}`, live: true },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
-  provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
+  lane: { lane: 'migration', holderTaskId: id, position: null },
+  provenance: { source: 'probe', derivedFrom: 'workers.prUrl ∩ tasks.pathManifest (claim layer 1)' },
 });
 const localHold = makeWaitingReason('mission_local', {
   because: "its mission runs in a person's own session, so runners do not pick up its tasks",
@@ -105,14 +119,17 @@ async function click(sel: string) {
 
 describe('TaskActionZone: coordination holds', () => {
   it('a queued task names its blocker, not the runner fleet', async () => {
+    hold = [laneHold];
     await render();
     const line = q('[data-testid="task-waiting-line"]');
-    expect(line?.dataset.kind).toBe('pr_overlap_ended');
+    expect(line?.dataset.kind).toBe('lane');
     expect(line?.dataset.chip).toBe('held');
     expect(line?.textContent).toContain('Waiting on PR #1234');
     expect(line?.textContent).toContain('because both edit packages/core/db/schema.ts');
     expect(container.textContent).not.toContain('Waiting for a runner');
     expect(container.textContent).not.toMatch(/no runner has responded/i);
+    // A lane is never forced.
+    expect(q('[data-action="force_start_offer"]')).toBeNull();
   });
 
   it('Run now refuses with the blocker and a Force start confirmation naming the gate and the rails', async () => {
@@ -120,11 +137,10 @@ describe('TaskActionZone: coordination holds', () => {
     await click('[data-action="run_now"]');
     const refusal = q('[data-testid="task-start-refusal"]');
     expect(refusal?.dataset.gate).toBe('coordination_hold');
-    expect(refusal?.textContent).toContain('Waiting on PR #1234');
+    expect(refusal?.textContent).toContain('Waiting on mission pacing');
     const confirm = q('[data-testid="task-force-confirm"]')!;
     expect(confirm.textContent).toContain('Force start “Fix schema”?');
-    expect(confirm.textContent).toContain('Skips: Open-PR file overlap: PR #1234: both edit packages/core/db/schema.ts');
-    expect(confirm.textContent).toContain('Risk: core/db overlap · declared files');
+    expect(confirm.textContent).toContain('Skips: Mission pacing: the mission starts a task at most every 10 min');
     expect(confirm.textContent).toContain('Still enforced:');
     expect(confirm.textContent).toContain('Files another agent is editing stay locked');
     expect(container.textContent).not.toMatch(/runners? online|no runner has responded/i);
@@ -135,12 +151,12 @@ describe('TaskActionZone: coordination holds', () => {
     await click('[data-action="run_now"]');
     await click('[data-action="force_start"]');
     const post = calls.filter(c => c.url.endsWith('/start')).at(-1)!;
-    expect(post.body.force).toEqual({ kinds: ['pr_overlap_ended'], reasonsDigest: coordinationHoldBody([prHold]).reasonsDigest });
+    expect(post.body.force).toEqual({ kinds: ['mission_paced'], reasonsDigest: coordinationHoldBody([prHold]).reasonsDigest });
     expect(post.body.forceOverride).toBeUndefined();
     expect(calls.some(c => c.url.includes('/api/workers/claim'))).toBe(false);
     const status = q('[data-testid="task-start-status"]');
     expect(status?.textContent).toContain('Force start requested');
-    expect(status?.textContent).toContain('Skipping: Open-PR file overlap');
+    expect(status?.textContent).toContain('Skipping: Mission pacing');
   });
 
   it('the waiting line itself offers Force start… that opens the same confirmation', async () => {
@@ -158,7 +174,7 @@ describe('TaskActionZone: coordination holds', () => {
     expect(container.textContent).toContain("Can't be forced: No runner for this role");
   });
 
-  it('blocked only by inferred migration edges: the migration slot, not "N dependencies", and one Force start', async () => {
+  it('held in the migration lane behind several tasks: the migration slot, not "N dependencies", and no Force start', async () => {
     hold = ['h1', 'h2', 'h3', 'h4', 'h5'].map(migrationEdge);
     await render({ isBlocked: true, blockedByCount: 5 });
     const panel = q('[data-testid="task-blocked-waiting"]')!;
@@ -166,13 +182,7 @@ describe('TaskActionZone: coordination holds', () => {
     expect(container.textContent).not.toMatch(/waiting on 5 dependencies/i);
     // Paths are drilldown only: the compact line names the area.
     expect(q('[data-testid="task-waiting-headline"]')!.textContent).not.toContain('schema.ts');
-
-    await click('[data-action="force_start_offer"]');
-    expect(container.querySelectorAll('[data-testid="task-force-skip"]')).toHaveLength(5);
-    expect(q('[data-testid="task-force-red-line"]')!.textContent).toContain('Migration numbering stays serialized');
-    await click('[data-action="force_start"]');
-    const post = calls.filter(c => c.url.endsWith('/start')).at(-1)!;
-    expect(post.body.force.kinds).toEqual(['dep_inferred']);
+    expect(q('[data-action="force_start_offer"]')).toBeNull();
   });
 
   // Regression (owner report): the overview card read "Next: Ready to start.
@@ -195,15 +205,15 @@ describe('TaskActionZone: coordination holds', () => {
     expect(q('[data-action="run_now"]')).not.toBeNull();
   });
 
-  it('a local mission held by coordination too: one press lifts both', async () => {
-    hold = [localHold, migrationEdge('h1')];
+  it('a local mission held by a limit too: one press lifts both', async () => {
+    hold = [localHold, capHold];
     await render({ missionExecutor: 'local' });
     await click('[data-action="force_start_offer"]');
     expect(container.querySelectorAll('[data-testid="task-force-skip"]')).toHaveLength(2);
     await click('[data-action="force_start"]');
     const posts = calls.filter(c => c.url.endsWith('/start'));
     expect(posts).toHaveLength(1);
-    expect([...posts[0].body.force.kinds].sort()).toEqual(['dep_inferred', 'mission_local']);
+    expect([...posts[0].body.force.kinds].sort()).toEqual(['mission_concurrent', 'mission_local']);
   });
 
   it('a declared dependency stays: blocked panel says so and offers no Force start', async () => {

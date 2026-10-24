@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, missions, missionNotes, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray, isNull, like, notLike } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, like, notLike, sql } from 'drizzle-orm';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
   SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
@@ -12,6 +12,7 @@ import {
   isSurfaceFixTask,
   isTrunkRefreshTask,
   planSurfaceFixFollowUp,
+  renderRecaptureScreens,
   surfaceAuditRound,
   surfaceAuditTitle,
   surfaceFixRoute,
@@ -22,7 +23,7 @@ import { VISUAL_AUDITOR_ROLE_SLUG, visualReviewPolicyOf } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { resolveVisualQaConfig } from '@buildd/core/visual-qa-page-source';
-import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
+import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, surfaceAuditWaived, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
 import { readAuditedSha } from '@/lib/workflow/visual-review-state';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import { readIncidentRecoveryRef } from '@/lib/incident-recovery-refs';
@@ -116,6 +117,15 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     columns: { id: true, title: true, status: true, dependsOn: true, context: true },
     orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
+
+  // Under a person's standing Skip, a finding the auditor files is information,
+  // not a repair (spec 072de598 I-18): its fix task is cancelled with the Skip
+  // as its reason and opens no round. A fix a person chose (`human`) still runs.
+  if (origin === 'auto' && isSurfaceFixTask(createdTask.title)
+    && await surfaceAuditWaived({ id: missionId, autoSurfaceAudit: mission.autoSurfaceAudit, workspaceId })) {
+    await cancelFixUnderSkip({ id: createdTask.id, workspaceId, missionId });
+    return;
+  }
 
   if (existingAudit && isSurfaceFixTask(createdTask.title)) {
     // A `[surface fix]` task is the auditor's (or a human's) answer to an
@@ -240,8 +250,13 @@ export interface RequestSurfaceAuditOptions {
   /** Round to file at (a re-review on a new head is the next round). Default 1. */
   round?: number;
   /** Why the scheduler filed it, recorded for the task page. */
-  reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery';
+  reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery' | 'recapture';
   attempt?: number;
+  /**
+   * For `recapture`: the screens a merged fix waits on (`recaptureScreenLabel`)
+   * and their routes. The audit re-shoots exactly these and depends on nothing.
+   */
+  recapture?: { screens: string[]; routes: string[] };
   /**
    * The mission's tasks in the gate's shape and a repo-link memo, when the
    * caller (the scheduler's sweep) already holds them: the plan then reads
@@ -315,7 +330,9 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
   });
   // A finished audit is the answer only for the commit it looked at. Asked for a
   // head, a completed audit stamped for another one is history, not a live review.
+  // A recapture follows a completed audit that missed screens: that audit is not the answer.
   const live = audits.find(a => isLiveAudit(a)
+    && !(opts.reason === 'recapture' && a.status === 'completed')
     && !(opts.headSha && a.status === 'completed' && readAuditedSha(a.context) !== opts.headSha.toLowerCase()));
   if (live) return { ok: true, mission, live: { id: live.id, status: live.status } };
 
@@ -362,25 +379,29 @@ export async function requestMissionSurfaceAudit(missionId: string, opts: Reques
   if (live) return { ok: true, created: false, taskId: live.id, status: live.status };
 
   const round = Math.max(1, opts.round ?? 1);
+  const recapture = opts.reason === 'recapture' && opts.recapture && opts.recapture.screens.length > 0 ? opts.recapture : null;
+  const recaptureBlock = recapture ? renderRecaptureScreens(recapture.screens) : null;
   const [auditTask] = await db.insert(tasks).values({
     workspaceId: targetWorkspace.id,
     missionId,
     title: surfaceAuditTitle(mission.title, round),
     description: buildSurfaceAuditDescription({
       missionTitle: mission.title,
-      scopedPaths,
-      requiredRoutes,
+      scopedPaths: recapture ? [] : scopedPaths,
+      requiredRoutes: recapture ? [...new Set(recapture.routes)].sort() : requiredRoutes,
       visualQa: auditVisualQa(targetWorkspace),
-    }) + (opts.headSha
+    }) + (recaptureBlock ? `\n\n${recaptureBlock}` : '') + (opts.headSha
       ? `\n\nThis review is for commit \`${opts.headSha.slice(0, 12)}\` of the integration branch. If the branch has moved past it by the time you capture, say so in your report: a pass only counts for the commit it looked at, and buildd files the next review for the new head itself.`
       : ''),
     taskClass: 'work',
     kind: 'observation',
-    dependsOn: builderIds,
+    // A recapture checks fixes that already merged: nothing to wait on.
+    dependsOn: recapture ? [] : builderIds,
     outputRequirement: 'artifact_required',
     context: {
       surfaceAuditTrigger: 'auto',
       ...(round > 1 ? { surfaceAuditRound: round } : {}),
+      ...(recapture ? { visualQa: { requiredRoutes: [...new Set(recapture.routes)].sort(), recapture: recapture.screens } } : {}),
       ...(opts.headSha ? { visualReview: { headSha: opts.headSha.toLowerCase(), reason: opts.reason ?? null, attempt: opts.attempt ?? 1 } } : {}),
     },
     roleSlug: VISUAL_AUDITOR_ROLE_SLUG,
@@ -428,6 +449,22 @@ export { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE };
  * A round skips the touchesUiSurface check: a fix task's manifest often names
  * no UI path, and the route in its title is what needs re-checking.
  */
+/** Cancel an auditor's fix filed under a standing Skip, while nobody has claimed it. */
+async function cancelFixUnderSkip(task: { id: string; workspaceId: string; missionId: string }): Promise<void> {
+  const cancellation = { reason: 'Visual review was skipped by a person, so this finding is kept as information, not repaired.', actor: 'system:visual-review-skip', at: new Date().toISOString() };
+  const cancelled = await db.update(tasks)
+    .set({
+      status: 'cancelled',
+      context: sql`coalesce(${tasks.context}, '{}'::jsonb) || jsonb_build_object('cancellation', ${JSON.stringify(cancellation)}::jsonb)`,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending'), isNull(tasks.claimedBy)))
+    .returning({ id: tasks.id });
+  if (cancelled.length === 0) return;
+  const { applyTaskCancelSideEffects } = await import('@/lib/task-cancel');
+  await applyTaskCancelSideEffects(task);
+}
+
 async function followUpSurfaceFix(opts: {
   missionId: string;
   workspaceId: string;

@@ -92,7 +92,8 @@ describe('formatVisualReview for MCP', () => {
     const m = model({ needsYou: { reason: 'round_cap' }, roundCapOpen: true, cells: [model().cells[1]], summary: { ...model().summary, unsure: 0, awaitingHuman: 0 } });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
     expect(text).not.toMatch(/\b0 (screens? )?needs? your review/);
-    expect(text).toContain('Decision needed: issues remain after 2 rounds (fix or waive).');
+    expect(text).toContain('Decision needed: issues remain after the automatic fixes (fix or waive).');
+    expect(text).not.toMatch(/after \d+ rounds?/);
   });
 
   it('question: the closing line carries the prompt', () => {
@@ -195,12 +196,12 @@ describe('formatVisualReview: wrong-ref shots (visual-qa-auditor.md, "Page sourc
 });
 
 describe('formatVisualReview: cells resolved elsewhere (visual-qa-human-review.md, "The crux")', () => {
-  it('lists a stuck fix-merged cell resolved by a later round\'s capture under a different variant, kept for audit', () => {
+  it('lists a cell covered by another cell\'s shot of the same screen, kept for audit', () => {
     const m = model({
       resolvedElsewhere: [{ key: '/app/example|mobile|eur', route: '/app/example', viewport: 'mobile', variant: 'eur', resolvedBy: '/app/example|mobile|' }],
     });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp' });
-    expect(text).toContain('Resolved (1): a merged fix\'s cell with no screenshot of its own since, verified instead by a later round\'s capture of the same route, viewport and state under a different variant; kept for audit, not shown for review:');
+    expect(text).toContain('Resolved (1): cells covered by another cell\'s shot of the same route, viewport and state; kept for audit, not shown for review:');
     expect(text).toContain('  - /app/example phone (eur): resolved by /app/example|mobile|');
   });
 
@@ -332,5 +333,16 @@ describe('formatVisualReview state line', () => {
     const withState = formatVisualReview(model(), 'Example', { audience: 'chat', stateLine: 'Ready to merge. Visual check passed on the latest changes.' });
     expect(withState).toBe(`State: Ready to merge. Visual check passed on the latest changes.\n${plain}`);
     expect(formatVisualReview(model(), 'Example', { audience: 'chat', stateLine: null })).toBe(plain);
+  });
+});
+
+describe('formatVisualReview: a merged fix waiting for a screenshot (spec 072de598 I-15)', () => {
+  const screen = { key: '/app/x|mobile|dialog', route: '/app/x', viewport: 'mobile' as const, state: 'dialog', variant: 'dialog', fixTaskId: 'fx', fixPrNumber: 7 };
+  it('names the exact screen and who takes the next step, never "nothing to decide"', () => {
+    for (const [next, words] of [['queued', 'a capture of each is queued'], ['capture', 'a capture of each is filed next'], ['decide', 'no new screenshot is coming: a human decides fixed or still broken']] as const) {
+      const text = formatVisualReview(model({ recapture: { next, screens: [screen] } }), 'Example', { audience: 'mcp' });
+      expect(text).toContain(`Fixes merged, waiting for a new screenshot (1): ${words}: /app/x · dialog · phone.`);
+      expect(text).not.toContain('nothing to decide');
+    }
   });
 });

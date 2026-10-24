@@ -407,3 +407,27 @@ describe('maxSeverity', () => {
     expect(maxSeverity('medium', 'medium')).toBe('medium');
   });
 });
+
+describe('stuck serial lane (spec: Overlap scheduling, I-7, AC-9)', () => {
+  const holder = '00000000-0000-4000-8000-0000000000b1';
+  const next = '00000000-0000-4000-8000-0000000000b2';
+
+  it('reports the holder, its PR and how long it has been quiet, through the stranded-gate family', () => {
+    const out = detectFailurePatterns(facts({ stuckLanes: [{ lane: 'migration', holderTaskId: holder, prNumber: 77, quietSince: minutesAgo(30 * 60), nextTaskId: next }] }));
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      rule: 'stranded_gate',
+      reasonCode: 'gate.lane_stuck',
+      severity: 'medium',
+      signature: `stranded_gate|ws=${WS}|gate=serial_lane|lane=migration|holder=${holder}`,
+      affected: { taskIds: [holder, next], prNumbers: [77] },
+      impact: { quietHours: 30, waiting: 1 },
+    });
+    expect(out[0].title).toContain('migration lane is stuck');
+    expect(out[0].title).toContain('PR #77');
+  });
+
+  it('nothing stuck, nothing reported', () => {
+    expect(detectFailurePatterns(facts({ stuckLanes: [] }))).toEqual([]);
+  });
+});

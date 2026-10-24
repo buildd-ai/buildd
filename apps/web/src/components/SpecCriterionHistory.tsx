@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import Card from '@/components/ui/Card';
-import { MarkedWords } from '@/components/SpecReviewChanges';
+import { ChangedText, Words } from '@/components/SpecReviewChanges';
 import { wordDiff } from '@buildd/spec-contract/criterion-review';
 import type { CriterionHistory } from '@/lib/specs/criteria';
 
@@ -54,9 +54,9 @@ export function CriterionHistoryEntries({ specId, criterionId, history }: { spec
               <span>by {e.author === 'person' ? 'a person' : 'an agent'}</span>
               {e.approved ? <span className="font-medium text-status-success">approved</span> : <span>not approved</span>}
             </span>
-            <p className="whitespace-pre-line text-body text-text-primary [overflow-wrap:anywhere]">
-              {prev && e.kind === 'changed' ? <MarkedWords words={wordDiff(prev.text, e.text)} /> : e.text}
-            </p>
+            <div className="text-body text-text-primary [overflow-wrap:anywhere]">
+              {prev && e.kind === 'changed' ? <ChangedText words={wordDiff(prev.text, e.text)} /> : <Words text={e.text} />}
+            </div>
             {e.changeSummary ? <p className="text-meta text-text-secondary [overflow-wrap:anywhere]">{e.changeSummary}</p> : null}
           </li>
         );
