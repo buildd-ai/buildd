@@ -180,8 +180,8 @@ If a step fails after the hold, the Windows runner stays on hold and keeps its
 Scheduled Task, so it is never removed while no WSL service is running. Fix what
 the message says and rerun `buildd wsl migrate`, or run `buildd resume` to put
 the Windows runner back to work. On a machine that has already been handed over,
-a rerun changes nothing and reports each step as done. `buildd wsl migrate --undo`
---distro <name>` removes that distribution's task and no other. The service inside
+a rerun changes nothing and reports each step as done.
+`buildd wsl migrate --undo --distro <name>` removes that distribution's task and no other. The service inside
 WSL stays until you run `buildd service uninstall` there.
 
 Then check **this WSL runner's** own report, not the old Windows runner's. In
