@@ -68,7 +68,7 @@ const workerOrderBy = (w: any, { desc }: any) => [desc(w.startedAt), desc(w.upda
 /**
  * The Plan page's missions (lib/mission-plan-source.ts): every open mission
  * with its tasks and their newest workers. Rule P-3 governs cost here
- * (bounded by workspace maxConcurrentTasks), so it is deliberately NOT limited. Adds `roleSlug` (tasks) and
+ * (bounded by each mission's cap), so it is deliberately NOT limited. Adds `roleSlug` (tasks) and
  * `exitCause` (workers) on top of the base columns — the two fields the
  * live flight-strip computation needs (Rule A-1/A-2) that nothing else on
  * this page reads — plus the phase fields that order the card's pulse.

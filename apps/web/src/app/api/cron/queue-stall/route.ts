@@ -61,14 +61,13 @@ import { notifyOperator } from '@/lib/pushover';
 import { checkConnectorRouting } from '@/app/api/workers/claim/connector-gate';
 import { checkMissionHeld, checkMissionLocal, TASK_HOLD_KEY } from '@/app/api/workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '@/app/api/workers/claim/mission-budget-gate';
-import { checkWorkspaceCap } from '@/app/api/workers/claim/workspace-cap-gate';
 import { isSubjectDead } from '@/lib/subject-gate-contract';
 // One definition of "is this operator bypass set", shared with the claim
 // route's SQL prefilter and /start. This file previously carried a local copy
 // that was byte-for-byte hasBypassFlag — a third copy of gate logic in the very
 // job whose purpose is to catch gate logic drifting.
 import { startAnywayAdmits } from '@/lib/start-anyway';
-import { hasBypassFlag, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY } from '@/lib/bypass-flags';
+import { hasBypassFlag, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY } from '@/lib/bypass-flags';
 // Reporting only. The credential state this reads has deliberately NO
 // task-level gate (`capability_mismatch` / `checkCapabilityMatch` were removed
 // in PR #1864 and replaced by configuration-time surfacing); the watchdog names
@@ -93,10 +92,9 @@ export const maxDuration = 60;
 /**
  * How long a task may sit pending-and-never-claimed before it is a stall.
  *
- * 4h, chosen against the longest LEGITIMATE queue wait: the only self-resolving
- * gate is the per-workspace concurrency cap (default 3 concurrent tasks), and a
- * task runs in tens of minutes, so a healthy queue drains a backlog well inside
- * 4h. Deferred (`startAt`) and in-flight-dependency waits are excluded from the
+ * 4h, chosen against the longest LEGITIMATE queue wait: the self-resolving
+ * waits are runner slots and a mission's concurrency cap, and a task runs in
+ * tens of minutes, so a healthy queue drains a backlog well inside 4h. Deferred (`startAt`) and in-flight-dependency waits are excluded from the
  * definition entirely rather than absorbed into the threshold, so the threshold
  * does not have to be padded for them.
  *
@@ -143,7 +141,6 @@ export type StallGate =
   | 'mission_held'
   | 'mission_budget_exhausted'
   | 'subject_dead'
-  | 'workspace_cap_reached'
   | 'backend_credential_missing'
   | 'routing_paused'
   | 'no_gate_identified';
@@ -153,7 +150,6 @@ interface CandidateWorkspace {
   name: string | null;
   teamId: string | null;
   repo: string | null;
-  maxConcurrentTasks: number | null;
 }
 
 interface Candidate {
@@ -200,8 +196,8 @@ interface GateVerdict {
  *
  * Evaluation order mirrors `/api/tasks/[id]/start` deliberately: an operator
  * who clicks Start on a reported task must see the same gateReason the
- * watchdog named. Notably the connector gate stays AHEAD of the concurrency cap
- * so a permanent capability block is never masked by a transient queue wait.
+ * watchdog named. Notably the connector gate stays AHEAD of transient waits
+ * so a permanent capability block is never masked by a queue wait.
  *
  * Reporting-only reasons sit below every gate /start can name, so an
  * operator sees /start's own rejection first.
@@ -350,20 +346,6 @@ async function resolveStallGate(
     };
   }
 
-  // ── Workspace concurrency cap ─────────────────────────────────────────────
-  if (task.workspace?.repo && !hasBypassFlag(ctx, CAP_EXEMPT_KEY)) {
-    const capResult = await checkWorkspaceCap(
-      task.workspaceId,
-      task.workspace.maxConcurrentTasks ?? null,
-    );
-    if (capResult) {
-      return {
-        gate: 'workspace_cap_reached',
-        detail: `workspace at concurrency limit (${capResult.active}/${capResult.cap}) — a zombie worker holding a slot looks identical to a busy queue`,
-      };
-    }
-  }
-
   // ── Missing backend credential ────────────────────────────────────────────
   // The effective backend (stored backend + the team's provider mask, resolved
   // by the one shared `resolveEffectiveBackend`) has no usable credential, so
@@ -506,7 +488,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     },
     with: {
       workspace: {
-        columns: { id: true, name: true, teamId: true, repo: true, maxConcurrentTasks: true },
+        columns: { id: true, name: true, teamId: true, repo: true },
       },
     },
     orderBy: sqlOrderBy(asc(tasks.createdAt)),

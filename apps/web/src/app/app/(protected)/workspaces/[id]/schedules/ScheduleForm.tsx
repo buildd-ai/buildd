@@ -314,7 +314,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
         {showAdvanced && (
           <div className="mt-4 border border-border-default p-6 space-y-4">
             <div>
-              <label className="block text-sm font-medium mb-1">Max concurrent tasks</label>
+              <label className="block text-sm font-medium mb-1">Runs at once</label>
               <input
                 type="number"
                 min={0}

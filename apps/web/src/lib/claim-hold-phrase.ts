@@ -20,8 +20,6 @@ export const CLAIM_HOLD_PHRASES: Readonly<Record<ClaimHoldReason, string>> = {
   soft_overlap: 'it waits for a task working on the same files',
   mission_budget: "the mission's budget is spent",
   mission_concurrent: 'the mission is already running as many tasks as it allows',
-  mission_paced: "the mission's pacing spaces out starts",
-  workspace_cap: 'every agent slot in the workspace is in use',
   provider_unavailable: 'no model provider is available to start it',
   budget_paused: 'runners paused new work until the model budget resets',
   routing_paused: 'routing is paused',

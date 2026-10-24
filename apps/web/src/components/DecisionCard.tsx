@@ -170,7 +170,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     setNoteError(null);
     try {
       await visualAct(label);
-      if (label !== 'Review screens →') {
+      if (label !== 'Review screens') {
         setNoteOutcome({ label, at: Date.now() });
         onAnswered?.(label);
         router.refresh();
@@ -181,18 +181,42 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
       setNoteSending(null);
     }
   }, [view.answer.kind, visualAct, noteSending, onAnswered, router]);
+  // The criteria escalation: waiving completes the mission (the filing option is a link).
+  const waive = useCallback(async (label: string) => {
+    if (view.answer.kind !== 'criteria' || noteSending) return;
+    setNoteSending(label);
+    setNoteError(null);
+    try {
+      const res = await fetch(`/api/missions/${encodeURIComponent(view.answer.missionId)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ status: 'completed' }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error || 'Could not complete the mission. Try again.');
+      }
+      setNoteOutcome({ label, at: Date.now() });
+      onAnswered?.(label);
+      router.refresh();
+    } catch (e) {
+      setNoteError(e instanceof Error ? e.message : 'Could not reach buildd.');
+    } finally {
+      setNoteSending(null);
+    }
+  }, [view.answer, noteSending, onAnswered, router]);
 
   const pick = useCallback((label: string) => {
     if (view.answer.kind === 'worker') void submit.submit(label);
     else if (view.answer.kind === 'note') void answerNote(label);
     else if (view.answer.kind === 'visual') void answerVisual(label);
-  }, [view.answer.kind, submit, answerNote, answerVisual]);
+    else if (view.answer.kind === 'criteria') void waive(label);
+  }, [view.answer.kind, submit, answerNote, answerVisual, waive]);
 
   const primary = view.options[0] ?? null;
   const sending = submit.sending ?? noteSending;
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     // The shortcut applies to this card's primary only while focus is inside it, never on an approval.
-    if (!view.shortcut || !primary || view.answer.kind === 'link') return;
+    if (!view.shortcut || !primary || view.answer.kind === 'link' || view.answer.kind === 'criteria') return;
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !sending) {
       e.preventDefault();
       pick(primary.label);
@@ -272,7 +296,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
               option={o}
               primary={i === 0}
               shortcut={view.shortcut}
-              href={view.answer.kind === 'link' ? (i === 0 ? view.answer.primaryHref : view.answer.secondaryHref) : undefined}
+              href={view.answer.kind === 'link' ? (i === 0 ? view.answer.primaryHref : view.answer.secondaryHref) : view.answer.kind === 'criteria' && i === 0 ? view.answer.fileWorkHref : undefined}
               onPick={() => pick(o.label)}
               disabled={!!sending}
               pending={sending === o.label}
@@ -280,7 +304,15 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
           ))}
         </div>
       )}
-      {differently ? (
+      {differently && view.answer.kind === 'visual' ? (
+        <div data-testid="decision-skips" className="flex flex-wrap gap-2.5">
+          {view.answer.skips.map(label => (
+            <button key={label} type="button" data-testid="decision-skip" disabled={!!sending} onClick={() => pick(label)} className="btn min-h-11 md:min-h-9">
+              {sending === label ? 'Saving…' : label}
+            </button>
+          ))}
+        </div>
+      ) : differently ? (
         <form
           data-testid="decision-answer-form"
           className="flex flex-wrap gap-2"
@@ -299,7 +331,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
         </form>
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-x-4">
-        {view.answer.kind === 'link' || view.answer.kind === 'visual'
+        {view.answer.kind === 'link' || view.answer.kind === 'criteria'
           ? <span />
           : !differently
             ? <button type="button" data-testid="decision-answer-differently" onClick={() => setDifferently(true)} className={TEXT_BUTTON}>Answer differently</button>

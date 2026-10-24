@@ -314,7 +314,7 @@ describe('claim_empty deferral breakdown', () => {
         reason: 'all_candidates_deferred',
         pendingTasks: 9,
         matchedTasks: 4,
-        deferrals: { subject_dead: 3, mission_paced: 1 },
+        deferrals: { subject_dead: 3, mission_concurrent: 1 },
       },
     }));
 
@@ -324,7 +324,7 @@ describe('claim_empty deferral breakdown', () => {
 
     const entry = emptyClaimCall();
     expect(entry.diagnosticReason).toBe('all_candidates_deferred');
-    expect(entry.deferrals).toEqual({ subject_dead: 3, mission_paced: 1 });
+    expect(entry.deferrals).toEqual({ subject_dead: 3, mission_concurrent: 1 });
   });
 
   test('records the candidate-window sizes that make a deferral count readable', async () => {
@@ -422,16 +422,16 @@ describe('idle claim polls', () => {
   // run-once.ts's classifyClaimFailure (--once's exit-code mapping) tells a
   // temporary capacity defer from a permanent refusal by this specific field —
   // without it, every explicit-taskId refusal looked identical regardless of
-  // whether the named gate (e.g. workspace_cap) was self-resolving.
+  // whether the named gate (e.g. mission_concurrent) was self-resolving.
   test('an explicit-task exclusion carries its gate code on the error', async () => {
     mockClaimTask.mockImplementation(async () => ({
       workers: [],
-      diagnostics: { reason: 'no_pending_tasks', taskExclusion: { code: 'workspace_cap', detail: 'at cap' } },
+      diagnostics: { reason: 'no_pending_tasks', taskExclusion: { code: 'mission_concurrent', detail: 'at cap' } },
     }));
     manager = new WorkerManager(makeConfig());
     const err: any = await manager.claimAndStart(makeTask()).catch(e => e);
     expect(err.claimError).toBe('server_rejected');
-    expect(err.claimTaskExclusionCode).toBe('workspace_cap');
+    expect(err.claimTaskExclusionCode).toBe('mission_concurrent');
   });
 
   // `buildd top` reads these (spec c7410e76 R-25): the latest outcome per task

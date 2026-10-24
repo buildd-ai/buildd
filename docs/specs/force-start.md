@@ -63,7 +63,7 @@ producer, `lib/coordination-probe.ts`, read by `/start` and `GET /api/tasks/[id]
 | creation-time overlap edge (`pathDeclaration.inferredDependsOn`, incl. migration overlap) | `dep_inferred` | yes | dependency-gate arm: `context.forceStart.liftDependsOn` |
 | soft overlap (`pathDeclaration.softOverlaps`): migration / hard surface | `serialized_surface` | yes | claim-loop key `soft_overlap` |
 | soft overlap: same file / prefix, last verdict HOLD | `soft_overlap` | yes | claim-loop key `soft_overlap` |
-| mission concurrency cap / pacing | `mission_concurrent`, `mission_paced` | yes | claim-loop keys |
+| mission cap | `mission_concurrent` | yes | claim-loop key |
 | planner order | `ordered_behind` (soft) | yes (human only) | claim planner off for the task |
 | local-session mission | `mission_local` | yes | `bypassHeldGate` (the claim's local prefilter) |
 | declared `dependsOn` | `dep_declared` | yes: **Start anyway** (below) | `context.forceStart.assessDependsOn`, admitted by the dependency gate's `assess_start` arm; the edge is kept |

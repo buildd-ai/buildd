@@ -278,8 +278,6 @@ export default function TaskActionZone({
   const refusalEntitlement = refusal?.gateReason === 'entitlement_blocked' ? parseEntitlementBlock(refusal.entitlement) : null;
   const waitingOnPlan = has('run_now') && phase === 'pending' && !!entitlementBlock && start.status === 'idle';
   const showRunNow = has('run_now') && !waitingOnPlan && (start.status === 'idle' || start.status === 'starting');
-  const cap = refusal?.cap ?? 3;
-  const [capTarget, setCapTarget] = useState<number | null>(null);
   const deferredLabel = refusal?.startAt
     ? displayTz ? formatInZone(refusal.startAt, displayTz, 'time') : '…'
     : null;
@@ -632,30 +630,12 @@ export default function TaskActionZone({
               </p>
             )}
           </div>
-          {refusal.gateReason === 'workspace_cap_reached' && refusal.canRaiseCap && (
-            <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
-              <span className="text-text-secondary">Raise the workspace limit to</span>
-              <div className="inline-flex shrink-0 items-center gap-2">
-                <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
-                <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
-                <button type="button" aria-label="Raise" onClick={() => setCapTarget(t => Math.min(20, (t ?? cap + 1) + 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">+</button>
-              </div>
-              <button type="button" data-action="raise_cap" onClick={() => start.raiseCapAndStart(capTarget ?? cap + 1)} disabled={starting} className={SECONDARY_BTN}>
-                {start.pending === 'cap' ? 'Updating…' : 'Save & start'}
-              </button>
-            </div>
-          )}
           <div className="flex flex-wrap items-center gap-2">
             {refusal.gateReason === 'capability_mismatch' && (refusal.availableBackends ?? []).map(b => (
               <button key={b} type="button" data-action="switch_and_start" onClick={() => start.switchBackendAndStart(b)} disabled={starting} className={SECONDARY_BTN}>
                 {start.pending === 'switch' ? 'Switching…' : `Switch to ${b === 'claude' ? 'Claude (default)' : backendDisplayName(b)} and start`}
               </button>
             ))}
-            {refusal.gateReason === 'workspace_cap_reached' && refusal.canExempt && (
-              <button type="button" data-action="cap_exempt" onClick={() => start.start({ capExempt: true })} disabled={starting} className={SECONDARY_BTN}>
-                {start.pending === 'exempt' ? 'Starting…' : 'Start anyway (this once)'}
-              </button>
-            )}
             {canOfferForce(refusal) && (
               <button
                 type="button"
@@ -668,7 +648,7 @@ export default function TaskActionZone({
               </button>
             )}
             <button type="button" onClick={start.dismiss} disabled={starting} className={QUIET_BTN}>
-              {refusal.gateReason === 'workspace_cap_reached' ? 'Leave queued' : canOfferForce(refusal) ? 'Cancel' : 'Close'}
+              {canOfferForce(refusal) ? 'Cancel' : 'Close'}
             </button>
           </div>
         </div>

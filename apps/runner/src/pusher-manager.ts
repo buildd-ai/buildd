@@ -31,7 +31,7 @@ function isLostClaimRace(err: unknown): boolean {
 }
 
 /**
- * The claim gate that refused a task we were woken for (e.g. `workspace_cap`),
+ * The claim gate that refused a task we were woken for (e.g. `mission_concurrent`),
  * or null. The claim WHERE drops such a task and answers `no_pending_tasks`,
  * which reads exactly like a lost race unless the named gate is printed.
  */
