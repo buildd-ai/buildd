@@ -78,18 +78,9 @@ const TABLE: Row[] = [
     kind: 'lane', extra: { lane: 'migration', position: 2, holderTaskId: 'h' }, headline: 'In the schema lane, 2nd in line',
   },
   {
-    name: 'limit: mission pacing, with when it lifts',
-    task: missionTask, facts: facts({ coordination: coordination(missionTask, { mission: { ...mission, maxConcurrentTasks: 5 } }) }),
-    kind: 'limit', extra: { limit: 'mission_pacing', liftsAt: '2026-10-22T12:04:00.000Z', forceable: true }, headline: 'Waiting: mission pacing, lifts in 4m',
-  },
-  {
     name: 'limit: mission cap',
     task: missionTask, facts: facts({ coordination: coordination(missionTask, { mission: { ...mission, pacingMode: 'eager' }, missionActiveCount: 1 }) }),
     kind: 'limit', extra: { limit: 'mission_cap' }, headline: 'Waiting: mission limit',
-  },
-  {
-    name: 'limit: workspace cap (claim WHERE)',
-    task: task({}, ['workspaceCap']), kind: 'limit', extra: { limit: 'workspace_cap' }, headline: 'Waiting: workspace limit',
   },
   {
     name: 'limit: workspace paused, with when it lifts',
@@ -107,10 +98,6 @@ const TABLE: Row[] = [
   {
     name: 'limit: plan (managed runner hours)',
     task: task(), facts: facts({ ledger: ledger('managed_runner_hours') }), kind: 'limit', extra: { limit: 'plan' }, headline: 'Waiting: plan limit',
-  },
-  {
-    name: 'limit: seats (subscription session limit)',
-    task: task(), facts: facts({ ledger: ledger('oauth_parallelism') }), kind: 'limit', extra: { limit: 'seats' }, headline: 'Waiting: seats in use',
   },
   {
     name: 'limit: a person paused it (claim WHERE)',

@@ -176,12 +176,12 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
   it('lists per-reason deferrals when every candidate was deferred', async () => {
     mockApi.mockResolvedValueOnce({
       workers: [],
-      diagnostics: { reason: 'all_candidates_deferred', pendingTasks: 1, matchedTasks: 1, deferrals: { mission_paced: 1 } },
+      diagnostics: { reason: 'all_candidates_deferred', pendingTasks: 1, matchedTasks: 1, deferrals: { mission_concurrent: 1 } },
     });
     const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', { taskId: TASK_ID }, interactive());
     const out = result.content[0].text;
     expect(out).toContain('all_candidates_deferred');
-    expect(out).toContain('mission_paced');
+    expect(out).toContain('mission_concurrent');
     expect(out).toContain(`Task ${TASK_ID} is claimable but was not started this round (see the reason above); try again shortly.`);
     expect(out).not.toMatch(/\bheld\b/);
   });

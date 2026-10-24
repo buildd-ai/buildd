@@ -96,10 +96,7 @@ editors or controls they cannot use.
 - A read-only section renders its values as text: Deploy access (an agent's
   deploy rights) is one line naming the workspaces it may deploy from; Repeat
   work is its value, not a switch.
-- A control whose action the viewer would be refused is not rendered. The
-  task start refusal for a full workspace carries `canRaiseCap` (from
-  `manage_workspace_settings`), and the "raise the workspace limit" control
-  renders only when it is true.
+- A control whose action the viewer would be refused is not rendered.
 - The flags come from `settingsPermissions`, which reads `roleHas`; a personal
   team counts as owned. No page reads a per-team grant (`team-permissions`
   § No per-team grants).
@@ -111,9 +108,8 @@ editors or controls they cannot use.
 - AC-7: GIVEN a `member` WHEN they open an agent's edit page THEN Deploy
   access is one plain line with no editor; GIVEN an `admin` THEN the team
   limit and workspace grants save.
-- AC-8: GIVEN a caller without `manage_workspace_settings` WHEN a start is
-  refused with `workspace_cap_reached` THEN `canRaiseCap` is false; GIVEN an
-  admin THEN it is true.
+- AC-8: Retired with the workspace cap (spec 0dc7c6de, Parallelism limits):
+  no start refusal offers to raise a workspace limit.
 - AC-9: GIVEN a `member` WHEN they open Settings › Members THEN no
   permission grant table renders.
 
@@ -163,7 +159,6 @@ team page, and team-facing copy MUST NOT name the operator.
   `SubjectPolicySection.tsx`.
 - `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/OperatorAccessSection.tsx`:
   Deploy access.
-- `apps/web/src/app/api/tasks/[id]/start/route.ts`: `canRaiseCap`.
 
 ## Out of scope
 

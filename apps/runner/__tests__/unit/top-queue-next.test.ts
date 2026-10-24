@@ -121,11 +121,11 @@ describe('the server\'s one wait', () => {
     const s = stateWith(6, 0, [
       task({ id: 'dep', wait: { kind: 'declared', blockerId: 'x', blockerTitle: '“Rework claim order”', count: 1 } }),
       task({ id: 'lane', wait: { kind: 'lane', lane: 'migration', position: 2, holderTaskId: 'h' } }),
-      task({ id: 'lim', wait: { kind: 'limit', limit: 'mission_pacing', liftsAt: iso(NOW + 4 * MIN) } }),
+      task({ id: 'lim', wait: { kind: 'limit', limit: 'mission_cap', liftsAt: iso(NOW + 4 * MIN) } }),
       task({ id: 'go', wait: { kind: 'slot', noRunnerReason: null } }),
     ]);
     const rows = queueSections(s, NOW)[0].rows;
-    expect(rows.map(r => r.starts)).toEqual(['after “Rework claim order”', 'schema lane, 2nd', 'mission pacing, in 4m', 'now']);
+    expect(rows.map(r => r.starts)).toEqual(['after “Rework claim order”', 'schema lane, 2nd', 'mission limit, in 4m', 'now']);
     expect(rows.map(r => r.wait ?? null)).toEqual(['dependency', 'same_files', 'limit', null]);
   });
 

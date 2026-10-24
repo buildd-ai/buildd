@@ -22,12 +22,6 @@ const LANE_PR = makeWaitingReason('lane', {
   lane: { lane: 'migration', holderTaskId: 'holder', position: null },
   provenance: { source: 'probe', derivedFrom: 'claim layer 1' },
 });
-const PACED = makeWaitingReason('mission_paced', {
-  because: 'the mission starts a task at most every 10 min',
-  blocker: { type: 'mission', id: 'm', label: 'mission pacing', href: '#' },
-  liftsAt: new Date(Date.now() + 4 * 60_000).toISOString(),
-  provenance: { source: 'probe', derivedFrom: 'missions.pacingMode' },
-});
 const MISSION_CAP = makeWaitingReason('mission_concurrent', {
   because: 'the mission runs at most 2 tasks at once and 2 are running',
   blocker: { type: 'mission', id: 'm', label: 'the mission limit', href: '#' },
@@ -81,10 +75,10 @@ export default function CoordinationHoldFixture() {
           <WaitingLine reasons={[LANE_SECOND]} />
         </Panel>
         <Panel label="Run now refused by a limit: Force start confirmation">
-          <CoordinationRefusal refusal={refusalOf([PACED])} pending={null} onForce={noop} onCancel={noop} taskTitle="PR scope verification" />
+          <CoordinationRefusal refusal={refusalOf([MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} taskTitle="PR scope verification" />
         </Panel>
         <Panel label="Two limits">
-          <CoordinationRefusal refusal={refusalOf([PACED, MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} />
+          <CoordinationRefusal refusal={refusalOf([MISSION_CAP, ROLE_GAP])} pending={null} onForce={noop} onCancel={noop} />
         </Panel>
         <Panel label="Local mission + mission limit: one Force start lifts both">
           <CoordinationRefusal refusal={refusalOf([LOCAL, MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} taskTitle="Add the run evidence table" />

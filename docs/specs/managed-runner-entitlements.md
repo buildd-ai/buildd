@@ -55,7 +55,7 @@ Three things are kept apart:
   month. Past the allowance, the plan's overage policy either holds new runs
   (`block`) or lets them run (`allow`).
 - **Self-hosted capacity**: an operator's own runners, bounded only by
-  `accounts.maxConcurrentWorkers` and `workspaces.maxConcurrentTasks`. These
+  their runner slots and the mission cap. These
   operational caps are independent of, and evaluated separately from, the
   entitlement.
 
@@ -110,7 +110,7 @@ Three things are kept apart:
   `stampEntitlementBlock`, `wakeEntitlementBlockedTasks`, `onManagedWorkerTerminal`,
   `sweepEntitlementBlockedTasks`.
 - `apps/web/src/app/api/workers/claim/route.ts`: the in-loop gate, after the
-  workspace cap.
+  mission cap.
 - `apps/web/src/app/api/tasks/[id]/start/route.ts`: the start refusal.
 - `apps/web/src/app/api/workers/[id]/route.ts`: the terminal wake.
 - `apps/web/src/app/api/cron/dispatch-drain/route.ts`: the hourly sweep.

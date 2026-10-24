@@ -20,6 +20,10 @@ import { requeueBranchContext } from '@/lib/integration-refresh';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { notDeliveryOwnedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { START_ANYWAY_PARK_KEY, parkAllowed, parseAssessment, planPark, type AssessmentFields } from '@buildd/core/start-anyway';
+import { wakeTask } from '@/lib/dispatch-authority';
+import { depsGate } from '@/app/api/workers/claim/deps-gate';
+import { lastStartAnyway, START_ANYWAY_PARKS_KEY } from '@/lib/start-anyway';
 
 /** The task context key the exit records: who waits on what, and why. */
 export const WAIT_EXIT_CONTEXT_KEY = 'waitExit';
@@ -102,9 +106,18 @@ export function decideWaitExit(i: {
   /** The blocker's latest PR is still open (it is completed but not merged). */
   blockerHasOpenPr: boolean;
   edges: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Set for a task a person started anyway (spec 36df686b): its assessment's
+   * park is the sanctioned wait, so the workspace flag does not gate it. The
+   * budget stops a dead prerequisite from looping wake and re-park.
+   */
+  startAnyway?: { parks: number } | null;
 }): WaitExitDecision {
   const refuse = (status: number, code: string, error: string): WaitExitRefusal => ({ ok: false, status, code, error });
-  if (!i.enabled) {
+  if (i.startAnyway && !parkAllowed(i.startAnyway.parks)) {
+    return refuse(409, 'park_limit', `This task has already parked on a prerequisite ${i.startAnyway.parks} times. Do not park again: finish what can be done, or ask a person.`);
+  }
+  if (!i.enabled && !i.startAnyway) {
     return refuse(409, 'wait_exit_disabled', 'Waiting on another task is not turned on for this workspace. Finish with complete_task { error } naming the task you are blocked by, or ask a person.');
   }
   if (!isOpenTaskStatus(i.task.status)) {
@@ -155,7 +168,11 @@ async function loadDependencyEdges(start: string, workspaceId: string): Promise<
 }
 
 export type WaitExitResult =
-  | { ok: true; taskId: string; blocker: { id: string; title: string }; dependsOn: string[]; workerId: string | null }
+  | {
+      ok: true; taskId: string; blocker: { id: string; title: string }; dependsOn: string[]; workerId: string | null;
+      /** A Start anyway park: whether the recheck after the write found it already released and woke it (R-9). */
+      park?: { resumedOnRecheck: boolean };
+    }
   | WaitExitRefusal;
 
 /**
@@ -170,10 +187,18 @@ export async function applyWaitExit(i: {
   reason: string;
   /** The worker asking, when known; otherwise the task's live worker. */
   workerId?: string | null;
+  /** A Start anyway park's structured assessment (optional; malformed is refused). */
+  assessment?: unknown;
 }): Promise<WaitExitResult> {
+  let assessment: AssessmentFields | null = null;
+  if (i.assessment !== undefined && i.assessment !== null) {
+    const parsed = parseAssessment(i.assessment);
+    if (!parsed.ok) return { ok: false, status: 400, code: 'invalid_assessment', error: parsed.error };
+    assessment = parsed.assessment;
+  }
   const blocker = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, i.blockerTaskId)),
-    columns: { id: true, workspaceId: true, status: true, loopState: true, title: true },
+    columns: { id: true, workspaceId: true, status: true, loopState: true, title: true, updatedAt: true },
   });
   let blockerHasOpenPr = false;
   if (blocker?.status === 'completed') {
@@ -187,8 +212,11 @@ export async function applyWaitExit(i: {
   const edges = blocker && blocker.workspaceId === i.task.workspaceId
     ? await loadDependencyEdges(blocker.id, i.task.workspaceId)
     : new Map<string, string[]>();
+  const startedAnyway = lastStartAnyway((i.task.context ?? null) as Record<string, unknown> | null);
+  const parks = Number((i.task.context as Record<string, unknown> | null)?.[START_ANYWAY_PARKS_KEY] ?? 0) || 0;
   const decision = decideWaitExit({
     enabled: waitExitEnabled(i.task.gitConfig),
+    startAnyway: startedAnyway ? { parks } : null,
     task: i.task,
     blockerTaskId: i.blockerTaskId,
     blocker: blocker ?? null,
@@ -207,7 +235,16 @@ export async function applyWaitExit(i: {
   });
   const workerId = liveWorker?.id ?? null;
   const ctx = (i.task.context ?? {}) as Record<string, unknown>;
-  const record: WaitExitRecord = { blockerTaskId: blocker!.id, reason: i.reason, workerId, at: new Date().toISOString() };
+  const now = new Date();
+  const record: WaitExitRecord = { blockerTaskId: blocker!.id, reason: i.reason, workerId, at: now.toISOString() };
+  // R-8: a Start anyway park keeps its assessment and the exact wake condition:
+  // the prerequisite, the event, and the version of it this park observed.
+  const park = startedAnyway
+    ? planPark({
+        assessment: assessment ?? { needs: i.reason, canProceed: 'unknown', uncertainty: 'unknown', nextStep: `wait for "${blocker!.title}" to merge` },
+        prerequisite: { id: blocker!.id, title: blocker!.title, status: blocker!.status, version: blocker!.updatedAt ? new Date(blocker!.updatedAt).getTime() : 0 },
+      })
+    : null;
 
   const [moved] = await db.update(tasks)
     .set({
@@ -220,6 +257,8 @@ export async function applyWaitExit(i: {
         ...withoutForceClaim(ctx),
         ...requeueBranchContext(ctx, liveWorker?.branch),
         [WAIT_EXIT_CONTEXT_KEY]: record,
+        ...(startedAnyway ? { [START_ANYWAY_PARKS_KEY]: parks + 1 } : {}),
+        ...(park ? { [START_ANYWAY_PARK_KEY]: { ...park.persist, structured: !!assessment, at: record.at } } : {}),
       },
       updatedAt: new Date(),
     })
@@ -235,5 +274,23 @@ export async function applyWaitExit(i: {
   // Its paths are no longer being worked on; a task waiting on them may go.
   await releaseAndNotify(i.task.id, 'abandoned');
 
-  return { ok: true, taskId: i.task.id, blocker: { id: blocker!.id, title: blocker!.title }, dependsOn: decision.dependsOn, workerId };
+  // Subscribe-and-recheck (R-9). The dependency wake fires when the
+  // prerequisite is released; if that happened while this task was still
+  // running (a merge, an early release), the wake saw no pending dependent
+  // and this park would strand. So read the claim's own gate once more now the
+  // task is pending, and wake it if it already passes.
+  let resumedOnRecheck = false;
+  if (park) {
+    const ready = await db.select({ id: tasks.id }).from(tasks)
+      .where(and(eq(tasks.id, i.task.id), eq(tasks.status, 'pending'), depsGate()));
+    if (ready.length > 0) {
+      await wakeTask(i.task.id, 'dependency.satisfied', { metadata: { startAnyway: 'park_recheck' } });
+      resumedOnRecheck = true;
+    }
+  }
+
+  return {
+    ok: true, taskId: i.task.id, blocker: { id: blocker!.id, title: blocker!.title }, dependsOn: decision.dependsOn, workerId,
+    ...(park ? { park: { resumedOnRecheck } } : {}),
+  };
 }

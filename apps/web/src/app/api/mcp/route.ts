@@ -712,7 +712,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           };
         }
 
-        const VALID_MSG_TYPES = ['path_blocked_on_you', 'path_released', 'question', 'answer'];
+        const VALID_MSG_TYPES = ['path_released', 'question', 'answer'];
         if (!msgType || !VALID_MSG_TYPES.includes(msgType)) {
           return {
             content: [{ type: "text" as const, text: `type must be one of: ${VALID_MSG_TYPES.join(', ')}` }],

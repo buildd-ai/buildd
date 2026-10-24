@@ -235,7 +235,7 @@ const TERM_LIST: Term[] = [
     from: [] },
   { key: 'wait.slot', word: 'Waiting for a free slot', short: 'no free slot', tone: 'q',
     means: 'Every slot it may use is in use; it starts when one frees.',
-    from: wk('mission_concurrent', 'mission_paced', 'workspace_cap', 'account_slots', 'oauth_parallelism', 'codex_single_flight', 'dispatch_undelivered', 'runner_cooldown') },
+    from: wk('mission_concurrent', 'account_slots', 'codex_single_flight', 'dispatch_undelivered', 'runner_cooldown') },
   { key: 'wait.runner', word: 'Waiting for its runner', short: 'waiting for its runner', tone: 'q',
     means: 'It asked for one runner; it starts when that runner is online.', from: wk('runner_preference') },
   { key: 'wait.no_runner', word: 'No runner can run it', short: 'no runner can run it', tone: 'bad',

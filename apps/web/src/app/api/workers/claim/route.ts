@@ -5,7 +5,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimDeferralCounters, ClaimTaskExclusion } from '@buildd/shared';
 import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp, parseRunnerLoginUse, pickLoginBackend } from '@buildd/shared';
@@ -33,16 +33,6 @@ import { pickRoleRowForTask, resolveClaimModelInputs, roleFloorTier, type RoleMo
 import { codingPolicyLoader } from '@buildd/core/coding-policy-store';
 import { codingPolicyAudit, decideCodingPolicy } from './coding-policy-gate';
 import { lazyRequester, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
-import {
-  describeOauthPressure,
-  learnOauthCapacity,
-  oauthBudgetPressure,
-  oauthParallelismCap,
-  readPacingConfig,
-  windowEndsAt,
-  type OauthBudgetPressure,
-} from '@buildd/core/oauth-budget';
-import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
 import { isTaskTier, readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
 import { bandExceedsLabel, claimTierRequest, enforceModelCeiling, enforceTierCeiling } from '@buildd/core/model-tier-ceiling';
@@ -57,7 +47,7 @@ import {
   DISPATCH_MODEL_REJECTED_PATTERN,
   type DispatchModelRejection, type DispatchModelSource,
 } from '@buildd/core/dispatch-model-guard';
-import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
+import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment, markDispatchFallback } from '@buildd/core/model-routing-experiment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
@@ -67,7 +57,6 @@ import { intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
-  CAP_EXEMPT_KEY,
   hasBypassFlag,
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
@@ -78,19 +67,16 @@ import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-
 import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { readForceStart } from '@buildd/core/waiting-reason';
 import { consumeForceStart, recordForceStartClaim } from '@/lib/force-start';
+import { assessmentContext, loadPrerequisites, START_ANYWAY_ASSESSMENT_KEY } from '@/lib/start-anyway';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { decideClaimIsolation, teamSizeLoader } from './isolation-gate';
 import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
-import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
+import { checkMissionConcurrencyGate } from './concurrency-gate';
 import { findActiveClaimBlocker } from './coordination-gates';
 import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from './coordination-snapshot';
 import { missionNotHeld, missionNotLocal, taskNotHeld, taskNotReserved, TASK_RESERVATION_KEY, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
-// The workspace concurrency cap as a claim predicate (see the call site for the
-// rules). A function so a force claim can evaluate it for the audit without
-// applying it.
-import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
 import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-paused-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
@@ -361,7 +347,7 @@ export async function POST(req: NextRequest) {
   // canClaim link into another team grants claiming, not overriding that
   // team's gates); any other combination is an ordinary claim. It lifts the
   // gates a person may override (deps, held mission, dead subject, startAt,
-  // mission concurrency/pacing, path overlap, workspace cap) and never the ones
+  // mission concurrency, path overlap) and never the ones
   // that protect correctness, cost or capacity (live worker, a person's hold on
   // the task, the mission budget, role/runner routing, provider walls,
   // account limits). Undeclared scope is not a gate, so there is nothing to lift. Granted below, once the task's
@@ -679,7 +665,7 @@ export async function POST(req: NextRequest) {
   // Skipped for a task in an executor='local' mission: there the interactive
   // session IS the executor, and fanning subagents out over a mission's tasks
   // is the intended use. The window is armed by the attempt, not the outcome,
-  // so it also turned a retry after a gate rejection (e.g. workspace_cap) into
+  // so it also turned a retry after a gate rejection (e.g. mission_concurrent) into
   // a second, unrelated rate_limited failure.
   const localMissionClaim = !!(taskId && interactiveSession) && await checkTaskMissionLocal(taskId!);
   if (taskId && interactiveSession && !localMissionClaim && !(await allowExplicitClaim(taskId, account.id))) {
@@ -758,7 +744,7 @@ export async function POST(req: NextRequest) {
   // cannot exhaust the window and starve valid tasks behind it.
   // Without this, `limit: availableSlots` means the dispatch loop only ever sees
   // the highest-priority N tasks; if all N are permanently deferred (wrong
-  // connector, pacing, etc.) nothing else is ever examined — race_lost forever.
+  // connector, etc.) nothing else is ever examined — race_lost forever.
   //
   // Role-env gaps are known before the cut, so they do not count toward the
   // window: a page whose candidates no channel can deliver secrets to fetches
@@ -818,7 +804,6 @@ export async function POST(req: NextRequest) {
         missionHeld: missionNotHeld(),
         missionLocal: missionNotLocal(),
         subject: subjectLivenessCondition(),
-        workspaceCap: workspaceCapGate(),
         workspaceExecutor: workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host'),
         workspacePaused: workspaceNotPausedGate(now),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
@@ -1116,63 +1101,6 @@ export async function POST(req: NextRequest) {
     ? Math.min(1, parseFloat(account.totalCost.toString()) / parseFloat(account.maxCostPerDay.toString()))
     : 0;
 
-  // OAuth budget pacing. Seat auth reports no cost, so the pressure signal is
-  // learned from past exhaustion episodes instead: how many workers/turns/tokens
-  // this account's 5h window has historically held (p25, conservative), versus
-  // what the current window has already consumed. The 5h-wall forecast is not
-  // reliable enough to delay work on, so it does NOT feed `dailyBudgetPct` (the
-  // router would pause priority-0 work at 95%). Its only effect is a lower
-  // per-seat session cap — `oauthSeatSlotsLeft`, retaining at least half the slots,
-  // restored when the window resets, off entirely at low confidence.
-  // Failures here never block claiming.
-  //
-  // Two hard exemptions, both deliberate:
-  //  • `taskId` present — this is an explicit start (dashboard Start button or a
-  //    Pusher assignment for one task). A human asking for this task now always
-  //    wins over pacing; pacing only governs autonomous background claiming.
-  //    Without this, pacing would reintroduce the silent no-op Start that
-  //    /api/tasks/[id]/start already suffers from.
-  //  • OAUTH_BUDGET_PACING=off — operational kill switch, no redeploy of logic
-  //    needed, no settings row, no UI.
-  const pacingConfig = readPacingConfig(process.env);
-  // An interactive session runs on the person's own credentials, not a seat.
-  const pacingApplies = pacingConfig.enabled && !taskId && !interactiveSession;
-  let oauthPressure: OauthBudgetPressure | null = null;
-  let oauthSeatSlotsLeft: number | null = null; // null = uncapped
-  if (account.authType === 'oauth' && pacingApplies) {
-    try {
-      const accountIds = await resolveSeatIdPeers({
-        id: account.id,
-        teamId: account.teamId ?? '',
-        seatId: account.seatId ?? null,
-      });
-      const episodes = await loadOauthEpisodes(accountIds, undefined, now);
-      const capacity = learnOauthCapacity(episodes, { quantile: pacingConfig.quantile });
-
-      if (capacity.confidence !== 'none') {
-        const { windowStartedAt, usage } = await measureOauthWindow({
-          accountIds,
-          now,
-          lastResetsAt: episodes[0]?.resetsAt ?? null,
-        });
-
-        oauthPressure = oauthBudgetPressure({ usage, capacity, now, windowStartedAt, observedAt: episodes[0]?.exhaustedAt });
-        const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: workerSlotLimit });
-        if (seatCap !== null) {
-          oauthSeatSlotsLeft = Math.max(0, seatCap - await countLiveSeatWorkers(accountIds));
-        }
-        if (oauthPressure.pct >= 0.5) {
-          console.log(
-            `[claim] ${describeOauthPressure(oauthPressure)} seat cap ${seatCap ?? 'none'} ` +
-            `window opened ${windowStartedAt.toISOString()}, ends ${windowEndsAt(windowStartedAt).toISOString()}`,
-          );
-        }
-      }
-    } catch (err) {
-      console.warn(`[claim] OAuth budget pacing unavailable for account ${account.id}:`, err);
-    }
-  }
-
   const tenMinAgo = new Date(now.getTime() - 10 * 60 * 1000);
   const recentClaims = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -1240,8 +1168,6 @@ export async function POST(req: NextRequest) {
     soft_overlap: 0,
     mission_budget: 0,
     mission_concurrent: 0,
-    mission_paced: 0,
-    workspace_cap: 0,
     provider_unavailable: 0,
     budget_paused: 0,
     routing_paused: 0,
@@ -1253,7 +1179,6 @@ export async function POST(req: NextRequest) {
     kernel_refused: 0,
     runner_capability: 0,
     codex_single_flight: 0,
-    oauth_parallelism: 0,
     role_env_unsatisfied: 0,
     delegation_unmet: 0,
     ordered_behind: 0,
@@ -1347,22 +1272,11 @@ export async function POST(req: NextRequest) {
     if (list.length > 0) deferralWaiters.set(workspaceId, list);
   };
 
-  // Per-workspace concurrency cap enforced within this batch. The SQL guard above
-  // filtered candidates against *existing* active workers, but a single batch could
-  // still claim several same-repo tasks at once (they all passed when the count was
-  // below the cap). Seed the running tally with this account's existing active
-  // workers per workspace and stop claiming once a repo workspace reaches its cap.
-  const DEFAULT_MAX_CONCURRENT_TASKS = 3;
-  const activeByWorkspace = new Map<string, number>();
   // Managed runs this batch started, per team: not yet visible to the
   // entitlement's live-worker count.
   const managedClaimedByTeam = new Map<string, number>();
   // Hosted runner allowance per team, read once per request (cloud claims only).
   const hostedAllowanceByTeam = new Map<string, Awaited<ReturnType<typeof checkHostedRunnerAllowance>>>();
-  for (const w of activeWorkers) {
-    if (!['running', 'starting', 'idle'].includes(w.status)) continue;
-    activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
-  }
 
   // Budget failover throttling: Codex shares one 5-hour plan window, so at most
   // one Codex worker may run per workspace (the runner defers extras). Derive the
@@ -1513,12 +1427,11 @@ export async function POST(req: NextRequest) {
     return view;
   };
 
-  // ── Mission-level gates (pacing, concurrency, budget) ─────────────────────────
+  // ── Mission-level gates (concurrency, budget) ─────────────────────────────────
   // Batch-fetch mission rows and active worker counts for all tasks that reference
-  // a mission. Used by three claim-loop guards:
+  // a mission. Used by two claim-loop guards:
   //   1. budget_exhausted status → skip task (never claim into an exhausted mission)
   //   2. maxConcurrentTasks     → skip when mission-level cap is reached
-  //   3. pacing                 → skip when the minimum inter-start interval hasn't elapsed
   //
   // These are enforced in-loop so they skip individual tasks without blocking other
   // missions or non-mission tasks in the same poll.
@@ -1586,7 +1499,7 @@ export async function POST(req: NextRequest) {
       missionInFlightRows,
       claimedThisBatch: claimed,
       capacity,
-      pressure: { dailyBudgetPct, oauthPressure: oauthPressure?.pct ?? null, confidence: oauthPressure?.confidence ?? null },
+      pressure: { dailyBudgetPct },
       thresholds: plannerThresholdsFor(cands),
       signals: plannerSignals,
     });
@@ -1905,12 +1818,12 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Mission-level gates ──────────────────────────────────────────────────────
-    // Applied before workspace concurrency and model routing (cheap short-circuits).
+    // Applied before model routing (cheap short-circuits).
     const taskMissionId = (task as any).missionId as string | null;
     // Reviews read a diff and post a verdict; they are not mission work. They
-    // keep the budget gate below and every workspace/account cap further down,
-    // but skip the mission's concurrency cap and pacing interval, and never
-    // consume either (see the post-claim bookkeeping). Gating them made
+    // keep the budget gate below and every account limit further down,
+    // but skip the mission's concurrency cap, and never consume it (see the
+    // post-claim bookkeeping). Gating them made
     // reviews start long after their PR opened, in bursts — widening the
     // window in which a PR can merge with no verdict. Only reviewer-dispatched
     // rows qualify: any task creator can set `category: 'review'`.
@@ -1945,19 +1858,6 @@ export async function POST(req: NextRequest) {
           if (bypassOrDefer('mission_concurrent', { missionId: taskMissionId, active: concurrencyBlock.active, cap: concurrencyBlock.cap })) continue;
         }
 
-        // 3. Pacing gate: paced missions enforce a minimum interval between task starts.
-        //    Skipping is cheap — the task stays pending and is eligible on the next poll.
-        //    Review tasks are exempt and never stamp lastTaskStartedAt.
-        const pacingBlock = !isReviewTask && checkMissionPacingGate(missionData, now);
-        if (pacingBlock) {
-          console.log(
-            `[claim] task ${task.id} deferred: mission ${taskMissionId} paced ` +
-            `(next eligible ${pacingBlock.nextEligibleAt.toISOString()}, ` +
-            `interval ${pacingBlock.intervalSec}s, elapsed ${Math.round(pacingBlock.elapsedSec)}s)`,
-          );
-          if (bypassOrDefer('mission_paced', { missionId: taskMissionId, nextEligibleAt: pacingBlock.nextEligibleAt.toISOString() })) continue;
-        }
-
         // No scope-undeclared serialization. A task that declares no files
         //    (null, [], '**') starts like any other: it runs in its own worktree
         //    on its own branch, and the merge settles an overlap (runner
@@ -1972,23 +1872,6 @@ export async function POST(req: NextRequest) {
         //    unmergeable surface, a migration included, under advisory leases
         //    (the default): the merge step and CI catch that. Under
         //    pathClaimEnforcement 'enforce' the second edit is denied.
-      }
-    }
-
-    // Per-repo concurrency cap (repo-backed workspaces only — repo-less ones are not
-    // serialized). Each task is worktree-isolated, so the cap only bounds how many
-    // branches run in parallel on one repo.
-    // capExempt=true in context allows one-time bypass (set by /start with capExempt flag).
-    // A mission may raise the effective cap above the workspace default; use the same
-    // GREATEST logic as the SQL prefilter so in-batch behaviour is consistent.
-    const isCapExempt = hasBypassFlag(taskContext, CAP_EXEMPT_KEY);
-    const taskWorkspace = (task as any).workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
-    if (taskWorkspace?.repo && !isCapExempt) {
-      const workspaceCap = taskWorkspace.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
-      const missionCap = taskMissionId ? (missionClaimMap.get(taskMissionId)?.maxConcurrentTasks ?? 0) : 0;
-      const cap = Math.max(workspaceCap, missionCap);
-      if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
-        if (bypassOrDefer('workspace_cap', { active: activeByWorkspace.get(task.workspaceId) || 0, cap })) continue;
       }
     }
 
@@ -2117,7 +2000,7 @@ export async function POST(req: NextRequest) {
     // agent endpoint, a metered Anthropic key, the runner's own provider or
     // cloud egress carries spends that budget, not the seat's. A tenant task
     // runs on its tenant's own seat, whose wall is the tenant budget above.
-    // Resolved lazily — only a walled pool or an active seat cap needs it.
+    // Resolved lazily — only a walled pool needs it.
     const isTenantTask = !!tenantCtx?.tenantId;
     const claudeRunUsesSeat = async (): Promise<boolean> =>
       isTenantTask || routeUsesOauthSeat(await claudeRouteFor(taskTeamId, task.workspaceId));
@@ -2203,17 +2086,6 @@ export async function POST(req: NextRequest) {
       if (await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'runner_login_mode')) {
         console.log(`[claim] Login mode: task ${task.id} → Codex (runner ${loginUse.mode}, ${loginRunning.codex} on Codex, ${loginRunning.claude} on Claude)`);
       }
-    }
-
-    // Learned OAuth pressure narrows the seat's Claude parallelism (see above).
-    // Codex, tenant work and non-seat Claude routes draw on other pools, so they
-    // are never held by it. Read the backend fresh: `isCodexTask` was captured
-    // before the budget failover above, which may just have flipped this task to Codex.
-    const usesOauthSeat = (task as any).backend !== 'codex' && !isTenantTask
-      && (oauthSeatSlotsLeft === null || await claudeRunUsesSeat());
-    if (usesOauthSeat && oauthSeatSlotsLeft !== null && oauthSeatSlotsLeft <= 0) {
-      deferTask(task, 'oauth_parallelism', { pct: oauthPressure?.pct ?? null });
-      continue;
     }
 
     // Workspace/project mismatch guard. If a task is pinned to a project name
@@ -2329,6 +2201,7 @@ export async function POST(req: NextRequest) {
     const experimentDraw = await drawModelRoutingArm({
       teamId: taskTeamId, task: task as any, explicitModel: explicit, routerReason: routingDecision.reason,
       routerModel: routingDecision.model, roleModel, budgetPressure: dailyBudgetPct,
+      executor: runsOnCallersSeat ? 'interactive' : 'runner',
     });
 
     // Resolve the concrete model ID through the model policy (the team's tier
@@ -2510,11 +2383,7 @@ export async function POST(req: NextRequest) {
       if (guarded.rejection) {
         modelRejections.push({ rejected: guarded.rejection.rejected, reason: guarded.rejection.reason, source: guarded.rejection.source });
         for (const draw of [experimentDraw, poolDraw]) {
-          if (draw && draw.assignedModel === guarded.rejection.rejected) {
-            draw.served = false;
-            draw.assignedModel = guarded.model;
-            draw.eligibility = { ...draw.eligibility, fallback: 'model_unrecognized' };
-          }
+          markDispatchFallback(draw, { rejectedModel: guarded.rejection.rejected, servedModel: guarded.model, reason: guarded.rejection.reason });
         }
         resolvedModel = guarded.model;
         modelSource = guarded.source;
@@ -2662,6 +2531,11 @@ export async function POST(req: NextRequest) {
     if (forced) {
       console.log(`[claim] force claim: task ${task.id} past [${forceBypassed.join(', ')}] by admin account ${account.id}`);
     }
+    // Start anyway: the claim that consumes an intent admitting declared edges
+    // hands the agent the prerequisites' live state as of now (R-4).
+    const assess = forceStartIntent?.assessDependsOn?.length
+      ? assessmentContext(task as any, await loadPrerequisites(forceStartIntent.assessDependsOn).catch(() => []), now)
+      : null;
     const patchedContext = {
       // A previous claim's force audit never carries over (withoutForceClaim),
       // and a force-start intent is single-use: consumed into its history here.
@@ -2674,6 +2548,7 @@ export async function POST(req: NextRequest) {
           bypassed: [...forceBypassed],
         },
       } : {}),
+      ...(assess ? { [START_ANYWAY_ASSESSMENT_KEY]: assess } : {}),
       model: resolvedModel,
       modelPinned: explicit !== null,
       routingReason: routingDecision.reason,
@@ -2917,8 +2792,6 @@ export async function POST(req: NextRequest) {
       await recordAgentPoolAssignment(poolDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
     }
 
-    // Count this claim toward the per-workspace cap for the rest of the batch.
-    activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
     if (account.managedRunner) {
       const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
       if (entitlementTeamId) managedClaimedByTeam.set(entitlementTeamId, (managedClaimedByTeam.get(entitlementTeamId) ?? 0) + 1);
@@ -2935,23 +2808,11 @@ export async function POST(req: NextRequest) {
 
     // Mission-level post-claim bookkeeping: update in-memory counters so
     // subsequent tasks in the same batch respect the gates we just passed.
-    // Review tasks consume neither the concurrency count nor the pacing slot.
+    // Review tasks do not consume the concurrency count.
     if (taskMissionId && !isReviewTask) {
       // Increment concurrency count so a second task from the same mission in
       // this batch sees the updated active count.
       missionActiveCountMap.set(taskMissionId, (missionActiveCountMap.get(taskMissionId) ?? 0) + 1);
-
-      const missionData = missionClaimMap.get(taskMissionId);
-      if (missionData?.pacingMode === 'paced') {
-        // Stamp lastTaskStartedAt in-memory to block same-batch double-starts.
-        missionData.lastTaskStartedAt = now;
-        // Persist to DB asynchronously — best-effort; pacing is maintained correctly
-        // in-memory for the current batch, and the DB timestamp governs future polls.
-        db.update(missions)
-          .set({ lastTaskStartedAt: now, updatedAt: now })
-          .where(eq(missions.id, taskMissionId))
-          .catch(err => console.warn(`[claim] Failed to stamp mission lastTaskStartedAt for ${taskMissionId}:`, err));
-      }
     }
 
     // Keep the in-memory task copy in sync so downstream enrichment and the
@@ -3188,7 +3049,6 @@ export async function POST(req: NextRequest) {
         now,
       });
     }
-    if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
   }
 
   // Planner bookkeeping. Under 'apply', every planned task never attempted is
@@ -3285,7 +3145,7 @@ export async function POST(req: NextRequest) {
     // deferred without a single claim attempt" (all_candidates_deferred).
     // race_lost = some tasks reached the atomic UPDATE but another worker won.
     // all_candidates_deferred = every filtered task was skipped by a pre-claim
-    // gate (connector mismatch, pacing, workspace cap, etc.) — no race occurred.
+    // gate (connector mismatch, mission cap, etc.) — no race occurred.
     // This matters for diagnostics: race_lost with pendingTasks>0 looked like
     // normal contention but was actually a permanent stall (2026-07-30 incident).
     const totalDeferrals = Object.values(deferrals).reduce((s, n) => s + n, 0);
@@ -3301,19 +3161,6 @@ export async function POST(req: NextRequest) {
         ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
         ...(firstBlockingPr ? { blockedByPr: firstBlockingPr } : {}),
         ...(explicitTaskExclusion ? { taskExclusion: explicitTaskExclusion } : {}),
-        // Surface learned OAuth pressure so an `oauth_parallelism` deferral is
-        // attributable ("seat capped at 97% of the learned window") instead of
-        // looking like an unexplained stall.
-        ...(oauthPressure && oauthPressure.confidence !== 'none'
-          ? {
-              budgetPressure: {
-                pct: oauthPressure.pct,
-                limiter: oauthPressure.limiter,
-                confidence: oauthPressure.confidence,
-                samples: oauthPressure.samples,
-              },
-            }
-          : {}),
       } satisfies ClaimDiagnostics,
     });
   }

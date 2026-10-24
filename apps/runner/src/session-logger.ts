@@ -77,7 +77,7 @@ export interface ClaimLogEntry {
    */
   deferrals?: ClaimDiagnostics['deferrals'];
   /**
-   * The gate that excluded an explicit-taskId claim (e.g. `workspace_cap`),
+   * The gate that excluded an explicit-taskId claim (e.g. `mission_concurrent`),
    * when the server named one. Without it a wake claim refused by the claim
    * WHERE logs as a bare `no_pending_tasks`, identical to a lost race.
    */

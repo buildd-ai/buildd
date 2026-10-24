@@ -386,11 +386,12 @@ export interface CheckSuiteSummary {
  * moment before its runs register, and skipping it then would pass on CI
  * that has not started.
  */
+export function isPhantomSuite(s: Pick<CheckSuiteSummary, 'status' | 'app' | 'latest_check_runs_count'>): boolean {
+  return s.status === 'queued' && s.latest_check_runs_count === 0 && !!s.app?.slug && s.app.slug !== 'github-actions';
+}
+
 export function checkSuitesAllPassed(suites: CheckSuiteSummary[]): boolean {
-  const real = suites.filter(
-    (s) =>
-      !(s.status === 'queued' && s.latest_check_runs_count === 0 && s.app?.slug && s.app.slug !== 'github-actions'),
-  );
+  const real = suites.filter((s) => !isPhantomSuite(s));
   if (real.length === 0) return false;
   return real.every(
     (suite) =>

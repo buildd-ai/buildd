@@ -264,7 +264,6 @@ function waitWords(t: RunnerQueueTask, positions: Map<string, number>, state: To
     return { text: t.lane.stuckSince ? `in line (${pos} ahead), holder stalled` : `in line, ${pos} ahead`, kind: 'same_files' };
   }
   if (t.holds.includes('deps_blocked')) return { text: 'after its dependency', kind: 'dependency' };
-  if (t.holds.includes('workspace_cap')) return { text: CLAIM_EXCLUSION_WORDS.workspace_cap, kind: 'limit' };
   return null;
 }
 

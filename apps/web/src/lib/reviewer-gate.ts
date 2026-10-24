@@ -67,7 +67,8 @@ export interface ReviewerGateReviewerTask {
 }
 
 export interface ReviewerStallFacts {
-  seats: { inProgress: number; maxConcurrentTasks: number } | null;
+  /** Live workers in the reviewer's workspace; null means the lookup failed. */
+  seats: { inProgress: number } | null;
   /** null means the lookup failed; [] means no recorded pauses. */
   budgetPauses: string[] | null;
 }
@@ -174,14 +175,14 @@ function stallReason(input: ReviewerGateInput): string {
     ? `${rt.status === 'pending' ? 'Pending' : `Reviewer ${rt.status}, no live worker`} · task age ${age}m`
     : `No reviewer task recorded · PR waiting ${age}m`];
   parts.push(facts?.seats
-    ? `seats ${facts.seats.inProgress}/${facts.seats.maxConcurrentTasks}` : 'seats unknown');
+    ? `${facts.seats.inProgress} running in workspace` : 'running unknown');
   const floor = rt?.startAt && rt.startAt > input.now ? rt.startAt : null;
   const providerFloor = floor && rt?.context?.budgetExhausted === true;
   if (facts?.budgetPauses == null) parts.push('budget pause unknown');
   else if (facts.budgetPauses.length) parts.push(...facts.budgetPauses);
   else if (!providerFloor) parts.push('no recorded budget pause');
   if (floor) parts.push(`${providerFloor ? 'provider retry' : 'scheduled start'} floor until ${floor.toISOString()}`);
-  // The specific gate (e.g. workspace_cap) beats the coarse diagnostic, which
+  // The specific gate (e.g. deps_blocked) beats the coarse diagnostic, which
   // for a WHERE-clause exclusion is only ever `no_pending_tasks`.
   const exclusionCode = (rt?.context?.lastClaimAttemptExclusion as { code?: unknown } | undefined)?.code;
   const reason = typeof exclusionCode === 'string' && exclusionCode.length > 0

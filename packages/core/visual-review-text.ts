@@ -22,6 +22,20 @@
 import type { VisualReviewAuditTask, VisualReviewCell, VisualReviewModel, VisualReviewNeedsYou } from '@buildd/shared';
 import { findingIsStillThere, fixStatusLabel } from './visual-fix-label';
 
+/**
+ * The `data-verify-block` role of a phase's `detail` where a card shows it: the
+ * sentence that says how to get out of a failure is `recovery`, what the audit
+ * waits on is `prerequisite`, what a boot failure meant is `consequence`.
+ */
+export function visualPhaseDetailRole(phase: VisualReviewModel['phase']): 'body' | 'consequence' | 'prerequisite' | 'recovery' {
+  switch (phase) {
+    case 'stalled': case 'failed': return 'recovery';
+    case 'waiting_deps': case 'waiting_on_failed_work': case 'queued': case 'no_browser_runner': return 'prerequisite';
+    case 'boot_failed': return 'consequence';
+    default: return 'body';
+  }
+}
+
 const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 
 /**

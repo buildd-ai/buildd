@@ -2,8 +2,8 @@
  * Managed-runner entitlement: metering, the claim-time check, and resume.
  *
  * Applies ONLY to claims by a Buildd-managed runner key (`accounts.managedRunner`).
- * A self-hosted runner never reaches this module, and the operational caps
- * (`accounts.maxConcurrentWorkers`, `workspaces.maxConcurrentTasks`) stay where
+ * A self-hosted runner never reaches this module, and the operational limits
+ * (`accounts.maxConcurrentWorkers`, `missions.maxConcurrentTasks`) stay where
  * they are in the claim route, independent of it.
  *
  * Usage is attributed to the team that owns the task's workspace, pooled

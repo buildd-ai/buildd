@@ -6,6 +6,7 @@ import {
   assignArm,
   decideArm,
   isEligible,
+  markDispatchFallback,
   parseModelRoutingConfig,
   resolveInheritanceParent,
   resolveUnit,
@@ -240,5 +241,34 @@ describe('parseModelRoutingConfig', () => {
     expect(parseModelRoutingConfig({
       arms: { treatment: { tier: 'ultra' } }, eligibility: { maxBudgetPressure: 5 }, minSamplePerArm: -1,
     })).toEqual({ treatmentTier: 'premium', maxBudgetPressure: DEFAULT_MAX_BUDGET_PRESSURE, minSamplePerArm: DEFAULT_MIN_SAMPLE_PER_ARM });
+  });
+});
+
+// Work analytics spec R-2: a fallback is recorded with its reason and the
+// refused model, never as though the drawn model ran.
+describe('markDispatchFallback', () => {
+  const draw = (over: Record<string, unknown> = {}) => ({
+    served: true, assignedModel: 'claude-sonnet-5-5' as string | null, eligibility: { source: 'drawn' } as Record<string, unknown>, ...over,
+  });
+
+  it('un-serves a draw whose model the dispatch guard refused, keeping why and what was refused', () => {
+    const d = draw();
+    const marked = markDispatchFallback(d, { rejectedModel: 'claude-sonnet-5-5', servedModel: 'claude-sonnet-5', reason: 'newer_than_floor_table' });
+    expect(marked).toBe(true);
+    expect(d).toEqual({
+      served: false,
+      assignedModel: 'claude-sonnet-5',
+      eligibility: { source: 'drawn', fallback: 'dispatch_rejected', fallbackReason: 'newer_than_floor_table', rejectedModel: 'claude-sonnet-5-5' },
+    });
+  });
+
+  it('leaves a draw alone when the refused model is not the one it was assigned', () => {
+    const d = draw({ assignedModel: 'claude-opus-5-5' });
+    expect(markDispatchFallback(d, { rejectedModel: 'claude-sonnet-6', servedModel: 'claude-sonnet-5-5', reason: 'not_in_catalog' })).toBe(false);
+    expect(d).toEqual(draw({ assignedModel: 'claude-opus-5-5' }));
+  });
+
+  it('treats a missing draw as nothing to mark', () => {
+    expect(markDispatchFallback(null, { rejectedModel: 'm', servedModel: 'n', reason: 'not_in_catalog' })).toBe(false);
   });
 });

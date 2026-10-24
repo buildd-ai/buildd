@@ -15,6 +15,7 @@ const NONE = 'none';
  * <reason>" or "Replaced by <spec>", with Restore for a person who may. A live
  * one offers that person Retire, folded away among the secondary actions:
  * a reason and an optional replacement. Both post to /api/specs/[id]/retire.
+ * While the PR on its repo file is open (R-78), the page names it.
  */
 export default function SpecRetire({ specId, retirement, canRetire, targets = [] }: {
   specId: string;
@@ -52,6 +53,11 @@ export default function SpecRetire({ specId, retirement, canRetire, targets = []
             <span data-testid="spec-retired-line">Retired: {retirement.reason}</span>
           )}
         </Notice>
+        {retirement.repoLine ? (
+          <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-retired-repo-pr">
+            {retirement.repoLine.href ? <a href={retirement.repoLine.href} className="underline">{retirement.repoLine.text}</a> : retirement.repoLine.text}
+          </p>
+        ) : null}
         {error ? <Notice tone="err">{error}</Notice> : null}
         {canRetire ? (
           <button type="button" disabled={busy} onClick={() => send('DELETE', {})} className="self-start min-h-11 md:min-h-9 px-3 border border-border-strong text-body text-text-primary hover:bg-surface-3 disabled:opacity-50" data-testid="spec-restore">

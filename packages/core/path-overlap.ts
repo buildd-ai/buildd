@@ -502,19 +502,3 @@ export function leasablePaths(paths: readonly unknown[] | null | undefined): str
  * Callers should treat an empty `contended` as "no collision": there is nothing
  * for the two agents to agree about.
  */
-export function partitionRegenerableOverlaps(paths: string[]): {
-  contended: string[];
-  regenerable: RegenerablePath[];
-} {
-  const contended: string[] = [];
-  const regenerable: RegenerablePath[] = [];
-  for (const path of paths) {
-    const hit = findRegenerable(path);
-    if (!hit) {
-      contended.push(path);
-    } else if (!regenerable.some(r => r.path === hit.path)) {
-      regenerable.push(hit);
-    }
-  }
-  return { contended, regenerable };
-}

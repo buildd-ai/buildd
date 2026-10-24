@@ -403,6 +403,19 @@ describe('staging', () => {
     expect(mockWakeTask).toHaveBeenCalledWith('task-1', 'task.created');
   });
 
+  it('does not file for an outpaced PR whose delivery is ESCALATED', async () => {
+    scanSnapshot = outpacedPrSnapshot();
+    scanSnapshot.personGatedPrs = new Map([[`ws-1 7777`, 'ESCALATED']]);
+    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 0, baseMerges: PR_OUTPACED_DRIFT };
+
+    const body = await (await POST(makeRequest())).json();
+    const outpaced = body.invariants.find((i: any) => i.key === 'open_pr_outpaced_by_base');
+
+    expect(outpaced.count).toBe(1);
+    expect(body.filed).toBe(0);
+    expect(inserted).toHaveLength(0);
+  });
+
   it('files a task for an open PR its base has outrun, and pages once', async () => {
     // The whole point of staging this one to file: an hourly log line is the
     // wrong instrument for a condition that exists because nobody looked.
@@ -416,7 +429,7 @@ describe('staging', () => {
     expect(outpaced.files).toBe(true);
     expect(body.filed).toBe(1);
     expect(inserted).toHaveLength(1);
-    expect(inserted[0].title).toStartWith('[friction] open_pr_outpaced_by_base');
+    expect(inserted[0].title).toBe('[friction] PR #7777 is falling behind dev');
     expect(inserted[0].context.frictionSignature).toBe(
       invariantFrictionSignature('open_pr_outpaced_by_base', '7777'),
     );

@@ -17,6 +17,7 @@ const { createSpecDraft, reviseSpecDraft } = await import('../../src/lib/specs/s
 const { approveSpecRevision, specApprovalDeps } = await import('../../src/lib/specs/approval');
 const { specPageView, specRepoChecks, specReviewView } = await import('../../src/lib/specs/page-view');
 const repoCopy = await import('../../src/lib/specs/repo-copy');
+const { specKnowledgeDeps } = await import('../../src/lib/specs/knowledge');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 const user = (userId: string) => ({ kind: 'user' as const, userId });
@@ -67,6 +68,8 @@ beforeAll(async () => {
   admin = await person(teamId, 'admin');
   member = await person(teamId, 'member');
   specApprovalDeps.afterResponse = () => {};
+  // Each revise indexes its draft after the response; not part of what a click pays.
+  specKnowledgeDeps.afterResponse = () => {};
   // Any GitHub call the page makes is recorded, and answered as if the repo were there.
   Object.assign(repoCopy.defaultRepoCopyDeps, {
     api: async (_i: number, path: string) => { github.push(path); return {}; },

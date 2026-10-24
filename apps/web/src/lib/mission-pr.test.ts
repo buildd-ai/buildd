@@ -460,6 +460,22 @@ describe('guardMissionPrMerge — a refresh PR lands only on the delivery it was
     expect((await guardMissionPrMerge(refreshTask())).blocks).toBe(false);
   });
 
+  it('a refresh the branch has since been refreshed past is refused as superseded', async () => {
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4670, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'open' }];
+    taskById['r-1'] = { createdAt: new Date('2026-10-01T00:00:00Z') };
+    missionRow = { ...missionRow, branchRefreshHeadSha: 'd2', branchRefreshedAt: new Date('2026-10-02T00:00:00Z') };
+    const gate = await guardMissionPrMerge(refreshTask());
+    expect(gate).toMatchObject({ blocks: true, codes: ['refresh_target_mismatch'], lasting: true });
+    expect((gate as { reason: string }).reason).toContain('superseded');
+    // Confirmed at the very trunk sha it was filed for: not superseded.
+    missionRow = { ...missionRow, branchRefreshHeadSha: 'd1' };
+    expect((await guardMissionPrMerge(refreshTask())).blocks).toBe(false);
+    // A refresh confirmed before this one was filed does not supersede it.
+    missionRow = { ...missionRow, branchRefreshHeadSha: 'd0', branchRefreshedAt: new Date('2026-09-30T00:00:00Z') };
+    expect((await guardMissionPrMerge(refreshTask())).blocks).toBe(false);
+  });
+
   it('review of #4806: a task PR still on a shipped delivery branch is refused at every door, naming where it goes', async () => {
     workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
     missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: `${BRANCH}-delivery-2`, state: 'open' }];

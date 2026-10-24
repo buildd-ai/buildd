@@ -45,3 +45,21 @@ describe('missionSummaryLine', () => {
     expect(missionSummaryLine('   ')).toBeNull();
   });
 });
+
+describe('a heading-like first word', () => {
+  it('keeps the sentence that follows it', () => {
+    expect(missionSummaryLine('Specs. Make the spec page readable on a phone and retire specs with their replacement.')).toBe('Specs. Make the spec page readable on a phone and retire specs with their replacement.');
+  });
+});
+
+describe('missionSummaryLine names, never ids (R-14)', () => {
+  it('drops a spec id from the goal sentence', () => {
+    const line = missionSummaryLine('Build and verify the change against spec 36df686b-ee6b-4fd0-9106-0123456789ab revision 1.');
+    expect(line).not.toMatch(/[0-9a-f]{8}-/);
+    expect(line).not.toContain('36df686b');
+    expect(line).toContain('Build and verify the change');
+  });
+  it('drops a truncated spec id too', () => {
+    expect(missionSummaryLine('Assess, coordinate and continue against spec 36df686b-ee6b-4fd0-9106-…')).toBe('Assess, coordinate and continue');
+  });
+});

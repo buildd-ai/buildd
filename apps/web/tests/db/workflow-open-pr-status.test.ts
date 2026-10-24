@@ -38,7 +38,7 @@ describe('the open-PR status sweep', () => {
     const first = await sweep(w);
     expect(first).toMatchObject({ repos: 1, checked: 1, published: 1, errors: 0, coverage: { verdict: 'covered', missing: [] } });
     expect(await shown(w, head)).toMatchObject({ state: 'pending', description: 'Review not requested: no buildd review covers ' + head.slice(0, 7) + ' yet' });
-    expect(await githubReader(w.installationId).statusOf!(w.repo, head, 'buildd/landing')).toMatchObject({ state: 'pending' });
+    expect(await githubReader(w.installationId).statusOf!(w.repo, head, 'buildd/landing')).toBeNull();
 
     const writes = () => w.gh.calls.filter((c) => c.method === 'POST' && c.path === `/repos/${w.repo}/statuses/${head}`).length;
     const before = writes();

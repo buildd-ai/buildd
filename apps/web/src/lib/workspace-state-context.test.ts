@@ -84,7 +84,7 @@ describe('cause: task_completed', () => {
 
   it('does NOT render sibling missions, held claims, initiative, or budget', async () => {
     const q = makeQuerier({
-      async getSiblingMissions() { q.calls.getSiblingMissions++; return [{ id: 'x', title: 'Other', status: 'active', isHeld: false, pacingMode: 'eager', progress: 50 }]; },
+      async getSiblingMissions() { q.calls.getSiblingMissions++; return [{ id: 'x', title: 'Other', status: 'active', isHeld: false, progress: 50 }]; },
     });
     const out = await buildWorkspaceStateContext({
       ...base,
@@ -221,9 +221,9 @@ describe('cause: claim_409', () => {
 describe('cause: mission_evaluate', () => {
   it('renders sibling missions with progress and isHeld flag', async () => {
     const siblings: SiblingMission[] = [
-      { id: 'ms-1', title: 'Build dashboard', status: 'active', isHeld: false, pacingMode: 'eager', progress: 65 },
-      { id: 'ms-2', title: 'Fix API bugs', status: 'active', isHeld: true, pacingMode: 'paced', progress: 30 },
-      { id: 'ms-3', title: 'Tidy docs', status: 'active', isHeld: true, armedAt: '2026-10-01T00:00:00Z', pacingMode: 'paced', progress: 10 },
+      { id: 'ms-1', title: 'Build dashboard', status: 'active', isHeld: false, progress: 65 },
+      { id: 'ms-2', title: 'Fix API bugs', status: 'active', isHeld: true, progress: 30 },
+      { id: 'ms-3', title: 'Tidy docs', status: 'active', isHeld: true, armedAt: '2026-10-01T00:00:00Z', progress: 10 },
     ];
     const q = makeQuerier({
       async getSiblingMissions() { q.calls.getSiblingMissions++; return siblings; },
@@ -238,10 +238,11 @@ describe('cause: mission_evaluate', () => {
     expect(out).toContain('65%');
     expect(out).toContain('Fix API bugs');
     // Terms catalog: a gated mission names its gate, never HELD.
-    expect(out).toContain('Fix API bugs · active · paced [Not started]');
-    expect(out).toContain('Tidy docs · active · paced [Paused]');
+    expect(out).toContain('Fix API bugs · active [Not started]');
+    expect(out).toContain('Tidy docs · active [Paused]');
     expect(out).not.toMatch(/held/i);
-    expect(out).toContain('paced');
+    // No mode word follows the status.
+    expect(out).not.toMatch(/paced|eager/);
   });
 
   it('renders held path claims with taskId and mission', async () => {
@@ -280,7 +281,7 @@ describe('cause: mission_evaluate', () => {
       },
     ];
     const siblings: SiblingMission[] = [
-      { id: 'mission-sibling-111', title: 'Sibling refactor', status: 'active', isHeld: false, pacingMode: 'eager', progress: 20 },
+      { id: 'mission-sibling-111', title: 'Sibling refactor', status: 'active', isHeld: false, progress: 20 },
     ];
     const q = makeQuerier({
       async getHeldClaims() { q.calls.getHeldClaims++; return claims; },
@@ -363,7 +364,7 @@ describe('cause: mission_evaluate', () => {
 describe('cause: first_decomposition', () => {
   it('renders the same sections as mission_evaluate', async () => {
     const siblings: SiblingMission[] = [
-      { id: 'ms-x', title: 'Active sib', status: 'active', isHeld: false, pacingMode: 'eager', progress: 10 },
+      { id: 'ms-x', title: 'Active sib', status: 'active', isHeld: false, progress: 10 },
     ];
     const q = makeQuerier({
       async getSiblingMissions() { q.calls.getSiblingMissions++; return siblings; },
@@ -385,7 +386,7 @@ describe('cause: first_decomposition', () => {
 describe('cause: fallback', () => {
   it('renders sibling missions and held claims', async () => {
     const siblings: SiblingMission[] = [
-      { id: 'ms-1', title: 'Other mission', status: 'active', isHeld: false, pacingMode: 'eager', progress: 50 },
+      { id: 'ms-1', title: 'Other mission', status: 'active', isHeld: false, progress: 50 },
     ];
     const q = makeQuerier({
       async getSiblingMissions() { q.calls.getSiblingMissions++; return siblings; },
@@ -460,7 +461,6 @@ describe('character budget enforcement', () => {
       title: `${hugeTitle} ${i}`,
       status: 'active',
       isHeld: false,
-      pacingMode: 'eager',
       progress: i * 10,
     }));
     const q = makeQuerier({

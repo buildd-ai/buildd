@@ -64,7 +64,7 @@ const resolveTeamIds = resolveAccountTeamIds;
  * Mission fields an orchestration task's admin per-task token may change on
  * its own mission: what it says and whether it runs. Everything else is the
  * owner's or team-wide: where it runs (workspace, initiative, executor,
- * backend, model), what it may spend (budget, concurrency, pacing), its
+ * backend, model), what it may spend (budget, concurrency), its
  * schedule, its delivery policy (merge policy, branch strategy), its links to
  * other missions and trackers, its definition of done, and the waiver.
  */
@@ -324,7 +324,7 @@ export async function PATCH(
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
       integrationBranchEnabled, branchStrategy,
-      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, autoSurfaceAudit, surfaceAuditWaiver,
+      goalCriteria, autoVerify, autoSurfaceAudit, surfaceAuditWaiver,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
       startMode, arm, executor, actorWorkerId } = body;
 
@@ -425,13 +425,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer between 1 and 20' }, { status: 400 });
     }
 
-    if (pacingMode !== undefined && pacingMode !== 'eager' && pacingMode !== 'paced') {
-      return NextResponse.json({ error: 'pacingMode must be "eager" or "paced"' }, { status: 400 });
-    }
 
-    if (pacingMaxPerHour !== undefined && pacingMaxPerHour !== null && (!Number.isInteger(pacingMaxPerHour) || pacingMaxPerHour < 1)) {
-      return NextResponse.json({ error: 'pacingMaxPerHour must be an integer >= 1' }, { status: 400 });
-    }
 
     if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
       return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
@@ -703,8 +697,6 @@ export async function PATCH(
         }
       }
     }
-    if (pacingMode !== undefined) updateData.pacingMode = pacingMode;
-    if (pacingMaxPerHour !== undefined) updateData.pacingMaxPerHour = pacingMaxPerHour ?? null;
     // startMode: 'held' → isHeld=true (workers cannot claim tasks); 'armed' → isHeld=false.
     // arm: true is shorthand for startMode='armed'.
     if (arm === true) {
@@ -1130,7 +1122,7 @@ export async function PATCH(
       }).catch(e => console.error('[missions/patch] Failed to emit initiative-link note:', e));
     }
 
-    // Everything else — orchestrationMode, held/armed, pacing, priority, budget,
+    // Everything else — orchestrationMode, held/armed, priority, budget,
     // dependency gate, backend, merge policy — is "config": individually low
     // signal, so repeated edits from the same actor within the window collapse
     // into one feed row instead of spamming a line per field per PATCH.
@@ -1138,8 +1130,6 @@ export async function PATCH(
       { key: 'orchestrationMode', label: 'orchestrationMode' },
       { key: 'isHeld', label: 'startMode', format: v => (v ? 'held' : 'armed') },
       { key: 'executor', label: 'executor' },
-      { key: 'pacingMode', label: 'pacingMode' },
-      { key: 'pacingMaxPerHour', label: 'pacingMaxPerHour' },
       { key: 'priority', label: 'priority' },
       { key: 'costBudgetUsd', label: 'costBudgetUsd' },
       { key: 'gateCondition', label: 'gateCondition' },

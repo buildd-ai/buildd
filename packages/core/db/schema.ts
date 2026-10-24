@@ -1230,12 +1230,6 @@ export const workspaces = pgTable('workspaces', {
   // webhooks are live on the Worker).
   dispatchTransport: text('dispatch_transport').default('dispatch').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
 
-  // Max tasks from this workspace that may have an active worker at once. Repo-backed
-  // workspaces isolate each task in its own git worktree, so parallel work is safe;
-  // this caps it to bound merge-conflict surface. Default 3. No effect on repo-less
-  // workspaces (those are never serialized by the per-repo guard).
-  maxConcurrentTasks: integer('max_concurrent_tasks').default(3).notNull(),
-
   // "Pause new starts until <time>": until then runner claims skip this
   // workspace's tasks (the claim route's workspacePaused gate). Running work
   // carries on and a person's interactive claim is never paused. NULL or a
@@ -1316,12 +1310,6 @@ export const missions = pgTable('missions', {
   dependencyMetAt: timestamp('dependency_met_at', { withTimezone: true }),
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   maxConcurrentTasks: integer('max_concurrent_tasks'),
-  // Pacing controls: 'eager' starts every claimable task immediately (current default).
-  // 'paced' enforces a minimum interval between task starts for this mission:
-  // at most pacingMaxPerHour starts per hour (default 1 when null).
-  // lastTaskStartedAt is updated atomically each time a task from this mission is claimed.
-  pacingMode: text('pacing_mode').default('eager').notNull().$type<'eager' | 'paced'>(),
-  pacingMaxPerHour: integer('pacing_max_per_hour'),
   lastTaskStartedAt: timestamp('last_task_started_at', { withTimezone: true }),
   // Mission integration branch, shape `mission/<slug>-<id8>`. Generated lazily on
   // first task creation.
@@ -2064,7 +2052,7 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
  * AskUserQuestion options as objects; older rows and hand-written callers still
  * send bare strings, so readers must accept both.
  */
-export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string };
+export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string; outcome?: 'continues' | 'finishes' | 'stops' | 'changes' };
 
 /**
  * `context`, `recommended` and `where` are the question brief
@@ -3108,6 +3096,10 @@ export const specRevisions = pgTable('spec_revisions', {
   // Set on a revision an import wrote (R-18): the repo file it is, as read. An
   // imported revision is never approved except by a person's confirmation.
   imported: jsonb('imported').$type<SpecRevisionImport>(),
+  // The specs this revision replaces ("Retiring a spec" R-76): ids of live
+  // specs in the same workspace, checked on write, never read from the body.
+  // Approving the revision offers to supersede each (R-77). NULL: none.
+  replaces: jsonb('replaces').$type<string[]>(),
   // The binding attachments this revision was approved with (living-specs.md
   // §21), each at the artifact revision it had then. Written once, by the
   // approving statement, next to approved_at; reference attachments are never
@@ -5021,41 +5013,6 @@ export const backendPauses = pgTable('backend_pauses', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   activeIdx: index('backend_pauses_team_backend_resets_idx').on(t.teamId, t.backend, t.resetsAt),
-}));
-
-// OAuth budget episodes — one row per observed session/budget exhaustion on a
-// seat-based (OAuth) account, recording how much work the window actually held.
-// Seat auth reports no cost, so this is the only usable signal for "how many
-// workers/turns/tokens does this account get per 5h window". The claim route
-// learns a conservative capacity from the recent rows and paces claims against
-// it (packages/core/oauth-budget.ts) instead of discovering the wall by hitting
-// it. Written by the first worker report that flips accounts.budgetExhaustedAt,
-// so concurrent budget failures produce exactly one episode.
-export const oauthBudgetEpisodes = pgTable('oauth_budget_episodes', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'cascade' }).notNull(),
-  /** Start of the window this episode measured (previous resetsAt, or exhaustedAt - 5h). */
-  windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
-  exhaustedAt: timestamp('exhausted_at', { withTimezone: true }).notNull(),
-  /** When the window was expected to reopen — also marks the next window's start. */
-  resetsAt: timestamp('resets_at', { withTimezone: true }),
-  workerCount: integer('worker_count').default(0).notNull(),
-  turns: integer('turns').default(0).notNull(),
-  inputTokens: integer('input_tokens').default(0).notNull(),
-  outputTokens: integer('output_tokens').default(0).notNull(),
-  /**
-   * Sonnet-equivalent totals (MODEL_WEIGHTS in packages/core/oauth-budget.ts).
-   * A window is consumed by cost, not raw counts — 300 opus turns eat ~5x the
-   * window that 300 haiku turns do — so capacity is learned in weighted units
-   * and stays valid when the model mix changes. Raw columns are kept alongside
-   * for auditability. 0 means "not weighted" (pre-weighting rows) and is
-   * dropped by the learner rather than treated as a real ceiling.
-   */
-  weightedTurns: integer('weighted_turns').default(0).notNull(),
-  weightedTokens: integer('weighted_tokens').default(0).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({
-  accountExhaustedIdx: index('oauth_budget_episodes_account_exhausted_idx').on(t.accountId, t.exhaustedAt),
 }));
 
 // Codex auth now lives in the unified `secrets` table (purpose='codex_credential').

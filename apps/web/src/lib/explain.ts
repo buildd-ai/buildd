@@ -20,6 +20,7 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { loadQuestionWaits } from './question-waits';
 import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
@@ -1079,13 +1080,14 @@ function prDeliveryView(m: ReadonlyMap<string, DeliveryView>, taskId: string, pr
  */
 export function kernelUnmergedPr(
   task: { id: string; title: string; status: string },
-  worker: { prUrl?: string | null; supersessionScan?: { suggestion?: unknown } | null } | undefined,
+  worker: { prUrl?: string | null; supersessionScan?: { suggestion?: unknown; refreshCheck?: unknown } | null } | undefined,
   d: Pick<DeliveryView, 'state' | 'prNumber'>,
 ): NonNullable<StateBecauseExtras['unmergedPrs']> {
   if (task.status === 'cancelled' || task.status === 'pending' || d.prNumber == null) return [];
   if (d.state === 'MERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'FAILED') return [];
   const closed = d.state === 'CLOSED_UNMERGED';
   const suggestion = closed ? worker?.supersessionScan?.suggestion : undefined;
+  const refreshCheck = closed ? worker?.supersessionScan?.refreshCheck : undefined;
   return [{
     taskId: task.id,
     title: task.title,
@@ -1093,6 +1095,7 @@ export function kernelUnmergedPr(
     prUrl: worker?.prUrl ?? null,
     ...(closed ? { closedUnsuperseded: true as const } : {}),
     ...(suggestion ? { suggestion: suggestion as never } : {}),
+    ...(refreshCheck ? { refreshCheck: refreshCheck as never } : {}),
   }];
 }
 
@@ -1244,6 +1247,9 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
           ...(worker.prLifecycleStatus === 'closed' ? { closedUnsuperseded: true as const } : {}),
           ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.suggestion
             ? { suggestion: worker.supersessionScan.suggestion }
+            : {}),
+          ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.refreshCheck
+            ? { refreshCheck: worker.supersessionScan.refreshCheck }
             : {}),
         }]
       : [];
@@ -1473,7 +1479,10 @@ export async function explainTask(taskId: string, actor: EvidenceActor, viewer: 
   const withCoordination = holds.length > 0 ? { ...answer, coordination: { holds } } : answer;
   const withAccess = access.length > 0 ? { ...withCoordination, access } : withCoordination;
   const withWait = queueWait ? { ...withAccess, queueWait } : withAccess;
-  return { scope: 'task', subjects: [verdict ? { ...withWait, verdict } : withWait] };
+  // An open question: what waits on its answer, the same projection the cards read (spec 1b257609 R-10).
+  const questionWaits = await loadQuestionWaits({ taskId, viewer, requireQuestion: true }).catch(() => null);
+  const withWaits = questionWaits ? { ...withWait, questionWaits } : withWait;
+  return { scope: 'task', subjects: [verdict ? { ...withWaits, verdict } : withWaits] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────

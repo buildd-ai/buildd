@@ -105,6 +105,10 @@ let runnerBeats: Row[] = [];
 const realRunnerOffline = await import('./runner-offline');
 mock.module('@/lib/runner-offline', () => ({ ...realRunnerOffline, loadRunnerBeats: mock(async () => runnerBeats) }));
 
+// What waits on an open question: the projection's own tests are lib/question-waits.test.ts.
+const mockLoadQuestionWaits = mock(async (_i: any): Promise<any> => null);
+mock.module('@/lib/question-waits', () => ({ loadQuestionWaits: mockLoadQuestionWaits }));
+
 // Imported AFTER the mocks.
 import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf, kernelUnmergedPr } from './explain';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
@@ -404,7 +408,7 @@ describe('explainMission', () => {
     function deferralRow(over: Partial<Row> = {}): Row {
       return {
         taskId: 'task-1',
-        reason: 'oauth_parallelism',
+        reason: 'codex_single_flight',
         occurredAt: new Date(),
         detail: {
           consecutiveDeferrals: 24,
@@ -416,7 +420,7 @@ describe('explainMission', () => {
 
     it('drops the warning once the deferred task has left pending', async () => {
       missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
-      taskRows = [task({ id: 'task-1', status: 'completed', title: 'OAuth parallelism' })];
+      taskRows = [task({ id: 'task-1', status: 'completed', title: 'Codex single flight' })];
       gateEventRows = [deferralRow()];
 
       const answer = (await explainMission('mission-1'))!.subjects[0];
@@ -426,7 +430,7 @@ describe('explainMission', () => {
 
     it('still reports the warning while the deferred task is pending', async () => {
       missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
-      taskRows = [task({ id: 'task-1', status: 'pending', title: 'OAuth parallelism' })];
+      taskRows = [task({ id: 'task-1', status: 'pending', title: 'Codex single flight' })];
       gateEventRows = [deferralRow()];
 
       const answer = (await explainMission('mission-1'))!.subjects[0];
@@ -518,6 +522,19 @@ describe('explainTask: an upstream in another workspace (spec e28018c2)', () => 
 });
 
 describe('explainTask', () => {
+  // Living Spec 1b257609 R-10: the same facts the decision card shows, as data.
+  it('a task with an open question carries what waits on its answer, read for the caller', async () => {
+    missionRow = null;
+    taskRows = [task({ id: 'task-1', status: 'in_progress', missionId: null })];
+    const waits = { taskId: 'task-1', waiting: [{ id: 'b', title: 'B', depth: 1 }], hiddenCount: 0, lanes: [], options: [{ label: 'Ship', outcome: 'finishes', effect: 'Finishes the task: B starts', recommended: true }] };
+    mockLoadQuestionWaits.mockResolvedValueOnce(waits);
+    const answer = (await explainTask('task-1', ACTOR, { kind: 'person', userId: 'u1' }))!.subjects[0];
+    expect(answer.questionWaits).toEqual(waits as any);
+    expect(mockLoadQuestionWaits.mock.calls.at(-1)![0]).toEqual({ taskId: 'task-1', viewer: { kind: 'person', userId: 'u1' }, requireQuestion: true });
+    const quiet = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(quiet).not.toHaveProperty('questionWaits');
+  });
+
   // executor='local' (task 09ed6675): a queued task in a local mission is the
   // person's session's to claim — never "stalled, dispatch a worker".
   it('a pending task in a local mission is waiting for your session to claim it', async () => {

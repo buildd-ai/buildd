@@ -42,7 +42,7 @@ import type { LaneRead } from '@/lib/serial-lanes-store';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The runner-independent claim gates a queue wait reads, each TRUE when the task passes. */
-export const QUEUE_WAIT_GATES = ['startAt', 'taskHeld', 'missionHeld', 'missionLocal', 'subject', 'deps', 'workspacePaused', 'workspaceCap'] as const satisfies readonly ClaimGateName[];
+export const QUEUE_WAIT_GATES = ['startAt', 'taskHeld', 'missionHeld', 'missionLocal', 'subject', 'deps', 'workspacePaused'] as const satisfies readonly ClaimGateName[];
 export type QueueWaitGate = (typeof QUEUE_WAIT_GATES)[number];
 
 /** At most this many tasks are read per call (a mission page, a runner's queue). */
@@ -138,7 +138,6 @@ export function sqlGateReasons(t: QueueWaitTask, deps: UnmetDependency[]): Waiti
     const until = iso(t.workspacePausedUntil);
     out.push(makeWaitingReason('workspace_paused', { because: until ? `the workspace paused new starts until ${until}` : 'the workspace paused new starts', liftsAt: until, provenance: prov('workspaces.newStartsPausedUntil (claim WHERE)') }));
   }
-  if (refuses(t, 'workspaceCap')) out.push(makeWaitingReason('workspace_cap', { because: 'every agent slot in the workspace is in use', provenance: prov('workspace cap (claim WHERE)') }));
   return out;
 }
 
@@ -152,9 +151,7 @@ const LEDGER_LIMITS: Readonly<Record<string, WaitingKind>> = {
   managed_concurrency: 'managed_entitlement',
   managed_runner_hours: 'managed_entitlement',
   hosted_runner_hours: 'managed_entitlement',
-  oauth_parallelism: 'oauth_parallelism',
   codex_single_flight: 'codex_single_flight',
-  workspace_cap: 'workspace_cap',
 };
 const LEDGER_NO_RUNNER = new Set([
   'runner_capability', 'isolation_unenforced', 'connector_mismatch', 'role_env_unsatisfied', 'no_personal_credential',

@@ -652,7 +652,7 @@ describe('POST /api/tasks/[id]/start', () => {
       dependsOn: null,
       missionId: null,
       context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -684,7 +684,7 @@ describe('POST /api/tasks/[id]/start', () => {
       dependsOn: null,
       missionId: null,
       context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -719,7 +719,7 @@ describe('POST /api/tasks/[id]/start', () => {
       dependsOn: null,
       missionId: null,
       context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -752,7 +752,7 @@ describe('POST /api/tasks/[id]/start', () => {
       dependsOn: null,
       missionId: null,
       context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -784,7 +784,7 @@ describe('POST /api/tasks/[id]/start', () => {
       dependsOn: null,
       missionId: null,
       context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -822,7 +822,7 @@ describe('POST /api/tasks/[id]/start', () => {
       context: null,
       mode: null,
       priority: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -850,7 +850,7 @@ describe('POST /api/tasks/[id]/start', () => {
       dependsOn: null,
       roleSlug: null,
       context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -873,7 +873,7 @@ describe('POST /api/tasks/[id]/start', () => {
     mockTasksFindFirst.mockResolvedValue({
       id: 'task-123', title: 'Paused Task', status: 'pending', workspaceId: 'ws-1', missionId: 'mission-1',
       dependsOn: null, roleSlug: null, context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: null },
     });
     mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', armedAt: new Date('2026-10-01T00:00:00Z') });
 
@@ -891,7 +891,7 @@ describe('POST /api/tasks/[id]/start', () => {
     const mockTask = {
       id: 'task-123', title: 'Local Task', status: 'pending', workspaceId: 'ws-1', missionId: 'mission-1',
       dependsOn: null, roleSlug: null, context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: null },
     };
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
@@ -922,7 +922,7 @@ describe('POST /api/tasks/[id]/start', () => {
       mode: null,
       priority: null,
       startAt: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -953,7 +953,7 @@ describe('POST /api/tasks/[id]/start', () => {
       mode: null,
       priority: null,
       startAt: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -971,81 +971,38 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
-  it('returns 422 workspace_cap_reached when workspace is at its concurrency limit', async () => {
+  // No workspace concurrency cap: a repo-backed workspace that already runs
+  // many workers starts the task like any other. Runner slots and the mission
+  // cap are the only parallelism limits.
+  it('starts a task in a repo-backed workspace with many live workers; no workspace cap refusal', async () => {
     const mockTask = {
       id: 'task-123',
       title: 'New Task',
+      description: null,
       status: 'pending',
       workspaceId: 'ws-1',
       dependsOn: null,
       missionId: null,
       roleSlug: null,
       context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', repo: 'org/repo', maxConcurrentTasks: 3 },
+      mode: null,
+      priority: null,
+      startAt: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: 'org/repo' },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockTasksFindFirst.mockResolvedValue(mockTask);
-    // 3 active workers — at the cap
-    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
-    // 1 other pending task ahead in queue
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }, { id: 'w4' }, { id: 'w5' }]);
     mockTasksFindMany.mockResolvedValue([{ id: 'task-queued-1' }]);
 
     const response = await callHandler(createMockRequest(), 'task-123');
-    expect(response.status).toBe(422);
-    const data = await response.json();
-    expect(data.gateReason).toBe('workspace_cap_reached');
-    expect(data.active).toBe(3);
-    expect(data.cap).toBe(3);
-    expect(data.queuePosition).toBe(1);
-    expect(data.canExempt).toBe(true);
-    // An owner holds manage_workspace_settings, so the refusal offers raising the cap.
-    expect(data.canRaiseCap).toBe(true);
-    expect(mockWakeTask).not.toHaveBeenCalled();
-  });
-
-  it('workspace_cap_reached tells a member they cannot raise the cap', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-123', title: 'New Task', status: 'pending', workspaceId: 'ws-1', dependsOn: null,
-      missionId: null, roleSlug: null, context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', repo: 'org/repo', maxConcurrentTasks: 3 },
-    });
-    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
-    mockTasksFindMany.mockResolvedValue([]);
-
-    const response = await callHandler(createMockRequest(), 'task-123');
-    expect(response.status).toBe(422);
-    const data = await response.json();
-    expect(data.gateReason).toBe('workspace_cap_reached');
-    expect(data.canRaiseCap).toBe(false);
-    expect(data.canExempt).toBe(true);
-  });
-
-  it('workspace_cap_reached includes queuePosition=0 when no other pending tasks', async () => {
-    const mockTask = {
-      id: 'task-123',
-      title: 'New Task',
-      status: 'pending',
-      workspaceId: 'ws-1',
-      dependsOn: null,
-      missionId: null,
-      roleSlug: null,
-      context: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', repo: 'org/repo', maxConcurrentTasks: 3 },
-    };
-
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockTasksFindFirst.mockResolvedValue(mockTask);
-    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
-    mockTasksFindMany.mockResolvedValue([]);
-
-    const response = await callHandler(createMockRequest(), 'task-123');
-    expect(response.status).toBe(422);
-    const data = await response.json();
-    expect(data.gateReason).toBe('workspace_cap_reached');
-    expect(data.queuePosition).toBe(0);
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await response.json());
+    expect(text).not.toContain('workspace_cap');
+    expect(text).not.toContain('canExempt');
+    expect(text).not.toContain('canRaiseCap');
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
   describe('managed-runner entitlement', () => {
@@ -1062,7 +1019,7 @@ describe('POST /api/tasks/[id]/start', () => {
       mode: null,
       priority: null,
       startAt: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     });
     const concurrencyBlock = { kind: 'concurrency', key: 'managed_runner.concurrency', active: 3, limit: 3, scope: 'individual' };
 
@@ -1123,63 +1080,6 @@ describe('POST /api/tasks/[id]/start', () => {
     });
   });
 
-  it('capExempt=true bypasses workspace cap and writes context.capExempt', async () => {
-    const mockTask = {
-      id: 'task-123',
-      title: 'Urgent Task',
-      description: null,
-      status: 'pending',
-      workspaceId: 'ws-1',
-      dependsOn: null,
-      missionId: null,
-      roleSlug: null,
-      context: {},
-      mode: null,
-      priority: null,
-      startAt: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: 'org/repo', maxConcurrentTasks: 3 },
-    };
-
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockTasksFindFirst.mockResolvedValue(mockTask);
-    // Workspace is at cap
-    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
-
-    const response = await callHandler(createMockRequest({ body: { capExempt: true } }), 'task-123');
-    expect(response.status).toBe(200);
-    expect(mockWakeTask).toHaveBeenCalledTimes(1);
-    // capExempt flag must be written to context
-    expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
-      context: expect.objectContaining({ capExempt: true }),
-    }));
-  });
-
-  it('does not apply workspace_cap gate for repo-less workspaces', async () => {
-    const mockTask = {
-      id: 'task-123',
-      title: 'Coordination Task',
-      description: null,
-      status: 'pending',
-      workspaceId: 'ws-1',
-      dependsOn: null,
-      missionId: null,
-      roleSlug: null,
-      context: null,
-      mode: null,
-      priority: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', repo: null, maxConcurrentTasks: 3, name: 'WS' },
-    };
-
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockTasksFindFirst.mockResolvedValue(mockTask);
-    // Even with "full" worker list, no cap applies without a repo
-    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
-
-    const response = await callHandler(createMockRequest(), 'task-123');
-    expect(response.status).toBe(200);
-    expect(mockWakeTask).toHaveBeenCalledTimes(1);
-  });
-
   // ── Durable start: manualStartAt + priority boost ─────────────────────────
 
   it('writes context.manualStartAt on every successful start', async () => {
@@ -1195,7 +1095,7 @@ describe('POST /api/tasks/[id]/start', () => {
       context: null,
       mode: null,
       priority: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -1223,7 +1123,7 @@ describe('POST /api/tasks/[id]/start', () => {
       context: null,
       mode: null,
       priority: 5,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -1249,7 +1149,7 @@ describe('POST /api/tasks/[id]/start', () => {
       context: null,
       mode: null,
       priority: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -1275,7 +1175,7 @@ describe('POST /api/tasks/[id]/start', () => {
       context: { manualStartAt: '2026-08-15T08:00:00.000Z' },
       mode: null,
       priority: 3,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: null },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -1301,7 +1201,7 @@ describe('POST /api/tasks/[id]/start', () => {
       context: null,
       mode: null,
       priority: null,
-      workspace: { id: 'ws-1', teamId: 'team-1', name: 'Clean WS', repo: null, maxConcurrentTasks: 3 },
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'Clean WS', repo: null },
     };
 
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
@@ -1369,7 +1269,7 @@ describe('POST /api/tasks/[id]/start — subject gate', () => {
     subjectPrNumber: 1789,
     subjectResolution: 'reconciled',
     subjectAnchor: { version: 1, kind: 'pull_request', prNumber: 1789, source: 'system', confidence: 'exact' },
-    workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     ...overrides,
   });
 
@@ -1473,7 +1373,7 @@ describe('POST /api/tasks/[id]/start — mission budget gate', () => {
     mode: null,
     priority: 0,
     startAt: null,
-    workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null, maxConcurrentTasks: 3 },
+    workspace: { id: 'ws-1', teamId: 'team-1', name: 'WS', repo: null },
     ...overrides,
   });
 
@@ -1567,7 +1467,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     missionId: null,
     pathManifest: ['packages/core/db/schema.ts', 'apps/web/src/lib/foo.ts'],
     context: {},
-    workspace: { id: 'ws-1', teamId: 'team-1', repo: 'test/repo', maxConcurrentTasks: 10 },
+    workspace: { id: 'ws-1', teamId: 'team-1', repo: 'test/repo' },
   };
   const snapshot = (over: Partial<CoordinationSnapshot> = {}): CoordinationSnapshot => ({
     openPrTasks: [{
@@ -1584,11 +1484,11 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
   });
   const probeWith = (snap: CoordinationSnapshot) =>
     mockProbe.mockImplementation(async (task: any) => evaluateCoordinationGates(task, snap));
-  // A limit Force start may lift (Health › Queue R-10): mission pacing on a mission task.
-  const pacedMission = { status: 'active', maxConcurrentTasks: null, pacingMode: 'paced' as const, pacingMaxPerHour: 2, lastTaskStartedAt: new Date(Date.now() - 60_000) };
+  // A limit Force start may lift (Health › Queue R-10): mission limit on a mission task.
+  const cappedMission = { status: 'active', maxConcurrentTasks: 1 };
   const probeLimit = (over: Partial<CoordinationSnapshot> = {}) => {
     mockTasksFindFirst.mockResolvedValue({ ...overlapTask, missionId: 'm-1' });
-    probeWith(snapshot({ openPrTasks: [], mission: pacedMission, ...over }));
+    probeWith(snapshot({ openPrTasks: [], mission: cappedMission, missionActiveCount: 1, ...over }));
   };
 
   beforeEach(() => {
@@ -1647,17 +1547,17 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.forced.gates).toEqual(['Mission pacing']);
+    expect(body.forced.gates).toEqual(['Mission concurrency limit']);
     expect(body.forced.railsRemaining.length).toBeGreaterThan(0);
 
     const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
     expect(ctx.forceStart).toMatchObject({
       userId: 'user-123',
-      kinds: ['mission_paced'],
-      loopKeys: ['mission_paced'],
+      kinds: ['mission_concurrent'],
+      loopKeys: ['mission_concurrent'],
       reasonsDigest: first.reasonsDigest,
     });
-    expect(ctx.forceStart.blockers[0]).toMatchObject({ kind: 'mission_paced', type: 'mission', id: 'm-1' });
+    expect(ctx.forceStart.blockers[0]).toMatchObject({ kind: 'mission_concurrent', type: 'mission', id: 'm-1' });
     expect(Date.parse(ctx.forceStart.expiresAt)).toBeGreaterThan(Date.now());
     // Not the MCP claim path: no forceClaim audit, no worker row, no claim.
     expect(ctx.forceClaim).toBeUndefined();
@@ -1666,14 +1566,14 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     // Request-time evidence on the gate ledger.
     const ev = mockFireGateEvent.mock.calls.map(c => c[0]).find(e => e.reason === 'force_start');
     expect(ev).toMatchObject({ outcome: 'bypassed', gate: 'claim_loop_deferral', taskId: 'task-123', callerOrigin: 'dashboard' });
-    expect(ev.detail).toMatchObject({ phase: 'requested', kinds: ['mission_paced'] });
+    expect(ev.detail).toMatchObject({ phase: 'requested', kinds: ['mission_concurrent'] });
   });
 
   it('409 when the blocker changed between the refusal and the confirmation', async () => {
     probeLimit();
     const first = await (await callHandler(createMockRequest(), 'task-123')).json();
-    // Pacing lifted; the mission's concurrency cap holds it instead.
-    probeLimit({ mission: { status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }, missionActiveCount: 1 });
+    // The cap no longer holds it, but another PR now holds a lane on its files.
+    probeLimit({ mission: { status: 'active', maxConcurrentTasks: 5 }, missionActiveCount: 1, openPrTasks: [{ taskId: 'pr-task', pathManifest: overlapTask.pathManifest, prNumber: 1, prUrl: 'https://github.com/o/r/pull/1', workerStatus: 'running', prLifecycle: 'open', branch: 'b', prBaseRef: 'dev' } as any] });
 
     const res = await callHandler(createMockRequest({
       body: { force: { kinds: first.force?.kinds ?? [], reasonsDigest: first.reasonsDigest } },
@@ -1682,7 +1582,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     const body = await res.json();
     expect(body.reasonsChanged).toBe(true);
     expect(body.gateReason).toBe('reasons_changed');
-    expect(body.waitingReasons[0].kind).toBe('mission_concurrent');
+    expect(body.waitingReasons[0].kind).toBe('lane');
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
@@ -1691,7 +1591,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     mockTasksFindFirst.mockResolvedValue(task);
     probeWith(snapshot({
       openPrTasks: [],
-      mission: { status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null },
+      mission: { status: 'active', maxConcurrentTasks: null },
       missionActiveCount: 1,
     }));
     const res = await callHandler(createMockRequest(), 'task-123');
@@ -1700,15 +1600,15 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     expect(body.waitingReasons ?? []).toEqual([]);
   });
 
-  it('a non-forceable reason (declared dependency) offers no Force start and refuses one', async () => {
-    mockProbe.mockResolvedValue([migrationEdge('a'), declaredEdge('z')]);
+  it('a non-forceable reason (task hold) offers no Force start and refuses one', async () => {
+    mockProbe.mockResolvedValue([migrationEdge('a'), makeWaitingReason('task_held', { because: 'paused', provenance: { source: 'probe', derivedFrom: 't' } })]);
     const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
     expect(refused.canForce).toBe(false);
     expect(refused.force).toBeNull();
-    expect(refused.notForceable).toEqual(['Serial lane', 'Declared dependency']);
+    expect(refused.notForceable).toEqual(['Serial lane', 'Task paused']);
 
     const res = await callHandler(createMockRequest({
-      body: { force: { kinds: ['lane', 'dep_declared'], reasonsDigest: refused.reasonsDigest } },
+      body: { force: { kinds: ['lane', 'task_held'], reasonsDigest: refused.reasonsDigest } },
     }), 'task-123');
     expect(res.status).toBe(422);
     expect(mockDbUpdate.set).not.toHaveBeenCalled();
@@ -1719,10 +1619,10 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     probeLimit();
     const first = await (await callHandler(createMockRequest(), 'task-123')).json();
     const res = await callHandler(createMockRequest({
-      body: { force: { kinds: ['mission_paced', 'mission_concurrent'], reasonsDigest: first.reasonsDigest } },
+      body: { force: { kinds: ['mission_concurrent', 'mission_local'], reasonsDigest: first.reasonsDigest } },
     }), 'task-123');
     expect(res.status).toBe(422);
-    expect((await res.json()).rejectedKinds).toEqual(['mission_concurrent']);
+    expect((await res.json()).rejectedKinds).toEqual(['mission_local']);
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
@@ -1765,21 +1665,21 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     expect(res.status).toBe(200);
   });
 
-  it('mission concurrency and pacing holds are forceable and named', async () => {
+  it('a mission concurrency hold is forceable and named', async () => {
     const task = { ...overlapTask, missionId: 'm-1', pathManifest: ['apps/runner/src/x.ts'] };
     mockTasksFindFirst.mockResolvedValue(task);
     probeWith(snapshot({
       openPrTasks: [],
-      mission: { status: 'active', maxConcurrentTasks: 1, pacingMode: 'paced', pacingMaxPerHour: 2, lastTaskStartedAt: new Date(Date.now() - 60_000) },
+      mission: { status: 'active', maxConcurrentTasks: 1 },
       missionActiveCount: 1,
     }));
     const body = await (await callHandler(createMockRequest(), 'task-123')).json();
-    expect(body.waitingReasons.map((r: any) => r.kind)).toEqual(['mission_concurrent', 'mission_paced']);
+    expect(body.waitingReasons.map((r: any) => r.kind)).toEqual(['mission_concurrent']);
     expect(body.canForce).toBe(true);
     const res = await callHandler(createMockRequest({ body: { force: { kinds: body.force.kinds, reasonsDigest: body.reasonsDigest } } }), 'task-123');
     expect(res.status).toBe(200);
     const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
-    expect(ctx.forceStart.loopKeys.sort()).toEqual(['mission_concurrent', 'mission_paced']);
+    expect(ctx.forceStart.loopKeys.sort()).toEqual(['mission_concurrent']);
   });
 
   it('starts normally once the blocker clears', async () => {
