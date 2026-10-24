@@ -210,6 +210,16 @@ describe('exportCanvas', () => {
     expect(out.html).toContain('<a href="#coverage">Open task</a>');
   });
 
+  test('screens.json can say a board is a component and name its code', () => {
+    const out = exportCanvas(fixtureCanvas({
+      ...withValues,
+      'screens.json': JSON.stringify({ TaskDetail: { id: 'c-row', kind: 'component', code: 'apps/web/src/components/X.tsx' } }),
+    }));
+    expect(out.metadata.screens.find(s => s.id === 'c-row')).toMatchObject({ kind: 'component', code: 'apps/web/src/components/X.tsx' });
+    expect(out.metadata.screens.find(s => s.id !== 'c-row')).not.toHaveProperty('kind');
+    expect(() => exportCanvas(fixtureCanvas({ ...withValues, 'screens.json': JSON.stringify({ TaskDetail: { kind: 'widget' } }) }))).toThrow(/kind/);
+  });
+
   test('two boards that come out with one id fail', () => {
     expect(() => exportCanvas(fixtureCanvas({ ...withValues, 'screens.json': JSON.stringify({ TaskDetail: 'same', MissionList: 'same' }) })))
       .toThrow(/"same"/);

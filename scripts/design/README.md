@@ -59,6 +59,18 @@ Override either in `project/screens.json`:
 { "Coverage": "coverage", "Detail.dc.html": { "id": "phone-task-merged", "name": "Phone · Task merged" } }
 ```
 
+A board that specifies one component, not a page, says so with `kind` and
+names its code; buildd's visual check then compares it on the component's dev
+fixture. Every other board is a page:
+
+```json
+{ "Row": { "id": "c-row", "kind": "component", "code": "apps/web/src/components/DeliveryRow.tsx" } }
+```
+
+An agent reads one board on its own with
+`manage_designs action=screen designId=<id> revision=<n> screenId=<screen>`:
+its source without the other boards, and a URL that renders it.
+
 Boards are live components: text like `{{count}}` is filled in by the canvas
 at runtime. A static design needs a value for each, in
 `project/placeholders.json`, per board or for all (`"*"`):
@@ -71,7 +83,7 @@ A placeholder with no value stops the export and names the board and the
 placeholder. Values are HTML-escaped.
 
 Next to `out.html` the script writes `out.metadata.json`:
-`{ kind: "design", screens: [{ id, name, viewport }], source }`, checked
+`{ kind: "design", screens: [{ id, name, viewport, kind?, code? }], source }`, checked
 with buildd's own design check before anything is uploaded.
 
 To check a re-export keeps the screen ids a spec already names, pass
