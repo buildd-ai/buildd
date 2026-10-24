@@ -15,7 +15,7 @@ import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
-import { commitShaOf, releaseCandidateFixOf, verifyCandidateFixCommit, RELEASE_CANDIDATE_FIX_COMMIT_KEY, type CandidateFixLanded } from '@/lib/release/candidate-fix-commit';
+import { commitShaOf, releaseCandidateFixOf, verifyCandidateFixCommit, RELEASE_CANDIDATE_FIX_COMMIT_KEY, type CandidateFixLanded } from '@/lib/candidate-fix-commit';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events, hasVisibleWorkerChange } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';

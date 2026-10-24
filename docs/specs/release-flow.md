@@ -8,7 +8,7 @@ domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
-verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/release/candidate-fix-commit.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/candidate-review.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/release-executor.test.ts]
+verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/candidate-fix-commit.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/candidate-review.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -346,7 +346,7 @@ path escalation or the migration inspector.
   `amendCandidateOnFixMerge()`, `amendCandidateOnFixCompletion()`; subscribers
   `release-candidate-amend-on-fix` and `release-candidate-amend-on-fix-completion`
   in `apps/web/src/lib/release/subscribers.ts`; the commit check
-  `apps/web/src/lib/release/candidate-fix-commit.ts`
+  `apps/web/src/lib/candidate-fix-commit.ts`
 - Green cut source: `scripts/release-candidate.ts`: `greenSource()`
 - Amend contract: `packages/core/release-config-shape.ts`:
   `amendContractShapeError()`, `amendContractCapabilityError()`,

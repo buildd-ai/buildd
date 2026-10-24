@@ -36,7 +36,7 @@ import {
   verifyCandidateFixCommit,
   type CandidateFixLanded,
   type ReleaseCandidateFixContext,
-} from '@/lib/release/candidate-fix-commit';
+} from '@/lib/candidate-fix-commit';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { amendContractCapabilityError, amendDispatchInputs } from '@buildd/core/release-config-shape';
 import { readWorkflowDispatchInputs as defaultReadInputs } from '@/lib/workflow-dispatch-inputs';
@@ -99,7 +99,7 @@ export async function amendCandidateOnFixMerge(
 /**
  * A candidate fix task completed without a PR of its own, naming where the fix
  * already is: a dev commit (`candidateFixLanded`, checked by
- * lib/release/candidate-fix-commit.ts before the completion was accepted) or a
+ * lib/candidate-fix-commit.ts before the completion was accepted) or a
  * merged PR another task owns (`alreadyShippedIn`). Neither ever emits a
  * `pr.merged` this task owns, so without this the candidate stays red until an
  * operator amends it by hand.

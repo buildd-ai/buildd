@@ -23,6 +23,10 @@ function api(opts: { commit?: string | null; ancestors: Record<string, string[]>
   return { fn, calls };
 }
 
+it('keeps the fix-context key in step with release-candidate-ci', () => {
+  expect(releaseCandidateFixOf({ [RELEASE_CANDIDATE_FIX_KEY]: { prNumber: 1, headSha: 'a', version: '1.0.0', branch: 'release/v1.0.0', sourceBranch: 'dev' } })).not.toBeNull();
+});
+
 describe('commitShaOf', () => {
   it('takes a short or full hex sha, and leaves a bare number to mean a PR', () => {
     expect(commitShaOf('b9c6a996b')).toBe('b9c6a996b');

@@ -13,7 +13,12 @@
  * Only reads GitHub through the injected `api`, so the worker route can call it
  * without pulling in the release dispatch modules.
  */
-import { RELEASE_CANDIDATE_FIX_KEY } from '@/lib/release-candidate-ci';
+/**
+ * Context key on the fix task (the same string as RELEASE_CANDIDATE_FIX_KEY in
+ * lib/release-candidate-ci.ts, which a test pins): declared here so core, which
+ * the worker route is part of, imports no releases-module file.
+ */
+const RELEASE_CANDIDATE_FIX_KEY = 'releaseCandidateFix';
 
 /** Task result key: the dev commit a candidate fix task named as carrying the fix. */
 export const RELEASE_CANDIDATE_FIX_COMMIT_KEY = 'candidateFixLanded';
