@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveServicePaths, type CommandResult } from '../../src/service';
+import * as migrateModule from '../../src/wsl-migrate';
 import {
-  logonTaskName,
   WSL_MIGRATE_PREFLIGHT,
   WSL_SERVICE_CHECK,
   WSL_SERVICE_INSTALL,
@@ -13,6 +13,10 @@ import {
   runWslMigrate,
   type MigrateDeps,
 } from '../../src/wsl-migrate';
+
+// Namespace access so a missing per-distribution name fails the logon-task checks, not the whole file.
+const logonTaskName: (distro: string) => string =
+  (migrateModule as { logonTaskName?: (distro: string) => string }).logonTaskName ?? (() => 'buildd wsl');
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -327,9 +331,11 @@ describe('the Windows launcher', () => {
 
 // Acceptance criteria (Living Spec a0b82b5d, part 3): one test per check id.
 //
-// AC-16 describes behaviour nobody has built yet, so it is red by design. They are skipped in the gating run and only execute with
+// The AC-16 test below describes behaviour nobody has
+// built yet, so they are red by design. They are skipped in the gating run and only execute with
 // BUILDD_RUN_PENDING_ACCEPTANCE=1 (that is how the starting-commit failure is
 // shown). The build that makes them pass MUST swap `pendingTest` back to `test`.
+// AC-18 (docs repo) and AC-20 (real machine) have no unit test by design.
 const pendingTest = process.env.BUILDD_RUN_PENDING_ACCEPTANCE ? test : test.skip;
 describe('acceptance criteria', () => {
   test('AC-10: an active task blocks the handover; the Scheduled Task is removed only once it finishes, never stopped', async () => {
@@ -351,7 +357,26 @@ describe('acceptance criteria', () => {
     expect(mutating(t.calls)).toEqual([]);
   });
 
-  test('AC-12: the logon task also brings the distribution back if WSL stops it, not only at the next sign-in', () => {
+  test('AC-12: the logon task starts the distribution at logon and never runs the native Windows runner', () => {
+    const xml = generateLogonTaskXml('Ubuntu-22.04', 'PC\\me');
+    expect(xml).toContain('<LogonTrigger>');
+    expect(xml).toContain('wsl.exe');
+    expect(xml).toContain('Ubuntu-22.04');
+    expect(xml).not.toMatch(/buildd(\.exe|\.cmd)?\s+(start|run)\b|runner[\\/]src/i);
+  });
+
+  test('AC-13: running migrate a second time reports each step as already done and registers or installs nothing', async () => {
+    const t = machine({ winTask: false, windowsLive: false, service: 'yes', linger: 'yes', logonTask: 'Running' });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
+    expect(mutating(t.calls)).toEqual([]);
+    expect(t.calls.filter(c => c.includes('/Create'))).toEqual([]);
+    expect(t.out()).toMatch(/already/i);
+  });
+
+  // Not yet built (bug eb029481): the logon task only has a LogonTrigger, so
+  // once WSL stops the distribution outside of a logon (the observed
+  // failure: it stayed down for hours) nothing brings it back. Fails now.
+  test('R-18 (bug eb029481): the logon task also brings the distribution back if WSL stops it, not only at the next sign-in', () => {
     const xml = generateLogonTaskXml('Ubuntu-22.04', 'PC\\me');
     const triggers = xml.match(/<Triggers>([\s\S]*?)<\/Triggers>/)?.[1] ?? '';
     const triggerKinds = triggers.match(/<(\w+Trigger)>/g) ?? [];
@@ -362,7 +387,12 @@ describe('acceptance criteria', () => {
     expect(triggers).toContain('<Repetition>');
   });
 
-  test('AC-13: migrating a second distribution on one machine registers its own logon task, not the first one\'s', async () => {
+  // Not yet built (bug eb029481): LOGON_TASK_NAME is one fixed name for every
+  // distribution. On one real machine, migrating a second distribution finds
+  // the first one's task already registered (same name) and reports it as
+  // already done instead of making its own. Fails now: `created` ends up
+  // with one entry, not two.
+  test('R-18 (bug eb029481): migrating a second distribution on one machine registers its own logon task, not the first one\'s', async () => {
     const tasks = new Map<string, 'Ready' | 'Running'>();
     const created: string[] = [];
     const preflightOk = 'BUILDD_WSL_MIGRATE=ok systemd=yes service=no linger=yes foreground=no verify=pass\n';
