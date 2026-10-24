@@ -42,6 +42,7 @@ import {
   type FailureIncidentTriageDecision,
   type FailureIncidentTriageFeatures,
 } from '@buildd/core/decision-kind-failure-incident-triage';
+import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { maxSeverity, severityRank } from './failure-pattern-sentinel';
 import {
   applyIncidentAction,
@@ -123,7 +124,9 @@ const SIGNATURE_KEYED_RULES: ReadonlySet<FailureIncidentRule> = new Set(['repeat
 
 export function isTransientOrBudgetPattern(incident: Pick<StoredIncident, 'rule' | 'signature' | 'title'>): boolean {
   if (!SIGNATURE_KEYED_RULES.has(incident.rule)) return false;
-  return TRANSIENT_OR_BUDGET.test(incident.signature) || TRANSIENT_OR_BUDGET.test(incident.title);
+  return TRANSIENT_OR_BUDGET.test(incident.signature) || TRANSIENT_OR_BUDGET.test(incident.title)
+    // Provider walls ("hit your session limit", "weekly limit") the regex has no word for.
+    || isBudgetExhaustionError(incident.signature) || isBudgetExhaustionError(incident.title);
 }
 
 export function incidentTriageFeatures(incident: StoredIncident): FailureIncidentTriageFeatures {
