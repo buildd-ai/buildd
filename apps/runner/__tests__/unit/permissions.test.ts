@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS, OWNER_ONLY_GITHUB_COMMAND_PATTERNS } from '@buildd/shared';
 
 // Helper to check if a command matches any dangerous pattern
 function isDangerousCommand(command: string): boolean {
@@ -525,5 +525,28 @@ describe('DANGEROUS_CREDENTIAL_READ_PATTERNS — bash reads of runner secrets', 
   test('allows cat of non-sensitive config files', () => {
     expect(isCredentialReadCommand('cat .buildd/env.yaml')).toBe(false);
     expect(isCredentialReadCommand('cat tsconfig.json')).toBe(false);
+  });
+});
+
+describe('OWNER_ONLY_GITHUB_COMMAND_PATTERNS', () => {
+  const isOwnerOnly = (command: string) => OWNER_ONLY_GITHUB_COMMAND_PATTERNS.some((p) => p.test(command));
+
+  test('blocks dispatching the release workflow through gh', () => {
+    expect(isOwnerOnly('gh workflow run release.yml --ref dev -f amend=v0.381.0 -f amend_confirm=v0.381.0')).toBe(true);
+    expect(isOwnerOnly('gh workflow run release --ref dev')).toBe(true);
+    expect(isOwnerOnly("gh workflow run 'Release' --ref dev")).toBe(true);
+    expect(isOwnerOnly('cd repo && gh workflow run -R buildd-ai/buildd release.yml')).toBe(true);
+  });
+
+  test('blocks dispatching it through the REST API', () => {
+    expect(isOwnerOnly('gh api -X POST repos/o/r/actions/workflows/release.yml/dispatches -f ref=dev')).toBe(true);
+  });
+
+  test('allows other workflows and read-only release commands', () => {
+    expect(isOwnerOnly('gh workflow run visual-qa.yml --ref dev -f capture_ref=x')).toBe(false);
+    expect(isOwnerOnly('gh workflow run release-notes-preview.yml --ref dev')).toBe(false);
+    expect(isOwnerOnly('gh run list --workflow release.yml')).toBe(false);
+    expect(isOwnerOnly('gh workflow view release.yml')).toBe(false);
+    expect(isOwnerOnly('bun run release:candidate -- cut --dry-run --source origin/dev')).toBe(false);
   });
 });

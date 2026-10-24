@@ -319,6 +319,27 @@ describe('a behind refresh says what it is doing, and whom it waits for in the l
     expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is merging into dev first');
   });
 
+  // e07ee9cf: a parked refresh has no worker and no repair; the lane owns the next move.
+  test('parked in the lane: owner is landing, not a worker, though the refresh row is queued', () => {
+    expect(behind().owner).toBe('worker');
+    const v = behind({ laneWait: { behindPr: 7, position: 2 } });
+    expect(v).toMatchObject({ owner: 'landing', needsYou: false, laneWait: { behindPr: 7, position: 2 } });
+    expect(v.detail).toBe('PR #7 is merging into dev first; position 2 in the queue');
+  });
+
+  test('parked in the lane on an approved head: says approved and queued to land', () => {
+    const v = view({
+      view: V(D({ state: 'REPAIRING', stateReason: 'behind', baseRef: 'dev', prNumber: 12, boundAttemptId: 'm1', currentHeadSha: 'H1', approvedHeads: ['H1'] }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'queued' })]),
+      laneWait: { behindPr: 7 },
+    });
+    expect(v).toMatchObject({ headline: 'Approved · queued to land behind PR #7', owner: 'landing' });
+  });
+
+  test('a lane wait on a non-behind repair is ignored', () => {
+    const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'ci' })), laneWait: { behindPr: 7 } });
+    expect(v).toMatchObject({ headline: 'Fixing CI', laneWait: null });
+  });
+
   test('other repairs keep their copy', () => {
     expect(view({ view: V(D({ state: 'REPAIRING', stateReason: 'ci' })) }).headline).toBe('Fixing CI');
   });
