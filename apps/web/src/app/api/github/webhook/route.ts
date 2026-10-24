@@ -496,7 +496,9 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   for (const pr of check_suite.pull_requests) {
     try {
       const { landSpecRepoCopy } = await import('@/lib/specs/repo-copy');
-      const landed = await landSpecRepoCopy({ repoFullName: repository.full_name, prNumber: pr.number, headSha, conclusion: check_suite.conclusion, installationId: installation.id });
+      const e = { repoFullName: repository.full_name, prNumber: pr.number, headSha, conclusion: check_suite.conclusion, installationId: installation.id };
+      // A retired spec's copy removal (§22, R-78) lands under the same exception.
+      const landed = await landSpecRepoCopy(e) ?? await (await import('@/lib/specs/retire-repo-file')).landRetirementPr(e);
       if (landed) console.log(`[spec-copy] ${repository.full_name}#${pr.number}@${headSha}: ${landed.outcome}`);
     } catch (err) {
       console.error(`[spec-copy] ${repository.full_name}#${pr.number}: landing check failed`, err);
@@ -1108,6 +1110,14 @@ async function handlePullRequestEvent(event: {
     }
   } catch (err) {
     console.error('[knowledge-ingest] enqueue failed (non-fatal):', err);
+  }
+
+  // A retired spec's repo-file PR (living-specs §22, R-78): the spec page names it until it merges.
+  try {
+    const { settleRetirementPr } = await import('@/lib/specs/retire-repo-file');
+    await settleRetirementPr({ repoFullName: repository.full_name, prNumber: pr.number, merged: !!pr.merged });
+  } catch (err) {
+    console.error(`[spec-retire] ${repository.full_name}#${pr.number}: settling the retirement PR failed`, err);
   }
 
   // Revert ledger: a merged PR whose title/body reverts another PR (or a

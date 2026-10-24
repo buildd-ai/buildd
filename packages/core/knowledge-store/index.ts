@@ -19,16 +19,21 @@ export type { PrDiffFileInput, PrDiffMeta } from './pr-diff-chunker';
 export type { ChunkOptions, ChunkPiece, SymbolSpan } from './chunker';
 export { ingestFiles, fileToChunks } from './ingest';
 export {
+  aggregateSpecMatches,
   buildLivingSpecChunks,
   buildLivingSpecGraph,
   livingSpecChunkPrefix,
+  livingSpecDraftChunkPrefix,
+  livingSpecPieces,
+  LIVING_SPEC_DRAFT_SOURCE_TYPE,
+  LIVING_SPEC_SIMILAR_FLOOR,
   livingSpecRevisionKey,
   livingSpecCriterionKey,
   LIVING_SPEC_DERIVED_RULE_PREFIX,
   LIVING_SPEC_SOURCE_TYPE,
   LIVING_SPEC_RULE_PREFIX,
 } from './living-spec';
-export type { LivingSpecChunkInput, LivingSpecGraphInput, LivingSpecGraph } from './living-spec';
+export type { LivingSpecChunkInput, LivingSpecGraphInput, LivingSpecGraph, LivingSpecPiece, SpecMatch, SpecProbeHits } from './living-spec';
 export { replaceLivingSpecGraph } from './living-spec-graph';
 export type { SourceFile, IngestResult } from './ingest';
 export { recencyDecay, applyRecencyAuthority, CORPUS_AUTHORITY, HALF_LIFE_DAYS } from './recency-authority';

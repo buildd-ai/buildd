@@ -21,8 +21,6 @@ export const NEIGHBOUR_KINDS = ['similar', 'shares_files', 'overlaps'] as const;
 export type NeighbourKind = (typeof NEIGHBOUR_KINDS)[number];
 
 export const MAX_SIMILAR = 5;
-/** Cosine floor for `similar` when an embedder answered; below it, two specs are only in the same product. */
-export const SIMILAR_FLOOR = 0.55;
 export const MAX_SHARES_FILES = 5;
 /** A path manifest entry that names a pattern, not a file, says nothing about overlap. */
 const isPattern = (p: string) => /[*?[\]{}]/.test(p) || p.endsWith('/');
@@ -86,23 +84,40 @@ export function sharedFileNeighbours(
     .slice(0, MAX_SHARES_FILES);
 }
 
-export type SimilarFn = (input: { workspaceId: string; specId: string; text: string }) => Promise<Array<{ specId: string; score: number; source: 'vector' | 'lexical' }>>;
-
-/** Pick `similar` neighbours from raw hits: not itself, not its own parent or children, above the floor when scored by vector. Pure. */
-export function pickSimilar(
-  hits: ReadonlyArray<{ specId: string; score: number; source: 'vector' | 'lexical' }>,
-  exclude: ReadonlySet<string>,
-): NeighbourRow[] {
-  return hits
-    .filter((h) => !exclude.has(h.specId) && (h.source === 'lexical' || h.score >= SIMILAR_FLOOR))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, MAX_SIMILAR)
-    .map((h) => ({ neighborSpecId: h.specId, score: h.score, source: h.source }));
+/** A spec near another in the spec corpus, already above the knowledge store's floor for its mode. */
+export interface SimilarHit {
+  specId: string;
+  score: number;
+  source: 'vector' | 'lexical';
+  /** The best criterion pair: `here` the asking spec's, `there` the hit's. */
+  pair?: { here: string; there: string } | null;
+  /** The hit spec's chunks that matched. */
+  chunkIds?: string[];
 }
 
 /**
- * How `similar` is answered. The knowledge module installs the spec-corpus
- * query (lib/specs/knowledge.ts, `installSpecSimilarity`, registered at boot
+ * `text` is free text (a new spec's title and body). With `body` and
+ * `revision`, the spec's own indexed chunks of that revision are the probes,
+ * so no embedding call is made.
+ */
+export type SimilarFn = (input: { workspaceId: string; specId: string; text: string; body?: string; revision?: number | null }) => Promise<SimilarHit[]>;
+
+/** Pick `similar` neighbours from hits: not itself, not its own parent or children, at most MAX_SIMILAR. Pure. */
+export function pickSimilar(hits: readonly SimilarHit[], exclude: ReadonlySet<string>): NeighbourRow[] {
+  return hits
+    .filter((h) => !exclude.has(h.specId))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_SIMILAR)
+    .map((h) => {
+      const detail = { ...(h.pair ? { pair: h.pair } : {}), ...(h.chunkIds?.length ? { chunks: h.chunkIds.slice(0, 5) } : {}) };
+      return { neighborSpecId: h.specId, score: h.score, source: h.source, ...(Object.keys(detail).length ? { detail } : {}) };
+    });
+}
+
+/**
+ * How `similar` is answered: the knowledge store's spec corpus, with the
+ * hybrid ranking recall uses (R-101). The knowledge module installs it
+ * (lib/specs/knowledge.ts, `installSpecSimilarity`, registered at boot
  * through modules.ts): core never imports the store. Until it is installed a
  * `similar` recompute fails and keeps its previous rows.
  */
@@ -128,7 +143,7 @@ export async function computeSpecNeighbours(specId: string, body: string | null)
   const approvedIds = new Set(approved.map((a) => a.id));
 
   try {
-    const hits = await neighbourDeps.similar({ workspaceId: spec.workspaceId, specId, text: `${spec.title}\n\n${body ?? ''}` });
+    const hits = await neighbourDeps.similar({ workspaceId: spec.workspaceId, specId, text: `${spec.title}\n\n${body ?? ''}`, body: body ?? undefined, revision: spec.approvedRevision });
     const rows = pickSimilar(hits.filter((h) => approvedIds.has(h.specId)), exclude);
     await replaceSpecNeighbours(spec.workspaceId, specId, 'similar', rows);
     out.similar = rows.length;
@@ -169,6 +184,8 @@ export function neighbourReason(kind: NeighbourKind, detail: Record<string, unkn
     if (!first) return detail?.relation === 'duplicate' ? 'Asks for the same things' : 'Shares some of what it asks for';
     return pairs.length > 1 ? `${first.here} here matches ${first.there} there, and ${pairs.length - 1} more` : `${first.here} here matches ${first.there} there`;
   }
+  const pair = detail?.pair as { here?: unknown; there?: unknown } | undefined;
+  if (typeof pair?.here === 'string' && typeof pair.there === 'string') return `${pair.here} here reads like ${pair.there} there`;
   return 'Similar in what it asks for';
 }
 
@@ -204,10 +221,14 @@ export async function readSpecNeighbours(specId: string, limit = 8, workspaceId?
     .filter((id) => titles.has(id))
     .map((id) => {
       const r = best.get(id)!;
-      // An `overlaps` row written from the other side names its criteria the other way round.
-      const detail = r.kind === 'overlaps' && r.specId !== specId && Array.isArray(r.detail?.pairs)
-        ? { ...r.detail, pairs: (r.detail!.pairs as Array<{ here?: string; there?: string }>).map((p) => ({ here: p.there, there: p.here })) }
-        : r.detail;
+      // A row written from the other side names its criteria the other way round.
+      const flip = (p: { here?: string; there?: string }) => ({ here: p.there, there: p.here });
+      const fromOther = r.specId !== specId;
+      const detail = fromOther && r.kind === 'overlaps' && Array.isArray(r.detail?.pairs)
+        ? { ...r.detail, pairs: (r.detail!.pairs as Array<{ here?: string; there?: string }>).map(flip) }
+        : fromOther && r.kind === 'similar' && r.detail?.pair
+          ? { ...r.detail, pair: flip(r.detail.pair as { here?: string; there?: string }) }
+          : r.detail;
       return { specId: id, title: titles.get(id)!, kind: r.kind, score: r.score, reason: neighbourReason(r.kind, detail) };
     })
     .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || b.score - a.score)
@@ -235,7 +256,7 @@ export async function suggestParent(workspaceId: string, specId: string, text: s
   } catch {
     // No similarity provider (or it failed): areas are still matched by their words below.
   }
-  const ranked = hits.filter((h) => h.specId !== specId && (h.source === 'lexical' || h.score >= SIMILAR_FLOOR)).sort((a, b) => b.score - a.score);
+  const ranked = hits.filter((h) => h.specId !== specId).sort((a, b) => b.score - a.score);
   const rows = ranked.length ? await db.select({ id: specs.id, title: specs.title, scope: specs.scope, status: specs.status, parentSpecId: specs.parentSpecId, workspaceId: specs.workspaceId })
     .from(specs).where(inArray(specs.id, ranked.map((h) => h.specId))) : [];
   const byId = new Map(rows.filter((r) => r.workspaceId === workspaceId).map((r) => [r.id, r]));
