@@ -14,6 +14,13 @@ describe('StageMeter', () => {
     expect([...html('build').matchAll(/data-segment="(\w+)"/g)].map(m => m[1])).toEqual(['build', 'verify', 'deliver']);
   });
 
+  it('colours the current stage as its Pipeline dots do: Build orange, Verify blue, Deliver green', () => {
+    const current = (state: StageMeterState) => /data-pattern="solid"[^>]*style="([^"]*)"/.exec(html(state))?.[1] ?? '';
+    expect(current('build')).toContain('var(--accent)');
+    expect(current('verify')).toContain('var(--status-info)');
+    expect(current('deliver')).toContain('var(--status-success)');
+  });
+
   it('gives every state a pattern signature no other state shares', () => {
     const sigs = STAGE_METER_STATES.map(s => signature(html(s, { fixRounds: 2 })));
     expect(new Set(sigs).size).toBe(STAGE_METER_STATES.length);

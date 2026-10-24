@@ -1,42 +1,40 @@
 'use client';
 
 /**
- * Activity: Now (live deliveries by mission, standalone last) and History
- * (one episode per delivery, newest first). Renders lib/activity-delivery.ts;
- * nothing here derives delivery state.
+ * Activity: Now (where every delivery is, by stage) and History (one bar per
+ * delivery on the day axis). Renders lib/activity-delivery.ts through
+ * ./now-board.ts; nothing here derives delivery state.
  *
- * Design: docs/prototypes/cross-surface-delivery (`#activity`, `#activity/history`).
- * A Now group is one mission's outcome: its current task and last transition,
- * then a row per task (title, the one Lifecycle track, one line, its last
- * transition and created time) with the reviews and repairs derived from it
- * folded beneath. New work carries a New marker where it already is.
+ * Design: 'Buildd delivery UX', screens phone-activity-now and
+ * desktop-activity-now (spec 9430a28f r2 R-12..R-15, R-2, R-21). Now is a
+ * picture, not a page of text: the YouStrip first, the Pipeline next, then one
+ * DeliveryRow per delivery grouped by stage, closest to done first (Deliver,
+ * Verify, Build, queued). Desktop is the Pipeline as a row, three stage
+ * columns of DeliveryCards and a rail with Waiting on you and Missions in
+ * motion. Reviews, repairs and retries are folded into their delivery's meter
+ * (↻N). Attribution, verification detail, commits and created time are on the
+ * task page each row links to.
  * History is day sections: the day's totals, then one DeliveryBar per delivery
  * on the day axis (table on desktop), with "Show more" by whole days, filtered
  * by outcome. Detail beyond the bar is on the task page (spec 9430a28f R-17, R-18).
- * A recorded spec verification shows on its row or episode; nothing is shown
- * where none was recorded (R-6). Who work is for shows only from recorded
- * lineage, else "Unattributed"; the identity filters appear only when the
- * page says they can be answered, and never hide unattributed work from All (R-4).
+ * The identity filters appear only when the page says they can be answered,
+ * and never hide unattributed work from All (R-19).
  * A live update keeps what is open, what has focus and where the reader is,
  * and shows each delivery once (R-7, ./stable-live.ts).
  */
 import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { TERMS } from '@buildd/shared';
-import { DeliveryEvidence, TONE_TEXT } from '@/components/delivery/DeliveryParts';
-import { lifecycleState } from '@/components/delivery/lifecycle-state';
-import Lifecycle, { STEP_OF } from '@/components/ui/Lifecycle';
-import { STATE_KEY_OF_DELIVERY } from '@/components/delivery/DeliveryStatePill';
-import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import Disclosure from '@/components/ui/Disclosure';
-import { STATES, TONE_TEXT as STATE_TONE_TEXT, type StateKey } from '@/components/ui/states';
-import { DELIVERY_KIND, type DeliveryKind } from '@/lib/delivery-projection';
+import DeliveryRow from '@/components/ui/DeliveryRow';
+import DeliveryCard from '@/components/ui/DeliveryCard';
+import Pipeline, { groupByStage, type PipelineStage } from '@/components/ui/Pipeline';
+import YouStrip from '@/components/ui/YouStrip';
 import {
-  age, filterEpisodes, filterNow, hiddenUnattributed,
-  type ActivityNow, type ActivityOutcome, type ActivityScope, type DerivedChild, type EvidenceEntry, type Episode, type NowGroup, type NowRow, type Transition,
+  age, filterEpisodes, hiddenUnattributed,
+  type ActivityNow, type ActivityOutcome, type ActivityScope, type Episode,
 } from '@/lib/activity-delivery';
-import type { ActivityWho, Attribution } from '@/lib/activity-attribution';
-import type { VerificationClaim } from '@/lib/activity-verification';
+import type { ActivityWho } from '@/lib/activity-attribution';
 import type { LocalSessionView } from '@/lib/local-session-view';
 import { groupSessionsForDisplay } from '@/lib/local-session-display';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
@@ -44,8 +42,11 @@ import InteractiveSessions from './InteractiveSessions';
 import DeliveryBar, { DELIVERY_END_MARK } from '@/components/ui/DeliveryBar';
 import { HISTORY_PAGE, axisHours, barOf, groupEpisodesByDay, type HistoryDay } from './history-days';
 import { displayTaskTitle } from '@/lib/task-title';
-import { TaskTitle } from '@/components/tasks/TaskTitle';
 import { ExpandedContext, useExpanded, useExpandedSet, useKeepFocus, useScrollAnchor } from './stable-live';
+import {
+  NOW_STAGE_LABEL, NOW_STAGE_ORDER, missionsInMotion, nowDeliveries, waitingOnYou,
+  type MissionInMotion, type MissionSegment, type NowDelivery,
+} from './now-board';
 
 export type ActivityMode = 'now' | 'history';
 
@@ -60,13 +61,11 @@ export interface ActivityViewProps {
   initiativeTitle?: string | null;
   /** Local interactive sessions (presence). Never counted as agents. */
   localSessions?: LocalSessionView[];
-  /** Rows whose evidence starts expanded (fixtures and deep links). */
-  openRowIds?: readonly string[];
   /** The rows could not be read. Shown as a failure, never as an empty Now or History. */
   loadError?: boolean;
   /** The load hit its root cap: History reaches back only to this time, not the full window. */
   historyReach?: { oldestAt: string } | null;
-  /** Filters to start with (fixtures). The filters are kept across Now and History. */
+  /** History's filters to start with (fixtures). */
   initialFilters?: { scope?: ActivityScope; outcome?: ActivityOutcome; who?: ActivityWho };
   /** "For me" / "Filed by me" can be answered from recorded lineage; otherwise they are not offered. */
   identityFilters?: boolean;
@@ -81,18 +80,6 @@ const OUTCOMES: ReadonlyArray<{ key: ActivityOutcome; label: string }> = [
   { key: 'exceptions', label: TERMS['pr.closed'].word },
 ];
 
-/** The headline's breakdown, in delivery order; anything not yet started folds into "N waiting". */
-const BREAKDOWN: ReadonlyArray<{ kind: DeliveryKind; word: string }> = [
-  { kind: 'build', word: 'building' },
-  { kind: 'audit', word: 'auditing' },
-  { kind: 'repair', word: 'repairing' },
-  { kind: 'landing', word: TERMS['pr.merging'].short },
-  { kind: 'unavailable', word: 'recovering' },
-  { kind: 'needs', word: 'waiting on you' },
-  { kind: 'notlanded', word: TERMS['pr.closed'].word.toLowerCase() },
-];
-const NOT_STARTED: ReadonlySet<DeliveryKind> = new Set(['waiting', 'held', 'planning']);
-
 /** Identity filters, offered only when recorded lineage can answer them. "All" is everyone's work, unattributed included. */
 const WHO: ReadonlyArray<{ key: ActivityWho; label: string }> = [
   { key: 'all', label: 'All' },
@@ -100,48 +87,21 @@ const WHO: ReadonlyArray<{ key: ActivityWho; label: string }> = [
   { key: 'filed-by-me', label: 'Filed by me' },
 ];
 
-/** Per-state counts for the headline line: `▶ 4 building · ◐ 1 auditing · 2 waiting`. */
-export function deliveryBreakdown(now: ActivityNow): { kind: DeliveryKind | 'waiting'; text: string; tone: string | null }[] {
-  const counts = new Map<DeliveryKind, number>();
-  let waiting = 0;
-  for (const g of now.groups) {
-    for (const r of [...g.rows, ...g.hiddenWaitingRows]) {
-      if (NOT_STARTED.has(r.delivery.kind)) waiting += 1;
-      else counts.set(r.delivery.kind, (counts.get(r.delivery.kind) ?? 0) + 1);
-    }
-  }
-  const out: { kind: DeliveryKind | 'waiting'; text: string; tone: string | null }[] = BREAKDOWN
-    .filter(b => counts.get(b.kind))
-    .map(b => {
-      const state = STATES[STATE_KEY_OF_DELIVERY[b.kind]];
-      const n = counts.get(b.kind)!;
-      const word = b.word;
-      return { kind: b.kind, text: `${DELIVERY_KIND[b.kind].glyph} ${n} ${word}`, tone: STATE_TONE_TEXT[state.tone] };
-    });
-  if (waiting > 0) out.push({ kind: 'waiting', text: `${waiting} waiting`, tone: null });
-  return out;
-}
-
 export { age };
 
-export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, historyReach = null, initialFilters, identityFilters = false }: ActivityViewProps) {
-  const breakdown = deliveryBreakdown(now);
-  const [nowOutcome, setNowOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
+export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], loadError = false, historyReach = null, initialFilters, identityFilters = false }: ActivityViewProps) {
+  const [outcome, setOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
   const [whoPicked, setWho] = useState<ActivityWho>(initialFilters?.who ?? 'all');
   // Without reliable lineage there is no identity filter: everything shows.
   const who = identityFilters ? whoPicked : 'all';
-  // A History-only outcome stays selected there, but cannot hide all of Now.
-  const nowFilterOutcome = nowOutcome === 'landed' || nowOutcome === 'you' ? 'any' : nowOutcome;
-  const groups = useMemo(() => onePerRow(filterNow(now, { scope: initialFilters?.scope ?? 'all', outcome: nowFilterOutcome, who })), [now, initialFilters?.scope, nowFilterOutcome, who]);
-  const nowHidden = hiddenUnattributed(now.groups.flatMap(g => [...g.rows, ...g.hiddenWaitingRows]), who);
-  const expanded = useExpandedSet(openRowIds.map(id => `ev:${id}`));
+  const expanded = useExpandedSet([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   useKeepFocus(scrollRef);
   useScrollAnchor(scrollRef);
   return (
     <ExpandedContext.Provider value={expanded}>
     <div ref={scrollRef} data-testid="activity-scroll" className="h-full overflow-y-auto">
-      <div data-testid="activity-view" data-mode={mode} className="mx-auto max-w-[1000px] px-4 pb-10 pt-14 md:px-6 md:pt-8">
+      <div data-testid="activity-view" data-mode={mode} className={`mx-auto px-4 pb-10 pt-14 md:px-6 md:pt-8 ${mode === 'now' ? 'max-w-[1240px]' : 'max-w-[1000px]'}`}>
         {missionFilter && (
           <nav aria-label="Breadcrumb" className="mb-2 flex flex-wrap items-center gap-x-2 text-meta text-text-muted">
             <Link href={`/app/missions/${missionFilter.id}`} className="inline-flex min-h-11 min-w-0 items-center break-words md:min-h-0">‹ {missionFilter.title ?? 'Mission'}</Link>
@@ -175,56 +135,14 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
             <a href={hrefs[mode]} className="mt-2 inline-flex min-h-11 items-center text-meta text-accent-text">Try again ›</a>
           </div>
         ) : mode === 'now' ? (
-          <>
-            <div className="mt-4" data-testid="activity-headline">
-              <p className="text-heading font-semibold text-text-primary">
-                {now.inMotion === 0 ? 'Nothing moving' : `${now.inMotion} ${now.inMotion === 1 ? 'delivery' : 'deliveries'} moving`}
-              </p>
-              {breakdown.length > 0 && (
-                <p data-testid="activity-counts" className="mt-1 font-mono text-meta text-text-muted">
-                  {breakdown.map((b, i) => (
-                    <span key={b.kind}>{i > 0 && ' · '}<span className={b.tone ?? undefined}>{b.text}</span></span>
-                  ))}
-                </p>
-              )}
-            </div>
-            {!missionFilter && <SessionsLine sessions={localSessions} nowMs={nowMs} />}
-            <div className="mt-3 flex flex-col gap-2" data-testid="activity-filters">
-              <FilterGroup label="Filter" options={[{ key: 'any', label: 'All' }, { key: 'retries', label: 'Had repairs' }, { key: 'exceptions', label: 'Needs attention' }]} value={nowFilterOutcome} onChange={setNowOutcome} />
-              {identityFilters && <WhoFilter value={who} onChange={setWho} hidden={nowHidden} />}
-            </div>
-            {groups.length === 0
-              ? (now.groups.length === 0
-                ? <Empty text="Nothing in motion. Finished work is in History." />
-                : <FilteredEmpty text="Nothing in motion matches these filters." available={`${now.groups.reduce((n, g) => n + g.rows.length + g.moreWaiting, 0)} deliveries in Now`} onClear={() => { setNowOutcome('any'); setWho('all'); }} />)
-              : groups.map(g => <NowGroupView key={g.missionId ?? '__standalone__'} group={g} nowMs={nowMs} />)}
-          </>
+          <NowView now={now} nowMs={nowMs} sessions={missionFilter ? [] : localSessions} />
         ) : (
-          <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={nowOutcome} onOutcomeChange={setNowOutcome} who={who} onWhoChange={identityFilters ? setWho : null} />
+          <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={outcome} onOutcomeChange={setOutcome} who={who} onWhoChange={identityFilters ? setWho : null} />
         )}
       </div>
     </div>
     </ExpandedContext.Provider>
   );
-}
-
-/**
- * One card per delivery, whatever the rows say: a delivery read twice, or
- * caught mid-move between groups, keeps its first place (the groups arrive in
- * attention order) and is dropped from any later one.
- */
-export function onePerRow(groups: NowGroup[]): NowGroup[] {
-  const seen = new Set<string>();
-  const once = (rows: NowRow[]) => rows.filter(r => (seen.has(r.id) ? false : (seen.add(r.id), true)));
-  return groups
-    .map(g => {
-      const rows = once(g.rows);
-      const hiddenWaitingRows = once(g.hiddenWaitingRows);
-      return rows.length === g.rows.length && hiddenWaitingRows.length === g.hiddenWaitingRows.length
-        ? g
-        : { ...g, rows, hiddenWaitingRows, moreWaiting: Math.min(g.moreWaiting, hiddenWaitingRows.length) };
-    })
-    .filter(g => g.rows.length > 0 || g.hiddenWaitingRows.length > 0);
 }
 
 /**
@@ -241,8 +159,8 @@ function SessionsLine({ sessions, nowMs }: { sessions: LocalSessionView[]; nowMs
     earlier.length > 0 && `${earlier.length} earlier`,
   ].filter(Boolean).join(' · ');
   return (
-    <div className="mt-3" data-testid="activity-sessions-line">
-      <Disclosure summary={<span className="text-meta text-text-muted">Your sessions: {parts}</span>}>
+    <div data-testid="activity-sessions-line">
+      <Disclosure summary={<span className="text-meta text-text-muted">{sessions.length} {sessions.length === 1 ? 'session' : 'sessions'}: {parts}</span>}>
         <div className="-mx-4"><InteractiveSessions sessions={sessions} now={nowMs} /></div>
       </Disclosure>
     </div>
@@ -338,215 +256,139 @@ function FilteredEmpty({ text, available, onClear }: { text: string; available: 
   );
 }
 
+
 // ── Now ─────────────────────────────────────────────────────────────────────
 
-const taskCount = (n: number) => `${n} ${n === 1 ? 'task' : 'tasks'}`;
+/** The stages with a column on desktop, in delivery order. Queued is a count and a fold, not a column. */
+const COLUMNS: readonly PipelineStage[] = ['build', 'verify', 'deliver'];
 
-/** The New marker: one per new mission or task, on the group or row it already has. */
-const NewMarker = () => <span data-testid="activity-new" className="shrink-0"><TonePill tone="act">New</TonePill></span>;
-const transitionText = (t: Transition, nowMs: number) => `${t.text} · ${age(t.at, nowMs) === 'now' ? 'just now' : `${age(t.at, nowMs)} ago`}`;
-const createdText = (at: number, nowMs: number) => `created ${age(at, nowMs) === 'now' ? 'just now' : `${age(at, nowMs)} ago`}`;
-
-function NowGroupView({ group, nowMs }: { group: NowGroup; nowMs: number }) {
-  const groupKey = group.missionId ?? 'standalone';
-  const [waitingOpen, setWaitingOpen] = useExpanded(`wait:${groupKey}`);
-  const rowProps = { nowMs, groupNew: group.isNew };
-  // A mission's group is one outcome: name the task that moved last, unless it is the only row.
-  const current = group.missionId && group.current && group.rows.length > 1 ? group.current : null;
+/**
+ * One list of deliveries, read once: the Pipeline's counts and dots, the stage
+ * groups, the cards, the YouStrip and the rail are all this array (AC-12).
+ * Phone and desktop are two arrangements of it; only one is displayed.
+ */
+function NowView({ now, nowMs, sessions }: { now: ActivityNow; nowMs: number; sessions: LocalSessionView[] }) {
+  const deliveries = useMemo(() => nowDeliveries(now), [now]);
+  const byStage = useMemo(() => groupByStage(deliveries), [deliveries]);
+  const waiting = useMemo(() => waitingOnYou(deliveries), [deliveries]);
+  const missions = useMemo(() => missionsInMotion(now, deliveries), [now, deliveries]);
+  const empty = deliveries.length === 0;
   return (
-    <section data-testid="activity-group" data-mission={group.missionId ?? 'standalone'} className="mt-6">
-      <div className="flex items-baseline justify-between gap-3 border-b border-border-default pb-1">
-        <h2 className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-meta font-semibold text-text-secondary">
-          <span className="line-clamp-2 min-w-0 break-words">{group.title}</span>
-          {group.isNew && <NewMarker />}
-          {group.isNew && group.createdAt != null && <span data-testid="activity-created" className="font-mono font-normal text-text-muted">{createdText(group.createdAt, nowMs)}</span>}
-        </h2>
-        {/* "n/m landed" only when the mission's projection loaded; never "0/0". */}
-        {group.href
-          ? <Link href={group.href} className="inline-flex min-h-11 shrink-0 items-center whitespace-nowrap font-mono text-meta text-text-muted md:min-h-0">{group.total > 0 ? `${group.landed}/${group.total} merged` : taskCount(group.rows.length)} ›</Link>
-          : <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{taskCount(group.rows.length)}</span>}
+    <>
+      <div data-testid="activity-now-phone" className="mt-4 flex flex-col md:hidden">
+        <YouStrip waiting={waiting} />
+        <Pipeline deliveries={deliveries} hrefFor={s => `#now-${s}`} className="mt-5" />
+        {NOW_STAGE_ORDER.filter(s => s !== 'queued' && byStage[s].length > 0).map(s => (
+          <section key={s} id={`now-${s}`} data-testid="activity-stage" data-stage={s} aria-label={NOW_STAGE_LABEL[s]} className="mt-6">
+            <StageHeading stage={s} n={byStage[s].length} />
+            {byStage[s].map(d => <NowRowView key={d.id} delivery={d} nowMs={nowMs} />)}
+          </section>
+        ))}
       </div>
-      {current && (
-        <p data-testid="activity-current" className="mt-1.5 min-w-0 break-words text-meta text-text-muted">
-          Latest: <Link href={current.href} className="text-text-secondary underline-offset-2 hover:underline">{displayTaskTitle(current.title)}</Link>
-          {current.transition && <> · {transitionText(current.transition, nowMs)}</>}
-        </p>
-      )}
-      {group.rows.map(r => <NowRowView key={r.id} row={r} {...rowProps} />)}
-      {group.moreWaiting > 0 && (
-        group.href
-          ? <Link href={group.href} className="flex min-h-11 items-center text-meta text-text-muted">+{group.moreWaiting} more waiting ›</Link>
-          : <div data-focus-key={`wait:${groupKey}`}>
-              <Disclosure summary={`+${group.moreWaiting} more waiting`} open={waitingOpen} onOpenChange={setWaitingOpen}>
-                {group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} {...rowProps} />)}
-              </Disclosure>
+
+      <div data-testid="activity-now-desktop" className="mt-6 hidden md:block">
+        <Pipeline deliveries={deliveries} layout="row" hrefFor={s => `#now-col-${s}`} data-testid="pipeline-row" />
+        <div className="mt-6 flex flex-wrap items-start gap-7">
+          <div className="grid min-w-0 flex-[999_1_600px] grid-cols-3 gap-4">
+            {COLUMNS.map(s => (
+              <section key={s} id={`now-col-${s}`} data-testid="activity-column" data-stage={s} aria-label={NOW_STAGE_LABEL[s]} className="flex min-w-0 flex-col gap-2">
+                <StageHeading stage={s} n={byStage[s].length} />
+                {byStage[s].map(d => (
+                  <div key={d.id} data-testid="activity-now-card" data-row={d.id} data-focus-key={`card:${d.id}`} data-scroll-anchor={`card:${d.id}`}>
+                    <DeliveryCard delivery={d} now={nowMs} />
+                  </div>
+                ))}
+              </section>
+            ))}
+          </div>
+          <aside aria-label="Your attention and missions" data-testid="activity-rail" className="flex min-w-0 max-w-[320px] flex-[1_1_260px] flex-col gap-6">
+            <div data-testid="activity-rail-waiting" className="flex flex-col gap-2">
+              <h2 className="text-meta font-semibold text-text-muted">Waiting on you</h2>
+              <YouStrip waiting={waiting} />
             </div>
-      )}
+            <MissionsInMotion missions={missions} />
+          </aside>
+        </div>
+      </div>
+
+      {empty && <Empty text="Nothing in motion. Finished work is in History." />}
+      <div className="mt-6 flex flex-col gap-2 border-t border-border-default pt-2">
+        {byStage.queued.length > 0 && <QueuedGroup deliveries={byStage.queued} nowMs={nowMs} />}
+        <SessionsLine sessions={sessions} nowMs={nowMs} />
+      </div>
+    </>
+  );
+}
+
+function StageHeading({ stage, n }: { stage: PipelineStage; n: number }) {
+  return (
+    <h2 className="flex items-baseline gap-2 pb-1 text-meta font-semibold text-text-muted md:justify-between">
+      <span>{NOW_STAGE_LABEL[stage]}</span>
+      <span className="font-mono font-medium">{n}</span>
+    </h2>
+  );
+}
+
+/** A phone row. The wrapper carries what a live update needs to keep focus and scroll (stable-live.ts). */
+function NowRowView({ delivery, nowMs }: { delivery: NowDelivery; nowMs: number }) {
+  return (
+    <div data-testid="activity-now-row" data-row={delivery.id} data-kind={delivery.row.delivery.kind} data-focus-key={`row:${delivery.id}`} data-scroll-anchor={`row:${delivery.id}`}>
+      <DeliveryRow delivery={delivery} now={nowMs} />
+    </div>
+  );
+}
+
+/** Not started yet: the last group, folded, so the work in motion comes first. Its open state survives a live update. */
+function QueuedGroup({ deliveries, nowMs }: { deliveries: readonly NowDelivery[]; nowMs: number }) {
+  const [open, setOpen] = useExpanded('stage:queued');
+  return (
+    <section id="now-queued" data-testid="activity-stage" data-stage="queued" aria-label={NOW_STAGE_LABEL.queued} data-focus-key="stage:queued">
+      <Disclosure summary={<span className="text-meta text-text-muted">{deliveries.length} queued</span>} open={open} onOpenChange={setOpen}>
+        <div className="md:max-w-[640px]">
+          {deliveries.map(d => <NowRowView key={d.id} delivery={d} nowMs={nowMs} />)}
+        </div>
+      </Disclosure>
     </section>
   );
 }
 
-function NowRowView({ row, nowMs, groupNew }: { row: NowRow; nowMs: number; groupNew: boolean }) {
-  const [open, setOpen] = useExpanded(`ev:${row.id}`);
-  const expandable = row.evidence.length > 0;
-  const rounds = row.delivery.repairRounds;
-  const state = lifecycleState(row.delivery.kind);
-  // Repair attempts are children of their delivery: always visible, never a row of their own, oldest first.
-  // A kernel delivery's repairs carry no number: they arrive newest first, and read oldest first here.
-  const repairs = row.evidence.filter((e): e is Extract<EvidenceEntry, { type: 'repair' }> => e.type === 'repair');
-  if (repairs.every(r => r.round != null)) repairs.sort((a, b) => a.round! - b.round!);
-  else repairs.reverse();
-  // Each fact told once: the repair list says what a repair step would, so the meta line drops it.
-  const transition = row.transition?.repair && repairs.length > 0 ? null : row.transition;
-  const head = (
-    <>
-      <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={row.title}><TaskTitle short title={row.title} /></span>
-      <span className="whitespace-nowrap font-mono text-meta text-text-muted">
-        {age(row.updatedAt, nowMs)}
-        {expandable && <span aria-hidden="true" className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-90' : ''}`}>›</span>}
-      </span>
-      <span className="col-span-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-        {/* Before Build the track has no current step, so the state word says where it stands. */}
-        {STEP_OF[state] < 0 && <StatePill state={state} label={DELIVERY_KIND[row.delivery.kind].label} variant="plain" data-testid="delivery-state" />}
-        <Lifecycle state={state} repairs={rounds} />
-        {row.quietHold && <span data-testid="activity-quiet-hold" className="text-meta text-text-muted">session {row.quietHold.state === 'ended' ? 'ended' : 'quiet'} · slot in use</span>}
-      </span>
-      <span className="col-span-2 text-meta text-text-secondary">{row.line}</span>
-      <span className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-meta text-text-muted">
-        {/* New once: on the mission's group when the mission is new, else on the task. */}
-        {row.isNew && !groupNew && <NewMarker />}
-        {/* A separator ends the item before it, so a wrapped line never starts with one. */}
-        {transition && <span><span data-testid="activity-transition">{transitionText(transition, nowMs)}</span><span aria-hidden="true"> ·</span></span>}
-        <span className="whitespace-nowrap"><span data-testid="activity-created">{createdText(row.createdAt, nowMs)}</span><span aria-hidden="true"> ·</span></span>
-        <AttributionText attribution={row.attribution} />
-      </span>
-    </>
-  );
-  const grid = 'grid w-full grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 py-2.5 text-left min-h-14';
-  return (
-    <div data-testid="activity-now-row" data-row={row.id} data-kind={row.delivery.kind} data-scroll-anchor={`row:${row.id}`} className="border-b border-border-default">
-      {expandable ? (
-        <button type="button" data-focus-key={`row:${row.id}`} aria-expanded={open} aria-controls={`ev-${row.id}`} onClick={() => setOpen(!open)} className={grid}>{head}</button>
-      ) : (
-        <Link href={row.href} data-focus-key={`row:${row.id}`} className={grid}>{head}</Link>
-      )}
-      {row.quietHold && (
-        <Link href={row.href} data-testid="activity-release-slot" className="mb-2 inline-flex min-h-11 items-center font-mono text-meta text-accent-text md:min-h-0">Release slot ›</Link>
-      )}
-      {repairs.length > 0 && (
-        <ul data-testid="activity-repairs" aria-label="Repair attempts" className="mb-2 ml-3 border-l border-border-strong pl-3">
-          {repairs.map((r, i) => <RepairChild key={i} entry={r} />)}
-        </ul>
-      )}
-      {row.children.length > 0 && <DerivedChildren items={row.children} repairsListed={repairs.length > 0} openKey={`der:${row.id}`} />}
-      {row.verification && <VerificationView claim={row.verification} openKey={`ver:${row.id}`} />}
-      {expandable && open && (
-        <div id={`ev-${row.id}`} data-testid="activity-evidence" className="pb-3">
-          {row.evidence.filter(e => e.type !== 'repair').map((e, i) => <DeliveryEvidence key={i} entry={e} />)}
-          <Link href={row.href} className="btn mt-3 min-h-11 md:min-h-0">Task page ›</Link>
-        </div>
-      )}
-    </div>
-  );
-}
-
-const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-
-/** Who it is for, from recorded lineage; "Unattributed" when none was recorded. */
-function AttributionText({ attribution }: { attribution: Attribution | null | undefined }) {
-  return <span data-testid="activity-attribution" data-known={attribution?.known ? 'true' : 'false'}>{attribution?.text ?? 'Unattributed'}</span>;
-}
-
-/**
- * A recorded spec verification: the state, the spec revision and the commit it
- * is read on, then the criteria and their evidence commits on demand. Only
- * rendered when an outcome was recorded; a merged PR alone never gets one.
- */
-function VerificationView({ claim, openKey }: { claim: VerificationClaim; openKey: string }) {
-  const [open, setOpen] = useExpanded(openKey);
-  const rev = claim.approvedRevision ?? claim.revision;
-  const summary = (
-    <span className="min-w-0 break-words text-meta text-text-muted">
-      Spec <span className={`font-semibold ${TONE_TEXT[claim.tone]}`}>{claim.label}</span>
-      {' · '}revision {rev}{claim.approvedRevision == null ? ' (not approved)' : ''}
-      {claim.headSha && <> · on <span className="font-mono">{claim.headSha}</span></>}
-    </span>
-  );
-  return (
-    <div data-testid="activity-verification" data-state={claim.state} data-focus-key={openKey} className="mb-2">
-      <Disclosure summary={summary} open={open} onOpenChange={setOpen}>
-        <div className="ml-3 border-l border-border-strong pl-3 text-meta">
-          <p className="text-text-secondary">{claim.line}</p>
-          <ul className="mt-1">
-            {claim.criteria.map(c => (
-              <li key={c.criterionId} data-testid="activity-verification-criterion" className="py-0.5">
-                <span className="font-mono text-text-primary">{c.criterionId}</span>{' '}
-                <span className={TONE_TEXT[c.tone]}>{c.label}</span>
-                {c.headSha && <span className="font-mono text-text-muted"> · {c.headSha}</span>}
-                {c.text && <span className="block break-words text-text-muted">{c.text}</span>}
-              </li>
-            ))}
-          </ul>
-          <Link href={claim.href} className="inline-flex min-h-11 min-w-0 items-center break-words text-accent-text md:min-h-0">{claim.specTitle} ›</Link>
-        </div>
-      </Disclosure>
-    </div>
-  );
-}
-
-/**
- * Reviews and repairs derived from a task, every generation, folded beneath it:
- * each links to its own task, to the task it was spawned from and to the mission.
- * When the row already lists its repairs, the summary does not count them again.
- */
-function DerivedChildren({ items, repairsListed, openKey }: { items: readonly DerivedChild[]; repairsListed: boolean; openKey: string }) {
-  const [open, setOpen] = useExpanded(openKey);
-  const reviews = items.filter(c => c.role === 'review').length;
-  const repairs = items.length - reviews;
-  const parts = [reviews > 0 && count(reviews, 'review', 'reviews'), repairs > 0 && count(repairs, 'repair', 'repairs')].filter(Boolean).join(' · ');
-  const summary = !repairsListed || repairs === 0
-    ? `${count(items.length, 'attempt', 'attempts')}: ${parts}`
-    : reviews > 0 ? `${count(reviews, 'review', 'reviews')} · repair tasks` : 'Repair tasks';
-  return (
-    <div data-testid="activity-derived" data-focus-key={openKey} className="mb-2">
-      <Disclosure summary={<span className="text-meta text-text-muted">{summary}</span>} open={open} onOpenChange={setOpen}>
-        <ol className="ml-3 border-l border-border-strong pl-3">
-          {items.map(c => (
-            <li key={c.id} data-testid="activity-derived-child" data-generation={c.generation} className="py-1 text-meta">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <StatusPill status={c.live ? 'running' : c.status} variant="plain" />
-                <span className="font-mono text-text-muted">{c.role === 'review' ? 'Review' : 'Repair'} · generation {c.generation}</span>
-              </div>
-              <Link href={c.href} data-testid="activity-derived-task" className="mt-0.5 inline-flex min-h-11 min-w-0 items-center break-words text-text-primary md:min-h-0">{displayTaskTitle(c.title)}</Link>
-              <div className="flex flex-wrap gap-x-3 text-text-muted">
-                <Link href={c.parent.href} data-testid="activity-derived-parent" className="inline-flex min-h-11 min-w-0 items-center break-words md:min-h-0">
-                  from {c.generation === 1 ? 'the task' : displayTaskTitle(c.parent.title)} ›
-                </Link>
-                {c.missionHref && <Link href={c.missionHref} data-testid="activity-derived-mission" className="inline-flex min-h-11 items-center md:min-h-0">Mission ›</Link>}
-              </div>
-            </li>
-          ))}
-        </ol>
-      </Disclosure>
-    </div>
-  );
-}
-
-const REPAIR_STATE: Record<Extract<EvidenceEntry, { type: 'repair' }>['status'], StateKey> = {
-  running: 'fixing', pushed: 'review', failed: 'failed', queued: 'queued', ended: 'not_landed', superseded: 'not_landed',
+const SEGMENT_STYLE: Record<MissionSegment, string> = {
+  merged: 'bg-[var(--faint)]',
+  build: 'bg-[var(--accent)]',
+  verify: 'bg-status-info',
+  fixing: 'bg-[repeating-linear-gradient(135deg,var(--accent)_0_2px,var(--accent-soft)_2px_4px)]',
+  deliver: 'bg-status-success',
+  waiting: 'bg-status-error',
+  todo: 'border border-border-strong',
 };
-/** The ledger's own word where the state's label would say something else ("Not landed" for a repair). */
-const REPAIR_LABEL: Partial<Record<Extract<EvidenceEntry, { type: 'repair' }>['status'], string>> = { ended: 'Done', superseded: 'Replaced' };
-const REPAIR_WHY: Record<string, string> = { ci: 'CI failed', conflict: 'branch conflict', review: 'review asked for changes' };
 
-/** One repair attempt, indented under its delivery: `↻ Repairing · Repair 1 · CI failed`. */
-function RepairChild({ entry }: { entry: Extract<EvidenceEntry, { type: 'repair' }> }) {
-  const why = entry.reason ? REPAIR_WHY[entry.reason] ?? null : null;
+/** The rail's missions: name, merged of total, and a strip with a segment per task. */
+function MissionsInMotion({ missions }: { missions: readonly MissionInMotion[] }) {
+  if (missions.length === 0) return null;
   return (
-    <li data-testid="activity-repair" data-status={entry.status} className="flex flex-wrap items-baseline gap-x-2 py-0.5 text-meta text-text-secondary">
-      <StatePill state={REPAIR_STATE[entry.status]} label={REPAIR_LABEL[entry.status]} variant="plain" />
-      <span>Repair{entry.round != null ? ` ${entry.round}` : ''}{why ? ` · ${why}` : ''}{entry.sha ? ` · ${entry.sha}` : ''}</span>
-    </li>
+    <div data-testid="activity-rail-missions" className="flex flex-col">
+      <h2 className="flex justify-between pb-2 text-meta font-semibold text-text-muted">
+        <span>Missions in motion</span>
+        <span className="font-mono">{missions.length}</span>
+      </h2>
+      {missions.map(m => {
+        const body = (
+          <>
+            <span className="flex items-baseline justify-between gap-3 text-body font-medium text-text-primary">
+              <span className="min-w-0 truncate" title={m.title}>{m.title}</span>
+              <span className="shrink-0 font-mono text-meta text-text-muted">{m.landed}/{m.total}</span>
+            </span>
+            <span aria-hidden="true" className="flex flex-wrap gap-[2px]">
+              {m.segments.map((s, i) => <i key={i} data-segment={s} className={`block h-1.5 w-2.5 rounded-[1px] ${SEGMENT_STYLE[s]}`} />)}
+            </span>
+          </>
+        );
+        const cls = 'flex min-h-11 flex-col gap-1.5 border-t border-border-default py-3 no-underline';
+        return m.href
+          ? <Link key={m.id} href={m.href} data-testid="activity-rail-mission" aria-label={`${m.title}: ${m.landed} of ${m.total} merged`} className={cls}>{body}</Link>
+          : <div key={m.id} data-testid="activity-rail-mission" className={cls}>{body}</div>;
+      })}
+    </div>
   );
 }
 

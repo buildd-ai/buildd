@@ -94,9 +94,12 @@ const HATCH = 'repeating-linear-gradient(135deg, var(--act-hatch) 0 2px, transpa
 function segmentStyle(p: StageSegmentPattern, state: StageMeterState): CSSProperties {
   switch (p) {
     case 'done': return { background: 'var(--faint)', borderColor: 'var(--faint)' };
+    // Each stage's own colour, the same as its Pipeline dots: Build orange, Verify blue, Deliver green.
     case 'solid': return state === 'deliver'
       ? { background: 'var(--status-success)', borderColor: 'var(--status-success)' }
-      : { background: 'var(--accent)', borderColor: 'var(--accent)' };
+      : state === 'verify'
+        ? { background: 'var(--status-info)', borderColor: 'var(--status-info)' }
+        : { background: 'var(--accent)', borderColor: 'var(--accent)' };
     case 'hatch': return { backgroundColor: 'var(--accent-soft)', backgroundImage: HATCH, borderColor: 'var(--act-hatch)', color: 'var(--accent-text)' };
     case 'outline': return { borderColor: 'var(--text-primary)', borderWidth: 2, borderStyle: 'solid', color: 'var(--text-primary)' };
     case 'alert': return { background: 'var(--status-error)', borderColor: 'var(--status-error)', color: 'var(--on-ink)' };
