@@ -124,8 +124,6 @@ export function describeExplicitDeferral(
     }
     case 'codex_single_flight':
       return { code: reason, detail: 'It runs on Codex and this workspace\'s one Codex slot is taken.' };
-    case 'oauth_parallelism':
-      return { code: reason, detail: 'The seat is at the session cap its learned OAuth budget allows right now.' };
     case 'role_env_unsatisfied': {
       const role = str(detail.roleSlug);
       const missing = Array.isArray(detail.missing) ? (detail.missing as unknown[]).filter((m): m is string => typeof m === 'string') : [];
