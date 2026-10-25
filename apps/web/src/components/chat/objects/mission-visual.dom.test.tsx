@@ -192,19 +192,16 @@ describe('review on a phone: the deck takes the sheet', () => {
     expect(sheet!.textContent).toContain('Review screens');
   });
 
-  it('deciding the last screen offers Done, which goes back to the mission (no dead end)', async () => {
+  it('the arrows walk every screen and stop at the last one, never at a Done-only page', async () => {
     desktop = false;
     await render();
     await click(qa('[data-testid="mission-card-review"]')[0]);
-    await click(q('[data-testid="chat-object-sheet"] [data-testid="deck-looks-right"]'));
-    // Walk to the end of the queue.
-    for (let i = 0; i < 20 && !q('[data-testid="deck-end"]'); i++) await click(q('[data-testid="chat-object-sheet"] [data-testid="deck-next"]'));
-    expect(q('[data-testid="deck-end"]')).not.toBeNull();
-    const done = q('[data-testid="chat-object-sheet"] [data-testid="deck-done"]');
-    expect(done).not.toBeNull();
-    await click(done);
-    expect(q('[data-testid="visual-review-deck"]')).toBeNull();
-    expect(q('[data-testid="chat-object-sheet"] [data-testid="object-pane"][data-kind="mission"]')).not.toBeNull();
+    const next = () => q('[data-testid="chat-object-sheet"] [data-testid="deck-next"]') as HTMLButtonElement | null;
+    for (let i = 0; i < 20 && next() && !next()!.disabled; i++) await click(next());
+    // The last screen is a screen, not an end-of-queue page whose only action is Done.
+    expect(next()!.disabled).toBe(true);
+    expect(q('[data-testid="deck-end"]')).toBeNull();
+    expect(q('[data-testid="visual-review-deck"]')).not.toBeNull();
   });
 
   it('opens on arrival for the fixture deep link', async () => {
