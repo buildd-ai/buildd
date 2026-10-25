@@ -12,12 +12,14 @@ import { DECISION_LABELS, parseDecisionHash, type DecisionCopy } from '@/lib/wor
 const ENDPOINT: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'apply-recommendation',
   force_re_review: 're-review',
+  land_pr: 'land',
   approve_override: 'approve-override',
 };
 
 const DONE: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'One more fix was requested. The automatic budget is still spent.',
   force_re_review: 'A forced re-review was requested for the current head.',
+  land_pr: 'One landing task was filed on the PR branch. It earns one review of the head it pushes.',
   approve_override: 'Head approved over remaining findings. Merge follows the workspace policy.',
 };
 
