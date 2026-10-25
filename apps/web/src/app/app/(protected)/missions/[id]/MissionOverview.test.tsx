@@ -242,7 +242,9 @@ describe('MissionOverview stages (Navigation R-15, AC-9; spec f7f67f1a R-11 to R
     const html = renderToStaticMarkup(<MissionOverview model={reopened} missionId="mission-1" checks={f.checks} history={historyRaised(reopened, [])} />);
     expect(html).toContain('data-stage="build"');
     expect(html).toContain('data-testid="task-strip"');
-    expect(html).toMatch(/data-testid="mission-history-raised" data-kind="reopened"/);
+    // The reopened task is a row of the Build list, so History does not repeat it (f7f67f1a R-37).
+    expect(html).toContain(`data-task-id="${first}" data-testid="mission-task-row"`);
+    expect(html).not.toContain('data-testid="mission-history-raised"');
   });
 
   it('the build-only estimate is the Plan page\u2019s schedule for the same build tasks', async () => {
@@ -260,18 +262,26 @@ describe('MissionOverview stages (Navigation R-15, AC-9; spec f7f67f1a R-11 to R
 });
 
 describe('History raised (Navigation R-6, AC-8)', () => {
-  it('an open organizer decision raises one History line above the list, naming it', () => {
+  it('an open organizer decision raises one History line above the list, naming it, while no card shows it', () => {
     const model = dagBoard(spec);
     const notes = [{ id: 'n1', type: 'question', status: 'open', title: 'Keep the legacy export?', body: null, createdAt: Date.UTC(2026, 0, 1) }];
     const history = historyRaised(model, notes);
-    const decisions = missionDecisions({ model, notes, mission: { id: 'mission-1', title: 'M', href: '/app/missions/mission-1' }, hrefFor: id => `/app/tasks/${id}` });
-    const html = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" decisions={decisions} history={history} />);
+    const html = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" history={history} />);
     const raised = html.match(/data-testid="mission-history-raised"[^>]*>[\s\S]*?<\/div>/)?.[0] ?? '';
     expect(raised).toContain('data-kind="decision"');
     expect(raised).toContain('Decision open: Keep the legacy export?');
     expect(raised).toContain('layout=feed');
     expect(html.indexOf('data-testid="mission-history-raised"')).toBeLessThan(html.indexOf('data-testid="mission-task-list"'));
     expect((html.match(/data-testid="mission-history-raised"/g) ?? []).length).toBe(1);
+  });
+
+  it('each fact once (f7f67f1a R-37): the decision\u2019s card on screen drops its History line', () => {
+    const model = dagBoard(spec);
+    const notes = [{ id: 'n1', type: 'question', status: 'open', title: 'Keep the legacy export?', body: null, createdAt: Date.UTC(2026, 0, 1) }];
+    const decisions = missionDecisions({ model, notes, mission: { id: 'mission-1', title: 'M', href: '/app/missions/mission-1' }, hrefFor: id => `/app/tasks/${id}` });
+    const html = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" decisions={decisions} history={historyRaised(model, notes)} />);
+    expect(html).toContain('data-testid="decision-card"');
+    expect(html).not.toContain('data-testid="mission-history-raised"');
   });
 });
 
@@ -326,16 +336,29 @@ describe('A visual review waiting on a person (Navigation R-16, R-18)', () => {
 
 describe('MissionOverview build stage: one failed task and a goal-criteria escalation (Navigation R-14, R-16 to R-20)', () => {
   const { criteriaEscalationDecision } = require('@/lib/mission-decisions') as typeof import('@/lib/mission-decisions');
-  const board = dagBoard({ tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'failed' } });
-  const decision = criteriaEscalationDecision({
-    missionId: 'mission-1',
-    reading: 'Check not verified: Spec "Cloud runner: deploy from Settings in one step" revision 1.',
-    criterion: 'Spec "Cloud runner: deploy from Settings in one step" revision 1',
-    fileWorkHref: '/app/tasks/new?from=mission-1',
-    mission: { id: 'mission-1', title: 'Cloud runner', href: '/app/missions/mission-1' },
-    askedAt: null,
+  const { dagTasks, dagId } = require('@/app/app/dev/fixtures/mission-task-strip-fixtures') as typeof import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
+  const failedSpec = { tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'failed' } } as const;
+  // The failed task carries its error evidence, as the page's `result` digest does.
+  const board = dagBoard(failedSpec, {
+    tasks: dagTasks(failedSpec).map(t => (t.label === 'A' ? { ...t, result: { error: 'Missing acceptance test: tests/acceptance/wsl2-setup.test.ts' } } : t)),
   });
-  const out = renderToStaticMarkup(<MissionOverview model={board} missionId="mission-1" decisions={[decision]} />);
+  const failedId = dagId(failedSpec, 'A');
+  const SPEC = 'Windows runner through WSL2: one guided setup';
+  const decision = criteriaEscalationDecision({
+    missionId: 'mission-1', workspaceId: 'w1',
+    unmet: { count: 4, state: 'not checked', names: ['WSL2 install step', 'Runner starts on boot', 'Setup reports progress', 'Errors say what to change'] },
+    fileWorkHref: '/app/tasks/new?from=mission-1',
+    mission: { id: 'mission-1', title: SPEC, href: '/app/missions/mission-1' },
+    asker: { id: 't9', title: 'Verify WSL2 guided setup', href: '/app/tasks/t9' },
+    askedAt: board.now - 60 * 60_000,
+  });
+  const history = { kind: 'failed' as const, text: 'Failed: task A', taskId: failedId, noteId: null };
+  const checks = {
+    branch: 'direct' as const, target: 'dev', mergeTier: 'auto_threshold' as const, visual: null,
+    criteria: [{ type: 'living_spec' as const, specId: 's1', revision: 1 }], criteriaState: null,
+    integrationPr: null, release: 'not_configured' as const, standardsEnforced: false, evidence: {},
+  } as unknown as import('./MissionOverview').MissionChecksSource;
+  const out = renderToStaticMarkup(<MissionOverview model={board} missionId="mission-1" missionTitle={SPEC} checks={checks} outcomeSpecTitles={{ s1: SPEC }} decisions={[decision]} history={history} />);
 
   it('draws no `A task failed` banner, no Open button and no verification link', () => {
     expect(out).not.toContain('A task failed');
@@ -345,22 +368,37 @@ describe('MissionOverview build stage: one failed task and a goal-criteria escal
     expect(out).not.toContain('Waive and complete</p>');
   });
 
-  it('the failed task leads the list as `Failed ·` with Retry and Cancel', () => {
+  it('the failed task leads the list as `Failed · <cause>` with Retry and Cancel', () => {
     const list = out.slice(out.indexOf('data-testid="mission-task-list"'));
     expect(list.indexOf('data-state="failed"')).toBeGreaterThanOrEqual(0);
     expect(list.indexOf('data-state="failed"')).toBeLessThan(list.indexOf('data-state="waiting"') === -1 ? Infinity : list.indexOf('data-state="waiting"'));
-    expect(list).toMatch(/Failed/);
+    expect(list).toContain('Failed · test file not found');
     expect(list).toContain('data-testid="task-row-retry"');
     expect(list).toContain('data-testid="task-row-cancel"');
   });
 
-  it('the escalation is a DecisionCard with a question and two options, each with its effect', () => {
-    const card = out.slice(out.indexOf('data-testid="decision-card"'));
-    expect(card).toContain('Ship without the &quot;Cloud runner: deploy from Settings in one step&quot; check?');
+  it('the escalation is a DecisionCard: the asking task, the requirements in words, a short question, two options, Answer differently and Not now', () => {
+    const card = out.slice(out.indexOf('data-testid="decision-card"'), out.indexOf('data-testid="task-strip"'));
+    expect(card).toContain('Verify WSL2 guided setup');
+    expect(card).toContain('asked 1h ago');
+    expect(card).toContain('4 requirements not checked: WSL2 install step');
+    expect(card).toContain('Ship without these 4 checks?');
     expect(card).toContain('File the work');
     expect(card).toContain('Waive and complete');
     expect((card.match(/data-testid="decision-option-effect"/g) ?? []).length).toBe(2);
+    expect(card).toContain('data-testid="decision-answer-differently"');
     expect(card).toContain('data-testid="decision-not-now"');
+  });
+
+  it('each fact once: no History line for the failed row, no Spec line repeating the mission title', () => {
+    expect(out).not.toContain('data-testid="mission-history-raised"');
+    expect(out).not.toContain('data-testid="mission-outcome-spec"');
+    expect((out.match(new RegExp(SPEC, 'g')) ?? []).length).toBe(0);
+  });
+
+  it('a Spec line whose title differs from the mission stays, as a link', () => {
+    const other = renderToStaticMarkup(<MissionOverview model={board} missionId="mission-1" missionTitle="Windows runner" checks={checks} outcomeSpecTitles={{ s1: SPEC }} />);
+    expect(other).toMatch(/data-testid="mission-outcome-spec"[^>]*>.*href="\/app\/specs\/s1"/);
   });
 });
 
