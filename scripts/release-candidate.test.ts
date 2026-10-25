@@ -527,6 +527,26 @@ describe('amend: the only way a candidate moves', () => {
     expect(pr.comments?.[0]).toContain('void');
   });
 
+  test('the comment names the account that dispatched the amend, not an assumed operator', () => {
+    const { f, version } = withCandidate();
+    const later = devCommit(f, 'fix: z (#12)');
+    const r = run(f, 'amend', ['--candidate', `v${version}`, '--confirm', `v${version}`, '--source', later], { GITHUB_TRIGGERING_ACTOR: 'someone' });
+    expect(r.status, r.log).toBe(0);
+    const comment = prs(f)[0].comments?.[0] ?? '';
+    expect(comment).toContain('`someone`');
+    expect(comment).not.toContain('operator request');
+  });
+
+  test('outside Actions the comment says no dispatcher was recorded', () => {
+    const { f, version } = withCandidate();
+    const later = devCommit(f, 'fix: z (#12)');
+    const r = run(f, 'amend', ['--candidate', `v${version}`, '--confirm', `v${version}`, '--source', later], { GITHUB_TRIGGERING_ACTOR: '' });
+    expect(r.status, r.log).toBe(0);
+    const comment = prs(f)[0].comments?.[0] ?? '';
+    expect(comment).toContain('outside GitHub Actions');
+    expect(comment).not.toContain('operator request');
+  });
+
   test('a range that now needs a new version becomes a new candidate; the old PR is closed, its branch kept', () => {
     const { f, version, head } = withCandidate('fix: y (#11)');
     const later = devCommit(f, 'feat: bigger (#12)');

@@ -6344,6 +6344,80 @@ describe('GET /api/github/pr', () => {
     });
   });
 
+  // A worker session's get_pr sends its own workerId with another task's prNumber.
+  describe('workerId of a worker that does not own prNumber', () => {
+    const CALLER = {
+      id: 'w-caller', accountId: 'account-1', taskId: 'task-caller', workspaceId: 'workspace-1',
+      prNumber: null, prUrl: null, mergedAt: null, prLifecycleStatus: 'merged',
+      lastCommitSha: 'caller-sha', workspace: WORKSPACE_OK,
+    };
+    function githubPr() {
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 5658, title: 'their PR', body: null, state: 'open', mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/5658', head: { sha: 'sha5658' }, additions: 1, deletions: 1, changed_files: 1,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+    }
+    beforeEach(() => {
+      mockLoadInlineEvidence.mockClear();
+      mockGetDeliveryViewsForTasks.mockClear();
+      mockVerifyAccountWorkspaceAccess.mockReset();
+      mockVerifyAccountWorkspaceAccess.mockImplementation(async () => true);
+    });
+
+    it("reads the owning worker's delivery and evidence, not the caller's", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(CALLER);
+      mockWorkersFindMany.mockResolvedValue([{
+        id: 'w-owner', accountId: 'account-1', taskId: 'task-owner', workspaceId: 'workspace-1',
+        prNumber: 5658, prUrl: 'https://github.com/owner/repo/pull/5658', mergedAt: null,
+        prLifecycleStatus: null, lastCommitSha: null, status: 'completed', workspace: WORKSPACE_OK,
+      }]);
+      githubPr();
+
+      const res = await GET(createGetRequest('w-caller', 5658));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.pr.state).toBe('open');
+      expect(mockGetDeliveryViewsForTasks.mock.calls.at(-1)?.[0]).toEqual(['task-owner']);
+      expect(mockLoadInlineEvidence.mock.calls[0]?.[1]).toBe('task-owner');
+      // The owner is looked up only in the anchor worker's workspace.
+      expect(mockWorkersFindMany.mock.calls.at(-1)?.[0]).toBeDefined();
+    });
+
+    it("reads nothing of the caller's task when no worker owns the PR", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(CALLER);
+      mockWorkersFindMany.mockResolvedValue([]);
+      githubPr();
+
+      const res = await GET(createGetRequest('w-caller', 5658));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.pr.title).toBe('their PR');
+      // The caller's stale 'merged' lifecycle must not turn GitHub's open into merged.
+      expect(data.pr.state).toBe('open');
+      expect(data.evidenceObjects).toBeUndefined();
+      expect(data.delivery).toBeUndefined();
+      expect(mockLoadInlineEvidence).not.toHaveBeenCalled();
+      expect(mockGetDeliveryViewsForTasks).not.toHaveBeenCalled();
+    });
+
+    it('keeps the worker it was given when that worker owns prNumber', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ ...CALLER, prNumber: 5658, prLifecycleStatus: null });
+      mockWorkersFindMany.mockClear();
+      githubPr();
+
+      const res = await GET(createGetRequest('w-caller', 5658));
+      expect(res.status).toBe(200);
+      expect(mockWorkersFindMany).not.toHaveBeenCalled();
+      expect(mockLoadInlineEvidence.mock.calls[0]?.[1]).toBe('task-caller');
+    });
+  });
+
   it('returns 200 when worker row has error set to a string (error column non-null)', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);

@@ -108,3 +108,24 @@ export function ownLineage(task: {
   );
   return { taskIds, prNumbers };
 }
+
+/**
+ * The task a run's evidence is filed under: `taskId` walked up through attempt
+ * parents only, as `collectLineage` walks. A task a sweep or organizer filed
+ * names its filer as parent, but it is not the filer's retry, so its runs stay
+ * its own and never surface on the filer's `get_task` or `get_pr`.
+ */
+export async function findAttemptRootTaskId(
+  taskId: string,
+  fetchTask: (id: string) => Promise<{ parentTaskId: string | null; taskClass?: string | null } | null | undefined>,
+): Promise<string> {
+  let current = taskId;
+  const seen = new Set<string>();
+  for (let depth = 0; depth < LINEAGE_MAX_DEPTH && !seen.has(current); depth++) {
+    seen.add(current);
+    const t = await fetchTask(current);
+    if (t?.taskClass !== 'attempt' || !t.parentTaskId) break;
+    current = t.parentTaskId;
+  }
+  return current;
+}

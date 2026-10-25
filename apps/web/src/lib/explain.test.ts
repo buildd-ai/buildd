@@ -227,6 +227,10 @@ describe('kernelUnmergedPr (§17.5: explain\'s state chain reads the delivery)',
   it('a failed owner attempt whose PR is live still holds the PR open (S35)', () => {
     expect(kernelUnmergedPr({ ...task, status: 'failed' }, undefined, { state: 'REPAIRING', prNumber: 7 })).toHaveLength(1);
   });
+  it('marks a failed owner task so the PR is not read as a completed task\'s (fe45dc7d)', () => {
+    expect(kernelUnmergedPr({ ...task, status: 'failed' }, undefined, { state: 'ESCALATED', prNumber: 7 })[0]).toMatchObject({ taskFailed: true });
+    expect(kernelUnmergedPr(task, undefined, { state: 'ESCALATED', prNumber: 7 })[0].taskFailed).toBeUndefined();
+  });
 });
 
 describe('explainMission', () => {
