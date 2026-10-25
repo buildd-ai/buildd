@@ -58,8 +58,8 @@ export default function CheckRow({ name, status, stateWord, detail, href, action
     <>
       <CheckIcon status={status} />
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="flex min-w-0 items-baseline gap-x-2.5">
-          <span className="min-w-0 truncate font-medium text-text-primary">{name}</span>
+        <span className="flex min-w-0 flex-wrap items-baseline gap-x-2.5">
+          <span className="min-w-0 font-medium text-text-primary">{name}</span>
           <span className={`shrink-0 text-meta ${TONE[status]}`}>{word}</span>
         </span>
         {detail && <span className="min-w-0 truncate font-mono text-meta text-text-muted">{detail}</span>}
