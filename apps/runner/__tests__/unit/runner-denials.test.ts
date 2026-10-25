@@ -115,6 +115,10 @@ const CASES: Case[] = [
     run: async () => reasonOf(await makeFactory().createPermissionHook(worker)(pre('Bash', { command: 'cat ~/.buildd/config.json' }), undefined, signal)),
   },
   {
+    name: 'permission hook: dispatching the Release workflow',
+    run: async () => reasonOf(await makeFactory().createPermissionHook(worker)(pre('Bash', { command: 'gh workflow run release.yml --ref dev -f amend=v1.0.0' }), undefined, signal)),
+  },
+  {
     name: 'permission hook: Read of a runner credential file',
     run: async () => reasonOf(await makeFactory().createPermissionHook(worker)(pre('Read', { file_path: '/home/u/.buildd/config.json' }), undefined, signal)),
   },

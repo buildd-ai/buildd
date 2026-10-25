@@ -21,6 +21,8 @@ const D = (o: Partial<DeliverySnapshot> = {}): DeliverySnapshot => ({
 const R = (round: number, verdict: RoundSnapshot['verdict'], o: Partial<RoundSnapshot> = {}): RoundSnapshot => ({
   id: `r${round}`, round, headSha: 'abcdef1234', kind: 'full', status: 'decided', verdict, effectiveVerdict: verdict, failureCount: 0, ...o,
 });
+/** CI read green at the fixture's head. */
+const GREEN = { ci: 'green', ciHeadSha: 'abcdef1234' } as const;
 const V = (d: DeliverySnapshot | null, rounds: RoundSnapshot[] = []): KernelView => ({ delivery: d, rounds, attempts: [] });
 
 describe('openVerdict: the newest decided round, while it stands against landing', () => {
@@ -69,8 +71,25 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     expect(landingStatusOf(V(D({ state: 'WORKING', approvedHeads: [] })))!.description).toBe('Review in progress: work on the PR is still running');
   });
   test('success only when the kernel would land the head; the description names it by short sha', () => {
-    expect(landingStatusOf(V(D(), [R(1, 'approve')]))).toEqual({ state: 'success', sha: 'abcdef1234', description: 'Ready to merge: abcdef1 approved by review' });
-    expect(landingStatusOf(V(D({ state: 'LANDING' }), [R(1, 'approve')]))!.state).toBe('success');
+    expect(landingStatusOf(V(D(GREEN), [R(1, 'approve')]))).toEqual({ state: 'success', sha: 'abcdef1234', description: 'Ready to merge: abcdef1 approved by review' });
+    expect(landingStatusOf(V(D({ state: 'LANDING', ...GREEN }), [R(1, 'approve')]))!.state).toBe('success');
+  });
+  // aa415afd: the check went green on approval alone while required CI was still running, and was
+  // merged past it. Approved is not mergeable until CI at that head has read green.
+  test('an approved head whose CI has not read green at that head is pending, never Ready to merge', () => {
+    expect(landingStatusOf(V(D(), [R(1, 'approve')]))).toEqual({ state: 'pending', sha: 'abcdef1234', description: 'Approved, waiting to merge: abcdef1 approved by review; waiting for CI on abcdef1' });
+    expect(landingStatusOf(V(D({ ci: 'running', ciHeadSha: 'abcdef1234' }), [R(1, 'approve')]))!.state).toBe('pending');
+    // A green on an earlier head says nothing about this one.
+    expect(landingStatusOf(V(D({ ci: 'green', ciHeadSha: '0123456' }), [R(1, 'approve')]))!.state).toBe('pending');
+    expect(landingStatusOf(V(D({ ci: 'red', ciHeadSha: 'abcdef1234' }), [R(1, 'approve')]))!.description).toBe('Approved, waiting to merge: abcdef1 approved by review; CI failed on abcdef1');
+    // A person's approval is no exception: CI still has to pass before the check reads success.
+    expect(landingStatusOf(V(D({ approvalBasis: 'human', approvedHeads: [] }), [R(1, 'approve')]))!.state).toBe('pending');
+    // LANDING before the merge call waits the same way; the CI reading is not recorded while landing.
+    expect(landingStatusOf(V(D({ state: 'LANDING' }), [R(1, 'approve')]))!.state).toBe('pending');
+  });
+  test('the merge effect, its rails just read CI green, publishes success; a merge already called keeps it', () => {
+    expect(landingStatusOf(V(D({ state: 'LANDING' }), [R(1, 'approve')]), { ciPassed: true })!.state).toBe('success');
+    expect(landingStatusOf(V(D({ state: 'LANDING', stateReason: 'merge_called' }), [R(1, 'approve')]))!.state).toBe('success');
   });
   test('failure while a verdict is open, or the delivery is anywhere else', () => {
     expect(landingStatusOf(V(D(), [R(1, 'approve'), R(2, 'request_changes')]))!.description).toBe('Changes requested: review round 2 asked for changes at abcdef1; supersedes the approval of abcdef1');
@@ -90,10 +109,10 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
   test('an approved head a waiting rail held reads pending and names the rail, not Ready to merge', () => {
     const held = landingStatusOf(V(D({ state: 'APPROVED' }), [R(1, 'approve')]), { detail: 'Visual review: 2 screens to review' })!;
     expect(held).toEqual({ state: 'pending', sha: 'abcdef1234', description: 'Approved, waiting to merge: abcdef1 approved by review; Visual review: 2 screens to review' });
-    // No detail (the hold lifted, or a later version): ready again.
-    expect(landingStatusOf(V(D({ state: 'APPROVED' }), [R(1, 'approve')]))!.description).toBe('Ready to merge: abcdef1 approved by review');
+    // No detail (the hold lifted, or a later version) and CI green at the head: ready again.
+    expect(landingStatusOf(V(D({ state: 'APPROVED', ...GREEN }), [R(1, 'approve')]))!.description).toBe('Ready to merge: abcdef1 approved by review');
     // Merging already started: the hold passed.
-    expect(landingStatusOf(V(D({ state: 'LANDING' }), [R(1, 'approve')]), { detail: 'x' })!.state).toBe('success');
+    expect(landingStatusOf(V(D({ state: 'LANDING', ...GREEN }), [R(1, 'approve')]), { detail: 'x' })!.state).toBe('success');
   });
   test('nothing to publish without a PR head, or once the delivery is over', () => {
     expect(landingStatusOf(V(D({ currentHeadSha: null })))).toBeNull();
@@ -116,7 +135,7 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the merge door merges it without another refresh',
   ];
   test('R-43: every description leads with a plain review term and never says "land"', () => {
-    const terms = ['Repair in progress', 'Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Approved, waiting to merge', 'Merge blocked'];
+    const terms = ['Repair in progress', 'Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Approved, waiting to merge', 'Approved, queued to merge', 'Merge blocked'];
     const F = { id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4, title: 'rename the flag', required: true, status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null };
     const states: DeliverySnapshot['state'][] = ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'FIXING', 'APPROVED', 'LANDING', 'REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED'];
     const out: string[] = [landingStatusUnknown('abcdef1234').description];
@@ -157,6 +176,15 @@ describe('landingStatusOf while the PR is being repaired (review validity vs lan
     ['something_else', 'Repair in progress: review approved abcdef1; the PR is being repaired'],
   ])('reason %s reads in its own terms and stays pending', (stateReason, description) => {
     expect(landingStatusOf(V(rep({ stateReason }), [R(1, 'approve')]))).toEqual({ state: 'pending', sha: 'abcdef1234', description });
+  });
+  // e07ee9cf: a refresh parked in the landing lane is queued, not "Branch update in progress".
+  test('parked in the landing lane (the refresh handler names the PR ahead): queued, pending', () => {
+    const s = landingStatusOf(V(rep(), [R(1, 'approve')]), { detail: 'queued behind PR #7, which is merging into dev first' })!;
+    expect(s).toEqual({ state: 'pending', sha: 'abcdef1234', description: 'Approved, queued to merge: review approved abcdef1; queued behind PR #7, which is merging into dev first' });
+    expect(s.description).not.toMatch(/\bland|in progress/i);
+  });
+  test('the queued words are for a behind refresh only', () => {
+    expect(landingStatusOf(V(rep({ stateReason: 'ci' }), [R(1, 'approve')]), { detail: 'x' })!.description).toMatch(/^CI fix in progress/);
   });
   test('a CI repair never reads as a branch update', () => {
     expect(landingStatusOf(V(rep({ stateReason: 'ci' }), [R(1, 'approve')]))!.description).not.toMatch(/branch update/i);

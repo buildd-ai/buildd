@@ -311,6 +311,8 @@ export interface CompositionInput {
    * review (a novel edit a later commit reverted stays listed), never narrow it.
    */
   aggregateFromCommits?: boolean;
+  /** Why the collector stopped before reading everything (a full review then); set, nothing is attested. */
+  abandoned?: string | null;
   verifier?: string;
   now?: string;
 }
@@ -354,9 +356,9 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
   const constituents: CompositionConstituent[] = [];
   const evidence: ConstituentEvidence[] = [];
   const novel: CompositionResult['novelCommits'] = [];
-  let unverifiable: string | null = null;
+  let unverifiable: string | null = input.abandoned ?? null;
 
-  if (!input.commits) unverifiable = 'commit_list_truncated';
+  if (!input.commits) unverifiable = unverifiable ?? 'commit_list_truncated';
   // Past the file cap a candidate stands its complete commit list in for the aggregate.
   const fromCommits = !input.aggregateFiles && input.aggregateFromCommits && input.commits && input.commits.every((c) => c.files)
     ? [...new Set(input.commits.flatMap((c) => c.files!))]
@@ -511,6 +513,12 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
 /** GitHub caps a compare at 250 commits and a diff at 300 files; at the cap the list may be cut. */
 export const COMPARE_COMMIT_CAP = 250;
 export const DIFF_FILE_CAP = 300;
+/**
+ * How long `collectComposition` may spend reading GitHub. It runs inside `dispatch_review`, and a
+ * read that outlives the drain (60s) takes the reviewer with it: the effect is re-claimed and re-run
+ * into the same wall. Past this, the attestation is unverifiable and the round reviews in full.
+ */
+export const COMPOSITION_READ_BUDGET_MS = 25_000;
 
 export type GithubApi = (installationId: number, path: string, options?: RequestInit) => Promise<unknown>;
 
@@ -562,8 +570,14 @@ export async function collectComposition(p: {
   constituentBase?: string | null;
   /** A release candidate: past the file cap, the complete commit list stands in for the aggregate (see `CompositionInput`). */
   aggregateFromCommits?: boolean;
+  /** Overrides `COMPOSITION_READ_BUDGET_MS`, and the clock it is measured on (tests). */
+  budgetMs?: number;
+  clock?: () => number;
 }): Promise<CompositionResult> {
   const { api, installationId: inst, repoFullName: repo } = p;
+  const clock = p.clock ?? Date.now;
+  const deadline = clock() + (p.budgetMs ?? COMPOSITION_READ_BUDGET_MS);
+  const spent = () => clock() > deadline;
   const cmp = (await api(inst, `/repos/${repo}/compare/${encodeURIComponent(p.baseRef)}...${p.aggregateHeadSha}?per_page=${COMPARE_COMMIT_CAP}`)) as GhCompare | null;
   const baseSha = cmp?.merge_base_commit?.sha ?? '';
   const baseHead = cmp?.base_commit?.sha ?? baseSha;
@@ -572,6 +586,14 @@ export async function collectComposition(p: {
   const aggregateFiles = cmp?.files && cmp.files.length < DIFF_FILE_CAP ? cmp.files.map((f) => f.filename) : null;
 
   const refreshTrunk = p.refreshTrunk?.trim() || null;
+  const unproven = (abandoned: string | null) => buildCompositionAttestation({
+    repoFullName: repo, prNumber: p.prNumber, baseSha, aggregateHeadSha: p.aggregateHeadSha,
+    commits: null, aggregateFiles, constituentsByCommit: {}, refresh: refreshTrunk ? { trunk: refreshTrunk } : null, abandoned,
+  });
+  // The compare alone already says nothing can be proven: read no commit (26b969db).
+  if (truncatedCommits) return unproven(null);
+  if (!aggregateFiles && !p.aggregateFromCommits) return unproven('aggregate_diff_truncated');
+  const BUDGET_SPENT = 'composition_read_budget_spent';
   // A refresh's constituents landed on trunk; a candidate's on its source
   // branch; anything else's on its head branch.
   const constituentBase = refreshTrunk ?? (p.constituentBase?.trim() || p.headRef);
@@ -585,6 +607,7 @@ export async function collectComposition(p: {
     } catch { return null; }
   };
   for (const c of rawCommits) {
+    if (spent()) return unproven(BUDGET_SPENT);
     const parents = (c.parents ?? []).map((x) => x.sha);
     let diff: FileDiff[] | null = null;
     try {
@@ -622,6 +645,7 @@ export async function collectComposition(p: {
     if (!pr) continue;
     for (const c of commits) {
       if (c.parents.length !== 1 || prsByCommit[c.sha]?.prNumber !== pr.prNumber) continue;
+      if (spent()) return unproven(BUDGET_SPENT);
       if (await onRef(api, inst, repo, c.sha, m.parents[1])) c.landedVia = m.sha;
     }
   }
@@ -657,6 +681,7 @@ export async function collectComposition(p: {
     const cov = pr?.delivery ? coveringRound(pr.delivery, pr.mergedHeadSha) : null;
     // A squash against its parent; a PR's merge commit against its first parent (the PR's own commits need none).
     if (!cov || c.landedVia || (c.parents.length !== 1 && !(c.parents.length === 2 && pr!.mergedHeadSha === c.parents[1]))) continue;
+    if (spent()) return unproven(BUDGET_SPENT);
     try {
       reviewedDiffs[c.sha] = toFileDiffs((await api(inst, `/repos/${repo}/compare/${c.parents[0]}...${cov.round.headSha}`)) as GhFiles | null);
     } catch { reviewedDiffs[c.sha] = null; }

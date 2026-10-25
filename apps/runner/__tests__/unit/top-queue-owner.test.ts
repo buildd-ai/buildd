@@ -33,7 +33,7 @@ const state = () => reduce(queueState(), { type: 'queue', queue: withOwners() })
 
 describe('the by column (R-58, AC-42)', () => {
   test('your task reads "you", a teammate\'s their first name, an unowned one "-", in claim order', () => {
-    const rows = queueSections(state(), NOW)[0].rows;
+    const rows = queueSections(state(), NOW)[0].rows.filter(r => r.status !== 'running');
     expect(rows.slice(0, 3).map(r => [r.position, r.by])).toEqual([[1, 'you'], [2, 'Sam'], [3, '-']]);
     // An older server without the field: "-".
     expect(rows[3].by).toBe('-');
