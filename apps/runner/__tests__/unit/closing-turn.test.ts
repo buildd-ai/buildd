@@ -813,7 +813,7 @@ describe('session-end classification', () => {
     expect(failedCall()).toBeUndefined();
     const worker = manager.getWorker('w-ask-park');
     expect(worker?.status).toBe('waiting');
-    expect((worker?.waitingFor as any)?.context).toContain('genuinely_blocked');
+    expect((worker?.waitingFor as any)?.context).toContain('Blocked');
     // Tagged with the gate's own disposition, so the server admits it to Needs You.
     expect((worker?.waitingFor as any)?.disposition).toBe('ask');
   });
@@ -966,7 +966,7 @@ describe('session-end classification', () => {
     expect(worker?.status).toBe('waiting');
     expect(worker?.sessionEndPushCount).toBe(2);
     expect(worker?.sessionEndPushes?.map(p => p.label)).toEqual(['believes_done_no_deliverable', 'believes_done_no_deliverable']);
-    expect((worker?.waitingFor as any)?.context).toContain('believes_done_no_deliverable');
+    expect((worker?.waitingFor as any)?.context).toContain('Ended with no PR');
   });
 
   test('a session that delivered a PR gets the ordinary closing turn, never a push', async () => {

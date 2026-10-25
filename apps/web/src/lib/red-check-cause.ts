@@ -414,6 +414,8 @@ export interface RedCheckView {
   /** One plain sentence or three: what failed, why, what the fixes did. */
   sentence: string;
   primary: RedCheckAction;
+  /** When the head went red; absent when the record carries no time. */
+  at?: string;
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -475,5 +477,6 @@ export function redCheckView(record: RedCheckRecord, history: RedFixHistory = { 
     cause,
     sentence: parts.join(' ') || 'A check failed.',
     primary: flake && !record.failedAfterRerun ? 'rerun' : 'fix',
+    ...(record.at ? { at: record.at } : {}),
   };
 }

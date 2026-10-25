@@ -138,14 +138,14 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   const decision = decisionLine(item);
   const detail = review ? review.reason
     : item.systemic && item.systemic.subjects.length > 2 ? `Affects ${item.systemic.subjects.join(', ')}.`
-    : item.sentence;
+    : item.detail ?? item.sentence;
   const status = q?.machineStatus ?? (q?.refreshFirst ? 'Waits on the branch refresh' : null);
   return <article data-testid="needs-you-card" data-kind={item.kind} data-systemic={item.systemic ? 'true' : undefined} className="card-decision flex min-w-0 flex-col p-4">
     <div className="flex items-center justify-between gap-3 text-meta">
       <Eyebrow tone="accent">{sentenceCase(item.systemic ? `Systemic · ${item.label}` : item.label)}</Eyebrow>
       <span className="shrink-0 font-mono text-text-muted">{item.meta}</span>
     </div>
-    <h3 className="mt-2 text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{displayTaskTitle(item.title)}</h3>
+    <h3 className={`mt-2 text-title font-semibold text-text-primary [overflow-wrap:anywhere] ${item.actionType === 'fix' ? 'line-clamp-1' : ''}`}>{displayTaskTitle(item.title)}</h3>
     <ReviewDecision decision={decision} detail={detail} blockers={review?.blockers ?? []} status={status} />
     {q?.mergeAdvice && <MergeAdvice slot={q.mergeAdvice} />}
     {actions && <div data-testid="needs-you-actions" className="mt-auto flex flex-wrap gap-2 pt-3">{actions}</div>}

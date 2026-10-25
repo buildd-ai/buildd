@@ -304,67 +304,100 @@ describe('deciding', () => {
     expect(q('visual-review-deck')!.dataset.undoMs).toBe('5000');
   });
 
-  it('J and K walk only the routes awaiting a decision; the end lists the rest read-only', () => {
+  /** The deck's walk order for the fixture: the queue, then the Already fine routes, then the rest, each in list order. */
+  const walkOrder = (m: VisualReviewModel) => {
+    const routeOf = (c: { route: string; variant: string | null }) => `${c.route}|${c.variant ?? ''}`;
+    const queued = [...new Set(m.queue.map(k => routeOf(m.cells.find(c => c.key === k)!)))];
+    const rest = [...new Set(m.cells.map(routeOf))].filter(r => !queued.includes(r));
+    const isFine = (r: string) => m.cells.some(c => routeOf(c) === r && c.standing === 'fine');
+    return [...queued, ...rest.filter(isFine), ...rest.filter(r => !isFine(r))].map(r => r.split('|')[0]);
+  };
+
+  it('J and K walk the queue first, then the Already fine screens, and stop at either end', () => {
     const m = deckModel();
     renderDeck();
-    const routes: string[] = [];
-    for (let i = 0; i < 10 && !q('deck-end'); i++) { routes.push(route()!); key('j'); }
+    const expected = walkOrder(m);
+    const seen: string[] = [route()!];
+    for (let i = 0; i < 20 && !(q('deck-next') as HTMLButtonElement).disabled; i++) { key('j'); seen.push(route()!); }
+    expect(seen).toEqual(expected);
+    // Never the end-of-queue screen by an arrow: the last route is a real screen.
+    expect(q('deck-end')).toBeNull();
+    expect(q('deck-looks-right') ?? q('deck-fixed') ?? q('deck-settled')).not.toBeNull();
+    key('j');
+    expect(route()).toBe(expected[expected.length - 1]);
+    for (let i = 0; i < expected.length - 1; i++) key('k');
+    expect(route()).toBe(expected[0]);
+    expect((q('deck-prev') as HTMLButtonElement).disabled).toBe(true);
+    // Viewing the fine ones left the count alone.
+    expect(q('deck-progress')!.textContent).toBe('2 to review');
+  });
+
+  it('after the queue is decided the end lists the rest, a tap on a row opens it, and arrows lead on from there', async () => {
+    const m = deckModel();
+    renderDeck();
+    key('y');
+    await flush();
+    key('y');
+    await flush();
     expect(q('deck-end')).not.toBeNull();
-    // Never a fine route (/app/tasks), a fix under way (/app/settings), a settled
-    // one (/app/inbox), or one whose fix finished without a PR (/app/workspaces/:id).
-    expect(routes).toEqual(['/app/missions/:id', '/app/tasks/:id']);
-    expect(q('deck-end')!.textContent).toContain('2 to review');
+    expect(q('deck-progress')!.textContent).toBe('Nothing to review');
     const rows = (id: string) => [...q(id)!.querySelectorAll<HTMLElement>('[data-testid="deck-settled-row"]')].map(r => r.dataset.cell);
     expect(rows('deck-group-fine').sort()).toEqual(m.cells.filter(c => c.standing === 'fine').map(c => c.key).sort());
     expect(rows('deck-group-fixing').sort()).toEqual(['/app/inbox|mobile|', '/app/settings|desktop|', '/app/workspaces/:id|desktop|']);
     expect(q('deck-group-fine')!.textContent).toContain('Already fine (5)');
     expect(q('deck-group-fixing')!.textContent).toContain('Fix under way (3)');
     expect(q('deck-group-fixing')!.textContent).toContain('Fix merged, waiting for a new screenshot');
-    // Read-only: no buttons in the groups, and no batch accept.
-    expect(q('deck-group-fine')!.querySelector('button')).toBeNull();
     expect(q('deck-accept-all')).toBeNull();
-    key('k');
-    expect(route()).toBe('/app/tasks/:id');
-    key('k');
-    expect(route()).toBe('/app/missions/:id');
-    // Nothing before the head of the queue.
-    expect((q('deck-prev') as HTMLButtonElement).disabled).toBe(true);
+    // One tap on a row opens that screenshot (no selection step first).
+    const row = q('deck-group-fine')!.querySelector<HTMLElement>('[data-testid="deck-settled-open"]')!;
+    const cell = row.closest<HTMLElement>('[data-cell]')!.dataset.cell!;
+    act(() => row.click());
+    expect(q('deck-end')).toBeNull();
+    expect(focused()).toBe(cell);
+    // From a fine screen the arrows go on in order, never back to the end screen.
+    const here = route();
+    key('j');
+    expect(route()).not.toBe(here);
+    expect(q('deck-end')).toBeNull();
   });
 
-  it('a decided route drops out of reach: prev and next skip it, and the count goes down', async () => {
-    renderDeck();
-    expect(q('deck-progress')!.textContent).toBe('2 to review');
-    key('y');
-    await flush();
-    expect(route()).toBe('/app/tasks/:id');
-    expect(q('deck-progress')!.textContent).toBe('1 to review');
-    // The decided route is behind, but prev does not go back to it.
-    expect((q('deck-prev') as HTMLButtonElement).disabled).toBe(true);
-    key('k');
-    expect(route()).toBe('/app/tasks/:id');
-    key('y');
-    await flush();
-    expect(q('deck-end')).not.toBeNull();
-    expect(q('deck-progress')!.textContent).toBe('Nothing to review');
-    expect(q('deck-end')!.textContent).toContain('Nothing to review');
-    expect(q('deck-back')).toBeNull();
-    // From the end, prev reaches nothing either: both routes are decided.
-    expect((q('deck-prev') as HTMLButtonElement).disabled).toBe(true);
-    key('k');
-    expect(q('deck-end')).not.toBeNull();
-  });
-
-  it('opened on a screen outside the queue (from a thumbnail): its buttons work, then it is left behind', async () => {
+  it('a screen opened from a thumbnail outside the queue is in the walk: its buttons work and the arrows go on from it', () => {
     const { onDecide } = renderDeck({ startKey: '/app/tasks|desktop|' });
     expect(focused()).toBe('/app/tasks|desktop|');
     expect(q('deck-progress')!.textContent).toBe('2 to review');
     expect(q('deck-looks-right')).not.toBeNull();
-    key('j');
-    expect(route()).toBe('/app/missions/:id');
+    const order = walkOrder(deckModel());
     key('k');
-    // Prev does not return to it: it was never awaiting a decision.
-    expect(route()).toBe('/app/missions/:id');
+    expect(route()).toBe(order[order.indexOf('/app/tasks') - 1]);
     expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it('an Already fine screen offers Looks right and Needs fix, confirming it leaves the count alone and moves on', async () => {
+    const m = deckModel();
+    const fine = m.cells.find(c => c.standing === 'fine' && c.current.agentVerdict === 'ok')!;
+    const { onDecide } = renderDeck({ startKey: fine.key });
+    expect(focused()).toBe(fine.key);
+    expect([...q('deck-actions')!.querySelectorAll<HTMLElement>('button')].map(b => b.dataset.testid)).toEqual(['deck-needs-fix', 'deck-looks-right']);
+    expect(q('visual-review-deck')!.textContent).not.toContain('Saving');
+    const before = q('deck-progress')!.textContent;
+    key('y');
+    await flush();
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(q('deck-progress')!.textContent).toBe(before);
+    expect(q('deck-end')).toBeNull();
+  });
+
+  it('Check again is offered on a viewed screen and on the end screen, only when the host provides it', async () => {
+    const m = deckModel();
+    const fine = m.cells.find(c => c.standing === 'fine' && !m.cells.some(o => o.route === c.route && o.standing === 'to_review'))!;
+    renderDeck({ startKey: fine.key });
+    expect(q('deck-check-again')).toBeNull();
+    const onCheckAgain = mock(async () => ({ ok: true, message: 'Check added.' }));
+    renderDeck({ startKey: fine.key, onCheckAgain });
+    act(() => q('deck-check-again')!.click());
+    await flush();
+    expect(onCheckAgain).toHaveBeenCalledTimes(1);
+    expect(q('deck-toast')!.textContent).toContain('Check added.');
   });
 
   it('C toggles compare on a screen shot in two rounds, and swipe is off while comparing', () => {

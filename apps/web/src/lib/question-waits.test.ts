@@ -85,7 +85,7 @@ describe('AC-1: declared dependents one and two steps out, named once', () => {
     expect(w.waiting.map(t => [t.title, t.depth, t.missionTitle])).toEqual([['Autostart repair', 1, 'Checkout rebuild'], ['Real-machine check', 2, 'Device lab']]);
     expect(w.waiting[1].after).toEqual({ id: B, title: 'Autostart repair' });
     const parts = waitsSummary(w);
-    expect(partsText(parts)).toBe('Waits on this: Autostart repair, then Real-machine check.');
+    expect(partsText(parts)).toBe('Blocks Autostart repair, then Real-machine check.');
     expect(parts.filter(p => p.href).map(p => [p.text, p.href])).toEqual([['Autostart repair', `/app/tasks/${B}`], ['Real-machine check', `/app/tasks/${C}`]]);
     // No other line repeats them.
     expect(waitsFooter(w, NOW)).not.toContain('Autostart repair');
@@ -96,7 +96,7 @@ describe('AC-1: declared dependents one and two steps out, named once', () => {
     world.tasks.push(task(D, 'Release notes', { dependsOn: [A] }), task(id(6), 'Release', { dependsOn: [C] }));
     const w = await load(world);
     expect(w.beyondCount).toBe(1);
-    expect(summary(w)).toBe('Waits on this: Autostart repair, Release notes and 2 more.');
+    expect(summary(w)).toBe('Blocks Autostart repair, Release notes and 2 more.');
   });
 
   it('leaves out finished dependents', async () => {
@@ -113,7 +113,7 @@ describe('AC-2: a lane the task holds, with positions', () => {
     world.lanes = [{ lane: 'schema', queued: [{ id: D, title: 'Add index', position: 2 }, { id: id(7), title: 'Drop column', position: 3 }] }];
     const w = await load(world);
     expect(w.lanes).toEqual([{ lane: 'schema', queued: [{ id: D, title: 'Add index', position: 2 }, { id: id(7), title: 'Drop column', position: 3 }], hiddenCount: 0 }]);
-    expect(summary(w)).toBe('Waits on this: Autostart repair, then Real-machine check. Holds the schema lane: 2 queued.');
+    expect(summary(w)).toBe('Blocks Autostart repair, then Real-machine check. Holds the schema lane: 2 queued.');
   });
 
   it('a lane waiter the viewer cannot see is counted', async () => {
@@ -176,7 +176,7 @@ describe('AC-5: expiry and what happens then, in the footer', () => {
     const world = chain();
     world.worker = { runner: 'runner-1', updatedAt: askedAt(30), waitingFor: waitingFor([{ label: 'Ship', recommended: true }, { label: 'Hold' }]) };
     const w = await load(world);
-    expect(waitsFooter(w, NOW)).toBe('Expires in 3 hours 30 minutes, then the task starts again and the agent goes with Ship.');
+    expect(waitsFooter(w, NOW)).toBe('Expires in 3h 30m. Goes with Ship.');
   });
 
   it('a standalone task waits 24 hours; an interactive session ends', () => {
@@ -224,7 +224,7 @@ describe('AC-6: option effects from outcome kinds', () => {
     world.worker = { runner: 'r', updatedAt: askedAt(5), waitingFor: waitingFor(['Yes', { label: 'No', consequence: 'Stops here.' }]) };
     const w = await load(world);
     expect(w.options.map(o => [o.label, o.outcome, o.effect])).toEqual([['Yes', null, null], ['No', null, null]]);
-    expect(summary(w)).toContain('Waits on this:');
+    expect(summary(w)).toContain('Blocks');
   });
 });
 
@@ -252,7 +252,7 @@ describe('AC-8: a waiting task the viewer cannot see', () => {
     expect(w.hiddenCount).toBe(1);
     const all = JSON.stringify(w) + summary(w) + waitsFooter(w, NOW);
     for (const secret of ['Secret payroll', 'Payroll secrets', H, WHIDDEN]) expect(all).not.toContain(secret);
-    expect(summary(w)).toBe("Waits on this: Autostart repair, then Real-machine check and 1 task you can't see.");
+    expect(summary(w)).toBe("Blocks Autostart repair, then Real-machine check and 1 task you can't see.");
     expect(w.options[0].effect).toBe("Stops the task: Autostart repair and 1 task you can't see fail too, then Real-machine check");
   });
 });

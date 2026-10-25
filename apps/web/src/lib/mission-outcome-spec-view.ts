@@ -33,6 +33,35 @@ export function countWord(n: number): string {
 }
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** One requirement as a line: its own words, its result, and the one-line reason when a check could not run. */
+export interface CriterionLine {
+  id: string;
+  /** Null on a state evaluated before the words were kept. */
+  text: string | null;
+  result: 'passed' | 'failed' | 'not checked' | 'out of date' | 'waived';
+  reason: string | null;
+}
+
+const RESULT_OF: Record<Standing, CriterionLine['result']> = {
+  pass: 'passed', fail: 'failed', inconclusive: 'not checked', unsupported: 'not checked', missing: 'not checked', stale: 'out of date', waived: 'waived',
+};
+
+/**
+ * `Nothing checked: 14 test files not found`, when every requirement still open
+ * is open for a reason a check named. Null when any open one has no reason,
+ * or none is open: the plain counts then stand.
+ */
+export function uncheckedSummary(lines: readonly CriterionLine[]): string | null {
+  const open = lines.filter(l => l.result === 'not checked');
+  if (open.length === 0 || open.some(l => !l.reason)) return null;
+  const parts = [...new Set(open.map(l => l.reason!))].map(reason => {
+    const n = open.filter(l => l.reason === reason).length;
+    const noun = reason === 'test file not found' ? `test ${n === 1 ? 'file' : 'files'} not found` : `${n === 1 ? 'test' : 'tests'} could not run`;
+    return `${n} ${noun}`;
+  });
+  return `Nothing checked: ${parts.join(', ')}`;
+}
+
 export interface OutcomeSpecView {
   specId: string;
   revision: number;
@@ -53,6 +82,10 @@ export interface OutcomeSpecView {
   open: { standing: OpenStanding; label: string; criterionIds: string[] }[];
   waived: { criterionId: string; reason: string }[];
   narrowed: { criterionIds: string[]; reason: string } | null;
+  /** Every in-scope requirement as a line, in spec order. */
+  criteria: CriterionLine[];
+  /** e.g. "Nothing checked: 14 test files not found"; null unless every open requirement names its reason. */
+  unchecked: string | null;
   /** The final verification task, when one is filed. */
   verificationTaskId: string | null;
   /** Who acts next, as a sentence. */
@@ -88,6 +121,12 @@ export function outcomeSpecView(
   const verdict: CriterionVerdict = entry?.verdict ?? 'UNVERIFIED';
   const verificationTaskId = entry?.workerTaskId ?? null;
 
+  const criteria: CriterionLine[] = standings.map(s => {
+    const result = waivedIds.has(s.criterionId) ? 'waived' : RESULT_OF[s.standing];
+    return { id: s.criterionId, text: s.text ?? null, result, reason: result === 'not checked' || result === 'failed' ? s.reason ?? null : null };
+  });
+  const unchecked = uncheckedSummary(criteria);
+
   const coverage = total === 0
     ? null
     : `${capital(countWord(passed))} of ${countWord(total)} pass${target ? ` on ${target}` : ''}.`;
@@ -118,6 +157,8 @@ export function outcomeSpecView(
     open,
     waived,
     narrowed: c.criteria && c.narrowedReason ? { criterionIds: [...c.criteria], reason: c.narrowedReason } : null,
+    criteria,
+    unchecked,
     verificationTaskId,
     next,
     verdict,

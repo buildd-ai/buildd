@@ -228,3 +228,37 @@ describe('Delivery and Checks (I-22 to I-24)', () => {
     expect(q('[data-testid="mission-check-skip-wrong"]')).not.toBeNull();
   });
 });
+
+describe('the spec row (items 6 to 8)', () => {
+  const specRow = (over: Partial<CheckRow> = {}): CheckRow => row({
+    key: 'criterion-0', kind: 'criterion', label: 'Spec revision 2', chip: 'goal', waivable: false, status: 'queued', state: 'not checked',
+    detail: 'Zero of two pass. Nothing checked: 2 test files not found.', href: '/app/specs/s1?revision=2',
+    criteria: [
+      { id: 'R-1', text: 'A queued task waits for a free slot.', result: 'not checked', reason: 'test file not found' },
+      { id: 'AC-3', text: 'The warning names the limit.', result: 'passed', reason: null },
+    ], ...over,
+  });
+
+  it('opens the spec at its revision when the name is tapped', () => {
+    mount([specRow()], null);
+    const link = q('[data-testid="mission-check-link"]') as HTMLAnchorElement;
+    expect(link.textContent).toBe('Spec revision 2');
+    expect(link.getAttribute('href')).toBe('/app/specs/s1?revision=2');
+  });
+
+  it('lists each requirement in its own words with its result and reason; the id is secondary', () => {
+    mount([specRow()], null);
+    const items = [...document.querySelectorAll('[data-testid="mission-check-criterion"]')] as HTMLElement[];
+    expect(items.map(i => i.getAttribute('data-result'))).toEqual(['not checked', 'passed']);
+    expect(items[0].textContent).toContain('A queued task waits for a free slot.');
+    expect(items[0].textContent).toContain('test file not found');
+    expect(items[0].querySelector('[data-testid="mission-check-criterion-id"]')?.textContent).toBe('R-1');
+    expect(q('[data-testid="mission-check-state"]')!.textContent).toBe('not checked');
+  });
+
+  it('a row without a link or lines draws neither', () => {
+    mount([row({ waivable: false })], null);
+    expect(q('[data-testid="mission-check-link"]')).toBeNull();
+    expect(q('[data-testid="mission-check-criteria"]')).toBeNull();
+  });
+});
