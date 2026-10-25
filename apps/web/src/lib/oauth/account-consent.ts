@@ -583,7 +583,7 @@ details.team:has(.tm-specific:checked) .team-ws { display: block; }
 details.team:has(.tm-all:checked) .m-all, details.team:has(.tm-specific:checked) .m-specific { display: inline; }
 details.team:has(.tm-all:checked) .m-none, details.team:has(.tm-specific:checked) .m-none { display: none; }
 .chip.mode { color: var(--text-primary); }
-.sum-list { list-style: none; margin: 0; padding: 0; }
+.sum-list { list-style: none; margin: 0; padding: 0; max-height: 7.5em; overflow-y: auto; }
 .sum-row { display: none; overflow-wrap: anywhere; }
 .sum-row.on { display: block; }
 .sum-none { color: var(--text-muted); }
