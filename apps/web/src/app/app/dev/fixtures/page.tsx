@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import RealTimeWorkerView from '../../(protected)/tasks/[id]/RealTimeWorkerView';
 import { KeyHintsProvider, keyHintsFromQuery } from '@/components/KeyHints';
+import { visualCheck } from '@/lib/mission-checks';
+import { deriveMissionVisualReview } from '@/lib/workflow/visual-review-state';
+import { resolveVisualReviewPolicy } from '@/lib/workflow/visual-review-policy';
 import VisualReviewAsk from '@/components/visual-review/VisualReviewAsk';
 import VisualReviewDeck from '@/components/visual-review/VisualReviewDeck';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
@@ -436,8 +439,8 @@ function VisualReviewFixtureView({ params }: { params: VisualReviewFixtureParams
     );
     const [initial] = useState(() => transport.model());
     const review = useVisualReviewDecisions(initial, transport);
-    const model = review.model;
-    const opensDeck = params.view === 'deck' || params.view === 'compare' || params.view === 'fix-check' || params.view === 'fix-merged';
+    const model = params.view === 'out-of-date' ? { ...review.model, onEarlierCommit: true } : review.model;
+    const opensDeck = params.view === 'all-fine' || params.view === 'deck' || params.view === 'compare' || params.view === 'fix-check' || params.view === 'fix-merged';
     const [deck, setDeck] = useState<{ startKey: string | null; compare: boolean } | null>(
         opensDeck ? { startKey: params.startKey, compare: params.compare } : null,
     );
@@ -495,6 +498,7 @@ function VisualReviewFixtureView({ params }: { params: VisualReviewFixtureParams
                             {model.phase !== 'needs_you' && <p className="font-mono text-[12px] text-text-muted">No ask in this phase.</p>}
                         </section>
                         {isRecaptureFixtureView(params.view) && <VerifyRowPreview model={model} />}
+                        {params.view === 'out-of-date' && <OutOfDateCheckPreview />}
                         <section className="flex flex-col gap-2">
                             <h2 className="section-label">Tray</h2>
                             <div className="border-2 border-border-strong bg-card p-4 shadow-[var(--card-shadow)]">
@@ -516,6 +520,26 @@ function VisualReviewFixtureView({ params }: { params: VisualReviewFixtureParams
                 />
             )}
         </div>
+    );
+}
+
+/** The Visual review check row for a branch that moved with no new check scheduled, beside the Line that names the earlier commit. */
+function OutOfDateCheckPreview() {
+    const row = visualCheck(deriveMissionVisualReview({
+        policy: resolveVisualReviewPolicy({}),
+        uiChange: { state: 'yes', source: 'diff', uiFiles: 2 },
+        audit: { id: 'a1', createdAt: '2026-10-01T00:00:00Z', errorType: null } as never,
+        review: { phase: 'reviewed', screens: 4, effectiveIssues: 0, awaitingHuman: 0, openFixes: 0, roundCapOpen: false, needsYouReason: null, captured: 0, expected: null } as never,
+        waiver: null,
+        auditedSha: 'aaaa1111',
+        branch: { headSha: 'bbbb2222', base: 'dev', integrationPr: { number: 9, state: 'open', ready: false, blocked: false }, workLanded: true },
+    }), { mergeTier: 'human' });
+    return (
+        <section className="flex flex-col gap-2" data-testid="out-of-date-check">
+            <h2 className="section-label">Visual review check</h2>
+            <p className="border-2 border-border-strong bg-card p-4 font-mono text-[13px]">{row.state}: {row.detail}</p>
+            <button type="button" className="min-h-11 self-start border-2 border-border-strong bg-surface-3 px-3.5 font-mono text-[13px] font-semibold">Check again</button>
+        </section>
     );
 }
 

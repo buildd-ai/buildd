@@ -175,6 +175,8 @@ export interface VisualReviewDeckProps {
   fixTaskHref?: (taskId: string) => string;
   /** How long Undo stays. Default five seconds. */
   undoMs?: number;
+  /** Files a new check of the whole set; the answer is shown as it comes. Absent: no Check again button. */
+  onCheckAgain?: () => Promise<{ ok: boolean; message: string }>;
 }
 
 export default function VisualReviewDeck(props: VisualReviewDeckProps) {
@@ -218,30 +220,25 @@ function DeckInner({
   onUndo,
   fixTaskHref,
   undoMs = 5000,
+  onCheckAgain,
 }: VisualReviewDeckProps) {
   const titleId = useId();
   const sectionRef = useRef<HTMLElement>(null);
   const hrefOf = useMemo(() => fixTaskHref ?? ((id: string) => taskPageHref({ taskId: id, missionId: model.missionId })), [fixTaskHref, model.missionId]);
 
-  // The order is fixed at open; a group that comes into the queue later joins
-  // the end. A group stays in the list once in it (positions never shift);
-  // navigation skips every group with nothing left to decide. A group outside
-  // the queue is in it only when the deck was opened on it.
-  const [startGroup] = useState(() => {
-    const c = startKey ? model.cells.find(x => x.key === startKey) : undefined;
-    return c ? groupKeyOf(c) : null;
-  });
-  // A start outside the queue (a thumbnail) goes first, so next leads into the queue.
+  // Every route is in the deck, in an order fixed at open: the decision queue
+  // first, then the Already fine screens, then the rest, each in list order.
+  // Previous and next walk that whole order, so a fine screen is never out of
+  // reach; only the queue counts as "to review". A route that appears later
+  // joins the end.
   const [snapshot] = useState(() => {
-    const keys = groupsInQueueOrder(model).map(g => g.key);
     const queued = new Set(model.queue.map(k => model.cells.find(c => c.key === k)).filter((c): c is VisualReviewCell => !!c).map(groupKeyOf));
-    return startGroup && !queued.has(startGroup) ? [startGroup, ...keys.filter(k => k !== startGroup)] : keys;
+    const all = groupsInQueueOrder(model);
+    const rank = (g: RouteGroup) => (queued.has(g.key) ? 0 : groupCellsOf(g).some(c => cellStanding(c) === 'fine') ? 1 : 2);
+    return all.map((g, i) => ({ g, i })).sort((x, y) => rank(x.g) - rank(y.g) || x.i - y.i).map(x => x.g.key);
   });
-  const members = useRef<Set<string>>(new Set(startGroup ? [startGroup] : []));
   const groups: RouteGroup[] = useMemo(() => {
-    const all = groupCells(model.cells);
-    for (const g of all) if (groupCellsOf(g).some(c => cellStanding(c) === 'to_review')) members.current.add(g.key);
-    const byKey = new Map(all.filter(g => members.current.has(g.key)).map(g => [g.key, g]));
+    const byKey = new Map(groupCells(model.cells).map(g => [g.key, g]));
     const keys = [...snapshot.filter(k => byKey.has(k)), ...[...byKey.keys()].filter(k => !snapshot.includes(k))];
     return keys.map(k => byKey.get(k)!);
   }, [model.cells, snapshot]);
@@ -294,6 +291,8 @@ function DeckInner({
   // Offered only while neither viewport has a decision; re-deciding one screen never touches the other.
   const canApplyBoth = !!sibling && !!focused && !isDone(sibling) && !isDone(focused);
   const both = canApplyBoth && (applyBoth ?? bothDefault);
+  // Every viewed screen takes a decision (queued, fine or fix under way); only one waiting for a new screenshot is just viewed.
+  const canDecide = !!focused && !!decisionLabels(focused);
 
   const go = useCallback((index: number, prefer?: string | null) => {
     const i = Math.max(0, Math.min(groups.length, index));
@@ -303,14 +302,12 @@ function DeckInner({
     setComparing(null);
     setZoomed(false);
   }, [groups, focusIn]);
-  /** The nearest group in `dir` with something left to decide: -1 or `groups.length` past either end. */
-  const stepFrom = useCallback((from: number, dir: 1 | -1) => {
-    let i = from + dir;
-    while (i >= 0 && i < groups.length && !isOpen(groups[i])) i += dir;
-    return i;
-  }, [groups, isOpen]);
-  const prevIndex = stepFrom(Math.min(pos.index, groups.length), -1);
-  const next = useCallback(() => go(stepFrom(pos.index, 1)), [go, stepFrom, pos.index]);
+  // Arrows walk every route in order and stop at either end: the end-of-queue
+  // screen is reached by deciding the last screen, never by an arrow, and an
+  // arrow back from it returns to the last route.
+  const nextIndex = pos.index + 1 < groups.length ? pos.index + 1 : -1;
+  const prevIndex = Math.min(pos.index, groups.length) - 1;
+  const next = useCallback(() => { if (nextIndex >= 0) go(nextIndex); }, [go, nextIndex]);
   const prev = useCallback(() => { if (prevIndex >= 0) go(prevIndex); }, [go, prevIndex]);
 
   // Undo stays for `undoMs`.
@@ -384,11 +381,16 @@ function DeckInner({
   const decide = useCallback((decision: VisualReviewDecision, noteText?: string) => {
     if (!focused) return;
     const cells = both && sibling ? [focused, sibling] : [focused];
-    if (awaitingCapture(focused)) return;
+    if (!canDecide) return;
     const where = `${focused.route}, ${cells.length > 1 ? 'phone and desktop' : VIEWPORT_LABEL[focused.viewport].toLowerCase()}`;
     const keys = submit(cells, decision, noteText, where, { index: pos.index, viewport: focused.viewport });
+    if (!isOpen(group)) {
+      // A screen viewed, not queued: on to the next one, or stay on the last.
+      go(nextIndex >= 0 ? nextIndex : pos.index, nextIndex >= 0 ? null : focused.key);
+      return;
+    }
     advanceAfter(keys);
-  }, [focused, sibling, both, submit, advanceAfter, pos.index]);
+  }, [focused, canDecide, group, sibling, both, submit, advanceAfter, isOpen, go, nextIndex, pos.index]);
 
   /**
    * Needs fix. Agreeing with an issue is one tap: the fix exists, a note is
@@ -397,7 +399,7 @@ function DeckInner({
    * is right, not what to change).
    */
   const needsFix = useCallback(() => {
-    if (!focused || awaitingCapture(focused)) return;
+    if (!focused || !canDecide) return;
     // Still broken: a new fix, prefilled with what the merged fix was for.
     const check = isFixCheck(focused) ? focused.fixCheck! : null;
     if (check) {
@@ -408,7 +410,7 @@ function DeckInner({
     if (focused.current.agentVerdict === 'issue') { decide('needs_fix'); return; }
     setGuidance(null);
     setNote(focused.current.agentVerdict === 'unsure' ? focused.current.finding : '');
-  }, [focused, decide]);
+  }, [focused, canDecide, decide]);
 
   /** Add guidance to the fix just agreed with: back to that screen, an empty note. */
   const addNote = useCallback(() => {
@@ -462,6 +464,16 @@ function DeckInner({
     }
   }, [toast, onUndo]);
 
+  const [rechecking, setRechecking] = useState(false);
+  const checkAgain = useCallback(async () => {
+    if (!onCheckAgain || rechecking) return;
+    setRechecking(true);
+    const r = await onCheckAgain().catch(() => ({ ok: false, message: 'That did not work. Try again.' }));
+    if (!mounted.current) return;
+    setRechecking(false);
+    if (r.ok) { setNotice(null); setFlash(r.message); } else setNotice(r.message);
+  }, [onCheckAgain, rechecking]);
+
   const toggleCompare = useCallback(() => {
     if (!focused || focused.history.length < 2) return;
     setComparing(!comparing);
@@ -469,8 +481,8 @@ function DeckInner({
   }, [focused, comparing]);
 
   // Keys. Typing in the note is never a shortcut.
-  const keyState = useRef({ decide, needsFix, next, prev, toggleCompare, undo, note, closeNote, comparing, atEnd, onClose, layout, focused });
-  keyState.current = { decide, needsFix, next, prev, toggleCompare, undo, note, closeNote, comparing, atEnd, onClose, layout, focused };
+  const keyState = useRef({ decide, needsFix, next, prev, toggleCompare, undo, note, closeNote, comparing, atEnd, onClose, layout, focused, canDecide: false });
+  keyState.current = { decide, needsFix, next, prev, toggleCompare, undo, note, closeNote, comparing, atEnd, onClose, layout, focused, canDecide };
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const s = keyState.current;
@@ -484,7 +496,7 @@ function DeckInner({
       if (s.note !== null) return;
       const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
       const act = (fn: () => void) => { e.preventDefault(); fn(); };
-      const decidable = !!s.focused && !s.atEnd && !awaitingCapture(s.focused);
+      const decidable = s.canDecide && !s.atEnd;
       if (k === 'y' && decidable) act(() => s.decide('looks_right'));
       else if (k === 'n' && decidable) act(s.needsFix);
       else if (k === 'j' || k === 'ArrowRight') act(s.next);
@@ -531,7 +543,7 @@ function DeckInner({
           <button type="button" data-testid="deck-prev" aria-label="Previous route" disabled={prevIndex < 0} onClick={prev} className={`${BTN_BASE} ${BTN_GHOST} h-10 w-10 text-lede`}>
             ‹<Kbd className="sr-only">K</Kbd>
           </button>
-          <button type="button" data-testid="deck-next" aria-label="Next route" disabled={atEnd} onClick={next} className={`${BTN_BASE} ${BTN_GHOST} h-10 w-10 text-lede`}>
+          <button type="button" data-testid="deck-next" aria-label="Next route" disabled={nextIndex < 0} onClick={next} className={`${BTN_BASE} ${BTN_GHOST} h-10 w-10 text-lede`}>
             ›
           </button>
           {onClose && (
@@ -570,7 +582,10 @@ function DeckInner({
       fine={fine}
       fixing={fixing}
       onBack={() => { const i = groups.findIndex(isOpen); if (i >= 0) go(i); }}
+      onOpen={(key) => { const i = groups.findIndex(g => groupCellsOf(g).some(c => c.key === key)); if (i >= 0) go(i, key); }}
       onClose={onClose}
+      onCheckAgain={onCheckAgain ? () => void checkAgain() : undefined}
+      checking={rechecking}
     />
   ) : comparing && focused ? (
     <div className="px-4 py-4 md:px-6">
@@ -603,7 +618,7 @@ function DeckInner({
             cell={c}
             focused={c.key === focused.key}
             paired={!!sibling}
-            done={isDone(c)}
+            decided={decided.has(c.key)}
             zoomed={zoomed && c.key === focused.key}
             onFocus={() => setPos({ index: pos.index, viewport: c.viewport })}
             onImageClick={() => { if (swiped.current) { swiped.current = false; return; } setZoomed(z => !z); }}
@@ -615,7 +630,7 @@ function DeckInner({
     </div>
   ) : null;
 
-  const labels = focused ? decisionLabels(focused) : null;
+  const labels = focused && canDecide ? decisionLabels(focused) : null;
   const effects = focused && labels ? verdictEffects(focused.current.agentVerdict) : null;
   const copy = focused ? buttonHints(focused) : null;
   const primary: VisualReviewDecision | null = focused && !focused.fixCheck
@@ -711,10 +726,15 @@ function DeckInner({
             </div>
           </form>
         )}
-        {!atEnd && focused && !labels && (
+        {!atEnd && focused && awaitingCapture(focused) && (
           <p data-testid="deck-settled" className="border-l-[3px] border-status-success bg-surface-2 py-2 pl-3 pr-2 font-mono text-meta text-text-primary">
             {FIX_MERGED_STATUS}
           </p>
+        )}
+        {!atEnd && focused && onCheckAgain && note === null && !isOpen(group) && (
+          <button type="button" data-testid="deck-check-again" disabled={rechecking} onClick={() => void checkAgain()} className={`${BTN_BASE} ${BTN_GHOST} min-h-10 text-meta`}>
+            {rechecking ? 'Adding…' : 'Check again'}
+          </button>
         )}
         {!atEnd && focused && labels && effects && note === null && (
           <div className="flex gap-2">
@@ -787,11 +807,12 @@ function DecisionButton({ testId, label, hint, effect, copy, primary, onClick }:
   );
 }
 
-function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick, swipe, fixTaskHref }: {
+function ShotPanel({ cell, focused, paired, decided, zoomed, onFocus, onImageClick, swipe, fixTaskHref }: {
   cell: VisualReviewCell;
   focused: boolean;
   paired: boolean;
-  done: boolean;
+  /** Decided in this deck, the server not yet shown to agree. */
+  decided: boolean;
   zoomed: boolean;
   onFocus: () => void;
   onImageClick: () => void;
@@ -822,7 +843,7 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
           <i aria-hidden="true" className={`inline-block h-2.5 w-2.5 ${VERDICT_DOT[entry.agentVerdict]}`} />
           Agent: {entry.agentVerdict}
         </span>
-        {(review || (done && !settled)) && (
+        {(review || (decided && !settled)) && (
           <span className="inline-flex items-center gap-1.5 font-mono text-meta text-text-secondary">
             <ReviewMarker marker={review ? cell.marker : 'confirmed'} />
             {review
@@ -876,12 +897,15 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
   );
 }
 
-function EndOfQueue({ remaining, fine, fixing, onBack, onClose }: {
+function EndOfQueue({ remaining, fine, fixing, onBack, onOpen, onClose, onCheckAgain, checking }: {
   remaining: number;
   fine: readonly VisualReviewCell[];
   fixing: readonly VisualReviewCell[];
   onBack: () => void;
+  onOpen: (key: string) => void;
   onClose?: () => void;
+  onCheckAgain?: () => void;
+  checking: boolean;
 }) {
   return (
     <div data-testid="deck-end" className="mx-auto flex max-w-[560px] flex-col gap-5 px-4 py-8 md:px-6 md:py-12">
@@ -900,24 +924,36 @@ function EndOfQueue({ remaining, fine, fixing, onBack, onClose }: {
           </button>
         )}
       </div>
-      <SettledGroup testId="deck-group-fine" title="Already fine" cells={fine} />
-      <SettledGroup testId="deck-group-fixing" title="Fix under way" cells={fixing} />
+      {onCheckAgain && (
+        <button type="button" data-testid="deck-check-again" disabled={checking} onClick={onCheckAgain} className={`${BTN_BASE} ${BTN_SECONDARY} min-h-12 text-title`}>
+          {checking ? 'Adding…' : 'Check again'}
+        </button>
+      )}
+      <SettledGroup testId="deck-group-fine" title="Already fine" cells={fine} onOpen={onOpen} />
+      <SettledGroup testId="deck-group-fixing" title="Fix under way" cells={fixing} onOpen={onOpen} />
     </div>
   );
 }
 
-/** Screens with nothing to decide, read-only: a row is not a way back into the deck. */
-function SettledGroup({ testId, title, cells }: { testId: string; title: string; cells: readonly VisualReviewCell[] }) {
+/** Screens with nothing to decide: one tap on a row opens its screenshot. */
+function SettledGroup({ testId, title, cells, onOpen }: { testId: string; title: string; cells: readonly VisualReviewCell[]; onOpen: (key: string) => void }) {
   if (cells.length === 0) return null;
   return (
     <section data-testid={testId} className="flex flex-col gap-2">
       <h3 className="section-label">{`${title} (${cells.length})`}</h3>
       <ul className="flex flex-col border-2 border-border-default">
         {cells.map(c => (
-          <li key={c.key} data-testid="deck-settled-row" data-cell={c.key} className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-border-default px-3 py-2 last:border-b-0">
-            <span className="min-w-0 break-all font-mono text-body text-text-primary">{c.route}{c.variant ? ` (${c.variant})` : ''}</span>
-            <span className="font-mono text-meta text-text-secondary">{VIEWPORT_LABEL[c.viewport]}</span>
-            <span className="ml-auto font-mono text-meta text-text-secondary">{standingNote(c)}</span>
+          <li key={c.key} data-testid="deck-settled-row" data-cell={c.key} className="border-b border-border-default last:border-b-0">
+            <button
+              type="button"
+              data-testid="deck-settled-open"
+              onClick={() => onOpen(c.key)}
+              className="flex min-h-11 w-full flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-text-primary [@media(hover:hover)]:hover:bg-surface-2"
+            >
+              <span className="min-w-0 break-all font-mono text-body text-text-primary">{c.route}{c.variant ? ` (${c.variant})` : ''}</span>
+              <span className="font-mono text-meta text-text-secondary">{VIEWPORT_LABEL[c.viewport]}</span>
+              <span className="ml-auto font-mono text-meta text-text-secondary">{standingNote(c)}</span>
+            </button>
           </li>
         ))}
       </ul>

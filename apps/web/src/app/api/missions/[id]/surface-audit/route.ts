@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { requestMissionSurfaceAudit } from '@/lib/mission-surface-audit';
+import { recheckMissionVisualReview } from '@/lib/mission-visual-recheck';
 import { previewMissionSurfaceAudit } from '@/lib/mission-surface-audit-preview';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
@@ -87,6 +88,16 @@ export async function POST(req: NextRequest, { params }: Params) {
     const denied = await refuse(req, id);
     if (denied) return denied;
 
+    // `{ recheck: true }`: check the screens again on the branch as it is now.
+    const body = await req.json().catch(() => null) as { recheck?: unknown } | null;
+    if (body?.recheck === true) {
+      const again = await recheckMissionVisualReview(id);
+      if (!again.ok && again.reason === 'no_head') {
+        return NextResponse.json({ error: 'The branch has no commit to check yet, so a new check cannot start.', code: 'no_head' }, { status: 409 });
+      }
+      if (!again.ok) return planRefusal(again.reason);
+      return NextResponse.json({ created: again.created, taskId: again.taskId, status: again.status });
+    }
     const result = await requestMissionSurfaceAudit(id);
     if (!result.ok) return planRefusal(result.reason);
     return NextResponse.json({ created: result.created, taskId: result.taskId, status: result.status });

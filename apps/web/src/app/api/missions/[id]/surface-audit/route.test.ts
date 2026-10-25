@@ -21,6 +21,9 @@ mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: () => Promise.r
 mock.module('@/lib/open-workspaces', () => ({ workspaceOpenToCaller: () => Promise.resolve(openToCaller) }));
 const request = mock((_id: string) => Promise.resolve(result));
 mock.module('@/lib/mission-surface-audit', () => ({ requestMissionSurfaceAudit: request }));
+let recheckResult: any = { ok: true, created: true, taskId: 't-2', status: 'pending' };
+const recheck = mock((_id: string) => Promise.resolve(recheckResult));
+mock.module('@/lib/mission-visual-recheck', () => ({ recheckMissionVisualReview: recheck }));
 let previewResult: any = null;
 const preview = mock((_id: string) => Promise.resolve(previewResult));
 mock.module('@/lib/mission-surface-audit-preview', () => ({ previewMissionSurfaceAudit: preview }));
@@ -116,5 +119,25 @@ describe('GET /api/missions/[id]/surface-audit (the Visual review sheet)', () =>
     const res = await read();
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('mission_closed');
+  });
+});
+
+describe('POST with { recheck: true }', () => {
+  const again = (id = ID) => POST(new NextRequest(`http://localhost/api/missions/${id}/surface-audit`, { method: 'POST', body: JSON.stringify({ recheck: true }) }), { params: Promise.resolve({ id }) });
+  beforeEach(() => { missionRow = { id: ID, teamId: 'team-1', workspaceId: 'w-1' }; currentUser = { id: 'u-1' }; recheck.mockClear(); });
+
+  it('files the next check through the recheck path, never the idempotent request', async () => {
+    const res = await again();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ created: true, taskId: 't-2', status: 'pending' });
+    expect(recheck).toHaveBeenCalledTimes(1);
+  });
+
+  it('says plainly when the branch has no commit to check', async () => {
+    recheckResult = { ok: false, reason: 'no_head' };
+    const res = await again();
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('no_head');
+    recheckResult = { ok: true, created: true, taskId: 't-2', status: 'pending' };
   });
 });

@@ -3134,6 +3134,8 @@ export interface VisualReviewModel {
   replacedAudits?: VisualReviewReplacedAudit[];
   /** For `waiting_on_failed_work`: the failed build task the audit waits on; its recovery is there. */
   waitingOn?: { taskId: string; title: string | null } | null;
+  /** The branch moved after these shots, so the counts describe an earlier commit. Set by the page from the check's own state, never by the loader. */
+  onEarlierCommit?: boolean;
   generatedAt: string;
 }
 
