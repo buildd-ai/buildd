@@ -38,6 +38,7 @@ import {
   type ReleaseCandidateFixContext,
 } from '@/lib/candidate-fix-commit';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { amendContractCapabilityError, amendDispatchInputs } from '@buildd/core/release-config-shape';
 import { readWorkflowDispatchInputs as defaultReadInputs } from '@/lib/workflow-dispatch-inputs';
 import { notifyTeamOf as defaultNotify } from '@/lib/notify';
@@ -220,10 +221,39 @@ async function amendForFixTask(
       return { kind: 'dispatch_failed', error: recorded.error };
     }
 
+    // The candidate's activity comment follows the fix: pointed at the fix, then opened, then amended.
+    const releaseRunUrl = recorded.runUrl ?? null;
+    const fixRef = via.kind === 'pr' ? `#${via.prNumber}` : `\`${via.sha.slice(0, 12)}\``;
+    const fixUrl = via.kind === 'pr'
+      ? `https://github.com/${repoFullName}/pull/${via.prNumber}`
+      : `https://github.com/${repoFullName}/commit/${via.sha}`;
+    const track = (kind: string, entry: Parameters<typeof appendPrActivity>[0]['entry'], updateKind?: 'ci_fixing') =>
+      appendPrActivity({
+        installationId,
+        repoFullName,
+        prNumber: fix.prNumber,
+        ...(updateKind ? { updateKind } : {}),
+        entry,
+        onlyIfPresent: true,
+        workspaceId: t.workspaceId,
+      }).catch((err: unknown) => console.error(`[release-amend] activity update (${kind}) on PR #${fix.prNumber} failed:`, err));
+
+    await track('ci_fixing', { kind: 'ci_fixing', detail: `fix via ${fixRef}, amend automatically`, url: fixUrl }, 'ci_fixing');
+    if (via.kind === 'pr') {
+      // Only known once it merges, so the row is written retroactively.
+      await track('fix_pr_opened', { kind: 'fix_pr_opened', note: `Fix opened in ${fixRef} on \`${fix.sourceBranch}\`.`, url: fixUrl });
+    }
+    await track('release_amended', {
+      kind: 'release_amended',
+      note: `The fix ${fixedIn(via, fix.sourceBranch)}. Release candidate v${v} was amended automatically: the Release workflow was dispatched with \`amend: ${v}\`.`,
+      url: releaseRunUrl,
+    });
+
+    // The standing comment on the candidate PR.
     await githubApi(installationId, `/repos/${repoFullName}/issues/${fix.prNumber}/comments`, {
       method: 'POST',
       body: JSON.stringify({ body: amendedComment(contract, v, via, fix.sourceBranch, strategy.workflowFile) }),
-    }).catch((err: unknown) => console.error(`[release-amend] comment on PR #${fix.prNumber} failed:`, err));
+    }).catch((err: unknown) => console.error(`[release-amend] comment on candidate PR #${fix.prNumber} failed:`, err));
     return { kind: 'amended', version: v, candidatePr: fix.prNumber };
   } catch (err) {
     await release();
