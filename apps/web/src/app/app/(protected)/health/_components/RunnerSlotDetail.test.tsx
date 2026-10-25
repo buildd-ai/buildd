@@ -9,7 +9,7 @@ const runner = { id: 'r1', maxConcurrentWorkers: 2, activeWorkerCount: 1, lastHe
 const fleetRow = {
   id: 'r1', name: 'Studio', machine: null, maxSlots: 2, online: true,
   slots: [
-    { index: 0, worker: { label: 'build', name: 'Fix the thing', mine: true }, last: null },
+    { index: 0, worker: { label: 'build', name: 'Fix the thing', mine: true, startedAt: new Date(NOW - 2 * 3_600_000).toISOString() }, last: null },
     { index: 1, worker: null, last: { label: 'older', failed: true, at: NOW - 3_600_000, mine: true } },
   ],
 } as unknown as FleetSnapshot['runners'][number];
@@ -20,9 +20,14 @@ const html = (over: Partial<Parameters<typeof RunnerSlotDetail>[0]> = {}) =>
   );
 
 describe('RunnerSlotDetail', () => {
+  it('Work is a bare label, not a sentence', () => {
+    expect(html()).toContain('>Per slot<');
+  });
+
   it('lists slots with their work and last run', () => {
     const h = html();
     expect(h).toContain('Working · Fix the thing');
+    expect(h).toContain('Fix the thing · 2h');
     expect(h).toContain('Idle · last older (failed), 1h ago');
   });
 

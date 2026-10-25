@@ -47,7 +47,7 @@ export default function RunnerSlotDetail({
         <dt className="text-text-muted">Owner</dt>
         <dd data-testid="health-runner-owner" className="text-text-primary">{ownerLabel}</dd>
         <dt className="text-text-muted">Work</dt>
-        <dd className="text-text-primary">per slot: yours, a teammate's, or unattributed</dd>
+        <dd className="text-text-primary">Per slot</dd>
         <dt className="text-text-muted">Route</dt>
         <dd data-testid="health-runner-route" className="text-text-primary">Claude: {route.claude} · Codex: {route.codex}</dd>
       </dl>
@@ -69,7 +69,7 @@ export default function RunnerSlotDetail({
               <span className="font-mono text-text-muted shrink-0">#{s.index + 1}</span>
               {s.worker ? (
                 <span className="text-text-primary truncate">
-                  {s.worker.question ? 'Waiting · ' : 'Working · '}{hidden(s.worker.mine) ? (s.worker.mine === null ? 'Unattributed work' : 'A teammate\'s work') : (s.worker.name ?? s.worker.title ?? s.worker.label)}
+                  {s.worker.question ? 'Waiting · ' : 'Working · '}{hidden(s.worker.mine) ? (s.worker.mine === null ? 'Unattributed work' : 'A teammate\'s work') : (s.worker.name ?? s.worker.title ?? s.worker.label)}{s.worker.startedAt ? ` · ${timeAgo(s.worker.startedAt, now).replace(' ago', '')}` : ''}
                 </span>
               ) : (
                 <span className="text-text-muted truncate">

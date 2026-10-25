@@ -27,7 +27,18 @@ describe('RunnerRow (R-14, R-15, AC-10)', () => {
   });
 
   it('working: busy count shown', () => {
-    expect(html({ runner: runner({ activeWorkerCount: 2 }) })).toContain('2 of 4 busy');
+    expect(html({ runner: runner({ activeWorkerCount: 2 }) })).toContain('2 of 4 slots in use');
+  });
+
+  it('working names the work, masking a teammate\'s run from a member', () => {
+    const fleetRow = { id: 'r1', name: 'Studio', maxSlots: 4, online: true, slots: [
+      { index: 0, worker: { label: 'build', name: 'Fix the thing', mine: true }, last: null },
+      { index: 1, worker: { label: 'x', name: 'Secret thing', mine: false }, last: null },
+    ] } as never;
+    const h = html({ runner: runner({ activeWorkerCount: 2 }), fleetRow });
+    expect(h).toContain('Working on Fix the thing, A teammate&#x27;s work');
+    expect(h).not.toContain('Secret thing');
+    expect(html({ runner: runner({ activeWorkerCount: 2 }), fleetRow, seesTeamWork: true })).toContain('Secret thing');
   });
 
   it('idle with work that could start here links to the queue', () => {

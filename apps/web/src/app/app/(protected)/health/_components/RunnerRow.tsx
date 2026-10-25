@@ -10,7 +10,6 @@ import RunnerSlotDetail from './RunnerSlotDetail';
 import { RunnerIsolation } from './RunnerIsolation';
 import { RunnerRoute } from './RunnerRoute';
 import { countOf } from '@/lib/plural';
-import { runnerBusyLine } from '@/lib/fleet-view';
 
 interface RunnerHealthState {
   loading: boolean;
@@ -68,9 +67,8 @@ export function RunnerRow({
 }: RunnerRowProps) {
   const name = fleetRow?.name ?? runner.accountName ?? 'Runner';
   const tokenName = fleetRow && runner.accountName && runner.accountName !== fleetRow.name ? runner.accountName : null;
-  const busyLine = fleetRow
-    ? runnerBusyLine({ ...fleetRow, online: true })
-    : `${runner.activeWorkerCount} of ${runner.maxConcurrentWorkers} busy`;
+  const activeCount = fleetRow ? fleetRow.slots.filter(sl => sl.worker).length : runner.activeWorkerCount;
+  const busyLine = `${activeCount} of ${fleetRow?.maxSlots ?? runner.maxConcurrentWorkers} slots in use`;
   const posture = deriveSandboxPosture(runner);
   const sandboxLabel = runnerIsolationDetail(runner).state === 'verified' ? SANDBOX_PLAIN_LABEL[posture.label] ?? null : null;
   const sandboxClass = posture.tier === 'success'
@@ -79,8 +77,15 @@ export function RunnerRow({
       ? 'text-status-warning'
       : 'text-text-muted';
 
-  const working = (fleetRow ? fleetRow.slots.filter(sl => sl.worker).length : runner.activeWorkerCount) > 0;
-  const freeSlot = runner.maxConcurrentWorkers > (fleetRow ? fleetRow.slots.filter(sl => sl.worker).length : runner.activeWorkerCount);
+  const working = activeCount > 0;
+  const freeSlot = runner.maxConcurrentWorkers > activeCount;
+  // Another person's run is named only to those who may read the team's work (same masking as the slot list).
+  const workNames = (fleetRow?.slots ?? []).flatMap(sl => {
+    const w = sl.worker;
+    if (!w) return [];
+    if (!seesTeamWork && w.mine !== true && w.mine !== undefined) return [w.mine === null ? 'Unattributed work' : 'A teammate\'s work'];
+    return [w.name ?? w.title ?? w.label];
+  });
   const savedChange = runner.slots?.desired != null && runner.slots.origin === 'dashboard' && runner.slots.desired !== runner.maxConcurrentWorkers;
   // One extra line for the two states the dot cannot say: idle with work that could start here, and offline with a saved slot change.
   const stateLine = !online
@@ -94,7 +99,9 @@ export function RunnerRow({
           <a href={queueHref} className="underline hover:text-text-primary">See the queue</a>
         </p>
       )
-      : null;
+      : working && workNames.length > 0
+        ? <p data-testid="health-runner-state-line" className="text-meta text-text-secondary truncate">Working on {workNames.join(', ')}</p>
+        : null;
 
   const handleToggle = () => {
     if (onToggleExpanded) {
