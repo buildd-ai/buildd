@@ -185,16 +185,12 @@ export function FailureGroupsSection({
 const WINDOW_PHRASE: Record<string, string> = { '24h': 'in the last day', '7d': 'this week', '30d': 'in the last 30 days' };
 
 /**
- * Overview's one Problems row for failures: how many causes, and the biggest
- * one. "Failures: 4 causes this week, mostly usage limit reached".
+ * Overview's one Problems row for failures: how many causes, nothing more.
+ * "2 failure causes this week". The causes are on Failures, behind the row.
  */
 export function failureProblemLine(groups: Pick<GroupsData, 'groups'>, window: string): string {
   const n = groups.groups.length;
   const when = WINDOW_PHRASE[window] ?? 'in this window';
-  const top = groups.groups[0];
-  const head = `Failures: ${n === 1 ? '1 cause' : `${n} causes`} ${when}`;
-  if (!top || n === 1) return top ? `${head}: ${lower(top.label)}` : head;
-  return `${head}, mostly ${lower(top.label)}`;
+  return `${n} failure ${n === 1 ? 'cause' : 'causes'} ${when}`;
 }
-const lower = (s: string) => (/^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s);
 

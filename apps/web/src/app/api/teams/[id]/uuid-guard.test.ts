@@ -6,7 +6,7 @@
  * for the shared structural check.
  *
  * Scoped to `route.ts` and `invitations/[invitationId]/route.ts` (task
- * 5b47a423 slice 4). `notifications/route.ts`, `backend-readiness/route.ts`,
+ * 5b47a423 slice 4). `notifications/route.ts`,
  * `members/route.ts`, `invitations/route.ts` and `members/[userId]/route.ts`
  * are out of scope for this slice — not guarded here.
  */
