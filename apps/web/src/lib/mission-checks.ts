@@ -428,16 +428,24 @@ export function waiverActorEmails(labels: readonly (string | null | undefined)[]
 
 export interface OutcomeSpecLine { specId: string; title: string; revision: string; status: string; href: string }
 
+const sameTitle = (a: string, b: string) => {
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').replace(/[.!?\s]+$/, '').trim();
+  return norm(a) === norm(b);
+};
+
 /**
  * One line per selected outcome spec, under the stage rail: its title, the
  * revision it is pinned to and the same status its Verify row shows. A spec
- * whose title could not be read still gets its line, named by revision.
+ * whose title could not be read still gets its line, named by revision. A
+ * spec titled as the mission is has no line: the page title already says it
+ * (f7f67f1a R-37, each fact once).
  */
-export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: readonly CheckRow[], titles: Readonly<Record<string, string>>): OutcomeSpecLine[] {
+export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: readonly CheckRow[], titles: Readonly<Record<string, string>>, missionTitle?: string | null): OutcomeSpecLine[] {
   const out: OutcomeSpecLine[] = [];
   criteria.forEach((c, i) => {
     // A standard is not the mission's outcome: it is listed with Standards, not here.
     if (c.type !== 'living_spec' || isStandardCriterion(c)) return;
+    if (missionTitle && titles[c.specId] && sameTitle(titles[c.specId], missionTitle)) return;
     const row = rows.find(r => r.key === `criterion-${i}`);
     out.push({
       specId: c.specId,

@@ -37,6 +37,7 @@ import type { DepReleaseArm } from './dep-gate-contract';
 import type { WaitingKind } from '@buildd/core/waiting-reason';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { classifyTaskFailure, failedDependencyOf, type TaskFailureKind } from './task-failure-kind';
+import { failureCause, resultError } from './failure-cause';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
@@ -324,6 +325,8 @@ export interface BoardTask {
   failureKind: TaskFailureKind | null;
   /** For a `dependency` failure: the failed task it waits on (`failedDependencyOf`). */
   failedDependency?: { taskId: string; title: string | null } | null;
+  /** A failed task's cause in words, from its error evidence (`failureCause`); null when none reads. */
+  failureCause?: string | null;
 }
 
 export interface BoardPhase {
@@ -887,6 +890,7 @@ export function buildBoardCells(
       backend: t.backend === 'claude' || t.backend === 'codex' ? t.backend : null,
       failureKind: classifyTaskFailure(t, input.tasks),
       failedDependency: failedDependencyOf(t, input.tasks),
+      failureCause: t.status === 'failed' ? failureCause(resultError(t.result)) : null,
     };
   }
 
