@@ -26,6 +26,7 @@
  */
 
 import { checkDispatch } from '@/lib/supersession';
+import { after } from 'next/server';
 import { scheduleFailurePatternSentinel } from './failure-pattern-sentinel-trigger';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -359,14 +360,14 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     recordSkip(skipCtx, reason);
     return { kind: 'skipped', reason };
   }
-  // What failed and why, kept for Home's card (surface-ia §11). Best-effort:
-  // the card falls back to plain words, the retry never waits. Synchronous so
-  // the record is ready if the Home card queries before we return.
+  // What failed and why, kept for Home's card (surface-ia §11). Deferred and
+  // best-effort: the card falls back to plain words, the retry never waits.
+  const recordRed = () => recordRedChecks({ installationId, repoFullName, prNumber, headSha }).then(() => undefined);
   try {
-    await recordRedChecks({ installationId, repoFullName, prNumber, headSha });
-  } catch (err) {
-    // Best-effort: a failure here doesn't block the retry.
-    console.warn(`[red-checks] could not record ${repoFullName}#${prNumber}@${headSha}:`, err);
+    after(recordRed);
+  } catch {
+    // Outside a request scope (tests, direct invocation, the cron): run inline.
+    await recordRed();
   }
   const infra = await rerunIfInfraFailure(installationId, repoFullName, headSha);
   if (infra.rerun) {
