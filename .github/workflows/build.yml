@@ -852,6 +852,18 @@ jobs:
       - name: Run DB architecture tests
         if: steps.dedupe.outputs.redundant != 'true'
         run: bun run test:db
+      # Mission criteria on the spec page (R-76..R-80, R-102..R-106, AC-122..AC-126,
+      # AC-141..AC-143) are verified by these acceptance files, which need real
+      # Postgres and live outside apps/web/tests/db/. Scoped to these four: the
+      # rest of apps/web/tests/acceptance/ is not DB-backed and is not gated here.
+      - name: Run spec acceptance tests (real Postgres)
+        if: steps.dedupe.outputs.redundant != 'true'
+        run: >-
+          bun run scripts/run-db-tests.ts
+          apps/web/tests/acceptance/spec-corpus-duplicates.test.ts
+          apps/web/tests/acceptance/spec-similarity-from-corpus.test.ts
+          apps/web/tests/acceptance/spec-replaces.test.ts
+          apps/web/tests/acceptance/mcp-specs-replaces.test.ts
       - name: Shim log
         if: failure() && steps.dedupe.outputs.redundant != 'true'
         run: cat "$RUNNER_TEMP/neon-sql-shim.log" || true

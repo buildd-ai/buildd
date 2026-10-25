@@ -545,3 +545,10 @@ it('works correctly', ...)
 4. **Document new test IDs** - Add them to this file when creating new data-testid attributes
 5. **Write regression tests for every bug fix** - Prevents the same bug from recurring
 6. **PRs without tests for behavioral changes will be sent back** - Docs/config-only changes are exempt
+
+**Spec acceptance files that need Postgres run in the same job.** The DB
+architecture job (`build.yml`) follows `bun run test:db` with a second step that
+passes four files from `apps/web/tests/acceptance/` (`spec-corpus-duplicates`,
+`spec-similarity-from-corpus`, `spec-replaces`, `mcp-specs-replaces`) to
+`scripts/run-db-tests.ts`. Other acceptance files are not run by that job; add
+a file to the step only once it is green.
