@@ -11,9 +11,9 @@ import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { isStandardCriterion } from '@buildd/core/mission-helpers';
 import { criterionLabel } from './goal-criterion-label';
 import { outcomeSpecView, type OpenStanding } from './mission-outcome-spec-view';
+import { criterionTextKey } from './specs/criterion-key';
 
-/** The key a spec criterion's text is held under: two specs may both have an R-1. */
-export const criterionTextKey = (specId: string, criterionId: string) => `${specId}:${criterionId}`;
+export { criterionTextKey };
 
 const NAME_MAX = 48;
 
@@ -26,7 +26,7 @@ export function criterionShortName(text: string, max = NAME_MAX): string {
     .trim()
     .replace(/^(?:R|AC)-\d+[a-z]?\s*[:.)-]?\s*/i, '');
   // The first clause: up to a sentence end, a comma, a colon or a dash between words.
-  const cut = /(?:[.;:!?](?:\s|$)|,\s| [-–—] |\s\()/.exec(s);
+  const cut = /(?:[.;:!?](?:\s|$)|,\s| [-–\u2014] |\s\()/.exec(s);
   if (cut && cut.index > 0) s = s.slice(0, cut.index);
   s = s.replace(/[.;:,]+$/, '').trim();
   if (s.length <= max) return s;

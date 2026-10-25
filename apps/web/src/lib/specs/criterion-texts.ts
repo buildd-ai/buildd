@@ -3,7 +3,7 @@ import { specs } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { recordsByRevision } from './criteria';
 import { isUuid } from '@/lib/uuid';
-import { criterionTextKey } from '@/lib/spec-criterion-words';
+import { criterionTextKey } from './criterion-key';
 
 /**
  * The words of each criterion of the given spec revisions, keyed by
