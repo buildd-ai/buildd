@@ -8755,6 +8755,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockGetMissionSpendUsd.mockResolvedValue(10);
       const body = { status: 'completed', summarySource: 'agent',
         summary: 'Checking the code.\n\n---\n\nNow locating the file.',
+        costBasis: 'real',
         ...(reported ? { costUsd: 10 } : { costUsd: 0, actualModel: 'claude-sonnet-4-20250514',
           resultMeta: { totalUsage: { inputTokens: 1000000, outputTokens: 100000 } } }),
       };
@@ -8784,7 +8785,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed', costUsd: 10 },
+        body: { status: 'completed', costUsd: 10, costBasis: 'real' },
       });
       const res = await PATCH(req, { params: mockParams });
 
@@ -8803,11 +8804,11 @@ describe('PATCH /api/workers/[id]', () => {
 
     // The monthly pool is Claude usage on a seat. Codex and tenant spend were
     // added to it, overstating it and firing its alerts early.
-    describe('Codex and tenant usage do not count toward the Agent SDK credit pool', () => {
+    describe('only real spend counts toward the monthly budget, never Codex or tenant usage', () => {
       const POOL = { monthlyBudgetUsd: '100', monthlyCostUsd: '45', monthlyCostMonth: monthKey, budgetAlertsSent: [] };
       const completion = () => createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed', costUsd: 10 },
+        body: { status: 'completed', costUsd: 10, costBasis: 'real' },
       });
 
       it('does not count a Codex session', async () => {
@@ -8821,7 +8822,7 @@ describe('PATCH /api/workers/[id]', () => {
       // accounts.authType records a CLI-login account as 'api' even on a
       // seat, so it cannot be used to exclude metered spend yet: doing so
       // silently stopped the pool counter for those runners.
-      it('still counts a session on an account recorded as api', async () => {
+      it('counts real spend on an account recorded as api', async () => {
         const getSet = setupCompletion({ authType: 'api' }, POOL);
         await PATCH(completion(), { params: mockParams });
         expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(55, 6);
@@ -8833,28 +8834,32 @@ describe('PATCH /api/workers/[id]', () => {
         expect(getSet()).toBeNull();
       });
 
-      // Real usage was charged per token, not drawn from the plan.
-      it('does not count a session that reports a real basis', async () => {
+      // A subscription login's cost is a virtual figure, not a bill.
+      it('does not count a session that reports a virtual basis', async () => {
         const getSet = setupCompletion({}, POOL);
         const res = await PATCH(createMockRequest({
           method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-          body: { status: 'completed', costUsd: 10, costBasis: 'real' },
+          body: { status: 'completed', costUsd: 10, costBasis: 'virtual' },
         }), { params: mockParams });
         expect(res.status).toBe(200);
         expect(getSet()).toBeNull();
+        expect(budgetNotifies()).toHaveLength(0);
       });
 
-      it('does not count a worker already recorded as real when the terminal report has no basis', async () => {
-        const getSet = setupCompletion({}, POOL, { costBasis: 'real' });
-        await PATCH(completion(), { params: mockParams });
-        expect(getSet()).toBeNull();
-      });
-
-      it('counts a session that reports a virtual basis, as before', async () => {
+      it('does not count a session that reports no basis', async () => {
         const getSet = setupCompletion({}, POOL);
         await PATCH(createMockRequest({
           method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-          body: { status: 'completed', costUsd: 10, costBasis: 'virtual' },
+          body: { status: 'completed', costUsd: 10 },
+        }), { params: mockParams });
+        expect(getSet()).toBeNull();
+      });
+
+      it('counts a worker already recorded as real when the terminal report has no basis', async () => {
+        const getSet = setupCompletion({}, POOL, { costBasis: 'real' });
+        await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', costUsd: 10 },
         }), { params: mockParams });
         expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(55, 6);
       });
@@ -8887,7 +8892,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed', costUsd: 5 },
+        body: { status: 'completed', costUsd: 5, costBasis: 'real' },
       });
       const res = await PATCH(req, { params: mockParams });
 

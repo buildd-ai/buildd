@@ -92,10 +92,9 @@ describe('applyBudgetUsage', () => {
 // billed somewhere else, so counting them overstated the pool and fired its
 // threshold alerts early.
 describe('countsTowardAgentSdkCreditPool', () => {
-  it('counts Claude work on a seat (OAuth) account', () => {
-    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'oauth' })).toBe(true);
-    // A task row with no backend recorded ran on the default backend: Claude.
-    expect(countsTowardAgentSdkCreditPool({ backend: null, authType: 'oauth' })).toBe(true);
+  it('counts real Claude spend, including a task row with no backend recorded', () => {
+    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'oauth', costBasis: 'real' })).toBe(true);
+    expect(countsTowardAgentSdkCreditPool({ backend: null, authType: 'oauth', costBasis: 'real' })).toBe(true);
   });
 
   it('does not count Codex work', () => {
@@ -107,9 +106,15 @@ describe('countsTowardAgentSdkCreditPool', () => {
   // on it would silently stop the pool counter for those runners, so until
   // the credential's billing mode is persisted per worker, authType does not
   // exclude anything.
-  it('still counts Claude work on an account recorded as api', () => {
-    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'api' })).toBe(true);
-    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: null })).toBe(true);
+  it('does not exclude real spend by account authType', () => {
+    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'api', costBasis: 'real' })).toBe(true);
+    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: null, costBasis: 'real' })).toBe(true);
+  });
+
+  it('never counts virtual, mixed, unknown or absent cost', () => {
+    for (const costBasis of ['virtual', 'mixed', 'unknown', null, undefined] as const) {
+      expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'oauth', costBasis })).toBe(false);
+    }
   });
 
   it('does not count work on a tenant credential', () => {

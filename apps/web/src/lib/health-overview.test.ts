@@ -35,7 +35,8 @@ describe('overviewStatusRows', () => {
   };
 
   it('budget links to Billing and budgets while capacity links to Runners', () => {
-    expect(byKey(STATE).budget.href).toBe('/app/settings/billing');
+    const withSpend = { ...STATE, budget: { monthly: { spentUsd: 5, budgetUsd: 100, pctUsed: 5 }, paused: [] } };
+    expect(byKey(withSpend).budget.href).toBe('/app/settings/billing');
     expect(byKey(STATE).runners.href).toBe('/app/health/runners');
   });
 
@@ -68,8 +69,10 @@ describe('overviewStatusRows', () => {
       .toMatchObject({ value: 'None stored', tone: 'muted' });
   });
 
-  it('budget: a paused provider wins, then the monthly limit, else no limit', () => {
-    expect(byKey(STATE).budget).toMatchObject({ value: 'No monthly limit set', tone: 'muted' });
+  it('budget: a paused provider wins, then real monthly spend, else no row', () => {
+    expect(byKey(STATE).budget).toBeUndefined();
+    // A cap with no real spend (a team on subscription logins) shows nothing.
+    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 0, budgetUsd: 100, pctUsed: 0 }, paused: [] } }).budget).toBeUndefined();
     expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 42, budgetUsd: 100, pctUsed: 42 }, paused: [] } }).budget)
       .toMatchObject({ value: '$42 of $100 this month', tone: 'ok' });
     expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 75, budgetUsd: 100, pctUsed: 75 }, paused: [] } }).budget.tone).toBe('warning');
