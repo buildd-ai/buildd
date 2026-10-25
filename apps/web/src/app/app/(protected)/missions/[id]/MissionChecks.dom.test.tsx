@@ -208,6 +208,13 @@ describe('Delivery and Checks (I-22 to I-24)', () => {
     expect(q('[data-testid="mission-delivery-timeline"]')!.textContent).toBe('Timeline ›');
   });
 
+  it('lets a check name wrap so a narrow desktop step never clips it', () => {
+    act(() => root.render(<DeliveryChecks checks={[...checks]} delivery={null} timelineHref="/t" />));
+    const names = Array.from(document.querySelectorAll('[data-testid="mission-check"] [data-testid="check-row"] a span.font-medium'));
+    expect(names.length).toBe(3);
+    for (const n of names) expect(n.className).not.toContain('truncate');
+  });
+
   it('renders nothing with no checks and no delivery', () => {
     act(() => root.render(<DeliveryChecks checks={[]} delivery={null} timelineHref="/t" />));
     expect(container.innerHTML).toBe('');
