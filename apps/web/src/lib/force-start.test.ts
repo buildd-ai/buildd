@@ -17,10 +17,10 @@ mock.module('@/lib/core-emit', () => ({
 import { buildForceStartIntent, consumeForceStart, recordForceStartClaim, recordForceStartRequest, HUMAN_FORCE_START_DECISION_ID } from './force-start';
 import { makeWaitingReason, FORCE_START_TTL_MS } from '@buildd/core/waiting-reason';
 
-// Force start lifts a limit only (Health › Queue R-10): mission pacing here.
-const prReason = makeWaitingReason('mission_paced', {
-  because: 'the mission starts a task at most every 10 min',
-  blocker: { type: 'mission', id: 'm1', label: 'mission pacing', live: false },
+// Force start lifts a limit only (Health › Queue R-10): the mission limit here.
+const prReason = makeWaitingReason('mission_concurrent', {
+  because: 'the mission runs at most 2 tasks at once and 2 are running',
+  blocker: { type: 'mission', id: 'm1', label: 'the mission limit', live: false },
   provenance: { source: 'probe', derivedFrom: 't' },
 });
 const now = new Date('2026-10-07T12:00:00Z');
@@ -30,10 +30,10 @@ describe('force-start', () => {
 
   it('builds a single-use, expiring intent naming exactly the confirmed gates and their evidence', () => {
     const intent = buildForceStartIntent({ reasons: [prReason], userId: 'u1', accountId: null, now });
-    expect(intent.kinds).toEqual(['mission_paced']);
-    expect(intent.loopKeys).toEqual(['mission_paced']);
+    expect(intent.kinds).toEqual(['mission_concurrent']);
+    expect(intent.loopKeys).toEqual(['mission_concurrent']);
     expect(Date.parse(intent.expiresAt) - now.getTime()).toBe(FORCE_START_TTL_MS);
-    expect(intent.blockers).toEqual([{ kind: 'mission_paced', type: 'mission', id: 'm1', label: 'mission pacing', live: false }]);
+    expect(intent.blockers).toEqual([{ kind: 'mission_concurrent', type: 'mission', id: 'm1', label: 'the mission limit', live: false }]);
     // No guessed edge is ever lifted by id: none exists (spec: Overlap scheduling, R-1).
     expect(intent.liftDependsOn).toBeUndefined();
   });
@@ -70,7 +70,7 @@ describe('force-start', () => {
     const row = mockRecordDecision.mock.calls[0][0];
     expect(row).toMatchObject({
       decisionId: HUMAN_FORCE_START_DECISION_ID, capability: 'orchestration_claim', ruleVerdict: 'HOLD', effective: 'START',
-      applied: true, status: 'applied', mode: 'live', candidatePolicyVersion: 'hf1.mission_paced', taskId: '11111111-1111-1111-1111-111111111111',
+      applied: true, status: 'applied', mode: 'live', candidatePolicyVersion: 'hf1.mission_concurrent', taskId: '11111111-1111-1111-1111-111111111111',
       experimentArm: 'human',
     });
     expect(row.receipt).toMatchObject({ actor: 'human_force', bypassed: ['path_overlap'], waitedMs: 30_000, userId: 'u1' });

@@ -70,7 +70,7 @@ export default function DeliveryBar({
       <span
         aria-hidden="true"
         data-segment="build"
-        className="absolute top-[3px] h-[8px] min-w-[3px] rounded-l-[2px]"
+        className="absolute top-[3px] h-[8px] min-w-[3px] rounded-l-[3px]"
         style={{ left: pct(s), width: pct(v - s), background: 'var(--accent)' }}
       />
       <span

@@ -66,12 +66,12 @@ describe('QueueBoard', () => {
     const html = render({ tasks: [
       t({ kind: 'declared', blockerId: 'a', blockerTitle: 'Add the index', count: 1 }),
       t({ kind: 'lane', lane: 'migration', position: 3 }),
-      t({ kind: 'limit', limit: 'mission_pacing', forceable: true }),
+      t({ kind: 'limit', limit: 'mission_budget', forceable: true }),
     ] });
     expect(html).toContain('Declared');
     expect(html).toContain('Add the index');
     expect(html).toContain('Schema lane · 3rd');
-    expect(html).toContain('Mission pacing');
+    expect(html).toContain('Mission budget');
     expect(html.match(/data-testid="queue-force-start"/g)).toHaveLength(1);
     // Filter segments carry counts.
     expect(html).toContain('All 3');
@@ -79,7 +79,7 @@ describe('QueueBoard', () => {
   });
 
   it('AC-10: a pager only past 50 rows', () => {
-    const many = Array.from({ length: 120 }, () => t({ kind: 'limit', limit: 'workspace_cap' }));
+    const many = Array.from({ length: 120 }, () => t({ kind: 'limit', limit: 'mission_cap' }));
     const html = render({ tasks: many });
     expect(html.match(/data-testid="queue-waiting-row"/g)).toHaveLength(50);
     expect(html).toContain('queue-pager');
@@ -88,7 +88,7 @@ describe('QueueBoard', () => {
   });
 
   it('no internal names in what it renders', () => {
-    const html = render({ slots: 1, lanes, tasks: [t({ kind: 'lane', lane: 'migration', position: 1 }), t({ kind: 'limit', limit: 'workspace_cap', forceable: true })] });
+    const html = render({ slots: 1, lanes, tasks: [t({ kind: 'lane', lane: 'migration', position: 1 }), t({ kind: 'limit', limit: 'mission_cap', forceable: true })] });
     for (const word of ['migration', 'slot_wait', 'workspace_cap', 'serial_lane', '—']) expect(html).not.toContain(word);
   });
 });
@@ -124,21 +124,21 @@ describe('LaneBody (AC-4, AC-6)', () => {
 });
 
 const limitRow: HealthQueueWaitingRow = {
-  id: 't-x', title: 'Ship it', workspaceId: 'ws-1', missionTitle: null, reason: 'limit', badge: 'Limit', blockedBy: 'Mission pacing',
+  id: 't-x', title: 'Ship it', workspaceId: 'ws-1', missionTitle: null, reason: 'limit', badge: 'Limit', blockedBy: 'Mission budget',
   blockerId: null, blockerStatus: null, setBy: null, why: null, lane: null, age: '1h', forceable: true,
-  wait: { kind: 'limit', limit: 'mission_pacing', forceable: true },
+  wait: { kind: 'limit', limit: 'mission_budget', forceable: true },
 };
 
 describe('ForceStartBody (AC-7)', () => {
   it('lists Skips and Still enforced from the /waiting contract', () => {
     const state = forceStateOf({
       reasonsDigest: 'd1', canForce: true,
-      force: { kinds: ['mission_paced'], checklist: [{ gate: 'Mission pacing', sentence: 'one task per hour' }], railsRemaining: ['Files another agent is editing stay locked.'] },
+      force: { kinds: ['mission_budget'], checklist: [{ gate: 'Mission budget', sentence: 'one task per hour' }], railsRemaining: ['Files another agent is editing stay locked.'] },
     });
-    expect(state).toMatchObject({ kind: 'ready', digest: 'd1', kinds: ['mission_paced'] });
+    expect(state).toMatchObject({ kind: 'ready', digest: 'd1', kinds: ['mission_budget'] });
     const html = renderToStaticMarkup(<ForceStartBody row={limitRow} state={state} busy={false} onConfirm={noop} onClose={noop} />);
     expect(html).toContain('Skips');
-    expect(html).toContain('Mission pacing: one task per hour');
+    expect(html).toContain('Mission budget: one task per hour');
     expect(html).toContain('Still enforced');
     expect(html).toContain('Files another agent is editing stay locked.');
     expect(html).toContain('queue-force-confirm');

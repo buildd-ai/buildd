@@ -24,8 +24,8 @@ interface Row { name: string; wait: QueueWait; cause: string }
 const TABLE: Row[] = [
   { name: 'declared dependency', wait: { kind: 'declared', blockerId: 'dep-1', blockerTitle: '“Rework claim order”', blockerStatus: 'in_progress', count: 1 }, cause: 'Waiting on “Rework claim order”' },
   { name: 'lane position', wait: { kind: 'lane', lane: 'migration', position: 2, holderTaskId: 'h' }, cause: 'in the schema lane, 2nd in line' },
-  { name: 'limit: pacing', wait: { kind: 'limit', limit: 'mission_pacing', liftsAt: at(4 * MIN), forceable: true }, cause: 'mission pacing, lifts in 4m' },
-  { name: 'limit: cap', wait: { kind: 'limit', limit: 'workspace_cap', forceable: false }, cause: 'workspace limit' },
+  { name: 'limit: mission budget', wait: { kind: 'limit', limit: 'mission_budget', liftsAt: at(4 * MIN), forceable: true }, cause: 'mission budget, lifts in 4m' },
+  { name: 'limit: cap', wait: { kind: 'limit', limit: 'mission_cap', forceable: false }, cause: 'mission limit' },
   { name: 'limit: plan', wait: { kind: 'limit', limit: 'plan', forceable: false }, cause: 'plan limit' },
   { name: 'limit: budget', wait: { kind: 'limit', limit: 'budget', liftsAt: at(90 * MIN), forceable: false }, cause: 'daily budget, lifts in 1h 30m' },
   { name: 'limit: seats', wait: { kind: 'limit', limit: 'seats', forceable: false }, cause: 'seats in use' },

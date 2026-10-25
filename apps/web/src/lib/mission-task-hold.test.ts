@@ -243,11 +243,11 @@ describe('derivePendingTaskHold with the live queue wait', () => {
   const TABLE: Array<{ name: string; wait: import('@buildd/shared').QueueWait; kind: string; cause: string | null; word?: string; holdKey: string }> = [
     { name: 'declared', wait: { kind: 'declared', blockerId: 'dep-1', blockerTitle: '“Add the index”', count: 1 }, kind: 'dependency', cause: null, word: 'Waiting on “Add the index”', holdKey: 'dependency' },
     { name: 'lane', wait: { kind: 'lane', lane: 'migration', position: 2, holderTaskId: 'h' }, kind: 'overlap', cause: 'in the schema lane, 2nd in line', holdKey: 'lane' },
-    { name: 'limit: pacing', wait: { kind: 'limit', limit: 'mission_pacing', liftsAt: at(4 * 60_000) }, kind: 'hold', cause: 'mission pacing, lifts in 4m', holdKey: 'mission_paced' },
+    { name: 'limit: mission budget', wait: { kind: 'limit', limit: 'mission_budget', liftsAt: at(4 * 60_000) }, kind: 'budget', cause: 'mission budget, lifts in 4m', holdKey: 'mission_budget' },
     { name: 'limit: cap', wait: { kind: 'limit', limit: 'mission_cap' }, kind: 'hold', cause: 'mission limit', holdKey: 'mission_concurrent' },
     { name: 'limit: plan', wait: { kind: 'limit', limit: 'plan' }, kind: 'budget', cause: 'plan limit', holdKey: 'managed_runner_hours' },
     { name: 'limit: budget', wait: { kind: 'limit', limit: 'budget', liftsAt: at(2 * H) }, kind: 'budget', cause: 'daily budget, lifts in 2h 00m', holdKey: 'budget_paused' },
-    { name: 'limit: seats', wait: { kind: 'limit', limit: 'seats' }, kind: 'hold', cause: 'seats in use', holdKey: 'oauth_parallelism' },
+    { name: 'limit: seats', wait: { kind: 'limit', limit: 'seats' }, kind: 'hold', cause: 'seats in use', holdKey: 'account_slots' },
     { name: 'start time', wait: { kind: 'start_time', startAt: at(3 * H) }, kind: 'scheduled', cause: 'starts in 3h 00m', holdKey: 'scheduled' },
     { name: 'free slot', wait: { kind: 'slot', noRunnerReason: null }, kind: 'next_in_line', cause: 'next in line for a runner', holdKey: 'next_in_line' },
     { name: 'free slot, no runner', wait: { kind: 'slot', noRunnerReason: 'no online runner has what it needs' }, kind: 'no_runner', cause: 'no runner can take it: no online runner has what it needs', holdKey: 'runner_capability' },

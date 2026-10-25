@@ -1484,11 +1484,11 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
   });
   const probeWith = (snap: CoordinationSnapshot) =>
     mockProbe.mockImplementation(async (task: any) => evaluateCoordinationGates(task, snap));
-  // A limit Force start may lift (Health › Queue R-10): mission pacing on a mission task.
-  const pacedMission = { status: 'active', maxConcurrentTasks: null, pacingMode: 'paced' as const, pacingMaxPerHour: 2, lastTaskStartedAt: new Date(Date.now() - 60_000) };
+  // A limit Force start may lift (Health › Queue R-10): the mission's concurrency cap on a mission task.
+  const cappedMission = { status: 'active', maxConcurrentTasks: 1 };
   const probeLimit = (over: Partial<CoordinationSnapshot> = {}) => {
     mockTasksFindFirst.mockResolvedValue({ ...overlapTask, missionId: 'm-1' });
-    probeWith(snapshot({ openPrTasks: [], mission: pacedMission, ...over }));
+    probeWith(snapshot({ openPrTasks: [], mission: cappedMission, missionActiveCount: 1, ...over }));
   };
 
   beforeEach(() => {
@@ -1547,17 +1547,17 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.forced.gates).toEqual(['Mission pacing']);
+    expect(body.forced.gates).toEqual(['Mission concurrency limit']);
     expect(body.forced.railsRemaining.length).toBeGreaterThan(0);
 
     const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
     expect(ctx.forceStart).toMatchObject({
       userId: 'user-123',
-      kinds: ['mission_paced'],
-      loopKeys: ['mission_paced'],
+      kinds: ['mission_concurrent'],
+      loopKeys: ['mission_concurrent'],
       reasonsDigest: first.reasonsDigest,
     });
-    expect(ctx.forceStart.blockers[0]).toMatchObject({ kind: 'mission_paced', type: 'mission', id: 'm-1' });
+    expect(ctx.forceStart.blockers[0]).toMatchObject({ kind: 'mission_concurrent', type: 'mission', id: 'm-1' });
     expect(Date.parse(ctx.forceStart.expiresAt)).toBeGreaterThan(Date.now());
     // Not the MCP claim path: no forceClaim audit, no worker row, no claim.
     expect(ctx.forceClaim).toBeUndefined();
@@ -1566,14 +1566,14 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     // Request-time evidence on the gate ledger.
     const ev = mockFireGateEvent.mock.calls.map(c => c[0]).find(e => e.reason === 'force_start');
     expect(ev).toMatchObject({ outcome: 'bypassed', gate: 'claim_loop_deferral', taskId: 'task-123', callerOrigin: 'dashboard' });
-    expect(ev.detail).toMatchObject({ phase: 'requested', kinds: ['mission_paced'] });
+    expect(ev.detail).toMatchObject({ phase: 'requested', kinds: ['mission_concurrent'] });
   });
 
   it('409 when the blocker changed between the refusal and the confirmation', async () => {
     probeLimit();
     const first = await (await callHandler(createMockRequest(), 'task-123')).json();
-    // Pacing lifted; the mission's concurrency cap holds it instead.
-    probeLimit({ mission: { status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }, missionActiveCount: 1 });
+    // The cap lifted; the mission's budget holds it instead.
+    mockProbe.mockResolvedValue([makeWaitingReason('mission_budget', { because: 'the mission spent its budget', blocker: { type: 'mission', id: 'm-1', label: 'the mission budget' }, provenance: { source: 'probe', derivedFrom: 'missions.budgetUsd' } })]);
 
     const res = await callHandler(createMockRequest({
       body: { force: { kinds: first.force?.kinds ?? [], reasonsDigest: first.reasonsDigest } },
@@ -1582,7 +1582,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     const body = await res.json();
     expect(body.reasonsChanged).toBe(true);
     expect(body.gateReason).toBe('reasons_changed');
-    expect(body.waitingReasons[0].kind).toBe('mission_concurrent');
+    expect(body.waitingReasons[0].kind).toBe('mission_budget');
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
@@ -1619,10 +1619,10 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     probeLimit();
     const first = await (await callHandler(createMockRequest(), 'task-123')).json();
     const res = await callHandler(createMockRequest({
-      body: { force: { kinds: ['mission_paced', 'mission_concurrent'], reasonsDigest: first.reasonsDigest } },
+      body: { force: { kinds: ['mission_concurrent', 'mission_budget'], reasonsDigest: first.reasonsDigest } },
     }), 'task-123');
     expect(res.status).toBe(422);
-    expect((await res.json()).rejectedKinds).toEqual(['mission_concurrent']);
+    expect((await res.json()).rejectedKinds).toEqual(['mission_budget']);
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 

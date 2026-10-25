@@ -60,8 +60,6 @@ describe('evaluateCoordinationGates', () => {
     const mission = { status: 'active', maxConcurrentTasks: 2 };
     const kinds = evaluateCoordinationGates(task({ missionId: 'm', pathManifest: ['**'] }), snap({ mission, missionActiveCount: 2 })).map(r => r.kind);
     expect(kinds).toEqual(['mission_concurrent']);
-    const paced = evaluateCoordinationGates(task({ missionId: 'm', pathManifest: ['**'] }), snap({ mission, missionActiveCount: 2 }))[1];
-    expect(paced.liftsAt).toBe('2026-10-07T12:50:00.000Z');
     const free = { status: 'active', maxConcurrentTasks: 5 };
     for (const pathManifest of [null, [], ['**']]) {
       expect(evaluateCoordinationGates(task({ missionId: 'm', pathManifest }), snap({ mission: free, missionActiveCount: 3 }))).toEqual([]);

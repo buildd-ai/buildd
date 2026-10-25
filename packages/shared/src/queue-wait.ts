@@ -26,9 +26,7 @@ export type QueueWaitKind = 'declared' | 'lane' | 'limit' | 'start_time' | 'slot
 
 /** Which limit holds it. */
 export type QueueLimit =
-  | 'mission_pacing'
   | 'mission_cap'
-  | 'workspace_cap'
   | 'workspace_paused'
   | 'mission_budget'
   | 'budget'
@@ -68,9 +66,7 @@ export type QueueBadge = 'Declared' | 'Lane' | 'Limit';
 const BADGE: Partial<Record<QueueWaitKind, QueueBadge>> = { declared: 'Declared', lane: 'Lane', limit: 'Limit' };
 
 const LIMIT_LABEL: Record<QueueLimit, string> = {
-  mission_pacing: 'Mission pacing',
   mission_cap: 'Mission limit',
-  workspace_cap: 'Workspace limit',
   workspace_paused: 'Workspace paused',
   mission_budget: 'Mission budget',
   budget: 'Daily budget',
@@ -142,7 +138,7 @@ export function queueWaitBlockedBy(w: QueueWait | null | undefined, now: number 
     return w.position != null && w.position > 0 ? `${name} · ${ordinal(w.position)}` : name;
   }
   if (w.kind === 'limit') {
-    const label = LIMIT_LABEL[w.limit ?? 'workspace_cap'];
+    const label = LIMIT_LABEL[w.limit ?? 'mission_cap'];
     return w.liftsAt ? `${label} · lifts ${queueWhen(w.liftsAt, now)}` : label;
   }
   return null;
@@ -168,7 +164,7 @@ export function queueWaitHeadline(w: QueueWait, now: number = Date.now()): strin
       return w.position != null && w.position > 0 ? `In the ${lane.toLowerCase()}, ${ordinal(w.position)} in line` : `In the ${lane.toLowerCase()}`;
     }
     case 'limit': {
-      const label = LIMIT_LABEL[w.limit ?? 'workspace_cap'];
+      const label = LIMIT_LABEL[w.limit ?? 'mission_cap'];
       return `Waiting: ${label.charAt(0).toLowerCase()}${label.slice(1)}${w.liftsAt ? `, lifts ${queueWhen(w.liftsAt, now)}` : ''}`;
     }
     case 'start_time':
@@ -193,7 +189,7 @@ export function queueWaitShort(w: QueueWait, now: number = Date.now()): string |
       return w.position != null && w.position > 0 ? `${lane}, ${ordinal(w.position)}${stuck}` : `${lane}${stuck}`;
     }
     case 'limit': {
-      const label = LIMIT_LABEL[w.limit ?? 'workspace_cap'].toLowerCase();
+      const label = LIMIT_LABEL[w.limit ?? 'mission_cap'].toLowerCase();
       return w.liftsAt ? `${label}, ${queueWhen(w.liftsAt, now)}` : label;
     }
     case 'start_time':

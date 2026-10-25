@@ -58,22 +58,16 @@ const TABLE: Row[] = [
     badge: 'Lane', blockedBy: 'Billing lane · 3rd', headline: 'In the billing lane, 3rd in line', short: 'billing lane, 3rd', next: false,
   },
   {
-    name: 'limit: mission pacing, with when it lifts',
-    reasons: [reason('mission_paced', { liftsAt: '2026-10-22T12:04:00Z' })],
-    wait: { kind: 'limit', limit: 'mission_pacing', liftsAt: '2026-10-22T12:04:00Z', forceable: true },
-    badge: 'Limit', blockedBy: 'Mission pacing · lifts in 4m', headline: 'Waiting: mission pacing, lifts in 4m', short: 'mission pacing, in 4m', next: false,
+    name: 'limit: mission budget, with when it lifts',
+    reasons: [reason('mission_budget', { liftsAt: '2026-10-22T12:04:00Z' })],
+    wait: { kind: 'limit', limit: 'mission_budget', liftsAt: '2026-10-22T12:04:00Z', forceable: false },
+    badge: 'Limit', blockedBy: 'Mission budget · lifts in 4m', headline: 'Waiting: mission budget, lifts in 4m', short: 'mission budget, in 4m', next: false,
   },
   {
     name: 'limit: mission cap',
     reasons: [reason('mission_concurrent')],
     wait: { kind: 'limit', limit: 'mission_cap', forceable: true },
     badge: 'Limit', blockedBy: 'Mission limit', headline: 'Waiting: mission limit', short: 'mission limit', next: false,
-  },
-  {
-    name: 'limit: workspace cap',
-    reasons: [reason('workspace_cap')],
-    wait: { kind: 'limit', limit: 'workspace_cap', forceable: false },
-    badge: 'Limit', blockedBy: 'Workspace limit', headline: 'Waiting: workspace limit', short: 'workspace limit', next: false,
   },
   {
     name: 'limit: plan',
@@ -89,7 +83,7 @@ const TABLE: Row[] = [
   },
   {
     name: 'limit: seats',
-    reasons: [reason('oauth_parallelism')],
+    reasons: [reason('account_slots')],
     wait: { kind: 'limit', limit: 'seats', forceable: false },
     badge: 'Limit', blockedBy: 'Seats in use', headline: 'Waiting: seats in use', short: 'seats in use', next: false,
   },
@@ -128,8 +122,8 @@ describe('queueWaitOf: one reason per pending task, the same words everywhere', 
 
   it('never says next in line while any hard gate refuses it', () => {
     const refusing: WaitingKind[] = ['start_deferred', 'task_held', 'mission_held', 'mission_local', 'subject_dead', 'dep_declared',
-      'workspace_paused', 'lane', 'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap', 'budget_paused',
-      'managed_entitlement', 'account_slots', 'oauth_parallelism', 'codex_single_flight'];
+      'workspace_paused', 'lane', 'mission_budget', 'mission_concurrent', 'budget_paused',
+      'managed_entitlement', 'account_slots', 'codex_single_flight'];
     for (const k of refusing) {
       const w = queueWaitOf([reason(k)]);
       expect(isNextInLine(w)).toBe(false);
@@ -144,9 +138,9 @@ describe('queueWaitOf: one reason per pending task, the same words everywhere', 
   it('exactly one reason when several hold: start time, hold, declared, lane, then limits', () => {
     expect(queueWaitOf([lane(1), declared('d'), reason('start_deferred', { liftsAt: '2026-10-24T09:00:00Z' })]).kind).toBe('start_time');
     expect(queueWaitOf([lane(1), declared('d'), reason('task_held')])).toMatchObject({ kind: 'limit', limit: 'task_paused' });
-    expect(queueWaitOf([reason('mission_paced'), lane(1), declared('d')]).kind).toBe('declared');
-    expect(queueWaitOf([reason('mission_paced'), lane(1)]).kind).toBe('lane');
-    expect(queueWaitOf([reason('workspace_cap'), reason('mission_paced')])).toMatchObject({ limit: 'mission_pacing' });
+    expect(queueWaitOf([reason('mission_concurrent'), lane(1), declared('d')]).kind).toBe('declared');
+    expect(queueWaitOf([reason('mission_concurrent'), lane(1)]).kind).toBe('lane');
+    expect(queueWaitOf([reason('mission_concurrent'), reason('mission_budget')])).toMatchObject({ limit: 'mission_budget' });
     expect(queueWaitOf([declared('a'), declared('b'), declared('c')])).toMatchObject({ kind: 'declared', blockerId: 'a', count: 3 });
     expect(queueWaitHeadline(queueWaitOf([declared('a'), declared('b')]), NOW)).toBe('Waiting on “Task a” and 1 more');
   });
@@ -154,7 +148,7 @@ describe('queueWaitOf: one reason per pending task, the same words everywhere', 
   it('Force start only for a limit a start can lift (Health › Queue R-10)', () => {
     expect(queueWaitOf([lane(1)]).forceable).toBeUndefined();
     expect(queueWaitOf([declared('a')]).forceable).toBeUndefined();
-    expect(queueWaitOf([reason('mission_paced')]).forceable).toBe(true);
+    expect(queueWaitOf([reason('mission_concurrent')]).forceable).toBe(true);
     expect(queueWaitOf([reason('budget_paused')]).forceable).toBe(false);
     expect(queueWaitOf([reason('task_held')]).forceable).toBe(false);
   });

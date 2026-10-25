@@ -21,7 +21,7 @@ function input(over: Partial<HealthQueueViewInput> = {}): HealthQueueViewInput {
 }
 
 const slot: QueueWait = { kind: 'slot' };
-const limit: QueueWait = { kind: 'limit', limit: 'mission_pacing', liftsAt: new Date(NOW + 4 * 60_000).toISOString(), forceable: true };
+const limit: QueueWait = { kind: 'limit', limit: 'mission_budget', liftsAt: new Date(NOW + 4 * 60_000).toISOString(), forceable: true };
 const parked: QueueWait = { kind: 'start_time', startAt: new Date(NOW + 2 * HOUR).toISOString() };
 
 describe('AC-1: tiles', () => {

@@ -19,9 +19,9 @@ import { GET } from './route';
 import { makeWaitingReason } from '@buildd/core/waiting-reason';
 
 const call = () => GET(new NextRequest('http://localhost/api/tasks/t1/waiting'), { params: Promise.resolve({ id: 't1' }) });
-const paced = makeWaitingReason('mission_paced', {
-  because: 'the mission starts a task at most every 10 min',
-  blocker: { type: 'mission', id: 'm', label: 'mission pacing' },
+const paced = makeWaitingReason('mission_concurrent', {
+  because: 'the mission runs at most 2 tasks at once and 2 are running',
+  blocker: { type: 'mission', id: 'm', label: 'the mission limit' },
   provenance: { source: 'probe', derivedFrom: 't' },
 });
 const laneHold = makeWaitingReason('lane', {
@@ -54,9 +54,9 @@ describe('GET /api/tasks/[id]/waiting', () => {
     mockTasksFindFirst.mockResolvedValueOnce({ id: 't1', workspaceId: 'ws', status: 'pending', context: {} });
     mockProbe.mockResolvedValueOnce([paced]);
     const body = await (await call()).json();
-    expect(body.waitingReasons[0].kind).toBe('mission_paced');
+    expect(body.waitingReasons[0].kind).toBe('mission_concurrent');
     expect(body.canForce).toBe(true);
-    expect(body.force.gates).toEqual(['Mission pacing']);
+    expect(body.force.gates).toEqual(['Mission concurrency limit']);
     expect(typeof body.reasonsDigest).toBe('string');
   });
 
@@ -74,16 +74,16 @@ describe('GET /api/tasks/[id]/waiting', () => {
     mockProbe.mockResolvedValueOnce([paced]);
     mockLive.mockResolvedValueOnce(new Map([['t1', { wait: { kind: 'limit', limit: 'task_paused', liftsAt: null, forceable: false }, reasons: [held, paced] }]]));
     const body = await (await call()).json();
-    expect(body.waitingReasons.map((r: any) => r.kind).sort()).toEqual(['mission_paced', 'task_held']);
+    expect(body.waitingReasons.map((r: any) => r.kind).sort()).toEqual(['mission_concurrent', 'task_held']);
     expect(body.queueWait).toEqual({ kind: 'limit', limit: 'task_paused', liftsAt: null, forceable: false });
     expect(body.canForce).toBe(false);
   });
 
   it('reports an unexpired force start awaiting its claim', async () => {
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
-    mockTasksFindFirst.mockResolvedValueOnce({ id: 't1', workspaceId: 'ws', status: 'pending', context: { forceStart: { loopKeys: ['mission_paced'], kinds: ['mission_paced'], expiresAt } } });
+    mockTasksFindFirst.mockResolvedValueOnce({ id: 't1', workspaceId: 'ws', status: 'pending', context: { forceStart: { loopKeys: ['mission_concurrent'], kinds: ['mission_concurrent'], expiresAt } } });
     mockProbe.mockResolvedValueOnce([paced]);
-    expect((await (await call()).json()).forceStart).toEqual({ kinds: ['mission_paced'], expiresAt });
+    expect((await (await call()).json()).forceStart).toEqual({ kinds: ['mission_concurrent'], expiresAt });
   });
 
   it('a running task has no reasons and is never probed', async () => {
