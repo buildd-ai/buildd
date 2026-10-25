@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.377.0",
+  "version": "0.381.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,8 @@
     "db:studio": "drizzle-kit studio"
   },
   "exports": {
+    "./ui-verification": "./ui-verification.ts",
+    "./decision-kind-ui-copy": "./decision-kind-ui-copy.ts",
     "./db": "./db/index.ts",
     "./run-evidence": "./run-evidence.ts",
     "./artifact-redaction": "./artifact-redaction.ts",
@@ -64,7 +66,6 @@
     "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./cost-basis": "./cost-basis.ts",
-    "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
     "./decision-benchmark": "./decision-benchmark.ts",
@@ -91,6 +92,7 @@
     "./runner-health": "./runner-health.ts",
     "./interactive-session-ask": "./interactive-session-ask.ts",
     "./question-brief": "./question-brief.ts",
+    "./question-waits": "./question-waits.ts",
     "./human-attention": "./human-attention.ts",
     "./needs-you": "./needs-you.ts",
     "./question-gate": "./question-gate.ts",
@@ -270,7 +272,9 @@
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
     "./unmergeable-surfaces": "./unmergeable-surfaces.ts",
+    "./start-anyway": "./start-anyway.ts",
     "./waiting-reason": "./waiting-reason.ts",
+    "./runner-pin": "./runner-pin.ts",
     "./claim-planner": "./claim-planner.ts",
     "./github-installation-auth": "./github-installation-auth.ts",
     "./pr-scope-read": "./pr-scope-read.ts",
@@ -343,7 +347,7 @@
     "@buildd/spec-contract": "workspace:*",
     "@buildd/ai-kit": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.163.0",
+    "@openai/codex-sdk": "^0.164.0",
     "@opentelemetry/api": "^1.9.0",
     "@typesafe-ai/sdk": "0.7.0",
     "dotenv": "^18.0.0",

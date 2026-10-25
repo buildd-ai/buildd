@@ -113,6 +113,59 @@ export interface SupersessionSuggestion {
   why: string;
   /** Rank among the candidates found, 0–1. Not a probability. */
   score: number;
+  /**
+   * How much of the closed PR's content was actually found in this candidate's own diff
+   * (`verifyByContent`/`verifyByPatchId`'s ratio) — never the nomination `score` above, which is
+   * only a claim/cross-reference/sibling-task/file-overlap signal and proves nothing about content.
+   * 0 means the content check ran and found NOTHING shared: the candidate was nominated by signal
+   * alone (PR #5530 nominated #5479 this way, with zero shared lines). A reader must not call that
+   * "likely superseded" — see mission-state-view.ts's `suggestionRef` call sites and
+   * ClosedPrResolution.tsx. Absent (old rows written before this field existed, or a suggestion from
+   * a caller that has not been updated) is treated as "unknown, assume positive" so existing
+   * suggestions keep reading as before until their next scan restamps them.
+   * Omitted whenever `contentUnavailable` is set: an unread diff is not a ratio of 0.
+   */
+  contentRatio?: number;
+  /**
+   * The candidate's changes could not be read from GitHub, so its content was never compared.
+   * Unavailable proof, not negative proof: a reader says "could not be checked", never "does not
+   * carry its changes", and never "likely superseded".
+   */
+  contentUnavailable?: true;
+}
+
+/**
+ * What a suggestion's content check says: `positive` (some of the closed PR's lines are in it, or
+ * an old row that predates the field), `none` (read, nothing shared) or `unavailable` (not read).
+ */
+export function suggestionEvidence(s: Pick<SupersessionSuggestion, 'contentRatio' | 'contentUnavailable'> | null | undefined): 'positive' | 'none' | 'unavailable' {
+  if (s?.contentUnavailable) return 'unavailable';
+  if (s == null || s.contentRatio == null || s.contentRatio > 0) return 'positive';
+  return 'none';
+}
+
+/**
+ * The integration-refresh check of a closed refresh PR (`SupersessionScan.refreshCheck`). A refresh's
+ * work is ancestry plus whatever it adds on top of trunk (mission migrations, schema, conflict
+ * resolution), so the generic candidate scan never applies to it. Instead the same proof
+ * pr-supersession-refresh.ts demands before retiring one is run against its integration branch:
+ *
+ *  - `landed`: the trunk sha and mission head it was for are ancestors of the branch, and every
+ *    migration and added line it carries is in the branch's own delta over trunk. Nothing is lost
+ *    by its closure; it is still a person's call to mark it abandoned (no PR carries it to point at).
+ *  - `unique_work`: read in full, and the branch is missing something it carries. Its closure
+ *    loses work.
+ *  - `unavailable`: GitHub would not give a complete answer for long enough. No verdict either way.
+ */
+export interface RefreshCheck {
+  outcome: 'landed' | 'unique_work' | 'unavailable';
+  branch: string | null;
+  /** One line a person can judge it by. */
+  reason: string;
+  /** ISO time it was checked. */
+  at: string;
+  filesChecked?: number;
+  migrationsMatched?: number;
 }
 
 /**
@@ -141,6 +194,8 @@ export interface SupersessionScan {
   judged?: Array<{ repo: string; prNumber: number; prUrl: string; verified: boolean; method?: 'patch-id' | 'content'; confidence: number; at: string; closedHeadSha?: string; mergeCommitSha?: string }>;
   /** When a scan last started and did not finish (deferred): orders the sweep's queue. */
   lastAttemptAt?: string;
+  /** Set instead of `suggestion` for an integration-refresh PR. */
+  refreshCheck?: RefreshCheck;
 }
 
 /** True when the row has a PR and that PR's work shipped (merged or superseded). */

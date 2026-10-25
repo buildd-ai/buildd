@@ -7,7 +7,7 @@ summary: When a task's agent backend hits a budget or rate-limit wall or has its
 domain: runners
 surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
 related: [codex-backend-spec, credential-isolation, runner-liveness]
-keywords: [backend_pauses, budget_exhausted_at, failoverpriority, rate limit, openrouter, oauth budget]
+keywords: [backend_pauses, budget_exhausted_at, failoverpriority, rate limit, openrouter, runner seat wall]
 assertions:
   - id: backend-registry
     type: symbol
@@ -111,8 +111,7 @@ against that provider only.
   carrying `teamId`, `backend`, `reason` and `resetsAt`. The active pause for a
   backend is the newest row with `resetsAt > now()`.
 - `accounts.budget_exhausted_at` / `accounts.budget_resets_at`, the
-  `tenant_budgets` row, and the `oauth_budget_episodes` measurement describe the
-  **Claude** session pool only. A worker report whose task ran on any other
+  and the `tenant_budgets` row describe the **Claude** session pool only. A worker report whose task ran on any other
   backend MUST NOT write them.
 - `getActiveBackendPauses` folds the legacy Claude signals into the same map, so
   callers never re-derive "is Claude walled" themselves.
@@ -120,15 +119,14 @@ against that provider only.
   one task's own ceiling, reported with `sessionBudgetCapped: true` or the
   legacy `error_max_budget_usd` / "Budget limit exceeded" text, and it MUST
   fail that task only: no `backend_pauses` row, no `budget_exhausted_at`, no
-  `oauth_budget_episodes` insert, no failover. The provider-wall detector
+  failover. The provider-wall detector
   (`isBudgetExhaustionError`, `packages/core/budget-error-classifier.ts`) does
   not match dollar-cap texts; `isSessionBudgetCapError` does.
 
 **Acceptance criteria**:
 - AC-4: GIVEN a task with `backend='codex'` WHEN its worker reports a
   budget/rate-limit failure THEN a `backend_pauses` row with `backend='codex'`
-  is written AND no `accounts.budget_exhausted_at` update and no
-  `oauth_budget_episodes` insert occur.
+  is written AND no `accounts.budget_exhausted_at` update occurs.
 - AC-5: GIVEN an account whose `budget_resets_at` is in the past WHEN
   `getActiveBackendPauses` runs THEN Claude is reported as un-walled.
 - AC-6: GIVEN no `teamId` in scope WHEN `recordBackendPause` is called THEN it
@@ -212,24 +210,16 @@ dispatched onto a provider that is itself walled.
   its own machine's login. A session, weekly or extra-usage limit that one of
   those logins hits is that runner's wall. The worker report MUST record it as
   a `backend_pauses` row carrying the runner's `seat_key`, and MUST NOT write
-  `accounts.budget_exhausted_at` or an `oauth_budget_episodes` row for it.
+  `accounts.budget_exhausted_at` for it.
 - The decision is `resolveRunnerSeatWallKey`
-  (`apps/web/src/lib/runner-seat-wall.ts`). A wall is runner-scoped only when
-  it is a Claude subscription limit (by its text), not tenant or cloud work,
-  the worker names its runner (`workers.runner`, the id every runner sends on
-  claim), that runner's heartbeat reports `modelAuthSource` `machine_login` or
-  `machine_token`, the team stores no Claude model credential the run could
-  have been handed (an Anthropic key, `oauth_token` or `claude_credential`),
-  and the team agent endpoint does not carry Claude. Anything else, including
-  a lookup error or a runner that reports no model auth, records the wall with
-  no seat key: shared, as before.
-- The run's own report of the login it used (`claudeLoginUsed` on the worker
-  PATCH: `machine_login`, `machine_token` or `stored`) decides before those
-  inferences. A run on its runner's machine login or token is runner-scoped
-  even when the team stores a Claude credential it did not use; a run on the
-  stored team credential is shared. The contract is the Living Spec
-  "A runner: one machine, its own login, its own slots, its own limits"
-  (R-9, R-10, R-13).
+  (`apps/web/src/lib/runner-seat-wall.ts`). A team never shares a subscription
+  wall (Living Spec "Parallelism limits" R-10): every Claude subscription
+  limit (by its text) that is not tenant work and whose worker names its runner
+  (`workers.runner`, the id every runner sends on claim) is runner-scoped,
+  whatever the team stores and whatever login the run reports. A subscription
+  wall whose worker names no runner writes no `backend_pauses` row at all,
+  only its own account's `budget_exhausted_at`. Codex walls, API rate limits
+  and tenant work stay shared.
 - A reset quoted in an IANA zone ("resets 12pm (America/New_York)") is read in
   that zone (`extractResetTime`). Refusing it sent the pause to the full
   session-window fallback, hours past the real reset.
@@ -261,15 +251,13 @@ dispatched onto a provider that is itself walled.
 - AC-24: GIVEN a Claude pause with no seat key, OR the account's
   `budget_exhausted_at` set, WHEN either runner claims THEN the task is
   deferred.
-- AC-25: GIVEN a weekly-limit report from a runner on its own machine login
-  with no team Claude credential WHEN it is processed THEN the pause carries
-  the seat key, `accounts.budget_exhausted_at` is not written and the task is
-  pending with no `start_at`. GIVEN the same report from a runner that reports
-  no model auth THEN the wall is recorded as before.
+- AC-25: GIVEN a weekly-limit report from a named runner WHEN it is processed
+  THEN the pause carries the seat key, `accounts.budget_exhausted_at` is not
+  written and the task is pending with no `start_at`. GIVEN the same report
+  from a worker that names no runner THEN no `backend_pauses` row is written.
 - AC-26: GIVEN the team stores a Claude credential AND a session-limit report
-  whose run says `claudeLoginUsed: machine_login` WHEN it is processed THEN the
-  pause carries that runner's seat key; GIVEN `claudeLoginUsed: stored` THEN it
-  is shared.
+  from a named runner, whatever `claudeLoginUsed` says, WHEN it is processed
+  THEN the pause carries that runner's seat key.
 - AC-27: GIVEN "resets 12pm (America/New_York)" reported at 10:10 New York
   time THEN the pause lifts at 12:00 New York time, not five hours later.
 - AC-28: GIVEN a Claude pause keyed to login identity L WHEN two runners that

@@ -39,7 +39,7 @@ export default function MissionConfig({
   // Workspace state
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(workspaceId || '');
 
-  // Max concurrent tasks state
+  // Mission cap state
   const [maxConcurrent, setMaxConcurrent] = useState<string>(initialMaxConcurrent != null ? String(initialMaxConcurrent) : '');
 
   // Cost budget state
@@ -118,9 +118,9 @@ export default function MissionConfig({
         )}
       </div>
 
-      {/* Max Concurrent Tasks */}
+      {/* Mission cap */}
       <div>
-        <label className="block text-[11px] text-text-secondary mb-1.5">Max concurrent tasks</label>
+        <label className="block text-[11px] text-text-secondary mb-1.5">Mission cap</label>
         <div className="flex items-center gap-2">
           <input
             type="number"

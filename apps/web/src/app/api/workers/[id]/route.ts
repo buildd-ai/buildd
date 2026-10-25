@@ -2,6 +2,8 @@ import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
+import { waitsNotificationLine } from '@buildd/core/question-waits';
+import { loadQuestionWaits } from '@/lib/question-waits';
 import { isUuid } from '@/lib/uuid';
 import { decisionTitleAdvisory } from '@buildd/core/human-attention';
 import { checkSubjectTask } from '@/lib/question-subject';
@@ -10,9 +12,10 @@ import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { deferredReplyWork } from '@/lib/deferred-reply-work';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
+import { commitShaOf, releaseCandidateFixOf, verifyCandidateFixCommit, RELEASE_CANDIDATE_FIX_COMMIT_KEY, type CandidateFixLanded } from '@/lib/candidate-fix-commit';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events, hasVisibleWorkerChange } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
@@ -45,9 +48,8 @@ import { combineCostBasis, costBasisWrite, parseCostBasis, type CostBasis } from
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
-import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
+import { isMachineLoginWallError, parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
@@ -83,7 +85,7 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyRepairGateDeps, type LegacyReviewFixGateDeps } from '@/lib/repair-completion';
-import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, blockedOnBaseOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, submitReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
@@ -133,7 +135,6 @@ import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { formatWorkerMessages, type WorkerMessage } from '@buildd/core/worker-message-format';
 import { queueSystemInstruction } from '@/lib/system-instruction-queue';
-import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsAcknowledged, markInstructionsDelivered, pendingInstructionIds } from '@/lib/worker-instructions';
 import { pauseServed } from '@/lib/worker-pause-policy';
@@ -141,7 +142,6 @@ import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearTeamCache } from '@/lib/team-cache';
@@ -282,30 +282,17 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  *  - The write is a compare-and-swap on the status that was read, so a row
  *    moving underneath it yields a retryable conflict rather than a stale write.
  */
-/** Serve each message id once; drop blocked-on-you prompts whose sender has no live worker. */
-async function dropUnanswerableMessages<T extends { id?: string; type?: string; fromTaskId?: string }>(
+/** Serve each message id once. */
+function dedupeWorkerMessages<T extends { id?: string }>(
   messages: T[],
-): Promise<T[]> {
+): T[] {
   const seen = new Set<string>();
-  const unique = messages.filter(m => {
+  return messages.filter(m => {
     if (!m?.id) return true;
     if (seen.has(m.id)) return false;
     seen.add(m.id);
     return true;
   });
-  const senderIds = [...new Set(unique.filter(m => m?.type === 'path_blocked_on_you' && m.fromTaskId).map(m => m.fromTaskId!))];
-  if (senderIds.length === 0) return unique;
-  try {
-    const live = await db
-      .select({ taskId: workers.taskId })
-      .from(workers)
-      .where(and(inArray(workers.taskId, senderIds), not(inArray(workers.status, [...TERMINAL_WORKER_STATUSES]))));
-    const liveIds = new Set(live.map(r => r.taskId));
-    return unique.filter(m => !(m?.type === 'path_blocked_on_you' && m.fromTaskId && !liveIds.has(m.fromTaskId)));
-  } catch (err) {
-    console.error('[worker-messages] sender liveness check failed:', err);
-    return unique;
-  }
 }
 
 /**
@@ -1534,18 +1521,25 @@ async function patchWorker(
   // sweep at its deadline (lib/question-hold.ts), a recovered one never.
   if (waitingFor?.type === 'question' && parkAdmitted) {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-    // Short by design: the question, one line of context, the recommended default.
-    const note = questionNotificationText(
-      withSanitizedBrief(waitingFor),
-      { sensitive: isSensitive },
-    );
-    void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
-      title: note.title,
-      message: note.message,
-      url: `${appBaseUrl}/app/tasks/${worker.taskId}?respond=1`,
-      urlTitle: 'Respond',
-      priority: 0,
-    });
+    // Short by design: the question, one line of context, the recommended
+    // default, and what waits on the answer (spec 1b257609 R-1). The push goes
+    // to the team, whose members see every workspace of it. Off the PATCH's
+    // critical path; a failed read sends the question without the line.
+    const sanitized = withSanitizedBrief(waitingFor);
+    const askingTaskId = worker.taskId;
+    void (async () => {
+      const waits = !isSensitive && askingTaskId
+        ? await loadQuestionWaits({ taskId: askingTaskId, viewer: { kind: 'member' }, worker: null }).catch(() => null)
+        : null;
+      const note = questionNotificationText(sanitized, { sensitive: isSensitive, waitsLine: waits ? waitsNotificationLine(waits) : null });
+      await notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
+        title: note.title,
+        message: note.message,
+        url: `${appBaseUrl}/app/tasks/${worker.taskId}?respond=1`,
+        urlTitle: 'Respond',
+        priority: 0,
+      });
+    })().catch((err) => console.warn('[workers] question notification failed:', err instanceof Error ? err.message : err));
     // Agent chat: a mission filed from a conversation gets the question posted
     // back into it. Lazy + best-effort: never on this PATCH's critical path.
     if (worker.taskId) {
@@ -1707,6 +1701,10 @@ async function patchWorker(
   // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
   // confirms merged; snapshotted onto tasks.result for audit.
   let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
+  // Set by the pr_required gate when a red release candidate's fix task names a
+  // source-branch commit (`alreadyShippedIn: <sha>`) that carries the fix
+  // without a PR; the completion then amends the candidate (candidate-amend.ts).
+  let candidateFixLanded: CandidateFixLanded | null = null;
   // Set by the pr_required gate when a mission-branch refresh task finds its
   // integration branch already containing the trunk sha it was dispatched for
   // (the merge was pushed straight to the branch, so no PR exists or can).
@@ -1778,8 +1776,7 @@ async function patchWorker(
 
         if (effectiveCost > 0 && countsTowardPool) {
           // Aggregate budget is tracked at the team level so all token-accounts
-          // under the same owner share one monthly cap (the Claude Agent SDK
-          // credit pool is a single pool per subscription).
+          // under the same owner share one monthly cap.
           //
           // Optimistic locking: read the team budget, compute the next state, then
           // commit only if the row is unchanged since we read it (CAS on cost+month).
@@ -2445,7 +2442,28 @@ async function patchWorker(
       // task, and this worker taking it over would confuse that PR's own
       // merge, supersession and shutdown handling.
       let alreadyShippedRefusal: string | null = null;
-      const shippedPrNumber = alreadyShippedIn == null
+      // A red release candidate's fix can land on the source branch as a plain
+      // commit (an autofix pushed straight to dev): such a task may name the
+      // commit instead of a PR. Only a candidate fix task; anywhere else a sha
+      // is still refused as not a PR number.
+      const candidateFix = releaseCandidateFixOf(terminalTaskRow[0]?.context);
+      const shippedCommit = candidateFix ? commitShaOf(alreadyShippedIn) : null;
+      if (outputReq === 'pr_required' && !hasPR && candidateFix && shippedCommit) {
+        if (!repoWithInstallation) {
+          alreadyShippedRefusal = `commit ${shippedCommit.slice(0, 12)} cannot be verified: this workspace has no linked GitHub repo with the app installed.`;
+        } else {
+          const check = await verifyCandidateFixCommit({
+            api: githubApi,
+            installationId: repoWithInstallation.installation.installationId,
+            repoFullName: repoWithInstallation.fullName,
+            sha: shippedCommit,
+            fix: candidateFix,
+          });
+          if (check.ok) candidateFixLanded = check.landed;
+          else alreadyShippedRefusal = check.refusal;
+        }
+      }
+      const shippedPrNumber = alreadyShippedIn == null || shippedCommit
         ? null
         : Number(String(alreadyShippedIn).trim().replace(/^#/, ''));
       if (outputReq === 'pr_required' && !hasPR && shippedPrNumber !== null) {
@@ -2482,7 +2500,7 @@ async function patchWorker(
       // be deleted (so the ancestry read fails) and GitHub refuses an empty
       // PR, so nothing else could ever satisfy the gate. Either is recorded on
       // the task result (docs/specs/mission-branch-refresh.md, "Conflict task").
-      if (outputReq === 'pr_required' && !hasPR && !alreadyShipped && repoWithInstallation) {
+      if (outputReq === 'pr_required' && !hasPR && !alreadyShipped && !candidateFixLanded && repoWithInstallation) {
         const refresh = integrationRefreshOf(terminalTaskRow[0]?.context);
         const refreshBranch = (terminalTaskRow[0]?.context as Record<string, unknown> | null | undefined)?.baseBranch;
         if (refresh?.trunk && refresh.trunkSha && typeof refreshBranch === 'string' && refreshBranch) {
@@ -2613,7 +2631,7 @@ async function patchWorker(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR: hasPR || !!alreadyShipped || !!refreshAlreadyLanded, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped || !!refreshAlreadyLanded || !!candidateFixLanded, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2718,13 +2736,15 @@ async function patchWorker(
         // need the same explicit discard the `auto` arm asks for.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
-        if ((!alreadyShipped && !refreshAlreadyLanded) || strandsOwnEdits) {
+        if ((!alreadyShipped && !refreshAlreadyLanded && !candidateFixLanded) || strandsOwnEdits) {
           const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-          const error = alreadyShipped || refreshAlreadyLanded
-            ? `${alreadyShipped ? `PR #${alreadyShipped.prNumber} is merged` : refreshAlreadyLanded!.evidence === 'mission_pr_merged' ? `the mission's shipping PR${refreshAlreadyLanded!.missionPrNumber ? ` #${refreshAlreadyLanded!.missionPrNumber}` : ''} is merged` : `${refreshAlreadyLanded!.branch} already contains ${refreshAlreadyLanded!.trunk}`}, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+          const error = alreadyShipped || refreshAlreadyLanded || candidateFixLanded
+            ? `${alreadyShipped ? `PR #${alreadyShipped.prNumber} is merged` : candidateFixLanded ? `commit ${candidateFixLanded.commitSha.slice(0, 12)} is on ${candidateFixLanded.sourceBranch}` : refreshAlreadyLanded!.evidence === 'mission_pr_merged' ? `the mission's shipping PR${refreshAlreadyLanded!.missionPrNumber ? ` #${refreshAlreadyLanded!.missionPrNumber}` : ''} is merged` : `${refreshAlreadyLanded!.branch} already contains ${refreshAlreadyLanded!.trunk}`}, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
             : alreadyShippedRefusal
               ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
-              : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
+              : candidateFix
+                ? `This task requires a pull request before completing. Use create_pr to open one. If the fix already landed on \`${candidateFix.sourceBranch}\`, call complete_task with \`alreadyShippedIn\` set to the merged PR or the ${candidateFix.sourceBranch} commit that carries it; that amends release candidate v${candidateFix.version}.`
+                : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
           return NextResponse.json({
             error,
             hint: 'create_pr',
@@ -2740,7 +2760,9 @@ async function patchWorker(
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'accepted',
-          reason: refreshAlreadyLanded
+          reason: candidateFixLanded
+            ? 'completion accepted under pr_required: the release candidate fix is already on its source branch as a commit'
+            : refreshAlreadyLanded
             ? refreshAlreadyLanded.evidence === 'mission_pr_merged'
               ? 'completion accepted under pr_required: the mission shipping PR merged, so the refresh is moot'
               : 'completion accepted under pr_required: mission branch already contains the refresh trunk sha'
@@ -2754,6 +2776,7 @@ async function patchWorker(
             outputRequirement: 'pr_required',
             ...(alreadyShipped ? { alreadyShippedIn: alreadyShipped.prNumber } : {}),
             ...(refreshAlreadyLanded ? { refreshAlreadyLanded } : {}),
+            ...(candidateFixLanded ? { [RELEASE_CANDIDATE_FIX_COMMIT_KEY]: candidateFixLanded } : {}),
             commits: effectiveCommits,
             dirtyWorktree: effectiveDirtyWorktree,
             ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
@@ -3311,20 +3334,14 @@ async function patchWorker(
       workspaceId: taskForBudget?.workspaceId,
       tenantId: tenantCtx?.tenantId,
     };
-    // A Claude limit on the runner's OWN machine login (lib/runner-seat-wall.ts)
-    // is that runner's wall, not the account's or the team's: other runners on
-    // the account run on their own logins. It is recorded under the runner's
-    // seat key and holds only that runner's claims. A wall whose login cannot
-    // be identified comes back with no key and is recorded as before.
-    const seatWall = await resolveRunnerSeatWallKey({
+    // A Claude subscription limit belongs to the login that hit it
+    // (lib/runner-seat-wall.ts): it is recorded under that runner's seat key
+    // and holds only that runner's claims. A team never shares one.
+    const seatWall = resolveRunnerSeatWallKey({
       backend: walledBackend,
       error,
       runner: worker.runner,
-      claimedByCloud: worker.claimedByCloud,
       tenantId: tenantCtx?.tenantId,
-      accountId: account.id,
-      teamId,
-      workspaceId: taskForBudget?.workspaceId,
       // Which Claude login this run used, as its runner reports it (newer
       // runners): a machine login walls only that runner.
       loginUsed: parseRunLoginUsed(body.claudeLoginUsed),
@@ -3337,20 +3354,25 @@ async function patchWorker(
       console.log(`[workers PATCH] Claude wall on worker ${id} is its runner's own login (${seatWall.reason}): holding that runner only`);
     }
 
-    await recordBackendPause({
-      backend: walledBackend,
-      scope: budgetScope,
-      resetsAt: budgetResetsAt,
-      reason: 'budget',
-      sourceWorkerId: id,
-      seatKey: runnerSeatWall,
-    });
+    // A subscription wall no runner can be named for still writes no
+    // team-wide pause: that would hold every runner of the team on one login.
+    // The account flag below is its narrowest record.
+    const subscriptionWallWithoutSeat = walledBackend === 'claude' && !runnerSeatWall
+      && !tenantCtx?.tenantId && isMachineLoginWallError(error);
+    if (!subscriptionWallWithoutSeat) {
+      await recordBackendPause({
+        backend: walledBackend,
+        scope: budgetScope,
+        resetsAt: budgetResetsAt,
+        reason: 'budget',
+        sourceWorkerId: id,
+        seatKey: runnerSeatWall,
+      });
+    }
 
-    // The account/tenant flags and the OAuth pacing episode describe Claude
-    // session capacity only, so they are written for Claude walls exclusively.
-    // A runner-scoped wall writes neither: the account flag would hold every
-    // runner on the account, and the account's pacing episode would book one
-    // machine's login as the account's capacity.
+    // The account/tenant flags describe Claude session capacity only, so they
+    // are written for Claude walls exclusively. A runner-scoped wall writes
+    // neither: the account flag would hold every runner on the account.
     const isClaudePoolWall = walledBackend === 'claude' && !runnerSeatWall;
     if (isClaudePoolWall && tenantCtx?.tenantId && teamId) {
       // Tenant-level budget exhaustion: upsert into tenantBudgets
@@ -3371,85 +3393,15 @@ async function patchWorker(
           },
         });
     } else if (isClaudePoolWall && account.authType === 'oauth') {
-      // Account-level budget exhaustion: set flag (first-writer wins)
-      const exhaustedAt = new Date();
-      const flipped = await db
+      // Account-level budget exhaustion: set flag (first-writer wins). It is
+      // this account's alone; no other account sharing a login is touched.
+      await db
         .update(accounts)
-        .set({
-          budgetExhaustedAt: exhaustedAt,
-          budgetResetsAt,
-        })
+        .set({ budgetExhaustedAt: new Date(), budgetResetsAt })
         .where(and(
           eq(accounts.id, account.id),
           isNull(accounts.budgetExhaustedAt),
-        ))
-        .returning({ id: accounts.id });
-
-      // Propagate exhaustion to all sibling accounts sharing the same seatId so
-      // pacing engages for every registration, not just the one that hit the wall.
-      if (flipped.length > 0 && account.seatId && account.teamId) {
-        await db
-          .update(accounts)
-          .set({ budgetExhaustedAt: exhaustedAt, budgetResetsAt })
-          .where(and(
-            eq(accounts.teamId, account.teamId),
-            eq(accounts.seatId, account.seatId),
-            eq(accounts.authType, 'oauth'),
-            isNull(accounts.budgetExhaustedAt),
-          ));
-      }
-
-      // Only the request that actually flipped the flag records the episode, so
-      // N concurrent budget failures in the same window yield exactly one row.
-      // Seat auth has no cost signal, so this measured usage is the only way to
-      // learn where the wall is — see packages/core/oauth-budget.ts.
-      if (flipped.length > 0) {
-        try {
-          // Measure across the full seatId group so the episode reflects the
-          // combined window usage, not just this account's slice.
-          const accountIds = await resolveSeatIdPeers({
-            id: account.id,
-            teamId: account.teamId ?? '',
-            seatId: account.seatId ?? null,
-          });
-          const prior = await db.query.oauthBudgetEpisodes.findFirst({
-            where: sqlWhere(inArray(oauthBudgetEpisodes.accountId, accountIds)),
-            orderBy: sqlOrderByFn((t, { desc }) => [desc(t.exhaustedAt)]),
-            columns: { resetsAt: true },
-          });
-          // Same measurement the claim route paces against: window start inferred
-          // by sessionizing worker history, usage weighted per model.
-          const { windowStartedAt, usage } = await measureOauthWindow({
-            accountIds,
-            now: exhaustedAt,
-            lastResetsAt: prior?.resetsAt ?? null,
-          });
-
-          await db.insert(oauthBudgetEpisodes).values({
-            accountId: account.id,
-            windowStartedAt,
-            exhaustedAt,
-            resetsAt: budgetResetsAt,
-            workerCount: usage.workerCount,
-            turns: usage.turns,
-            // Raw token split is not recoverable per-direction from the window
-            // aggregate; the combined total is what the learner uses.
-            inputTokens: usage.tokens,
-            outputTokens: 0,
-            weightedTurns: usage.weightedTurns,
-            weightedTokens: usage.weightedTokens,
-          });
-          console.log(
-            `[workers PATCH] Recorded OAuth budget episode for account ${account.id}: ` +
-            `${usage.workerCount} workers / ${usage.turns} turns ` +
-            `(${usage.weightedTurns} sonnet-equivalent) since ${windowStartedAt.toISOString()}`,
-          );
-        } catch (err) {
-          // Non-fatal: losing an episode only slows learning, it must never break
-          // the budget-exhaustion path that re-queues the task.
-          console.warn(`[workers PATCH] Failed to record OAuth budget episode for account ${account.id}:`, err);
-        }
-      }
+        ));
     }
 
     // Provider failover, either direction: move the task to any other enabled,
@@ -3560,7 +3512,7 @@ async function patchWorker(
       message: failoverBackend
         ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
         : runnerSeatWall
-          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: one runner's own ${walledLabel} login hit its limit. That runner waits; other runners can take the task now.`
+          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: one runner's ${walledLabel} login is at its limit until ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. That runner waits; other runners can take the task now.`
           : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
       url: `https://buildd.dev/app/tasks/${worker.taskId}`,
       urlTitle: 'View task',
@@ -4425,6 +4377,9 @@ async function patchWorker(
           // The evidence a mission-branch refresh was accepted on without a PR
           // (see `refreshAlreadyLanded` above).
           ...(refreshAlreadyLanded && { refreshAlreadyLanded }),
+          // The source-branch commit a candidate fix task named; the completion
+          // subscriber reads it to amend the candidate.
+          ...(candidateFixLanded && { [RELEASE_CANDIDATE_FIX_COMMIT_KEY]: candidateFixLanded }),
         };
 
         // Snapshot unique MCP servers into task result
@@ -4446,6 +4401,10 @@ async function patchWorker(
           if (loop.startAt) {
             taskUpdate.startAt = loop.startAt;
           }
+        } else if (loop.kind === 'defer') {
+          // The kernel delivery is a person's to move (ESCALATED): no requeue, no loop failure. The
+          // task ends as reported (the kernel projects an owner's end); the webhook can still settle it.
+          taskUpdate.loopState = 'condition_unmet';
         } else {
           // Worker reported completed but loop iterations are exhausted → task is failed.
           taskUpdate.status = 'failed';
@@ -4631,6 +4590,7 @@ async function patchWorker(
           taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
           ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
+          ...(blockedOnBaseOf(body.structuredOutput) ? { blockedOnBase: true } : {}),
         }, { principal: kernelPrincipalOf({ account }) });
       };
 
@@ -5361,10 +5321,8 @@ async function patchWorker(
   const unackedWorkerMessages = deliveredMessageIds.length > 0
     ? pendingWorkerMessages.filter(m => !deliveredMessageIds.includes(m?.id ?? ''))
     : pendingWorkerMessages;
-  // Serve each message id once, and not a blocked-on-you prompt whose sender is
-  // already terminal: the recipient's reply to it bounces (recipient_terminal),
-  // so it only costs an interruption nobody can receive.
-  const retainedWorkerMessages = await dropUnanswerableMessages(unackedWorkerMessages);
+  // Serve each message id once; dedupe serves the same message only on ack.
+  const retainedWorkerMessages = dedupeWorkerMessages(unackedWorkerMessages);
 
   // §6d-derived lease: the observed touch is also a claim.
   //
@@ -5505,167 +5463,6 @@ async function patchWorker(
     }
   }
 
-  // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
-  // Advisory-only — never rejects the update_progress call.
-  const accumulatedTouches = (updates.observedTouches as string[] | null | undefined) ?? null;
-  // Advisory and reply-independent: it runs after the reply (R-33). The ack of
-  // served worker messages below stays in the request.
-  const overlapWorkspaceId = worker.workspaceId;
-  const overlapTaskId = worker.taskId;
-  if (accumulatedTouches && accumulatedTouches.length > 0 && overlapWorkspaceId && overlapTaskId && !isTerminalStatus) {
-    await afterReply('passive overlap detection', async () => {
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const siblings = await db.query.workers.findMany({
-        where: sqlWhere(and(
-          eq(workers.workspaceId, overlapWorkspaceId),
-          not(eq(workers.id, id)),
-          not(inArray(workers.status, TERMINAL_WORKER_STATUSES)),
-          isNull(workers.mergedAt),
-          gt(workers.updatedAt, twentyFourHoursAgo),
-          not(isNull(workers.observedTouches)),
-        )),
-        columns: {
-          id: true,
-          taskId: true,
-          branch: true,
-          lastCommitSha: true,
-          observedTouches: true,
-          runner: true,
-        },
-        with: {
-          task: { columns: { pathManifest: true, kind: true, roleSlug: true } },
-        },
-      });
-
-      const notifiedOverlaps: Array<{ path: string; siblingTaskId: string }> =
-        Array.isArray(taskContext?.notifiedOverlaps)
-          ? (taskContext.notifiedOverlaps as Array<{ path: string; siblingTaskId: string }>)
-          : [];
-      const newNotifications: Array<{ path: string; siblingTaskId: string }> = [];
-
-      // A reviewer is read-only: its touches are reads of the PR it reviews, not
-      // edits, so it never blocks anyone and the PR's author must not be asked
-      // to answer for it.
-      const senderIsReviewer = Boolean(taskContext?.reviewerFor);
-      for (const sibling of senderIsReviewer ? [] : siblings) {
-        if (!sibling.taskId) continue;
-        const siblingTouches = Array.isArray(sibling.observedTouches) ? sibling.observedTouches as string[] : [];
-        if (siblingTouches.length === 0) continue;
-
-        // Wildcard guard: skip siblings with advisory pathManifest (**).
-        const siblingManifest = (sibling.task as any)?.pathManifest as string[] | null | undefined;
-        if (isAdvisoryManifest(siblingManifest)) continue;
-
-        // No path claim, or an observation / visual-auditor task: it edits
-        // nothing, so a conflict notice only costs it a turn.
-        if (!holdsPathClaim({ ...(sibling.task as any), pathManifest: siblingManifest })) continue;
-
-        if (!pathsOverlap(accumulatedTouches, siblingTouches)) continue;
-
-        // Identify overlapping paths for this sibling.
-        const normalizeP = (p: string) => p.replace(/\/+$/, '');
-        const overlappingPaths = accumulatedTouches.filter(p => {
-          const np = normalizeP(p);
-          return siblingTouches.some(sp => {
-            const nsp = normalizeP(sp);
-            return np === nsp || np.startsWith(nsp + '/') || nsp.startsWith(np + '/');
-          });
-        });
-
-        // Dedupe gate: skip pairs already notified this session.
-        const newPaths = overlappingPaths.filter(p =>
-          !notifiedOverlaps.some(n => n.path === p && n.siblingTaskId === sibling.taskId),
-        );
-        if (newPaths.length === 0) continue;
-
-        for (const p of newPaths) {
-          newNotifications.push({ path: p, siblingTaskId: sibling.taskId! });
-        }
-
-        // A generated file is not a mutex. `docs/specs/INDEX.md` and the drizzle
-        // journal are among the most contended files in this repo by
-        // concurrent-PR overlap, and none of those overlaps is something the two
-        // agents need to agree about — whoever pushes second re-runs one command.
-        // Splitting here keeps the block message about real work while still
-        // passing the generated-file overlap along, with the right verb.
-        const { contended, regenerable } = partitionRegenerableOverlaps(newPaths);
-
-        // Emit Pusher event on workspace channel.
-        const overlapEvent = {
-          detectedWorkerId: id,
-          detectedTaskId: overlapTaskId,
-          siblingWorkerId: sibling.id,
-          siblingTaskId: sibling.taskId,
-          overlappingPaths: contended,
-          regenerablePaths: regenerable.map(r => r.path),
-          detectedByBranch: updated.branch ?? worker.branch,
-          detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
-        };
-        await triggerEvent(channels.workspace(overlapWorkspaceId), 'path_overlap_detected', overlapEvent);
-
-        // Deliver structured WorkerMessage to sibling's task via pendingWorkerMessages.
-        // One atomic append (capped in SQL): the sibling is checking in and
-        // writing its own context, so a read-modify-write here loses whichever
-        // of the two wrote second.
-        //
-        // That queue is read only by an interactive session (update_progress
-        // surfaces `workerMessages`); a runner-managed session never reads it,
-        // so every message to one was lost. For those the same text also goes
-        // on the instruct queue, which the runner injects at its next check-in.
-        const deliver = async (message: WorkerMessage) => {
-          await enqueueWorkerMessage(sibling.taskId!, message);
-          if (sibling.runner !== INTERACTIVE_WORKER_RUNNER) {
-            // Marker: one uncollected notice per (type, sender) — a re-detection
-            // before the runner's next check-in must not stack a copy.
-            await queueSystemInstruction(sibling.id, formatWorkerMessages([message]), {
-              marker: `(${message.type}, from task ${message.fromTaskId}`,
-            })
-              .catch(err => console.error(`[Worker ${id}] overlap instruction to ${sibling.id} failed:`, err));
-          }
-        };
-        if (contended.length > 0) {
-          await deliver(buildWorkerMessage({
-            type: 'path_blocked_on_you',
-            fromTaskId: overlapTaskId,
-            toTaskId: sibling.taskId!,
-            body: {
-              overlappingPaths: contended,
-              detectedByBranch: updated.branch ?? worker.branch,
-              detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
-              funcNames: [] as string[],
-            },
-          }));
-        }
-        if (regenerable.length > 0) {
-          await deliver(buildWorkerMessage({
-            type: 'path_regenerable_overlap',
-            fromTaskId: overlapTaskId,
-            toTaskId: sibling.taskId!,
-            body: {
-              overlappingPaths: regenerable.map(r => r.path),
-              commands: [...new Set(regenerable.map(r => r.command))],
-              detectedByBranch: updated.branch ?? worker.branch,
-              detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
-            },
-          }));
-        }
-      }
-
-      // Persist notifiedOverlaps as a jsonb merge, NOT a spread of the snapshot
-      // read before this loop began. The loop above does several round trips and
-      // a Pusher call, so a message enqueued by a sibling in that window would be
-      // reverted by a whole-column overwrite — the same loss this PR removes,
-      // arriving by a different route.
-      if (newNotifications.length > 0) {
-        await db
-          .update(tasks)
-          .set({
-            context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('notifiedOverlaps', ${JSON.stringify([...notifiedOverlaps, ...newNotifications])}::jsonb)`,
-          })
-          .where(eq(tasks.id, overlapTaskId));
-      }
-    });
-  }
   if (deliveredMessageIds.length > 0 && worker.taskId) {
     await clearWorkerMessages(worker.taskId, deliveredMessageIds);
   }
@@ -6144,6 +5941,7 @@ async function handleReviewerOutcomeIfNeeded(
         prNumber,
         headSha,
         files: (currentFiles ?? []) as never,
+        trunkRef: workspace?.gitConfig?.targetBranch ?? workspace?.gitConfig?.defaultBranch ?? null,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
@@ -6229,13 +6027,14 @@ async function handleReviewerOutcomeIfNeeded(
   // after the gates above, so an escalation to a person is kept; before the
   // evidence gate, which still wins.
   if (effectiveVerdict === 'approve') {
-    const { loadDesignRequirement, applyDesignGate, parseDesignChecks } = await import('@/lib/reviewer');
+    const { loadDesignRequirement, applyDesignGate, componentScreens, parseDesignChecks } = await import('@/lib/reviewer');
     const requirement = await loadDesignRequirement(originalTaskId);
     const designGate = applyDesignGate({
       verdict: effectiveVerdict,
       required: requirement.criteria,
       checks: parseDesignChecks(output),
       feedback: output.feedback,
+      components: componentScreens(requirement.design),
     });
     if (designGate.reason) {
       console.log(`[reviewer] PR #${prNumber}: design gate turned approve into request-changes`);

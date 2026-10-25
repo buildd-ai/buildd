@@ -174,12 +174,29 @@ describe('loopPolicy on a kernel owner while the kernel owns the PR', () => {
     expect((await loopPolicy(input))?.kind).toBe('pass');
   });
 
-  it('a delivery waiting on the owner (WORKING) or a person (ESCALATED) is evaluated as before', async () => {
-    for (const state of ['WORKING', 'ESCALATED']) {
-      owned(state);
-      completingWorker = { prLifecycleStatus: 'ci_failed', prNumber: 42, mergedAt: null };
-      expect((await loopPolicy(input))?.kind).toBe('fail');
+  it('a delivery waiting on the owner (WORKING) is evaluated as before', async () => {
+    owned('WORKING');
+    completingWorker = { prLifecycleStatus: 'ci_failed', prNumber: 42, mergedAt: null };
+    expect((await loopPolicy(input))?.kind).toBe('fail');
+  });
+
+  // fe45dc7d (#5539): the delivery escalated to a person, and the loop kept running passes that
+  // pushed commits the kernel ignored, then failed the task "exhausted" over the escalation.
+  it('an ESCALATED delivery stands the loop down: no pass dispatched, no iteration spent, no failure', async () => {
+    owned('ESCALATED');
+    completingWorker = { prLifecycleStatus: 'ci_failed', prNumber: 42, mergedAt: null };
+    for (const iteration of [2, 3]) {
+      taskRow = { ...taskRow, loopIteration: iteration };
+      const v = await loopPolicy(input);
+      if (v?.kind !== 'defer') throw new Error(`expected defer, got ${v?.kind}`);
+      expect(v.progress.iteration).toBe(iteration);
+      expect(v.deliveryState).toBe('ESCALATED');
     }
+  });
+
+  it('an ESCALATED delivery that has since merged still satisfies the loop', async () => {
+    owned('MERGED', { mergedAt: '2026-10-18T10:00:00Z' });
+    expect((await loopPolicy(input))?.kind).toBe('pass');
   });
 
   it('a structured-predicate loop ignores the delivery', async () => {

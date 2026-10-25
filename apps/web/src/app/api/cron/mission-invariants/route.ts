@@ -160,7 +160,7 @@ async function fileViolation(
     .insert(tasks)
     .values({
       workspaceId: violation.workspaceId,
-      title: `[friction] ${result.key}: ${violation.entityKind} ${violation.entityId}`.slice(0, 200),
+      title: `[friction] ${violation.subject ?? `${result.key}: ${violation.entityKind} ${violation.entityId}`}`.slice(0, 200),
       description,
       priority: 7,
       status: 'pending',
@@ -273,6 +273,8 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
   for (const result of results) {
     if (!result.files) continue;
     for (const violation of result.violations) {
+      // A person already owns this decision; the report lists it, no task is filed.
+      if (violation.holdFiling) continue;
       if (filings.length >= MAX_FILINGS_PER_RUN) {
         filingsDropped++;
         continue;

@@ -10,9 +10,25 @@
  * `pr.closed` (merged): the PR's rendered-surface files, with patches, are
  * recorded durably (lib/pr-surface-evidence.ts), so the surface-audit gate
  * never reads a merged PR's file list from GitHub while a page renders.
+ *
+ * `worker.reported` (a mission task's run ended): when it is a [surface
+ * audit], the captures it uploaded have arrived, so the registered `verify:`
+ * checks of every subject it reviews run again on them (the pinned tasks it
+ * depends on and the mission's final verification;
+ * lib/specs/registered-verification-store.ts). A check that found no capture
+ * when its PR opened does not stay inconclusive forever.
  */
 import { after } from 'next/server';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
+
+/** After the response when a request scope exists, inline otherwise. */
+async function afterResponse(work: () => Promise<void>): Promise<void> {
+  try {
+    after(work);
+  } catch {
+    await work();
+  }
+}
 
 export const surfaceAuditSubscribers: readonly AnySubscriber[] = [
   subscriber('visual-qa', 'task.left_mission', 'surface-audit-detach', async e => {
@@ -31,5 +47,12 @@ export const surfaceAuditSubscribers: readonly AnySubscriber[] = [
     } catch {
       await record();
     }
+  }),
+  subscriber('visual-qa', 'worker.reported', 'registered-checks-on-captures', async e => {
+    // Only a mission's audit supplies captures; the store reads the task to be sure.
+    if (!e.missionId) return;
+    await afterResponse(() => import('@/lib/specs/registered-verification-store')
+      .then(m => m.rerunRegisteredVerificationForAudit(e.taskId))
+      .catch(err => console.error(`[registered-verification] captures from ${e.taskId} not verified:`, err)));
   }),
 ];

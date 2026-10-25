@@ -8,6 +8,7 @@ import { isDeliverableTask, isStandardCriterion } from '@buildd/core/mission-hel
 import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type VerificationVerdict } from '@buildd/core/verification-check';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
+import { criterionVerifications } from '@buildd/spec-contract/verification-bindings';
 import { githubApi } from '@/lib/github';
 import { unacceptedPathsOf } from '@/lib/acceptance-edit-sync';
 import { encodeRef, isAncestor } from '@/lib/integration-refresh';
@@ -21,6 +22,9 @@ import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTa
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
+import { readPinnedSpecRevision } from './pin';
+import { registeredAuthor as authorFor } from './registered-author';
+import { registeredMissionRow } from './mission-registered-verification';
 import { checkTaskIdOf, holdUnacceptedTestRows } from './acceptance-hold';
 
 /**
@@ -132,6 +136,20 @@ export async function resolveMissionTarget(mission: MissionRow, candidateHeads: 
   return { kind: 'direct', mergeShas, validHeads };
 }
 
+const METHODS = ['deterministic', 'model', 'visual', 'fallback'] as const;
+
+/** A stored registered row through the shared mission adapter: a review, carrying the method it actually ran with. */
+function storedRegisteredRow(r: { id: string; criterionId: string; verdict: string; headSha: string | null }, evidence: Record<string, unknown> | null | undefined) {
+  if (evidence?.kind !== 'registered') return null;
+  const method = METHODS.find((m) => m === evidence.method);
+  if (!method) return null;
+  return registeredMissionRow(r.id, {
+    criterionId: r.criterionId, verdict: r.verdict as MissionVerdictRow['verdict'], targetSha: r.headSha ?? '', method,
+    fingerprint: typeof evidence.fingerprint === 'string' ? evidence.fingerprint : '',
+    provenance: { evidenceFingerprint: typeof evidence.evidenceFingerprint === 'string' ? evidence.evidenceFingerprint : String(evidence.inputFingerprint ?? '') },
+  });
+}
+
 async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<MissionVerdictRow[]> {
   const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash, evidence: specOutcomeVerdicts.evidence })
     .from(specOutcomeVerdicts)
@@ -139,8 +157,20 @@ async function missionRows(missionId: string, specRevisionId: string, hashes: Re
     .orderBy(asc(specOutcomeVerdicts.createdAt));
   // A verdict on another wording does not count for this one (R-13); one recorded before wordings were kept does.
   const filtered = rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId));
-  const mapped = filtered.map(({ textHash: _t, evidence, ...r }) => ({ ...r, source: verdictSourceOfEvidence(evidence), evidence })) as MissionVerdictRow[];
+  const mapped = filtered.map(({ textHash: _t, evidence, ...r }) => {
+    const bindingFingerprint = typeof evidence?.bindingFingerprint === 'string' ? evidence.bindingFingerprint : null;
+    const registered = storedRegisteredRow(r, evidence);
+    return { ...r, source: verdictSourceOfEvidence(evidence), bindingFingerprint, evidence, ...(registered ? { source: registered.source, method: registered.method } : {}) };
+  }) as MissionVerdictRow[];
   return filterMissionRowsByAcceptanceEdit(mapped, filtered);
+}
+
+/** Registrations answer to the selected immutable body, never mutable metadata. */
+async function missionBindings(c: LivingSpecGoalCriterion) {
+  const read = await readPinnedSpecRevision({ specId: c.specId, specRevisionId: c.specRevisionId, contentHash: c.contentHash });
+  if (!read.ok) return { ok: false as const, reason: read.reason };
+  try { return { ok: true as const, bindings: criterionVerifications(read.body) }; }
+  catch { return { ok: false as const, reason: 'the selected revision contains an invalid verifier binding' }; }
 }
 
 export async function unacceptedAcceptanceTestPaths(missionId: string): Promise<string[]> {
@@ -156,10 +186,18 @@ export async function readMissionSpecStanding(mission: MissionRow, c: LivingSpec
   if (!scope.ok) {
     return { verdict: 'UNVERIFIED', evidence: `The selected spec revision is unavailable: ${scope.reason}`, targetSha: null, standings: [], target: { kind: 'unknown', reason: scope.reason }, scope: [], title: '' };
   }
+  const registrations = await missionBindings(c);
+  if (!registrations.ok) {
+    return { verdict: 'UNVERIFIED', evidence: `The selected spec revision is unavailable: ${registrations.reason}`, targetSha: null, standings: [], target: { kind: 'unknown', reason: registrations.reason }, scope: scope.criteria, title: scope.title };
+  }
+  const requiredBindings = new Map<string, string[]>();
+  for (const { criterionId, binding, fingerprint } of registrations.bindings) {
+    if (binding.mode === 'required') requiredBindings.set(criterionId, [...(requiredBindings.get(criterionId) ?? []), fingerprint]);
+  }
   const rows = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
   const target = await resolveMissionTarget(mission, rows.map((r) => r.headSha).filter((h): h is string => !!h), api);
   const unaccepted = await unacceptedAcceptanceTestPaths(mission.id);
-  const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target, unacceptedTestPaths: unaccepted });
+  const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target, requiredBindings, unacceptedTestPaths: unaccepted });
   return { ...folded, target, scope: scope.criteria, title: scope.title };
 }
 
@@ -299,6 +337,21 @@ export async function recordMissionVerdictServer(missionId: string, input: {
   const scope = await selectedScope(c);
   if (!scope.ok) return fail(409, scope.reason);
   if (!scope.criteria.some((r) => r.id === input.criterionId)) return fail(400, `${input.criterionId} is not in the selected scope`);
+  const fingerprint = input.evidence.bindingFingerprint;
+  const registeredAuthor = /^(?:check:)?registered:/.test(input.recordedBy);
+  if (registeredAuthor || fingerprint !== undefined) {
+    const registrations = await missionBindings(c);
+    if (!registrations.ok) return fail(409, registrations.reason);
+    const matched = registrations.bindings.find((b) => b.criterionId === input.criterionId && b.fingerprint === fingerprint);
+    if (!matched || !registeredAuthor) {
+      return fail(409, 'Registered evidence must name the matching approved verifier binding');
+    }
+    const method = input.evidence.method;
+    const expectedAuthor = (method === 'deterministic' && matched.binding.id === 'ui.actions_match_state')
+      || (method === 'model' && matched.binding.id === 'ui.card_clarity') || method === 'fallback'
+      ? authorFor(matched.binding.id, method) : null;
+    if (input.recordedBy !== expectedAuthor) return fail(409, 'Registered evidence author must match its verifier and evaluation method');
+  }
   if (!SHA.test(input.headSha)) return fail(400, 'headSha must be a commit SHA');
   const target = await resolveMissionTarget(mission, [input.headSha], api);
   if (!verdictIsCurrent(target, input.headSha)) return fail(409, 'The commit is not the mission\'s current integrated target');

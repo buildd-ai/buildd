@@ -6,7 +6,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
-import { githubApi, githubApiText } from '@/lib/github';
+import { githubApi, githubApiText, isPhantomSuite } from '@/lib/github';
 import { failingEntries, failingTestsFromLog } from './failing-tests';
 import { isBaseDiffEquivalent, isContentEquivalentHead, readReviewedDelta } from '@/lib/pr-content-equivalence';
 import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, latestRunPerName, listAllCheckRuns } from '@/lib/ci-verdict';
@@ -51,11 +51,18 @@ export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
 // One rule with the landing door (ci-verdict.ts), so the two cannot drift.
 const PASSING = PASSING_CONCLUSIONS;
 
-/** §10.5 revalidation of a CI repair: green only when every suite completed and none failed. */
-export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: string | null }> | null | undefined): boolean | null {
-  if (!suites || suites.length === 0) return null;
-  if (suites.some((x) => x.status !== 'completed')) return null;
-  return suites.every((x) => PASSING.has(String(x.conclusion ?? '')));
+type SuiteRow = { status?: string; conclusion?: string | null; app?: { slug?: string } | null; latest_check_runs_count?: number };
+
+/**
+ * §10.5 revalidation of a CI repair: green only when every suite completed and none failed.
+ * An installed app that never reports leaves a suite queued with no runs on every head; it is
+ * skipped by the same rule as the landing door's (`isPhantomSuite`), or no head here reads green.
+ */
+export function ciGreenFromSuites(suites: SuiteRow[] | null | undefined): boolean | null {
+  const real = (suites ?? []).filter((x) => !isPhantomSuite({ status: x.status ?? '', app: x.app, latest_check_runs_count: x.latest_check_runs_count }));
+  if (real.length === 0) return null;
+  if (real.some((x) => x.status !== 'completed')) return null;
+  return real.every((x) => PASSING.has(String(x.conclusion ?? '')));
 }
 
 const FAILING = FAILING_CONCLUSIONS;
@@ -186,7 +193,7 @@ export function githubReader(
     async ciGreen(repoFullName, headSha) {
       try {
         const [data, runs] = await Promise.all([
-          api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as Promise<{ check_suites?: Array<{ id?: number; status?: string; conclusion?: string | null }> } | null>,
+          api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as Promise<{ check_suites?: Array<SuiteRow & { id?: number }> } | null>,
           // The runs only ever drop a superseded suite; an unreadable or partial list drops nothing.
           listAllCheckRuns<CheckRunRow>(api, installationId, repoFullName, headSha).catch(() => null),
         ]);
@@ -240,6 +247,14 @@ export function githubReader(
       } catch (err) {
         // Only GitHub's own "not found" says the branch is gone; anything else is unknown.
         return /\b404\b/.test(err instanceof Error ? err.message : String(err)) ? false : null;
+      }
+    },
+    async mergeBase(repoFullName, ref, headSha) {
+      try {
+        const cmp = await api(installationId, `/repos/${repoFullName}/compare/${encodeURIComponent(ref)}...${headSha}`) as { merge_base_commit?: { sha?: string } } | null;
+        return cmp?.merge_base_commit?.sha ?? null;
+      } catch {
+        return null;
       }
     },
     async contains(repoFullName, ancestorSha, headSha) {

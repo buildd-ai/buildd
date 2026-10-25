@@ -51,6 +51,36 @@ export function closesForeignPr(
   return true;
 }
 
+/**
+ * Is this an agent run closing the PR its retry attempt exists to fix? A fix
+ * attempt counts as the PR's owner for every other act, but closing its
+ * subject ends the delivery it was filed to repair: a fix that closed its own
+ * subject after its fix was approved left an orphan that was later reopened
+ * and merged stale. When a retry opens a fresh PR, the parent's is closed by
+ * buildd itself (lib/retry-pr-supersession.ts), never by the attempt.
+ */
+export function closesOwnRetrySubject(
+  caller: { id: string; sessionUserId?: string | null },
+  worker: { accountId: string | null; prNumber?: number | null; task?: PrLinkTask | null },
+  prNumber: number,
+): boolean {
+  if (caller.sessionUserId) return false;
+  if (worker.accountId !== caller.id) return false;
+  if (worker.prNumber === prNumber) return false;
+  return !!worker.task && retrySubject(worker.task) === prNumber;
+}
+
+/** The refusal `closesOwnRetrySubject` answers with. */
+export function retrySubjectCloseRefusal(prNumber: number): { status: number; reasonCode: 'retry_closes_subject'; error: string; hint: string } {
+  return {
+    status: 409,
+    reasonCode: 'retry_closes_subject',
+    error: `PR #${prNumber} is the PR this fix attempt was filed to repair: a fix attempt never closes it.`,
+    hint: 'Push the fix to its branch and complete the task. If the PR should not land, say so in complete_task or ask a person; '
+      + 'if you opened a replacement PR, buildd closes this one as superseded on its own.',
+  };
+}
+
 export interface ForeignCloseDeps {
   /**
    * The PR's delivery: its state, and whether its next move is a person's.

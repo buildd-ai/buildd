@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   classifyPullRequestMigrations,
   classifyMigrationSql,
+  definedDbObjects,
   getMigrationNumber,
   isGeneratedMigrationPath,
   isLegacyMigrationPath,
@@ -139,7 +140,8 @@ describe('classifyMigrationSql', () => {
       'CREATE OR REPLACE FUNCTION f() RETURNS void AS $fn$ BEGIN UPDATE "tasks" SET x = 1; END; $fn$ LANGUAGE plpgsql;',
     );
     expect(result.safe).toBe(false);
-    expect(result.safe ? '' : result.reason).toMatch(/^ambiguous migration statement: CREATE OR REPLACE FUNCTION/);
+    // One statement, classified as a function: not the UPDATE inside its body.
+    expect(result.safe ? '' : result.reason).toBe('replaces function f, which may already exist on the base');
   });
 
   it.each([
@@ -162,6 +164,95 @@ describe('classifyMigrationSql', () => {
     ['ALTER TABLE "x" ADD COLUMN IF NOT EXISTS "y" text NOT NULL;', 'adds NOT NULL column without default x.y'],
   ])('names the risky operation instead of "ambiguous": %s', (sql, reason) => {
     expect(classifyMigrationSql(sql)).toEqual({ safe: false, operationClass: 'CONTRACT', reason });
+  });
+});
+
+// Trigger migrations: a real one from the repo, and the one PR #5646 carried.
+const artifactRevisionsTrigger = readFileSync(
+  join(import.meta.dir, '../../../../packages/core/drizzle/20261010170119_artifact_revisions_trigger/migration.sql'),
+  'utf8',
+);
+const specExplanationTrigger = migration('spec_revision_explanation_immutable.sql');
+const emptyBase = definedDbObjects([]);
+
+describe('classifyMigrationSql: functions and triggers', () => {
+  it('a new trigger and its function are EXPAND (artifact_revisions trigger)', () => {
+    expect(classifyMigrationSql(artifactRevisionsTrigger, emptyBase)).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a new immutability trigger is EXPAND (spec_revisions.explanation)', () => {
+    const base = definedDbObjects([artifactRevisionsTrigger]);
+    expect(classifyMigrationSql(specExplanationTrigger, base)).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('with an additive column in the same PR, it is not a mixed EXPAND/CONTRACT PR', () => {
+    expect(
+      classifyPullRequestMigrations(
+        [
+          { filename: 'packages/core/drizzle/20261024130014_useful_pixie/migration.sql', content: 'ALTER TABLE "spec_revisions" ADD COLUMN "explanation" jsonb;' },
+          { filename: 'packages/core/drizzle/20261024130028_spec_revision_explanation_immutable/migration.sql', content: specExplanationTrigger },
+        ],
+        [],
+        undefined,
+        definedDbObjects([artifactRevisionsTrigger]),
+      ),
+    ).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('replacing a function or trigger the base already defines stays CONTRACT', () => {
+    const base = definedDbObjects([artifactRevisionsTrigger]);
+    expect(classifyMigrationSql(artifactRevisionsTrigger, base)).toMatchObject({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: 'replaces function artifacts_record_revision, which the base already defines',
+    });
+    expect(
+      classifyMigrationSql('CREATE OR REPLACE TRIGGER artifact_revisions_immutable BEFORE UPDATE ON artifact_revisions FOR EACH ROW EXECUTE FUNCTION f();', base),
+    ).toMatchObject({ safe: false, reason: 'replaces trigger artifact_revisions_immutable, which the base already defines' });
+  });
+
+  it('without the base catalogue, CREATE OR REPLACE fails closed', () => {
+    expect(classifyMigrationSql(specExplanationTrigger)).toMatchObject({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: 'replaces function spec_revisions_explanation_immutable, which may already exist on the base',
+    });
+  });
+
+  it('a plain CREATE FUNCTION is new by construction', () => {
+    expect(
+      classifyMigrationSql('CREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$;'),
+    ).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('DROP TRIGGER and DROP FUNCTION stay CONTRACT', () => {
+    expect(classifyMigrationSql('DROP TRIGGER IF EXISTS artifacts_record_revision ON artifacts;', emptyBase)).toEqual({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: 'drops trigger artifacts_record_revision on artifacts',
+    });
+    expect(classifyMigrationSql('DROP FUNCTION IF EXISTS artifacts_record_revision();', emptyBase)).toEqual({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: 'drops function artifacts_record_revision',
+    });
+  });
+
+  it('a DROP TRIGGER guarding a re-create of a live trigger stays CONTRACT', () => {
+    const base = definedDbObjects([artifactRevisionsTrigger]);
+    const sql = [
+      'DROP TRIGGER IF EXISTS artifact_revisions_immutable ON artifact_revisions;',
+      'CREATE TRIGGER artifact_revisions_immutable BEFORE UPDATE ON artifact_revisions FOR EACH ROW EXECUTE FUNCTION g();',
+    ].join('\n--> statement-breakpoint\n');
+    expect(classifyMigrationSql(sql, base)).toMatchObject({ safe: false, reason: 'drops trigger artifact_revisions_immutable on artifact_revisions' });
+    expect(classifyMigrationSql(sql)).toMatchObject({ safe: false });
+  });
+
+  it('definedDbObjects follows drops in order', () => {
+    const base = definedDbObjects([artifactRevisionsTrigger, 'DROP TRIGGER artifacts_record_revision ON artifacts; DROP FUNCTION "public"."artifacts_record_revision"();']);
+    expect(base.functions.has('artifacts_record_revision')).toBe(false);
+    expect(base.triggers.has('artifacts_record_revision')).toBe(false);
+    expect(base.functions.has('artifact_revisions_immutable')).toBe(true);
   });
 });
 

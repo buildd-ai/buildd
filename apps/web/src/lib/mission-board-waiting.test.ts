@@ -24,7 +24,7 @@ const edge = (over: Partial<EdgeFactsRow> = {}): EdgeFactsRow => ({
   arm_inferred_unstarted_holder: false,
   arm_force_start: false,
   arm_surface_audit_scope: false,
-  arm_bypass: false,
+  arm_assess_start: false,
   ...over,
 });
 
@@ -42,7 +42,7 @@ describe('edgeReleaseArm', () => {
   });
 
   it('gate-level arms win: they release every edge of the dependent', () => {
-    expect(edgeReleaseArm(edge({ arm_bypass: true, arm_early_release: true }))).toBe('bypass');
+    expect(edgeReleaseArm(edge({ arm_assess_start: true }))).toBe('assess_start');
     expect(edgeReleaseArm(edge({ arm_surface_audit_scope: true }))).toBe('surface_audit_scope');
   });
 
@@ -71,7 +71,7 @@ describe('waitingKindFor', () => {
   });
 
   it('otherwise the claim loop\'s last deferral, and nothing when there is none', () => {
-    expect(waitingKindFor(task({ deferralReason: 'workspace_cap' }), MISSION_FREE)).toBe('workspace_cap');
+    expect(waitingKindFor(task({ deferralReason: 'mission_budget' }), MISSION_FREE)).toBe('mission_budget');
     expect(waitingKindFor(task({ deferralReason: 'mission_concurrent' }), MISSION_FREE)).toBe('mission_concurrent');
     expect(waitingKindFor(task({ deferralReason: 'path_overlap' }), MISSION_FREE)).toBe('pr_overlap_live');
     expect(waitingKindFor(task({ deferralReason: 'something_new' }), MISSION_FREE)).toBeNull();
@@ -89,11 +89,11 @@ describe('combineGateFacts', () => {
         edge({ dependent_id: 'e', dependency_id: 'a', arm_status: true }),
       ],
       pending: [{ id: 'b', deferred: false, held: false }, { id: 'c', deferred: false, held: false }, { id: 'd', deferred: false, held: false }, { id: 'e', deferred: false, held: false }],
-      deferrals: [{ taskId: 'e', reason: 'workspace_cap' }],
+      deferrals: [{ taskId: 'e', reason: 'mission_concurrent' }],
       mission: MISSION_FREE,
     });
     expect(facts.releasedEdges).toEqual([{ dependentId: 'b', dependencyId: 'a', arm: 'early_release' }]);
-    expect(facts.waitingKinds).toEqual({ c: 'dep_declared', d: 'dep_inferred', e: 'workspace_cap' });
+    expect(facts.waitingKinds).toEqual({ c: 'dep_declared', d: 'dep_inferred', e: 'mission_concurrent' });
   });
 
   it('a held task reads held even when every edge is released', () => {
@@ -125,7 +125,7 @@ describe('the loader queries', () => {
     expect(q.params).toEqual(expect.arrayContaining([MISSION, 'm-2', 'ws-1']));
     // Same arms as the page's one-mission read.
     const one = render(edgeFactsSql(MISSION)).sql;
-    for (const arm of ['arm_status', 'arm_early_release', 'arm_force_start', 'arm_surface_audit_scope', 'arm_bypass']) {
+    for (const arm of ['arm_status', 'arm_early_release', 'arm_force_start', 'arm_surface_audit_scope', 'arm_assess_start']) {
       expect(one).toContain(arm);
       expect(q.sql).toContain(arm);
     }

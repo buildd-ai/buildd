@@ -4,6 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  ownerParkedIn,
   parseRenderVersion,
   renderDeliveryActivity,
   renderVersionMarker,
@@ -242,5 +243,85 @@ describe('58c8961e: why each review round started', () => {
 
   test('a round recorded before triggers keeps its plain label', () => {
     expect(transitionsToActivityEntries(log, rounds, attempts).filter((e) => e.kind === 'review_queued').map((e) => e.detail)).toEqual(['round 1', 'round 2']);
+  });
+});
+
+describe('WORKING with the owner parked in the queue (loop pass, requeue) is not "Agent working"', () => {
+  const working = (ts: ActivityTransition[]) =>
+    renderDeliveryActivity({ view: { delivery: D({ state: 'WORKING', version: 9 }), rounds: [], attempts: [] }, transitions: ts, timezone: 'UTC' });
+
+  test('a loop hold requeue, then CI readings, still reads as waiting for the next pass', () => {
+    v = 0;
+    const ts = [
+      T('DeliveryOpened', null, 'WORKING', {}, 0),
+      T('AttemptStarted', 'WORKING', 'WORKING', { start: true, taskId: 't1' }, 1),
+      T('AttemptRequeued', 'WORKING', 'WORKING', { requeue: true, reason: 'loop_hold', taskId: 't1' }, 2),
+      T('CiObserved', 'WORKING', 'WORKING', { verdict: 'red' }, 3),
+    ];
+    expect(ownerParkedIn(ts)).toBe(true);
+    const body = working(ts);
+    expect(body).toContain("Waiting for the agent's next pass");
+    expect(body).not.toContain('Agent working');
+  });
+
+  test('the next claim starts it: Agent working again', () => {
+    v = 0;
+    const ts = [
+      T('DeliveryOpened', null, 'WORKING', {}, 0),
+      T('AttemptRequeued', 'WORKING', 'WORKING', { requeue: true, reason: 'loop_hold', taskId: 't1' }, 1),
+      T('AttemptStarted', 'WORKING', 'WORKING', { start: true, taskId: 't1' }, 2),
+    ];
+    expect(ownerParkedIn(ts)).toBe(false);
+    expect(working(ts)).toContain('Agent working');
+  });
+
+  test('an end the task retries, and a reopen to pending, park it; a reopen to assigned does not', () => {
+    v = 0;
+    expect(ownerParkedIn([T('AttemptEnded', 'WORKING', 'WORKING', { outcome: 'failed', requeue: true }, 1)])).toBe(true);
+    expect(ownerParkedIn([T('AttemptReopened', 'WORKING', 'WORKING', { reopen: true, to: 'pending' }, 2)])).toBe(true);
+    expect(ownerParkedIn([T('AttemptReopened', 'WORKING', 'WORKING', { reopen: true, to: 'assigned' }, 3)])).toBe(false);
+    expect(ownerParkedIn([T('DeliveryOpened', null, 'WORKING', {}, 0)])).toBe(false);
+  });
+});
+
+describe('a long delivery: more rows than the comment keeps', () => {
+  // Five review rounds, each changes-requested then a fix: well past MAX_ACTIVITY_ENTRIES.
+  const many = (): { ts: ActivityTransition[]; rs: RoundSnapshot[]; as: AttemptSnapshot[] } => {
+    v = 0;
+    const rs: RoundSnapshot[] = [];
+    const as: AttemptSnapshot[] = [];
+    const ts: ActivityTransition[] = [T('DeliveryOpened', null, 'WORKING', {}, 0)];
+    let min = 1;
+    for (let n = 1; n <= 5; n++) {
+      const head = `H${n}`;
+      rs.push({ id: `r${n}`, round: n, headSha: head, kind: n === 1 ? 'full' : 'delta', status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes', failureCount: 0 });
+      as.push({ id: `a${n}`, family: 'review_fix', attemptNo: n, mode: 'agent', boundHeadSha: head, triggerReason: `r${n}`, taskId: `ft${n}`, status: 'ended', outcome: 'delivered', maxAttempts: 9, reportedShas: [] });
+      ts.push(T('AttemptEnded', n === 1 ? 'WORKING' : 'FIXING', 'AWAITING_REVIEW', { outcome: 'success', live: live(head) }, min++));
+      ts.push(T('ReviewVerdictRecorded', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', { roundId: `r${n}`, verdict: 'request_changes', effectiveVerdict: 'request_changes' }, min++));
+      ts.push(T('FixClaimed', 'CHANGES_REQUESTED', 'FIXING', { attemptId: `a${n}`, roundId: `r${n}`, live: live(head) }, min++));
+    }
+    return { ts, rs, as };
+  };
+
+  test('"Started" is the delivery start, a fold line links the task, and the round label is the delivery round', () => {
+    const { ts, rs, as } = many();
+    const body = renderDeliveryActivity({
+      view: { delivery: D({ state: 'FIXING', currentRound: 5, ownerTaskId: 'owner-task' }), rounds: rs, attempts: as },
+      transitions: ts, timezone: 'UTC',
+    });
+    expect(body).toContain('Started Oct 6, 10:00 UTC');
+    expect(body).toMatch(/^- \d+ earlier events · \[see Buildd\]\([^)]*\/app\/tasks\/owner-task\)$/m);
+    const queued = body.split('\n').filter((l) => l.includes('Re-review queued') || l.includes('Review queued'));
+    expect(queued[queued.length - 1]).toContain('round 5');
+    // No row is offset from a kept row: the first kept row is well past 0m.
+    expect(body).not.toContain('`0m`');
+  });
+
+  test('rounds with no transition here (imported with a legacy PR): the newest queued row is still the delivery round', () => {
+    const { ts, rs, as } = many();
+    // Drop the first two rounds' transitions; their rounds remain in the view.
+    const tail = [ts[0], ...ts.slice(7)];
+    const entries = transitionsToActivityEntries(tail, rs, as);
+    expect(entries.filter((e) => e.kind === 'review_queued').map((e) => e.detail)).toEqual(['round 3', 'round 4', 'round 5']);
   });
 });

@@ -67,7 +67,7 @@ const task = (over: Record<string, unknown> = {}) => ({
 
 const drawArgs = (over: Record<string, unknown> = {}) => ({
   teamId: 'team-1', task: task(), explicitModel: null, routerReason: 'baseline',
-  routerModel: 'sonnet', roleModel: null, budgetPressure: 0.1, ...over,
+  routerModel: 'sonnet', roleModel: null, budgetPressure: 0.1, executor: 'runner', ...over,
 }) as any;
 
 beforeEach(() => {
@@ -146,6 +146,21 @@ describe('drawModelRoutingArm', () => {
     // explicitModel set — as it is after a first claim wrote context.model.
     const d = await src.drawModelRoutingArm(drawArgs({ explicitModel: 'claude-sonnet-5', routerReason: 'explicit_override' }));
     expect(d).toMatchObject({ arm: 'control', alreadyRecorded: true });
+  });
+
+  // Work analytics spec R-8 / AC-3: a claim from a person's own session runs on
+  // that session's model, whatever the arm says, so it is never enrolled.
+  it('an interactive claim is not enrolled: no draw, no lookup, no prior-row read', async () => {
+    fake.experimentRows = [running()];
+    expect(await src.drawModelRoutingArm(drawArgs({ executor: 'interactive' }))).toBeNull();
+    expect(fake.selectCalls).toBe(0);
+  });
+
+  it('an interactive retry of an enrolled task does not inherit the arm', async () => {
+    fake.experimentRows = [running()];
+    fake.priorRows = [{ taskId: 'parent-1', unitType: 'task', unitId: 'parent-1', arm: 'treatment', propensity: 0.5 }];
+    const d = await src.drawModelRoutingArm(drawArgs({ executor: 'interactive', task: task({ taskClass: 'attempt', parentTaskId: 'parent-1' }) }));
+    expect(d).toBeNull();
   });
 
   it('never throws: a db error means "no experiment"', async () => {

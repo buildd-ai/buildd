@@ -29,6 +29,8 @@ describe('question context loader liveness', () => {
     const loaded = await loadQuestionContext('task', 'viewer');
     expect(loaded?.view).toMatchObject({ open: false, awaitingAgent: false, answer: null,
       question: { headline: question.title } });
+    // No agent is waiting, so the answer cannot be delivered: it is a left question, not an ask.
+    expect(loaded?.view.askerLabel).toBe('The agent left a question');
     // Status must be selected from the DB, rather than inferred from waitingFor.
     expect(findWorkers.mock.calls[0]?.[0]).toMatchObject({ columns: { status: true } });
   });
@@ -41,6 +43,6 @@ describe('question context loader liveness', () => {
   it('opens the same retained question only for a waiting worker on an active task', async () => {
     taskStatus = 'in_progress'; workerStatus = 'waiting_input';
     expect((await loadQuestionContext('task', 'viewer'))?.view)
-      .toMatchObject({ open: true, workerId: 'worker', answer: null });
+      .toMatchObject({ open: true, workerId: 'worker', answer: null, askerLabel: 'The agent asks' });
   });
 });

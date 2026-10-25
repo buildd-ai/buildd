@@ -13,6 +13,8 @@
 import { selectStripCell } from './strip-select';
 import { useEffect, useState } from 'react';
 import type { GoalCriterion } from '@buildd/shared';
+import DesignsSection from '@/components/DesignsSection';
+import { DESIGN_PREVIEW_FIXTURE_SCREENS } from './DesignPreviewFixture';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionLayoutShell, { MissionBoardHeader } from '@/app/app/(protected)/missions/[id]/MissionLayoutShell';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
@@ -37,8 +39,11 @@ const CRITERIA: GoalCriterion[] = [
 export default function MissionDetailCompactFixture() {
   // Built after mount: the clocks read the real now, so server and client render alike.
   const [fixture, setFixture] = useState<Fixture | null>(null);
+  // `&design=1` adds the mission page's Design section around the sample file; `&design=unavailable`, storage unable to serve it.
+  const [design, setDesign] = useState<string | null>(null);
   useEffect(() => {
     const { variant, select } = parseMissionDetailCompact(new URLSearchParams(window.location.search));
+    setDesign(new URLSearchParams(window.location.search).get('design'));
     setFixture(missionDetailCompactFixture(variant, select, Date.now()));
   }, []);
   // `&select=`: open on that strip position, the way a tap would (the strip owns its selection).
@@ -114,6 +119,23 @@ export default function MissionDetailCompactFixture() {
           flow={header(null)}
           feed={header(null)}
         />
+        {design ? (
+          <div className="px-4 pb-6 md:px-8">
+            <DesignsSection
+              designs={[{
+                id: 'fixture-mission-design',
+                title: 'Navigation design (sample)',
+                downloadUrl: '/app/dev/fixtures/design',
+                view: {
+                  revision: 1,
+                  frameUrl: design === 'unavailable' ? null : '/app/dev/fixtures/design',
+                  screens: DESIGN_PREVIEW_FIXTURE_SCREENS,
+                  revisionNote: null,
+                },
+              }]}
+            />
+          </div>
+        ) : null}
       </main>
       <MissionsBottomNav />
     </div>

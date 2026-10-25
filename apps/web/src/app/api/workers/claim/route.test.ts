@@ -61,7 +61,6 @@ const mockMissionsFindMany = mock(() => [] as any[]);
 // mission keep the role gate applying exactly as before.
 const mockTasksFindFirst = mock(() => null as any);
 const mockMissionsFindFirst = mock(() => null as any);
-const mockOauthEpisodesFindMany = mock(() => [] as any[]);
 const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
 
@@ -82,8 +81,6 @@ function makeSelectChain(result: any[] = []) {
   return chain;
 }
 const mockDbSelect = mock(() => makeSelectChain([]));
-/** Every `.set()` payload written to the missions table (pacing stamp observer). */
-const missionsUpdateSets: any[] = [];
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -107,18 +104,6 @@ mock.module('@/lib/openai-credential', () => ({
   resolveOpenAiApiKey: mock(() => Promise.resolve(null as any)),
 }));
 
-const mockLoadOauthEpisodes = mock(() => Promise.resolve([] as any[]));
-const mockMeasureOauthWindow = mock(() => Promise.resolve({
-  windowStartedAt: new Date(),
-  usage: { workerCount: 0, turns: 0, tokens: 0, weightedTurns: 0, weightedTokens: 0 },
-}));
-const mockCountLiveSeatWorkers = mock(() => Promise.resolve(0));
-mock.module('@/lib/oauth-budget-window', () => ({
-  loadOauthEpisodes: mockLoadOauthEpisodes,
-  measureOauthWindow: mockMeasureOauthWindow,
-  countLiveSeatWorkers: mockCountLiveSeatWorkers,
-  resolveSeatIdPeers: mock((a: { id: string }) => Promise.resolve([a.id])),
-}));
 
 const mockRefreshMcpConnectorCredential = mock(() => Promise.resolve('error' as string));
 mock.module('@/lib/mcp-connector-refresh', () => ({
@@ -153,21 +138,12 @@ mock.module('@buildd/core/db', () => ({
       // brokered by the connector gateway (built-in Axiom/Vercel entries).
       connectorCatalogEntries: { findMany: async () => [] },
       missions: { findMany: mockMissionsFindMany, findFirst: mockMissionsFindFirst },
-      oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
     update: (table: any) => {
       // The mocked schema's workers table is an object (its `turns` column), not the string 'workers'.
       if (table === 'workers' || table?.turns === 'turns') return mockWorkersUpdate();
       if (table === 'tasks') return mockTasksUpdate();
       if (table === 'accounts' || table === mockAccountsTable) return mockAccountsUpdate();
-      if (table?.pacingMode === 'pacingMode') {
-        return {
-          set: (values: any) => {
-            missionsUpdateSets.push(values);
-            return { where: () => ({ catch: () => {}, then: (r: any) => Promise.resolve().then(r) }) };
-          },
-        };
-      }
       return mockTasksUpdate();
     },
     insert: (table: any) => table === mockErrorTracesTable ? mockErrorTracesInsert() : mockWorkersInsert(),
@@ -233,7 +209,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
   tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest', roleSlug: 'roleSlug' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
-  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled', defaultBackend: 'defaultBackend' },
+  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled', defaultBackend: 'defaultBackend' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workerErrorTraces: mockErrorTracesTable,
   workspaces: { id: 'id', accessMode: 'accessMode', teamId: 'teamId' },
@@ -241,7 +217,6 @@ mock.module('@buildd/core/db/schema', () => ({
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
   backendPauses: { teamId: 'teamId', backend: 'backend', resetsAt: 'resetsAt' },
-  oauthBudgetEpisodes: { accountId: 'accountId', exhaustedAt: 'exhaustedAt' },
   teams: { id: 'id', enabledBackends: 'enabledBackends' },
   connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName', transport: 'transport', command: 'command', args: 'args', envMapping: 'envMapping' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
@@ -437,6 +412,8 @@ mock.module('@buildd/core/model-routing-experiment-source', () => ({
   drawModelRoutingArm: mockDrawModelRoutingArm,
   applyModelRoutingTreatment: mockApplyModelRoutingTreatment,
   recordModelRoutingAssignment: mockRecordModelRoutingAssignment,
+  // Pure, so the real one: the guard tests assert what it writes onto the draw.
+  markDispatchFallback: require('@buildd/core/model-routing-experiment').markDispatchFallback,
 }));
 
 // Tier-pool draw glue. The real module is exercised in
@@ -672,8 +649,6 @@ describe('POST /api/workers/claim', () => {
     mockMissionsFindMany.mockReset();
     mockMissionsFindMany.mockResolvedValue([]);
     // Default: no learned OAuth budget episodes (pacing inert)
-    mockOauthEpisodesFindMany.mockReset();
-    mockOauthEpisodesFindMany.mockResolvedValue([]);
     // Default: empty select chain (role lookups, mission concurrency counts)
     mockDbSelect.mockReturnValue(makeSelectChain([]));
   });
@@ -2391,6 +2366,8 @@ describe('POST /api/workers/claim', () => {
     const wallOn = (seatKey: string | null, resetsAt = weeklyReset()) =>
       mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', resetsAt, reason: 'budget', seatKey }]);
 
+    // Parallelism limits AC-5: a wall on one runner's Claude login holds only
+    // that runner's Claude claims, never another runner's.
     it('lets runner B claim Claude work while runner A, whose login hit the wall, is deferred', async () => {
       const resetsAt = weeklyReset();
       wallOn(runnerSeatKey(RUNNER_A), resetsAt);
@@ -2410,7 +2387,7 @@ describe('POST /api/workers/claim', () => {
       expect(a.diagnostics.budgetBlock.walls).toEqual([
         { kind: 'runner_seat', backend: 'claude', resetsAt: resetsAt.toISOString() },
       ]);
-      expect(a.diagnostics.budgetBlock.summary).toContain("This runner's own Claude login hit its limit");
+      expect(a.diagnostics.budgetBlock.summary).toContain("This runner's Claude login is at its limit until");
       // A's resume poll lands on its own reset, in the future: no hot loop.
       expect(a.budgetResetsAt).toBe(resetsAt.toISOString());
     });
@@ -2985,7 +2962,7 @@ describe('POST /api/workers/claim', () => {
       expect(res.status).toBe(200);
       expect((await res.json()).workers.length).toBe(1);
       expect(mockDrawModelRoutingArm).toHaveBeenCalledTimes(1);
-      expect(mockDrawModelRoutingArm.mock.calls[0][0]).toMatchObject({ teamId: 'team-1', routerReason: 'baseline', explicitModel: null });
+      expect(mockDrawModelRoutingArm.mock.calls[0][0]).toMatchObject({ teamId: 'team-1', routerReason: 'baseline', explicitModel: null, executor: 'runner' });
       expect(mockApplyModelRoutingTreatment).not.toHaveBeenCalled();
       expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
       const claimSet = sets.find(v => v.status === 'assigned');
@@ -3310,8 +3287,21 @@ describe('POST /api/workers/claim', () => {
         expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5-5');
         expect(draw.served).toBe(false);
         expect(draw.assignedModel).toBe('claude-sonnet-5-5');
-        expect(draw.eligibility).toMatchObject({ fallback: 'model_unrecognized' });
+        expect(draw.eligibility).toMatchObject({ fallback: 'dispatch_rejected', fallbackReason: 'newer_than_floor_table', rejectedModel: BAD });
         expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5-5' });
+      });
+
+      it('a routing-experiment draw whose model the guard refuses records the fallback, its reason and the refused model', async () => {
+        const sets = setup();
+        const draw: any = { arm: 'treatment', served: true, assignedModel: BAD, eligibility: { source: 'drawn' } };
+        mockDrawModelRoutingArm.mockResolvedValue(draw);
+        mockApplyModelRoutingTreatment.mockResolvedValue({ tier: 'premium', model: BAD, provider: 'anthropic', source: 'default' });
+        await POST(claimReq());
+
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5-5');
+        expect(draw).toMatchObject({ served: false, assignedModel: 'claude-sonnet-5-5' });
+        expect(draw.eligibility).toEqual({ source: 'drawn', fallback: 'dispatch_rejected', fallbackReason: 'newer_than_floor_table', rejectedModel: BAD });
+        expect(mockRecordModelRoutingAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5-5' });
       });
 
       it('a recognised model is left alone and leaves no trace', async () => {
@@ -3465,9 +3455,10 @@ describe('POST /api/workers/claim', () => {
       workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
     });
 
-    const claimAs = async (runner: string, requiredCapabilities: unknown) => {
+    const claimAs = async (runner: string, requiredCapabilities: unknown, extra: { environment?: unknown; accountName?: string } = {}) => {
       mockAuthenticateApiKey.mockResolvedValue({
         id: 'account-1',
+        name: extra.accountName,
         maxConcurrentWorkers: 3,
         type: 'user',
         authType: 'api',
@@ -3481,11 +3472,33 @@ describe('POST /api/workers/claim', () => {
       }));
       const res = await POST(createMockRequest({
         headers: { Authorization: 'Bearer bld_test' },
-        body: { runner },
+        body: { runner, ...(extra.environment ? { environment: extra.environment } : {}) },
       }));
       expect(res.status).toBe(200);
       return res.json();
     };
+
+    // What a real runner claims with: its key is its localUiUrl, never the
+    // label list_runners leads with nor the hostname its workers report.
+    const realRunner = {
+      key: 'http://100.64.0.1:8766',
+      environment: { labels: { type: 'local', hostname: 'build-host' } },
+      accountName: 'team-runner',
+    };
+
+    it.each([['team-runner'], ['build-host'], ['http://100.64.0.1:8766'], ['Build-Host']])(
+      'a pin by the name list_runners shows (%p) is claimed by that runner',
+      async (pin) => {
+        const data = await claimAs(realRunner.key, [`runner:${pin}`], realRunner);
+        expect(data.workers.length).toBe(1);
+      },
+    );
+
+    it('a real runner still defers a task pinned to another runner', async () => {
+      const data = await claimAs(realRunner.key, ['runner:the-mac'], realRunner);
+      expect(data.workers).toEqual([]);
+      expect(data.diagnostics.deferrals.runner_capability).toBe(1);
+    });
 
     it('defers a pinned task for a different runner, naming the pin', async () => {
       const data = await claimAs('coder', ['runner:the-mac']);
@@ -3505,126 +3518,110 @@ describe('POST /api/workers/claim', () => {
     });
   });
 
-  // --- Per-workspace concurrency cap tests ---
+  // --- No workspace concurrency cap (spec: runner slots and mission cap only) ---
 
-  it('caps concurrent workers per repo-backed workspace at maxConcurrentTasks', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({
-      id: 'account-1',
-      name: 'acct',
-      teamId: 'team-1',
-      maxConcurrentWorkers: 10,
-      type: 'user',
-      authType: 'api',
-    });
-
-    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-repo', accessMode: 'open', teamId: 'team-1' }]);
-    mockAccountWorkspacesFindMany.mockResolvedValue([]);
-    const repoWs = { id: 'ws-repo', repo: 'org/repo', maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: { claimPlanner: 'record' } };
-    mockTasksFindMany.mockResolvedValue(
-      [1, 2, 3, 4, 5].map((n) => ({
-        id: `task-${n}`,
-        workspaceId: 'ws-repo',
-        title: `Task ${n}`,
-        requiredCapabilities: [],
-        workspace: repoWs,
-      })),
-    );
-    // Every optimistic claim + conditional insert "succeeds" so only the in-loop cap limits us.
+  function repoTasks(count: number, workspaceId = 'ws-repo') {
+    const ws = { id: workspaceId, repo: 'org/repo', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } };
+    return Array.from({ length: count }, (_, i) => ({
+      id: `task-${i + 1}`,
+      workspaceId,
+      title: `Task ${i + 1}`,
+      requiredCapabilities: [],
+      pathManifest: [`src/file-${i + 1}.ts`],
+      workspace: ws,
+    }));
+  }
+  function everyInsertSucceeds() {
     let inserted = 0;
     mockDbExecute.mockImplementation(() =>
       Promise.resolve({ rows: [{ id: `worker-${++inserted}`, task_id: `task-${inserted}`, branch: 'b', status: 'idle' }] }),
     );
+  }
 
-    const req = createMockRequest({
-      headers: { Authorization: 'Bearer bld_test' },
-      body: { runner: 'test-runner' },
+  // AC-1: the runner's free slots are the only bound on independent work in
+  // one repo. Nine pending tasks, no mission, twelve free slots: all nine start.
+  it('AC-1: claims all 9 independent tasks of one repo-backed workspace in one call when the runner has 12 free slots', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', name: 'acct', teamId: 'team-1', maxConcurrentWorkers: 12, type: 'user', authType: 'api',
     });
-    const res = await POST(req);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-repo', accessMode: 'open', teamId: 'team-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue(repoTasks(9));
+    everyInsertSucceeds();
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', maxTasks: 12 },
+    }));
 
     expect(res.status).toBe(200);
     const data = await res.json();
-    // 5 same-repo tasks pending, cap 3 → only 3 claimed in this batch.
-    expect(data.workers.length).toBe(3);
+    expect(data.workers.length).toBe(9);
+    expect(JSON.stringify(data)).not.toContain('workspace_cap');
   });
 
-  it('counts existing active workers in the repo toward the cap', async () => {
+  // AC-4: a workspace that already runs many workers is not held back by any
+  // per-workspace number; nothing in a claim response says workspace_cap or
+  // mission_paced.
+  it('AC-4: a repo workspace with many live workers still claims, and no deferral names workspace_cap or mission_paced', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
-      id: 'account-1',
-      name: 'acct',
-      teamId: 'team-1',
-      maxConcurrentWorkers: 10,
-      type: 'user',
-      authType: 'api',
+      id: 'account-1', name: 'acct', teamId: 'team-1', maxConcurrentWorkers: 12, type: 'user', authType: 'api',
     });
-
-    // Two workers already active in ws-repo (cap 3) → only 1 more may be claimed.
-    mockWorkersFindMany.mockResolvedValue([
-      { workspaceId: 'ws-repo', status: 'running' },
-      { workspaceId: 'ws-repo', status: 'idle' },
-    ]);
+    // Five workers already live in ws-repo: more than any old default cap.
+    mockWorkersFindMany.mockResolvedValue(
+      [1, 2, 3, 4, 5].map(n => ({ id: `live-${n}`, workspaceId: 'ws-repo', taskId: `live-task-${n}`, status: 'running' })),
+    );
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-repo', accessMode: 'open', teamId: 'team-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
-    const repoWs = { id: 'ws-repo', repo: 'org/repo', maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: { claimPlanner: 'record' } };
-    mockTasksFindMany.mockResolvedValue(
-      [1, 2, 3].map((n) => ({
-        id: `task-${n}`,
-        workspaceId: 'ws-repo',
-        title: `Task ${n}`,
-        requiredCapabilities: [],
-        workspace: repoWs,
-      })),
-    );
-    let inserted = 0;
-    mockDbExecute.mockImplementation(() =>
-      Promise.resolve({ rows: [{ id: `worker-${++inserted}`, task_id: `task-${inserted}`, branch: 'b', status: 'idle' }] }),
-    );
+    // One mission task among them: the mission just started a task, which
+    // used to pace the next start.
+    const tasksInRepo = repoTasks(3);
+    (tasksInRepo[0] as any).missionId = 'mission-A';
+    mockTasksFindMany.mockResolvedValueOnce(tasksInRepo).mockResolvedValue([]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, lastTaskStartedAt: new Date() }]);
+    everyInsertSucceeds();
 
-    const req = createMockRequest({
+    const res = await POST(createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
-      body: { runner: 'test-runner' },
-    });
-    const res = await POST(req);
+      body: { runner: 'test-runner', maxTasks: 6 },
+    }));
 
+    expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.workers.length).toBe(1);
+    expect(data.workers.length).toBe(3);
+    const text = JSON.stringify(data);
+    expect(text).not.toContain('workspace_cap');
+    expect(text).not.toContain('mission_paced');
+    expect(data.diagnostics?.deferrals ?? {}).not.toHaveProperty('workspace_cap');
+    expect(data.diagnostics?.deferrals ?? {}).not.toHaveProperty('mission_paced');
   });
 
-  it('does not cap repo-less workspaces (no serialization)', async () => {
+  it('AC-4: when every candidate is deferred, the deferral counters carry no workspace_cap or mission_paced key', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
-      id: 'account-1',
-      name: 'acct',
-      teamId: 'team-1',
-      maxConcurrentWorkers: 10,
-      type: 'user',
-      authType: 'api',
+      id: 'account-1', name: 'acct', teamId: 'team-1', maxConcurrentWorkers: 12, type: 'user', authType: 'api',
     });
-
-    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-coord', accessMode: 'open', teamId: 'team-1' }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-repo', accessMode: 'open', teamId: 'team-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
-    // No repo → cap must not apply even with maxConcurrentTasks set.
-    const coordWs = { id: 'ws-coord', repo: null, maxConcurrentTasks: 3, teamId: 'team-1', gitConfig: { claimPlanner: 'record' } };
-    mockTasksFindMany.mockResolvedValue(
-      [1, 2, 3, 4, 5].map((n) => ({
-        id: `task-${n}`,
-        workspaceId: 'ws-coord',
-        title: `Task ${n}`,
-        requiredCapabilities: [],
-        workspace: coordWs,
-      })),
-    );
-    let inserted = 0;
-    mockDbExecute.mockImplementation(() =>
-      Promise.resolve({ rows: [{ id: `worker-${++inserted}`, task_id: `task-${inserted}`, branch: 'b', status: 'idle' }] }),
-    );
+    const tasksInRepo = repoTasks(1);
+    (tasksInRepo[0] as any).missionId = 'mission-A';
+    mockTasksFindMany.mockResolvedValueOnce(tasksInRepo).mockResolvedValue([]);
+    // The mission cap is the per-work limit that stays: one in flight, cap 1.
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1 }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([
+      { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['src/other.ts'] },
+    ]));
+    everyInsertSucceeds();
 
-    const req = createMockRequest({
+    const res = await POST(createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
-      body: { runner: 'test-runner' },
-    });
-    const res = await POST(req);
+      body: { runner: 'test-runner', maxTasks: 6 },
+    }));
 
     const data = await res.json();
-    expect(data.workers.length).toBe(5);
+    expect(data.workers.length).toBe(0);
+    expect(data.diagnostics?.deferrals?.mission_concurrent).toBe(1);
+    expect(Object.keys(data.diagnostics?.deferrals ?? {})).not.toContain('workspace_cap');
+    expect(Object.keys(data.diagnostics?.deferrals ?? {})).not.toContain('mission_paced');
   });
 
   // --- Dependency filtering tests ---
@@ -3726,9 +3723,6 @@ describe('POST /api/workers/claim', () => {
         id: 'mission-1',
         status: 'active',
         maxConcurrentTasks: null,
-        pacingMode: 'eager',
-        pacingMaxPerHour: null,
-        lastTaskStartedAt: null,
         workingBranch: 'mission/checkout-arc-1a2b3c4d',
         integrationBranchEnabled: true,
       },
@@ -3783,8 +3777,7 @@ describe('POST /api/workers/claim', () => {
       mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
       mockAccountWorkspacesFindMany.mockResolvedValue([]);
       mockMissionsFindMany.mockResolvedValue([{
-        id: 'mission-1', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null,
-        lastTaskStartedAt: null, workingBranch: 'mission/checkout-arc-1a2b3c4d-delivery-2', integrationBranchEnabled: true,
+        id: 'mission-1', status: 'active', maxConcurrentTasks: null, workingBranch: 'mission/checkout-arc-1a2b3c4d-delivery-2', integrationBranchEnabled: true,
       }]);
       mockTasksFindMany.mockResolvedValueOnce([{
         id: 'task-1', workspaceId: 'ws-1', missionId: 'mission-1', title: 'Test task', context: { ...context },
@@ -3945,7 +3938,7 @@ describe('POST /api/workers/claim', () => {
   });
 
   // The PR #3678 reviewer: filed, woken, and the runner's wake claim named it
-  // within a second — but a WHERE gate (the workspace cap) dropped it, so the
+  // within a second — but a WHERE gate (a dependency) dropped it, so the
   // runner heard only `no_pending_tasks` and nothing recorded why. The exact
   // exclusion must reach the task's gate history and its stamp.
   it('a wake claim the WHERE refuses records the exact gate on the task (ledger + stamp)', async () => {
@@ -3956,7 +3949,7 @@ describe('POST /api/workers/claim', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
     mockAccountWorkspacesFindMany.mockResolvedValue([]);
     mockTasksFindMany.mockResolvedValueOnce([]);
-    const exclusion = { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' };
+    const exclusion = { code: 'deps_blocked', detail: 'A dependency is not satisfied yet.' };
     mockDiagnoseExplicitTaskExclusion.mockReset();
     mockDiagnoseExplicitTaskExclusion.mockResolvedValueOnce(exclusion);
     mockStampLastClaimAttempt.mockReset();
@@ -3964,14 +3957,14 @@ describe('POST /api/workers/claim', () => {
 
     const res = await POST(createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
-      body: { runner: 'coder-workspace', taskId: 'reviewer-task', workspaceId: 'ws-1' },
+      body: { runner: 'team-runner', taskId: 'reviewer-task', workspaceId: 'ws-1' },
     }));
     const data = await res.json();
     expect(data.diagnostics).toMatchObject({ reason: 'no_pending_tasks', taskExclusion: exclusion });
 
     await new Promise((r) => setTimeout(r, 0));
     const events = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).filter((e: any) => e.taskId === 'reviewer-task');
-    expect(events).toEqual([expect.objectContaining({ gate: 'claim_loop_deferral', reason: 'workspace_cap', workspaceId: 'ws-1' })]);
+    expect(events).toEqual([expect.objectContaining({ gate: 'claim_loop_deferral', reason: 'deps_blocked', workspaceId: 'ws-1' })]);
     expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({ taskId: 'reviewer-task', exclusion });
   });
 
@@ -6429,7 +6422,7 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers).toHaveLength(1);
   });
 
-  describe('mission pacing gates', () => {
+  describe('mission gates', () => {
     function apiAccount() {
       return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
     }
@@ -6464,9 +6457,6 @@ describe('POST /api/workers/claim', () => {
         id: 'mission-A',
         status: 'active',
         maxConcurrentTasks: null,
-        pacingMode: 'eager',
-        pacingMaxPerHour: null,
-        lastTaskStartedAt: new Date(),
       }]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
@@ -6483,7 +6473,7 @@ describe('POST /api/workers/claim', () => {
       mockEmit.mockClear();
       mockTasksFindMany.mockResolvedValueOnce([{ ...missionTask('task-1', 'mission-A'), context: { baseBranch: 'mission/a-0a1b2c3d' } }]);
       mockMissionsFindMany.mockResolvedValue([{
-        id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: new Date(),
+        id: 'mission-A', status: 'active', maxConcurrentTasks: null,
       }]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
@@ -6494,68 +6484,31 @@ describe('POST /api/workers/claim', () => {
       expect(claimed[0].tasks).toEqual([{ id: 'task-1', workspaceId: 'ws-1', missionId: 'mission-A', context: expect.objectContaining({ baseBranch: 'mission/a-0a1b2c3d' }) }]);
     });
 
-    it('skips task from paced mission when interval has not elapsed', async () => {
+    // AC-4: missions have no pacing. A mission that just started a task still
+    // starts every eligible candidate in the same poll, and no claim ever
+    // carries a mission_paced deferral.
+    it('claims every task of a mission that just started one, with no pacing deferral', async () => {
       mockAuthenticateApiKey.mockResolvedValue(apiAccount());
       setupClaimBase();
-      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', 'mission-A')]);
-      mockMissionsFindMany.mockResolvedValue([{
-        id: 'mission-A',
-        status: 'active',
-        maxConcurrentTasks: null,
-        pacingMode: 'paced',
-        pacingMaxPerHour: 2,
-        lastTaskStartedAt: new Date(Date.now() - 5 * 60 * 1000),
-      }]);
-
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
-      const data = await res.json();
-
-      expect(res.status).toBe(200);
-      expect(data.workers.length).toBe(0);
-    });
-
-    it('claims task from paced mission when interval has elapsed', async () => {
-      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-      setupClaimBase();
-      mockTasksFindMany.mockResolvedValueOnce([missionTask('task-1', 'mission-A')]);
-      mockMissionsFindMany.mockResolvedValue([{
-        id: 'mission-A',
-        status: 'active',
-        maxConcurrentTasks: null,
-        pacingMode: 'paced',
-        pacingMaxPerHour: 2,
-        lastTaskStartedAt: new Date(Date.now() - 35 * 60 * 1000),
-      }]);
-
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
-      const data = await res.json();
-
-      expect(res.status).toBe(200);
-      expect(data.workers.length).toBe(1);
-    });
-
-    it('claims only one task from a paced mission in a single poll (in-memory stamp)', async () => {
-      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-      setupClaimBase();
+      let inserted = 0;
+      mockDbExecute.mockImplementation(() =>
+        Promise.resolve({ rows: [{ id: `worker-${++inserted}`, task_id: `task-${inserted}`, branch: 'b', status: 'idle' }] }),
+      );
       mockTasksFindMany.mockResolvedValueOnce([
-        missionTask('task-1', 'mission-A'),
-        missionTask('task-2', 'mission-A'),
-        missionTask('task-3', 'mission-A'),
+        { ...missionTask('task-1', 'mission-A'), pathManifest: ['src/a.ts'] },
+        { ...missionTask('task-2', 'mission-A'), pathManifest: ['src/b.ts'] },
+        { ...missionTask('task-3', 'mission-A'), pathManifest: ['src/c.ts'] },
       ]);
       mockMissionsFindMany.mockResolvedValue([{
-        id: 'mission-A',
-        status: 'active',
-        maxConcurrentTasks: null,
-        pacingMode: 'paced',
-        pacingMaxPerHour: 1,
-        lastTaskStartedAt: null,
+        id: 'mission-A', status: 'active', maxConcurrentTasks: null, lastTaskStartedAt: new Date(),
       }]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
 
       expect(res.status).toBe(200);
-      expect(data.workers.length).toBe(1);
+      expect(data.workers.length).toBe(3);
+      expect(JSON.stringify(data)).not.toContain('mission_paced');
     });
 
     it('skips task from budget_exhausted mission', async () => {
@@ -6566,9 +6519,6 @@ describe('POST /api/workers/claim', () => {
         id: 'mission-A',
         status: 'budget_exhausted',
         maxConcurrentTasks: null,
-        pacingMode: 'eager',
-        pacingMaxPerHour: null,
-        lastTaskStartedAt: null,
       }]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
@@ -6586,9 +6536,6 @@ describe('POST /api/workers/claim', () => {
         id: 'mission-A',
         status: 'active',
         maxConcurrentTasks: 2,
-        pacingMode: 'eager',
-        pacingMaxPerHour: null,
-        lastTaskStartedAt: null,
       }]);
       // In-flight rows for the mission (one row per active worker) — the claim
       // route derives the concurrency count from these rows and also reads their
@@ -6616,9 +6563,6 @@ describe('POST /api/workers/claim', () => {
         id: 'mission-A',
         status: 'active',
         maxConcurrentTasks: 3,
-        pacingMode: 'eager',
-        pacingMaxPerHour: null,
-        lastTaskStartedAt: null,
       }]);
       // Concrete peer manifest: the mission's single scope-undeclared slot is
       // a separate gate (see the advisory-manifest describe below), and a null
@@ -6635,10 +6579,10 @@ describe('POST /api/workers/claim', () => {
     });
 
     // Review tasks inherit missionId from the PR they review, but they are not
-    // mission work: a reviewer reads a diff and posts a verdict. Pacing and the
-    // mission concurrency cap exist to meter builder starts, so a review must
-    // neither wait on them nor consume them (V2).
-    describe('review tasks are exempt from mission pacing/concurrency', () => {
+    // mission work: a reviewer reads a diff and posts a verdict. The mission
+    // concurrency cap exists to meter builder starts, so a review must
+    // neither wait on it nor consume it (V2).
+    describe('review tasks are exempt from mission concurrency', () => {
       function reviewTask(id: string, missionId: string) {
         return {
           ...missionTask(id, missionId),
@@ -6654,14 +6598,11 @@ describe('POST /api/workers/claim', () => {
       function builderTask(id: string, missionId: string) {
         return { ...missionTask(id, missionId), category: 'feature', pathManifest: [`src/${id}.ts`] };
       }
-      function pacedMission(overrides: Record<string, unknown> = {}) {
+      function cappedMission(overrides: Record<string, unknown> = {}) {
         return {
           id: 'mission-A',
           status: 'active',
-          maxConcurrentTasks: null,
-          pacingMode: 'paced',
-          pacingMaxPerHour: 1,
-          lastTaskStartedAt: new Date(Date.now() - 60 * 1000),
+          maxConcurrentTasks: 1,
           ...overrides,
         };
       }
@@ -6670,48 +6611,11 @@ describe('POST /api/workers/claim', () => {
         return { res, data: await res.json() };
       }
 
-      beforeEach(() => { missionsUpdateSets.length = 0; });
-
-      it('(a) claims a review on a paced mission whose last start was 60s ago, without stamping lastTaskStartedAt', async () => {
-        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-        setupClaimBase();
-        mockTasksFindMany.mockResolvedValueOnce([reviewTask('task-1', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission()]);
-
-        const { res, data } = await claim();
-        expect(res.status).toBe(200);
-        expect(data.workers.map((w: any) => w.taskId)).toEqual(['task-1']);
-        expect(missionsUpdateSets.filter(s => 'lastTaskStartedAt' in s)).toEqual([]);
-      });
-
-      it('(b) still defers a builder on the same paced mission as mission_paced', async () => {
-        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-        setupClaimBase();
-        mockTasksFindMany.mockResolvedValueOnce([builderTask('task-1', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission()]);
-
-        const { data } = await claim();
-        expect(data.workers.length).toBe(0);
-        expect(data.diagnostics?.deferrals?.mission_paced).toBe(1);
-      });
-
-      it('a claimed review does not push back a builder later in the same batch', async () => {
-        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-        setupClaimBase();
-        mockTasksFindMany.mockResolvedValueOnce([reviewTask('task-1', 'mission-A'), builderTask('task-2', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission({ lastTaskStartedAt: null })]);
-
-        const { data } = await claim();
-        expect(data.workers.length).toBe(2);
-        // Only the builder's start is stamped.
-        expect(missionsUpdateSets.filter(s => 'lastTaskStartedAt' in s).length).toBe(1);
-      });
-
       it('(c) cap 1 with one active builder: the review is claimed and a builder is deferred', async () => {
         mockAuthenticateApiKey.mockResolvedValue(apiAccount());
         setupClaimBase();
         mockTasksFindMany.mockResolvedValueOnce([reviewTask('task-1', 'mission-A'), builderTask('task-2', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission({ pacingMode: 'eager', maxConcurrentTasks: 1, lastTaskStartedAt: null })]);
+        mockMissionsFindMany.mockResolvedValue([cappedMission()]);
         mockDbSelect.mockReturnValue(makeSelectChain([
           { missionId: 'mission-A', taskId: 'task-8', pathManifest: ['src/other.ts'], category: 'feature' },
         ]));
@@ -6724,7 +6628,7 @@ describe('POST /api/workers/claim', () => {
         mockAuthenticateApiKey.mockResolvedValue(apiAccount());
         setupClaimBase();
         mockTasksFindMany.mockResolvedValueOnce([builderTask('task-1', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission({ pacingMode: 'eager', maxConcurrentTasks: 1, lastTaskStartedAt: null })]);
+        mockMissionsFindMany.mockResolvedValue([cappedMission()]);
         mockDbSelect.mockReturnValue(makeSelectChain([
           { missionId: 'mission-A', taskId: 'task-8', pathManifest: [], category: 'review', context: { reviewerFor: 'orig-8' } },
         ]));
@@ -6735,23 +6639,12 @@ describe('POST /api/workers/claim', () => {
 
       // The exemption belongs to reviewer-dispatched rows only. POST /api/tasks
       // accepts `category: 'review'` from any caller, so the category alone
-      // must not unlock the mission's pacing or concurrency cap.
-      it('a review-labelled task without reviewerFor is still paced', async () => {
-        mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-        setupClaimBase();
-        mockTasksFindMany.mockResolvedValueOnce([selfLabelledReview('task-1', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission()]);
-
-        const { data } = await claim();
-        expect(data.workers.length).toBe(0);
-        expect(data.diagnostics?.deferrals?.mission_paced).toBe(1);
-      });
-
+      // must not unlock the mission's concurrency cap.
       it('a review-labelled task without reviewerFor is still held by the concurrency cap', async () => {
         mockAuthenticateApiKey.mockResolvedValue(apiAccount());
         setupClaimBase();
         mockTasksFindMany.mockResolvedValueOnce([selfLabelledReview('task-1', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission({ pacingMode: 'eager', maxConcurrentTasks: 1, lastTaskStartedAt: null })]);
+        mockMissionsFindMany.mockResolvedValue([cappedMission()]);
         mockDbSelect.mockReturnValue(makeSelectChain([
           { missionId: 'mission-A', taskId: 'task-8', pathManifest: ['src/other.ts'], category: 'feature', context: {} },
         ]));
@@ -6764,7 +6657,7 @@ describe('POST /api/workers/claim', () => {
         mockAuthenticateApiKey.mockResolvedValue(apiAccount());
         setupClaimBase();
         mockTasksFindMany.mockResolvedValueOnce([builderTask('task-1', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission({ pacingMode: 'eager', maxConcurrentTasks: 1, lastTaskStartedAt: null })]);
+        mockMissionsFindMany.mockResolvedValue([cappedMission()]);
         mockDbSelect.mockReturnValue(makeSelectChain([
           { missionId: 'mission-A', taskId: 'task-8', pathManifest: ['src/other.ts'], category: 'review', context: {} },
         ]));
@@ -6777,7 +6670,7 @@ describe('POST /api/workers/claim', () => {
         mockAuthenticateApiKey.mockResolvedValue(apiAccount());
         setupClaimBase();
         mockTasksFindMany.mockResolvedValueOnce([reviewTask('task-1', 'mission-A')]);
-        mockMissionsFindMany.mockResolvedValue([pacedMission({ status: 'budget_exhausted' })]);
+        mockMissionsFindMany.mockResolvedValue([cappedMission({ status: 'budget_exhausted' })]);
 
         const { data } = await claim();
         expect(data.workers.length).toBe(0);
@@ -8187,343 +8080,6 @@ describe('entity catalog injection at claim time', () => {
       }
     });
   });
-  // OAuth budget pacing (packages/core/oauth-budget.ts). Seat auth reports no
-  // cost, so pressure is learned from past exhaustion episodes. Its only effect
-  // is a lower per-seat concurrency cap (retaining half the slots) — see
-  // oauthParallelismCap.
-  describe('oauth budget pacing', () => {
-    // Several task UPDATEs can fire per claim (claim + post-claim bookkeeping),
-    // so keep every payload and pick the one carrying the routing decision.
-    let taskSetPayloads: any[] = [];
-    const claimPayload = () => taskSetPayloads.find(p => p && 'predictedModel' in p) ?? null;
-
-    function mockClaimSuccess() {
-      mockTasksUpdate.mockImplementation(() => ({
-        set: mock((payload: any) => {
-          taskSetPayloads.push(payload);
-          return {
-            where: mock(() => ({
-              returning: mock(() => [{ id: 'task-1' }]),
-            })),
-          };
-        }),
-      }));
-      mockDbExecute.mockReturnValue(Promise.resolve({
-        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
-      }));
-    }
-
-    /** Five episodes at 600 sonnet-equivalent turns → 'good' confidence, p25 = 600. */
-    function learnedWindow() {
-      return Array.from({ length: 5 }, (_, i) => ({
-        exhaustedAt: new Date(Date.now() - (1 + i) * 60 * 60 * 1000),
-        resetsAt: new Date(Date.now() - 23 * 60 * 60 * 1000),
-        workerCount: 10,
-        turns: 600,
-        inputTokens: 0,
-        outputTokens: 0,
-        weightedTurns: 600,
-        weightedTokens: 0,
-      }));
-    }
-
-    function windowUsage(over: Partial<Record<string, number>> = {}) {
-      return {
-        windowStartedAt: new Date(Date.now() - 60 * 60 * 1000),
-        usage: {
-          workerCount: 0, turns: 0, tokens: 0,
-          weightedTurns: 0, weightedTokens: 0,
-          ...over,
-        },
-      };
-    }
-
-    function pendingTask(over: Record<string, unknown> = {}) {
-      return {
-        id: 'task-1',
-        workspaceId: 'ws-1',
-        title: 'background work',
-        kind: 'engineering',
-        complexity: 'normal',
-        priority: 0,
-        dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
-        ...over,
-      };
-    }
-
-    beforeEach(() => {
-      taskSetPayloads = [];
-      delete process.env.OAUTH_BUDGET_PACING;
-      mockLoadOauthEpisodes.mockReset();
-      mockLoadOauthEpisodes.mockResolvedValue([]);
-      mockMeasureOauthWindow.mockReset();
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage());
-      mockCountLiveSeatWorkers.mockReset();
-      mockCountLiveSeatWorkers.mockResolvedValue(0);
-      mockAuthenticateApiKey.mockResolvedValue({
-        id: 'account-1', maxConcurrentWorkers: 5, type: 'user',
-        authType: 'oauth', maxConcurrentSessions: null,
-      });
-      mockWorkersFindMany.mockResolvedValueOnce([]);
-      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
-      mockAccountWorkspacesFindMany.mockResolvedValue([]);
-      mockTasksFindMany.mockResolvedValue([pendingTask()]);
-      mockClaimSuccess();
-    });
-
-    afterEach(() => {
-      delete process.env.OAUTH_BUDGET_PACING;
-    });
-
-    it('stays inert with too few episodes — claims exactly as before', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().slice(0, 2));
-      // Usage that would be way over capacity if it were being applied.
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(claimPayload()).not.toBeNull();
-      expect(data.diagnostics?.budgetPressure).toBeUndefined();
-      // Below the sample threshold we never even measure the window.
-      expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
-    });
-
-    // The 5h-wall forecast is unreliable, so learned pressure may only narrow
-    // how many sessions a seat runs at once. It must never pause or downshift a
-    // task: a seat with nothing running always gets its next claim.
-    it('never pauses work on the forecast alone — an idle seat still claims at full pressure', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(0);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(claimPayload()).not.toBeNull();
-    });
-
-    it('keeps a ten-slot healthy seat claiming when saturated forecast has one busy worker', async () => {
-      mockAuthenticateApiKey.mockResolvedValue({
-        id: 'account-1', maxConcurrentWorkers: 10, type: 'user',
-        authType: 'oauth', maxConcurrentSessions: null,
-      });
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ turns: 600, weightedTurns: 600 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(1);
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
-      }));
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(data.diagnostics?.deferrals?.oauth_parallelism).toBeUndefined();
-    });
-
-    it('fails open when the newest forecast observation belongs to a prior window', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().map(e => ({
-        ...e, exhaustedAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
-      })));
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({weightedTurns: 99_999}));
-      mockCountLiveSeatWorkers.mockResolvedValue(4);
-      const res = await POST(createMockRequest({
-        headers: {Authorization: 'Bearer bld_test'}, body: {runner: 'test-runner'},
-      }));
-      expect((await res.json()).workers).toHaveLength(1);
-      expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
-    });
-
-    it('narrows seat parallelism at high pressure instead of pausing', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // Full forecast -> cap of three; the seat already has three Claude sessions.
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(3);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(0);
-      expect(claimPayload()).toBeNull();
-      expect(data.diagnostics.reason).toBe('all_candidates_deferred');
-      expect(data.diagnostics.deferrals.oauth_parallelism).toBe(1);
-      expect(data.diagnostics.deferrals.routing_paused).toBeUndefined();
-      expect(data.diagnostics.budgetPressure).toEqual({
-        pct: 1,
-        limiter: 'turns',
-        confidence: 'good',
-        samples: 5,
-      });
-    });
-
-    // Budget failover flips a Claude task to Codex in-memory. The flipped task
-    // no longer draws on the Claude seat, so the Claude-only cap must not hold
-    // it — this is exactly when the cap is likely active (Claude walled, high
-    // pressure). Deferring it after the flip would also leave the workspace
-    // marked as flipped and refuse later Codex work in the same batch.
-    describe('after budget failover to Codex', () => {
-      const exhaustedOauthAccount = () => ({
-        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const,
-        authType: 'oauth' as const, maxConcurrentSessions: 10, activeSessions: 0,
-        budgetExhaustedAt: new Date().toISOString(),
-        budgetResetsAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
-      });
-
-      beforeEach(() => {
-        mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
-        mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
-        mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
-        mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
-        mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-        // Full forecast -> Claude cap of three sessions.
-        mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
-      });
-
-      it('claims a failed-over task on Codex even when the Claude seat is at its cap', async () => {
-        mockCountLiveSeatWorkers.mockResolvedValue(3);
-        mockTasksFindMany.mockResolvedValue([
-          pendingTask({ backend: 'claude', workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } }),
-        ]);
-
-        const res = await POST(createMockRequest({
-          headers: { Authorization: 'Bearer bld_test' },
-          body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
-        }));
-
-        const data = await res.json();
-        expect(data.workers).toHaveLength(1);
-        expect(data.workers[0].task.backend).toBe('codex');
-        expect(data.diagnostics?.deferrals?.oauth_parallelism).toBeUndefined();
-      });
-    });
-
-    it('claims only up to the narrowed cap in one batch', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // 75% → cap 4 of 5; three already live on the seat → one more slot.
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 3, turns: 450, weightedTurns: 450 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(3);
-      mockTasksFindMany.mockResolvedValue([pendingTask(), pendingTask({ id: 'task-2' })]);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-    });
-
-    it('fails open at low confidence — no cap, however full the forecast', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().slice(0, 3));
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(4);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
-    });
-
-    it('an opus-heavy window fills faster than a haiku-heavy one at equal turn counts', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // 150 raw turns, but haiku-weighted to ~40 sonnet-equivalents → 7% pressure.
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 3, turns: 150, weightedTurns: 40 }));
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(claimPayload()?.predictedModel).toBe(tierModel('standard'));
-      // Well under half the window: parallelism is untouched, so no seat count.
-      expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
-    });
-
-    it('never downshifts the model on learned OAuth pressure', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 5, turns: 480, weightedTurns: 480 }));
-      mockTasksFindMany.mockResolvedValue([pendingTask({ complexity: 'complex' })]);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      // 80% pressure used to downshift opus → sonnet. The forecast is not
-      // trusted to change what runs, only how much runs at once.
-      expect(claimPayload()?.predictedModel).toBe(tierModel('premium'));
-    });
-
-    // The whole point of the Start button is that it does something. Pacing must
-    // never turn an explicit start into a silent no-op (the phantom-stop bug
-    // /api/tasks/[id]/start already has for other gates).
-    it('never paces an explicit single-task claim, even at 100% pressure', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner', taskId: 'task-1' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(claimPayload()).not.toBeNull();
-      // Pacing was not even consulted for a targeted claim.
-      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
-    });
-
-    it('OAUTH_BUDGET_PACING=off makes it fully inert', async () => {
-      process.env.OAUTH_BUDGET_PACING = 'off';
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
-      expect(data.diagnostics?.budgetPressure).toBeUndefined();
-    });
-
-    it('does not pace API-billed accounts (they have a real cost signal)', async () => {
-      mockAuthenticateApiKey.mockResolvedValue({
-        id: 'account-1', maxConcurrentWorkers: 5, type: 'user',
-        authType: 'api', maxCostPerDay: '100', totalCost: '1',
-      });
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
-    });
-  });
 
   // --- connector_advisory_mode workspace flag ---
   // When connector_advisory_mode=true on a workspace, connector failures that
@@ -8745,8 +8301,6 @@ describe('claim gate overrides', () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([]);
     mockWorkspaceSkillsFindFirst.mockReset();
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
-    mockOauthEpisodesFindMany.mockReset();
-    mockOauthEpisodesFindMany.mockResolvedValue([]);
     mockBackendPausesFindMany.mockReset();
     mockBackendPausesFindMany.mockResolvedValue([]);
     mockGetActiveClaimsByWorkspace.mockReset();
@@ -8763,19 +8317,6 @@ describe('claim gate overrides', () => {
     return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
   }
 
-  /** Every string literal reachable from a (mocked) drizzle condition tree. */
-  function conditionLiterals(node: any, out: string[] = [], seen = new Set<any>()): string[] {
-    if (node === null || node === undefined) return out;
-    if (typeof node === 'string') { out.push(node); return out; }
-    if (typeof node !== 'object') return out;
-    if (seen.has(node)) return out;
-    seen.add(node);
-    for (const value of Array.isArray(node) ? node : Object.values(node)) {
-      conditionLiterals(value, out, seen);
-    }
-    return out;
-  }
-
   function setupClaimBase() {
     mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
@@ -8787,78 +8328,25 @@ describe('claim gate overrides', () => {
     }));
   }
 
-  /** A repo-backed workspace with a cap of 1 — one active worker fills it. */
-  function cappedTask(context: Record<string, unknown>) {
+  /** A task in a repo-backed workspace. */
+  function repoTask(context: Record<string, unknown>) {
     return {
       id: 'task-1',
       workspaceId: 'ws-1',
-      title: 'Capped task',
+      title: 'Repo task',
       backend: 'claude' as const,
       dependsOn: [],
       context,
-      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, repo: 'org/repo', maxConcurrentTasks: 1 },
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, repo: 'org/repo' },
     };
   }
-
-  describe('capExempt (workspace concurrency cap)', () => {
-    it('SQL prefilter carries a capExempt bypass — without it the exempted task is filtered out exactly when the cap is hit', async () => {
-      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-      setupClaimBase();
-      mockWorkersFindMany.mockResolvedValue([]);
-      mockTasksFindMany.mockResolvedValue([]);
-
-      await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
-
-      const whereArg = capturedWhere((mockTasksFindMany.mock.calls[0] as any)[0]?.where);
-      expect(conditionLiterals(whereArg)).toContain('capExempt');
-    });
-
-    it('honours capExempt written as the string "true" (SQL ->> yields text, so both sides must accept both forms)', async () => {
-      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-      setupClaimBase();
-      // One active worker in ws-1 → workspace cap of 1 is already reached.
-      mockWorkersFindMany.mockResolvedValue([{ id: 'w-0', workspaceId: 'ws-1', status: 'running', taskId: 'other' }]);
-      mockTasksFindMany.mockResolvedValueOnce([cappedTask({ capExempt: 'true' })]).mockResolvedValue([]);
-
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
-      const data = await res.json();
-
-      expect(res.status).toBe(200);
-      expect(data.workers).toHaveLength(1);
-    });
-
-    it('honours capExempt written as boolean true', async () => {
-      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-      setupClaimBase();
-      mockWorkersFindMany.mockResolvedValue([{ id: 'w-0', workspaceId: 'ws-1', status: 'running', taskId: 'other' }]);
-      mockTasksFindMany.mockResolvedValueOnce([cappedTask({ capExempt: true })]).mockResolvedValue([]);
-
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
-      const data = await res.json();
-
-      expect(data.workers).toHaveLength(1);
-    });
-
-    it('still enforces the cap for a task with no exemption', async () => {
-      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-      setupClaimBase();
-      mockWorkersFindMany.mockResolvedValue([{ id: 'w-0', workspaceId: 'ws-1', status: 'running', taskId: 'other' }]);
-      mockTasksFindMany.mockResolvedValueOnce([cappedTask({})]).mockResolvedValue([]);
-
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
-      const data = await res.json();
-
-      expect(data.workers).toHaveLength(0);
-      expect(data.diagnostics?.deferrals?.workspace_cap).toBe(1);
-    });
-  });
 
   describe('managed-runner entitlement (commercial, managed keys only)', () => {
     function managedAccount() {
       return { ...apiAccount(), managedRunner: true };
     }
     function managedTask(context: Record<string, unknown> = {}) {
-      return { ...cappedTask(context), workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' }, repo: 'org/repo', maxConcurrentTasks: 20 } };
+      return repoTask(context);
     }
     /** Every status a tasks UPDATE in this request wrote. */
     function statusesWritten(): unknown[] {
@@ -9069,19 +8557,18 @@ describe('claim gate overrides', () => {
       expect((await res.json()).workers).toHaveLength(1);
     });
 
-    it('the operational workspace cap still holds a managed claim on its own, under its own reason', async () => {
+    it('a managed claim under its entitlement is not held by a live worker elsewhere in the workspace', async () => {
       mockAuthenticateApiKey.mockResolvedValue(managedAccount());
       setupClaimBase();
       mockWorkersFindMany.mockResolvedValue([{ id: 'w-0', workspaceId: 'ws-1', status: 'running', taskId: 'other' }]);
-      mockTasksFindMany.mockResolvedValueOnce([cappedTask({})]).mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([repoTask({})]).mockResolvedValue([]);
       entTest.plan = { plan: 'team' };
       entTest.activeRuns = 1;
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
 
-      expect(data.workers).toHaveLength(0);
-      expect(data.diagnostics?.deferrals?.workspace_cap).toBe(1);
+      expect(data.workers).toHaveLength(1);
       expect(data.diagnostics?.deferrals?.managed_concurrency ?? 0).toBe(0);
       expect(mockStampEntitlementBlock).not.toHaveBeenCalled();
     });
@@ -9161,9 +8648,6 @@ describe('claim gate overrides', () => {
       id: 'mission-A',
       status: 'budget_exhausted',
       maxConcurrentTasks: null,
-      pacingMode: 'eager',
-      pacingMaxPerHour: null,
-      lastTaskStartedAt: null,
     }];
 
     it('claims a task from a budget_exhausted mission when the operator force-started it (bypassMissionBudget)', async () => {
@@ -9227,9 +8711,6 @@ describe('claim gate overrides', () => {
       id: 'mission-A',
       status: 'active',
       maxConcurrentTasks: null,
-      pacingMode: 'eager',
-      pacingMaxPerHour: null,
-      lastTaskStartedAt: null,
     }];
 
     beforeEach(() => {
@@ -9798,8 +9279,6 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
     mockMissionsFindMany.mockReset();
     mockMissionsFindMany.mockResolvedValue([]);
-    mockOauthEpisodesFindMany.mockReset();
-    mockOauthEpisodesFindMany.mockResolvedValue([]);
     mockBackendPausesFindMany.mockReset();
     mockBackendPausesFindMany.mockResolvedValue([]);
     mockConnectorsFindMany.mockReset();
@@ -9982,7 +9461,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
   it('a mission-concurrency deferral of the named task names itself with the counts', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A' })]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1 }]);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'other', pathManifest: ['a.ts'], category: null, context: {} }]));
 
     const data = await (await claim({ runner: 'mcp' })).json();
@@ -10278,6 +9757,24 @@ describe('explicit taskId claims (organizer workflow)', () => {
     });
   });
 
+  // Work analytics spec R-8 / AC-3: these claims run on the caller's own session
+  // model, so the routing experiment is told they are interactive.
+  it('an explicit mcp claim of one task reaches the routing experiment as interactive', async () => {
+    mockDrawModelRoutingArm.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'work' })]);
+    await claim({ runner: 'mcp' });
+    expect(mockDrawModelRoutingArm.mock.calls.at(-1)?.[0]).toMatchObject({ executor: 'interactive' });
+  });
+
+  it('a verified interactive session claim reaches the routing experiment as interactive', async () => {
+    mockDrawModelRoutingArm.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'work' })]);
+    await claim({ runner: 'mcp', taskId: undefined }, interactiveHeaders());
+    expect(mockDrawModelRoutingArm.mock.calls.at(-1)?.[0]).toMatchObject({ executor: 'interactive' });
+  });
+
   it('a task that is not an attempt never consults the retry guard', async () => {
     mockGuardClaimedRetry.mockClear();
     mockAuthenticateApiKey.mockResolvedValue(account());
@@ -10299,6 +9796,22 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('mailer');
     const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'role_env_unsatisfied');
     expect(deferred?.detail).toEqual({ roleSlug: 'mailer', missing: ['SERVICE_API_KEY', 'TENANT_ID'] });
+  });
+
+  it('a broad claim returns every turned-away task with its reason code', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ id: 'task-1', roleSlug: 'mailer' }), task({ id: 'task-2', roleSlug: 'mailer' })]);
+    mockRunRoleEnvPreFilter.mockResolvedValueOnce(new Map([
+      ['task-1', { roleSlug: 'mailer', missing: ['SERVICE_API_KEY'] }],
+      ['task-2', { roleSlug: 'mailer', missing: ['SERVICE_API_KEY'] }],
+    ]));
+
+    const data = await (await claim({ runner: 'mcp', taskId: undefined })).json();
+    expect(data.diagnostics.deferrals.role_env_unsatisfied).toBe(2);
+    expect(data.diagnostics.deferredTasks).toEqual([
+      { taskId: 'task-1', code: 'role_env_unsatisfied' },
+      { taskId: 'task-2', code: 'role_env_unsatisfied' },
+    ]);
   });
 
   it('a task whose cross-workspace need its token would not carry is held before any agent turn, with the named reason', async () => {
@@ -10492,7 +10005,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
   it('local executor: an interactive session claims a local mission\'s task as a tracked mcp worker', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L' })]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', executor: 'local', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', executor: 'local', maxConcurrentTasks: null }]);
     const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].taskId).toBe('task-1');
@@ -10599,7 +10112,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
   it('local executor: an exempted audit task still claims end to end', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', roleSlug: 'visual-auditor' })]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', executor: 'local', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', executor: 'local', maxConcurrentTasks: null }]);
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
     mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
 
@@ -10846,14 +10359,14 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindMany.mockResolvedValueOnce(forceTarget());
     await claim({ runner: 'mcp', forceOverride: true });
     const gates = probedGates();
-    for (const g of ['deps', 'missionHeld', 'subject', 'workspaceCap']) expect(gates).not.toContain(g);
+    for (const g of ['deps', 'missionHeld', 'subject', 'workspaceExecutor']) expect(gates).not.toContain(g);
     for (const g of ['activeWorker', 'taskHeld']) expect(gates).toContain(g);
   });
 
   it('force is ignored for a non-admin token', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('worker'));
     await claim({ runner: 'mcp', forceOverride: true });
-    expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceCap']));
+    expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceExecutor']));
   });
 
   for (const preset of ['ci', 'runner'] as const) {
@@ -10863,7 +10376,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
       // a wrongly granted force would actually lift the gates.
       mockTasksFindMany.mockImplementation(((opts: any) => Promise.resolve(opts?.limit === 1 && opts?.columns?.workspaceId ? forceTarget() : [])) as any);
       await claim({ runner: 'mcp', forceOverride: true });
-      expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceCap']));
+      expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceExecutor']));
     });
   }
 
@@ -10871,7 +10384,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockAuthenticateApiKey.mockResolvedValue({ ...account('admin'), scopes: ['admin'], workspaceIds: null });
     mockTasksFindMany.mockResolvedValueOnce(forceTarget());
     await claim({ runner: 'mcp', forceOverride: true });
-    for (const g of ['deps', 'missionHeld', 'subject', 'workspaceCap']) expect(probedGates()).not.toContain(g);
+    for (const g of ['deps', 'missionHeld', 'subject', 'workspaceExecutor']) expect(probedGates()).not.toContain(g);
   });
 
   it('a workspace-restricted token never claims outside its workspaces, with or without a taskId', async () => {
@@ -10899,7 +10412,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
     mockTasksFindMany.mockResolvedValueOnce(forceTarget('team-other'));
     await claim({ runner: 'mcp', forceOverride: true });
-    expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceCap']));
+    expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceExecutor']));
     const rejected = (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'force_claim_cross_team');
     expect(rejected?.outcome).toBe('rejected');
   });
@@ -10914,7 +10427,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
       .mockResolvedValueOnce(forceTarget())
       .mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['a.ts'] })])
       .mockResolvedValueOnce([{ id: 'sibling', pathManifest: ['a.ts'] }]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1 }]);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'other', pathManifest: ['b.ts'], category: null, context: {} }]));
 
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
@@ -10931,7 +10444,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindMany
       .mockResolvedValueOnce(forceTarget())
       .mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['a.ts'] })]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'budget_exhausted', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'budget_exhausted', maxConcurrentTasks: null }]);
 
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
     expect(data.workers).toHaveLength(0);
@@ -10943,7 +10456,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindMany
       .mockResolvedValueOnce(forceTarget())
       .mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: null })]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null }]);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
 
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
@@ -10957,7 +10470,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindMany
       .mockResolvedValueOnce(forceTarget())
       .mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['**'] })]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null }]);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
 
     const ctx = claimedContext();
@@ -10975,7 +10488,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
     mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
     mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', pathManifest: null })]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', maxConcurrentTasks: null }]);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-L', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
 
     const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
@@ -10990,7 +10503,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
     mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
     mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', pathManifest: null })]);
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', maxConcurrentTasks: null }]);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-L', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
 
     const data = await (await claim({ runner: 'runner-7' })).json();
@@ -11145,7 +10658,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
         mockAuthenticateApiKey.mockResolvedValue(account('worker'));
         mockTasksFindMany.mockReset();
         mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: null, context: forceStart ? { forceStart } : {} })]).mockResolvedValue([]);
-        mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+        mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null }]);
         mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
         const ctx = claimedContext();
         const data = await (await claim({ runner: 'runner-7' })).json();
@@ -11157,7 +10670,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     it('never lifts the mission budget', async () => {
       mockAuthenticateApiKey.mockResolvedValue(account('worker'));
       mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['a.ts'], context: { forceStart: intent({ loopKeys: ['path_overlap', 'mission_budget'] }) } })]);
-      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'budget_exhausted', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'budget_exhausted', maxConcurrentTasks: null }]);
       const data = await (await claim({ runner: 'runner-7' })).json();
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics.taskExclusion.code).toBe('mission_budget');
@@ -11166,7 +10679,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     it('lifts a confirmed mission concurrency cap for that task', async () => {
       mockAuthenticateApiKey.mockResolvedValue(account('worker'));
       mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['a.ts'], context: { forceStart: intent({ kinds: ['mission_concurrent'], loopKeys: ['mission_concurrent'] }) } })]);
-      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: 1 }]);
       mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'other', pathManifest: ['b.ts'], category: null, context: {} }]));
       const data = await (await claim({ runner: 'runner-7' })).json();
       expect(data.workers).toHaveLength(1);
@@ -11350,7 +10863,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
   }
 
-  const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
+  const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null }];
 
   function task(over: Record<string, unknown> = {}) {
     return {
@@ -11382,7 +10895,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     mockTeamsFindFirst.mockResolvedValue(null);
     mockHeartbeatsFindFirst.mockReset();
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
-    for (const m of [mockSecretsFindMany, mockConnectorsFindMany, mockConnectorSharesFindMany, mockConnectorWorkspacesFindMany, mockWorkspaceSkillsFindMany, mockOauthEpisodesFindMany, mockBackendPausesFindMany]) {
+    for (const m of [mockSecretsFindMany, mockConnectorsFindMany, mockConnectorSharesFindMany, mockConnectorWorkspacesFindMany, mockWorkspaceSkillsFindMany, mockBackendPausesFindMany]) {
       m.mockReset();
       m.mockResolvedValue([] as any);
     }
@@ -11522,9 +11035,10 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
       prManifests: [{ id: 'pr-task', pathManifest: ['packages/core/drizzle/0300_x.sql'] }],
     }),
-    'a mission pacing deferral (not advisory)': () => arm({
+    'a mission concurrency deferral (not advisory)': () => arm({
       tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
-      missions: [{ ...mission[0], pacingMode: 'paced', pacingMaxPerHour: 1, lastTaskStartedAt: new Date() }],
+      missions: [{ ...mission[0], maxConcurrentTasks: 1 }],
+      inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['apps/web/src/lib/other.ts'] }],
     }),
   };
 
@@ -11975,8 +11489,6 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([]);
     mockWorkspaceSkillsFindFirst.mockReset();
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
-    mockOauthEpisodesFindMany.mockReset();
-    mockOauthEpisodesFindMany.mockResolvedValue([]);
     mockBackendPausesFindMany.mockReset();
     mockBackendPausesFindMany.mockResolvedValue([]);
     mockGetActiveClaimsByWorkspace.mockReset();
@@ -12074,7 +11586,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   });
 
   it('off: a scope-undeclared task beside a running scope-undeclared peer is claimed', async () => {
-    const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
+    const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null }];
     mockMissionsFindMany.mockResolvedValue(mission);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }]));
     const off = await claim([plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, { claimPlanner: 'off' })]);
@@ -12157,7 +11669,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   it('apply: a pick refused by an in-loop gate is dropped and the rest re-planned', async () => {
     const cfg = { claimPlanner: 'apply' };
     // a's mission is budget_exhausted: refused in the loop.
-    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-X', status: 'budget_exhausted', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-X', status: 'budget_exhausted', maxConcurrentTasks: null }]);
     const trio = overlappingTrio(cfg);
     (trio[0] as any).missionId = 'mission-X';
     const { data } = await claim(trio);
@@ -12180,7 +11692,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   });
 
   describe('scope-undeclared work under apply: no mutex, whatever the prediction', () => {
-    const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
+    const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null }];
     const undeclared = (g: Record<string, unknown>) => [
       plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, g),
       plannedTask('b', { missionId: 'mission-A', pathManifest: ['**'] }, g),

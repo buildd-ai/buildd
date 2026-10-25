@@ -14,9 +14,10 @@
  */
 import { applyCommandOn } from '../command-runner';
 import { EFFECT_MAX_ATTEMPTS, type EffectHandler, type EffectHandlers } from '../effects';
-import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, landingStatusOf, landingStatusUnknown, reviewGate, type LandingStatus } from '../landing-gate';
+import { LANDING_STATUS_CONTEXT, landingStatusOf, landingStatusUnknown, reviewGate, type LandingStatus } from '../landing-gate';
 import { heldOutcome, MERGE_HOLD_MAX_MS, mergeHoldDelayMs } from '../merge-hold';
 import { githubOf, type GithubFacts, type GithubWrites, type KernelPorts } from '../ports';
+import type { DeliverySnapshot } from '../types';
 import { hasPr, need } from './ports-of';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
@@ -53,16 +54,47 @@ function staleStatus(current: ShownStatus, want: LandingStatus, targetUrl: strin
     || (current.targetUrl !== undefined && targetUrl !== null && current.targetUrl !== targetUrl);
 }
 
-/** What GitHub shows on `want.sha` under every name the kernel publishes (null where it cannot read). */
-function shownStatuses(github: GithubFacts, repoFullName: string, want: LandingStatus): Promise<ShownStatus[]> {
-  return Promise.all(LANDING_STATUS_CONTEXTS.map((c) => (github.statusOf ? github.statusOf(repoFullName, want.sha, c).catch(() => null) : null)));
+/** What GitHub shows on `want.sha` under the kernel's status (null where it cannot read). */
+async function shownStatus(github: GithubFacts, repoFullName: string, want: LandingStatus): Promise<ShownStatus> {
+  return github.statusOf ? github.statusOf(repoFullName, want.sha, LANDING_STATUS_CONTEXT).catch(() => null) : null;
 }
 
-/** One answer, under both names (legacy first) until nothing reads the old one. */
 async function publishStatusOn(writes: GithubWrites, repoFullName: string, s: { state: 'success' | 'failure' | 'pending'; description: string; sha: string }, targetUrl: string | null): Promise<void> {
-  for (const context of LANDING_STATUS_CONTEXTS) {
-    await writes.publishStatus({ repoFullName, sha: s.sha, context, state: s.state, description: s.description, ...(targetUrl ? { targetUrl } : {}) });
+  await writes.publishStatus({ repoFullName, sha: s.sha, context: LANDING_STATUS_CONTEXT, state: s.state, description: s.description, ...(targetUrl ? { targetUrl } : {}) });
+}
+
+/**
+ * e07ee9cf: a behind refresh that waits in the landing lane (enforce, another delivery holds it)
+ * is queued, not in progress. The status names the PR ahead, whichever of the refresh and this
+ * publish drains first. Null when not waiting, or when lane or policy cannot be read.
+ */
+export async function laneWaitDetail(ports: KernelPorts, d: DeliverySnapshot): Promise<string | null> {
+  if (d.state !== 'REPAIRING' || d.stateReason !== 'behind' || !d.repoFullName || !d.baseRef || !ports.policy) return null;
+  try {
+    if ((await ports.policy.forWorkspace(d.workspaceId)).landingLane !== 'enforce') return null;
+    const holder = await ports.store.laneHolder({ repoFullName: d.repoFullName, baseRef: d.baseRef });
+    if (!holder || holder.deliveryId === d.id) return null;
+    return laneQueuedWords(holder.prNumber, d.baseRef);
+  } catch {
+    return null;
   }
+}
+
+/** The words after "review approved <sha>; " for a refresh parked behind `aheadPr`. */
+export function laneQueuedWords(aheadPr: number | null, baseRef: string | null): string {
+  return `queued behind ${aheadPr != null ? `PR #${aheadPr}` : 'another PR'}, which is merging into ${baseRef ?? 'the base'} first`;
+}
+
+/**
+ * Publish `status` on the delivery's head unless GitHub already shows it. For a handler outside
+ * the landing family that has something newer to say than its last transition (a parked refresh).
+ */
+export async function publishLandingStatusIfChanged(ports: KernelPorts, github: GithubFacts, d: DeliverySnapshot, status: LandingStatus): Promise<boolean> {
+  if (!github.writes || !d.repoFullName) return false;
+  const targetUrl = ports.links?.review(d) ?? null;
+  if (!staleStatus(await shownStatus(github, d.repoFullName, status), status, targetUrl)) return false;
+  await publishStatusOn(github.writes, d.repoFullName, status, targetUrl);
+  return true;
 }
 
 export function landingHandlers(ports: KernelPorts): EffectHandlers {
@@ -143,9 +175,10 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     // The head's own success is on GitHub, read back, before the merge is asked for: a rule that
     // requires `Buildd / Review approval` must never see the merge race ahead of it.
     const targetUrl = ports.links?.review(d) ?? null;
-    const own = landingStatusOf(view);
+    // The rails just read CI at this head (or a person decided past it).
+    const own = landingStatusOf(view, { ciPassed: true });
     const ownReady = own?.state === 'success' && own.sha === headSha;
-    if (own && ownReady && (await shownStatuses(github, d.repoFullName, own)).some((x) => staleStatus(x, own, targetUrl))) {
+    if (own && ownReady && staleStatus(await shownStatus(github, d.repoFullName, own), own, targetUrl)) {
       await publishStatusOn(writes, d.repoFullName, own, targetUrl);
       const back = github.statusOf ? await github.statusOf(d.repoFullName, headSha, LANDING_STATUS_CONTEXT).catch(() => null) : { state: 'success' };
       if (back?.state !== 'success') {
@@ -161,7 +194,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       const named = check ? `required check "${check}"` : 'a required check';
       // The review check on a head the kernel has not approved (a person's override past the
       // review): the kernel will never turn it green, so no wait passes it. GitHub's own bypass does.
-      if (check !== null && LANDING_STATUS_CONTEXTS.includes(check) && !ownReady) {
+      if (check === LANDING_STATUS_CONTEXT && !ownReady) {
         return hold(check, 'required_check', `GitHub requires ${named}, which buildd shows as success only on an approved head; merging past it is a GitHub bypass`, true);
       }
       return hold(check, 'required_check', `GitHub kept the merge waiting on ${named} for ${waited()}${ans.detail ? ` (${ans.detail})` : ''}`);
@@ -187,7 +220,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
     const version = typeof e.payload.version === 'number' ? e.payload.version : null;
     if (version !== null && d.version > version) return { outcome: 'skipped:older_version' };
-    const detail = typeof e.payload.detail === 'string' ? e.payload.detail : null;
+    const detail = (typeof e.payload.detail === 'string' ? e.payload.detail : null) ?? await laneWaitDetail(ports, d);
     let status = landingStatusOf(view, { detail });
     if (!status) return { outcome: `skipped:state_${d.state}` };
     const github = await githubOf(ports, d.workspaceId);
@@ -205,14 +238,14 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       for (let pass = 0; pass < 3; pass++) {
         // Nothing to say that GitHub does not already show, under every name: no write (statuses pile up per commit).
         const want = status;
-        if ((await shownStatuses(github, d.repoFullName, want)).some((x) => staleStatus(x, want, targetUrl))) {
+        if (staleStatus(await shownStatus(github, d.repoFullName, want), want, targetUrl)) {
           await publish(want);
           wrote = true;
         }
         const again = await ports.store.loadView({ deliveryId: e.deliveryId });
         if (!again.delivery || again.delivery.version === seen) break;
         seen = again.delivery.version;
-        const next = landingStatusOf(again, { detail: again.delivery.version === version ? detail : null });
+        const next = landingStatusOf(again, { detail: again.delivery.version === version ? detail : await laneWaitDetail(ports, again.delivery) });
         if (!next) break;
         status = next;
       }

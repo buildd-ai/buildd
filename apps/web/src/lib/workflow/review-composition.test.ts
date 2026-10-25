@@ -568,6 +568,44 @@ describe('collectComposition: a refresh PR', () => {
   test('a truncated tree fails closed', async () => {
     expect((await collect(api({ truncated: true }))).attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'refresh_merge_unreadable:M' });
   });
+
+  // 26b969db: a refresh merging ~250 trunk commits read each one (commit, PRs, trees) before the
+  // capped compare made it unverifiable anyway. The dispatch_review that ran it outlived the drain,
+  // so the round never got a reviewer.
+  const capped = (o: { commits: number; files: number }, reads: string[]) => async (_i: number, path: string): Promise<unknown> => {
+    reads.push(path);
+    if (path.startsWith(`/repos/${REPO}/compare/mission%2Fx...AGG`)) return {
+      merge_base_commit: { sha: 'MISSION' }, base_commit: { sha: 'MISSION' }, total_commits: o.commits,
+      commits: Array.from({ length: Math.min(o.commits, 250) }, (_, i) => ({ sha: `C${i}`, parents: [{ sha: i ? `C${i - 1}` : 'B0' }], commit: { message: `feat: ${i}` } })),
+      files: Array.from({ length: o.files }, (_, i) => ({ filename: `f${i}.ts` })),
+    };
+    return { files: [] };
+  };
+  const collectWith = (a: ReturnType<typeof capped>, extra: Record<string, unknown> = {}) => collectComposition({
+    api: a, exec: ledger, installationId: 1, workspaceId: 'w1', repoFullName: REPO, prNumber: 50, baseRef: 'mission/x', headRef: 'buildd/abc-chore-mission-merge-dev', aggregateHeadSha: 'AGG', refreshTrunk: 'dev', ...extra,
+  });
+
+  test('regression: a compare past the commit cap is unverifiable without reading a single commit', async () => {
+    const reads: string[] = [];
+    const b = await collectWith(capped({ commits: 257, files: 40 }, reads));
+    expect(b.attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'commit_list_truncated' });
+    expect(reads).toHaveLength(1);
+  });
+
+  test('regression: an aggregate diff at the file cap is unverifiable without reading a single commit', async () => {
+    const reads: string[] = [];
+    const b = await collectWith(capped({ commits: 20, files: 300 }, reads));
+    expect(b.attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'aggregate_diff_truncated' });
+    expect(reads).toHaveLength(1);
+  });
+
+  test('reading stops once the time budget is spent, and the attestation is unverifiable (a full review)', async () => {
+    const reads: string[] = [];
+    let t = 0;
+    const b = await collectWith(capped({ commits: 200, files: 40 }, reads), { clock: () => (t += 1_000), budgetMs: 10_000 });
+    expect(b.attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'composition_read_budget_spent' });
+    expect(reads.length).toBeLessThan(30);
+  });
 });
 
 // ── Release candidate shapes the attestation met on a real release ──────────

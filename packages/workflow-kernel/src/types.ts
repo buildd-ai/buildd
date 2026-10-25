@@ -36,6 +36,8 @@ export type EscalationReason =
   | 'review_exhausted'
   | 'review_unavailable'
   | 'ci_exhausted'
+  /** A CI fix ended failed with the PR head where it was bound: re-filing it would repeat the same work. */
+  | 'ci_unfixed_head'
   | 'conflict_exhausted'
   | 'push_undeliverable'
   | 'landing_needs_human'

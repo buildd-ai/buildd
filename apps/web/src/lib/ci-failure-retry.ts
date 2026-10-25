@@ -30,7 +30,7 @@ import { after } from 'next/server';
 import { scheduleFailurePatternSentinel } from './failure-pattern-sentinel-trigger';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, or, sql } from 'drizzle-orm';
 import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { githubApi } from '@/lib/github';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -54,6 +54,7 @@ import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrConte
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
 import { rerunIfInfraFailure } from '@/lib/ci-infra-failure';
+import { rerunIfKnownFlake } from '@/lib/ci-flake-rerun';
 import { recordRedChecks } from '@/lib/red-check-record';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -79,12 +80,18 @@ export type CiRetrySkipReason =
   | 'duplicate'
   /** The failed jobs hit an infrastructure fault (registry rate limit, image pull): they were re-run, no fix attempt filed. */
   | 'infra_rerun'
+  /** Every failed job is scoped to paths the diff does not touch and was not red on the base: re-run once, the flaky tests filed as friction. */
+  | 'flake_rerun'
   /** The workflow kernel owns this PR and decided not to dispatch now (its state is the reason). */
   | 'kernel_owned'
   /** The kernel blocked the delivery on a trunk incident (§6.10): the base branch fails the same checks. */
   | 'blocked_on_trunk'
   /** A frozen release candidate: never fixed on its branch; the fix is filed against its source branch instead. */
-  | 'release_candidate';
+  | 'release_candidate'
+  /** GitHub did not name the PR's head branch: a fix filed without it cannot be pinned to the PR. */
+  | 'pr_unreadable'
+  /** The kernel owner was parked on a future loop pass: that pass starts now and fixes CI, no separate attempt. */
+  | 'owner_pass_started';
 
 /** Fixed text per code: the ledger coalesces on (gate, outcome, reason), so the PR number lives in `detail`. */
 const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
@@ -101,9 +108,12 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   advisory_only: 'no CI retry: all failed checks are advisory only (Visual QA)',
   duplicate: 'no CI retry: a retry for this PR and head was filed concurrently',
   infra_rerun: 'no CI retry: the failure is infrastructure (registry or runner), the failed jobs were re-run',
+  flake_rerun: 'no CI retry: the failed jobs test nothing this PR changes and pass on the base, so they were re-run as a flake',
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
   blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
   release_candidate: 'no CI retry: a frozen release candidate is fixed on its source branch and then amended, never pushed to',
+  owner_pass_started: "no CI retry: the PR owner's next pass was waiting on a timer and starts now to fix CI",
+  pr_unreadable: 'no CI retry yet: the PR head branch could not be read, and a fix is never filed without it',
 };
 
 export type CiRetryOutcome =
@@ -365,6 +375,19 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     await lookAgain(skipCtx);
     return { kind: 'skipped', reason: 'infra_rerun' };
   }
+  // A known flake (a job testing nothing the diff touches, not red on the base)
+  // has nothing in the PR for a builder to fix: re-run it once instead.
+  const flake = await rerunIfKnownFlake({ installationId, repoFullName, prNumber, headSha, workspaceId: task.workspaceId });
+  if (flake.rerun) {
+    recordSkip(skipCtx, 'flake_rerun', {
+      runId: flake.runId,
+      runAttempt: flake.runAttempt,
+      flakeSignatures: flake.tests.map(t => t.signature),
+      frictionTaskIds: flake.friction.map(f => f.taskId),
+    });
+    await lookAgain(skipCtx);
+    return { kind: 'skipped', reason: 'flake_rerun' };
+  }
 
   // A frozen release candidate is never repaired on its branch: a push there
   // un-candidates it. Ahead of the kernel door, which would file a head-branch
@@ -377,9 +400,18 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   // legacy decision below MUST NOT run beside it (one authority per delivery).
   const kernel = await observeKernelCiFailure(input, task.workspaceId);
   if (kernel) {
-    if (kernel.kind === 'skipped') recordSkip(skipCtx, kernel.reason, { kernel: kernel.detail });
+    // WORKING means the owner holds the next move, but an owner parked on a
+    // loop pass hours away is not working: nothing pushes until that timer runs
+    // out. CI going red is the reason for the pass, so it starts now.
+    const ownerHolds = kernel.kind === 'skipped' && kernel.reason === 'fix_in_flight' && kernel.kernelState === 'WORKING';
+    if (ownerHolds && await startParkedOwnerPass(task)) {
+      recordSkip(skipCtx, 'owner_pass_started', { kernel: kernel.detail, holderTaskId: task.id, parkedUntil: task.startAt ?? null });
+      await lookAgain(skipCtx);
+      return { kind: 'skipped', reason: 'owner_pass_started', inFlightTaskId: task.id };
+    }
+    if (kernel.kind === 'skipped') recordSkip(skipCtx, kernel.reason, { kernel: kernel.detail, ...(ownerHolds ? { holderTaskId: task.id } : {}) });
     if (kernel.kind === 'skipped' && kernel.reason === 'fix_in_flight') await lookAgain(skipCtx);
-    return kernel.kind === 'skipped' ? { kind: 'skipped', reason: kernel.reason } : kernel;
+    return kernel.kind === 'skipped' ? { kind: 'skipped', reason: kernel.reason, ...(ownerHolds ? { inFlightTaskId: task.id } : {}) } : kernel;
   }
 
   // A failed or cancelled owner must not spawn retry children: failed is what
@@ -473,6 +505,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       conflictRetryPrNumber: tasks.conflictRetryPrNumber,
       context: tasks.context,
       createdAt: tasks.createdAt,
+      startAt: tasks.startAt,
     })
     .from(tasks)
     .where(and(
@@ -498,7 +531,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     );
     // If that attempt finishes without pushing, GitHub never reports this head
     // again — the sweep is the only thing that will come back for it.
-    recordSkip(skipCtx, 'fix_in_flight', { inFlightTaskId: inFlight.id, inFlightStatus: inFlight.status });
+    recordSkip(skipCtx, 'fix_in_flight', { inFlightTaskId: inFlight.id, inFlightStatus: inFlight.status, holderTaskId: inFlight.id });
     await lookAgain(skipCtx);
     return { kind: 'skipped', reason: 'fix_in_flight', inFlightTaskId: inFlight.id };
   }
@@ -601,6 +634,14 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   const currentIteration = ciRetriesUsed;
   const ownerCtx = (task.context as Record<string, unknown>) || {};
 
+  // e2ea3764: a fix filed without the PR's head ref resumes the worker row's branch, and one missing
+  // on the remote was cut from trunk instead. The sweep comes back once GitHub answers.
+  if (!prGate.headRef) {
+    recordSkip(skipCtx, 'pr_unreadable');
+    await lookAgain(skipCtx);
+    return { kind: 'skipped', reason: 'pr_unreadable' };
+  }
+
   const retryTask = buildCIRetryTask({
     originalTask: {
       id: task.id,
@@ -618,7 +659,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     ciFailedJobId: ciLogs.failedJobId,
     ciRunUrl: ciLogs.runUrl,
     workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
-    prRefs: prGate.headRef ? { headRef: prGate.headRef, baseRef: prGate.baseRef ?? null } : null,
+    prRefs: { headRef: prGate.headRef, baseRef: prGate.baseRef ?? null },
   });
 
   if (!retryTask) {
@@ -756,8 +797,8 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
 /**
  * A red frozen release candidate (lib/release-candidate-ci.ts): null for any
  * other PR. A trusted candidate at its recorded head gets one fix task against
- * its source branch per head (the owner task's context marker is claimed with
- * a compare-and-set, so the webhook and the sweep file it once). A
+ * its source branch per head (the PR's first owner task's context marker is
+ * claimed with a compare-and-set, so the webhook and the sweep file it once). A
  * candidate-shaped PR that is not provably one (head pushed over, untrusted
  * author) gets nothing filed: it needs an amendment, not a builder.
  */
@@ -781,13 +822,25 @@ async function releaseCandidateCiFailure(
     return { kind: 'skipped', reason: 'release_candidate' };
   }
 
+  // The marker lives on the PR's FIRST owner task, not on `owner`: `owner` is the
+  // newest worker stamped with this PR, and any attempt filed on the candidate
+  // (a conflict attempt, a review) is stamped too. Once one is, the next red
+  // report resolves that attempt as owner, finds no marker on it, and files a
+  // second fix for the same head (v0.381.0: two fixes 7 minutes apart).
+  const firstOwner = await db.query.workers.findFirst({
+    where: sqlWhere(and(workerOwnsPr(input.repoFullName, input.prNumber), isNotNull(workers.taskId))),
+    columns: { taskId: true },
+    orderBy: sqlOrderBy([asc(workers.createdAt), asc(workers.id)]),
+  });
+  const markerTaskId = firstOwner?.taskId ?? owner.id;
+
   const claimed = await db
     .update(tasks)
     .set({
       context: sql`jsonb_set(coalesce(${tasks.context}, '{}'::jsonb), ${`{${RELEASE_CANDIDATE_FIX_HEAD_KEY}}`}::text[], to_jsonb(${input.headSha}::text))`,
       updatedAt: new Date(),
     })
-    .where(and(eq(tasks.id, owner.id), sql`coalesce(${tasks.context}->>${RELEASE_CANDIDATE_FIX_HEAD_KEY}, '') <> ${input.headSha}`))
+    .where(and(eq(tasks.id, markerTaskId), sql`coalesce(${tasks.context}->>${RELEASE_CANDIDATE_FIX_HEAD_KEY}, '') <> ${input.headSha}`))
     .returning({ id: tasks.id });
   if (claimed.length === 0) {
     recordSkip(skipCtx, 'release_candidate', { alreadyFiled: true });
@@ -833,7 +886,8 @@ async function releaseCandidateCiFailure(
 
 type KernelCiOutcome =
   | { kind: 'dispatched'; taskId: string }
-  | { kind: 'skipped'; reason: CiRetrySkipReason; detail: string };
+  /** `kernelState`: the delivery's state when T10 did not act (WORKING: the owner holds the move). */
+  | { kind: 'skipped'; reason: CiRetrySkipReason; detail: string; kernelState?: string | null };
 
 /**
  * The kernel door of a CI failure: T10 through the kernel client, mapped onto the
@@ -858,6 +912,31 @@ async function observeKernelCiFailure(input: CiFailureInput, workspaceId: string
   return kernelCiOutcome(seen);
 }
 
+/**
+ * A kernel owner task parked on a loop pass (`condition_unmet`, `startAt` in the
+ * future) starts now: its PR went red, which is what the pass is for. Guarded on
+ * the row still being exactly that, so a claimed, cancelled or already-due task
+ * is untouched; the claim route's gates (budget, capacity) still apply. Answers
+ * whether it moved.
+ */
+export async function startParkedOwnerPass(task: { id: string; deliveryRole?: string | null }): Promise<boolean> {
+  if (task.deliveryRole !== 'owner') return false;
+  const moved = await db
+    .update(tasks)
+    .set({ startAt: new Date(), updatedAt: new Date() })
+    .where(and(
+      eq(tasks.id, task.id),
+      eq(tasks.status, 'pending'),
+      eq(tasks.deliveryRole, 'owner'),
+      eq(tasks.loopState, 'condition_unmet'),
+      sql`${tasks.startAt} > now()`,
+    ))
+    .returning({ id: tasks.id });
+  if (moved.length === 0) return false;
+  await wakeTask(task.id, 'ci.retry');
+  return true;
+}
+
 /** Exported for tests: what a kernel T10 result means to the CI doors. */
 export function kernelCiOutcome(seen: { result: { result: string; reason?: string; current?: { state: string | null } | null; decision?: { toState: string } }; attemptTaskId?: string | null }): KernelCiOutcome {
   const r = seen.result;
@@ -876,7 +955,7 @@ export function kernelCiOutcome(seen: { result: { result: string; reason?: strin
   const state = r.current?.state ?? null;
   if (state === 'BLOCKED_ON_TRUNK') return { kind: 'skipped', reason: 'blocked_on_trunk', detail: `${r.result}:${r.reason ?? ''}` };
   if (r.reason === 'fix_in_flight' || state === 'REPAIRING' || state === 'FIXING' || state === 'WORKING' || state === 'AWAITING_PUSH') {
-    return { kind: 'skipped', reason: 'fix_in_flight', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}` };
+    return { kind: 'skipped', reason: 'fix_in_flight', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}`, kernelState: state };
   }
   return { kind: 'skipped', reason: 'kernel_owned', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}` };
 }

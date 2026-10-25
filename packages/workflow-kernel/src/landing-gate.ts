@@ -14,19 +14,19 @@
  * or a request for changes.
  */
 import { describeFinding, openRequiredFindings } from './findings';
-import { headCoverage, openVerdict } from './reducer';
+import { headCoverage, MERGE_CALLED, openVerdict } from './reducer';
 import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
 /** The commit status context the kernel publishes on every kernel-owned PR head: the one a trunk rule requires. */
 export const LANDING_STATUS_CONTEXT = 'Buildd / Review approval';
 
 /**
- * The name it was published under before the rename. Still written with the same answer, so a
- * rule or tool that already reads it keeps working until nothing does; never read as CI.
+ * The name it was published under before the rename. No longer written; older heads still carry
+ * it, so a reader that skips the kernel's own status skips this one too. Never read as CI.
  */
 export const LEGACY_LANDING_STATUS_CONTEXT = 'buildd/landing';
 
-/** Every context carrying the kernel's verdict, the legacy name first so the current one is the last write. */
+/** Every context a head may carry the kernel's verdict under: for readers that skip it, never for writes. */
 export const LANDING_STATUS_CONTEXTS: readonly string[] = [LEGACY_LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXT];
 
 /** GitHub caps a status description at 140 characters. */
@@ -136,6 +136,8 @@ export const REVIEW_STATUS_TERMS = {
   ready: 'Ready to merge',
   /** Approved, and a rail that clears by itself (a visual review, CI still running) refused the merge for now. */
   waiting: 'Approved, waiting to merge',
+  /** Approved, and its branch update is parked in the landing lane behind another PR on the same base. */
+  queued: 'Approved, queued to merge',
   blocked: 'Merge blocked',
   repairing: 'Repair in progress',
   repairingBehind: 'Branch update in progress',
@@ -175,9 +177,10 @@ function plainCode(code: string | null | undefined, fallback: string): string {
 
 /**
  * The `Buildd / Review approval` status for the delivery's current head: `success` only
- * when the kernel would merge that head (approved or merging, covered, no open
- * verdict), `pending` while review of it has not finished (work running, review
- * awaited), `failure` with the blocker otherwise (an open finding, a verdict
+ * when the kernel would merge that head now (approved or merging, covered, no open
+ * verdict, CI read green at that head or `ciPassed` from the merge effect's rails),
+ * `pending` while review of it has not finished (work running, review awaited) or
+ * an approved head waits on CI, `failure` with the blocker otherwise (an open finding, a verdict
  * against it, a person's decision). Null when there is nothing
  * to publish on (no PR or head, or the delivery is over: a merged or closed
  * PR's head keeps the last status it was given).
@@ -187,7 +190,7 @@ function plainCode(code: string | null | undefined, fallback: string): string {
  * (AC-13), "Ready to merge", "Approved, waiting to merge: <rail>" or
  * "Merge blocked: <reason>".
  */
-export function landingStatusOf(view: KernelView, o: { detail?: string | null } = {}): LandingStatus | null {
+export function landingStatusOf(view: KernelView, o: { detail?: string | null; ciPassed?: boolean } = {}): LandingStatus | null {
   const d = view.delivery;
   if (!d || d.prNumber == null || !d.repoFullName || !d.currentHeadSha) return null;
   if (d.state === 'MERGED' || d.state === 'CLOSED_UNMERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'FAILED') return null;
@@ -203,6 +206,12 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
     // A waiting rail refused the merge of this approved head (the detail the refusal named):
     // say what it waits on, the same words get_pr and explain give (spec 072de598 I-12, AC-24).
     if (o.detail && d.state === 'APPROVED') return status('pending', T.waiting, `${at} approved by ${by}${overText}; ${o.detail}`);
+    // "Ready to merge" only when the kernel would merge now: CI recorded green at this head too. The
+    // merge effect passes `ciPassed` once its rails read CI green; a merge already called stands.
+    const ciAtHead = d.ciHeadSha === d.currentHeadSha ? d.ci : null;
+    if (ciAtHead !== 'green' && !o.ciPassed && d.stateReason !== MERGE_CALLED) {
+      return status('pending', T.waiting, `${at} approved by ${by}${overText}; ${ciAtHead === 'red' ? `CI failed on ${at}` : `waiting for CI on ${at}`}`);
+    }
     return status('success', T.ready, `${at} approved by ${by}${overText}`);
   }
   const gateFailure = (r: ReviewGate): LandingStatus | null => {
@@ -233,6 +242,8 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
     // review of this head stands clean the check is pending, never a red that reads as a rejection.
     if (d.state === 'REPAIRING') {
       const review = reviewGate(view, { states: ['REPAIRING'] });
+      // e07ee9cf: parked in the landing lane (the refresh handler names the PR ahead): queued, not "in progress".
+      if (review.ok && o.detail && d.stateReason === 'behind') return status('pending', T.queued, `review approved ${at}; ${o.detail}`);
       if (review.ok) return status('pending', repairTerm(d.stateReason), `review approved ${at}; ${repairWords(d.stateReason)}`);
       if (review.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
       const failedReview = gateFailure(review);

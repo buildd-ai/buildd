@@ -1082,7 +1082,7 @@ export class FakeGithub {
       };
     }
 
-    // Statuses API: a commit status on a sha (the kernel's `buildd/landing`), latest per context.
+    // Statuses API: a commit status on a sha (the kernel's `Buildd / Review approval`), latest per context.
     if (a === 'statuses' && b1 && !c && method === 'POST') {
       const head = this.resolve(repo, b1);
       const context = String(b.context ?? 'default');

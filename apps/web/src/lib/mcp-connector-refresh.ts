@@ -62,6 +62,15 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
         or(
           isNull(secrets.lastRefreshedAt),
           lt(secrets.lastRefreshedAt, sql`NOW() - INTERVAL '60 minutes'`),
+          // An access token that has already expired cannot wait out the hour:
+          // providers with short-lived tokens (minutes) were otherwise held on a
+          // dead token for most of every window while every caller got 'locked'.
+          // The 2-minute guard still keeps concurrent callers to one attempt. A
+          // dead refresh token nulls tokenExpiresAt, so it stays on the hourly throttle.
+          and(
+            lt(secrets.tokenExpiresAt, sql`NOW()`),
+            lt(secrets.lastRefreshedAt, sql`NOW() - INTERVAL '2 minutes'`),
+          ),
         ),
       ),
     )

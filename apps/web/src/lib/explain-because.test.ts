@@ -263,6 +263,88 @@ describe('buildStateBecause', () => {
     expect(chain[0].refs.prNumber).toBe(77);
   });
 
+  // fe45dc7d (#5539): explain said "Task … is completed but its PR cannot land" over a failed owner task.
+  it('a failed owner task whose PR is still live is not called completed', () => {
+    const pr = { taskId: 't', title: 'Wire the route', prNumber: 77, prUrl: 'u', taskFailed: true as const };
+    const landingBlocked = [{
+      taskId: 't', prNumber: 77, prUrl: 'u', cause: 'human_decision', owner: 'person', label: 'it needs a person', nextAction: 'Decide.',
+      derivedFrom: 'workflow_deliveries',
+    }] as never;
+    for (const extra of [{}, { landingBlocked }]) {
+      const view = deriveMissionStateView({
+        ...base,
+        ...extra,
+        completion: { ok: false, code: 'awaiting_merge', reason: 'unmerged', awaitingMerge: 1, awaitingMergeDetails: [pr] },
+      });
+      const claims = buildStateBecause(view, { missionId: 'm' }, { unmergedPrs: [pr] }).map(l => l.claim).filter(c => c.includes('Wire the route'));
+      expect(claims.length).toBeGreaterThan(0);
+      for (const c of claims) {
+        expect(c).not.toContain('is completed');
+        expect(c).toContain('Task "Wire the route" failed, but its PR');
+      }
+    }
+  });
+
+  // Repro (task c8092d2a / PR #5530): the backend's own suggestion already says "none of this
+  // PR's added lines were found in it", but the sentence used to still open with "likely
+  // superseded by" regardless of that content verdict.
+  it('does not call a zero-evidence suggestion "likely superseded"; a positive one still is', () => {
+    const noMatch = {
+      repo: 'org/buildd', prNumber: 5479, prUrl: 'https://github.com/org/buildd/pull/5479',
+      signal: 'sibling_task' as const, why: 'merged by a sibling task in the same mission', score: 0.6,
+      contentRatio: 0,
+    };
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: 'x',
+        awaitingMerge: 1,
+        awaitingMergeDetails: [{ taskId: 't', title: 'Merge dev into mission branch', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true, suggestion: noMatch }],
+      },
+    });
+    const chain = buildStateBecause(view, { missionId: 'm' }, {
+      unmergedPrs: [{ taskId: 't', title: 'Merge dev into mission branch', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true, suggestion: noMatch }],
+    });
+    expect(chain[0].claim).not.toContain('likely superseded by');
+    expect(chain[0].claim).toContain('does not carry its changes');
+    expect(chain[0].claim).toContain('#5479');
+
+    const match = { ...noMatch, contentRatio: 0.95 };
+    const matchView = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false, code: 'awaiting_merge', reason: 'x', awaitingMerge: 1,
+        awaitingMergeDetails: [{ taskId: 't', title: 'T', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true, suggestion: match }],
+      },
+    });
+    const matchChain = buildStateBecause(matchView, { missionId: 'm' }, {
+      unmergedPrs: [{ taskId: 't', title: 'T', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true, suggestion: match }],
+    });
+    expect(matchChain[0].claim).toContain('likely superseded by');
+  });
+
+  it('names unavailable proof as neither confirmed nor ruled out, and a refresh by its own check', () => {
+    const unavailable = {
+      repo: 'org/buildd', prNumber: 9, prUrl: 'https://github.com/org/buildd/pull/9',
+      signal: 'claim' as const, why: 'GitHub did not return its changes', score: 0.9, contentUnavailable: true as const,
+    };
+    const detail = { taskId: 't', title: 'T', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true as const };
+    const viewOf = (d: any) => deriveMissionStateView({
+      ...base,
+      completion: { ok: false, code: 'awaiting_merge', reason: 'x', awaitingMerge: 1, awaitingMergeDetails: [d] },
+    });
+    const a = { ...detail, suggestion: unavailable };
+    const chain = buildStateBecause(viewOf(a), { missionId: 'm' }, { unmergedPrs: [a] });
+    expect(chain[0].claim).toContain('neither confirmed nor ruled out');
+    expect(chain[0].claim).not.toContain('does not carry');
+
+    const r = { ...detail, refreshCheck: { outcome: 'unique_work' as const, branch: 'mission/m', reason: 'migration not found', at: 'x' } };
+    const rChain = buildStateBecause(viewOf(r), { missionId: 'm' }, { unmergedPrs: [r] });
+    expect(rChain[0].claim).toContain('is missing work it carries');
+  });
+
   it('produces a single honest link when nothing is outstanding', () => {
     const view = deriveMissionStateView(base);
     const chain = buildStateBecause(view, { missionId: 'm' });

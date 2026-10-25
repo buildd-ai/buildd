@@ -25,6 +25,7 @@ describe('composition root', () => {
       'missions:mission-completion-attempt',
       'missions:subject-anchor-sweep',
       'reviews:spec-check-outcome',
+      'visual-qa:registered-checks-on-captures',
     ]);
   });
 
@@ -35,6 +36,7 @@ describe('composition root', () => {
   it('task.completed: a resolved release\'s mission attempt, chat, the ledger, the team push, then its analytics row', () => {
     expect(byEvent('task.completed')).toEqual([
       'missions:mission-completion-on-release-completed',
+      'releases:release-candidate-amend-on-fix-completion',
       'chat:chat-task-completed',
       'notifications:ledger-task-completed',
       'notifications:push-task-completed',

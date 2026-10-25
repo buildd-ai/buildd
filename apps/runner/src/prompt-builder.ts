@@ -1,5 +1,6 @@
 import type { query } from '@anthropic-ai/claude-agent-sdk';
 import { QUESTION_BRIEF_GUIDANCE } from '@buildd/core/question-brief';
+import { resumeInstruction } from '@buildd/core/start-anyway';
 import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
 import { isCloudExecutor } from './git-clone';
@@ -727,6 +728,9 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   // docs/specs/answered-question-resume.md, "The cold fallback".
   addSection('answered-question', renderAnsweredQuestions((taskCtx as any)?.answeredQuestions));
   addSection('unanswered-question', renderUnansweredQuestion((taskCtx as any)?.unansweredQuestion));
+  // Start anyway (spec 36df686b): the assessment the claim stored, or the resume
+  // after the task parked on its prerequisite and was woken.
+  addSection('start-anyway', renderStartAnyway(taskCtx as Record<string, unknown> | undefined));
 
   // Communication instruction: configurable input policy. Every policy also
   // gets REFUSED_TOOL_CALL_GUIDANCE (see its definition).
@@ -753,6 +757,25 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   addSection('task-metadata', `---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
 
   return { promptText: promptParts.join('\n\n'), memory, sections };
+}
+
+/**
+ * The `start-anyway` section: the assessment instruction (with the
+ * prerequisites' live state as of the claim) for a task a person started past
+ * its declared dependency, or, once the task parked on that prerequisite and
+ * woke, the resume carrying its saved assessment. A later Start anyway
+ * (a newer assessment than the park) assesses again.
+ */
+export function renderStartAnyway(ctx: Record<string, unknown> | null | undefined): string | null {
+  const a = ctx?.startAnywayAssessment as { at?: string; text?: string } | undefined;
+  const w = ctx?.waitExit as { blockerTaskId?: string; reason?: string; at?: string } | undefined;
+  const parked = !!w?.blockerTaskId && typeof w.reason === 'string';
+  if (parked && (!a?.at || !w!.at || w!.at >= a.at)) {
+    // A structured assessment saved with the park (task-wait-exit.ts), when the agent sent one.
+    const park = ctx?.startAnywayPark as { structured?: boolean; assessment?: Parameters<typeof resumeInstruction>[0]['assessment'] } | undefined;
+    return resumeInstruction({ blockerTaskId: w!.blockerTaskId!, reason: w!.reason!, at: w!.at, assessment: park?.structured ? park.assessment : null });
+  }
+  return typeof a?.text === 'string' && a.text ? a.text : null;
 }
 
 /**
@@ -784,13 +807,16 @@ function renderAnsweredQuestions(raw: unknown): string | null {
  */
 export function renderUnansweredQuestion(raw: unknown): string | null {
   if (!raw || typeof raw !== 'object') return null;
-  const e = raw as { prompt?: unknown; options?: unknown };
+  const e = raw as { prompt?: unknown; options?: unknown; recommended?: unknown };
   const prompt = typeof e.prompt === 'string' && e.prompt ? e.prompt : null;
   const options = Array.isArray(e.options) ? e.options.filter((o): o is string => typeof o === 'string' && !!o) : [];
+  // The person was told the task takes this option when nobody answers (spec 1b257609 R-3).
+  const recommended = typeof e.recommended === 'string' && e.recommended.trim() ? e.recommended.trim() : null;
   const parts = ['## Unanswered Question',
     prompt
       ? `An earlier attempt of this task stopped waiting for input and nobody answered: "${prompt}"${options.length ? ` (options: ${options.join(', ')})` : ''}`
       : 'An earlier attempt of this task stopped waiting for input and nobody answered.',
+    ...(recommended ? [`Go with "${recommended}", the option the earlier attempt recommended, unless the task description rules it out.`] : []),
     'Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.'];
   return parts.join('\n\n');
 }

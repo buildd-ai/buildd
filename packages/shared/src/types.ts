@@ -1051,6 +1051,8 @@ export interface WaitingForOption {
   consequence?: string;
   /** The consequence cut to the button line, under 40 characters (Navigation R-16). */
   effect?: string;
+  /** What the option does to the task: continues, finishes, stops or changes (packages/core/question-waits.ts). */
+  outcome?: 'continues' | 'finishes' | 'stops' | 'changes';
 }
 
 /**
@@ -1706,7 +1708,7 @@ export interface ClaimTasksInput {
    * team's workspace: claim that one task past the gates a person may override,
    * the MCP equivalent of the dashboard's "Start with override". Skips
    * dependencies, a held mission, a dead subject, a future startAt, mission
-   * concurrency and pacing, path overlap and the workspace cap. Never skips a
+   * concurrency and path overlap. Never skips a
    * live worker, a person's hold on the task, the mission budget,
    * role/runner routing, provider walls or account limits. Ignored otherwise. Audited on the task and the gate ledger.
    */
@@ -1809,7 +1811,6 @@ export type ClaimTaskExclusionCode =
   | 'runner_preference'
   | 'role_mismatch'
   | 'runner_cooldown'
-  | 'workspace_cap'
   /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
   | 'workspace_executor'
   /** The workspace paused new starts until a set time (runner claims only). */
@@ -1857,6 +1858,13 @@ export interface ClaimTaskExclusion {
   holderTaskId?: string;
 }
 
+/** A task a claim turned away: the dispatch-loop code that held it and when the hold lifts, when known. */
+export interface ClaimDeferredTask {
+  taskId: string;
+  code: string;
+  until?: string;
+}
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
@@ -1885,10 +1893,8 @@ export interface ClaimDiagnostics {
    * `summary` is the same thing as one or two sentences for a person.
    * A wall is listed only where a task was actually deferred on it.
    *
-   * Only these hard walls produce budget_exhausted. The learned forecast
-   * (`deferrals.oauth_parallelism`, `budgetPressure`) and plan allowances
-   * (hosted runner hours) never do: they hold a claim under their own
-   * deferral reason, and the forecast never holds an explicit start.
+   * Only these hard walls produce budget_exhausted. Plan allowances (hosted
+   * runner hours) never do: they hold a claim under their own deferral reason.
    */
   budgetBlock?: { walls: ClaimBudgetWall[]; summary: string };
   /**
@@ -1908,8 +1914,6 @@ export interface ClaimDiagnostics {
     soft_overlap?: number;
     mission_budget?: number;
     mission_concurrent?: number;
-    mission_paced?: number;
-    workspace_cap?: number;
     provider_unavailable?: number;
     budget_paused?: number;
     routing_paused?: number;
@@ -1949,12 +1953,6 @@ export interface ClaimDiagnostics {
     codex_single_flight?: number;
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */
     runner_capability?: number;
-    /**
-     * Claude task held because learned OAuth pressure lowered this seat's
-     * session cap and the seat is at it. Never applies to explicit starts,
-     * Codex, or tenant work. See `budgetPressure` for the reading behind it.
-     */
-    oauth_parallelism?: number;
     /**
      * Its role (or workspace envMapping) declares env vars no delivery channel
      * can satisfy — no role_env_secret under the mapped label, no mcp_credential
@@ -2014,21 +2012,8 @@ export interface ClaimDiagnostics {
      */
     isolation_unenforced?: number;
   };
-  /**
-   * Learned OAuth budget pressure for this seat (seat-based auth only).
-   * pct is 0..1 of the capacity learned from past exhaustion episodes. Its only
-   * effect is a lower per-seat concurrent-session cap (never below one live
-   * session, restored when the window resets); it does not change the routed
-   * tier and never pauses or delays claims. Absent when the account is
-   * API-billed, pacing is off, or there are too few episodes to learn from.
-   * See packages/core/oauth-budget.ts (`oauthParallelismCap`).
-   */
-  budgetPressure?: {
-    pct: number;
-    limiter: 'workers' | 'turns' | 'tokens' | null;
-    confidence: 'low' | 'good';
-    samples: number;
-  };
+  /** Which tasks the claim turned away (window it read), each with its deferral code. Absent from an older server. */
+  deferredTasks?: ClaimDeferredTask[];
 }
 
 /**
@@ -2708,6 +2693,19 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
   // Direct printenv/env output that names the runner coordination key
   /\bprintenv\s+BUILDD_API_KEY\b/,
   /\benv\b.*\bBUILD_API_KEY\b/,
+] as const;
+
+// Bash commands an agent must not run with whatever GitHub login its host holds.
+// On a runner whose agents still inherit the operator's `gh` login, GitHub
+// records these as the owner, and nothing tells an agent apart from the person.
+// Dispatching the Release workflow cuts or amends a candidate (voiding its
+// checks and approvals): buildd amends a candidate itself when its fix merges,
+// and an owner-requested release goes through the `trigger_release` action,
+// which buildd records. A guard against an honest mistake, not a sandbox: the
+// credential fix is task-scoped GitHub tokens (docs/runner-github-credentials.md).
+export const OWNER_ONLY_GITHUB_COMMAND_PATTERNS = [
+  /\bgh\s+workflow\s+run\b(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+["']?release(?:\.ya?ml)?["']?(?=\s|$)/i,
+  /\/actions\/workflows\/release\.ya?ml\/dispatches\b/i,
 ] as const;
 
 // Runner capability keys — advertised in WorkerEnvironment.envKeys, matched
@@ -3459,6 +3457,8 @@ export interface LivingSpecCriterionStanding {
   verdictId?: string;
   /** Review verdicts a deciding test result outranks (spec 1dc6cc39 R-85); absent reads 0. */
   overriddenReviews?: number;
+  /** How a required registered check was evaluated; absent for tests and ordinary reviews. */
+  method?: 'deterministic' | 'model' | 'visual' | 'fallback';
 }
 
 /**
@@ -3641,7 +3641,6 @@ export type RunnerQueueHold =
   | 'mission_held'
   | 'task_held'
   | 'workspace_paused'
-  | 'workspace_cap'
   | 'runner_cooldown'
   /** Its mission already runs a task that, like it, declares no files: the claim starts one such task per mission at a time. */
   | 'advisory_manifest';
@@ -3686,6 +3685,8 @@ export interface RunnerQueueTask {
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
   /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
   holderTaskId?: string | null;
+  /** Its mission's cap on tasks at once (spec 0dc7c6de R-7); absent or null = no mission limit. */
+  missionCap?: number | null;
   /**
    * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
    * its mission's, else its schedule's) against the person behind the runner's

@@ -6,9 +6,14 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  aggregateSpecMatches,
   buildLivingSpecChunks,
   buildLivingSpecGraph,
   livingSpecChunkPrefix,
+  livingSpecDraftChunkPrefix,
+  livingSpecPieces,
+  LIVING_SPEC_DRAFT_SOURCE_TYPE,
+  LIVING_SPEC_SIMILAR_FLOOR,
   LIVING_SPEC_SOURCE_TYPE,
 } from '../knowledge-store/living-spec';
 
@@ -30,11 +35,12 @@ const base = {
 };
 
 describe('buildLivingSpecChunks', () => {
-  test('a short body is one chunk keyed by the spec, carrying the approved revision', async () => {
+  test('a short body is its whole text, keyed by the spec and revision, carrying the approved revision', async () => {
     const chunks = await buildLivingSpecChunks({ ...base, body: '# Bug Intake\n\nEvery report lands on one incident.\n' });
+    // One heading holding the whole text: the section would repeat it, so only the whole text.
     expect(chunks).toHaveLength(1);
     const [c] = chunks;
-    expect(c.id.startsWith(livingSpecChunkPrefix(SPEC))).toBe(true);
+    expect(c.id).toBe(`${livingSpecChunkPrefix(SPEC)}@3#text`);
     expect(c.sourceType).toBe(LIVING_SPEC_SOURCE_TYPE);
     // No source path: a repo ingest prunes paths it did not see, and this is not a repo file.
     expect(c.sourcePath ?? null).toBeNull();
@@ -43,26 +49,97 @@ describe('buildLivingSpecChunks', () => {
     expect(c.lexicalText).toContain('Bug Intake and Quality');
     expect(c.metadata).toMatchObject({
       specId: SPEC, revision: 3, contentHash: 'abc123', parentSpecId: PARENT,
-      scope: 'feature', workspaceId: WS, approvedAt: approvedAt.toISOString(),
+      scope: 'feature', workspaceId: WS, approvedAt: approvedAt.toISOString(), draft: false, chunkKind: 'text',
     });
     expect(c.sourceTs).toEqual(approvedAt);
   });
 
-  test('a long body is split at headings into stable, unique ids under one prefix', async () => {
+  test('R-102: the whole text, one chunk per section and one per criterion, each criterion carrying its id and section', async () => {
+    const body = [
+      '# Cart', '', 'The cart page.', '',
+      '## Totals', '', '- **R-1** Totals are in the shopper currency.', '- **AC-1** GIVEN a basket THEN the total is in euros.', '',
+      '## Empty', '', 'R-2: An empty cart shows the empty state.', '',
+    ].join('\n');
+    const chunks = await buildLivingSpecChunks({ ...base, body });
+    const ids = chunks.map(c => c.id.slice(`${livingSpecChunkPrefix(SPEC)}@3#`.length));
+    expect(ids).toEqual(['text', 's1', 's2', 's3', 'R-1', 'AC-1', 'R-2']);
+    const r1 = chunks.find(c => c.id.endsWith('#R-1'))!;
+    expect(r1.content).toBe('R-1: Totals are in the shopper currency.');
+    expect(r1.metadata).toMatchObject({ chunkKind: 'criterion', criterionId: 'R-1', section: { id: 's2', title: 'Totals' } });
+    expect(r1.lexicalText).toContain('Cart > Totals');
+    const s3 = chunks.find(c => c.id.endsWith('#s3'))!;
+    expect(s3.metadata).toMatchObject({ chunkKind: 'section', section: { id: 's3', title: 'Empty' } });
+    // A section is its own text, not its children's.
+    expect(chunks.find(c => c.id.endsWith('#s1'))!.content).not.toContain('Totals are');
+    // Stable: the same body gives the same ids.
+    expect((await buildLivingSpecChunks({ ...base, body })).map(c => c.id)).toEqual(chunks.map(c => c.id));
+  });
+
+  test('R-106: a draft revision is indexed under its own prefix and source type, marked draft', async () => {
+    const writtenAt = new Date('2026-10-12T00:00:00Z');
+    const [c] = await buildLivingSpecChunks({ ...base, approvedAt: null, writtenAt, draft: true, body: '# X\n\nR-1: A thing.\n' });
+    expect(c.id).toBe(`${livingSpecDraftChunkPrefix(SPEC)}@3#text`);
+    expect(c.id.startsWith(livingSpecChunkPrefix(SPEC))).toBe(false);
+    expect(c.sourceType).toBe(LIVING_SPEC_DRAFT_SOURCE_TYPE);
+    expect(c.metadata).toMatchObject({ draft: true, approvedAt: null });
+    expect(c.sourceTs).toEqual(writtenAt);
+  });
+
+  test('a long body keeps every section and the whole text stays bounded', async () => {
     const section = (i: number) => `## Section ${i}\n\n${'Requirement text that goes on. '.repeat(80)}\n`;
     const body = `# Big spec\n\n${Array.from({ length: 40 }, (_, i) => section(i)).join('\n')}`;
     const a = await buildLivingSpecChunks({ ...base, body });
-    const b = await buildLivingSpecChunks({ ...base, body });
-    expect(a.length).toBeGreaterThan(10);
     expect(new Set(a.map(c => c.id)).size).toBe(a.length);
-    expect(a.map(c => c.id)).toEqual(b.map(c => c.id));
-    for (const c of a) expect(c.id.startsWith(`${livingSpecChunkPrefix(SPEC)}#`)).toBe(true);
-    // Every character of the body is in some chunk.
-    expect(a.map(c => c.content).join('\n')).toContain('## Section 39');
+    expect(a.filter(c => c.metadata?.chunkKind === 'section').length).toBe(40);
+    expect(a.find(c => c.id.endsWith('#s41'))!.content).toContain('## Section 39');
+    for (const c of a) expect(c.content.length).toBeLessThanOrEqual(32_000);
   });
 
   test('an empty body yields no chunks', async () => {
     expect(await buildLivingSpecChunks({ ...base, body: '   \n' })).toEqual([]);
+  });
+});
+
+describe('livingSpecPieces', () => {
+  test('the pieces a duplicate check probes with, same derivation as the stored chunks', () => {
+    const pieces = livingSpecPieces('# A\n\n## B\n\nR-1: One.\n');
+    expect(pieces.map(p => [p.key, p.kind, p.criterionId ?? null])).toEqual([
+      ['text', 'text', null], ['s2', 'section', null], ['R-1', 'criterion', 'R-1'],
+    ]);
+  });
+});
+
+describe('aggregateSpecMatches', () => {
+  const hit = (specId: string, key: string, dense: number | undefined, extra: Record<string, unknown> = {}) => ({
+    id: `living-spec:${specId}@1#${key}`, namespace: 'w:spec', corpus: 'spec' as const, sourceType: LIVING_SPEC_SOURCE_TYPE,
+    sourcePath: null, sourceUrl: null, content: key, score: dense ?? 0.2,
+    metadata: { specId, revision: 1, draft: false, criterionId: /^(R|AC)-/.test(key) ? key : undefined, ...extra },
+    scoreBreakdown: dense === undefined ? { lexical: 0.2 } : { dense },
+  });
+
+  test('one row per spec at its best score, keeping the best criterion pair as the reason (AC-139)', () => {
+    const got = aggregateSpecMatches([
+      { probe: { key: 'text', criterionId: null }, results: [hit('b', 'text', 0.6), hit('c', 'text', 0.58)] },
+      { probe: { key: 'AC-3', criterionId: 'AC-3' }, results: [hit('b', 'R-7', 0.91), hit('b', 'R-8', 0.7)] },
+      { probe: { key: 'R-1', criterionId: 'R-1' }, results: [hit('b', 'R-8', 0.8)] },
+    ], { limit: 5 });
+    expect(got.map(m => m.specId)).toEqual(['b', 'c']);
+    expect(got[0]).toMatchObject({ score: 0.91, mode: 'vector', pairs: [{ here: 'AC-3', there: 'R-7' }, { here: 'R-1', there: 'R-8' }] });
+    expect(got[0]!.chunkIds).toContain('living-spec:b@1#R-7');
+  });
+
+  test('vector hits below the floor are dropped; lexical ranks are not cosines, so they have none', () => {
+    const got = aggregateSpecMatches([
+      { probe: { key: 'text', criterionId: null }, results: [hit('low', 'text', LIVING_SPEC_SIMILAR_FLOOR.vector - 0.01), hit('lex', 'text', undefined)] },
+    ], { limit: 5 });
+    expect(got.map(m => [m.specId, m.mode])).toEqual([['lex', 'lexical']]);
+  });
+
+  test('leaves out the spec itself and keeps at most limit, marking drafts', () => {
+    const got = aggregateSpecMatches([
+      { probe: { key: 'text', criterionId: null }, results: [hit('self', 'text', 0.99), ...['a', 'b', 'c'].map((s, i) => hit(s, 'text', 0.9 - i / 10, { draft: s === 'b' }))] },
+    ], { limit: 2, excludeSpecId: 'self' });
+    expect(got.map(m => [m.specId, m.draft])).toEqual([['a', false], ['b', true]]);
   });
 });
 

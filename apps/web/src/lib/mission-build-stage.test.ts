@@ -171,7 +171,7 @@ describe('waiting groups (R-5)', () => {
     ];
     const stage = buildStage(board(rows), NOW, { hrefFor, clock });
     expect(stage.waitingGroups).not.toBeNull();
-    expect(stage.waitingGroups!.map(g => g.line)).toEqual(['Waiting on feat: the gate · 12 ›', 'Waiting on feat: the other gate · 8 ›']);
+    expect(stage.waitingGroups!.map(g => g.line)).toEqual(['Waiting on The gate · 12 ›', 'Waiting on The other gate · 8 ›']);
     expect(stage.summary).toBe(`0 of ${WAITING_GROUP_FROM + 2} merged · 2 running · ${WAITING_GROUP_FROM} waiting`);
   });
 });
@@ -216,5 +216,53 @@ describe('the summary names what sets the finish (R-22, AC-18)', () => {
     const done = board(Array.from({ length: 3 }, (_, i) => merged(i + 1, `feat: step ${i + 1}`)));
     expect(missionFinishClause(done, NOW, Object.fromEntries([1, 2, 3].map(n => [id(n), 30])))).toBeNull();
     expect(buildStage(done, NOW, { hrefFor, clock, finish: 'finish depends on X' }).summary).toBe('3 of 3 merged');
+  });
+});
+
+describe('row words (R-5, R-14): steps in words, updated on every running row, names without brackets', () => {
+  const run = (n: number, title: string, action: string | null, milestones: { ts: number; label: string }[] = [], over: Partial<BoardWorkerInput> = {}) =>
+    task(n, title, { status: 'in_progress', workers: [worker({ status: 'running', startedAt: min(110), completedAt: null, updatedAt: min(119), currentAction: action, milestones, ...over })] });
+  const lineOf = (tasks: BoardTaskInput[], n: number) => buildStage(board(tasks), NOW, { hrefFor, clock }).rows.find(r => r.id === id(n))!.line;
+
+  it('a commit step reads as its subject: no prefix, no trailer, one line', () => {
+    const label = 'commit: test: acceptance tests for Start anyway (spec 36df686b r1), failing before the build\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>';
+    const line = lineOf([run(1, 'Acceptance tests', label, [{ ts: min(119), label }])], 1);
+    expect(line).not.toContain('commit:');
+    expect(line).not.toContain('Co-Authored-By');
+    expect(line).not.toContain('\n');
+    expect(line).toContain('test: acceptance tests for Start anyway');
+  });
+
+  it('a long step truncates', () => {
+    const line = lineOf([run(1, 'T', null, [{ ts: min(119), label: 'commit: ' + 'word '.repeat(60) }])], 1);
+    expect(line.length).toBeLessThan(140);
+    expect(line).toContain('…');
+  });
+
+  it('a raw shell command is not a step: it maps to words or falls back to the latest milestone', () => {
+    const raw = lineOf([run(1, 'T', 'running: cat "apps/web/src/app/api/tasks/[id]/start/route.ts"')], 1);
+    expect(raw).not.toContain('cat ');
+    expect(raw).not.toContain('running:');
+    const tests = lineOf([run(1, 'T', 'running: bun run test apps/web')], 1);
+    expect(tests).toContain('running tests');
+    const edit = lineOf([run(1, 'T', 'editing: apps/web/src/lib/foo.ts')], 1);
+    expect(edit).toContain('editing foo.ts');
+    const read = lineOf([run(1, 'T', 'reading: apps/web/src/lib/foo.ts')], 1);
+    expect(read).toContain('reading foo.ts');
+  });
+
+  it('every running row ends with updated … ago, even before its first event', () => {
+    const line = lineOf([run(1, 'T', 'Writing the test', [], { updatedAt: null })], 1);
+    expect(line).toMatch(/· updated \d+[smh]/);
+  });
+
+  it('a waiting row names the blocker as the list shows it: no brackets, no internal title', () => {
+    const tasks = [
+      task(1, '[acceptance tests] Spec "Start anyway: assess" revision 1', { status: 'in_progress', workers: [worker({ status: 'running', startedAt: min(110), completedAt: null, updatedAt: min(119) })] }),
+      task(2, 'Build the thing', { dependsOn: [id(1)] }),
+    ];
+    const line = lineOf(tasks, 2);
+    expect(line).not.toContain('[');
+    expect(line.startsWith('Waiting on ')).toBe(true);
   });
 });

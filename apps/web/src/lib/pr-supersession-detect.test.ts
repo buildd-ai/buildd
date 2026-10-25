@@ -127,6 +127,31 @@ beforeEach(() => {
 });
 
 describe('detectPrSupersession', () => {
+  it('regression (c8092d2a): a candidate whose file list GitHub would not return is unavailable proof — never contentRatio 0, never cached or kept as judged', async () => {
+    gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
+    mergedPr('org/kb', 9, []);
+    delete gh['org/kb/pulls/9/files']; // the read fails (404 in the mock)
+
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+
+    expect(r.outcome).toBe('suggested');
+    expect(recordCalls).toHaveLength(0);
+    const scan = scanWrites.at(-1).supersessionScan;
+    expect(scan.suggestion).toMatchObject({ prNumber: 9, contentUnavailable: true });
+    expect(scan.suggestion.contentRatio).toBeUndefined();
+    expect(scan.suggestion.why).toContain('was not compared');
+    expect(scan.suggestion.why).not.toContain('none of this PR');
+    // Not kept as a judged pair: the next scan reads it again rather than reusing "carries nothing".
+    expect((scan.judged ?? []).some((j: any) => j.prNumber === 9)).toBe(false);
+  });
+
+  it('verifyPrCarriedBy reads an unreadable candidate as unavailable, not as carrying nothing', async () => {
+    mergedPr('org/kb', 9, []);
+    delete gh['org/kb/pulls/9/files'];
+    const v = await verifyPrCarriedBy({ installationId: 1, repo: 'org/kb', prNumber: 6, candidatePrNumber: 9 });
+    expect(v.outcome).toBe('unavailable');
+  });
+
   it('records the edge when a sibling squash carries the closed PR’s content, naming the method', async () => {
     gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
     mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES, 'Squashed in with a follow-up line.') }]);
@@ -151,7 +176,7 @@ describe('detectPrSupersession', () => {
     expect(r.outcome).toBe('suggested');
     expect(recordCalls).toHaveLength(0);
     const scan = scanWrites.at(-1).supersessionScan;
-    expect(scan.suggestion).toMatchObject({ prNumber: 2558, signal: 'claim' });
+    expect(scan.suggestion).toMatchObject({ prNumber: 2558, signal: 'claim', contentRatio: 0 });
     expect(scan.suggestion.why).toContain('none of this PR');
     expect(gateEvents[0]).toMatchObject({ outcome: 'deferred' });
   });
@@ -280,7 +305,7 @@ describe('a verified record the control plane did not answer is deferred, bounde
     expect(w.supersessionScannedAt).toBeInstanceOf(Date);
     expect(w.supersessionScan.deferral).toBeUndefined();
     expect(w.supersessionScan.deferralExhausted).toMatchObject({ count: 24, firstAt: '2026-10-14T00:10:00Z' });
-    expect(w.supersessionScan.suggestion).toMatchObject({ prNumber: 9 });
+    expect(w.supersessionScan.suggestion).toMatchObject({ prNumber: 9, contentRatio: 1 });
     expect(w.supersessionScan.suggestion.why).toContain('did not take the record');
     expect(gateEvents).toHaveLength(1);
     expect(gateEvents[0]).toMatchObject({ outcome: 'stranded', detail: expect.objectContaining({ kind: 'control_plane_deferral_exhausted' }) });
@@ -648,5 +673,120 @@ describe('prRefsIn', () => {
     expect(prRefsIn('Re-land of #6, see org/other#7 and https://github.com/org/kb/pull/6 and https://github.com/a/b/pull/8#issuecomment-1; x#9', 'org/kb')).toEqual([
       { repo: 'org/kb', prNumber: 6 }, { repo: 'a/b', prNumber: 8 }, { repo: 'org/other', prNumber: 7 },
     ]);
+  });
+});
+
+// ─── Closed integration-refresh PRs (task c8092d2a / PR #5530) ─────────────────
+//
+// A mission/dev refresh PR closed unmerged. The generic detector's sibling-task signal nominated an
+// unrelated merged acceptance-tests PR in the same mission and, on zero shared lines (a refresh's
+// effective diff is near-empty by construction), still offered it as "likely superseded". A
+// refresh's work is ancestry plus what it adds on top of trunk; it gets the refresh proof
+// (`verifyRefreshInBranch`, the same one pr-supersession-refresh.ts retires by), never a candidate.
+describe('a closed integration-refresh PR', () => {
+  const BRANCH = 'mission/acceptance';
+  const MIGRATION = 'packages/core/drizzle/20261020000000_mission_cols/migration.sql';
+  const REFRESH_CTX = { requireMergeCommit: true, refreshBranch: BRANCH, refreshTrunk: 'dev', refreshTrunkSha: 'trunk1', refreshMissionHeadSha: 'mhead1' };
+
+  function refreshRepro(opts: { refreshDelta: any[]; branchDelta: any[] }) {
+    workerRow = {
+      ...workerRow, prUrl: 'https://github.com/org/kb/pull/5530', prNumber: 5530,
+      task: { id: 't-6', missionId: 'm-1', context: REFRESH_CTX },
+    };
+    closedPr('org/kb', 5530, { base: { ref: BRANCH }, head: { sha: 'rhead' } });
+    // The unrelated sibling PR the old scan nominated.
+    siblingTasks = [{ id: 't-7', title: 'Acceptance tests', workers: [{ prUrl: 'https://github.com/org/kb/pull/5479', prNumber: 5479, mergedAt: '2026-10-23T01:00:00Z' }] }];
+    mergedPr('org/kb', 5479, [{ filename: 'tests/acceptance.test.ts', status: 'added', patch: patch('it("works", () => {});') }]);
+    gh[`org/kb/git/ref/heads/${BRANCH}`] = { object: { sha: 'bhead' } };
+    gh['org/kb/compare/trunk1...bhead'] = { status: 'ahead' };
+    gh['org/kb/compare/mhead1...bhead'] = { status: 'ahead' };
+    gh['org/kb/compare/dev...rhead'] = { files: opts.refreshDelta };
+    gh['org/kb/compare/dev...bhead'] = { files: opts.branchDelta };
+  }
+  const sqlFile = (sha: string) => ({ filename: MIGRATION, status: 'added', sha, additions: 1, deletions: 0, patch: patch('ALTER TABLE missions ADD COLUMN x text;') });
+
+  it('genuinely equivalent (the #5530 shape: ancestry in the branch, migration present by identical SQL): landed, and no candidate is offered', async () => {
+    refreshRepro({ refreshDelta: [sqlFile('blob1')], branchDelta: [sqlFile('blob1')] });
+
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+
+    expect(r).toEqual({ outcome: 'none', candidatesChecked: 0 });
+    expect(recordCalls).toHaveLength(0);
+    expect(ghCalls.some(c => c.includes('/pulls/5479'))).toBe(false);
+    const w = scanWrites.at(-1);
+    expect(w.supersessionScannedAt).toBeInstanceOf(Date);
+    expect(w.supersessionScan.suggestion).toBeNull();
+    expect(w.supersessionScan.refreshCheck).toMatchObject({ outcome: 'landed', branch: BRANCH, migrationsMatched: 1 });
+    expect(gateEvents).toHaveLength(0);
+  });
+
+  it('unique migration work the branch does not have: unique_work with the migration named, one stranded event', async () => {
+    refreshRepro({ refreshDelta: [sqlFile('blob1')], branchDelta: [] });
+
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+
+    const check = scanWrites.at(-1).supersessionScan.refreshCheck;
+    expect(check).toMatchObject({ outcome: 'unique_work', branch: BRANCH });
+    expect(check.reason).toContain(MIGRATION);
+    expect(scanWrites.at(-1).supersessionScan.suggestion).toBeNull();
+    expect(gateEvents).toHaveLength(1);
+    expect(gateEvents[0]).toMatchObject({ outcome: 'stranded', detail: expect.objectContaining({ kind: 'refresh_unique_work' }) });
+  });
+
+  it('ancestry missing (the refresh never landed): unique_work, not landed', async () => {
+    refreshRepro({ refreshDelta: [], branchDelta: [] });
+    gh['org/kb/compare/trunk1...bhead'] = { status: 'diverged' };
+
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+
+    expect(scanWrites.at(-1).supersessionScan.refreshCheck).toMatchObject({ outcome: 'unique_work' });
+  });
+
+  it('unavailable proof: a branch GitHub will not read is deferred (no stamp, no verdict), never landed or unique_work', async () => {
+    refreshRepro({ refreshDelta: [sqlFile('blob1')], branchDelta: [sqlFile('blob1')] });
+    delete gh[`org/kb/git/ref/heads/${BRANCH}`];
+
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+
+    expect(r.outcome).toBe('deferred');
+    const w = scanWrites.at(-1);
+    expect(w.supersessionScannedAt).toBeUndefined();
+    expect(w.supersessionScan.refreshCheck).toBeUndefined();
+    expect(w.supersessionScan.deferral).toMatchObject({ count: 1 });
+  });
+
+  it('unavailable proof past the deferral cap settles as unavailable, not as either verdict', async () => {
+    refreshRepro({ refreshDelta: [], branchDelta: [] });
+    delete gh[`org/kb/git/ref/heads/${BRANCH}`];
+    workerRow = { ...workerRow, supersessionScan: { scannedAt: '', candidatesChecked: 0, suggestion: null, deferral: { firstAt: '2026-10-14T00:00:00Z', count: 23, reason: 'x' } } };
+
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+
+    const w = scanWrites.at(-1);
+    expect(w.supersessionScannedAt).toBeInstanceOf(Date);
+    expect(w.supersessionScan.refreshCheck).toMatchObject({ outcome: 'unavailable' });
+    expect(w.supersessionScan.deferral).toBeUndefined();
+  });
+
+  it('repeated reconciliation: a re-run re-reads GitHub, writes the same verdict, clears a stale old suggestion, and does not re-announce', async () => {
+    refreshRepro({ refreshDelta: [sqlFile('blob1')], branchDelta: [] });
+    const staleSuggestion = { repo: 'org/kb', prNumber: 5479, prUrl: 'https://github.com/org/kb/pull/5479', signal: 'sibling_task', why: 'old', score: 0.6 };
+    workerRow = { ...workerRow, supersessionScan: { scannedAt: '2026-10-01T00:00:00Z', candidatesChecked: 1, suggestion: staleSuggestion } };
+
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+    const first = scanWrites.at(-1).supersessionScan;
+    expect(first.suggestion).toBeNull();
+    expect(gateEvents).toHaveLength(1);
+
+    workerRow = { ...workerRow, supersessionScan: first };
+    const callsBefore = ghCalls.length;
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+    const second = scanWrites.at(-1).supersessionScan;
+
+    expect(ghCalls.length).toBeGreaterThan(callsBefore);
+    expect(second.refreshCheck.outcome).toBe(first.refreshCheck.outcome);
+    expect(second.refreshCheck.reason).toBe(first.refreshCheck.reason);
+    expect(gateEvents).toHaveLength(1);
+    expect(recordCalls).toHaveLength(0);
   });
 });

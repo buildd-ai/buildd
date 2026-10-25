@@ -87,19 +87,6 @@ mock.module('@buildd/core/db/schema', () => ({
     resetsAt: 'backendPauses.resetsAt', createdAt: 'backendPauses.createdAt',
     reason: 'backendPauses.reason',
   },
-  oauthBudgetEpisodes: {},
-}));
-
-mock.module('@buildd/core/oauth-budget', () => ({
-  learnOauthCapacity: mock(() => ({ confidence: 'none', samples: 0 })),
-  oauthBudgetPressure: mock(() => ({ pct: 0, limiter: null })),
-  windowEndsAt: mock(() => new Date('2026-09-01T00:00:00Z')),
-  readPacingConfig: mock(() => ({ quantile: 0.9 })),
-}));
-
-mock.module('@/lib/oauth-budget-window', () => ({
-  loadOauthEpisodes: mock(() => Promise.resolve([])),
-  measureOauthWindow: mock(() => Promise.resolve({ windowStartedAt: new Date(), usage: 0 })),
 }));
 
 // Import AFTER all mocks
@@ -267,23 +254,13 @@ describe('getBudgetForecast — Codex vs Claude tenant walls', () => {
   });
 });
 
-it('OAuth output explicitly identifies a forecast floor and sample basis, never actual percent used', async () => {
-  mockAccountsFindMany.mockImplementation(() => Promise.resolve([{id: 'acc-test', name: 'test', seatId: null, budgetResetsAt: null}] as any));
-  const forecast = await getBudgetForecast(TEAM_ID, []);
-  const row = forecast.oauthSessions[0];
-  expect(row.source).toBe('learned_exhaustion_floor');
-  expect(row.pressureLabel).toBe('forecast floor pressure');
-  expect(row.providerUsagePct).toBeNull();
-  expect(row.sampleBasis.quantile).toBe(0.9);
-  expect(row.sampleBasis.metric).toBeNull();
-  expect(row).not.toHaveProperty('pctUsed');
-  mockAccountsFindMany.mockImplementation(() => Promise.resolve([]));
-});
-
-it('does not truncate sibling registrations before grouping seats', async () => {
+// Parallelism limits R-9/AC-10: the server keeps no model of a subscription,
+// so the forecast reads no subscription accounts and carries no learned figure.
+it('reads no subscription accounts and carries no learned session forecast', async () => {
   mockAccountsFindMany.mockClear();
-  await getBudgetForecast(TEAM_ID, []);
-  expect(mockAccountsFindMany.mock.calls[0][0]).not.toHaveProperty('limit');
+  const forecast = await getBudgetForecast(TEAM_ID, []);
+  expect(mockAccountsFindMany).not.toHaveBeenCalled();
+  expect(forecast).not.toHaveProperty('oauthSessions');
 });
 
 // docs/specs/real-and-virtual-cost.md "Spend consequences": the burn rate

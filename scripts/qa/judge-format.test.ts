@@ -186,6 +186,33 @@ describe('design vs built', () => {
     expect(report).toContain('order: decision card after the bar');
   });
 
+  test('a component screen is judged on its dev fixture, and the verdict names the screen and the fixture URL', () => {
+    const url = '/app/dev/fixtures?state=stage-meter&variant=failed';
+    const comp = {
+      ...design,
+      criteria: [{ id: 'AC-14', text: 'The stage meter shows each stage.', screens: ['c-stage-meter'] }],
+      shots: [{ screen: 'c-stage-meter', file: 'designs/c-stage-meter.png', viewport: { width: 480, height: 160 }, theme: null }],
+      pairs: [{
+        captureId: 'meter', route: url, screen: 'c-stage-meter', criteria: ['AC-14'], kind: 'component' as const, fixture: url, code: 'apps/web/src/components/UiStageMeter.tsx',
+        designViewport: { width: 480, height: 160 }, builtViewport: { width: 480, height: 900 }, theme: null, builtTheme: null, themeMismatch: false,
+        designImage: 'designs/c-stage-meter.png', builtImage: 'screenshots/meter.png',
+      }],
+      unmatchedScreens: [],
+    };
+    const mcaps = [cap({ id: 'meter', path: url, screenshotFile: 'meter.png' })];
+    const input = buildJudgeInput(manifest, mcaps, comp);
+    expect(input.routes[0].designChecks![0]).toMatchObject({ screen: 'c-stage-meter', kind: 'component', fixture: url, code: 'apps/web/src/components/UiStageMeter.tsx', judge: true });
+    expect(input.instructions).toMatch(/component/);
+    expect(input.instructions).toMatch(/fixture URL/);
+    const verdicts = assembleVerdicts(input, {
+      meter: { summary: 's', expectations: [{ id: 'renders', verdict: 'pass' }, { id: 'first-screen', verdict: 'pass' }, { id: 'no-overflow', verdict: 'pass' }, { id: 'tap-targets', verdict: 'pass' }], designChecks: [{ screen: 'c-stage-meter', verdict: 'pass', reason: 'All four stages, in order.' }] },
+    }, mcaps);
+    expect(verdicts[0].design![0]).toMatchObject({ screen: 'c-stage-meter', kind: 'component', fixture: url, verdict: 'MATCHES-SPEC' });
+    const report = renderReport(verdicts);
+    expect(report).toContain(`**c-stage-meter** (AC-14) — \`MATCHES-SPEC\` · component, on fixture [${url}](${url})`);
+    expect(report).toContain(`| Design · c-stage-meter | Built · fixture ${url} |`);
+  });
+
   test('a design check the judge skipped is unsure, never a pass', () => {
     const input = buildJudgeInput(manifest, caps, design);
     const verdicts = assembleVerdicts(input, {

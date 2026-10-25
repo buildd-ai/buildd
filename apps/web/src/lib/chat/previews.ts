@@ -308,8 +308,8 @@ function criterionText(c: Obj): string {
 
 const MISSION_FIELDS: Array<[string, string]> = [
   ['title', 'Title'], ['description', 'Goal'], ['status', 'Status'], ['priority', 'Priority'],
-  ['cronExpression', 'Schedule'], ['orchestrationMode', 'Orchestration'], ['maxConcurrentTasks', 'Max concurrent tasks'],
-  ['costBudgetUsd', 'Budget (USD)'], ['pacingMode', 'Pacing'], ['autoVerify', 'Auto-verify'], ['model', 'Model'],
+  ['cronExpression', 'Schedule'], ['orchestrationMode', 'Orchestration'], ['maxConcurrentTasks', 'Mission cap'],
+  ['costBudgetUsd', 'Budget (USD)'], ['autoVerify', 'Auto-verify'], ['model', 'Model'],
 ];
 
 const updateMission: Builder = async (input, env) => {

@@ -6,7 +6,7 @@
  * The display gate (`isGateSatisfied`) judges a dependency by its status only.
  * The claim gate also releases an edge on an early release, a force start, an
  * inferred edge onto an unstarted holder or another landing base, a surface
- * audit's mission scope and the bypass flag, so a dependent the claim gate
+ * audit's mission scope, so a dependent the claim gate
  * would start read blocked on the strip. This module selects each arm of
  * `dependencySatisfied()` separately (`DEP_EDGE_ARM_SQL`), so the page and the
  * claim read the same SQL, and never writes anything.
@@ -21,7 +21,6 @@ import { inArray, sql, type SQL } from 'drizzle-orm';
 import type { WaitingKind } from '@buildd/core/waiting-reason';
 import { DEP_EDGE_ARM_SQL, outsideSurfaceAuditMission } from '@/app/api/workers/claim/deps-gate';
 import { taskNotHeld } from '@/app/api/workers/claim/held-gate';
-import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
 import { DEP_EDGE_RELEASE_ARMS, type DepEdgeReleaseArm, type DepReleaseArm } from '@/lib/dep-gate-contract';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import type { MissionGateFacts, ReleasedEdge } from '@/lib/mission-board';
@@ -32,7 +31,7 @@ export const EMPTY_GATE_FACTS: MissionGateFacts = { releasedEdges: [], waitingKi
 
 /** One row of `edgeFactsSql`: every arm's verdict for one (dependent, dependency) edge. */
 export type EdgeFactsRow = { dependent_id: string; dependency_id: string; mission_id?: string | null; inferred: boolean | string | null }
-  & Record<`arm_${DepEdgeReleaseArm}` | 'arm_surface_audit_scope' | 'arm_bypass', boolean | string | null>;
+  & Record<`arm_${DepEdgeReleaseArm}` | 'arm_surface_audit_scope', boolean | string | null>;
 
 const truthy = (v: unknown) => v === true || v === 't' || v === 'true';
 
@@ -60,7 +59,6 @@ function edgeFactsWhere(scope: SQL): SQL {
   return sql`SELECT ${tasks.id} AS dependent_id, dep_id AS dependency_id, ${tasks.missionId} AS mission_id,
     ${sql.join(arms, sql`, `)},
     ${outsideSurfaceAuditMission(dep)} AS arm_surface_audit_scope,
-    ${bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY)} AS arm_bypass,
     COALESCE(${tasks.pathDeclaration}->'inferredDependsOn' ? dep_id, FALSE) AS inferred
   FROM ${tasks}, jsonb_array_elements_text(COALESCE(${tasks.dependsOn}::jsonb, '[]'::jsonb)) AS dep_id
   WHERE ${scope}
@@ -83,7 +81,6 @@ export function pendingHoldsSql(missionId: string): SQL {
  * release every edge of the dependent.
  */
 export function edgeReleaseArm(row: EdgeFactsRow): DepReleaseArm | undefined {
-  if (truthy(row.arm_bypass)) return 'bypass';
   if (truthy(row.arm_surface_audit_scope)) return 'surface_audit_scope';
   if (truthy(row.arm_status)) return undefined;
   return DEP_EDGE_RELEASE_ARMS.find((arm) => arm !== 'status' && truthy(row[`arm_${arm}`]));
@@ -98,8 +95,6 @@ export const DEFERRAL_WAITING_KIND: Readonly<Record<string, WaitingKind>> = {
   subject_dead: 'subject_dead',
   mission_budget: 'mission_budget',
   mission_concurrent: 'mission_concurrent',
-  mission_paced: 'mission_paced',
-  workspace_cap: 'workspace_cap',
   provider_unavailable: 'provider_unavailable',
   budget_paused: 'budget_paused',
 };

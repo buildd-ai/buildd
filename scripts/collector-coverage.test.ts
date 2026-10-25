@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { isUnitTestFile } from './run-unit-tests';
+import { ACCEPTANCE_ONLY_TESTS, isUnitTestFile } from './run-unit-tests';
 
 /**
  * Every tracked test file must be either collected by the unit runner or listed
@@ -24,6 +24,10 @@ const DELIBERATELY_NOT_IN_THE_UNIT_SUITE: Array<[pattern: RegExp, runBy: string]
   [/^tests\/e2e\//, 'bun run test:e2e (needs BUILDD_TEST_SERVER)'],
   [/^apps\/web\/tests\/acceptance\//, 'bun run scripts/run-acceptance-tests.ts <id> <file> (test-first checks; red until the spec is built, run by verified_by)'],
   [/^apps\/web\/tests\/db\//, 'bun run test:db (real Postgres; CI db-architecture job in build.yml)'],
+  // Only while the list holds a file: an empty list would leave a pattern that matches nothing.
+  ...(ACCEPTANCE_ONLY_TESTS.length
+    ? [[new RegExp(`^(?:${ACCEPTANCE_ONLY_TESTS.map(f => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`), 'scripts/run-acceptance-tests.ts (test-first; red until the build lands)'] as [RegExp, string]]
+    : []),
 ];
 
 function trackedTestFiles(): string[] {

@@ -2,8 +2,11 @@
  * Spec criterion checks on a PR head (lib/specs/criterion-checks.ts).
  *
  * - `pr.review_ready` (opened ready, or out of draft) and `pr.synchronized`
- *   (a push): file one check run per checked criterion of the task's pinned
- *   revision for that head. Every delivery: dispatch is idempotent per head.
+ *   (a push): file one check run per checked criterion, and one per
+ *   registered `verify:` binding, of the task's pinned revision for that head.
+ *   Every delivery: dispatch is idempotent per head. A registered run asks the
+ *   explicit verify route, so the coordinator an explicit request and a
+ *   mission's final verification use decides it; no model call holds the webhook.
  * - `worker.reported` for a check run: its exit code becomes the verdict at
  *   the head it ran on.
  *
