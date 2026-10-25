@@ -63,7 +63,7 @@ export function visualReviewSkipCause(state: MissionVisualReviewState | null): V
   if (state.recapture?.next === 'decide') return 'fix_not_rechecked';
   if (state.status === 'findings') return 'findings_wrong';
   if (state.status === 'running') return 'still_running';
-  if (state.status === 'queued' && state.holdReason) return 'audit_held';
+  if ((state.status === 'queued' || state.status === 'needed') && state.holdReason) return 'audit_held';
   if (state.status === 'needed' && state.nextActor === 'owner') return 'awaiting_approval';
   if (state.status === 'needed' && state.staleEvidence) return 'new_commit_unaudited';
   if (state.status === 'queued' || state.status === 'needed') return 'never_started';

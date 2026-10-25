@@ -49,7 +49,7 @@ describe('one projection, the same waiting work everywhere (AC-9)', () => {
     const api = mock(async () => ({ id: id(1), title: 'Acceptance tests', status: 'in_progress', priority: 0, workspace: { name: 'w' }, workers: [], artifacts: [], questionWaits: projection }));
     const getTask = ((await handleBuilddAction(api as unknown as ApiFn, 'get_task', { taskId: id(1) }, { workspaceId: 'ws', getWorkspaceId: async () => 'ws', getLevel: async () => 'worker' })) as any).content[0].text as string;
 
-    expect(expected).toBe("Waits on this: Autostart repair, then Real-machine check and 1 task you can't see. Holds the schema lane: 1 queued.");
+    expect(expected).toBe("Blocks Autostart repair, then Real-machine check and 1 task you can't see. Holds the schema lane: 1 queued.");
     expect(partsText(waitsSummary(home.waits!))).toBe(expected);
     expect(partsText(waitsSummary(mission.waits!))).toBe(expected);
     expect(getTask).toContain(`- ${expected}`);

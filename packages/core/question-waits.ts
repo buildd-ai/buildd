@@ -187,7 +187,7 @@ function declaredParts(w: Pick<QuestionWaits, 'waiting' | 'hiddenCount' | 'beyon
 export function waitsSummary(w: QuestionWaits): WaitsPart[] {
   const sentences: WaitsPart[][] = [];
   const c = counts(w);
-  if (c.declared > 0) sentences.push([{ text: 'Waits on this: ' }, ...declaredParts(w)]);
+  if (c.declared > 0) sentences.push([{ text: 'Blocks ' }, ...declaredParts(w)]);
   for (const l of w.lanes ?? []) {
     const n = l.queued.length + l.hiddenCount;
     if (n > 0) sentences.push([{ text: `Holds ${laneName(l.lane)}: ${n} queued` }]);
@@ -211,27 +211,38 @@ export function waitsSummary(w: QuestionWaits): WaitsPart[] {
   return out;
 }
 
-function expiryWords(w: QuestionWaits): string {
+/** "3h 59m", "2d 4h": the footer's span, no unit words. */
+function shortSpan(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 60_000));
+  if (total < 1) return '<1m';
+  const days = Math.floor(total / 1440);
+  const hours = Math.floor((total % 1440) / 60);
+  const minutes = total % 60;
+  const units: string[] = [];
+  if (days) units.push(`${days}d`);
+  if (hours) units.push(`${hours}h`);
+  if (minutes && !days) units.push(`${minutes}m`);
+  return units.slice(0, 2).join(' ');
+}
+
+/** What happens at expiry, as a fragment; null when it is only the run ending, which the card's own state shows. */
+function expiryFragment(w: QuestionWaits): string | null {
   switch (w.onExpiry.action) {
-    case 'default':
-      return `the task starts again and the agent goes with ${w.onExpiry.option ?? 'its recommendation'}`;
-    case 'restart':
-      return 'the task starts again and the agent decides for itself';
-    case 'ends':
-      return 'the task stops waiting and ends';
-    case 'delivery':
-      return 'this run ends and buildd decides whether to start the task again';
+    case 'default': return `Goes with ${w.onExpiry.option ?? 'its recommendation'}`;
+    case 'restart': return 'Task restarts';
+    case 'ends': return 'Task ends';
+    case 'delivery': return null;
   }
 }
 
-/** The card's footer line (R-7): when it expires and what happens then. Null with no open question. */
+/** The card's footer line (R-7): when it expires, then what happens if that is not obvious. Null with no open question. */
 export function waitsFooter(w: QuestionWaits, now: number = Date.now()): string | null {
   const expires = w.expiresAt ? Date.parse(w.expiresAt) : NaN;
   if (!Number.isFinite(expires)) return null;
   const left = expires - now;
-  return left > 0
-    ? `Expires in ${formatSpan(left)}, then ${expiryWords(w)}.`
-    : `Expired: at the next check ${expiryWords(w)}.`;
+  const then = expiryFragment(w);
+  const head = left > 0 ? `Expires in ${shortSpan(left)}` : 'Expired';
+  return then ? `${head}. ${then}.` : head;
 }
 
 /** A plain-text rendering of parts (push, MCP). */

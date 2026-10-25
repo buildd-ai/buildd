@@ -44,6 +44,7 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   // A person or an agent asked and got the 503: they ask again, and the landing sweep re-drives an approved PR.
   land: false,
   apply_recommendation: false,
+  land_escalated: false,
   policy_merge: false,
   request_review: false,
   request_ci_retry: false,

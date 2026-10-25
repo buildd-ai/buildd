@@ -79,17 +79,30 @@ export function roundLabel(r: RoundSnapshot): string {
 }
 
 /**
- * Why an ended attempt escalated, read from what the transition recorded: the review budget
- * flag, the attempt's family against its own cap in the ledger, and the live CI read.
+ * Why an attempt's end handed the delivery to a person, read from what the transition recorded:
+ * the review budget flag, the policy/no-PR-head evidence, the attempt's family against its own
+ * cap in the ledger, and the live CI read. 08d752ed: only an owner end with no open PR head to
+ * hand on is "never reached GitHub"; a policy hand-off or a spent budget is not a failed push.
  */
-function attemptEscalation(ev: Record<string, unknown>, a: AttemptSnapshot | undefined, attempts: AttemptSnapshot[]): Omit<PrActivityEntry, 'at'> {
+function attemptEscalation(
+  fromState: string | null,
+  ev: Record<string, unknown>,
+  a: AttemptSnapshot | undefined,
+  attempts: AttemptSnapshot[],
+): Omit<PrActivityEntry, 'at'> {
+  // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
   if (ev.reviewBudgetSpent) return { kind: 'review_escalated', detail: 'review budget spent' };
+  if (ev.policyEvidence) return { kind: 'human_review_required', detail: str(ev.reason) };
+  if (ev.note === 'no_open_pr_head') return { kind: 'push_undeliverable' };
   if (a) {
     const spent = attempts.filter((x) => x.family === a.family && x.mode === a.mode && x.status !== 'skipped').length >= a.maxAttempts;
     if (spent) return a.family === 'ci' ? { kind: 'ci_exhausted' } : { kind: 'review_escalated', detail: a.family === 'review_fix' ? 'fix budget spent' : `${a.family} fix budget spent` };
     if (ev.noChange) return { kind: 'review_escalated', detail: `the ${a.family === 'review_fix' ? 'review' : a.family} fix left the PR unchanged` };
     return { kind: 'review_escalated', detail: `the ${a.family === 'review_fix' ? 'review' : a.family} fix ended and the head is still not mergeable` };
   }
+  if (fromState === 'WORKING' && str(ev.signature)) return { kind: 'ci_exhausted' };
+  if (fromState === 'FIXING') return { kind: 'review_escalated', detail: 'fix budget spent' };
+  if (fromState === 'REPAIRING') return { kind: 'review_escalated', detail: 'repair budget spent' };
   const failing = (ev.liveChecks as { failing?: unknown } | undefined)?.failing;
   if (Array.isArray(failing) && failing.length > 0) return { kind: 'review_escalated', detail: 'CI is red' };
   return { kind: 'review_escalated', detail: 'the fix ended and a person has to decide' };
@@ -175,10 +188,9 @@ export function transitionsToActivityEntries(
         } else if (t.toState === 'AWAITING_PUSH') {
           push({ kind: 'push_pending' });
         }
-        // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
-        // Name the real reason, from the ledger and the evidence; only PushRecoveryExhausted says
-        // "never reached GitHub".
-        if (t.toState === 'ESCALATED') push(attemptEscalation(ev, fixAttempt, attempts));
+        // Name the real reason, from the ledger and the evidence; only a missing PR head or
+        // PushRecoveryExhausted says "never reached GitHub".
+        if (t.toState === 'ESCALATED') push(attemptEscalation(t.fromState, ev, fixAttempt, attempts));
         break;
       }
       case 'PushRecoveryExhausted':

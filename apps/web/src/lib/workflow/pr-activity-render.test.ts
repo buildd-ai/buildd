@@ -88,6 +88,25 @@ describe('transitions → timeline', () => {
     ]);
   });
 
+  // 08d752ed (#5580, #5647): an owner's hand-off to a person at PR open is not a push that failed.
+  test('an attempt end that escalates says why, and only a lost PR head reads as "never reached GitHub"', () => {
+    const ts = [
+      T('AttemptEnded', 'WORKING', 'ESCALATED', { outcome: 'success', live: live('H1'), policyEvidence: { headSha: 'H1', reason: 'destructive migration' }, reason: 'destructive migration' }, 1),
+      T('AttemptEnded', 'WORKING', 'ESCALATED', { outcome: 'success', live: live('H1'), signature: 'ci:unit', spent: 3, max: 3 }, 2),
+      T('AttemptEnded', 'FIXING', 'ESCALATED', { outcome: 'failed', live: live('H1') }, 3),
+      T('AttemptEnded', 'REPAIRING', 'ESCALATED', { outcome: 'failed', live: live('H1') }, 4),
+      T('AttemptEnded', 'WORKING', 'ESCALATED', { outcome: 'failed', live: null, note: 'no_open_pr_head' }, 5),
+    ];
+    const entries = transitionsToActivityEntries(ts, [], []);
+    expect(entries.filter((e) => e.kind !== 'fix_ended').map((e) => [e.kind, e.detail ?? null])).toEqual([
+      ['human_review_required', 'destructive migration'],
+      ['ci_exhausted', null],
+      ['review_escalated', 'fix budget spent'],
+      ['review_escalated', 'repair budget spent'],
+      ['push_undeliverable', null],
+    ]);
+  });
+
   test('a close without a merge carries who closed it, on the row and in the header', () => {
     const closedBy = { login: 'example-app[bot]', type: 'Bot', door: { workerId: 'wk1', taskId: '0123abcd-0000-4000-8000-000000000000', accountId: null, principalVia: 'task_token', reason: 'superseded by #8' } };
     const ts = [T('PrClosedUnmerged', 'AWAITING_REVIEW', 'CLOSED_UNMERGED', { live: { ...live('H2'), state: 'closed' }, closeCause: 'buildd_close', closedBy }, 1)];

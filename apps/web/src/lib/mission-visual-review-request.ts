@@ -38,6 +38,7 @@ export type VisualReviewRequestOutcome =
   | { kind: 'error'; message: string };
 
 export const RUN_VISUAL_REVIEW_LABEL = 'Run visual review';
+export const CHECK_AGAIN_LABEL = 'Check again';
 
 const DONE = new Set(['completed']);
 
@@ -47,9 +48,12 @@ export const visualReviewRequestUrl = (missionId: string) => `/api/missions/${en
 export async function requestMissionVisualReview(
   missionId: string,
   fetchImpl: typeof fetch = fetch,
+  opts: { recheck?: boolean } = {},
 ): Promise<VisualReviewRequestOutcome> {
   try {
-    const res = await fetchImpl(visualReviewRequestUrl(missionId), { method: 'POST' });
+    const res = await fetchImpl(visualReviewRequestUrl(missionId), opts.recheck
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recheck: true }) }
+      : { method: 'POST' });
     const body = await res.json().catch(() => ({})) as Record<string, unknown>;
     if (!res.ok) {
       return {
