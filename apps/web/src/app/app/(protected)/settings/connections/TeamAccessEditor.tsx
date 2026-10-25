@@ -54,13 +54,13 @@ export default function TeamAccessEditor({
   const reviewId = useId();
 
   return (
-    <div className="space-y-3 rounded-[var(--radius-card)] border border-border-default bg-card p-3" data-testid="team-access-editor" data-team={team.id}>
+    <div className="card space-y-3 p-3" data-testid="team-access-editor" data-team={team.id}>
       <fieldset className="space-y-2" aria-describedby={reviewId}>
         <legend className="mb-1 text-title font-semibold text-text-primary">{connection.clientName} in {team.name}</legend>
         {(['none', 'all', 'specific'] as const).map((value) => (
           <label
             key={value}
-            className={`flex cursor-pointer items-start gap-3 rounded-[var(--radius-card)] border p-3 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)] ${choice === value ? 'border-text-primary' : 'border-border-default'}`}
+            className={`card flex cursor-pointer items-start gap-3 p-3 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--accent)]${choice === value ? ' border-text-primary' : ''}`}
           >
             <input
               type="radio"
@@ -93,7 +93,7 @@ export default function TeamAccessEditor({
         {review.invalid ? (
           <p className="text-body text-text-secondary">{review.invalid}</p>
         ) : review.change ? (
-          <div className={`space-y-1 rounded-[var(--radius-card)] border p-3 ${review.expands ? 'border-[var(--dec-frame)]' : 'border-border-default'}`} data-expands={review.expands ? 'true' : 'false'}>
+          <div className={`space-y-1 p-3 ${review.expands ? 'card-decision' : 'card'}`} data-expands={review.expands ? 'true' : 'false'}>
             <p className="text-meta font-semibold text-text-secondary">{review.expands ? 'This widens access' : 'This narrows access'}</p>
             {review.lines.map((l) => <p key={l} className="text-body text-text-primary">{l}</p>)}
           </div>
