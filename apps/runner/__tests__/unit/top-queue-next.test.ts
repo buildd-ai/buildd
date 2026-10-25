@@ -98,3 +98,40 @@ describe('the Next line (R-59)', () => {
     expect(queueNextLine(s, NOW)).toBe('Next: #1 and #2 take a free slot');
   });
 });
+
+describe('serial lane rows (spec: Overlap scheduling, I-3)', () => {
+  test('a lane row says how many go first, and a stalled holder says so', () => {
+    const s = stateWith(9, 0, [
+      task({ id: 'l1', holds: ['serial_lane'], lane: { lane: 'migration', position: 1, holderTaskId: 'x' } }),
+      task({ id: 'l2', holds: ['serial_lane'], lane: { lane: 'migration', position: 2, holderTaskId: 'x', stuckSince: iso(NOW - 30 * 60 * MIN) } }),
+    ]);
+    const rows = queueSections(s, NOW)[0].rows;
+    expect(rows.map(r => r.starts)).toEqual(['in line, 1 ahead', 'in line (2 ahead), holder stalled']);
+    expect(rows.every(r => r.wait === 'same_files')).toBe(true);
+  });
+});
+
+/**
+ * Spec "Overlap scheduling", AC-10 / "Health › Queue", AC-9: the terminal
+ * Queue gives the server's one reason, the same one explain gives; a row the
+ * claim would refuse never reads "now", and "now" needs a slot wait.
+ */
+describe('the server\'s one wait', () => {
+  test('a declared dependency, a lane place and a limit each read as themselves, never "now"', () => {
+    const s = stateWith(6, 0, [
+      task({ id: 'dep', wait: { kind: 'declared', blockerId: 'x', blockerTitle: '“Rework claim order”', count: 1 } }),
+      task({ id: 'lane', wait: { kind: 'lane', lane: 'migration', position: 2, holderTaskId: 'h' } }),
+      task({ id: 'lim', wait: { kind: 'limit', limit: 'mission_pacing', liftsAt: iso(NOW + 4 * MIN) } }),
+      task({ id: 'go', wait: { kind: 'slot', noRunnerReason: null } }),
+    ]);
+    const rows = queueSections(s, NOW)[0].rows;
+    expect(rows.map(r => r.starts)).toEqual(['after “Rework claim order”', 'schema lane, 2nd', 'mission pacing, in 4m', 'now']);
+    expect(rows.map(r => r.wait ?? null)).toEqual(['dependency', 'same_files', 'limit', null]);
+  });
+
+  test('2026-10-22: no stored refusal for this runner, but the server says the lane: not "now"', () => {
+    const s = stateWith(6, 0, [task({ id: 'schema', wait: { kind: 'lane', lane: 'migration', position: 5, holderTaskId: 'h' } })]);
+    expect(queueSections(s, NOW)[0].rows[0].starts).toBe('schema lane, 5th');
+    expect(queueNextLine(s, NOW)).not.toContain('starts now');
+  });
+});

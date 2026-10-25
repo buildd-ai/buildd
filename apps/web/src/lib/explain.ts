@@ -24,7 +24,7 @@ import { loadQuestionWaits } from './question-waits';
 import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
-import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, RUNNER_RECENTLY_SEEN_MS, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, RUNNER_RECENTLY_SEEN_MS, type QueueWait, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
 import { loadRunnerBeats, offlineRunnerWaitLine, runnerLiveness, type RunnerLiveness } from '@/lib/runner-offline';
 import { isWorktreeSetupTimeoutError } from '@/lib/worker-exit-taxonomy';
 import { collectLineage } from '@/lib/attempt-lineage';
@@ -142,6 +142,24 @@ function deferralBlockerId(h: ClaimHoldFacts | undefined): string | null {
   return holdStr(h?.detail?.blockingTaskId) ?? holdStr(h?.detail?.holderTaskId);
 }
 
+/** The task a queue wait names: its declared dependency, its lane's holder, or the one ahead of it. */
+function waitBlockerId(w: QueueWait | undefined): string | null {
+  if (!w) return null;
+  return w.kind === 'declared' ? w.blockerId ?? null : w.kind === 'lane' ? w.holderTaskId ?? w.aheadTaskId ?? null : null;
+}
+
+/**
+ * The one reason each pending row waits, read live from the claim route's own
+ * query and gates (lib/queue-wait-load.ts; spec: Overlap scheduling, AC-10).
+ * Loaded lazily, like the holder loader below. A failed read is an empty map:
+ * the rows then keep the ledger reading.
+ */
+async function loadWaits(ids: readonly string[]): Promise<Map<string, QueueWait>> {
+  if (ids.length === 0) return new Map();
+  const { loadQueueWaitMap } = await import('@/lib/queue-wait-load');
+  return loadQueueWaitMap(ids).catch(() => new Map<string, QueueWait>());
+}
+
 /**
  * The holder loader, loaded at call time: a static edge from this module
  * into the db-backed loader reshaped the server chunk graph into a Turbopack
@@ -188,10 +206,14 @@ function pendingRowFacts(
   holds: ReadonlyMap<string, ClaimHoldFacts>,
   unmetDeps: readonly string[],
   holders: ReadonlyMap<string, PendingHolderFacts>,
-): Pick<PendingTaskHoldInput, 'deferral' | 'dependencies' | 'createdAt' | 'startAt' | 'budgetExhausted'> {
+  waits: ReadonlyMap<string, QueueWait> = new Map(),
+): Pick<PendingTaskHoldInput, 'deferral' | 'dependencies' | 'createdAt' | 'startAt' | 'budgetExhausted' | 'wait'> & { queueWait?: QueueWait | null } {
   if (t.status !== 'pending') return {};
   const h = holds.get(t.id);
+  const w = waits.get(t.id) ?? null;
   return {
+    wait: w,
+    queueWait: w,
     deferral: h ? { reason: h.reason, firstDeferredAt: h.firstDeferredAt, detail: h.detail } : null,
     dependencies: unmetDeps.map(id => holders.get(id)).filter((f): f is PendingHolderFacts => !!f),
     createdAt: t.createdAt,
@@ -203,7 +225,7 @@ function pendingRowFacts(
 /** The hold as the because[] chain prints it. */
 function pendingHoldSummary(input: PendingTaskHoldInput): NonNullable<NonNullable<StateBecauseExtras['openTasks']>[number]['pendingHold']> {
   const h = derivePendingTaskHold(input);
-  return { row: h.row, kind: h.kind, holder: h.holder };
+  return { row: h.row, kind: h.kind, holder: h.holder, ...(h.fromClaimGates ? { fromClaimGates: true } : {}) };
 }
 
 /** The mission's base is red (a delivery is BLOCKED_ON_TRUNK): queued work reads `merges paused`. */
@@ -743,11 +765,13 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs, 
   // already loaded above is the current answer to "did it leave pending" and
   // costs nothing extra to consult.
   const pendingTaskIds = new Set(loaded.filter(t => t.status === 'pending').map(t => t.id));
-  const [deferralRows, claimHolds] = await Promise.all([
+  const [deferralRows, claimHolds, queueWaits] = await Promise.all([
     loadMissionClaimDeferrals(missionId),
     // R-33 / Navigation R-14: the newest refusal, with the blocker it named,
     // says why a pending task has not started.
     loadClaimHolds([...pendingTaskIds]),
+    // ...and what the claim route's own query and gates say now, which decides.
+    loadWaits([...pendingTaskIds]),
   ]);
   const deferrals = deferralRows.filter(d => pendingTaskIds.has(d.taskId));
   const holdReasons = new Map([...claimHolds].map(([id, h]) => [id, h.reason]));
@@ -777,6 +801,8 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs, 
     if (t.status !== 'pending') continue;
     const blocker = deferralBlockerId(claimHolds.get(t.id));
     if (blocker && blocker !== t.id) holderIds.add(blocker);
+    const waitBlocker = waitBlockerId(queueWaits.get(t.id));
+    if (waitBlocker && waitBlocker !== t.id) holderIds.add(waitBlocker);
     for (const id of waitingOnOf(t)) holderIds.add(id);
   }
   const holders = await loadHolders([...holderIds], holderSourceRows(loadedById));
@@ -808,7 +834,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs, 
   // the chain word one hold one way.
   const holdInputOf = (t: LoadedTask): PendingTaskHoldInput => ({
     now,
-    ...pendingRowFacts(t, claimHolds, waitingOnOf(t), holders),
+    ...pendingRowFacts(t, claimHolds, waitingOnOf(t), holders, queueWaits),
     holders,
     runnerOnline: m.executor === 'local' ? null : runnerOnline ?? null,
     missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
@@ -843,7 +869,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs, 
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
       surfaceAudit: isMissionAuditTask(t),
       holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
-      ...pendingRowFacts(t, claimHolds, waitingOnOf(t), holders),
+      ...pendingRowFacts(t, claimHolds, waitingOnOf(t), holders, queueWaits),
       missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
     })),
     visualReview,
@@ -1138,6 +1164,8 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
   answerExtras: StateBecauseExtras;
   workspaceId: string | null;
   missionId: string | null;
+  /** A pending task's one wait, from the claim route's own query and gates; null when not pending or unread. */
+  queueWait: QueueWait | null;
   teamId: string | null;
 } | null> {
   const task = (await db.query.tasks.findFirst({
@@ -1238,19 +1266,22 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
   // Every holder is resolved for the caller (spec e28018c2 R-7): one in a
   // workspace it cannot see is named, refs and all, as a task it cannot see.
   const reachScope = { viewer, teamId: task.workspace?.teamId ?? null, dependentWorkspaceId: task.workspaceId ?? null };
-  const [claimHolds, depRows] = await Promise.all([
+  const [claimHolds, depRows, queueWaits] = await Promise.all([
     pending ? loadClaimHolds([taskId]) : Promise.resolve(new Map<string, ClaimHoldFacts>()),
     pending && (task.dependsOn?.length ?? 0) > 0 ? loadDependencyRows(task.dependsOn!, reachScope) : Promise.resolve(new Map<string, DependencyRow>()),
+    // The one reason the claim route's own query and gates give now (spec: Overlap scheduling, AC-10).
+    pending ? loadWaits([taskId]) : Promise.resolve(new Map<string, QueueWait>()),
   ]);
   const unmetDeps = pending ? unmetDependencyIds(task, depRows) : [];
   const blockerId = pending ? deferralBlockerId(claimHolds.get(taskId)) : null;
-  const holderIds = [...unmetDeps, ...(blockerId && blockerId !== taskId ? [blockerId] : [])];
+  const waitBlocker = pending ? waitBlockerId(queueWaits.get(taskId)) : null;
+  const holderIds = [...new Set([...unmetDeps, ...[blockerId, waitBlocker].filter((id): id is string => !!id && id !== taskId)])];
   const [loadedHolders, holderReach] = await Promise.all([
     loadHolders(holderIds, holderSourceRows([...depRows].filter(([id]) => id !== taskId))),
     resolveDependencyHolders(reachScope, holderIds.filter(id => !depRows.has(id))).catch(() => new Map()),
   ]);
   const holders = new Map([...loadedHolders].map(([id, f]) => [id, holderForViewer(f, depRows.get(id) ?? holderReach.get(id))]));
-  const rowFacts = pendingRowFacts(task as LoadedTask, claimHolds, unmetDeps, holders);
+  const rowFacts = pendingRowFacts(task as LoadedTask, claimHolds, unmetDeps, holders, queueWaits);
   const openTasks = OPEN_TASK_STATUSES.has(task.status)
     ? [{
         id: task.id, status: task.status, title: task.title,
@@ -1329,6 +1360,7 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
     lineage: historyTasks,
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
+    queueWait: queueWaits.get(taskId) ?? null,
     answerExtras: {
       openTasks: openTasks.map(t => ({
         id: t.id, title: t.title, status: t.status,
@@ -1403,7 +1435,7 @@ async function loadTaskVerdictForExplain(taskId: string): Promise<ExplainAnswer[
 export async function explainTask(taskId: string, actor: EvidenceActor, viewer: DependencyViewer = { kind: 'member' }): Promise<ExplainResult | null> {
   const loaded = await viewForTask(taskId, viewer);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries, queueWait } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'task',
@@ -1458,9 +1490,10 @@ export async function explainTask(taskId: string, actor: EvidenceActor, viewer: 
   const verdict = await loadTaskVerdictForExplain(taskId).catch(() => null);
   const withCoordination = holds.length > 0 ? { ...answer, coordination: { holds } } : answer;
   const withAccess = access.length > 0 ? { ...withCoordination, access } : withCoordination;
+  const withWait = queueWait ? { ...withAccess, queueWait } : withAccess;
   // An open question: what waits on its answer, the same projection the cards read (spec 1b257609 R-10).
   const questionWaits = await loadQuestionWaits({ taskId, viewer, requireQuestion: true }).catch(() => null);
-  const withWaits = questionWaits ? { ...withAccess, questionWaits } : withAccess;
+  const withWaits = questionWaits ? { ...withWait, questionWaits } : withWait;
   return { scope: 'task', subjects: [verdict ? { ...withWaits, verdict } : withWaits] };
 }
 

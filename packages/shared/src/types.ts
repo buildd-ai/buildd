@@ -1865,6 +1865,12 @@ export interface ClaimDeferredTask {
   until?: string;
 }
 
+/**
+ * The deferral counters a claim response fills in: every declared key except
+ * the retired undeclared-scope one, which nothing counts any more.
+ */
+export type ClaimDeferralCounters = Required<Omit<NonNullable<ClaimDiagnostics['deferrals']>, 'advisory_manifest'>>;
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
@@ -3648,6 +3654,8 @@ export type RunnerQueueHold =
   | 'task_held'
   | 'workspace_paused'
   | 'runner_cooldown'
+  /** It is in a serial lane (schema, migrations, a hard surface) that another task holds, or someone came first: see `lane`. */
+  | 'serial_lane'
   /** Its mission already runs a task that, like it, declares no files: the claim starts one such task per mission at a time. */
   | 'advisory_manifest';
 
@@ -3693,6 +3701,19 @@ export interface RunnerQueueTask {
   holderTaskId?: string | null;
   /** Its mission's cap on tasks at once (spec 0dc7c6de R-7); absent or null = no mission limit. */
   missionCap?: number | null;
+  /**
+   * With the `serial_lane` hold: which lane, the task holding it (null when the
+   * lane is free and `aheadTaskId` came first), and how many go first. The same
+   * stored order the claim route serves (spec: Overlap scheduling, I-3).
+   */
+  lane?: { lane: string; position: number; holderTaskId: string | null; aheadTaskId?: string | null; stuckSince?: string | null } | null;
+  /**
+   * The one reason it waits, from the claim route's own query and gates
+   * (spec: Overlap scheduling, AC-10): the same reason explain, the task page
+   * and the web Queue give. `slot` = the claim query would return it now.
+   * Absent from an older server, or when the read failed.
+   */
+  wait?: import('./queue-wait').QueueWait | null;
   /**
    * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
    * its mission's, else its schedule's) against the person behind the runner's

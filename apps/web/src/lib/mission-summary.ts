@@ -28,6 +28,7 @@
  * (lib/mission-summary-store.ts) writes the output; the loader
  * (lib/mission-summary-load.ts) reads the input.
  */
+import type { QueueWait } from '@buildd/shared';
 import { MISSION_SUMMARY_VERSION, type MissionSummary, type MissionSummaryDelivery, type MissionSummaryHome, type MissionSummaryList } from '@buildd/shared';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
@@ -58,6 +59,8 @@ export interface MissionSummaryInput extends MissionStageRows {
   escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null;
   /** Navigation R-14: each pending task's newest claim refusal, and the rows the pending tasks wait behind, when the loader read them. */
   claimHolds?: ReadonlyMap<string, ClaimHoldFacts> | null;
+  /** Each pending row's one wait from the claim route's own query and gates (lib/queue-wait-load.ts). */
+  queueWaits?: ReadonlyMap<string, QueueWait> | null;
   holders?: ReadonlyMap<string, PendingHolderFacts> | null;
 }
 
@@ -156,6 +159,7 @@ export function computeMissionSummary(input: MissionSummaryInput, now: number): 
   // R-14: why each pending row is not running, from the claim gate's record and the holder rows.
   const holdFacts: MissionCardHoldFacts = {
     claimHolds: input.claimHolds ?? null,
+    queueWaits: input.queueWaits ?? null,
     holders: input.holders ?? null,
     dependencies: input.foreignDeps as ReadonlyMap<string, DependencyRow>,
   };

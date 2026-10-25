@@ -41,6 +41,33 @@ export function compareClaimOrder(
   return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
 }
 
+/**
+ * A serial lane's stored order (spec: Overlap scheduling, I-3): first come by
+ * when the task became claimable apart from the lane (`claimable_since`, never
+ * moved once stamped; an entry not yet stamped goes last), then priority, then
+ * creation time. The claim route, explain, the probe and the terminal Queue all
+ * read lane positions through lib/serial-lanes-store.ts, which orders by this.
+ */
+export function laneOrderBy(
+  e: { claimableSince: any },
+  t: typeof tasks,
+): SQL[] {
+  return [sql`${e.claimableSince} ASC NULLS LAST`, sql`${t.priority} DESC`, sql`${t.createdAt} ASC`, sql`${t.id} ASC`];
+}
+
+/** JS mirror of laneOrderBy, for a list already read. Keep the two in step. */
+export function compareLaneOrder(
+  a: { claimableSince: Date | string | null; priority: number | null; createdAt: Date | string; taskId: string },
+  b: { claimableSince: Date | string | null; priority: number | null; createdAt: Date | string; taskId: string },
+): number {
+  const sa = a.claimableSince == null ? Infinity : new Date(a.claimableSince).getTime();
+  const sb = b.claimableSince == null ? Infinity : new Date(b.claimableSince).getTime();
+  if (sa !== sb) return sa < sb ? -1 : 1;
+  const byClaim = compareClaimOrder(a, b);
+  if (byClaim !== 0) return byClaim;
+  return a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0;
+}
+
 export type ClaimScopeAccount = GrantScopedAccount & { id: string; teamId: string };
 
 /**

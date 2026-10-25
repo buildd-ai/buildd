@@ -6,10 +6,16 @@
  *
  * Pure and dependency-free: client components import it too.
  *
- * Only a subset of kinds has a producer today (the coordination probe behind
- * `/api/tasks/[id]/start`). The table carries every kind of the design so a new
- * producer adds rows, never a second model.
+ * Producers: the coordination probe behind `/api/tasks/[id]/start`, and the
+ * queue-wait read (apps/web/src/lib/queue-wait-load.ts) that adds the claim
+ * query's own SQL gates and the claim loop's limits. `queueWaitOf` picks the
+ * ONE reason every surface leads with (spec: Overlap scheduling, AC-10).
+ *
+ * No kind guesses an overlap (spec: Overlap scheduling, R-1, R-2): a task
+ * waits on a declared dependency, its lane position, a limit, its start time
+ * or a free slot, nothing else.
  */
+import type { QueueLimit, QueueWait } from '@buildd/shared';
 
 export type WaitingClass =
   | 'schedule' | 'hold' | 'dependency' | 'coordination' | 'capacity'
@@ -22,17 +28,15 @@ export type WaitingKind =
   | 'mission_held'
   | 'mission_local'
   | 'dep_declared'
-  | 'dep_inferred'
   | 'subject_dead'
-  | 'pr_overlap_live'
-  | 'pr_overlap_ended'
-  | 'lease_overlap'
+  /** A serial lane (schema, migrations, a hard surface): held by another task, or someone came first. Carries `lane`. */
+  | 'lane'
   | 'lease_stale'
-  | 'soft_overlap'
-  | 'scope_undeclared_mutex'
   | 'ordered_behind'
   | 'serialized_surface'
   | 'mission_concurrent'
+  /** The workspace paused new starts until a set time. */
+  | 'workspace_paused'
   | 'account_slots'
   | 'codex_single_flight'
   | 'managed_entitlement'
@@ -74,6 +78,8 @@ export interface WaitingBlocker {
   href?: string;
   /** The holder has a live writer. */
   live?: boolean;
+  /** A task blocker's status (`running`, `pending`, `completed`), when known. */
+  status?: string;
 }
 
 export type OverlapBasis = 'declared' | 'predicted' | 'observed' | 'pr_scope' | 'lease';
@@ -94,6 +100,15 @@ export interface WaitingOverlap {
   overlapKind?: string;
 }
 
+export interface WaitingLane {
+  lane: string;
+  holderTaskId: string | null;
+  /** How many go first: the holder plus the members ahead. Null when only the holder is known. */
+  position: number | null;
+  /** When the holder's PR went quiet, if the lane is stuck (24h with no activity). */
+  stuckSince?: string;
+}
+
 export interface WaitingReason {
   kind: WaitingKind;
   class: WaitingClass;
@@ -106,6 +121,10 @@ export interface WaitingReason {
     derivedFrom: string;
     firstSeenAt?: string;
   };
+  /** A serial lane wait: which lane, who holds it, and how many go first (0 = next). */
+  lane?: WaitingLane;
+  /** When this reason lifts on its own (a start time, pacing, a budget reset), when known. */
+  liftsAt?: string;
   /** One plain sentence: "both edit packages/core/db/schema.ts". */
   because: string;
   releasesWhen: { event: string; text: string };
@@ -152,16 +171,11 @@ const memberForce = (rails: Rail[] = COORDINATION_RAILS): Omit<ForceSpec, 'lifts
 
 /**
  * Classification table (artifact §1.3). `force` is the Stage-2 contract
- * (docs/specs/force-start.md):
- *
- *  - `scope_undeclared_mutex` and `ordered_behind` are liftable by a HUMAN
- *    force start only; the admin MCP `claim_task force` keeps not lifting the
- *    mutex.
- *  - `dep_declared` is startable by a person as Start anyway: the intent admits
- *    the task's agent for assessment (`assessDependsOn`); the edge is kept.
- *  - `dep_inferred` / `serialized_surface` are forceable for claim-time
- *    ordering only; the edit-time anchor lease stays enforced, so migration
- *    numbering is still serialized.
+ * (docs/specs/force-start.md), narrowed by spec "Health › Queue" R-10: Force
+ * start is offered only for a limit (caps, a hold, a budget a person
+ * raises). A lane is never forced: it is the first-come order. A declared
+ * dependency is startable by a person as Start anyway: the intent admits the
+ * task's agent for assessment (`assessDependsOn`); the edge is kept.
  */
 export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   start_deferred: { class: 'schedule', strength: 'hard', intent: 'intentional', gateName: 'Scheduled start', releasesWhen: { event: 'time', text: 'its start time passes' }, owner: 'system', force: { scope: 'member', railsRemaining: POLICY_RAILS, mechanism: 'clear_start_at' } },
@@ -170,17 +184,14 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   mission_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Mission not running', releasesWhen: { event: 'mission.armed', text: 'someone starts or resumes the mission' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   mission_local: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Local-session mission', releasesWhen: { event: 'claimed', text: 'your session claims it' }, owner: 'human', force: memberForce(POLICY_RAILS), prefilterLift: 'local_mission' },
   dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: assessForce(), prefilterLift: 'declared_assess' },
-  dep_inferred: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'File-overlap ordering', releasesWhen: { event: 'task.completed+merged', text: 'the overlapping task completes and merges' }, owner: 'system', force: memberForce(), prefilterLift: 'inferred_deps' },
+  dep_inferred: { },
   subject_dead: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Closed subject PR', releasesWhen: { event: 'never', text: 'never: its subject PR is gone' }, owner: 'human', force: memberForce(POLICY_RAILS) },
-  pr_overlap_live: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Open-PR file overlap', releasesWhen: { event: 'path_claim.released', text: 'that PR merges, closes or narrows its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'path_overlap' },
-  pr_overlap_ended: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Open-PR file overlap', releasesWhen: { event: 'pr.closed', text: 'that PR merges or closes' }, owner: 'system', force: memberForce(), claimLoopKey: 'path_overlap' },
-  lease_overlap: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Files claimed by a running task', releasesWhen: { event: 'path_claim.released', text: 'that task releases or narrows its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'path_overlap' },
+  lane: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serial lane', releasesWhen: { event: 'pr.closed', text: 'the task holding the lane merges or closes its PR, or ends, and the tasks ahead of it in line go first' }, owner: 'system', force: null },
   lease_stale: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'Stale file claim', releasesWhen: { event: 'sweep.hourly', text: 'the hourly sweep releases the stale claim' }, owner: 'system', force: null },
-  soft_overlap: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'Scope overlap with an in-flight task', releasesWhen: { event: 'task.finished', text: 'the overlapping task finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'soft_overlap' },
-  scope_undeclared_mutex: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'One scope-undeclared task per mission', releasesWhen: { event: 'task.finished', text: 'the other scope-undeclared task finishes or declares its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'advisory_manifest' },
-  ordered_behind: { class: 'coordination', strength: 'soft', intent: 'intentional', gateName: 'Planner order', releasesWhen: { event: 'task.claimed', text: 'the task ahead of it is claimed or finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'ordered_behind' },
-  serialized_surface: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serialized surface', releasesWhen: { event: 'task.finished', text: 'the task holding that surface finishes' }, owner: 'agent', force: memberForce(), claimLoopKey: 'soft_overlap' },
+  ordered_behind: { class: 'coordination', strength: 'soft', intent: 'intentional', gateName: 'Planner order', releasesWhen: { event: 'task.claimed', text: 'the task ahead of it is claimed or finishes' }, owner: 'system', force: null },
+  serialized_surface: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serialized surface', releasesWhen: { event: 'task.finished', text: 'the task holding that surface finishes' }, owner: 'agent', force: null },
   mission_concurrent: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission concurrency limit', releasesWhen: { event: 'slot.freed', text: 'another task in the mission finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_concurrent' },
+  workspace_paused: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Workspace paused', releasesWhen: { event: 'time', text: 'the workspace resumes new starts' }, owner: 'human', force: null },
   account_slots: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Account worker slots', releasesWhen: { event: 'slot.freed', text: 'a worker slot frees' }, owner: 'system', force: null },
   codex_single_flight: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'One Codex task per workspace', releasesWhen: { event: 'slot.freed', text: 'the running Codex task ends' }, owner: 'system', force: null },
   managed_entitlement: { class: 'budget', strength: 'hard', intent: 'incidental', gateName: 'Plan limit', releasesWhen: { event: 'slot.freed', text: 'a managed run ends or the allowance refills' }, owner: 'system', force: null },
@@ -200,8 +211,10 @@ export function makeWaitingReason(kind: WaitingKind, fields: {
   because: string;
   blocker?: WaitingBlocker;
   overlap?: WaitingOverlap;
+  lane?: WaitingLane;
+  liftsAt?: string | null;
   provenance: WaitingReason['provenance'];
-  /** A producer that knows this instance only orders the claim (e.g. an undecided soft overlap). */
+  /** A producer that knows this instance only orders the claim. */
   strength?: 'hard' | 'soft';
 }): WaitingReason {
   const spec = WAITING_KIND_SPEC[kind];
@@ -212,6 +225,8 @@ export function makeWaitingReason(kind: WaitingKind, fields: {
     intent: spec.intent,
     ...(fields.blocker ? { blocker: fields.blocker } : {}),
     ...(fields.overlap ? { overlap: fields.overlap } : {}),
+    ...(fields.lane ? { lane: fields.lane } : {}),
+    ...(fields.liftsAt ? { liftsAt: fields.liftsAt } : {}),
     provenance: fields.provenance,
     because: fields.because,
     releasesWhen: spec.releasesWhen,
@@ -294,6 +309,120 @@ export function waitingReasonsDigest(reasons: readonly WaitingReason[]): string 
   return h.toString(16).padStart(8, '0');
 }
 
+/**
+ * Which of the five waits a kind is (spec: Overlap scheduling, "What a waiting
+ * task can say"), and for a limit which one. Null: the kind never decides the
+ * wait (a soft ordering, a per-runner cooldown, an unknown).
+ */
+const QUEUE_SHAPE: Record<WaitingKind, { kind: QueueWait['kind']; limit?: QueueLimit } | null> = {
+  start_deferred: { kind: 'start_time' },
+  runner_preference: { kind: 'slot' },
+  task_held: { kind: 'limit', limit: 'task_paused' },
+  mission_held: { kind: 'limit', limit: 'mission_paused' },
+  mission_local: { kind: 'limit', limit: 'local_session' },
+  dep_declared: { kind: 'declared' },
+  subject_dead: { kind: 'limit', limit: 'pr_closed' },
+  lane: { kind: 'lane' },
+  lease_stale: { kind: 'lane' },
+  ordered_behind: null,
+  serialized_surface: { kind: 'lane' },
+  mission_concurrent: { kind: 'limit', limit: 'mission_cap' },
+  workspace_paused: { kind: 'limit', limit: 'workspace_paused' },
+  account_slots: { kind: 'limit', limit: 'seats' },
+  codex_single_flight: { kind: 'limit', limit: 'seats' },
+  managed_entitlement: { kind: 'limit', limit: 'plan' },
+  mission_budget: { kind: 'limit', limit: 'mission_budget' },
+  budget_paused: { kind: 'limit', limit: 'budget' },
+  provider_unavailable: { kind: 'slot' },
+  role_unavailable: { kind: 'slot' },
+  capability_mismatch: { kind: 'slot' },
+  runner_cooldown: null,
+  dispatch_undelivered: { kind: 'slot' },
+  eligible_no_runner: { kind: 'slot' },
+  unknown: null,
+};
+
+/**
+ * Which reason decides the wait when several hold, first match wins. The
+ * claim query's own prefilters come first (a start time, a person's hold, a
+ * declared dependency: a parked or dependency-blocked task keeps its lane
+ * place and blocks nobody, Overlap scheduling I-4), then the lane, then the
+ * claim loop's limits in the order it checks them.
+ */
+const QUEUE_PRECEDENCE: WaitingKind[] = [
+  'start_deferred', 'task_held', 'mission_held', 'mission_local', 'subject_dead', 'dep_declared', 'workspace_paused',
+  'lane', 'serialized_surface', 'lease_stale',
+  'mission_budget', 'mission_concurrent',
+  'budget_paused', 'managed_entitlement', 'account_slots', 'codex_single_flight',
+];
+
+/** The hard reason that decides the wait (`QUEUE_PRECEDENCE`), or null when only a free slot does. */
+export function leadReason(reasons: readonly WaitingReason[]): WaitingReason | null {
+  for (const kind of QUEUE_PRECEDENCE) {
+    const r = reasons.find(x => x.kind === kind && x.strength === 'hard');
+    if (r) return r;
+  }
+  return null;
+}
+
+/**
+ * The ONE reason a pending task waits, over every live reason the claim
+ * route's query and gates give for it (spec: Overlap scheduling, AC-10;
+ * Health › Queue, R-5). `slot` only when no hard reason holds it: the claim
+ * query would return it now. A capability reason (no runner for its role, a
+ * provider off) keeps it a `slot` wait and names why no runner takes it.
+ */
+export function queueWaitOf(reasons: readonly WaitingReason[]): QueueWait {
+  const hard = reasons.filter(r => r.strength === 'hard' && QUEUE_SHAPE[r.kind]);
+  const r = leadReason(reasons);
+  if (r) {
+    const kind = r.kind;
+    const shape = QUEUE_SHAPE[kind]!;
+    if (shape.kind === 'start_time') return { kind: 'start_time', startAt: r.liftsAt ?? null };
+    if (shape.kind === 'declared') {
+      const deps = hard.filter(x => x.kind === 'dep_declared');
+      return {
+        kind: 'declared',
+        blockerId: r.blocker?.id ?? null,
+        blockerTitle: r.blocker?.label ?? null,
+        blockerStatus: r.blocker?.status ?? null,
+        count: deps.length,
+      };
+    }
+    if (shape.kind === 'lane') {
+      const holder = r.lane?.holderTaskId ?? null;
+      return {
+        kind: 'lane',
+        lane: r.lane?.lane ?? 'migration',
+        position: r.lane?.position ?? null,
+        holderTaskId: holder,
+        aheadTaskId: holder ? null : r.blocker?.id ?? null,
+        stuckSince: r.lane?.stuckSince ?? null,
+      };
+    }
+    return { kind: 'limit', limit: shape.limit!, liftsAt: r.liftsAt ?? null, forceable: isStartForceable(kind) };
+  }
+  const noRunner = reasons.find(r => r.strength === 'hard' && QUEUE_SHAPE[r.kind]?.kind === 'slot' && r.kind !== 'eligible_no_runner');
+  return { kind: 'slot', noRunnerReason: noRunner ? noRunner.because : null };
+}
+
+const LIMIT_KIND: Record<QueueLimit, WaitingKind> = {
+  mission_cap: 'mission_concurrent', workspace_paused: 'workspace_paused',
+  mission_budget: 'mission_budget', budget: 'budget_paused', plan: 'managed_entitlement', seats: 'account_slots',
+  task_paused: 'task_held', mission_paused: 'mission_held', local_session: 'mission_local', pr_closed: 'subject_dead',
+};
+
+/** The waiting kind a queue wait is (for surfaces keyed by kind, e.g. the terms catalog); null for a slot wait. */
+export function waitingKindOfQueueWait(w: QueueWait): WaitingKind | null {
+  switch (w.kind) {
+    case 'declared': return 'dep_declared';
+    case 'lane': return 'lane';
+    case 'start_time': return 'start_deferred';
+    case 'limit': return LIMIT_KIND[w.limit ?? 'mission_cap'];
+    case 'slot': return w.noRunnerReason ? 'capability_mismatch' : null;
+  }
+}
+
 /** Headline status chip (artifact §2). */
 export type WaitingChip = 'ready' | 'held' | 'blocked' | 'cant_run' | 'scheduled' | 'unknown';
 
@@ -367,8 +496,8 @@ export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
   return { checklist, stillEnforced, risk, redLines };
 }
 
-/** Coordination-only kinds: incidental serialization, never an order a person declared. */
-const COORDINATION_ONLY: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['dep_inferred', 'serialized_surface', 'soft_overlap', 'pr_overlap_live', 'pr_overlap_ended', 'lease_overlap']);
+/** Coordination-only kinds: serialization, never an order a person declared. */
+const COORDINATION_ONLY: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['serialized_surface', 'lane']);
 
 /**
  * The compact headline over every reason (artifact §2/§3): declared
@@ -380,7 +509,9 @@ export function waitingSummary(reasons: readonly WaitingReason[]): { headline: s
   const hard = orderWaitingReasons(blockingReasons(reasons));
   const declared = hard.filter(r => r.kind === 'dep_declared').length;
   const coord = hard.filter(r => COORDINATION_ONLY.has(r.kind));
-  const head = hard[0] ?? orderWaitingReasons(reasons)[0];
+  // The reason the queue wait leads with (`queueWaitOf`), so this headline and
+  // every queue surface name the same thing.
+  const head = leadReason(hard) ?? hard[0] ?? orderWaitingReasons(reasons)[0];
   if (!head) return { headline: 'Ready', declared: 0, coordination: 0, summarised: false, lead: null };
   let headline: string;
   let summarised = false;
@@ -393,7 +524,7 @@ export function waitingSummary(reasons: readonly WaitingReason[]): { headline: s
     summarised = true;
     lead = coord[0];
     const holders = new Set(coord.map(r => r.blocker?.id ?? r.kind)).size;
-    const migration = coord.some(r => r.overlap?.overlapKind === 'migration');
+    const migration = coord.some(r => r.overlap?.overlapKind === 'migration' || r.lane?.lane === 'migration');
     const byArea = new Map<string, number>();
     for (const r of coord) for (const a of r.overlap?.areas ?? []) byArea.set(a.area, (byArea.get(a.area) ?? 0) + a.count);
     const area = [...byArea].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))[0]?.[0];

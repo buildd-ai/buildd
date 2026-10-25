@@ -6,6 +6,7 @@ describe('healthItemFor', () => {
     expect(healthItemFor('/app/health')?.id).toBe('overview');
     expect(healthItemFor('/app/health/failures')?.id).toBe('failures');
     expect(healthItemFor('/app/health/runners')?.id).toBe('runners');
+    expect(healthItemFor('/app/health/queue')?.id).toBe('queue');
     expect(healthItemFor('/app/health/usage')?.id).toBe('usage');
     expect(healthItemFor('/app/health/insights')?.id).toBe('insights');
     expect(healthItemFor('/app/health/operator')?.id).toBe('operator');
@@ -29,11 +30,11 @@ describe('healthNavFor', () => {
   });
 
   it('shows a team admin Failures, Usage and Insights for their own team', () => {
-    expect(healthNavFor(admin).map(i => i.id)).toEqual(['overview', 'failures', 'runners', 'estimates', 'usage', 'insights']);
+    expect(healthNavFor(admin).map(i => i.id)).toEqual(['overview', 'failures', 'runners', 'queue', 'estimates', 'usage', 'insights']);
   });
 
   it("shows a member Failures and their own Usage, but not the team's Insights", () => {
-    expect(healthNavFor(member).map(i => i.id)).toEqual(['overview', 'failures', 'runners', 'estimates', 'usage']);
+    expect(healthNavFor(member).map(i => i.id)).toEqual(['overview', 'failures', 'runners', 'queue', 'estimates', 'usage']);
   });
 
   it('keeps registry order, Overview first', () => {

@@ -801,6 +801,10 @@ UPDATE path_claims SET
 UPDATE path_claim_waiters SET
   blocked_path = pg_temp.qa_hash('path/', blocked_path);
 
+-- A surface lane's key names a path pattern; the migration lane is a fixed word.
+UPDATE serial_lane_entries SET
+  lane = CASE WHEN lane = 'migration' THEN lane ELSE pg_temp.qa_hash('lane/', lane) END;
+
 UPDATE backend_pauses SET
   reason = pg_temp.qa_str(reason),
   -- Already an opaque hash of a runner id; re-hashed so equal keys stay equal.

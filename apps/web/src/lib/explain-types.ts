@@ -91,6 +91,8 @@ export type CausalLinkSource =
   | 'tasks.pathDeclaration.softOverlaps + gate_events'
   | 'gate_events.detail'
   | 'gate_events.reason'
+  /** lib/queue-wait-load.ts: the one wait, read live from the claim route's own query and gates. */
+  | 'queueWaitOf (claim WHERE + claim-loop gates)'
   | 'DeliveryView.lastTransition'
   | 'DeliveryView.rounds'
   /** workflow-kernel-library.md §7 / AC-26: the worker row's merge columns disagree with the delivery. */
@@ -223,6 +225,14 @@ export interface ExplainAnswer {
    * overlapping paths and the hold/start verdict. Task scope only.
    */
   coordination?: { holds: import('./explain-coordination').CoordinationHold[] };
+  /**
+   * Task scope, a pending task only: the one reason it waits, read live from
+   * the claim route's own query and gates (spec: Overlap scheduling, AC-10):
+   * a declared dependency, its lane position, a limit, its start time, or a
+   * free slot. The headline, `waitingOn` and `presentation` above say the same
+   * reason; only a `slot` wait reads "next in line".
+   */
+  queueWait?: import('@buildd/shared').QueueWait;
   /**
    * For a task subject: what its runs were given and refused (repo access,
    * buildd tokens, PR actions), oldest first, repeats folded. Absent when

@@ -111,6 +111,7 @@ import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thre
 import { quietLabel } from './local-strand';
 import type { LandingBlocker, LandingBlockCause } from './landing-blocker';
 import { BROWSER_RUNNER_MISSING, claimHoldPhrase } from './claim-hold-phrase';
+import type { QueueWait } from '@buildd/shared';
 import { derivePendingTaskHold, type PendingDeferralFacts, type PendingHoldKind, type PendingHolderFacts, type PendingTaskHold } from './mission-task-hold';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
@@ -639,6 +640,13 @@ export interface MissionStateInput {
     budgetExhausted?: boolean | null;
     /** A visual-auditor row no online browser runner can take: that is its one cause. */
     missingBrowser?: boolean;
+    /**
+     * The one reason a pending row waits, read live from the claim route's own
+     * query and gates (lib/queue-wait-load.ts). When present it decides: a
+     * declared wait is the dependency hold, a slot wait is claimable whatever
+     * `waitingOnTaskIds` says, and only a slot wait is "next in line".
+     */
+    queueWait?: QueueWait | null;
   }>;
   /** Holder rows by id, for naming the task an overlap deferral recorded (`detail.blockingTaskId`). */
   holders?: ReadonlyMap<string, PendingHolderFacts> | null;
@@ -1615,7 +1623,7 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   // Every open row waiting on its dependencies is a fact whatever the health
   // signal says (it reads NOMINAL for exactly this case), so a card with no
   // completion decision names the wait the same way `explain` does.
-  const allDepBlocked = openTasks.length > 0 && openTasks.every(t => (t.waitingOnTaskIds?.length ?? 0) > 0);
+  const allDepBlocked = openTasks.length > 0 && openTasks.every(depHeld);
   const qualifies = live
     ? pendingCount > 0
     : allDepBlocked || input.health === 'STALLED' || (completion?.code === 'pending_deliverables' && pendingCount > 0);
@@ -1639,17 +1647,21 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   // claimed, so it is not what is holding the mission. Claimable rows lead;
   // when there are none, the unmet dependencies are the honest answer, and
   // the reading is a wait on the DAG rather than a stall.
-  const claimable = openTasks.filter(t => !(t.waitingOnTaskIds?.length));
+  const claimable = openTasks.filter(t => !depHeld(t));
   const depOnly = !live && openTasks.length > 0 && claimable.length === 0;
   if (depOnly) {
-    const depIds = [...new Set(openTasks.flatMap(t => t.waitingOnTaskIds ?? []))];
+    const depIds = [...new Set(openTasks.flatMap(depIdsOf))];
     const prByDep = new Map<string, number>();
     for (const t of openTasks) for (const [dep, pr] of Object.entries(t.waitingOnPrs ?? {})) prByDep.set(dep, pr);
     const prNumbers = [...new Set(depIds.map(id => prByDep.get(id)).filter((n): n is number => typeof n === 'number'))];
     const unfinished = depIds.filter(id => !prByDep.has(id)).length;
     // R-14: the dependencies by name, when every one was loaded; a dead one says so.
     const facts = new Map<string, PendingHolderFacts>();
-    for (const t of openTasks) for (const d of t.dependencies ?? []) facts.set(d.id, d);
+    for (const t of openTasks) {
+      const w = t.queueWait;
+      if (w?.kind === 'declared' && w.blockerId && w.blockerTitle) facts.set(w.blockerId, { id: w.blockerId, title: w.blockerTitle, status: w.blockerStatus ?? null });
+      for (const d of t.dependencies ?? []) facts.set(d.id, d);
+    }
     const names = depIds.every(id => facts.has(id))
       ? depIds.map(id => derivePendingTaskHold({ now: nowOf(input), dependencies: [facts.get(id)!] }).word.replace(/^Waiting on /, ''))
       : undefined;
@@ -1786,6 +1798,19 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   };
 }
 
+type OpenTaskRow = NonNullable<MissionStateInput['openTasks']>[number];
+
+/** A row the dependency gate holds: by the live queue wait when read, else by its unmet `dependsOn`. */
+function depHeld(t: OpenTaskRow): boolean {
+  return t.queueWait ? t.queueWait.kind === 'declared' : !!t.waitingOnTaskIds?.length;
+}
+
+/** The dependencies holding a row: its unmet `dependsOn`, else the one its queue wait names. */
+function depIdsOf(t: OpenTaskRow): string[] {
+  if (t.waitingOnTaskIds?.length) return t.waitingOnTaskIds;
+  return t.queueWait?.kind === 'declared' && t.queueWait.blockerId ? [t.queueWait.blockerId] : [];
+}
+
 /** The clock the hold reads: the caller's, else now. */
 function nowOf(input: MissionStateInput): number {
   return input.now ?? Date.now();
@@ -1813,6 +1838,7 @@ function pendingHoldOf(input: MissionStateInput, t: NonNullable<MissionStateInpu
     runnerOnline: isLocal(input) ? null : input.runnerOnline ?? null,
     missingBrowser: t.missingBrowser ?? false,
     trunkRed: input.trunkRed ?? null,
+    wait: t.queueWait ?? null,
   });
 }
 

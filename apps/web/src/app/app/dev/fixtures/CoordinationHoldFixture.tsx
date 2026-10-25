@@ -1,14 +1,13 @@
 'use client';
 
 /**
- * `?state=coordination-hold`: a queued task a coordination gate holds, in the
- * shapes the task sheet / task page / mission drawer render (all through
+ * `?state=coordination-hold`: a queued task a claim gate holds, in the shapes
+ * the task sheet / task page / mission drawer render (all through
  * `TaskActionZone`): the waiting line with its "Why" drilldown, Run now's
- * refusal with the Force start confirmation, a wait no force lifts, a task
- * blocked only by creation-time migration-overlap edges (the "migration slot"
- * headline, with its red line), and a local mission held by coordination too
- * (one press lifts both). Reaching these live needs an open PR or in-flight
- * task overlapping a pending one, so a route screenshot never does.
+ * refusal with the Force start confirmation for a limit, a lane wait no force
+ * lifts (spec: Overlap scheduling; Health › Queue R-10), and a local mission
+ * held by a limit too (one press lifts both). Reaching these live needs a
+ * held lane or a busy mission, so a route screenshot never does.
  */
 import type { ReactNode } from 'react';
 import WaitingLine from '@/components/tasks/WaitingLine';
@@ -16,26 +15,18 @@ import { CoordinationRefusal } from '@/app/app/(protected)/missions/[id]/TaskAct
 import { coordinationHoldBody, makeWaitingReason } from '@buildd/core/waiting-reason';
 import type { GateRefusal } from '@/lib/task-actions';
 
-const PR_HOLD = makeWaitingReason('pr_overlap_ended', {
-  because: 'both edit packages/core/db/schema.ts',
+const LANE_PR = makeWaitingReason('lane', {
+  because: 'both edit packages/core/db/schema.ts, and PR #1234 holds the lane until it merges or closes',
   blocker: { type: 'pr', id: '1234', label: 'PR #1234', href: 'https://github.com/example/repo/pull/1234', live: false },
   overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared' },
+  lane: { lane: 'migration', holderTaskId: 'holder', position: null },
   provenance: { source: 'probe', derivedFrom: 'claim layer 1' },
 });
-const LEASE_HOLD = makeWaitingReason('lease_overlap', {
-  because: 'both edit 6 files in web, runner',
-  blocker: { type: 'task', id: 'holder', label: '“runner: claim waiter fix”', href: '#', live: true },
-  overlap: {
-    areas: [{ area: 'web', count: 4 }, { area: 'runner', count: 2 }],
-    pathCount: 6,
-    paths: [
-      'apps/web/src/app/api/workers/claim/route.ts', 'apps/web/src/app/api/workers/claim/claim-plan-input.ts',
-      'apps/web/src/lib/dispatch-authority.ts', 'apps/web/src/lib/path-claim-check.ts',
-      'apps/runner/src/workers.ts', 'apps/runner/src/worker-sync.ts',
-    ],
-    basis: 'lease',
-  },
-  provenance: { source: 'probe', derivedFrom: 'claim layer 2' },
+const PACED = makeWaitingReason('mission_paced', {
+  because: 'the mission starts a task at most every 10 min',
+  blocker: { type: 'mission', id: 'm', label: 'mission pacing', href: '#' },
+  liftsAt: new Date(Date.now() + 4 * 60_000).toISOString(),
+  provenance: { source: 'probe', derivedFrom: 'missions.pacingMode' },
 });
 const MISSION_CAP = makeWaitingReason('mission_concurrent', {
   because: 'the mission runs at most 2 tasks at once and 2 are running',
@@ -51,20 +42,19 @@ const DECLARED = makeWaitingReason('dep_declared', {
   blocker: { type: 'task', id: 'd1', label: '“design the API first”', href: '#' },
   provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
 });
-const migrationEdge = (n: number) => makeWaitingReason('dep_inferred', {
-  because: 'both change migrations in core/db',
-  blocker: { type: 'task', id: `h${n}`, label: `“unrelated schema task ${n}”`, href: '#', live: n === 1 },
-  overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
-  provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
+const LANE_SECOND = makeWaitingReason('lane', {
+  because: 'waiting in the migration lane at position 2, behind task h1 (PR #1220) which holds it',
+  blocker: { type: 'task', id: 'h1', label: '“add the run evidence table”', href: '#', live: true },
+  lane: { lane: 'migration', holderTaskId: 'h1', position: 2 },
+  provenance: { source: 'probe', derivedFrom: 'serial_lane_entries (claim-order laneOrderBy)' },
 });
-const EDGES = [1, 2, 3, 4, 5].map(migrationEdge);
 const LOCAL = makeWaitingReason('mission_local', {
   because: "its mission runs in a person's own session, so runners do not pick up its tasks",
   blocker: { type: 'mission', id: 'm', label: 'a mission run from your session', href: '#' },
   provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
 
-const refusalOf = (reasons: typeof PR_HOLD[]): GateRefusal => coordinationHoldBody(reasons) as GateRefusal;
+const refusalOf = (reasons: typeof LANE_PR[]): GateRefusal => coordinationHoldBody(reasons) as GateRefusal;
 const noop = () => {};
 
 function Panel({ label, children }: { label: string; children: ReactNode }) {
@@ -84,33 +74,29 @@ export default function CoordinationHoldFixture() {
         <h1 className="mt-1 font-mono text-title font-semibold">Held by coordination</h1>
       </header>
       <main className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-6 md:px-8">
-        <Panel label="Queued, held by an open PR">
-          <WaitingLine reasons={[PR_HOLD]}>
-            <button type="button" className="inline-flex min-h-11 items-center px-3 font-mono text-meta text-text-secondary">Force start…</button>
-          </WaitingLine>
+        <Panel label="Queued, in the schema lane behind an open PR (no Force start)">
+          <WaitingLine reasons={[LANE_PR]} />
         </Panel>
-        <Panel label="Run now refused: Force start confirmation">
-          <CoordinationRefusal refusal={refusalOf([PR_HOLD])} pending={null} onForce={noop} onCancel={noop} taskTitle="PR scope verification" />
+        <Panel label="Queued, 2nd in the schema lane">
+          <WaitingLine reasons={[LANE_SECOND]} />
         </Panel>
-        <Panel label="Two holds, many files">
-          <CoordinationRefusal refusal={refusalOf([LEASE_HOLD, MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} />
+        <Panel label="Run now refused by a limit: Force start confirmation">
+          <CoordinationRefusal refusal={refusalOf([PACED])} pending={null} onForce={noop} onCancel={noop} taskTitle="PR scope verification" />
         </Panel>
-        <Panel label="Blocked only by migration-overlap ordering (not dependencies)">
-          <WaitingLine reasons={EDGES}>
-            <button type="button" className="inline-flex min-h-11 items-center px-3 font-mono text-meta text-text-secondary">Force start…</button>
-          </WaitingLine>
+        <Panel label="Two limits">
+          <CoordinationRefusal refusal={refusalOf([PACED, MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} />
         </Panel>
-        <Panel label="Local mission + migration ordering: one Force start lifts both">
-          <CoordinationRefusal refusal={refusalOf([LOCAL, ...EDGES.slice(0, 3)])} pending={null} onForce={noop} onCancel={noop} taskTitle="Add the run evidence table" />
+        <Panel label="Local mission + mission limit: one Force start lifts both">
+          <CoordinationRefusal refusal={refusalOf([LOCAL, MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} taskTitle="Add the run evidence table" />
         </Panel>
         <Panel label="A declared dependency stays (no Force start)">
-          <WaitingLine reasons={[DECLARED, ...EDGES.slice(0, 2)]} />
+          <WaitingLine reasons={[DECLARED, LANE_SECOND]} />
         </Panel>
-        <Panel label="Can't be forced: fix the capability instead">
-          <CoordinationRefusal refusal={refusalOf([PR_HOLD, ROLE_GAP])} pending={null} onForce={noop} onCancel={noop} />
+        <Panel label="Can't be forced: a lane, and a capability to fix">
+          <CoordinationRefusal refusal={refusalOf([LANE_PR, ROLE_GAP])} pending={null} onForce={noop} onCancel={noop} />
         </Panel>
         <Panel label="Changed under the confirmation (409)">
-          <CoordinationRefusal refusal={{ ...refusalOf([LEASE_HOLD]), reasonsChanged: true }} pending={null} onForce={noop} onCancel={noop} />
+          <CoordinationRefusal refusal={{ ...refusalOf([MISSION_CAP]), reasonsChanged: true }} pending={null} onForce={noop} onCancel={noop} />
         </Panel>
       </main>
     </div>
