@@ -3,6 +3,9 @@ import { describe, it, expect, mock } from 'bun:test';
 let prior: any[] = [];
 let runs: unknown[] = [];
 let inserted: any[] = [];
+// What the atomic insert finds already filed: a racing evaluation that won, or nothing.
+let raced: any[] | null = null;
+const params = (q: any) => (q.queryChunks as unknown[]).filter((c): c is string => typeof c === 'string');
 mock.module('./mission-acceptance-checks', () => ({ runFinalAcceptanceChecks: async (...args: unknown[]) => { runs.push(args); } }));
 mock.module('@buildd/core/db', () => ({ db: {
   query: {
@@ -10,7 +13,13 @@ mock.module('@buildd/core/db', () => ({ db: {
     missions: { findFirst: async () => ({ id: 'm', title: 'Mission', workspaceId: 'ws', integrationBranchEnabled: true, workingBranch: 'mission/x' }) },
     workspaces: { findFirst: async () => ({ id: 'ws' }) },
   },
-  insert: () => ({ values: (v: any) => { inserted.push(v); return { returning: async () => [{ id: 'new-final' }] }; } }),
+  execute: (q: unknown) => q,
+  batch: async ([, insert]: any[]) => {
+    if (raced) { prior = raced; return [{}, { rows: [] }]; }
+    const p = params(insert);
+    inserted.push({ title: p.find((c) => c.startsWith('[final verification]')), description: p.find((c) => c.startsWith('## Final requirement verification')) });
+    return [{}, { rows: [{ id: 'new-final' }] }];
+  },
 } }));
 mock.module('@/lib/dispatch-authority', () => ({ announceTaskCreated: async () => {}, wakeTask: async () => {} }));
 mock.module('@/lib/effective-roles', () => ({ pickEffectiveRole: async () => null }));
@@ -58,6 +67,18 @@ it('launches mechanical checks for both newly filed and reused final verificatio
   runs = [];
   expect((await ensureFinalVerification('m', criterion, standing)).kind).toBe('open');
   expect(runs).toEqual([['old-final', 'm']]);
+});
+
+it('two evaluations racing on one target file one verification: the loser reuses the winner\'s task and its checks', async () => {
+  const criterion = { type: 'living_spec', specId: 's', specRevisionId: 'r', revision: 1, contentHash: 'h' } as any;
+  const standing = { target: { kind: 'integration', headSha: A, branch: 'mission/x' }, scope: [], standings: [], title: 'Spec' } as any;
+  prior = []; runs = []; inserted = [];
+  raced = [{ id: 'winner', status: 'pending', context: { finalVerification: { missionId: 'm', targetKey: `head:${A}` } } }];
+  try {
+    expect(await ensureFinalVerification('m', criterion, standing)).toEqual({ kind: 'open', taskId: 'winner' });
+  } finally { raced = null; }
+  expect(inserted).toEqual([]);
+  expect(runs).toEqual([['winner', 'm']]);
 });
 
 it('a standard\'s verification says so and names its spec in the verdict call (D-43)', async () => {

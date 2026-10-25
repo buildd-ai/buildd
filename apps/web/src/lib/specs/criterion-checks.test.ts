@@ -46,6 +46,30 @@ describe('runner checks on the merged mission result', () => {
     expect(woke).toHaveLength(1);
     expect(woke[0]).toMatchObject({ missionId: 'mission' });
   });
+  it('keys a mission run by the mission, so a second final verification of the same target reuses the first one\'s run', async () => {
+    selected.criteria = ['AC-1'];
+    const OTHER = '00000000-0000-4000-8000-000000000003';
+    const keysOf = (b: any) => (b[1].queryChunks as unknown[]).filter((c): c is string => typeof c === 'string' && c.includes('specCriterionCheck') && !c.includes('verificationCommand'));
+    reads = [[subject()], []];
+    await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} });
+    reads = [[subject()], []];
+    await dispatchCriterionChecks({ taskId: OTHER, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} });
+    expect(batches).toHaveLength(2);
+    const [first, second] = batches.map(keysOf);
+    expect(first).toEqual(second);
+    const key = JSON.parse(first[0]).specCriterionCheck;
+    expect(key).toEqual({ missionId: 'mission', specRevisionId: 'revision', criterionId: 'AC-1', headSha: SHA, command: COMMAND });
+    // The run still names who filed it, for the outcome handler to re-read the selection through.
+    const ctx = JSON.parse((batches[1][1].queryChunks as unknown[]).find((c): c is string => typeof c === 'string' && c.includes('verificationCommand'))!);
+    expect(ctx.specCriterionCheck).toMatchObject({ subjectTaskId: OTHER, missionId: 'mission' });
+  });
+  it('refuses a mission run whose marker names another mission', async () => {
+    const r = run();
+    (r.context.specCriterionCheck as Record<string, unknown>).missionId = 'another';
+    reads = [[r], [subject()], []];
+    expect(await handleCriterionCheckOutcome(ID, { reportedVia: 'runner', outcome: 'ok', exitCode: 0 })).toMatchObject({ recorded: false });
+    expect(missionWrites).toHaveLength(0);
+  });
   for (const [outcome, exitCode, verdict] of [['ok', 0, 'pass'], ['failed', 1, 'fail'], ['exec_error', undefined, 'inconclusive'], ['timeout', undefined, 'inconclusive'], ['failed', 125, 'inconclusive']] as const) {
     it(`AC-127: ${outcome}/${exitCode} records ${verdict} for the mission at the merged SHA`, async () => {
       reads = [[run()], [subject()], []];
