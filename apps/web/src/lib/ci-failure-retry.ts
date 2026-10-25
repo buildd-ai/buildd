@@ -30,7 +30,7 @@ import { after } from 'next/server';
 import { scheduleFailurePatternSentinel } from './failure-pattern-sentinel-trigger';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, or, sql } from 'drizzle-orm';
 import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { githubApi } from '@/lib/github';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -784,8 +784,8 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
 /**
  * A red frozen release candidate (lib/release-candidate-ci.ts): null for any
  * other PR. A trusted candidate at its recorded head gets one fix task against
- * its source branch per head (the owner task's context marker is claimed with
- * a compare-and-set, so the webhook and the sweep file it once). A
+ * its source branch per head (the PR's first owner task's context marker is
+ * claimed with a compare-and-set, so the webhook and the sweep file it once). A
  * candidate-shaped PR that is not provably one (head pushed over, untrusted
  * author) gets nothing filed: it needs an amendment, not a builder.
  */
@@ -809,13 +809,25 @@ async function releaseCandidateCiFailure(
     return { kind: 'skipped', reason: 'release_candidate' };
   }
 
+  // The marker lives on the PR's FIRST owner task, not on `owner`: `owner` is the
+  // newest worker stamped with this PR, and any attempt filed on the candidate
+  // (a conflict attempt, a review) is stamped too. Once one is, the next red
+  // report resolves that attempt as owner, finds no marker on it, and files a
+  // second fix for the same head (v0.381.0: two fixes 7 minutes apart).
+  const firstOwner = await db.query.workers.findFirst({
+    where: sqlWhere(and(workerOwnsPr(input.repoFullName, input.prNumber), isNotNull(workers.taskId))),
+    columns: { taskId: true },
+    orderBy: sqlOrderBy([asc(workers.createdAt), asc(workers.id)]),
+  });
+  const markerTaskId = firstOwner?.taskId ?? owner.id;
+
   const claimed = await db
     .update(tasks)
     .set({
       context: sql`jsonb_set(coalesce(${tasks.context}, '{}'::jsonb), ${`{${RELEASE_CANDIDATE_FIX_HEAD_KEY}}`}::text[], to_jsonb(${input.headSha}::text))`,
       updatedAt: new Date(),
     })
-    .where(and(eq(tasks.id, owner.id), sql`coalesce(${tasks.context}->>${RELEASE_CANDIDATE_FIX_HEAD_KEY}, '') <> ${input.headSha}`))
+    .where(and(eq(tasks.id, markerTaskId), sql`coalesce(${tasks.context}->>${RELEASE_CANDIDATE_FIX_HEAD_KEY}, '') <> ${input.headSha}`))
     .returning({ id: tasks.id });
   if (claimed.length === 0) {
     recordSkip(skipCtx, 'release_candidate', { alreadyFiled: true });
