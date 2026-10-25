@@ -4,7 +4,6 @@ import { MISSION_START_COPY } from './mission-start-state';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
 import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
-import { timeAgo } from './mission-helpers';
 import type { RedCheckView } from './red-check-cause';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
@@ -143,6 +142,14 @@ function questionSentence(q: HomeQuestion): string {
 
 type Resolved = Pick<HomeAttentionItem, 'label' | 'tone' | 'title' | 'sentence' | 'detail' | 'meta' | 'href' | 'actionType' | 'primary' | 'details' | 'owner'>;
 
+function agoShort(at: Date): string {
+  const mins = Math.max(0, Math.floor((Date.now() - at.getTime()) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
+
 /**
  * The failing-check line of a red PR card: "✕ Unit tests (2/3) · 4m ago". Never a sentence;
  * with no reading the generic "Checks failed · 4m ago". The cause sentence rides in `detail`.
@@ -152,7 +159,7 @@ export function checkLine(red: RedCheckView | null, waitingMinutes?: number | nu
   const what = names.length === 0 ? 'Checks failed'
     : `✕ ${names.length <= 2 ? names.join(', ') : `${names.slice(0, 2).join(', ')} +${names.length - 2}`}`;
   const at = red?.at ? new Date(red.at) : waitingMinutes != null ? new Date(Date.now() - waitingMinutes * 60000) : null;
-  return at && !Number.isNaN(at.getTime()) ? `${what} · ${timeAgo(at)}` : what;
+  return at && !Number.isNaN(at.getTime()) ? `${what} · ${agoShort(at)}` : what;
 }
 
 /**
