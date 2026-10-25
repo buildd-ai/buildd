@@ -106,11 +106,11 @@ describe('amendCandidateOnFixMerge', () => {
     // Third entry: amendment dispatched
     expect(activities[2].prNumber).toBe(90);
     expect(activities[2].entry.kind).toBe('release_amended');
-    expect(activities[2].entry.note).toContain('merged into `dev`');
+    expect(activities[2].entry.note).toContain('The fix merged in #101');
     expect(activities[2].entry.note).toContain('Release candidate v1.2.3 was amended automatically');
     expect(activities[2].entry.url).toBe('https://example.test/run/1');
-    // Comment on fix PR (legacy)
-    const comment = g.calls.find((c) => c.path === '/repos/o/r/issues/101/comments');
+    // Standing comment on the candidate PR
+    const comment = g.calls.find((c) => c.path === '/repos/o/r/issues/90/comments');
     expect(comment?.opts?.method).toBe('POST');
     expect(JSON.parse(comment!.opts!.body).body).toContain('amend: 1.2.3');
     expect(JSON.parse(comment!.opts!.body).body).toMatch(/^The fix for this candidate merged in #\d+\. /);

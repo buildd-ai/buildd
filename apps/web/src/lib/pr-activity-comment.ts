@@ -305,7 +305,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
     case 'human_override_merge':
       return { tone: 'done', label: 'Merged · escalation overridden', noteLabel: 'Reason' };
     case 'fix_pr_opened':
-      return { tone: 'progress', label: 'Fix PR opened', urlLabel: 'PR' };
+      return { tone: 'waiting', label: 'Fix PR opened', urlLabel: 'PR' };
     case 'release_amended':
       return { tone: 'done', label: 'Release candidate amended', status: 'checks and approvals restarting on the new head', urlLabel: 'Run' };
     case 'merged':
