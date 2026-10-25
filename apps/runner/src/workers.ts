@@ -5764,7 +5764,7 @@ export class WorkerManager {
           // denies that call with the output as the agent's next instruction.
           // Off unless gitConfig.preflight.commands lists any. Codex has no seam.
           ...preflightHookEntries({
-            gitConfig, isCodexTask, cwd,
+            gitConfig, isCodexTask, cwd, taskContext: task.context,
             milestone: (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }),
           }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],

@@ -8,7 +8,7 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/preflight-guard.test.ts
  */
 import { describe, expect, test } from 'bun:test';
-import { createPreflightGuard, preflightCommands, preflightHookEntries, type PreflightRun } from '../../src/preflight-guard';
+import { createPreflightGuard, FIX_ATTEMPT_TYPE_CHECK, isFixAttemptContext, preflightCommands, preflightHookEntries, type PreflightRun } from '../../src/preflight-guard';
 import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
 
 const BASH_PUSH = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push origin HEAD' } };
@@ -110,5 +110,25 @@ describe('preflightHookEntries (what the session registers)', () => {
   test('none by default, and none for Codex', () => {
     expect(preflightHookEntries({ gitConfig: undefined, isCodexTask: false, cwd: '/w' })).toEqual([]);
     expect(preflightHookEntries({ gitConfig: { preflight: { commands: ['a'] } }, isCodexTask: true, cwd: '/w' })).toEqual([]);
+  });
+});
+
+describe('fix attempts: a push that breaks the type check is refused', () => {
+  const fixCtx = { failureContext: { errorType: 'reviewer_request_changes' } };
+  test('review-fix, escalation-applied and CI-fix tasks are fix attempts; others are not', () => {
+    for (const errorType of ['reviewer_request_changes', 'reviewer_escalation_applied', 'ci_failure']) expect(isFixAttemptContext({ failureContext: { errorType } })).toBe(true);
+    expect(isFixAttemptContext({ failureContext: { errorType: 'other' } })).toBe(false);
+    expect(isFixAttemptContext(null)).toBe(false);
+  });
+  test('a fix attempt gets the type check even when the workspace lists no commands; Codex and plain tasks do not', () => {
+    expect(preflightHookEntries({ gitConfig: undefined, isCodexTask: false, cwd: '/w', taskContext: fixCtx }).length).toBe(1);
+    expect(preflightHookEntries({ gitConfig: undefined, isCodexTask: false, cwd: '/w', taskContext: {} })).toEqual([]);
+    expect(preflightHookEntries({ gitConfig: undefined, isCodexTask: true, cwd: '/w', taskContext: fixCtx })).toEqual([]);
+  });
+  test('push refused when the type check fails', async () => {
+    const { guard } = harness({ [FIX_ATTEMPT_TYPE_CHECK]: failed('pr-activity-comment.ts(308,16): TS2322') });
+    const out = JSON.stringify(await guard(BASH_PUSH));
+    expect(out).toContain('deny');
+    expect(out).toContain('TS2322');
   });
 });

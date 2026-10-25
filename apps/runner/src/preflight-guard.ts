@@ -31,14 +31,34 @@ const NOT_FOUND_EXIT = 127;
 const OUTPUT_TAIL_CHARS = 2_000;
 export const PREFLIGHT_COMMAND_TIMEOUT_MS = 120_000;
 
+/**
+ * A fix attempt's own check, on whatever the workspace lists: "a fix that turns
+ * CI red is not a fix". Review fixes and CI fixes (the task's
+ * `failureContext.errorType`) may not push or open a PR on a head that fails the
+ * repo's type check. Same advisory rules as every preflight command: one that
+ * cannot run lets the ship through, CI stays the backstop.
+ */
+export const FIX_ATTEMPT_TYPE_CHECK = 'bun run type-check';
+export const TYPE_CHECK_TIMEOUT_MS = 600_000;
+const FIX_ATTEMPT_ERROR_TYPES = new Set(['ci_failure', 'reviewer_request_changes', 'reviewer_escalation_applied']);
+
+export function isFixAttemptContext(context: unknown): boolean {
+  const fc = (context as { failureContext?: { errorType?: unknown } } | null | undefined)?.failureContext;
+  return typeof fc?.errorType === 'string' && FIX_ATTEMPT_ERROR_TYPES.has(fc.errorType);
+}
+
 export function preflightCommands(gitConfig: { preflight?: { commands?: unknown } | null } | null | undefined): string[] {
   const raw = gitConfig?.preflight?.commands;
   if (!Array.isArray(raw)) return [];
   return raw.filter((c): c is string => typeof c === 'string').map((c) => c.trim()).filter(Boolean);
 }
 
+function commandTimeoutMs(command: string): number {
+  return command === FIX_ATTEMPT_TYPE_CHECK ? TYPE_CHECK_TIMEOUT_MS : PREFLIGHT_COMMAND_TIMEOUT_MS;
+}
+
 export async function runPreflightCommand(command: string, cwd: string): Promise<PreflightRun> {
-  const ev = await runVerificationCommand({ workerId: 'preflight', iteration: 0, command, cwd, timeoutMs: PREFLIGHT_COMMAND_TIMEOUT_MS });
+  const ev = await runVerificationCommand({ workerId: 'preflight', iteration: 0, command, cwd, timeoutMs: commandTimeoutMs(command) });
   return {
     outcome: ev.outcome,
     exitCode: ev.exitCode ?? null,
@@ -113,12 +133,15 @@ export function preflightHookEntries(p: {
   gitConfig: { preflight?: { commands?: unknown } | null } | null | undefined;
   isCodexTask: boolean;
   cwd: string;
+  /** The task's context: a fix attempt gets the type check on top of the workspace's list. */
+  taskContext?: unknown;
   milestone?: (label: string) => void;
 }): Array<{ timeout: number; hooks: Array<ReturnType<typeof createPreflightGuard>> }> {
   const commands = preflightCommands(p.gitConfig);
+  if (isFixAttemptContext(p.taskContext) && !commands.includes(FIX_ATTEMPT_TYPE_CHECK)) commands.unshift(FIX_ATTEMPT_TYPE_CHECK);
   if (p.isCodexTask || commands.length === 0) return [];
   return [{
-    timeout: Math.ceil((PREFLIGHT_COMMAND_TIMEOUT_MS * commands.length) / 1000) + 15,
+    timeout: Math.ceil(commands.reduce((sum, c) => sum + commandTimeoutMs(c), 0) / 1000) + 15,
     hooks: [createPreflightGuard({ commands, cwd: p.cwd, milestone: p.milestone })],
   }];
 }

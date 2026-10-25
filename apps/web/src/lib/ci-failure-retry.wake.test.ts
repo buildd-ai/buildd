@@ -214,6 +214,8 @@ describe('retryCiFailureForPr on a kernel-owned PR (§5.7, T10)', () => {
   it('maps every kernel answer onto a CI-door outcome', () => {
     expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'REPAIRING' } }, attemptTaskId: null })).toMatchObject({ kind: 'skipped', reason: 'fix_in_flight' });
     expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'CHANGES_REQUESTED' } } })).toMatchObject({ reason: 'fix_in_flight' });
+    // An escalated PR (review budget spent) with red CI: the kernel moves it to REPAIRING, so the door dispatches the CI fix.
+    expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'REPAIRING' } }, attemptTaskId: 'ci-fix-1' })).toEqual({ kind: 'dispatched', taskId: 'ci-fix-1' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } })).toMatchObject({ reason: 'fix_in_flight', kernelState: 'WORKING' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'ESCALATED' } } })).toMatchObject({ reason: 'kernel_owned' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'head_not_current', current: { state: 'AWAITING_REVIEW' } } })).toMatchObject({ reason: 'kernel_owned' });
