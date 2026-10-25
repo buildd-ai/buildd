@@ -167,6 +167,20 @@ async function tokenRequest(form: Record<string, string>) {
   return { status: res.status, body: await res.json() as TokenSet & { error?: string; error_description?: string } };
 }
 
+/**
+ * Tick `workspaceIds` as specific workspaces: each team holding one is set to
+ * Specific workspaces, every other team to No access (the account consent
+ * page's per-team choice).
+ */
+function chooseSpecific(html: string, fields: Array<[string, string]>, workspaceIds: string[]): Array<[string, string]> {
+  let out = setField(fields, 'ws', workspaceIds);
+  for (const m of html.matchAll(/<details class="team" data-team="([^"]+)"[\s\S]*?<\/details>/g)) {
+    const has = workspaceIds.some((id) => m[0].includes(`value="${id}"`));
+    out = setField(out, `tmode.${m[1]}`, [has ? 'specific' : 'none']);
+  }
+  return out;
+}
+
 /** The whole browser leg: consent page -> chosen workspaces/kind -> code -> token pair. */
 async function connect(o: {
   clientId: string; cookie: string; workspaceIds: string[]; scope?: string;
@@ -176,8 +190,8 @@ async function connect(o: {
   const state = `st-${rand()}`;
   const page = await getConsent(authorizeUrl(o.clientId, challenge, { scope: o.scope, state }), o.cookie);
   expect(page.status).toBe(200);
-  let fields = formOf(await page.text());
-  fields = setField(fields, 'ws', o.workspaceIds);
+  const html = await page.text();
+  let fields = chooseSpecific(html, formOf(html), o.workspaceIds);
   if (o.actsAs) fields = setField(fields, 'acts_as', [o.actsAs]);
   if (o.write === false) fields = setField(fields, 'perm_write', []);
   const res = await postConsent([...fields, ['decision', 'approve']], o.cookie);
@@ -569,7 +583,8 @@ describe.skipIf(!ENABLED)('live: one MCP connection across teams', () => {
     test('a forged person choice without the scope is refused and writes nothing', async () => {
       const { challenge } = pkce();
       const page = await getConsent(authorizeUrl(clientId, challenge), W.cookie);
-      const fields = setField(setField(formOf(await page.text()), 'acts_as', ['person']), 'ws', [W.a1]);
+      const html = await page.text();
+      const fields = chooseSpecific(html, setField(formOf(html), 'acts_as', ['person']), [W.a1]);
       const before = await q<{ n: number }>('SELECT count(*)::int AS n FROM mcp_oauth_grants WHERE client_id = $1', [clientId]);
       const res = await postConsent([...fields, ['decision', 'approve']], W.cookie);
       expect(res.status).toBe(400);
@@ -579,7 +594,8 @@ describe.skipIf(!ENABLED)('live: one MCP connection across teams', () => {
 
     test('consent from another origin is refused', async () => {
       const page = await getConsent(authorizeUrl(clientId, pkce().challenge), W.cookie);
-      const fields = setField(formOf(await page.text()), 'ws', [W.a1]);
+      const html = await page.text();
+      const fields = chooseSpecific(html, formOf(html), [W.a1]);
       const res = await fetch(`${SERVER}/api/oauth/authorize`, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: W.cookie, origin: 'https://evil.example' },

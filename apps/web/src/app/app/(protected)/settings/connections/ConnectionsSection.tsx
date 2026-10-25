@@ -5,15 +5,21 @@
  * buildd (docs/specs/auth-oauth-boundaries.md, "Managing connections").
  *
  * Each connection is one hairline row: the app's name, whether it acts as the
- * person or as their agent, and one line of meta. Opening a row shows what it
- * reaches, grouped by team, and every change it allows: add or remove
- * workspaces (the consent page's picker), read only or read and write, make
- * it an agent, revoke. A connection that is an agent cannot be made to act as
- * the person here; that takes a fresh consent.
+ * person or as their agent, and one line of meta. Opening a row shows, team by
+ * team, what it reaches and how (all current and future workspaces, or
+ * specific ones), and every change it allows: edit a team's access (the
+ * consent page's picker for specific workspaces), add a team, remove a
+ * specific workspace, read only or read and write, make it an agent, revoke.
+ * A connection that is an agent cannot be made to act as the person here;
+ * that takes a fresh consent.
  *
- * Every change goes to /api/mcp-grants and applies on the app's next request.
+ * Every change goes to /api/mcp-grants with the revision it was made against,
+ * and applies on the app's next request. A change made against an older
+ * revision is refused; the page then shows the connection as it is now and
+ * keeps the person's edit open to review again.
  */
 import { useState } from 'react';
+import type { TeamModeChange } from '@/lib/mcp-grant-patch';
 import ConnectionRow, { StatusChip } from '../_components/ConnectionRow';
 import Disclosure from '@/components/ui/Disclosure';
 import Notice from '@/components/ui/Notice';
@@ -22,8 +28,8 @@ import Section from '@/components/ui/Section';
 import type { ConsentTeam } from '@/lib/oauth/account-consent';
 import type { ConnectionAccess, ConnectionSummary, LegacyConnectionSummary } from '@/lib/mcp-grant-patch';
 import InlineConfirm from './InlineConfirm';
-import WorkspacePicker from './WorkspacePicker';
-import { ACCESS_LABEL, KIND_LABEL, byTeam, connectionMeta, lastActive, selectionChange } from './connections-view';
+import TeamAccessEditor from './TeamAccessEditor';
+import { ACCESS_LABEL, KIND_LABEL, MODE_LABEL, connectionMeta, lastActive, savedMessage } from './connections-view';
 
 export interface ConnectionsData {
   connections: ConnectionSummary[];
@@ -31,36 +37,60 @@ export interface ConnectionsData {
   teams: ConsentTeam[];
 }
 
-type PatchBody = { addWorkspaceIds?: string[]; removeWorkspaceIds?: string[]; access?: ConnectionAccess; actsAs?: 'agent' };
+export type PatchBody = {
+  addWorkspaceIds?: string[];
+  removeWorkspaceIds?: string[];
+  teams?: TeamModeChange[];
+  access?: ConnectionAccess;
+  actsAs?: 'agent';
+  ifRevision?: number;
+};
+
+export type PatchFailure = { ok: false; error: string; code?: string; connection?: ConnectionSummary };
 
 /** The two calls the section makes. The dev fixture swaps in a local one. */
 export interface ConnectionsApi {
-  patch(id: string, body: PatchBody): Promise<{ ok: true; connection: ConnectionSummary } | { ok: false; error: string }>;
+  patch(id: string, body: PatchBody): Promise<{ ok: true; connection: ConnectionSummary } | PatchFailure>;
   revoke(id: string): Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
-async function errorOf(res: Response, fallback: string): Promise<string> {
+async function failureOf(res: Response, fallback: string): Promise<PatchFailure> {
   try {
     const body = await res.json();
-    return typeof body?.error === 'string' && body.error ? body.error : fallback;
+    return {
+      ok: false,
+      error: typeof body?.error === 'string' && body.error ? body.error : fallback,
+      ...(typeof body?.code === 'string' ? { code: body.code } : {}),
+      ...(body?.connection && typeof body.connection === 'object' ? { connection: body.connection as ConnectionSummary } : {}),
+    };
   } catch {
-    return fallback;
+    return { ok: false, error: fallback };
   }
 }
 
 export const fetchConnectionsApi: ConnectionsApi = {
   async patch(id, body) {
-    const res = await fetch(`/api/mcp-grants/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) return { ok: false, error: await errorOf(res, 'Could not save the change. Try again.') };
+    let res: Response;
+    try {
+      res = await fetch(`/api/mcp-grants/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      return { ok: false, error: 'Could not reach buildd. Check your connection and try again.' };
+    }
+    if (!res.ok) return failureOf(res, 'Could not save the change. Try again.');
     return { ok: true, connection: (await res.json()).connection };
   },
   async revoke(id) {
-    const res = await fetch(`/api/mcp-grants/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    if (!res.ok) return { ok: false, error: await errorOf(res, 'Could not revoke it. Try again.') };
+    let res: Response;
+    try {
+      res = await fetch(`/api/mcp-grants/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch {
+      return { ok: false, error: 'Could not reach buildd. Check your connection and try again.' };
+    }
+    if (!res.ok) return { ok: false, error: (await failureOf(res, 'Could not revoke it. Try again.')).error };
     return { ok: true };
   },
 };
@@ -143,7 +173,10 @@ function LegacyConnections({ legacy, now }: { legacy: LegacyConnectionSummary[];
   );
 }
 
-type Busy = null | 'workspaces' | 'access' | 'kind' | 'revoke';
+type Busy = null | 'workspaces' | 'access' | 'kind' | 'revoke' | 'team';
+
+/** A team being edited: its id, and where the editor starts. */
+type Editing = { teamId: string; start?: 'all' };
 
 function ConnectionItem({
   connection: c,
@@ -166,21 +199,36 @@ function ConnectionItem({
 }) {
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
-  const [picking, setPicking] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [adding, setAdding] = useState(false);
   const [confirm, setConfirm] = useState<null | 'kind' | 'revoke'>(null);
 
-  async function save(kind: Exclude<Busy, null | 'revoke'>, body: PatchBody) {
+  /** One request at a time per connection, sent with the revision on screen. */
+  async function save(kind: Exclude<Busy, null | 'revoke'>, body: PatchBody, onError: (e: string) => void = setError) {
+    if (busy !== null) return false;
     setBusy(kind);
     setError(null);
-    const r = await api.patch(c.id, body);
+    setEditError(null);
+    setSaved(null);
+    const r = await api.patch(c.id, { ...body, ifRevision: c.revision });
     setBusy(null);
     if (!r.ok) {
-      setError(r.error);
+      // Someone (another tab, another device) changed it first: show what it
+      // is now and let the person look again, never overwrite it.
+      if (r.connection) onChange(r.connection);
+      onError(r.error);
       return false;
     }
     onChange(r.connection);
+    setSaved(savedMessage(c.clientName));
     return true;
   }
+
+  const editable = teams.filter((t) => t.workspaces.some((w) => !w.system));
+  const addable = editable.filter((t) => !c.teams.some((x) => x.teamId === t.id));
+  const editingTeam = editing ? teams.find((t) => t.id === editing.teamId) ?? null : null;
 
   async function revoke() {
     setBusy('revoke');
@@ -250,35 +298,63 @@ function ConnectionItem({
         <p className="text-meta text-text-muted">In each workspace it is also limited to your team role.</p>
       </div>
 
-      <div className="space-y-2 border-t border-[var(--line-soft)] pt-3" data-testid="connection-workspaces">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-title font-semibold text-text-primary">Workspaces</p>
-          {!picking && (
-            <button type="button" data-testid="connection-change-workspaces" className="btn btn-sm h-11 md:h-8" onClick={() => setPicking(true)} disabled={busy !== null}>
-              Add or remove
-            </button>
-          )}
+      <div className="space-y-3 border-t border-[var(--line-soft)] pt-3" data-testid="connection-workspaces">
+        <div>
+          <p className="text-title font-semibold text-text-primary">Teams and workspaces</p>
+          <p className="text-meta text-text-muted">What {c.clientName} can reach, team by team. Changes apply on its next request.</p>
         </div>
-        {picking ? (
-          <WorkspacePicker
-            teams={teams}
-            clientName={c.clientName}
-            initialSelected={c.workspaces.map((w) => w.id)}
-            saving={busy === 'workspaces'}
-            onCancel={() => setPicking(false)}
-            onSave={async (selected) => {
-              const { add, remove } = selectionChange(c.workspaces.map((w) => w.id), selected);
-              if (add.length === 0 && remove.length === 0) { setPicking(false); return; }
-              if (await save('workspaces', { addWorkspaceIds: add, removeWorkspaceIds: remove })) setPicking(false);
-            }}
-          />
-        ) : (
-          <>
-            {byTeam(c.workspaces).map((g) => (
-              <div key={g.teamId}>
-                <p className="text-meta text-text-muted">{g.teamName}</p>
+        {saved && <p className="text-body text-text-secondary" role="status" data-testid="connection-saved">{saved}</p>}
+        {c.teams.map((t) => {
+          const isEditing = editing?.teamId === t.teamId && editingTeam;
+          return (
+            <div key={t.teamId} className="space-y-1" data-testid="connection-team" data-team={t.teamId} data-mode={t.mode}>
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <div className="min-w-0">
+                  <p className="break-words text-body font-semibold text-text-primary">{t.teamName}</p>
+                  <p className="text-meta text-text-muted" data-testid="connection-team-mode">
+                    {t.mode === 'all'
+                      ? `${MODE_LABEL.all} · ${t.workspaces.length} now`
+                      : `${MODE_LABEL.specific} · ${t.workspaces.length}`}
+                  </p>
+                </div>
+                {!isEditing && (
+                  <button
+                    type="button"
+                    data-testid="connection-team-edit"
+                    className="btn btn-sm h-11 md:h-8"
+                    disabled={busy !== null || !teams.some((x) => x.id === t.teamId)}
+                    aria-label={`Edit access to ${t.teamName}`}
+                    onClick={() => { setEditing({ teamId: t.teamId }); setAdding(false); setEditError(null); setSaved(null); }}
+                  >
+                    Edit access
+                  </button>
+                )}
+              </div>
+              {isEditing ? (
+                <TeamAccessEditor
+                  connection={c}
+                  team={editingTeam}
+                  saving={busy === 'team'}
+                  error={editError}
+                  onCancel={() => { setEditing(null); setEditError(null); }}
+                  onSave={async (change) => { if (await save('team', { teams: [change] }, setEditError)) setEditing(null); }}
+                />
+              ) : t.mode === 'all' ? (
+                <>
+                  <Disclosure summary={`${t.workspaces.length === 1 ? '1 workspace' : `${t.workspaces.length} workspaces`} it reaches now`}>
+                    <ul className="divide-y divide-[var(--line-soft)] pb-2">
+                      {t.workspaces.map((w) => (
+                        <li key={w.id} className="flex min-h-11 items-center text-body text-text-primary" data-testid="connection-workspace">{w.name}</li>
+                      ))}
+                    </ul>
+                  </Disclosure>
+                  <p className="text-meta text-text-muted">
+                    Workspaces created in or moved into {t.teamName} later are included. To leave one out, edit access and choose specific workspaces.
+                  </p>
+                </>
+              ) : (
                 <ul className="divide-y divide-[var(--line-soft)]">
-                  {g.workspaces.map((w) => (
+                  {t.workspaces.map((w) => (
                     <li key={w.id} className="flex min-h-11 items-center justify-between gap-3" data-testid="connection-workspace">
                       <span className="min-w-0 break-words text-body text-text-primary">{w.name}</span>
                       <button
@@ -294,14 +370,60 @@ function ConnectionItem({
                     </li>
                   ))}
                 </ul>
-              </div>
-            ))}
-            {c.unreachableCount > 0 && (
-              <p className="text-meta text-text-muted">
-                {c.unreachableCount === 1 ? 'One more workspace is' : `${c.unreachableCount} more workspaces are`} out of reach: you are no longer on {c.unreachableCount === 1 ? 'its team' : 'their teams'}.
-              </p>
-            )}
-          </>
+              )}
+            </div>
+          );
+        })}
+
+        {editing && editingTeam && !c.teams.some((t) => t.teamId === editing.teamId) && (
+          <TeamAccessEditor
+            connection={c}
+            team={editingTeam}
+            initialChoice={editing.start}
+            saving={busy === 'team'}
+            error={editError}
+            onCancel={() => { setEditing(null); setEditError(null); }}
+            onSave={async (change) => { if (await save('team', { teams: [change] }, setEditError)) setEditing(null); }}
+          />
+        )}
+
+        {!editing && addable.length > 0 && (
+          adding ? (
+            <div className="space-y-2" data-testid="connection-add-team">
+              <p className="text-body text-text-secondary">Which team should {c.clientName} reach?</p>
+              <ul className="divide-y divide-[var(--line-soft)] border-y border-[var(--line-soft)]">
+                {addable.map((t) => (
+                  <li key={t.id} className="flex min-h-11 items-center justify-between gap-3">
+                    <span className="min-w-0 break-words text-body text-text-primary">{t.name}</span>
+                    <button
+                      type="button"
+                      className="btn btn-sm h-11 md:h-8"
+                      aria-label={`Choose access to ${t.name}`}
+                      onClick={() => { setEditing({ teamId: t.id, start: 'all' }); setAdding(false); setSaved(null); }}
+                    >
+                      Choose access
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button type="button" className="btn btn-quiet btn-sm h-11 md:h-8" onClick={() => setAdding(false)}>Cancel</button>
+            </div>
+          ) : (
+            <button type="button" data-testid="connection-add-team-open" className="btn btn-sm h-11 md:h-8" disabled={busy !== null} onClick={() => { setAdding(true); setSaved(null); }}>
+              Add a team
+            </button>
+          )
+        )}
+
+        {c.unreachableCount > 0 && (
+          <p className="text-meta text-text-muted">
+            {c.unreachableCount === 1 ? 'One more workspace is' : `${c.unreachableCount} more workspaces are`} out of reach: you are no longer on {c.unreachableCount === 1 ? 'its team' : 'their teams'}.
+          </p>
+        )}
+        {c.unreachableTeamCount > 0 && (
+          <p className="text-meta text-text-muted">
+            {c.unreachableTeamCount === 1 ? 'One team you left is' : `${c.unreachableTeamCount} teams you left are`} out of reach. Rejoining gives the app access there again.
+          </p>
         )}
       </div>
 

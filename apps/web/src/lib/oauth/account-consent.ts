@@ -3,11 +3,13 @@
  * "Account-level consent").
  *
  * The authorize endpoint takes this path when the client asks for the
- * account-level resource (`resource=<issuer>/api/mcp`). The person picks which
- * workspaces, across their teams, the connection may reach, what kind of
- * connection it is ('agent' by default, 'person' only when the client asked
- * for it) and whether it may write. Approving creates one grant
- * (lib/mcp-grants.ts) and a code bound to it.
+ * account-level resource (`resource=<issuer>/api/mcp`). The person picks, team
+ * by team, what the connection may reach: no access, all current and future
+ * workspaces of the team (the default for a team they choose), or specific
+ * workspaces. They also pick what kind of connection it is ('agent' by
+ * default, 'person' only when the client asked for it) and whether it may
+ * write. Approving creates one grant (lib/mcp-grants.ts) and a code bound to
+ * it.
  *
  * Everything here is pure: no database, no session. The route supplies the
  * user's teams and workspaces, re-validates the submitted selection against
@@ -158,9 +160,27 @@ export interface ConsentTeam {
   workspaces: ConsentWorkspace[];
 }
 
+/**
+ * What a connection reaches in one team. 'all': every workspace of the team
+ * now and every one created in or moved into it later (internal workspaces
+ * excepted). 'specific': only the ticked workspaces.
+ */
+export type TeamAccessMode = 'all' | 'specific';
+/** The consent page's per-team choice: a mode, or no access to the team. */
+export type TeamChoice = 'none' | TeamAccessMode;
+const TEAM_CHOICES: readonly TeamChoice[] = ['none', 'all', 'specific'];
+const isTeamChoice = (v: unknown): v is TeamChoice => typeof v === 'string' && (TEAM_CHOICES as readonly string[]).includes(v);
+/** Form field carrying a team's choice: `tmode.<teamId>`. */
+export const TEAM_MODE_FIELD = 'tmode.';
+
 export interface ConsentState {
   /** Selected workspace ids, each one the user can reach. */
   selected: string[];
+  /**
+   * Account consent only: what the connection reaches in each team, by team
+   * id. A team that is absent gets no access. The runner picker never sets it.
+   */
+  teamModes?: Record<string, TeamChoice>;
   actsAs: McpGrantActsAs;
   write: boolean;
   query: string;
@@ -220,36 +240,56 @@ export function filteredWorkspaces(team: ConsentTeam, query: string): ConsentWor
 }
 
 /**
- * The first visit. Exactly one workspace is preselected: the one the client
- * named, if the user can reach it, else the first workspace of the first
- * team. The kind is 'person' only when the client asked for it; otherwise it
- * is 'agent'. Write is on when the client asked for it.
+ * The first visit of the account consent page. A team is chosen only when the
+ * choice is not the page's to make up: the team of the workspace the client
+ * named (if the user can reach it), or the only team there is. That team is
+ * set to all current and future workspaces, with the named workspace ticked
+ * in case the person switches to specific workspaces; a named internal
+ * workspace is never part of "all", so its team starts on specific
+ * workspaces with it ticked. With several teams and no hint nothing is
+ * chosen: the person picks the teams. The kind is 'person' only when the
+ * client asked for it; otherwise it is 'agent'. Write is on when the client
+ * asked for it.
  */
 export function initialConsentState(
   teams: ConsentTeam[],
   requested: RequestedAccess,
   hintWorkspaceId: string | null,
 ): ConsentState {
-  const reachable = allWorkspaceIds(teams);
-  const first = teams.find((t) => t.workspaces.length > 0)?.workspaces[0]?.id ?? null;
-  const pick = hintWorkspaceId && reachable.has(hintWorkspaceId) ? hintWorkspaceId : first;
+  const hintTeam = hintWorkspaceId ? teams.find((t) => t.workspaces.some((w) => w.id === hintWorkspaceId)) : undefined;
+  const hint = hintTeam?.workspaces.find((w) => w.id === hintWorkspaceId);
+  const teamModes: Record<string, TeamChoice> = {};
   const pages: Record<string, number> = {};
-  if (pick) {
-    const team = teams.find((t) => t.workspaces.some((w) => w.id === pick));
-    if (team) {
-      const index = team.workspaces.findIndex((w) => w.id === pick);
-      const page = Math.floor(index / CONSENT_PAGE_SIZE) + 1;
-      if (page > 1) pages[team.id] = page;
-    }
+  const selected: string[] = [];
+  if (hintTeam && hint) {
+    teamModes[hintTeam.id] = hint.system ? 'specific' : 'all';
+    selected.push(hint.id);
+    const page = Math.floor(hintTeam.workspaces.findIndex((w) => w.id === hint.id) / CONSENT_PAGE_SIZE) + 1;
+    if (page > 1) pages[hintTeam.id] = page;
+  } else if (teams.length === 1) {
+    teamModes[teams[0].id] = 'all';
   }
   return {
-    selected: pick ? [pick] : [],
+    selected,
+    teamModes,
     actsAs: requested.person ? 'person' : 'agent',
     write: requested.write,
     query: '',
     pages,
     focusTeam: null,
   };
+}
+
+/** The team choices a form carries, leniently: unknown teams and values are dropped. */
+function readTeamModes(form: URLSearchParams, teams: ConsentTeam[]): Record<string, TeamChoice> {
+  const teamIds = new Set(teams.map((t) => t.id));
+  const out: Record<string, TeamChoice> = {};
+  for (const [key, value] of form.entries()) {
+    if (!key.startsWith(TEAM_MODE_FIELD)) continue;
+    const id = key.slice(TEAM_MODE_FIELD.length);
+    if (teamIds.has(id) && isTeamChoice(value)) out[id] = value;
+  }
+  return out;
 }
 
 const MAX_QUERY = 100;
@@ -274,6 +314,7 @@ export function readConsentForm(form: URLSearchParams, teams: ConsentTeam[], req
   }
   return {
     selected,
+    teamModes: readTeamModes(form, teams),
     actsAs,
     write: requested.write && form.get('perm_write') === 'on',
     query: (form.get('q') ?? '').slice(0, MAX_QUERY),
@@ -288,7 +329,7 @@ export function applyNav(state: ConsentState, nav: string | null, teams: Consent
   const [action, teamId, n] = nav.split(':');
   const team = teamId ? teams.find((t) => t.id === teamId) : undefined;
   const selected = new Set(state.selected);
-  const next: ConsentState = { ...state, pages: { ...state.pages }, focusTeam: team?.id ?? null };
+  const next: ConsentState = { ...state, pages: { ...state.pages }, ...(state.teamModes ? { teamModes: { ...state.teamModes } } : {}), focusTeam: team?.id ?? null };
 
   switch (action) {
     case 'search':
@@ -331,6 +372,18 @@ export type ApprovalCheck =
  * approval; nothing is dropped silently, and no refusal names an id.
  */
 export function validateApproval(form: URLSearchParams, teams: ConsentTeam[], requested: RequestedAccess): ApprovalCheck {
+  const basics = checkApprovalBasics(form, teams, requested);
+  if (!basics.ok) return basics;
+  if (basics.workspaceIds.length === 0) {
+    return { ok: false, status: 400, message: 'Choose at least one workspace.', showPage: true };
+  }
+  return basics;
+}
+
+type Refusal = { ok: false; status: 400 | 403; message: string; showPage: boolean };
+
+/** The checks every approval shares: reachable ids, the kind, write. */
+function checkApprovalBasics(form: URLSearchParams, teams: ConsentTeam[], requested: RequestedAccess): { ok: true; workspaceIds: string[]; actsAs: McpGrantActsAs; scopes: McpGrantScope[] } | Refusal {
   const reachable = allWorkspaceIds(teams);
   const ids = [...new Set(form.getAll('ws'))];
   if (ids.some((id) => !reachable.has(id))) {
@@ -353,10 +406,58 @@ export function validateApproval(form: URLSearchParams, teams: ConsentTeam[], re
     return { ok: false, status: 400, message: 'This app did not ask to write. Start the connection again.', showPage: false };
   }
 
-  if (ids.length === 0) {
-    return { ok: false, status: 400, message: 'Choose at least one workspace.', showPage: true };
-  }
   return { ok: true, workspaceIds: ids, actsAs: kind, scopes: write === 'on' ? ['read', 'write'] : ['read'] };
+}
+
+export type AccountApprovalCheck =
+  | { ok: true; teamIds: string[]; workspaceIds: string[]; actsAs: McpGrantActsAs; scopes: McpGrantScope[] }
+  | Refusal;
+
+/**
+ * Strict check of an account consent approval. On top of the shared checks:
+ * every team choice must name one of the offered teams (403 otherwise, a
+ * tampered or stale team id) with a known value, at most once. A team on all
+ * current and future workspaces becomes a whole-team grant; a team on
+ * specific workspaces contributes exactly its ticked workspaces and must have
+ * at least one. Ticks in a team that is not on specific workspaces are not
+ * part of the approval: the page hides them, and the mode is what the person
+ * chose. No refusal names an id.
+ */
+export function validateAccountApproval(form: URLSearchParams, teams: ConsentTeam[], requested: RequestedAccess): AccountApprovalCheck {
+  const basics = checkApprovalBasics(form, teams, requested);
+  if (!basics.ok) return basics;
+
+  const byId = new Map(teams.map((t) => [t.id, t]));
+  const modes = new Map<string, TeamChoice>();
+  for (const key of new Set([...form.keys()].filter((k) => k.startsWith(TEAM_MODE_FIELD)))) {
+    const id = key.slice(TEAM_MODE_FIELD.length);
+    if (!byId.has(id)) {
+      return { ok: false, status: 403, message: 'One of the chosen teams is not available to you. Start the connection again.', showPage: false };
+    }
+    const values = form.getAll(key);
+    if (values.length !== 1 || !isTeamChoice(values[0])) {
+      return { ok: false, status: 400, message: 'Unknown team access. Start the connection again.', showPage: false };
+    }
+    modes.set(id, values[0]);
+  }
+
+  const ticked = new Set(basics.workspaceIds);
+  const teamIds: string[] = [];
+  const workspaceIds: string[] = [];
+  for (const team of teams) {
+    const mode = modes.get(team.id) ?? 'none';
+    if (mode === 'all') teamIds.push(team.id);
+    if (mode !== 'specific') continue;
+    const chosen = team.workspaces.filter((w) => ticked.has(w.id)).map((w) => w.id);
+    if (chosen.length === 0) {
+      return { ok: false, status: 400, message: `Tick at least one workspace in ${team.name}, or choose all current and future workspaces.`, showPage: true };
+    }
+    workspaceIds.push(...chosen);
+  }
+  if (teamIds.length === 0 && workspaceIds.length === 0) {
+    return { ok: false, status: 400, message: 'Choose at least one team, and whether the app reaches all of its workspaces or specific ones.', showPage: true };
+  }
+  return { ok: true, teamIds, workspaceIds, actsAs: basics.actsAs, scopes: basics.scopes };
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -472,6 +573,20 @@ form:has(#perm-write:checked) .p-read { display: none; }
 .actions { display: flex; gap: 8px; }
 .actions .btn { flex: 1; min-height: 44px; font-size: var(--type-title); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.tmode { margin: 0 0 8px; }
+.tmode .option { margin-bottom: 6px; }
+.option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.team-ws { display: none; border-top: 1px solid var(--line-soft); padding-top: 4px; }
+details.team:has(.tm-specific:checked) .team-ws { display: block; }
+.m-all, .m-specific { display: none; }
+details.team:has(.tm-all:checked) .m-all, details.team:has(.tm-specific:checked) .m-specific { display: inline; }
+details.team:has(.tm-all:checked) .m-none, details.team:has(.tm-specific:checked) .m-none { display: none; }
+.chip.mode { color: var(--text-primary); }
+.sum-list { list-style: none; margin: 0; padding: 0; }
+.sum-row { display: none; overflow-wrap: anywhere; }
+.sum-row.on { display: block; }
+.sum-none { color: var(--text-muted); }
 `;
 
 export interface ConsentPageArgs {
@@ -568,6 +683,130 @@ ${teamActions ? `<div class="team-actions">${navButton(`team_all:${team.id}`, 'S
 </details>`;
 }
 
+const MODE_CHIP: Record<TeamChoice, string> = { none: 'no access', all: 'all workspaces', specific: 'specific' };
+
+/**
+ * One team on the account consent page: its access choice (no access, all
+ * current and future workspaces, specific workspaces) and, shown only while
+ * specific is chosen, its workspace list. The choice is a radio group per
+ * team, so choosing a team is always a separate, deliberate act from ticking
+ * a workspace. `index` names the team's radios and counter (ids stay short
+ * and never contain a team id).
+ */
+function renderAccountTeam(team: ConsentTeam, index: number, state: ConsentState, selected: Set<string>, carried: string[]): string {
+  const mode = state.teamModes?.[team.id] ?? 'none';
+  const shown = filteredWorkspaces(team, state.query);
+  const totalPages = Math.max(1, Math.ceil(shown.length / CONSENT_PAGE_SIZE));
+  const page = Math.min(Math.max(1, state.pages[team.id] ?? 1), totalPages);
+  const start = (page - 1) * CONSENT_PAGE_SIZE;
+  const visible = shown.slice(start, start + CONSENT_PAGE_SIZE);
+  const visibleIds = new Set(visible.map((w) => w.id));
+  for (const w of team.workspaces) if (selected.has(w.id) && !visibleIds.has(w.id)) carried.push(w.id);
+
+  const name = escapeHtml(team.name);
+  const ordinary = team.workspaces.filter((w) => !w.system).length;
+  const open = mode !== 'none' || state.focusTeam === team.id || state.query.trim() !== '' || page > 1;
+  const radio = (value: TeamChoice, title: string, detail: string) => `<label class="option"><input type="radio" class="tm-${value}" id="tm${index}-${value}" name="${TEAM_MODE_FIELD}${escapeHtml(team.id)}" value="${value}"${mode === value ? ' checked' : ''}><span><span class="t">${title}</span><span class="d" style="display:block">${detail}</span></span></label>`;
+
+  const rows = visible.map((w) => {
+    const detail = workspaceDetail(team, w);
+    const sub = detail ? `<span class="ws-sub">${escapeHtml(detail)}</span>` : '';
+    return `<label class="ws"><input type="checkbox" name="ws" value="${escapeHtml(w.id)}"${selected.has(w.id) ? ' checked' : ''}><span class="ws-text"><span>${escapeHtml(displayName(w))}</span>${sub}</span></label>`;
+  }).join('\n');
+  const list = shown.length > 0
+    ? rows
+    : `<p class="empty">No workspaces in ${name} match “${escapeHtml(state.query.trim())}”.</p>`;
+  const pager = totalPages > 1
+    ? `<div class="pager">${page > 1 ? navButton(`page:${team.id}:${page - 1}`, 'Previous', 'btn', `Previous page of ${team.name}`) : ''}<span class="meta mono">page ${page} of ${totalPages}</span>${page < totalPages ? navButton(`page:${team.id}:${page + 1}`, 'Next', 'btn', `Next page of ${team.name}`) : ''}</div>${hiddenInput('tpage', `${team.id}:${page}`)}`
+    : '';
+  const count = shown.length === team.workspaces.length
+    ? plural(team.workspaces.length, 'workspace', 'workspaces')
+    : `${shown.length} of ${team.workspaces.length}`;
+
+  return `<details class="team" data-team="${escapeHtml(team.id)}" data-i="${index}"${open ? ' open' : ''}>
+<summary><span class="team-head"><span class="team-name">${name}</span><span class="team-chips"><span class="chip">${escapeHtml(count)}</span><span class="chip">${escapeHtml(accessLabel(team.role).toLowerCase())}</span><span class="chip mode" data-mode-chip><span class="m-none">${MODE_CHIP.none}</span><span class="m-all">${MODE_CHIP.all}</span><span class="m-specific">${MODE_CHIP.specific}</span></span></span></span></summary>
+<div class="team-body">
+<fieldset class="tmode">
+<legend class="sr-only">What ${name} access covers</legend>
+${radio('none', 'No access', `Nothing in ${name}.`)}
+${radio('all', 'All current and future workspaces', `The ${escapeHtml(plural(ordinary, 'workspace', 'workspaces'))} in ${name} now, and any created in or moved into it later, with the permissions below. Internal workspaces are not included.`)}
+${radio('specific', 'Specific workspaces', `Only the workspaces you tick. Workspaces added to ${name} later are not included.`)}
+</fieldset>
+<div class="team-ws" data-team-ws>
+${list}
+<div class="team-actions">${navButton(`team_all:${team.id}`, 'Tick all listed', 'btn btn-quiet', `Tick every workspace listed in ${team.name}`)}${navButton(`team_clear:${team.id}`, 'Clear ticks', 'btn btn-quiet', `Clear the ticked workspaces in ${team.name}`)}</div>
+${pager}
+<p class="meta">Ticking every workspace listed covers the workspaces of now only.</p>
+</div>
+</div>
+</details>`;
+}
+
+/**
+ * The live summary of team choices: one row per team, shown only while that
+ * team has access (per-team `:has()` rules, so it follows the radios without
+ * script). A specific team's count is a CSS counter over its ticks plus the
+ * ticks carried from other pages.
+ */
+function teamSummary(teams: ConsentTeam[], state: ConsentState, carriedByTeam: Map<string, number>): { css: string; rows: string; reset: string } {
+  const css: string[] = [];
+  const rows: string[] = [];
+  const reset: string[] = [];
+  teams.forEach((team, i) => {
+    const ordinary = team.workspaces.filter((w) => !w.system).length;
+    const name = escapeHtml(team.name);
+    css.push(`form:has(#tm${i}-all:checked) .sum-row.s${i}.all, form:has(#tm${i}-specific:checked) .sum-row.s${i}.specific { display: block; }`);
+    css.push(`details[data-i="${i}"] input[name="ws"][type="checkbox"]:checked { counter-increment: c${i}; }`);
+    css.push(`.cnt${i}::before { content: counter(c${i}); }`);
+    reset.push(`c${i} ${carriedByTeam.get(team.id) ?? 0}`);
+    rows.push(`<li class="sum-row s${i} all" data-sum="${i}:all"><strong>${name}</strong>: all current and future workspaces, ${escapeHtml(plural(ordinary, 'workspace', 'workspaces'))} now</li>`);
+    rows.push(`<li class="sum-row s${i} specific" data-sum="${i}:specific"><strong>${name}</strong>: <span class="cnt${i} mono"></span> ticked, none added later</li>`);
+  });
+  return { css: css.join('\n'), rows: rows.join('\n'), reset: reset.join(' ') };
+}
+
+/** A team the search hides keeps its choice and a static summary row. */
+function hiddenTeamCarry(team: ConsentTeam, state: ConsentState, selected: Set<string>, carried: string[]): { inputs: string; row: string } {
+  const mode = state.teamModes?.[team.id] ?? 'none';
+  for (const w of team.workspaces) if (selected.has(w.id)) carried.push(w.id);
+  const inputs = mode === 'none' ? '' : hiddenInput(`${TEAM_MODE_FIELD}${team.id}`, mode);
+  const name = escapeHtml(team.name);
+  const ordinary = team.workspaces.filter((w) => !w.system).length;
+  const ticked = team.workspaces.filter((w) => selected.has(w.id)).length;
+  const row = mode === 'all'
+    ? `<li class="sum-row on" data-sum-static="all"><strong>${name}</strong>: all current and future workspaces, ${escapeHtml(plural(ordinary, 'workspace', 'workspaces'))} now</li>`
+    : mode === 'specific'
+      ? `<li class="sum-row on" data-sum-static="specific"><strong>${name}</strong>: ${ticked} ticked, none added later</li>`
+      : '';
+  return { inputs, row };
+}
+
+/** The account page's team blocks, the inputs carried for hidden teams, and the summary. */
+function renderAccountTeams(teams: ConsentTeam[], state: ConsentState, selected: Set<string>, carried: string[]) {
+  const blocks: string[] = [];
+  const carriedModes: string[] = [];
+  const staticRows: string[] = [];
+  const carriedByTeam = new Map<string, number>();
+  const shownTeams: ConsentTeam[] = [];
+  const searching = state.query.trim() !== '';
+  teams.forEach((team) => {
+    const before = carried.length;
+    // Searching hides a team whose name and workspaces all miss; its choice still rides along.
+    if (searching && filteredWorkspaces(team, state.query).length === 0) {
+      const c = hiddenTeamCarry(team, state, selected, carried);
+      if (c.inputs) carriedModes.push(c.inputs);
+      if (c.row) staticRows.push(c.row);
+      return;
+    }
+    blocks.push(renderAccountTeam(team, shownTeams.length, state, selected, carried));
+    carriedByTeam.set(team.id, carried.length - before);
+    shownTeams.push(team);
+  });
+  const summary = teamSummary(shownTeams, state, carriedByTeam);
+  const anyChosen = Object.values(state.teamModes ?? {}).some((m) => m !== 'none');
+  return { blocks, carriedModes, staticRows, summary, anyChosen };
+}
+
 /**
  * The consent page. A plain HTML form POSTing back to the authorize endpoint;
  * nothing is granted until the person presses Allow access. Every value is
@@ -579,7 +818,9 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
   const selected = new Set(state.selected);
   const safeClient = escapeHtml(args.clientName);
   const carried: string[] = [];
-  const teamBlocks = teams.map((t) => renderTeam(t, state, selected, carried, teams.length > 1)).filter(Boolean);
+  const runner = args.runner ?? null;
+  const account = runner ? null : renderAccountTeams(teams, state, selected, carried);
+  const teamBlocks = account ? account.blocks : teams.map((t) => renderTeam(t, state, selected, carried, teams.length > 1)).filter(Boolean);
   const totalWorkspaces = teams.reduce((n, t) => n + t.workspaces.length, 0);
 
   const hidden = args.hidden
@@ -600,11 +841,39 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
     ? `<label class="option"><input type="checkbox" id="perm-write" name="perm_write" value="on"${state.write ? ' checked' : ''}><span><span class="t">Write</span><span class="d" style="display:block">Create and update tasks, claim work, open pull requests, record progress and knowledge.</span></span></label>`
     : '';
 
-  const runner = args.runner ?? null;
   const searchActive = state.query.trim() !== '';
   const workspaceList = teamBlocks.length > 0
     ? teamBlocks.join('\n')
-    : `<p class="empty" data-empty="${searchActive ? 'search' : 'none'}">${searchActive ? `No workspaces match “${escapeHtml(state.query.trim())}”.` : 'No workspaces.'}</p>`;
+    : `<p class="empty" data-empty="${searchActive ? 'search' : 'none'}">${searchActive ? `No ${account ? 'teams or workspaces' : 'workspaces'} match “${escapeHtml(state.query.trim())}”.` : 'No workspaces.'}</p>`;
+
+  const picker = account
+    ? `<fieldset>
+<legend>Teams</legend>
+<p class="meta" style="margin:0 0 8px">For each team, choose No access, All current and future workspaces, or Specific workspaces.</p>
+<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Team or repo" aria-label="Search teams, workspaces and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
+${account.carriedModes.join('\n')}
+${workspaceList}
+<p class="meta">With All current and future workspaces, a workspace created in the team or moved into it later is included straight away, with the same permissions. A workspace moved out of the team, or a team you leave, is no longer reachable. You can change this in Settings, Connected apps.</p>
+</fieldset>`
+    : `<fieldset>
+<legend>Workspaces</legend>
+<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Name or repo" aria-label="Search workspaces, teams and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
+<div class="bulk">${navButton('select_all', searchActive ? 'Select all matches' : 'Select all', 'btn btn-quiet')}${navButton('clear_all', 'Clear all', 'btn btn-quiet')}</div>
+${workspaceList}
+<p class="meta">${runner ? escapeHtml(runner.footnote) : ''}</p>
+</fieldset>`;
+
+  const reach = account
+    ? `<dt>Teams</dt><dd><ul class="sum-list" data-summary="teams">
+${account.summary.rows}
+${account.staticRows.join('\n')}
+</ul>${account.anyChosen ? '' : '<span class="sum-none" data-sum-none>No team chosen yet.</span>'}</dd>
+`
+    : `<dt>Selected</dt><dd><span class="count mono"></span> of ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}</dd>
+`;
+  const formStyle = account
+    ? `--carried: ${carried.length}; counter-reset: ws ${carried.length}${account.summary.reset ? ` ${account.summary.reset}` : ''}`
+    : `--carried: ${carried.length}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -612,23 +881,17 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
 <meta charset="utf-8">
 <title>${runner ? escapeHtml(runner.title) : `Authorize ${safeClient}`}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>${CONSENT_CSS}</style>
+<style>${CONSENT_CSS}${account ? `\n.sum-none { display: block; }\nform:has(.tm-all:checked, .tm-specific:checked) .sum-none { display: none; }\n${account.summary.css}` : ''}</style>
 </head>
 <body>
 <main class="wrap">
 ${runner ? `<div class="ident"><h1>${escapeHtml(runner.title)}</h1></div>` : clientHeader(args.clientName, args.clientVerified === true, args.redirectHost)}
 <p class="lede">${runner ? escapeHtml(runner.lede) : `Choose the teams and workspaces ${safeClient} can access.`}</p>
 ${args.error ? `<div class="notice-err" role="alert">${escapeHtml(args.error)}</div>` : ''}
-<form method="post" action="${escapeHtml(args.action ?? '/api/oauth/authorize')}" style="--carried: ${carried.length}" data-consent="${runner ? 'runner' : 'account'}">
+<form method="post" action="${escapeHtml(args.action ?? '/api/oauth/authorize')}" style="${formStyle}" data-consent="${runner ? 'runner' : 'account'}">
 ${hidden}
 ${carriedInputs}
-<fieldset>
-<legend>Workspaces</legend>
-<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Name or repo" aria-label="Search workspaces, teams and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
-<div class="bulk">${navButton('select_all', searchActive ? 'Select all matches' : 'Select all', 'btn btn-quiet')}${navButton('clear_all', 'Clear all', 'btn btn-quiet')}</div>
-${workspaceList}
-<p class="meta">${runner ? escapeHtml(runner.footnote) : 'Access covers the workspaces ticked here. Workspaces created later need adding in Settings.'}</p>
-</fieldset>
+${picker}
 ${runner ? '' : `<fieldset>
 <legend>Permissions</legend>
 <div class="option off"><input type="checkbox" checked disabled aria-label="Read, always included"><span><span class="t">Read</span><span class="d" style="display:block">See tasks, missions, artifacts, pull requests and knowledge.</span></span></div>
@@ -636,10 +899,9 @@ ${writeOption}
 <p class="meta">Admin actions work only where you are a team owner or admin.</p>
 </fieldset>
 ${kind}`}
-<div class="decision sticky" aria-live="polite">
+<div class="decision sticky" aria-live="polite" aria-label="Summary">
 <dl>
-<dt>Selected</dt><dd><span class="count mono"></span> of ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}</dd>
-${runner ? '' : `<dt>Can</dt><dd><span class="p-read">read</span><span class="p-write">read and write</span>, <span class="k-agent">as your agent</span><span class="k-person">as you</span></dd>\n`}<dt>Returns to</dt><dd class="mono">${escapeHtml(runner ? runner.returnsTo : args.redirectHost)}</dd>
+${reach}${runner ? '' : `<dt>Can</dt><dd><span class="p-read">read</span><span class="p-write">read and write</span>, <span class="k-agent">as your agent</span><span class="k-person">as you</span></dd>\n`}<dt>Returns to</dt><dd class="mono">${escapeHtml(runner ? runner.returnsTo : args.redirectHost)}</dd>
 </dl>
 <div class="actions">
 <button class="btn" type="submit" name="decision" value="deny">Cancel</button>
@@ -652,11 +914,28 @@ ${runner ? '' : `<dt>Can</dt><dd><span class="p-read">read</span><span class="p-
 </html>`;
 }
 
+/** One team of a new grant, for the confirmation line. */
+export interface GrantedTeamSummary {
+  name: string;
+  mode: TeamAccessMode;
+  /** Workspaces reached there now. */
+  count: number;
+}
+
+/** "all current and future workspaces in Alpha (12 now) and 2 workspaces in Beta" */
+export function describeGrantedTeams(teams: GrantedTeamSummary[]): string {
+  const parts = teams.map((t) => (t.mode === 'all'
+    ? `all current and future workspaces in ${t.name} (${t.count} now)`
+    : `${plural(t.count, 'workspace', 'workspaces')} in ${t.name}`));
+  if (parts.length <= 1) return parts[0] ?? 'no workspace';
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
 /** After approval, before the code redirect: what was granted, then back to the client. */
-export function renderGrantInterstitial(args: { clientName: string; redirectUrl: string; workspaceCount: number; actsAs: McpGrantActsAs }): string {
+export function renderGrantInterstitial(args: { clientName: string; redirectUrl: string; teams: GrantedTeamSummary[]; actsAs: McpGrantActsAs }): string {
   const safeClient = escapeHtml(args.clientName);
   const safeUrl = escapeHtml(args.redirectUrl);
-  const reach = escapeHtml(plural(args.workspaceCount, 'workspace', 'workspaces'));
+  const reach = escapeHtml(describeGrantedTeams(args.teams));
   return `<!doctype html>
 <html lang="en">
 <head>

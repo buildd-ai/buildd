@@ -232,6 +232,7 @@ describe('GET /api/oauth/authorize — resource routing', () => {
     registeredUris = ['https://client.example.com/callback', 'https://chatgpt.com/connector_platform_oauth_redirect'];
     authCodeInserts = 0;
     grantsCreated = [];
+    lastCode = null;
     memberRole = 'admin';
   });
 
@@ -280,22 +281,62 @@ describe('GET /api/oauth/authorize — resource routing', () => {
     expect(authCodeInserts).toBe(0);
   });
 
-  it('approving creates a grant of exactly the ticked workspaces and a grant-bound code', async () => {
+  const accountPost = async (pairs: Array<[string, string]>) => {
     const page = await GET(authorizeRequest('https://client.example.com/callback', { resource: 'https://buildd.dev/api/mcp' }));
     const fields = consentFields(await page.text());
     const body = new URLSearchParams({ ...fields, decision: 'approve' });
-    body.append('ws', WS);
-    body.append('ws', OTHER_WS);
-    const res = await POST(new NextRequest('https://buildd.dev/api/oauth/authorize', {
+    for (const [k, v] of pairs) body.append(k, v);
+    return POST(new NextRequest('https://buildd.dev/api/oauth/authorize', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://buildd.dev' },
       body: body.toString(),
     }));
+  };
+
+  it('approving specific workspaces creates a grant of exactly the ticked ones and a grant-bound code', async () => {
+    const res = await accountPost([['tmode.team-1', 'specific'], ['tmode.team-2', 'specific'], ['ws', WS], ['ws', OTHER_WS]]);
     expect(res.status).toBe(200);
     expect(grantsCreated).toHaveLength(1);
     expect((grantsCreated[0].workspaceIds as string[]).sort()).toEqual([OTHER_WS, WS].sort());
+    expect(grantsCreated[0].teamIds).toEqual([]);
     expect(grantsCreated[0].actsAs).toBe('agent');
     expect(lastCode?.grantId).toBe('grant-1');
+  });
+
+  it('a team chosen with its default, all current and future workspaces, is a whole-team grant', async () => {
+    const res = await accountPost([['tmode.team-1', 'all'], ['tmode.team-2', 'none']]);
+    expect(res.status).toBe(200);
+    expect(grantsCreated).toHaveLength(1);
+    expect(grantsCreated[0].teamIds).toEqual(['team-1']);
+    expect(grantsCreated[0].workspaceIds).toEqual([]);
+    // the confirmation says the reach grows, not a fixed count
+    expect(await res.text()).toContain('all current and future workspaces in Acme (1 now)');
+  });
+
+  it('opting a team out of future workspaces grants only its ticked workspaces', async () => {
+    const res = await accountPost([['tmode.team-1', 'specific'], ['ws', WS], ['tmode.team-2', 'all']]);
+    expect(res.status).toBe(200);
+    expect(grantsCreated[0].teamIds).toEqual(['team-2']);
+    expect(grantsCreated[0].workspaceIds).toEqual([WS]);
+  });
+
+  it('refuses a team the person is not on, without naming it, and grants nothing', async () => {
+    const forged = 'f0f0f0f0-0000-4000-8000-000000000000';
+    const res = await accountPost([['tmode.team-1', 'all'], [`tmode.${forged}`, 'all']]);
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain(forged);
+    expect(grantsCreated).toHaveLength(0);
+    expect(lastCode).toBeNull();
+  });
+
+  it('asks again when a team is on specific workspaces with none ticked, or no team is chosen', async () => {
+    const empty = await accountPost([['tmode.team-1', 'specific']]);
+    expect(empty.status).toBe(400);
+    expect(await empty.text()).toContain('Tick at least one workspace in Acme');
+    const none = await accountPost([['ws', WS]]);
+    expect(none.status).toBe(400);
+    expect(await none.text()).toContain('Choose at least one team');
+    expect(grantsCreated).toHaveLength(0);
   });
 });
 
