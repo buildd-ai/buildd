@@ -190,6 +190,7 @@ import {
   GENUINELY_BLOCKED_RETRY_OPTION,
   isBackgroundJobOutstanding,
   lastToolWasDeniedByRunner,
+  SESSION_END_LABEL_TEXT,
   SESSION_END_PUSH_TEXT,
   type SessionEndLabel,
 } from './session-end-classification.js';
@@ -4044,8 +4045,8 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${gateReply?.disposition ?? disposition}`, worker.taskId);
     const base: WaitingFor = {
       type: 'question',
-      prompt: 'This session ended without delivering anything, and nothing here decided it for you.',
-      context: `Classified as: ${label}. ${note}`.trim(),
+      prompt: 'Ended with nothing delivered',
+      context: `${SESSION_END_LABEL_TEXT[label]}. ${note}`.trim(),
     };
     // The gate's own disposition when it answered (so a recovered blocker is
     // not admitted to Needs You); with no reply the server re-checks the park.
@@ -4121,7 +4122,7 @@ export class WorkerManager {
       action: 'park',
       disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
       reply,
-      text: reply.reason || (reply.disposition === 'hold' ? 'Not sent yet: it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
+      text: reply.reason || (reply.disposition === 'hold' ? 'Held: not urgent enough to interrupt anyone.' : 'Needs a person.'),
     };
   }
 
@@ -6252,7 +6253,7 @@ export class WorkerManager {
           const lastLabel: SessionEndLabel = worker.sessionEndPushes?.[worker.sessionEndPushes.length - 1]?.label ?? 'genuinely_blocked';
           await this.parkSessionEnd(
             worker, lastLabel, 'ask',
-            `This session used its ${SESSION_END_MAX_PUSHES} pushes (${(worker.sessionEndPushes ?? []).map(p => p.label).join(', ')}) and still has nothing delivered.`,
+            `Used all ${SESSION_END_MAX_PUSHES} pushes. Nothing delivered.`,
           );
           return;
         }
