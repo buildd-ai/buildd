@@ -60,7 +60,8 @@ describe('the open-PR status sweep', () => {
 
     const r = await sweep(w);
     expect(r).toMatchObject({ checked: 1, republished: 1, published: 0, errors: 0, coverage: { verdict: 'covered' } });
-    expect(await shown(w, head)).toMatchObject({ state: 'success' });
+    // Approved, CI not yet read at this head: the kernel's answer is pending, never success.
+    expect(await shown(w, head)).toMatchObject({ state: 'pending', description: expect.stringContaining('waiting for CI') });
     const version = (await w.delivery(pr)).version;
     const rows = await q<{ status: string }>(sql`SELECT status FROM workflow_effects WHERE dedupe_key = ${republishKey(pr.deliveryId, version)}`);
     expect(rows.map((x) => x.status)).toEqual(['done']);

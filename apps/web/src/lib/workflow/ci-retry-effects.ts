@@ -14,6 +14,7 @@
  *    now an effect of its own instead of work after the response.
  *  - `ciEscalate` (`Escalate`, family `ci`): a person owns the red PR.
  */
+import { liveRefreshConflictTaskFor, refreshOwnerNote } from './refresh-task-owner';
 import { desc, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -68,7 +69,11 @@ export const ciFixWork: WorkBuilder = async (req) => {
   const coordinationOwner = isCoordinationOwner(owner as { kind?: string | null; category?: string | null });
   const identity = { ...inherited, roleSlug: !inherited.roleSlug || coordinationOwner ? REPAIR_BUILDER_ROLE : inherited.roleSlug, ...(coordinationOwner ? { kind: 'engineering' as const } : {}) };
   const pull = await githubApi(repo.installationId, `/repos/${repoFullName}/pulls/${prNumber}`).catch(() => null) as { head?: { ref?: string }; base?: { ref?: string } } | null;
-  const prRefs = pull?.head?.ref ? { headRef: pull.head.ref, baseRef: pull.base?.ref ?? null } : null;
+  // e2ea3764: never filed without the PR's head as GitHub names it. Without that stamp the runner
+  // resumes the worker row's branch, which need not be the PR head; missing on the remote, the fix
+  // was cut from trunk and could change nothing on the PR. Thrown, the effect retries with backoff.
+  if (!pull?.head?.ref) throw new Error(`PR #${prNumber}'s head branch is unreadable; a CI fix is not filed without it`);
+  const prRefs = { headRef: pull.head.ref, baseRef: pull.base?.ref ?? null };
   const kernelContext = { workflowAttemptId: req.lineage.attemptId, prNumber, headSha };
   const drift = isSchemaDriftFailure(ciLogs.failedJobNames);
 
@@ -94,6 +99,8 @@ export const ciFixWork: WorkBuilder = async (req) => {
       workspaceMaxCiRetries: Math.max(maxAttempts, attemptNo),
     });
   if (!built) return { skipped: 'not_buildable' };
+  const refreshTask = await liveRefreshConflictTaskFor(req.workspaceId, prRefs?.headRef);
+  if (refreshTask) built.description += refreshOwnerNote(refreshTask);
 
   return {
     workspace,

@@ -146,6 +146,7 @@ describe('readRedChecks with the PR (R-3 not-this-PR rules)', () => {
     const record = await readRedChecks(gh, 'o/r', 'sha1', null, now, { number: 5 });
     if (!record || record === 'unchanged') throw new Error('expected a record');
     expect(record.jobs[0].rule).toBe('unrelated_to_diff');
+    expect(record.jobs[0].baseGreen).toBe(true);
     expect(record.cause).toBe('flake');
   });
 

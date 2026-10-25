@@ -58,9 +58,38 @@ describe('design actions', () => {
     expect(out).toContain('revision 3');
   });
 
-  it('a worker token may call them: store and attach need tasks:write, list needs tasks:read', () => {
+  it('manage_designs list shows a screen\'s kind and code (AC-11)', async () => {
+    const list = recording({ designs: [{ id: D, title: 'T', revision: 1, screens: [
+      { id: 'c-row', name: 'Row', viewport: '360x120', kind: 'component', code: 'apps/web/src/components/X.tsx' },
+      { id: 'home', name: 'Home', viewport: '1440x900' },
+    ] }] });
+    const out = await run(list.api, 'manage_designs', { action: 'list', missionId: M });
+    expect(out).toContain('c-row (component, apps/web/src/components/X.tsx)');
+    expect(out).toContain('home');
+    expect(out).not.toContain('home (');
+  });
+
+  it('manage_designs screen reads one board of one revision: its source and a render at its viewport (AC-12)', async () => {
+    const reply = recording({
+      design: { id: D, title: 'Delivery', revision: 2 },
+      screen: { id: 'c-row', name: 'Row', viewport: '360x120', kind: 'component', code: 'apps/web/src/components/X.tsx' },
+      source: { html: '<!doctype html><section data-screen="c-row">Row board</section>', bytes: 60, truncated: false },
+      render: { url: 'https://storage.example/d.html?sig=1#c-row', viewport: '360x120', page: `/app/artifacts/${D}?screen=c-row&revision=2` },
+    });
+    const out = await run(reply.api, 'manage_designs', { action: 'screen', designId: D, revision: 2, screenId: 'c-row' });
+    expect(reply.calls[0]).toMatchObject({ path: `/api/artifacts/designs/${D}/screens/c-row?revision=2`, method: 'GET' });
+    expect(out).toContain('Row board');
+    expect(out).toContain('https://storage.example/d.html?sig=1#c-row');
+    expect(out).toContain('360x120');
+    expect(out).toContain('component');
+    expect(out).toContain('apps/web/src/components/X.tsx');
+    await expect(run(reply.api, 'manage_designs', { action: 'screen', designId: D })).rejects.toThrow('screenId is required');
+  });
+
+  it('a worker token may call them: store and attach need tasks:write, list and screen need tasks:read', () => {
     for (const a of ['store_design', 'manage_designs']) expect(requiredScopeForAction(a)).toBe('tasks:write');
     expect(requiredScopeForAction('manage_designs', { action: 'list' })).toBe('tasks:read');
+    expect(requiredScopeForAction('manage_designs', { action: 'screen' })).toBe('tasks:read');
   });
 
   it('get_task lists attached designs with their screen names and sizes', async () => {

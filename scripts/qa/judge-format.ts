@@ -71,6 +71,12 @@ export type DesignCheck = {
   criteria: Array<{ id: string; text?: string }>;
   /** The artifact viewer at this screen and revision. */
   designHref?: string;
+  /** `component`: "built" is the component's dev fixture, not a page (R-17). Absent from an older design-captures.json: a page. */
+  kind?: 'component' | 'page';
+  /** The dev fixture URL a component screen was compared with. */
+  fixture?: string;
+  /** The repo path of the code component the screen specifies. */
+  code?: string;
 };
 export type JudgeInput = {
   routes: JudgeInputRoute[];
@@ -85,6 +91,7 @@ export const DESIGN_JUDGE_INSTRUCTIONS = [
   'Compare them for the differences that matter to the listed criteria: layout, content order, words and states shown (which cards, rows, controls and states are present, in what order, with what text). Judge not pixels: colour shades, fonts, spacing of a few pixels, placeholder or scrubbed text, and a different number of rows of the same kind are not differences.',
   'Write each in verdicts/<route id>.json under "designChecks": [{"screen": "<screen id>", "verdict": "pass|fail|unsure", "reason": "<one sentence citing the screen id and what you saw>", "differences": [{"kind": "layout|order|words|state", "detail": "<what differs>"}]}].',
   '"pass": the built page shows what the design shows for these criteria. "fail": a difference above. "unsure": the capture cannot show it (wrong state, cut off).',
+  'A check with "kind": "component" compares one component, so "built" is its dev fixture at the screen\'s width: judge that component only, not the page around it, and name the screen id and the fixture URL ("fixture") in the reason.',
 ].join(' ');
 
 /** What the judge writes to verdicts/<id>.json. */
@@ -105,6 +112,8 @@ export type DesignVerdict = {
   builtImage?: string;
   sideBySide?: string;
   designHref?: string;
+  kind?: 'component' | 'page';
+  fixture?: string;
 };
 
 export type ExpectationVerdict = {
@@ -162,6 +171,9 @@ function designChecksFor(captureId: string, judgeable: boolean, design: DesignCa
         return text ? { id, text: clip(text) } : { id };
       }),
       ...(shot?.href ? { designHref: shot.href } : {}),
+      ...(p.kind ? { kind: p.kind } : {}),
+      ...(p.fixture ? { fixture: p.fixture } : {}),
+      ...(p.code ? { code: p.code } : {}),
     };
   });
 }
@@ -218,6 +230,8 @@ function designVerdicts(r: JudgeInputRoute, v: RawVerdict | undefined): DesignVe
       ...(check.built ? { builtImage: check.built } : {}),
       ...(check.sideBySide ? { sideBySide: check.sideBySide } : {}),
       ...(check.designHref ? { designHref: check.designHref } : {}),
+      ...(check.kind ? { kind: check.kind } : {}),
+      ...(check.fixture ? { fixture: check.fixture } : {}),
     };
   });
 }
@@ -311,12 +325,12 @@ export function renderReport(verdicts: RouteVerdict[]): string {
       report += `#### Design vs built\n\n`;
       for (const d of v.design) {
         const icon = d.verdict === 'MATCHES-SPEC' ? '✅' : d.verdict === 'CONTRADICTED' ? '🔴' : '⚠️';
-        report += `${icon} **${d.screen}**${d.criteria.length ? ` (${d.criteria.join(', ')})` : ''} — \`${d.verdict}\`${d.designHref ? ` · [open the design screen](${d.designHref})` : ''}\n`;
+        report += `${icon} **${d.screen}**${d.criteria.length ? ` (${d.criteria.join(', ')})` : ''} — \`${d.verdict}\`${d.fixture ? ` · component, on fixture [${d.fixture}](${d.fixture})` : ''}${d.designHref ? ` · [open the design screen](${d.designHref})` : ''}\n`;
         report += `> ${d.evidence}\n\n`;
         for (const x of d.differences) report += `- ${x.kind}: ${x.detail}\n`;
         if (d.differences.length) report += `\n`;
         if (d.designImage || d.builtImage) {
-          report += `| Design · ${d.screen} | Built · ${v.id} |\n|---|---|\n`;
+          report += `| Design · ${d.screen} | Built · ${d.fixture ? `fixture ${d.fixture}` : v.id} |\n|---|---|\n`;
           report += `| ${d.designImage ? `![Design · ${d.screen}](${d.designImage})` : '_not rendered_'} | ${d.builtImage ? `![Built · ${v.id}](${d.builtImage})` : '_not captured_'} |\n\n`;
         }
       }

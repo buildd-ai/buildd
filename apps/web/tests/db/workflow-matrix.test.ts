@@ -138,6 +138,8 @@ async function fakeGithubApi(_installationId: number, path: string, opts?: Reque
   }
   if (ghApi && method === 'GET' && !/\/issues\//.test(path)) { const out = ghApi(path); if (out !== undefined) return out; }
   if (!/\/issues\//.test(path)) {
+    // The PR itself names its head branch: a CI fix is never filed without it (e2ea3764).
+    if (method === 'GET' && new RegExp(`^/repos/${REPO}/pulls/\\d+$`).test(path)) return { head: { ref: 'feat/matrix', sha: gh.head }, base: { ref: gh.baseRef ?? 'dev' } };
     if (method === 'GET') return null;
     const body = opts?.body ? JSON.parse(String(opts.body)) : null;
     ghWrites.push({ path, method, body });
@@ -1026,12 +1028,13 @@ describe('S9–S15', () => {
     expect(mergeCalls).toEqual([{ prNumber: o.prNumber, method: 'squash', sha: 'H1' }]);
   });
 
-  test('S3b (buildd/landing on the host): the status follows the delivery, published through the GitHub App: pending while review runs, success once approved', async () => {
+  test('S3b (buildd/landing on the host): the status follows the delivery, published through the GitHub App: pending while review runs, and while CI has not read green once approved', async () => {
     const o = await openAndHandOn();
     expect(statusWrites.at(-1)).toMatchObject({ sha: 'H1', state: 'pending' });
     expect(statusWrites.some((w) => w.state === 'success')).toBe(false);
     await verdict(o, 'approve');
-    expect(statusWrites.at(-1)).toEqual({ sha: 'H1', state: 'success', description: 'Ready to merge: H1 approved by review' });
+    // aa415afd: approved is not "Ready to merge" until CI at the head reads green.
+    expect(statusWrites.at(-1)).toEqual({ sha: 'H1', state: 'pending', description: 'Approved, waiting to merge: H1 approved by review; waiting for CI on H1' });
     const fx = (await effects(o.deliveryId)).filter((e) => e.kind === 'publish_landing_status');
     expect(fx.every((e) => e.status === 'done')).toBe(true);
     expect(fx.filter((e) => e.outcome === 'skipped:older_version').length + fx.filter((e) => String(e.outcome).startsWith('ok:')).length).toBe(fx.length);
@@ -1914,11 +1917,12 @@ describe('S23 — CI provenance', () => {
     const o = await openAndHandOn();
     const max = 2;
     const t1 = await ciRepairing(o, max);
-    await endCi(t1, 'failed');
+    // 'lost' (not 'failed'): a failed fix on an unmoved head escalates as ci_unfixed_head instead of re-filing.
+    await endCi(t1, 'lost');
     const [, second] = await tasksOf(o.deliveryId, 'ci_fix');
     const t2 = (await taskRow(second.id)).task;
     expect(await seam.claimFix(t2, deps)).toEqual({ action: 'proceed' });
-    await endCi(t2, 'failed');
+    await endCi(t2, 'lost');
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'ci_exhausted' });
     expect(ciEscalations.length).toBe(1);
     // The sweep coming back changes nothing.

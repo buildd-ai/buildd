@@ -1,10 +1,12 @@
 import { githubApi } from '@/lib/github';
 import {
   classifyPullRequestMigrations,
+  definedDbObjects,
   getMigrationNumber,
   isGeneratedMigrationPath,
   isLegacyMigrationPath,
   type MigrationCollision,
+  type KnownDbObjects,
   type MigrationSafety,
   type OpenPullRequestMigration,
   type PullRequestMigrationFile,
@@ -63,17 +65,44 @@ async function resolveBaseSha(
   repoFullName: string,
   prNumber: number,
   baseRef: string | null | undefined,
-): Promise<string | undefined> {
+): Promise<{ ref?: string; sha?: string }> {
+  let ref = baseRef ?? undefined;
   try {
-    let ref = baseRef ?? undefined;
     if (!ref) {
       const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
       ref = typeof pr?.base?.ref === 'string' ? pr.base.ref : undefined;
     }
-    if (!ref) return undefined;
-    const encodedRef = ref.split('/').map(encodeURIComponent).join('/');
-    const data = await githubApi(installationId, `/repos/${repoFullName}/git/ref/heads/${encodedRef}`);
-    return typeof data?.object?.sha === 'string' ? data.object.sha : undefined;
+    return { ref, sha: ref ? await branchTip(installationId, repoFullName, ref) : undefined };
+  } catch {
+    return { ref };
+  }
+}
+
+async function branchTip(installationId: number, repoFullName: string, ref: string): Promise<string | undefined> {
+  const encodedRef = ref.split('/').map(encodeURIComponent).join('/');
+  const data = await githubApi(installationId, `/repos/${repoFullName}/git/ref/heads/${encodedRef}`);
+  return typeof data?.object?.sha === 'string' ? data.object.sha : undefined;
+}
+
+/**
+ * Trunk's current tip, when the PR targets some other branch (a mission
+ * integration branch). Trunk is `trunkRef`, else the repo's default branch.
+ * Undefined when the PR targets trunk itself or trunk can't be read.
+ */
+async function resolveTrunkSha(
+  installationId: number,
+  repoFullName: string,
+  trunkRef: string | null | undefined,
+  baseRef: string | undefined,
+): Promise<string | undefined> {
+  try {
+    let ref = trunkRef ?? undefined;
+    if (!ref) {
+      const repo = await githubApi(installationId, `/repos/${repoFullName}`);
+      ref = typeof repo?.default_branch === 'string' ? repo.default_branch : undefined;
+    }
+    if (!ref || !baseRef || ref === baseRef) return undefined;
+    return await branchTip(installationId, repoFullName, ref);
   } catch {
     return undefined;
   }
@@ -154,8 +183,48 @@ async function migrationNamesAt(
   }
 }
 
+/** SQL that only the base's function/trigger catalogue can classify (see `classifyMigrationSql`). */
+const ROUTINE_REDEFINITION = /\bCREATE\s+OR\s+REPLACE\s+(?:FUNCTION|TRIGGER)\b|\bDROP\s+TRIGGER\b/i;
+/** Past this many base migrations the catalogue is not read, and the classifier fails closed. */
+const MAX_BASE_MIGRATIONS_READ = 400;
+
+/**
+ * The functions and triggers the base's migrations leave defined, read only
+ * when a novel migration replaces a routine or drops a trigger. Undefined when
+ * any file cannot be read: the classifier then fails closed, as it did before.
+ */
+async function baseDbObjects(
+  installationId: number,
+  repoFullName: string,
+  dir: string,
+  baseSha: string,
+): Promise<KnownDbObjects | undefined> {
+  const listing = await migrationNamesAt(installationId, repoFullName, dir, baseSha);
+  if (!listing) return undefined;
+  const paths = [
+    ...[...listing.legacy].sort().map((name) => `${dir}/${name}`),
+    ...[...listing.v1Folders].sort().map((folder) => `${dir}/${folder}/migration.sql`),
+  ];
+  if (paths.length > MAX_BASE_MIGRATIONS_READ) return undefined;
+  const sqls: string[] = [];
+  for (let i = 0; i < paths.length; i += 8) {
+    const batch = await Promise.all(
+      paths.slice(i, i + 8).map((path) => readFileAtRef(installationId, repoFullName, path, baseSha).catch(() => undefined)),
+    );
+    if (batch.some((sql) => sql === undefined)) return undefined;
+    sqls.push(...(batch as string[]));
+  }
+  return definedDbObjects(sqls);
+}
+
 function basenameOf(path: string): string {
   return path.split('/').at(-1) ?? path;
+}
+
+/** `drizzle/0001_x.sql` and `drizzle/<ts>_x/migration.sql` both live in `drizzle`. */
+function migrationsDirOf(path: string): string {
+  const parts = path.split('/');
+  return parts.slice(0, isLegacyMigrationPath(path) ? -1 : -2).join('/');
 }
 
 function numberOf(name: string): number {
@@ -200,6 +269,14 @@ async function inspectOnce(params: {
    * If the delta can't be read, the full PR file list is used, as before.
    */
   deltaBase?: string | null;
+  /**
+   * The workspace's trunk (e.g. `dev`); the repo's default branch when
+   * omitted. On a PR into any other branch, a migration whose post-image
+   * trunk already carries byte-for-byte (including a folder rename trunk
+   * made) arrived by merging trunk into a branch whose base is behind it,
+   * so it is inherited, not this PR's to classify.
+   */
+  trunkRef?: string | null;
   /**
    * Open PRs this PR replaces (`predecessorPrNumbers`): their migration slots
    * are not collisions. A successor must never be told to renumber around
@@ -256,13 +333,34 @@ async function inspectOnce(params: {
     }
   }
 
-  const baseSha = allMigrationFiles.length > 0
+  const base = allMigrationFiles.length > 0
     ? await resolveBaseSha(params.installationId, params.repoFullName, params.prNumber, usedDelta ? params.deltaBase : params.baseRef)
-    : undefined;
+    : {};
+  const baseSha = base.sha;
   const readOnBase = (path: string) =>
     baseSha
       ? readFileAtRef(params.installationId, params.repoFullName, path, baseSha).catch(() => undefined)
       : Promise.resolve(undefined);
+  // Trunk is read only for a migration the base does not already explain.
+  let trunkSha: Promise<string | undefined> | null = null;
+  const trunkTip = () =>
+    (trunkSha ??= resolveTrunkSha(params.installationId, params.repoFullName, params.trunkRef, base.ref));
+  const readOnTrunk = async (path: string) => {
+    const sha = await trunkTip();
+    return sha ? readFileAtRef(params.installationId, params.repoFullName, path, sha).catch(() => undefined) : undefined;
+  };
+  // Absence is proven by a listing that read, never by a read that failed.
+  const goneFromTrunk = async (path: string) => {
+    const sha = await trunkTip();
+    if (!sha || !isGeneratedMigrationPath(path)) return false;
+    const legacy = isLegacyMigrationPath(path);
+    const parts = path.split('/');
+    const listing = await migrationNamesAt(
+      params.installationId, params.repoFullName, parts.slice(0, legacy ? -1 : -2).join('/'), sha,
+    );
+    if (!listing) return false;
+    return legacy ? !listing.legacy.includes(parts.at(-1)!) : !listing.v1Folders.includes(parts.at(-2)!);
+  };
 
   // An integration refresh whose merge moved the mission's own migration to a
   // free index past trunk's (`bun run migrations:regenerate`, legacy layout only) shows a deletion
@@ -283,6 +381,22 @@ async function inspectOnce(params: {
     const own = filesWithContent.find((file) => file.filename === migration.filename)!;
     if (own.content === undefined) continue;
     if ((await readOnBase(migration.filename)) === own.content) inherited.add(migration.filename);
+  }
+  // A PR into a mission branch that is behind trunk lists whatever merging
+  // trunk brought in, a trunk-side folder rename included. Trunk holding the
+  // same bytes at the same path is the proof; a rename also needs trunk to
+  // have dropped the old path, or the PR deleted a migration trunk still runs.
+  if (!params.deltaBase) {
+    for (const migration of allMigrationFiles) {
+      if (inherited.has(migration.filename) || migration.status === 'removed') continue;
+      const own = filesWithContent.find((file) => file.filename === migration.filename)!;
+      if (own.content === undefined || (await readOnTrunk(migration.filename)) !== own.content) continue;
+      if (migration.status === 'renamed') {
+        const from = migration.previous_filename;
+        if (!from || !(await goneFromTrunk(from))) continue;
+      }
+      inherited.add(migration.filename);
+    }
   }
 
   const changedExistingMigration = allMigrationFiles.find(
@@ -376,6 +490,7 @@ async function inspectOnce(params: {
         // A path alone cannot prove inheritance: changed SQL in the same file
         // still occupies the same slot.
         if (own?.content !== undefined && (await readOnBase(path)) === own.content) continue;
+        if (inherited.has(path)) continue;
         openPullRequestMigrations.push({ path, prNumber: pull.number as number });
       }
     }
@@ -383,11 +498,12 @@ async function inspectOnce(params: {
     return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions', kind: 'uninspectable' };
   }
 
-  const verdict = classifyPullRequestMigrations(
-    filesWithContent.filter((file) => !inherited.has(file.filename) && !removed.has(file.filename)),
-    openPullRequestMigrations,
-    params.prNumber,
-  );
+  const own = filesWithContent.filter((file) => !inherited.has(file.filename) && !removed.has(file.filename));
+  const redefines = own.find((file) => file.content !== undefined && ROUTINE_REDEFINITION.test(file.content));
+  const existing = redefines && baseSha
+    ? await baseDbObjects(params.installationId, params.repoFullName, migrationsDirOf(redefines.filename), baseSha)
+    : undefined;
+  const verdict = classifyPullRequestMigrations(own, openPullRequestMigrations, params.prNumber, existing);
   // Destructive SQL, a mixed PR or unreadable SQL outranks a slot already
   // taken on the base: those still need their own handling.
   if (!verdict.safe && verdict.kind !== 'collision') return verdict;
@@ -407,8 +523,46 @@ async function inspectOnce(params: {
   if (baseSha && novelV1.length > 0) {
     const stale = await staleSnapshotParent(params, novelV1, baseSha);
     if (stale) return stale;
+    const fork = await forkedFromBase(params, novelV1, baseSha);
+    if (fork) return fork;
   }
   return verdict;
+}
+
+/**
+ * The folder-set twin of the stale-parent rule. That rule reads snapshot ids and
+ * lets the PR through when it cannot read one; this one compares only folder
+ * names, which one directory listing per side answers. A PR whose head holds
+ * folders the base lacks while the base holds folders the head lacks is a fork
+ * of the snapshot chain (the same test as `forkOf` in refresh-migration-fork.ts):
+ * a sibling migration landed after CI ran. Skipped when either listing is
+ * unreadable, as the stale-parent rule is.
+ */
+async function forkedFromBase(
+  params: { installationId: number; repoFullName: string; headSha: string },
+  novelV1: readonly string[],
+  baseSha: string,
+): Promise<MigrationSafety | null> {
+  const dir = novelV1[0]!.split('/').slice(0, -2).join('/');
+  const [head, base] = await Promise.all([
+    migrationNamesAt(params.installationId, params.repoFullName, dir, params.headSha),
+    migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha),
+  ]);
+  if (!head || !base) return null;
+  const onBase = new Set(base.v1Folders);
+  const onHead = new Set(head.v1Folders);
+  const headOnly = head.v1Folders.filter((f) => !onBase.has(f));
+  const baseOnly = base.v1Folders.filter((f) => !onHead.has(f));
+  if (headOnly.length === 0 || baseOnly.length === 0) return null;
+  return {
+    safe: false,
+    operationClass: 'CONTRACT',
+    kind: 'stale_parent',
+    reason:
+      `migration snapshot parent is no longer a leaf of the base: the base gained migration ${baseOnly.sort().join(', ')} ` +
+      `since this branch was cut, so the two snapshot chains fork. Rebase onto the base branch and run ` +
+      `bun run migrations:regenerate, then CI must run again`,
+  };
 }
 
 /**

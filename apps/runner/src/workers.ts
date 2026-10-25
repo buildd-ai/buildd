@@ -66,7 +66,7 @@ import {
   ContextBreaker,
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
-import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit } from './provider-limit';
+import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit, type LimitProvider } from './provider-limit';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
@@ -862,6 +862,9 @@ export class WorkerManager {
   private contextBreaker = new ContextBreaker();
   /** Providers this runner's login is at its limit on (provider-limit.ts): new work waits, running work finishes. */
   private providerLimits = new ProviderLimitHolds();
+  private startableProviders(): LimitProvider[] {
+    return this.codexAuth === 'none' ? ['claude'] : ['claude', 'codex'];
+  }
   // Distinct role-env gaps this runner has started workers with — one warning
   // per gap, and listed in getInternalState (/api/debug/internals).
   private roleEnvGapLog = new RoleEnvGapLog();
@@ -2271,13 +2274,6 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
-    // Every provider this runner can start on is at its login limit: poll when the first lifts.
-    if (this.providerLimits.allHeld()) {
-      const lift = this.providerLimits.nextLift();
-      if (lift !== null) this.scheduleResumeAt(lift, 'provider limit reset');
-      return [];
-    }
-
     let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
     // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
@@ -2681,7 +2677,11 @@ export class WorkerManager {
     this.noteProviderLimitOutcome();
     this.scheduleResumeAt(untilMs, 'provider limit reset');
     // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
-    if (this.providerLimits.allHeld()) {
+    // A runner with no Codex login of its own cannot start Codex work, so a held Claude login holds every claim:
+    // pause the poll (running sessions are untouched) until the first hold lifts.
+    if (this.providerLimits.allHeld(Date.now(), this.startableProviders())) {
+      this.claimsPaused = true;
+      this.claimsPausedUntil = Math.max(this.claimsPausedUntil, this.providerLimits.nextLift() ?? untilMs);
       this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
     } else {
       this.emit({ type: 'provider_limit', provider: limit.provider, pausedUntil: untilMs, kind: limit.kind });
@@ -3222,6 +3222,7 @@ export class WorkerManager {
         // so later steps (git stats, the prompt, parking) read the ref the
         // worktree really uses instead of re-deriving it.
         worker.worktreeBaseRef = setupResult.base;
+        worker.worktreeBaseSha = setupResult.baseSha;
         worker.resumedFrom = setupResult.resumed?.from;
         // The PR's base, which the path-claim sweep measures against. Read
         // after setup: a fallback to a fresh base has already cleared the
@@ -3849,7 +3850,7 @@ export class WorkerManager {
     // that ran — its work is not on GitHub, which is not the work failing.
     const handOff = isHandOffRefusal(refusal)
       ? handOffUnproven(
-        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha),
         worker.commits.length,
       )
       : null;
@@ -3953,7 +3954,7 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
     // No TASK_ERROR checkpoint: a parked question or a pause is not a failure,
     // and a "Task failed" milestone right after "Paused" read as one.
-    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
     // Mirrors the sibling non-abort branch's local 'waiting' state — the
     // session is gone here, but 'waiting' + no live session is already a
     // recognized local state elsewhere in this file.
@@ -6176,7 +6177,7 @@ export class WorkerManager {
         // backend and the claim breaker walls the seat for an hour.
         sessionLog(worker.id, 'error', 'session_budget_capped', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
         worker.status = 'error';
         worker.error = SESSION_BUDGET_CAP_ERROR;
         worker.currentAction = 'Session cost cap';
@@ -6279,7 +6280,7 @@ export class WorkerManager {
           error: errMsg,
           // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
           ...handOffUnproven(
-            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha),
             worker.commits.length,
           ),
           milestones: worker.milestones,
@@ -6361,7 +6362,7 @@ export class WorkerManager {
         // A clean completion proves the credential works — reset the auth-failure
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
 
         // B (write-back): After a successful OAuth Codex session, the CLI may have
         // silently refreshed the tokens. Read the auth.json we left in place
