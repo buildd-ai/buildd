@@ -88,14 +88,20 @@ function holderState(m: HealthQueueLaneMemberInput): string {
   return m.prNumber != null ? 'PR open' : 'Running';
 }
 
+/** The holder's StageMeter reading: an open PR is verifying, a live agent building, else not started. */
+function holderMeter(m: HealthQueueLaneMemberInput): NonNullable<HealthQueueLaneMember['meter']> {
+  if (m.prNumber != null) return { state: 'verify' };
+  return { state: m.status === 'in_progress' || m.status === 'assigned' ? 'build' : 'queued' };
+}
+
 function laneView(l: HealthQueueViewInput['lanes'][number], now: number): HealthQueueLane | null {
   if (l.members.length === 0) return null;
   const holderIn = l.members.find(m => m.holding) ?? null;
   const holder: HealthQueueLaneMember | null = holderIn
-    ? { taskId: holderIn.taskId, title: holderIn.title, position: null, state: holderState(holderIn), age: since(holderIn.since, now), prNumber: holderIn.prNumber }
+    ? { taskId: holderIn.taskId, title: holderIn.title, position: null, state: holderState(holderIn), meter: holderMeter(holderIn), age: since(holderIn.since, now), prNumber: holderIn.prNumber }
     : null;
   const waiters = l.members.filter(m => !m.holding).map((m, i): HealthQueueLaneMember => ({
-    taskId: m.taskId, title: m.title, position: i + 1, state: null, age: since(m.since, now), prNumber: m.prNumber,
+    taskId: m.taskId, title: m.title, position: i + 1, state: null, meter: null, age: since(m.since, now), prNumber: m.prNumber,
   }));
   return {
     workspaceId: l.workspaceId,
@@ -160,19 +166,23 @@ export function buildHealthQueueView(input: HealthQueueViewInput): HealthQueueRe
 
   const idle = Math.max(0, input.slots - input.teamBusy);
   let startsNow = idle;
+  // Claim order, as read (R-7, R-15): the first free slots go to the first rows.
   const readyRows = ready.slice(0, HEALTH_QUEUE_PAGE_SIZE).map(t => {
+    const row = { id: t.id, title: t.title, missionTitle: t.missionTitle, createdAt: t.createdAt };
     const noRunner = t.wait?.noRunnerReason ?? null;
-    if (noRunner) return { id: t.id, title: t.title, note: `No runner: ${noRunner}`, noRunner: true };
-    if (startsNow > 0) { startsNow -= 1; return { id: t.id, title: t.title, note: 'Starts now', noRunner: false }; }
-    return { id: t.id, title: t.title, note: 'Next free slot', noRunner: false };
+    if (noRunner) return { ...row, note: `No runner: ${noRunner}`, noRunner: true };
+    if (startsNow > 0) { startsNow -= 1; return { ...row, note: 'Starts now', noRunner: false }; }
+    return { ...row, note: 'Next free slot', noRunner: false };
   });
 
   const lanes = input.lanes.map(l => laneView(l, now)).filter((l): l is HealthQueueLane => !!l);
 
   // R-4: worst first. Idle slots while work could start, then stuck lanes.
   const alerts: string[] = [];
+  let idleAlert: HealthQueueResponse['idle'] = null;
   if (idle > 0 && ready.length > 0) {
     const causes = [...new Set(ready.map(t => t.wait?.noRunnerReason).filter((c): c is string => !!c))].slice(0, 2);
+    idleAlert = { slots: idle, tasks: ready.length, cause: causes.length ? causes.join(', ') : null };
     alerts.push(`${plural(idle, 'idle slot', 'idle slots')}, ${plural(ready.length, 'task could start', 'tasks could start')}${causes.length ? ` · ${causes.join(', ')}` : ''}`);
   }
   for (const l of lanes) if (l.stuckFor) alerts.push(`${l.name} lane stuck ${l.stuckFor}`);
@@ -187,6 +197,7 @@ export function buildHealthQueueView(input: HealthQueueViewInput): HealthQueueRe
       waitingByReason: byReason,
     },
     alert: alerts.length > 0 ? alerts.join(' · ') : null,
+    idle: idleAlert,
     lanes,
     waiting: { rows, filter: input.filter, page, pages, total: filtered.length },
     ready: readyRows,

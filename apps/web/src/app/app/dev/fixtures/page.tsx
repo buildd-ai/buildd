@@ -70,6 +70,7 @@ import StageMeterFixture from './StageMeterFixture';
 import DeliveryRowFixture from './DeliveryRowFixture';
 import YouStripPipelineFixture from './YouStripPipelineFixture';
 import DeliveryBarFixture from './DeliveryBarFixture';
+import HealthQueueFixture from './HealthQueueFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -109,6 +110,7 @@ import {
     YOU_STRIP_PIPELINE_FIXTURE_STATE,
     CHECK_ROW_FIXTURE_STATE,
     DELIVERY_BAR_FIXTURE_STATE,
+    HEALTH_QUEUE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -304,6 +306,9 @@ export default function DevFixturesPage() {
     }
     if (state === YOU_STRIP_PIPELINE_FIXTURE_STATE) {
         return <YouStripPipelineFixture />;
+    }
+    if (state === HEALTH_QUEUE_FIXTURE_STATE) {
+        return <HealthQueueFixture />;
     }
     if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
         return <DesignPreviewFixture />;

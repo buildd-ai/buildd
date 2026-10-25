@@ -10,14 +10,15 @@ export const dynamic = 'force-dynamic';
 /**
  * `/app/health/queue`: what is waiting across the team, why, and whether it
  * will start (spec "Health › Queue"). Every member of the active team sees
- * it. Reads `?workspace=`, `?mission=`, `?reason=` and `?page=`; the same
+ * it. Reads `?workspace=`, `?mission=`, `?reason=`, `?page=` and `?open=`; the same
  * read backs GET /api/health/queue.
  */
 export default async function HealthQueuePage({ searchParams }: { searchParams: Promise<{ workspace?: string; mission?: string; reason?: string; page?: string }> }) {
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
   const params = await searchParams;
-  const loaded = await loadHealthQueueFor(user.id, (await cookies()).get('buildd-team')?.value, params);
+  const now = new Date();
+  const loaded = await loadHealthQueueFor(user.id, (await cookies()).get('buildd-team')?.value, params, now);
   if (loaded.kind !== 'ok') {
     return (
       <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
@@ -30,5 +31,5 @@ export default async function HealthQueuePage({ searchParams }: { searchParams: 
       </div>
     );
   }
-  return <QueueClient view={loaded.view} workspaces={loaded.workspaces} workspace={loaded.workspace} mission={loaded.mission} />;
+  return <QueueClient view={loaded.view} workspaces={loaded.workspaces} workspace={loaded.workspace} mission={loaded.mission} now={now.getTime()} />;
 }

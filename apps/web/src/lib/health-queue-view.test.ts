@@ -45,6 +45,8 @@ describe('AC-2 and R-4: the alert line', () => {
   it('names idle slots and the cause when a ready task no runner serves', () => {
     const v = buildHealthQueueView(input({ slots: 3, teamBusy: 1, tasks: [task({ kind: 'slot', noRunnerReason: 'no reviewer runner online' })] }));
     expect(v.alert).toBe('2 idle slots, 1 task could start · no reviewer runner online');
+    // The shared IdleAlert's props: idle slots, tasks that could start, the cause.
+    expect(v.idle).toEqual({ slots: 2, tasks: 1, cause: 'no reviewer runner online' });
     expect(v.ready[0].note).toBe('No runner: no reviewer runner online');
   });
 
@@ -52,6 +54,7 @@ describe('AC-2 and R-4: the alert line', () => {
     expect(buildHealthQueueView(input({ slots: 2, teamBusy: 2, tasks: [task(slot), task(limit)] })).alert).toBeNull();
     // Idle slots with nothing that could start is not wrong either.
     expect(buildHealthQueueView(input({ slots: 4, teamBusy: 0, tasks: [task(limit)] })).alert).toBeNull();
+    expect(buildHealthQueueView(input({ slots: 4, teamBusy: 0, tasks: [task(limit)] })).idle).toBeNull();
   });
 
   it('a lane holder with no PR activity for 24h: the alert names the stuck lane (AC-4)', () => {
@@ -121,7 +124,8 @@ describe('AC-5, AC-6: lanes', () => {
     }));
     const lane = v.lanes[0];
     expect(lane.name).toBe('Schema');
-    expect(lane.holder).toMatchObject({ taskId: 'h', state: 'Running', age: '2h', position: null });
+    expect(lane.holder).toMatchObject({ taskId: 'h', state: 'Running', age: '2h', position: null, meter: { state: 'build' } });
+    expect(lane.waiters.every(w => w.meter === null)).toBe(true);
     expect(lane.waiters.map(w => [w.taskId, w.position])).toEqual([['w1', 1], ['w2', 2]]);
     expect(lane.stuckFor).toBeNull();
   });
@@ -133,6 +137,17 @@ describe('AC-5, AC-6: lanes', () => {
       ] }],
     }));
     expect(v.lanes[0].holder?.state).toBe('PR open');
+    // Its StageMeter is at Verify once its PR is open (R-8).
+    expect(v.lanes[0].holder?.meter).toEqual({ state: 'verify' });
+  });
+
+  it('a holder no agent is on yet sits queued on its meter', () => {
+    const v = buildHealthQueueView(input({
+      lanes: [{ workspaceId: 'ws-1', lane: 'migration', members: [
+        { taskId: 'h', title: 'Holder', holding: true, status: 'pending', prNumber: null, since: null, stuckSince: null },
+      ] }],
+    }));
+    expect(v.lanes[0].holder?.meter).toEqual({ state: 'queued' });
   });
 });
 
@@ -178,5 +193,15 @@ describe('reasons unread', () => {
     expect(v.tiles.ready).toBe(0);
     expect(v.ready).toEqual([]);
     expect(v.reasonsUnavailable).toBe(true);
+  });
+});
+
+describe('AC-14 and R-7: Queued rows in claim order', () => {
+  it('keep the read\'s order, with their mission and when they were filed', () => {
+    const rows = [task(slot, { title: 'C', missionTitle: 'Health' }), task(slot, { title: 'A' }), task(slot, { title: 'B' })];
+    const v = buildHealthQueueView(input({ slots: 1, teamBusy: 0, tasks: rows }));
+    expect(v.ready.map(r => r.title)).toEqual(['C', 'A', 'B']);
+    expect(v.ready[0]).toMatchObject({ missionTitle: 'Health', createdAt: rows[0].createdAt, note: 'Starts now' });
+    expect(v.ready.slice(1).map(r => r.note)).toEqual(['Next free slot', 'Next free slot']);
   });
 });

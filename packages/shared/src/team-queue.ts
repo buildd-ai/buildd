@@ -58,6 +58,10 @@ export interface HealthQueueWaitingRow {
 export interface HealthQueueReadyRow {
   id: string;
   title: string;
+  /** The mission's title; null for standalone work. */
+  missionTitle: string | null;
+  /** When it was filed (ISO): the row's time. */
+  createdAt: string;
   /** `Starts now`, `Next free slot`, or why no runner takes it. */
   note: string;
   noRunner: boolean;
@@ -77,6 +81,11 @@ export interface HealthQueueLaneMember {
   position: number | null;
   /** Holder: `Running` or `PR open`. Waiter: null. */
   state: string | null;
+  /**
+   * Holder: where its delivery is, for its StageMeter: building while its
+   * agent runs, verifying once its PR is open. Waiter: null.
+   */
+  meter: { state: 'build' | 'verify' | 'queued' } | null;
   /** How long it has held the lane, or waited in it. */
   age: string | null;
   prNumber: number | null;
@@ -97,6 +106,8 @@ export interface HealthQueueResponse {
   tiles: HealthQueueTiles;
   /** One line, worst first; null when nothing is wrong (R-4). */
   alert: string | null;
+  /** Idle team slots while tasks could start, for the shared IdleAlert; null when not both (R-4). */
+  idle: { slots: number; tasks: number; cause: string | null } | null;
   lanes: HealthQueueLane[];
   waiting: {
     rows: HealthQueueWaitingRow[];
