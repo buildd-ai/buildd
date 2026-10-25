@@ -200,7 +200,7 @@ describe('Delivery and Checks (I-22 to I-24)', () => {
   it('reads three rows in order, the current one marked, with no sentence or Open button', () => {
     act(() => root.render(<DeliveryChecks checks={[...checks]} delivery={{ ...delivery, prs: [...delivery.prs] }} timelineHref="/t" />));
     const rows = Array.from(document.querySelectorAll('[data-testid="mission-check"]'));
-    expect(rows.map(r => r.textContent)).toEqual(['Visual reviewSkipped0 screens · 90df389', 'Merge into devIn review#5701', 'ReleaseQueuedafter #5701']);
+    expect(rows.map(r => r.textContent)).toEqual(['Visual review0 screens · 90df389Skipped', 'Merge into dev#5701In review', 'Releaseafter #5701Queued']);
     expect(rows.map(r => r.getAttribute('data-current'))).toEqual([null, 'true', null]);
     const all = document.body.textContent!;
     expect(all).not.toMatch(/Open the PR|Open release|reviewer|view timeline|unmerged|completed|\(no PR\)/);

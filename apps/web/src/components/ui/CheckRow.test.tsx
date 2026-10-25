@@ -47,3 +47,15 @@ describe('CheckRow (spec 072de598 I-22, AC-29)', () => {
     expect(html('running')).not.toContain('aria-current');
   });
 });
+
+describe('CheckRow layout (design UiCheckRow)', () => {
+  it('puts the state word after the text, in mono, not beside the name', () => {
+    const h = html('running', { stateWord: 'In review' });
+    expect(h.indexOf('#5701')).toBeLessThan(h.indexOf('>In review<'));
+    expect(/<span class="[^"]*font-mono[^"]*">In review</.test(h)).toBe(true);
+  });
+
+  it('marks a desktop step', () => {
+    expect(html('queued', { steps: true })).toContain('data-steps="true"');
+  });
+});

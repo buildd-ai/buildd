@@ -49,30 +49,32 @@ export interface CheckRowProps {
   action?: ReactNode;
   /** The step the mission waits on, marked on the desktop steps. */
   current?: boolean;
+  /** Stack icon, text and state as a desktop step. */
+  steps?: boolean;
   className?: string;
 }
 
-export default function CheckRow({ name, status, stateWord, detail, href, action, current, className = '' }: CheckRowProps) {
+export default function CheckRow({ name, status, stateWord, detail, href, action, current, steps, className = '' }: CheckRowProps) {
   const word = stateWord ?? CHECK_STATE_WORD[status];
   const body = (
     <>
       <CheckIcon status={status} />
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="flex min-w-0 flex-wrap items-baseline gap-x-2.5">
-          <span className="min-w-0 font-medium text-text-primary">{name}</span>
-          <span className={`shrink-0 text-meta ${TONE[status]}`}>{word}</span>
-        </span>
+      <span className="flex min-w-0 flex-1 flex-col md:group-data-[steps]/check:w-full md:group-data-[steps]/check:flex-none">
+        <span className="min-w-0 font-medium text-text-primary [overflow-wrap:anywhere]">{name}</span>
         {detail && <span className="min-w-0 truncate font-mono text-meta text-text-muted">{detail}</span>}
       </span>
+      <span className={`shrink-0 font-mono text-meta ${TONE[status]}`}>{word}</span>
     </>
   );
-  const layout = 'flex min-h-11 min-w-0 items-center gap-x-2.5 py-1.5 text-body';
+  // Phone: icon, name over detail, state word right. Desktop steps: the same three stacked (design MissionChecksDesk).
+  const layout = 'flex min-h-11 min-w-0 items-center gap-x-2.5 py-1.5 text-body md:group-data-[steps]/check:flex-col md:group-data-[steps]/check:items-start md:group-data-[steps]/check:gap-y-2 md:group-data-[steps]/check:py-3';
   return (
     <div
       data-testid="check-row"
       data-status={status}
+      data-steps={steps || undefined}
       aria-current={current ? 'step' : undefined}
-      className={`relative flex min-w-0 items-center gap-x-3 px-3 py-1 ${current ? 'shadow-[inset_2px_0_0_var(--accent)]' : ''} ${className}`}
+      className={`group/check relative flex min-w-0 items-center gap-x-3 px-3 py-1 ${current ? 'shadow-[inset_2px_0_0_var(--accent)]' : ''} ${className}`}
     >
       {href
         ? <a href={href} className={`${layout} flex-1 after:absolute after:inset-0 after:content-[''] hover:text-text-primary`}>{body}</a>

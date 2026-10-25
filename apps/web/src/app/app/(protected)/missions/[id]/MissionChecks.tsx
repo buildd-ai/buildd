@@ -231,6 +231,7 @@ export function DeliveryChecks({ checks, delivery, timelineHref, onOpenTask }: {
                     detail={c.detail}
                     href={c.href}
                     current={c.current}
+                    steps
                     action={c.skippable ? <CheckSkip.Trigger row={c.key} /> : undefined}
                   />
                   {c.skippable && <div className="px-3 pb-3"><CheckSkip.Form row={c.key} /></div>}
