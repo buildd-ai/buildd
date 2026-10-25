@@ -17,7 +17,7 @@ import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import type { MissionIntegrationPrView } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
 import { planMissions, type PlanTask } from './mission-plan';
-import { outcomeSpecView } from './mission-outcome-spec-view';
+import { countWord, outcomeSpecView, type CriterionLine } from './mission-outcome-spec-view';
 import { standardsGateEnforced, standardsLine, type StandardItemStatus, type StandardsLine } from './specs/mission-standards-gate';
 
 /** R-17's statuses. Only `passed` reads as passed; waived and not applicable never do. */
@@ -52,6 +52,10 @@ export interface CheckRow {
   evidence: { label: string; href: string }[];
   /** A person may skip this check with a reason (R-34): visual review only, never under strict policy or once settled. */
   waivable?: boolean;
+  /** Where tapping the row's name goes (a spec row opens the spec at its pinned revision). */
+  href?: string;
+  /** A spec row's requirements, each in its own words with its result. The one source for any count of them. */
+  criteria?: CriterionLine[];
 }
 
 export type RailKey = 'build' | 'verify' | 'deliver';
@@ -230,14 +234,17 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
       // state as the goal criteria panel. Only every in-scope requirement passing
       // on the integrated result passes it; waived and stale never count.
       const v = outcomeSpecView(c, e, { buildDone: ctx.buildComplete });
-      const detail = sentence(v.coverage, ...v.open.map(o => `${o.label}: ${o.criterionIds.join(', ')}`), v.waived.length ? `Waived: ${v.waived.map(w => w.criterionId).join(', ')}` : null, v.next);
-      const spec = { commit: e?.spec?.targetSha ? e.spec.targetSha.slice(0, 7) : null };
+      const open = v.open.map(o => `${o.label}: ${countWord(o.criterionIds.length)}`);
+      const detail = sentence(v.coverage, v.unchecked ?? (v.open.length ? open.join('. ') : null), v.waived.length ? `Waived: ${countWord(v.waived.length)}` : null, v.unchecked ? null : v.next);
+      const spec = { commit: e?.spec?.targetSha ? e.spec.targetSha.slice(0, 7) : null, href: `/app/specs/${c.specId}?revision=${c.revision}`, ...(v.criteria.length ? { criteria: v.criteria } : {}) };
       if (!e) return row('queued', 'not checked', ctx.buildComplete ? 'The build is done. It is checked on the integrated result next.' : 'Checked on the integrated result once the build work is done.', spec);
       if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) return row('stale', 'out of date', 'The spec selection changed after it was judged. It needs checking again.', spec);
       if (e.verdict === 'pass') return row('passed', 'passed', detail, { ...spec, actor: 'none' });
       // Waived by a person: nothing is open, and it never reads as passed.
       if (v.waived.length > 0 && v.open.length === 0) return row('waived', 'waived', detail, { ...spec, actor: 'none' });
       if (e.verdict === 'fail') return row('finding', v.short, detail, { ...spec, problem: 'product' });
+      // Every open check already ended without a result: nothing is verifying it, so it says what is true.
+      if (v.unchecked) return row('queued', 'not checked', detail, spec);
       if (e.verdict === 'PENDING') return row('running', 'verifying', detail, spec);
       // Judged on the integration branch before the mission PR merges, so never "after merge".
       if (e.verdict === 'NOT_EVALUATED' || e.verdict === 'UNVERIFIED') {
@@ -495,4 +502,25 @@ export function buildEstimate(tasks: readonly PlanTask[], now: number, held: boo
   const [loN, loUnit] = lo.split(' ');
   const line = lo === hi ? `build only: about ${lo}` : loUnit === hi.split(' ')[1] ? `build only: ${loN} to ${hi}` : `build only: ${lo} to ${hi}`;
   return { p50: row.p50, p80: row.p80, line };
+}
+
+/**
+ * `0 of 15 met`: one count for the Requirements fold, from the same lines the
+ * spec row lists. A spec row counts each of its requirements; any other row
+ * counts once.
+ */
+export function requirementsCount(rows: readonly CheckRow[]): string {
+  let met = 0; let total = 0;
+  for (const r of rows) {
+    if (r.kind !== 'criterion' && r.kind !== 'visual') continue;
+    if (r.criteria?.length) {
+      const counted = r.criteria.filter(l => l.result !== 'waived');
+      total += counted.length;
+      met += counted.filter(l => l.result === 'passed').length;
+    } else if (r.status !== 'not_applicable') {
+      total += 1;
+      if (r.status === 'passed') met += 1;
+    }
+  }
+  return total === 0 ? 'nothing to check' : `${met} of ${total} met`;
 }
