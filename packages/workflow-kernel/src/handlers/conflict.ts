@@ -19,7 +19,7 @@ import { applyCommandOn } from '../command-runner';
 import type { Command, LivePr } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { landingStatusOf } from '../landing-gate';
-import { acquireLaneOn, laneOutcome, refreshTakesLane, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME } from '../landing-lane';
+import { acquireLaneOn, laneOutcome, laneWait, refreshTakesLane, LANE_PARKED_OUTCOME } from '../landing-lane';
 import { laneQueuedWords, publishLandingStatusIfChanged } from './landing';
 import { githubOf, type ClaimedEffect, type GithubFactReader, type GithubFacts, type KernelPorts } from '../ports';
 import type { AttemptSnapshot, DeliverySnapshot } from '../types';
@@ -126,12 +126,14 @@ export function conflictHandlers(ports: KernelPorts): EffectHandlers {
     else if (laneMode !== 'off') {
       const lane = await acquireLaneOn(ports.store, { repoFullName: b.d.repoFullName, baseRef: b.d.baseRef!, deliveryId: b.d.id, headSha: b.attempt.boundHeadSha });
       if (!lane.acquired) {
-        if (laneMode === 'enforce') {
+        const wait = laneMode === 'enforce' ? laneWait(e.ageMs) : null;
+        if (wait && wait !== 'wait_spent') {
           // Say on GitHub that it is queued, not "Branch update in progress": nothing runs until the lane frees.
           await announceParked(b, lane.holder).catch((err) => console.warn('[workflow] parked status not published:', err instanceof Error ? err.message : err));
-          return { outcome: laneOutcome(LANE_PARKED_OUTCOME, lane.holder), park: { delayMs: LANE_PARK_BACKSTOP_MS } };
+          return { outcome: laneOutcome(LANE_PARKED_OUTCOME, lane.holder), park: { delayMs: wait.park } };
         }
-        laneNote = `(${laneOutcome('lane:would_wait', lane.holder)})`;
+        // Shadow never waits; enforce waits LANE_MAX_WAIT_MS at most, then refreshes beside the lane.
+        laneNote = `(${laneOutcome(wait === 'wait_spent' ? 'lane:wait_spent' : 'lane:would_wait', lane.holder)})`;
       }
     }
     const out = await conflicts.refresh(b.d, b.attempt);
