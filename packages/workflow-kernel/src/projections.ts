@@ -120,6 +120,11 @@ export interface DeliveryViewInput {
    * parked refreshes on that base (1 = next). Absent or null = not parked.
    */
   laneWait?: LaneWait | null;
+  /**
+   * The owner task is back in the queue with no worker on it (a loop pass waiting
+   * on its backoff, a retry): WORKING then names the wait, not an agent at work.
+   */
+  ownerParked?: boolean;
 }
 
 export interface LaneWait {
@@ -317,6 +322,22 @@ export function reviewExhaustedCopy(rounds: RoundSnapshot[]): string {
   return `Approved${approvals.length > 1 ? ` ${timesWord(approvals.length)}` : ''}, then a later change was refused${refused > 1 ? ` ${timesWord(refused)}` : ''}`;
 }
 
+/**
+ * `review_escalated` names who escalated. A server gate (migration safety, a hard path rule,
+ * the confidence bar) can override an approve after the reviewer decided; the round keeps the
+ * reviewer's own verdict beside the effective one, so the copy says it was the gate, not the
+ * reviewer, that sent the PR to a person.
+ */
+export function reviewEscalatedCopy(rounds: RoundSnapshot[]): string {
+  const last = rounds.filter((r) => r.status === 'decided' && r.effectiveVerdict).sort((a, b) => b.round - a.round)[0];
+  if (last?.effectiveVerdict === 'escalate' && last.verdict && last.verdict !== 'escalate') {
+    return last.verdict === 'approve'
+      ? 'The reviewer approved; a merge gate escalated this PR'
+      : 'A merge gate escalated this PR';
+  }
+  return ESCALATION_COPY.review_escalated!;
+}
+
 /** c1d66a6a / AC-17: open findings a push already touched, waiting for a review to verify them. */
 function addressedNote(findings: FindingSnapshot[]): string | null {
   const open = findings.filter((f) => f.required && (f.status === 'open' || f.status === 'addressed'));
@@ -413,7 +434,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
   const pr = d.prNumber != null ? `PR #${d.prNumber}` : 'the PR';
 
   switch (d.state) {
-    case 'WORKING': headline = 'Agent working'; break;
+    case 'WORKING': headline = input.ownerParked ? "Waiting for the agent's next pass" : 'Agent working'; break;
     case 'AWAITING_PUSH':
       headline = 'Waiting for the fix to reach GitHub';
       detail = `${pr} is still at ${short(d.currentHeadSha)}; the platform is re-checking for the pushed commit`;
@@ -471,7 +492,9 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       if (d.stateReason === 'landing_needs_human') {
         ({ headline, detail } = landingEscalationCopy(input.lastTransition));
       } else {
-        headline = d.stateReason === 'review_exhausted' ? reviewExhaustedCopy(input.view.rounds) : ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
+        headline = d.stateReason === 'review_exhausted' ? reviewExhaustedCopy(input.view.rounds)
+          : d.stateReason === 'review_escalated' ? reviewEscalatedCopy(input.view.rounds)
+          : ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
         detail = [evidenceDetail(input.lastTransition), addressedNote(input.view.findings ?? [])].filter(Boolean).join('; ') || null;
       }
       cta = { action: 'open_pr', label: 'Review on GitHub' };

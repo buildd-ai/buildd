@@ -25,7 +25,8 @@ import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import type { CheckRunsRead, Trunk, TrunkIncident } from '@buildd/workflow-kernel/ports';
 import type { Exec } from './kernel';
 import type { GithubFactReader } from './facts';
-import { UNKNOWN_CI_SIGNATURE, ciSignature, signatureCheckNames, trunkExplains, trunkRecovered } from './trunk-signature';
+import { UNKNOWN_CI_SIGNATURE, ciSignature, trunkExplains } from './trunk-signature';
+import { baseGreenFor } from '@buildd/workflow-kernel/handlers/trunk';
 import { scheduleTrunkRecheck } from './trunk-recheck';
 
 export { UNKNOWN_CI_SIGNATURE, ciSignature, signatureCheckNames, signatureChecks, trunkExplains, trunkRecovered } from './trunk-signature';
@@ -110,7 +111,7 @@ LIMIT ${TRUNK_AFFECTED_CAP}::int`;
 /** The least recently rechecked first: every recheck that leaves one unresolved touches it (`touchIncidentSql`). */
 export function unresolvedIncidentsSql(limit: number): SQL {
   return sql`-- workflow:trunk_unresolved
-SELECT id, workspace_id, repo_full_name, base_ref, signature FROM trunk_incidents
+SELECT id, workspace_id, repo_full_name, base_ref, signature, trunk_fix_task_id FROM trunk_incidents
 WHERE status <> 'resolved' ORDER BY updated_at, id LIMIT ${limit}::int`;
 }
 
@@ -118,7 +119,7 @@ WHERE status <> 'resolved' ORDER BY updated_at, id LIMIT ${limit}::int`;
 export function unresolvedIncidentsByIdSql(ids: readonly string[]): SQL {
   const list = sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `);
   return sql`-- workflow:trunk_unresolved_by_id
-SELECT id, workspace_id, repo_full_name, base_ref, signature FROM trunk_incidents
+SELECT id, workspace_id, repo_full_name, base_ref, signature, trunk_fix_task_id FROM trunk_incidents
 WHERE id IN (${list}) AND status <> 'resolved'`;
 }
 
@@ -198,11 +199,26 @@ WHERE id = ${incidentId}::uuid AND trunk_fix_task_id IS NULL AND status <> 'reso
  * recovered.
  */
 export function trunkRecoveredOnRuns(incidentSignature: string, runs: CheckRunsRead | null): boolean {
-  if (!runs || !trunkRecovered(incidentSignature, runs.tests ?? runs.failing)) return false;
-  if (runs.complete) return true;
-  if (!runs.pending) return false;
-  const checks = new Set(signatureCheckNames(incidentSignature));
-  return !signatureCheckNames(ciSignature(runs.pending)).some((c) => checks.has(c));
+  return !!runs && baseGreenFor(incidentSignature, runs, ciSignature);
+}
+
+/**
+ * T26's evidence for a base with no CI of its own. A mission branch's pushes run no gating workflow,
+ * so its head has no check runs and `trunkRecoveredOnRuns` reads it as unknown at every recheck,
+ * until something else moves the base. There the fix stands in for the base's own run: the
+ * incident's fix PR merged into this base, its own checks (run on its merge ref) finished with none
+ * of the incident's entries failing, and the base head contains its merge commit. Only when the
+ * base head reads no runs at all; a base that reports runs is read by them alone.
+ */
+export async function trunkFixLandedGreen(p: {
+  repoFullName: string; baseRef: string; baseHead: string; signature: string; fixPrNumber: number | null; reader: GithubFactReader;
+}): Promise<boolean> {
+  if (p.fixPrNumber == null || !p.reader.checkRuns || !p.reader.contains) return false;
+  const pr = await p.reader.readPr(p.repoFullName, p.fixPrNumber).catch(() => null);
+  if (!pr?.merged || !pr.mergeCommitSha || pr.baseRef !== p.baseRef) return false;
+  const runs = await p.reader.checkRuns(p.repoFullName, pr.headSha, { tests: true }).catch(() => null);
+  if (!runs?.complete || !trunkRecoveredOnRuns(p.signature, runs)) return false;
+  return p.reader.contains(p.repoFullName, pr.mergeCommitSha, p.baseHead).catch(() => false);
 }
 
 /** buildd's `trunk_incidents` as the kernel's `Trunk` port. */
@@ -235,7 +251,41 @@ export interface TrunkClassification {
   /** The failure's own signature (also the ci ledger row's trigger reason). */
   signature: string;
   /** The incident this delivery joined, if the trunk explains the failure. */
-  incident: { id: string; opened: boolean; signature: string; rule: 'base_red' | 'threshold' | 'open_incident' } | null;
+  incident: { id: string; opened: boolean; signature: string; rule: TrunkRule } | null;
+}
+
+export type TrunkRule = 'base_red' | 'inherited' | 'threshold' | 'open_incident';
+
+/**
+ * Rule (c), inherited: the PR's failing entries already failed on the commit it branched
+ * from (or last took in) its base, so the PR brought nothing broken of its own. Its base
+ * may be green again by now, the trunk having fixed it since; the remedy is then a refresh,
+ * never a builder re-diagnosing the trunk's defect (e2ea3764: #5641 went red on a test dev
+ * had fixed twenty minutes earlier). A mission branch runs no CI of its own, so its branch
+ * point has no runs to read; the PR's branch point on the trunk is read too, since a
+ * mission refresh is how a trunk defect reaches it (#5639). Returns the branch point's
+ * signature, or null when nothing there explains the failure or nothing could be read.
+ */
+export async function inheritedSignature(p: {
+  repoFullName: string; baseRef: string; trunkRef: string | null; headSha: string; signature: string; reader: GithubFactReader;
+}): Promise<string | null> {
+  const { reader } = p;
+  if (!reader.mergeBase || !reader.checkRuns) return null;
+  const refs = p.trunkRef && p.trunkRef !== p.baseRef ? [p.baseRef, p.trunkRef] : [p.baseRef];
+  for (const ref of refs) {
+    const point = await reader.mergeBase(p.repoFullName, ref, p.headSha).catch(() => null);
+    if (!point || point === p.headSha) continue;
+    const runs = await reader.checkRuns(p.repoFullName, point, { tests: true }).catch(() => null);
+    const pointSignature = ciSignature(runs?.tests ?? runs?.failing ?? []);
+    if (pointSignature !== UNKNOWN_CI_SIGNATURE && trunkExplains(p.signature, pointSignature)) return pointSignature;
+  }
+  return null;
+}
+
+/** The repo's trunk as gitConfig names it; null when it names none. */
+function trunkRefOf(gitConfig: unknown): string | null {
+  const b = (gitConfig as { defaultBranch?: unknown } | null | undefined)?.defaultBranch;
+  return typeof b === 'string' && b.trim() ? b.trim() : null;
 }
 
 /**
@@ -254,7 +304,7 @@ export async function classifyCiFailure(p: {
   const cfg = trunkBreakerConfig(p.gitConfig);
   if (!cfg.enabled || signature === UNKNOWN_CI_SIGNATURE || !p.baseRef) return { signature, incident: null };
   const baseRef = p.baseRef;
-  const join = async (incidentSignature: string, rule: 'base_red' | 'threshold' | 'open_incident') => {
+  const join = async (incidentSignature: string, rule: TrunkRule) => {
     const row = ((await exec(openOrJoinIncidentSql({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef, signature: incidentSignature, deliveryId: p.deliveryId }))).rows ?? [])[0] as { id: string; opened: boolean } | undefined;
     // On the recheck queue from the start: rechecked within the fallback even if no base suite reports.
     if (row) await scheduleTrunkRecheck(String(row.id));
@@ -273,6 +323,12 @@ export async function classifyCiFailure(p: {
     const baseSignature = ciSignature(baseRuns?.tests ?? baseRuns?.failing ?? []);
     if (trunkExplains(signature, baseSignature)) return join(baseSignature, 'base_red');
   }
+
+  // (c) The failure came with the base: its branch point fails the same checks. A base green
+  // since then owes no trunk fix (dispatch skips it) and the recheck resolves the incident,
+  // refreshing this head (T26); a base still red gets its one trunk fix.
+  const inherited = await inheritedSignature({ repoFullName: p.repoFullName, baseRef, trunkRef: trunkRefOf(p.gitConfig), headSha: p.headSha, signature, reader: p.reader });
+  if (inherited) return join(inherited, 'inherited');
 
   // (b) Opt-in: enough distinct deliveries on this signature inside the window.
   if (cfg.minDeliveries) {

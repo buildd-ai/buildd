@@ -210,6 +210,16 @@ describe('exportCanvas', () => {
     expect(out.html).toContain('<a href="#coverage">Open task</a>');
   });
 
+  test('screens.json can say a board is a component and name its code', () => {
+    const out = exportCanvas(fixtureCanvas({
+      ...withValues,
+      'screens.json': JSON.stringify({ TaskDetail: { id: 'c-row', kind: 'component', code: 'apps/web/src/components/X.tsx' } }),
+    }));
+    expect(out.metadata.screens.find(s => s.id === 'c-row')).toMatchObject({ kind: 'component', code: 'apps/web/src/components/X.tsx' });
+    expect(out.metadata.screens.find(s => s.id !== 'c-row')).not.toHaveProperty('kind');
+    expect(() => exportCanvas(fixtureCanvas({ ...withValues, 'screens.json': JSON.stringify({ TaskDetail: { kind: 'widget' } }) }))).toThrow(/kind/);
+  });
+
   test('two boards that come out with one id fail', () => {
     expect(() => exportCanvas(fixtureCanvas({ ...withValues, 'screens.json': JSON.stringify({ TaskDetail: 'same', MissionList: 'same' }) })))
       .toThrow(/"same"/);
@@ -314,5 +324,97 @@ describe('uploadDesign', () => {
   test('a refused upload fails with the server message', async () => {
     const fn = (async () => Response.json({ error: 'metadata.screens[0].id must be …' }, { status: 400 })) as unknown as typeof fetch;
     await expect(uploadDesign({ server: 'https://srv', apiKey: 'k', html, filename: 'n.html', metadata, missionId: M }, fn)).rejects.toThrow(/400.*metadata\.screens/);
+  });
+});
+
+describe('exportCanvas: live components', () => {
+  const script = (props: Record<string, unknown>, cls: string) =>
+    `<script type="text/x-dc" data-dc-script data-props='${JSON.stringify(props)}'>\n${cls}\n</script>`;
+  const comp = (name: string, body: string, props: Record<string, unknown>, cls: string, style = '') =>
+    `<x-dc><helmet><style>${style}</style></helmet>${body}</x-dc>\n${script(props, cls)}`;
+
+  function liveCanvas(files: Record<string, string>, screens?: Record<string, unknown>): string {
+    const root = mkdtempSync(join(tmpdir(), 'canvas-live-'));
+    dirs.push(root);
+    const project = join(root, 'project');
+    mkdirSync(project);
+    writeFileSync(join(project, 'canvas.json'), JSON.stringify({
+      v: 3,
+      boards: {
+        'Page.dc.html': { w: 390, h: 600, title: 'Page' },
+        'Row.dc.html': { w: 390, h: 60, title: 'Row' },
+      },
+    }));
+    for (const [f, c] of Object.entries(files)) writeFileSync(join(project, f), c);
+    if (screens) writeFileSync(join(project, 'screens.json'), JSON.stringify(screens));
+    return root;
+  }
+
+  const row = comp(
+    'Row',
+    '<div class="row"><b class="s" style="{{sty}}"></b>{{title}}<sc-if value="{{hasFix}}"><i>{{fixText}}</i></sc-if></div>',
+    { title: { editor: 'text', default: 'Default title' }, fixes: { editor: 'int', default: 0 }, $preview: { width: 390, height: 60 } },
+    `class Component extends DCLogic { renderVals() { const f = this.props.fixes ?? 0; return { title: this.props.title ?? 'Default title', sty: 'color:red', hasFix: f > 0, fixText: '↻' + f }; } }`,
+    '.row{display:flex}',
+  );
+  const page = comp(
+    'Page',
+    `<h1>{{heading}}</h1>
+<sc-for list="{{groups}}" as="g"><h2>{{g.label}} {{g.count}}</h2><sc-for list="{{g.rows}}" as="r"><dc-import name="Row" title="{{r.title}}" fixes="{{r.fixes}}" hint-size="100%,64px"></dc-import></sc-for></sc-for>
+<dc-import name="Row"></dc-import>
+<sc-if value="{{showFooter}}"><footer>shown</footer></sc-if><sc-if value="{{hideFooter}}"><footer>hidden</footer></sc-if>`,
+    { $preview: { width: 390, height: 600 } },
+    `class Component extends DCLogic { renderVals() {
+      const groups = [{ label: 'Build', rows: [{ title: 'One', fixes: 2 }, { title: 'Two', fixes: 0 }] }, { label: 'Done', rows: [{ title: 'Three', fixes: 0 }] }].map(g => ({ ...g, count: g.rows.length }));
+      return { heading: 'Now', groups, showFooter: true, hideFooter: false };
+    } }`,
+  );
+  const files = { 'Page.dc.html': page, 'Row.dc.html': row };
+
+  test('expands dc-import, sc-for and sc-if from the component\'s own logic and defaults', () => {
+    const { html } = exportCanvas(liveCanvas(files));
+    const section = html.slice(html.indexOf('id="phone-page"'), html.indexOf('id="phone-row"'));
+    expect(section).toContain('<h1>Now</h1>');
+    expect(section).toContain('Build 2');
+    expect(section).toContain('Done 1');
+    for (const t of ['One', 'Two', 'Three']) expect(section).toContain(t);
+    expect(section).toContain('Default title'); // an import with no props takes the component's defaults
+    expect(section).toContain('↻2');
+    expect(section).not.toContain('↻0');
+    expect(section).toContain('<footer>shown</footer>');
+    expect(section).not.toContain('hidden');
+    expect(section).not.toMatch(/dc-import|sc-for|sc-if|\{\{/);
+    expect(section).toContain('style="color:red"');
+  });
+
+  test('each board stays its own screen, ids from screens.json, the component\'s css is merged', () => {
+    const out = exportCanvas(liveCanvas(files, { Page: 'phone-page-x', Row: { id: 'c-row', kind: 'component' } }));
+    expect(out.metadata.screens.map(s => s.id)).toEqual(['phone-page-x', 'c-row']);
+    expect(out.html.match(/data-screen="/g)).toHaveLength(2);
+    expect(out.html).toContain('.row{display:flex}');
+  });
+
+  test('a board with its own props renders their defaults', () => {
+    const out = exportCanvas(liveCanvas(files));
+    const rowSection = out.html.slice(out.html.indexOf('id="phone-row"'));
+    expect(rowSection).toContain('Default title');
+    expect(rowSection).not.toContain('↻');
+  });
+
+  test('values stay escaped', () => {
+    const evil = { ...files, 'Row.dc.html': row.replace('"default":"Default title"', '"default":"<b>x</b>"').replace('"default": "Default title"', '"default": "<b>x</b>"') };
+    const { html } = exportCanvas(liveCanvas(evil));
+    expect(html).toContain('&lt;b&gt;x&lt;/b&gt;');
+  });
+
+  test('an import of a component the canvas does not have warns and renders nothing', () => {
+    const f = { ...files, 'Page.dc.html': page.replace('<dc-import name="Row"></dc-import>', '<dc-import name="Ghost"></dc-import>') };
+    const out = exportCanvas(liveCanvas(f));
+    expect(out.warnings.join('\n')).toContain('Ghost');
+  });
+
+  test('a placeholder the logic does not supply still falls back to placeholders.json, then fails', () => {
+    const f = { ...files, 'Page.dc.html': page.replace('<h1>{{heading}}</h1>', '<h1>{{heading}}</h1><p>{{nope}}</p>') };
+    expect(() => exportCanvas(liveCanvas(f))).toThrow(/nope/);
   });
 });

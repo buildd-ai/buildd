@@ -9,6 +9,7 @@ exports[`Queue view (R-26) 80x24: the tab line, both teams in claim order, est. 
 ›   name override                   you   -           Running                   
     single instance                 you   -           Running                   
   1 fix(kernel): review composition -     Workflow k… Blocked · until Thu 00:00 
+    This runner's Claude login is at its limit until Thu 00:00 (in 33h) · other…
   2 feat(intake): one intake door   -     Bug intake  Queued                    
   3 chore(web): cache /fonts        -     -           Queued                    
   4 docs: kernel commands           -     Workflow k… Blocked · after its depen…
@@ -20,7 +21,6 @@ exports[`Queue view (R-26) 80x24: the tab line, both teams in claim order, est. 
     design: the queue tab           -     Workflow k… Blocked · needs Designer  
  Team Two · next for this runner    by    mission     status                    
   1 fix(billing): round half up     -     -           Queued                    
-                                                                                
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
@@ -36,6 +36,7 @@ exports[`Queue view (R-26) 120x40: est. shows for the team that has estimates on
 ›   name override                  you      -            -              -     Running                                   
     single instance                you      -            -              -     Running                                   
   1 fix(kernel): review compositi… -        alpha        Workflow kern… 40m   Blocked · until Thu 00:00                 
+    This runner's Claude login is at its limit until Thu 00:00 (in 33h) · other runners can take Claude work            
   2 feat(intake): one intake door  -        alpha        Bug intake     1h    Queued                                    
   3 chore(web): cache /fonts       -        alpha        -              15m   Queued                                    
   4 docs: kernel commands          -        alpha        Workflow kern… -     Blocked · after its dependency            
@@ -47,7 +48,6 @@ exports[`Queue view (R-26) 120x40: est. shows for the team that has estimates on
     design: the queue tab          -        alpha        Workflow kern… -     Blocked · needs Designer                  
  Team Two · next for this runner         by       workspace    mission        status                                    
   1 fix(billing): round half up          -        bravo        -              Queued                                    
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

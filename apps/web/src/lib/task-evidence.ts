@@ -113,6 +113,8 @@ export interface EvidenceInput {
   /** The task's own error line (worker.error / result.error). */
   error: string | null;
   diff: { files: number; added: number; removed: number };
+  /** Commits the attempt reported making. Above 0 the head moved, whatever the diff counted. */
+  commits?: number;
   traces: readonly EvidenceTrace[];
   /** The CI failure digest the task was handed, for CI-fix tasks. */
   ciDigest: string | null;
@@ -171,6 +173,7 @@ export function detectMismatches(input: {
   status: 'completed' | 'failed';
   summary: string | null;
   diff: EvidenceInput['diff'];
+  commits?: number;
   traces: readonly EvidenceTrace[];
   ciChecks: EvidenceInput['ciChecks'];
   /** The check a CI-fix attempt was sent to fix, when its brief named one. */
@@ -179,9 +182,11 @@ export function detectMismatches(input: {
   const out: TaskMismatch[] = [];
   const { summary, diff } = input;
 
+  // Commits are the push itself as evidence: a change set made only of
+  // generated files counts 0 files in the diff, yet the head moved.
   if (
     summary && PUSHED.test(summary) && !NEGATED_PUSH.test(summary) &&
-    diff.files === 0 && diff.added === 0 && diff.removed === 0
+    diff.files === 0 && diff.added === 0 && diff.removed === 0 && !((input.commits ?? 0) > 0)
   ) {
     out.push({
       kind: 'pushed_without_diff',

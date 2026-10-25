@@ -230,3 +230,27 @@ describe('Queue view keys', () => {
     expect(handleKey(queueState(), key('q'), NOW).effects).toEqual([{ type: 'quit' }]);
   });
 });
+
+describe('provider hold sentence on a row (R-11)', () => {
+  const withWall = (taskId: string, kind: string, backend = 'claude') =>
+    reduce(queueState(), { type: 'claim_outcome', taskId, outcome: {
+      at: NOW - 60_000, reason: 'budget_exhausted', walls: [{ kind, backend, resetsAt: new Date(NOW + 3_600_000).toISOString() }],
+    } } as any);
+  const row = (s: ReturnType<typeof queueState>, id: string) =>
+    queueSections(s, NOW).flatMap(sec => [...sec.rows, ...sec.held]).find(r => r.taskId === id) as any;
+
+  test('a runner_seat wall carries the sentence, naming the provider', () => {
+    expect(row(queueState(), 'q-review').providerHoldSentence).toContain("This runner's Claude login");
+  });
+
+  test('a non-claude backend names its own provider', () => {
+    const s = withWall('q-review', 'runner_seat', 'codex');
+    const r = row({ ...s, queue: { ...s.queue!, teams: s.queue!.teams.map(t => ({ ...t, queue: t.queue.map(q => q.id === 'q-review' ? { ...q, backend: 'codex' } : q) })) } } as any, 'q-review');
+    expect(r.providerHoldSentence).toContain("This runner's Codex login");
+  });
+
+  test('an account_seat wall or no outcome carries none', () => {
+    expect(row(withWall('q-review', 'account_seat'), 'q-review').providerHoldSentence).toBeUndefined();
+    expect(row(queueState(), 'q-fonts').providerHoldSentence).toBeUndefined();
+  });
+});

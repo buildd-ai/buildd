@@ -13,6 +13,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findFirst: async () => owner },
+      missions: { findFirst: async () => null },
       workspaces: { findFirst: async () => ({ id: 'w1', teamId: 't1' }) },
       workers: { findFirst: async () => ({ id: 'wk1', branch: 'buildd/owner-branch', prUrl: 'https://github.com/acme/w/pull/7', prNumber: 7 }) },
     },
@@ -56,13 +57,17 @@ describe('ciFixWork (rule 3)', () => {
     expect(b.values).toMatchObject({ roleSlug: 'builder', kind: 'engineering' });
     expect(b.values.description).not.toContain('performs no work');
   });
-  test('an owner with no role still gets a builder; an unreadable PR keeps the legacy branch and claims no target', async () => {
+  test('an owner with no role still gets a builder', async () => {
     inherited = { ...inherited, roleSlug: null };
-    pull = null;
     const b = await ciFixWork(req() as never) as { values: Record<string, any> };
     expect(b.values.roleSlug).toBe('builder');
-    expect(b.values.context.repairTarget).toBeUndefined();
-    expect(b.values.context.resumeBranch).toBe('buildd/owner-branch');
+  });
+  // e2ea3764: filed on the worker row's branch, the fix found it missing on the remote and started from dev.
+  test('an unreadable PR files nothing (the effect retries), never a fix resuming the worker row\'s branch', async () => {
+    pull = null;
+    await expect(ciFixWork(req() as never)).rejects.toThrow(/head branch is unreadable/);
+    pull = { base: { ref: 'dev' } };
+    await expect(ciFixWork(req() as never)).rejects.toThrow(/head branch is unreadable/);
   });
   test('the activity entry numbers the fix by the dispatched count the kernel hands it (a skipped row in front), never past the budget', async () => {
     activity.length = 0;

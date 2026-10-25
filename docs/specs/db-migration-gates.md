@@ -60,6 +60,9 @@ assertions:
 | `ALTER COLUMN ... TYPE` | CONTRACT | Rewrites column data |
 | `ALTER COLUMN ... SET NOT NULL` | CONTRACT | Locks table; fails on null rows |
 | `ADD COLUMN ... NOT NULL` (no DEFAULT) | CONTRACT | Locks table; fails on existing rows |
+| `CREATE FUNCTION`, `CREATE TRIGGER`; `CREATE OR REPLACE` of one the base does not define | EXPAND | New routine; nothing runs it until this migration wires it in |
+| `DROP TRIGGER [IF EXISTS] t ON x` followed in the same file by `CREATE TRIGGER t ... ON x`, `t` not on the base | EXPAND | Idempotency guard around a new trigger |
+| `CREATE OR REPLACE` of a function/trigger the base defines (or when the base cannot be read); `DROP FUNCTION`; any other `DROP TRIGGER` | CONTRACT | Changes or removes live behaviour |
 | `INSERT/UPDATE/DELETE/MERGE` | CONTRACT (`kind: 'data'`) | Data migration, irreversible; see the data-migration policy below |
 | Any other statement | CONTRACT | Fail-closed |
 
