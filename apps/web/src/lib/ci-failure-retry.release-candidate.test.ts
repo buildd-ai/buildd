@@ -254,4 +254,13 @@ describe('retryCiFailureForPr on a red frozen release candidate', () => {
     expect(out).toMatchObject({ kind: 'skipped', reason: 'release_candidate', fixTaskId: 'new-1' });
     expect(insertedRows).toHaveLength(1);
   });
+
+  it('the activity comment says the amendment is automatic', async () => {
+    await retryCiFailureForPr(input);
+    expect(activity).toHaveLength(1);
+    const entry = activity[0].entry;
+    expect(entry.detail).toContain('amend automatically');
+    expect(entry.note).toContain('will be amended automatically');
+    expect(entry.note).toContain('checks will restart on the new head');
+  });
 });

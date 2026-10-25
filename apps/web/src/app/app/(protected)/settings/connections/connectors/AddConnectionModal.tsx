@@ -41,7 +41,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
-  // Scope control — mirrors AgentBackendsSection (docs/design/unified-sharing-model.md)
+  // Scope control (docs/design/unified-sharing-model.md)
   const [scope, setScope] = useState<ShareScope>('team');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
   const [workspaces, setWorkspaces] = useState<{ id: string; name: string }[]>([]);
