@@ -180,13 +180,15 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
     taskId: String(t.id), role: t.role == null ? 'attempt' : String(t.role), status: String(t.status), createdAt: iso(t.created_at),
     ownerQuestion: typeof t.owner_question === 'string' && t.owner_question.trim() ? t.owner_question.trim() : null,
   }));
+  const delivery = toDeliverySnapshot(row.delivery as J);
   const view = deriveDeliveryView({
-    view: { delivery: toDeliverySnapshot(row.delivery as J), rounds, attempts, findings },
+    view: { delivery, rounds, attempts, findings },
     lastTransition,
     attemptTasks,
     remediation: remediationFrom(row.remediation as J | null, now),
     approvedNeedsPerson: (row.delivery as J).state === 'APPROVED' ? approvedNeedsPerson(row) : false,
     laneWait: laneWaitFrom(row.lane_wait),
+    ownerParked: delivery.state === 'WORKING' && attemptTasks.some((t) => t.taskId === delivery.ownerTaskId && t.status === 'pending'),
     ...(escalationPermissions ? { escalationPermissions } : {}),
   });
   return view ? withMergeContradiction(view, row.merge_contradiction as J | null | undefined) : null;

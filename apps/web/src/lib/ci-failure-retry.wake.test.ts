@@ -8,8 +8,21 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 let workerRow: any = null;
 let insertedRows: any[] = [];
+/** What the guarded `startParkedOwnerPass` update returns (empty: the owner is not parked). */
+let parkedUpdateRows: any[] = [];
+const taskUpdates: any[] = [];
 mock.module('@buildd/core/db', () => ({
   db: {
+    update: () => ({
+      set: (v: any) => ({
+        where: () => ({
+          returning: async () => {
+            taskUpdates.push(v);
+            return parkedUpdateRows;
+          },
+        }),
+      }),
+    }),
     query: {
       workers: { findFirst: async () => workerRow },
       workspaces: { findFirst: async () => ({ id: 'ws1', name: 'ws', gitConfig: {} }) },
@@ -167,10 +180,41 @@ describe('retryCiFailureForPr on a kernel-owned PR (§5.7, T10)', () => {
     expect(insertedRows).toEqual([]);
   });
 
+  it('an owner parked on a future loop pass (delivery WORKING, no worker) starts now instead of reading as a fix in flight', async () => {
+    mockWakeTask.mockClear();
+    taskUpdates.length = 0;
+    parkedUpdateRows = [{ id: 't1' }];
+    workerRow.task = { ...workerRow.task, status: 'pending', deliveryRole: 'owner', loopState: 'condition_unmet', startAt: new Date(Date.now() + 4 * 3600_000) };
+    kernelSeen = { handled: true, attemptTaskId: null, result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } };
+    expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'owner_pass_started', inFlightTaskId: 't1' });
+    expect(taskUpdates).toHaveLength(1);
+    expect(taskUpdates[0].startAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(mockWakeTask.mock.calls).toEqual([['t1', 'ci.retry']]);
+    expect(insertedRows).toEqual([]);
+  });
+
+  it('a WORKING owner that is not parked (claimed, or due already) stays a fix in flight and names itself as the holder', async () => {
+    mockWakeTask.mockClear();
+    parkedUpdateRows = [];
+    workerRow.task = { ...workerRow.task, status: 'in_progress', deliveryRole: 'owner' };
+    kernelSeen = { handled: true, attemptTaskId: null, result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } };
+    expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'fix_in_flight', inFlightTaskId: 't1' });
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('a repair in flight never pulls the owner forward', async () => {
+    taskUpdates.length = 0;
+    parkedUpdateRows = [{ id: 't1' }];
+    workerRow.task = { ...workerRow.task, status: 'pending', deliveryRole: 'owner' };
+    kernelSeen = { handled: true, attemptTaskId: null, result: { result: 'rejected', reason: 'fix_in_flight', current: { state: 'REPAIRING' } } };
+    expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'fix_in_flight' });
+    expect(taskUpdates).toEqual([]);
+  });
+
   it('maps every kernel answer onto a CI-door outcome', () => {
     expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'REPAIRING' } }, attemptTaskId: null })).toMatchObject({ kind: 'skipped', reason: 'fix_in_flight' });
     expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'CHANGES_REQUESTED' } } })).toMatchObject({ reason: 'fix_in_flight' });
-    expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } })).toMatchObject({ reason: 'fix_in_flight' });
+    expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } })).toMatchObject({ reason: 'fix_in_flight', kernelState: 'WORKING' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'ESCALATED' } } })).toMatchObject({ reason: 'kernel_owned' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'head_not_current', current: { state: 'AWAITING_REVIEW' } } })).toMatchObject({ reason: 'kernel_owned' });
   });
