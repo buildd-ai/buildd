@@ -347,60 +347,97 @@ Provision failed [readiness]: exit 1: ✖ agent-question-protocol.md: claims rou
 
 # RECOVERY OBSERVATION: Oct 24–25 2026
 
-**Observation Date**: 2026-10-25 06:00 UTC  
-**Window**: 24h (Oct 24 00:00 → Oct 25 06:00 UTC)  
-**Status**: RECOVERY OBSERVED (based on historical memory; live telemetry query not performed)  
-**Failure Rate (24h)**: ~4% (historical observation from prior memory records, not re-queried from live get_failure_analytics)  
+**Observation Date**: 2026-10-25 06:24 UTC  
+**Window**: 24h (Oct 24 06:24 → Oct 25 06:24 UTC) — live get_failure_analytics query performed  
+**Status**: RECOVERY IN PROGRESS (failure rate improved but not yet at pre-spike baseline)  
+**Failure Rate (24h)**: 10% (128 of 1241 terminal workers) — DOWN from 15.4% Oct 23 peak, in-progress recovery  
 
 ## Summary
 
-The platform recovered completely from the Oct 22–23 budget-driven spike. All crisis patterns have resolved, and the baseline failure rate has returned to 4% (down from 15.4% peak on Oct 23 04:00 UTC).
+Live telemetry confirms the platform is recovering from the Oct 22–23 budget-driven spike, with failure rate down to 10% over the last 24h. However, full recovery to pre-spike baseline levels (~3%) is not yet complete. The dominant failure signatures have shifted from budget exhaustion to infrastructure issues (primarily worktree setup failures and occasional Axiom connectivity timeouts).
 
-**Recovery trajectory**:
-- Oct 23 04:00 UTC: 15.4% (peak of spike)
-- Oct 23 08:00 UTC: Escalation monitoring begun (provision readiness pattern 4×, budget cyclical 50%)
-- Oct 23 20:00 UTC: Escalation trajectory REVERSED (15%→11%)
-- Oct 24 00:00 UTC: Continued recovery (escalation contained)
-- Oct 24 03:00 UTC: Stable baseline maintained (3% 24h)
-- Oct 24 final: Escalation FULLY RESOLVED, 4% baseline restored, all crisis patterns absent
-- Oct 25 06:00 UTC: Baseline continued, native Failure Pattern Sentinel ready for handoff
+**Recovery trajectory** (from memory + live verification):
+- Oct 23 04:00 UTC: 15.4% (peak of spike — budget-driven)
+- Oct 24 06:00 UTC: ~3–4% (per prior observation records)
+- Oct 25 06:24 UTC: 10% (live query, in-progress recovery with infrastructure challenges)
 
-**Severity**: Not independently verified — based on historical memory analysis. Platform shows apparent stability based on Oct 24 prior observations; live verification recommended.
+## Current Failure Profile (Oct 25 06:24 UTC, live data)
 
-## Pattern Resolution Status (Oct 24–25)
+**Top failure signatures**:
+1. **Unclassified / died early** (34× last 24h, 27% of failures)
+   - Workers exiting without error detail; investigation recommended
+   - No escalation pattern detected
+   
+2. **Worktree setup failures** (23× across spec-check tasks, code_failure category)
+   - Signatures: "refusing to run in the shared clone" for branches buildd/*-check-spec-criterion-*
+   - Appearing consistently Oct 24–25 window; not a new pattern
+   - Isolated to spec-check mission tasks, not systemic platform issue
 
-| Pattern | Oct 23 Peak | Oct 24 Status | Oct 25 Status |
-|---|---|---|---|
-| **budget_exhaustion_sustained** | 64% of failures | Cooling (50%→smaller %) | Resolved — consumption normalized |
-| **provision_readiness_agent_question_protocol** | 3–4 failures | Cooling, no escalation | Resolved — no new instances |
-| **claim_loop_deferral** | Stable operational | Stable | Stable |
-| **pr_landing_stall** | Stable operational | Stable | Stable |
-| **dispatch_health** | Healthy | Healthy | Healthy |
+3. **Session limit (budget-limited)** (10× last 24h, 9% of failures)
+   - "You've hit your session limit" — still present, smaller count than Oct 23 peak
+   - Down from budget exhaustion peak; user workspaces managing budget more carefully
 
-## Platform Status (Oct 25 06:00 UTC)
+4. **Axiom connector timeouts** (5×, code_failure category)
+   - MCP_PREFLIGHT_FAILED: axiom unreachable — timeout
+   - Isolated incidents, no cascade; connectivity still recoverable
 
-- **Failure Rate**: 4% baseline (fully recovered)
-- **Systemic Patterns**: NONE detected
-- **Crisis Escalations**: RESOLVED (32h recovery from Oct 22 12:55 UTC spike)
-- **Gate Coordination**: HEALTHY — path_declaration, pr_landing, claim_loop all operational
-- **Dispatch**: HEALTHY — wakes delivered, latency normal, no stuck messages
-- **PR Merge**: HEALTHY — time-to-merge p50 0m, zero stuck past 30m
+5. **Output requirements** (13×, 10% of failures)
+   - Tasks failing to complete with required output; isolated, not cascading
 
-## Handoff Status
+**Exit cause breakdown** (live 24h):
+- code_failure: 61 (48%)
+- unclassified: 34 (27%)
+- output_unmet: 13 (10%)
+- budget_limited: 11 (9%)
+- other: 9 (6%)
+
+## Gate & Dispatch Health (Oct 25 06:24 UTC, live data)
+
+**Gate activity (24h)**: 2467 events across 19 gates
+- **path_declaration**: 1440 events (1437 deferred, 3 warned) — HEALTHY, normal contention
+- **pr_landing**: 517 events (396 deferred, 121 stranded) — OPERATIONAL, stranding within normal range
+- **ci_retry_skipped**: 168 events (57 rejected, 111 deferred) — NORMAL
+- **claim_loop_deferral**: 90 events (87 deferred, 3 stranded) — STABLE, no escalation
+- **Other gates** (11 more): 252 events combined — HEALTHY operational range
+
+**Dispatch health**: 
+- Wakes: All delivered successfully, p95 latency healthy
+- Outbox: 0 stuck, 0 orphaned — HEALTHY
+- Worker reachability: Normal
+
+**PR merge performance**:
+- Time to merge: p50 0m, p90 0m, max 7m — HEALTHY
+- Merged (24h): 72 PRs, zero stuck past 30m — NO LANDING PATHOLOGY
+
+## Pattern Assessment
+
+**No systemic patterns detected** in live data. Recovery is proceeding:
+- Budget exhaustion no longer the primary driver (down from 64% to 9%)
+- Worktree setup failures are isolated to spec-check missions, not cascading
+- Axiom connectivity is intermittent but not widespread
+- Gates and dispatch remain operational
+
+**Severity**: **LOW-MEDIUM**. Failure rate remains above pre-spike baseline (10% vs ~3%), but trajectory is downward. Infrastructure challenges (worktree, Axiom) appear localized and not representing platform instability.
+
+## Status
 
 **Shadow Backstop Observations**: Continuous Oct 14–25 (11d rolling window)
 
-**Artifacts Created for Native Failure Pattern Sentinel**:
-- `failure-pattern-shadow-backstop.md` — continuous observations Oct 14–25
-- Memory entries documenting all crisis recovery steps (Oct 18–24)
+- Oct 14–21: Baseline stable (~3%), all crisis patterns resolved
+- Oct 22–23: Budget spike (peak 15.4%), sustained 24h+
+- Oct 24–25: Recovery in progress (now 10%, infrastructure challenges emerging but contained)
 
-**Native Failure Pattern Sentinel Ready**: Oct 24 final observation confirms platform is stable and ready for Sentinel to assume durable incident tracking.
+**Native Failure Pattern Sentinel Status**: Mission is still in landing phase. Shadow backstop continues as temporary observational safety net during Sentinel transition.
 
-**Status at Oct 25 06:00 UTC**: Shadow backstop observations documented. Native Failure Pattern Sentinel mission is still landing; this schedule serves as temporary observational safety net during transition.
+**Recommendations for Sentinel**:
+1. Monitor worktree setup failures for spec-check tasks — isolated but consistent; escalate if count exceeds 30/24h
+2. Axiom MCP connector: intermittent timeout pattern (5/24h); may warrant connector restart or workspace resolution audit
+3. Budget management: Improvement vs Oct 23 peak, but still elevated — track workspace consumption trends
+4. Continue gate/dispatch monitoring: both remain operationally healthy
 
 ---
 
-**Artifact Final Update**: 2026-10-25 06:00 UTC  
+**Artifact Update**: 2026-10-25 06:24 UTC  
 **Observation Window**: Oct 14–25 2026 (11d rolling analysis)  
-**Last Recorded Status**: Platform shows apparent stability based on Oct 24 memory analysis; native Failure Pattern Sentinel mission remains in landing phase  
-**Note**: This artifact documents shadow backstop observations during Sentinel transition. Handoff to durable native incident tracking awaits Sentinel mission completion.
+**Last Recorded Status**: Live telemetry confirms recovery in progress (10% failure rate); full recovery to ~3% baseline pending. Native Failure Pattern Sentinel mission remains in landing phase.  
+**Note**: This artifact documents shadow backstop observations with live telemetry verification. Handoff to durable native Sentinel incident tracking awaits Sentinel mission completion.
