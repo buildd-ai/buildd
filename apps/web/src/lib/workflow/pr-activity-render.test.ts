@@ -325,3 +325,30 @@ describe('a long delivery: more rows than the comment keeps', () => {
     expect(entries.filter((e) => e.kind === 'review_queued').map((e) => e.detail)).toEqual(['round 3', 'round 4', 'round 5']);
   });
 });
+
+describe('escalation after a fix that pushed', () => {
+  test('a spent fix budget names the budget, never "the fix never reached GitHub"', () => {
+    const ts = [
+      T('FixClaimed', 'CHANGES_REQUESTED', 'FIXING', { attemptId: 'a1', roundId: 'r1', live: live('H1') }, 3),
+      T('AttemptEnded', 'FIXING', 'ESCALATED', { outcome: 'success', live: live('H2') }, 4),
+    ];
+    const ks = kinds(ts);
+    expect(ks).toContain('review_escalated');
+    expect(ks).not.toContain('push_undeliverable');
+  });
+
+  test('a CI repair that spent its budget is ci_exhausted', () => {
+    const ci: AttemptSnapshot[] = [{ ...attempts[0]!, id: 'c1', family: 'ci' }];
+    const ts = [
+      T('FixClaimed', 'REPAIRING', 'REPAIRING', { attemptId: 'c1', live: live('H1') }, 3),
+      T('AttemptEnded', 'REPAIRING', 'ESCALATED', { outcome: 'failed', live: live('H1') }, 4),
+    ];
+    const ks = transitionsToActivityEntries(ts, rounds, ci).map((e) => e.kind);
+    expect(ks).toContain('ci_exhausted');
+    expect(ks).not.toContain('push_undeliverable');
+  });
+
+  test('PushRecoveryExhausted still says the push never arrived', () => {
+    expect(kinds([T('PushRecoveryExhausted', 'AWAITING_PUSH', 'ESCALATED', { localHeadSha: 'abcdef1' }, 4)])).toContain('push_undeliverable');
+  });
+});

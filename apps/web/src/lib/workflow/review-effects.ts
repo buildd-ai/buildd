@@ -155,6 +155,10 @@ export const reviewWork: WorkBuilder = async (req) => {
 
 // ── Work, role `fix`: the fix task under the ledger row's task id ───────────
 
+/** A fix that turns CI red is not a fix: targeted tests alone never show a type or build break. */
+export const VERIFY_BEFORE_PUSH =
+  "Before you push, run the repo's type check (`bun run type-check`, or `tsc --noEmit` in each package you touched) and the build step for anything you changed, not only the targeted tests. If either fails, fix it first; never push a head that breaks the type check or the build.";
+
 const STOP_AND_REPORT =
   'If this turns out to be a misdiagnosis rather than a real defect, stop and report why instead of patching around it.';
 
@@ -187,6 +191,10 @@ export function pinnedFixDescription(p: {
     '## Where to push',
     '',
     `Push to the PR's own head branch${p.headRef ? ` \`${p.headRef}\`` : ''}${p.headSha ? `, currently at \`${p.headSha.slice(0, 12)}\`` : ''}${p.baseRef ? ` (base \`${p.baseRef}\`)` : ''}. Never to another worker's branch or to the base branch.`,
+    '',
+    '## Before you push',
+    '',
+    VERIFY_BEFORE_PUSH,
     '',
     '## When it is done',
     '',

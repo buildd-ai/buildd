@@ -159,7 +159,15 @@ export function transitionsToActivityEntries(
           push({ kind: 'push_pending' });
         }
         // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
-        if (t.toState === 'ESCALATED') push(ev.reviewBudgetSpent ? { kind: 'review_escalated', detail: 'review budget spent' } : { kind: 'push_undeliverable' });
+        // An attempt that ended and escalated pushed (or tried to); only a delivery that never saw
+        // a head move says "never reached GitHub" (PushRecoveryExhausted). Name the budget instead.
+        if (t.toState === 'ESCALATED') {
+          if (ev.reviewBudgetSpent) push({ kind: 'review_escalated', detail: 'review budget spent' });
+          else if (t.fromState === 'FIXING') push({ kind: 'review_escalated', detail: 'fix budget spent' });
+          else if (fixAttempt?.family === 'ci') push({ kind: 'ci_exhausted' });
+          else if (fixAttempt) push({ kind: 'review_escalated', detail: `${fixAttempt.family} fix budget spent` });
+          else push({ kind: 'review_escalated', detail: 'the fix ended and a person has to decide' });
+        }
         break;
       }
       case 'PushRecoveryExhausted':
