@@ -250,7 +250,7 @@ export interface RequestSurfaceAuditOptions {
   /** Round to file at (a re-review on a new head is the next round). Default 1. */
   round?: number;
   /** Why the scheduler filed it, recorded for the task page. */
-  reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery' | 'recapture';
+  reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery' | 'recapture' | 'recheck';
   attempt?: number;
   /**
    * For `recapture`: the screens a merged fix waits on (`recaptureScreenLabel`)
@@ -332,7 +332,7 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
   // head, a completed audit stamped for another one is history, not a live review.
   // A recapture follows a completed audit that missed screens: that audit is not the answer.
   const live = audits.find(a => isLiveAudit(a)
-    && !(opts.reason === 'recapture' && a.status === 'completed')
+    && !((opts.reason === 'recapture' || opts.reason === 'recheck') && a.status === 'completed')
     && !(opts.headSha && a.status === 'completed' && readAuditedSha(a.context) !== opts.headSha.toLowerCase()));
   if (live) return { ok: true, mission, live: { id: live.id, status: live.status } };
 
