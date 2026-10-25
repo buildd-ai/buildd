@@ -468,7 +468,7 @@ function DeckInner({
   const checkAgain = useCallback(async () => {
     if (!onCheckAgain || rechecking) return;
     setRechecking(true);
-    const r = await onCheckAgain().catch(() => ({ ok: false, message: 'That did not work. Try again.' }));
+    const r = await onCheckAgain().catch(() => ({ ok: false, message: 'Check not added. Retry.' }));
     if (!mounted.current) return;
     setRechecking(false);
     if (r.ok) { setNotice(null); setFlash(r.message); } else setNotice(r.message);
