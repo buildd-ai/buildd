@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimate, criteriaChecks, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import { buildEstimate, criteriaChecks, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementsCount, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { planMissions, type PlanTask } from './mission-plan';
 
@@ -241,9 +241,50 @@ describe('criteriaChecks: the outcome spec is one Verify row (R-29)', () => {
     const [row] = criteriaChecks([spec], state('UNVERIFIED', [['R-1', 'pass'], ['R-2', 'stale'], ['R-3', 'pass']]), ctx);
     expect(row.status).toBe('stale');
     expect(row.state).toBe('1 of 3 pass');
-    expect(row.detail).toContain('Out of date: R-2');
-    expect(row.detail).toContain('Waived: R-3');
+    expect(row.detail).toContain('Out of date: one');
+    expect(row.detail).toContain('Waived: one');
+    expect(row.criteria?.map(l => [l.id, l.result])).toEqual([['R-1', 'passed'], ['R-2', 'out of date'], ['R-3', 'waived']]);
     expect(row.commit).toBe('abc1234');
+  });
+
+  it('opens the spec at its pinned revision', () => {
+    const [row] = criteriaChecks([spec], state('UNVERIFIED', [['R-1', 'pass']]), ctx);
+    expect(row.href).toBe('/app/specs/00000000-0000-4000-8000-000000000001?revision=7');
+  });
+
+  describe('every check ended because its test file is missing', () => {
+    const missing = (n: number) => criteriaState([{
+      index: 0, type: 'living_spec', verdict: 'PENDING', fingerprint: fp, workerTaskId: 't-final',
+      spec: {
+        specId: spec.type === 'living_spec' ? spec.specId : '', revision: 7, targetSha: 'abc1234def',
+        standings: Array.from({ length: n }, (_, i) => ({
+          criterionId: `R-${i + 1}`, standing: 'inconclusive' as const, headSha: 'abc1234def', text: `Requirement number ${i + 1}.`, reason: 'test file not found' as const,
+        })),
+      },
+    }]);
+    const noWaiver = { ...spec, waived: [] } as GoalCriterion;
+    const ctxM = { ...ctx };
+    it('says what is true, not "could not tell" while verifying', () => {
+      const c = noWaiver; const st = missing(14); st.criteria[0].fingerprint = criterionFingerprint(c);
+      const [row] = criteriaChecks([c], st, ctxM);
+      expect(row).toMatchObject({ status: 'queued', state: 'not checked' });
+      expect(row.detail).toContain('Nothing checked: 14 test files not found.');
+      expect(row.detail).not.toContain('Could not tell');
+      expect(row.detail).not.toContain('R-1');
+    });
+    it('lists each requirement in its own words with its result and reason', () => {
+      const c = noWaiver; const st = missing(2); st.criteria[0].fingerprint = criterionFingerprint(c);
+      const [row] = criteriaChecks([c], st, ctxM);
+      expect(row.criteria).toEqual([
+        { id: 'R-1', text: 'Requirement number 1.', result: 'not checked', reason: 'test file not found' },
+        { id: 'R-2', text: 'Requirement number 2.', result: 'not checked', reason: 'test file not found' },
+      ]);
+    });
+    it('one count: the Requirements fold counts the same lines', () => {
+      const c = noWaiver; const st = missing(14); st.criteria[0].fingerprint = criterionFingerprint(c);
+      const rows = criteriaChecks([c], st, ctxM);
+      expect(requirementsCount(rows)).toBe('0 of 14 met');
+    });
   });
 
   it('passes only when the evaluator says every in-scope requirement passes', () => {

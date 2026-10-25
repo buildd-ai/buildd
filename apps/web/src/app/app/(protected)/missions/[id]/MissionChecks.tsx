@@ -24,6 +24,7 @@ import Card from '@/components/ui/Card';
 import { VISUAL_REVIEW_SKIP_REASONS, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
 import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
+import type { CriterionLine } from '@/lib/mission-outcome-spec-view';
 import { buildFoldLine } from '@/lib/mission-build-stage';
 import type { StandardItemStatus, StandardsLine } from '@/lib/specs/mission-standards-gate';
 
@@ -158,6 +159,28 @@ function Glyph({ status }: { status: CheckStatus }) {
   }
 }
 
+const RESULT_TONE: Record<CriterionLine['result'], string> = {
+  passed: 'text-status-success', failed: 'text-status-error', 'not checked': 'text-text-muted', 'out of date': 'text-status-warning', waived: 'text-text-muted',
+};
+
+/** A spec row's requirements: each in its own words with its result; the id is a small secondary label. */
+export function CriterionLines({ lines }: { lines: readonly CriterionLine[] }) {
+  return (
+    <ul data-testid="mission-check-criteria" aria-label="Requirements" className="col-start-2 mt-1 flex flex-col gap-2 md:col-[2/4]">
+      {lines.map(l => (
+        <li key={l.id} data-testid="mission-check-criterion" data-result={l.result} className="flex min-w-0 flex-col gap-0.5 text-body">
+          <span className="text-text-primary [overflow-wrap:anywhere]">{l.text ?? l.id}</span>
+          <span className="flex flex-wrap items-baseline gap-x-2 font-mono text-meta">
+            <span className={RESULT_TONE[l.result]}>{l.result}</span>
+            {l.reason && <span className="text-text-secondary">{l.reason}</span>}
+            {l.text && <span data-testid="mission-check-criterion-id" className="text-chip text-text-muted">{l.id}</span>}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 const LIVE: ReadonlySet<CheckStatus> = new Set(['running', 'finding', 'owner', 'unable', 'stale']);
 
 /** The checks that apply, one row each (R-16). */
@@ -181,7 +204,9 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
           >
             <span className="row-span-2 pt-px md:row-span-2"><Glyph status={r.status} /></span>
             <span className="min-w-0 text-title [overflow-wrap:anywhere]">
-              <span className="font-medium text-text-primary">{r.label}</span>
+              {r.href
+                ? <a href={r.href} data-testid="mission-check-link" className="inline-flex min-h-11 items-center font-medium text-text-primary underline decoration-border-strong underline-offset-4 hover:decoration-current md:min-h-0">{r.label}</a>
+                : <span className="font-medium text-text-primary">{r.label}</span>}
               {r.chip && <span className="ml-2 inline-block rounded px-1.5 align-[1px] font-mono text-chip text-text-muted [background:var(--q-tint)]">{r.chip}</span>}
             </span>
             <span className="flex flex-wrap items-baseline gap-x-3 md:justify-end">
@@ -192,6 +217,7 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
               {r.waivable && <CheckSkip.Trigger row={r.key} />}
             </span>
             {r.detail && <span className="col-start-2 text-body text-text-secondary md:col-[2/4]">{r.detail}</span>}
+            {r.criteria && r.criteria.length > 0 && <CriterionLines lines={r.criteria} />}
             {r.waivable && <CheckSkip.Form row={r.key} />}
             {(r.repairs.length > 0 || r.evidence.length > 0) && (
               <div className="col-start-2 mt-1 flex flex-col gap-2 md:col-[2/4]">

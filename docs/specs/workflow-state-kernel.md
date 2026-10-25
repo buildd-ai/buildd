@@ -1444,6 +1444,11 @@ each expires on its own:
   never past 40 minutes from its grant. A holder red at its head or with a CI attempt open
   holds nothing. A PR in that state refreshes beside the lane, neither taking nor waiting on it,
   and the wake passes it over, so the lane only goes to a head that can land (eccb6687).
+  A refresh waits in the lane at most 15 minutes from its outbox row's creation
+  (`LANE_MAX_WAIT_MS`); its next park never runs past that, and once it is spent the refresh
+  runs beside the lane (`lane:wait_spent`). A park hands its attempt back, so nothing else
+  bounds the wait, and a free lane goes to whichever refresh drains first, not the oldest
+  (221c7b95: an approved, green PR re-parked for 11.5 hours).
 
 A refresh that throws (`in_flight`, `deferred`, `semantic_deferred`) backs off 15s, doubling,
 capped at 30 minutes, and is retried by:
