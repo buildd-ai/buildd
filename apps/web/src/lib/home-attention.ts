@@ -4,6 +4,8 @@ import { MISSION_START_COPY } from './mission-start-state';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
 import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
+import { timeAgo } from './mission-helpers';
+import type { RedCheckView } from './red-check-cause';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start' | 'access';
@@ -16,6 +18,8 @@ export interface HomeAttentionItem {
   tone: 'ink' | 'error' | 'warning';
   title: string;
   sentence: string;
+  /** The longer reason, folded behind Details when it says more than the sentence. */
+  detail?: string | null;
   meta: string;
   href: string;
   /** What the primary action does; summarised in the Home headline. */
@@ -137,7 +141,19 @@ function questionSentence(q: HomeQuestion): string {
   return q.question.context ?? q.question.body ?? (rec ? `Recommended: ${rec.label}` : `Asked while working on ${q.label}.`);
 }
 
-type Resolved = Pick<HomeAttentionItem, 'label' | 'tone' | 'title' | 'sentence' | 'meta' | 'href' | 'actionType' | 'primary' | 'details' | 'owner'>;
+type Resolved = Pick<HomeAttentionItem, 'label' | 'tone' | 'title' | 'sentence' | 'detail' | 'meta' | 'href' | 'actionType' | 'primary' | 'details' | 'owner'>;
+
+/**
+ * The failing-check line of a red PR card: "✕ Unit tests (2/3) · 4m ago". Never a sentence;
+ * with no reading the generic "Checks failed · 4m ago". The cause sentence rides in `detail`.
+ */
+export function checkLine(red: RedCheckView | null, waitingMinutes?: number | null): string {
+  const names = red?.checks ?? [];
+  const what = names.length === 0 ? 'Checks failed'
+    : `✕ ${names.length <= 2 ? names.join(', ') : `${names.slice(0, 2).join(', ')} +${names.length - 2}`}`;
+  const at = red?.at ? new Date(red.at) : waitingMinutes != null ? new Date(Date.now() - waitingMinutes * 60000) : null;
+  return at && !Number.isNaN(at.getTime()) ? `${what} · ${timeAgo(at)}` : what;
+}
 
 /**
  * The four answers a Needs You card must carry: what (title), why (sentence), what to do
@@ -145,14 +161,14 @@ type Resolved = Pick<HomeAttentionItem, 'label' | 'tone' | 'title' | 'sentence' 
  */
 export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
   const text = (v?: string | null) => v?.trim() || null;
-  const subject = text(i.taskTitle) ?? text(i.missionTitle) ?? text(i.connectorName) ?? (i.prNumber != null ? `PR #${i.prNumber}` : null);
+  const subject = text(i.taskTitle) ?? text(i.missionTitle) ?? text(i.connectorName) ?? (i.prNumber != null ? `#${i.prNumber}` : null);
   const taskHref = i.taskId ? `/app/tasks/${i.taskId}` : null;
   const subjectHref = i.missionId ? `/app/missions/${i.missionId}` : taskHref;
   const meta = i.prNumber != null ? `PR #${i.prNumber}` : i.workspaceName ?? '';
-  const make = (r: { label: string; tone: HomeAttentionItem['tone']; title: string | null; sentence: string | null; actionType: AttentionActionType; primary: AttentionLink | null; details?: AttentionLink | null }): Resolved | null => {
+  const make = (r: { label: string; tone: HomeAttentionItem['tone']; title: string | null; sentence: string | null; detail?: string | null; actionType: AttentionActionType; primary: AttentionLink | null; details?: AttentionLink | null }): Resolved | null => {
     if (!r.title || !r.sentence || !r.primary?.href) return null;
     const details = r.details && r.details.href !== r.primary.href ? r.details : null;
-    return { label: r.label, tone: r.tone, title: r.title, sentence: r.sentence, meta, href: r.primary.href, actionType: r.actionType, primary: r.primary, details, owner: 'human' };
+    return { label: r.label, tone: r.tone, title: r.title, sentence: r.sentence, ...(r.detail ? { detail: r.detail } : {}), meta, href: r.primary.href, actionType: r.actionType, primary: r.primary, details, owner: 'human' };
   };
   const pr = text(i.prUrl);
   switch (i.chip) {
@@ -196,7 +212,8 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
         const red = ci.red ?? null;
         return make({
           label: ci.reviewApproved ? 'Approved · checks failing' : 'checks failing', tone: 'error', title: subject,
-          sentence: red?.sentence ?? 'A required check is failing and no fix is running.',
+          sentence: checkLine(red, i.waitingMinutes),
+          detail: red?.sentence ?? null,
           actionType: 'fix', primary: { label: red?.primary === 'rerun' ? 'Re-run' : 'Start fix', href: pr ?? subjectHref ?? '' },
           details: pr ? { label: 'Logs', href: `${pr}/checks` } : null,
         });
