@@ -752,7 +752,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('revision', num, [{ text: 'Read this revision', actions: ['get_artifact'] }]),
     param('expectedRevision', num, [{ text: 'Refuse if body moved', actions: ['update_artifact'] }]),
     param('missionId', str, [{ text: 'Mission UUID, not a title', actions: ['list_artifacts'] }]),
-    param('action', str, [{ text: `manage_specs: ${alt('manage_specs')}`, actions: ['manage_specs'], moreOnly: true }, { text: 'designs: attach|detach|list', actions: ['manage_designs'], moreOnly: true }]),
+    param('action', str, [{ text: `manage_specs: ${alt('manage_specs')}`, actions: ['manage_specs'], moreOnly: true }, { text: 'designs: attach|detach|list|screen', actions: ['manage_designs'], moreOnly: true }]),
     param('html', str, [{ text: 'HTML', actions: ['store_design'] }]),
     // Nearly every manage_specs call names a spec, and every write carries the version read.
     param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'], forMore: true }]),
