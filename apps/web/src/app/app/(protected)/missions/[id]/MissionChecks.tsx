@@ -217,8 +217,10 @@ export function DeliveryChecks({ checks, delivery, timelineHref, onOpenTask }: {
       <section data-testid="mission-delivery-checks" className={`grid min-w-0 gap-5 ${delivery && checks.length > 0 ? 'md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]' : ''}`}>
         {delivery && (
           <div data-testid="mission-delivery" className="flex min-w-0 flex-col gap-2">
-            <h2 className="text-meta text-text-muted">Delivery</h2>
-            {delivery.line && <p data-testid="mission-delivery-line" className="font-mono text-meta text-text-secondary">{delivery.line}</p>}
+            <div className="flex items-baseline justify-between gap-3">
+              <h2 className="text-meta text-text-muted">Delivery</h2>
+              {delivery.line && <p data-testid="mission-delivery-line" className="font-mono text-meta text-text-secondary">{delivery.line}</p>}
+            </div>
             {delivery.prs.length > 0 && (
               <ul className="overflow-hidden rounded-[var(--radius-card)] border border-border-default bg-card">
                 {delivery.prs.map(p => {
@@ -238,7 +240,7 @@ export function DeliveryChecks({ checks, delivery, timelineHref, onOpenTask }: {
                 })}
               </ul>
             )}
-            <a href={timelineHref} data-testid="mission-delivery-timeline" className="inline-flex min-h-11 items-center self-start font-mono text-meta text-text-secondary hover:text-text-primary md:min-h-0">Timeline ›</a>
+            <a href={timelineHref} data-testid="mission-delivery-timeline" className="flex min-h-11 items-center justify-between font-mono text-meta text-text-secondary hover:text-text-primary md:min-h-9"><span>Timeline</span> <span aria-hidden="true">›</span></a>
           </div>
         )}
         {checks.length > 0 && (
