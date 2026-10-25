@@ -27,7 +27,7 @@ import type { Exec } from './kernel';
 // The lane's rules (modes, hold and backstop, acquire-then-ask-who-holds,
 // release-then-wake) are the package's; this file keeps the statements.
 export {
-  laneOutcome, resolveLandingLaneMode, LANE_HOLD_MS, LANE_MAX_TENURE_MS, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME,
+  laneOutcome, resolveLandingLaneMode, LANE_HOLD_MS, LANE_MAX_TENURE_MS, LANE_MAX_WAIT_MS, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME,
   type LandingLaneMode, type LaneAcquisition, type LaneKey,
 } from '@buildd/workflow-kernel/landing-lane';
 

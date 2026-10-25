@@ -6,10 +6,10 @@ import { resolveMissionCheckTarget } from './mission-outcome';
  * the selected revision's `check:` commands, and its registered `verify:`
  * checks through the same coordinator an explicit request uses.
  */
-export async function runFinalAcceptanceChecks(taskId: string, missionId: string): Promise<void> {
+export async function runFinalAcceptanceChecks(taskId: string, missionId: string, opts: { rerun?: boolean } = {}): Promise<void> {
   const target = await resolveMissionCheckTarget(missionId);
   if (!target) return;
-  await dispatchCriterionChecks({ taskId, headSha: target.headSha, headBranch: target.branch });
+  await dispatchCriterionChecks({ taskId, headSha: target.headSha, headBranch: target.branch, ...(opts.rerun ? { rerun: true } : {}) });
   try {
     const { dispatchRegisteredVerification } = await import('./registered-verification');
     const { registeredVerificationDeps } = await import('./registered-verification-store');

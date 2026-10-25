@@ -3459,6 +3459,10 @@ export interface LivingSpecCriterionStanding {
   overriddenReviews?: number;
   /** How a required registered check was evaluated; absent for tests and ordinary reviews. */
   method?: 'deterministic' | 'model' | 'visual' | 'fallback';
+  /** The criterion's own words, kept with the evaluation so a page can show them without reading the spec. Absent on older states. */
+  text?: string;
+  /** Why a check did not reach a pass or fail, in a few words (`verdictReason`). Absent when it did or when unknown. */
+  reason?: 'test file not found' | 'test could not run' | 'test failed';
 }
 
 /**

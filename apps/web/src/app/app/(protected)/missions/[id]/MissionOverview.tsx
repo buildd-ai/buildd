@@ -29,7 +29,7 @@ import DecisionCard from '@/components/DecisionCard';
 import { useVisualDecisionAct } from './visual-decision-act';
 import { useMissionFocusSnapshot } from '@/components/missions/mission-focus-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementsCount, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
 import { isClosedUnshipped, overviewCells, overviewLayout } from '@/lib/mission-overview';
 import { stripOrder } from '@/lib/mission-task-strip';
 import type { DecisionView } from '@/lib/needs-you-card';
@@ -245,13 +245,6 @@ function LeadDecision({ decisions, now, missionId }: { decisions: readonly Decis
       {open && decisions.slice(1).map(d => <MissionDecisionCard key={d.key} view={d} now={now} missionId={missionId} />)}
     </div>
   );
-}
-
-/** `21 of 21 met`: the requirements that count, folded to one line once delivered. */
-function requirementsCount(rows: readonly { kind: string; status: CheckStatus }[]): string {
-  const counted = rows.filter(r => (r.kind === 'criterion' || r.kind === 'visual') && r.status !== 'not_applicable');
-  const met = counted.filter(r => r.status === 'passed').length;
-  return counted.length === 0 ? 'nothing to check' : `${met} of ${counted.length} met`;
 }
 
 /**

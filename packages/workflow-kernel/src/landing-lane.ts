@@ -31,6 +31,23 @@ export const LANE_HOLD_MS = 20 * 60_000;
 export const LANE_MAX_TENURE_MS = 40 * 60_000;
 /** A parked refresh comes due again after this even if no release wakes it. */
 export const LANE_PARK_BACKSTOP_MS = 10 * 60_000;
+/**
+ * The most one refresh waits in the lane, from its row's creation: past it the refresh runs
+ * beside the lane. A park hands its attempt back, so nothing else bounds the wait, and a free
+ * lane goes to whichever refresh drains first, not the oldest. 221c7b95: #5658 re-parked for
+ * 11.5h while other PRs took the lane, approved and green the whole time.
+ */
+export const LANE_MAX_WAIT_MS = 15 * 60_000;
+
+/**
+ * What a refresh that found the lane taken does: park until the next backstop (never past the
+ * wait bound), or, its wait spent, refresh beside the lane. An unknown age parks for the backstop.
+ */
+export function laneWait(ageMs: number | undefined): { park: number } | 'wait_spent' {
+  if (typeof ageMs !== 'number') return { park: LANE_PARK_BACKSTOP_MS };
+  if (ageMs >= LANE_MAX_WAIT_MS) return 'wait_spent';
+  return { park: Math.min(LANE_PARK_BACKSTOP_MS, LANE_MAX_WAIT_MS - ageMs) };
+}
 /** The outcome prefix of a parked refresh; the wake finds parked rows by it. */
 export const LANE_PARKED_OUTCOME = 'parked:lane_busy';
 
