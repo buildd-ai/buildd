@@ -53,9 +53,11 @@ export function resolveClaudeRoute(
     const via = localLogin === 'ready' ? 'local login' : 'managed API key';
     return {
       state: 'eligible', eligibleVia, localLogin, managedKey,
-      summary: localLogin === 'ready' && managedKey !== 'ready'
-        ? `Claude work is eligible via a runner's local login; ${keyWord}, which does not block it`
-        : `Claude work is eligible via ${via}`,
+      summary: localLogin !== 'ready' || managedKey === 'ready'
+        ? `Claude work is eligible via ${via}`
+        : managedKey === 'unavailable'
+          ? "Claude uses each runner's sign-in. The stored API key isn't working."
+          : "Claude uses each runner's sign-in.",
     };
   }
   if (online.length === 0 && managedKey === 'not_configured') {

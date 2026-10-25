@@ -42,7 +42,7 @@ describe('ClaimRefusalBackoff', () => {
 
   test('a refusal with no holder (a cap, a slot) lifts when any agent here ends', () => {
     const b = new ClaimRefusalBackoff();
-    b.refused('task-a', 'workspace_cap', null, T0);
+    b.refused('task-a', 'mission_concurrent', null, T0);
     b.agentEnded('task-x');
     expect(b.skip('task-a', T0 + 1)).toBeNull();
   });

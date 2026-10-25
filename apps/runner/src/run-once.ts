@@ -49,8 +49,8 @@ export const EXIT_CLAIM_REFUSED = 3;
 /** The worker was parked (resumable runs): a resume continues it in a new container. Not a failure. */
 export const EXIT_PARKED = 4;
 /**
- * The server named a temporary, self-resolving reason (account/workspace/
- * mission capacity, pacing, path overlap, a provider wall): the task stays
+ * The server named a temporary, self-resolving reason (account/mission
+ * capacity, path overlap, a provider wall): the task stays
  * pending and WILL become claimable again without anyone touching it. Retry
  * it later — do not fail the task over this.
  */
@@ -70,7 +70,7 @@ export const PARKED_LINE_PREFIX = 'BUILDD_PARKED=';
 /** Printed once a resumed run has re-attached to its parked worker. */
 export const RESUMED_LINE_PREFIX = 'BUILDD_RESUMED=';
 /**
- * Printed just before EXIT_CLAIM_DEFERRED, e.g. `BUILDD_CLAIM_DEFERRED=workspace_cap`.
+ * Printed just before EXIT_CLAIM_DEFERRED, e.g. `BUILDD_CLAIM_DEFERRED=mission_concurrent`.
  * A supervisor that only sees the exit code (apps/cloud-runner) reads this to
  * log and report WHY the retry it schedules is happening.
  */
@@ -209,7 +209,7 @@ export function createOnceResolver(
 
 /**
  * `diagnostics.reason` values (apps/web/src/app/api/workers/claim/route.ts)
- * that mean every candidate in this poll was held back by load or pacing, not
+ * that mean every candidate in this poll was held back by load, not
  * that THIS task is unclaimable — the task stays `pending` and becomes
  * claimable again on its own. Only reached when the response carried no
  * `taskExclusion` (an explicit-taskId claim almost always gets one; this is
@@ -223,7 +223,7 @@ const DEFERRED_CLAIM_REASONS = new Set<string>([
 /**
  * `diagnostics.taskExclusion.code` values that name a temporary, self-healing
  * gate on THIS specific task: the dispatch loop's own per-task deferrals
- * (mission/workspace/account capacity, pacing, a provider wall, path overlap)
+ * (mission/account capacity, a provider wall, path overlap)
  * and the explicit-task-exclusion SQL probe's load/scheduling gates
  * (explicit-task-exclusion.ts). The task is never cancelled for any of these —
  * it is left `pending` and the condition lifts without anyone acting on it.
@@ -233,10 +233,10 @@ const DEFERRED_CLAIM_REASONS = new Set<string>([
  * stay `refused`, same as before this classification existed.
  */
 const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
-  // Dispatch-loop deferrals (route.ts deferTask) — capacity/pacing/provider.
-  'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap', 'account_cap',
+  // Dispatch-loop deferrals (route.ts deferTask) — capacity/provider.
+  'mission_budget', 'mission_concurrent', 'account_cap',
   'provider_unavailable', 'budget_paused', 'routing_paused', 'sibling_retry_open', 'awaiting_owner_answer',
-  'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'ordered_behind', 'kernel_unavailable', 'kernel_refused',
+  'runner_capability', 'codex_single_flight', 'ordered_behind', 'kernel_unavailable', 'kernel_refused',
   'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
   // Cross-workspace reach not granted yet: held until a person grants it.
   'delegation_unmet',
@@ -273,7 +273,7 @@ export function classifyClaimFailure(err: unknown): 'refused' | 'failed' | 'defe
   }
   // 429 here is the account-wide cap (route.ts: activeWorkers.length >=
   // maxConcurrentWorkers), hit before any task-specific gate even runs — the
-  // same capacity wall as `no_slots`/`workspace_cap`, just thrown instead of
+  // same capacity wall as `no_slots`/`account_cap`, just thrown instead of
   // answered with an empty 200. 408 stays "try again" without the deferred
   // bookkeeping: a request timeout says nothing about capacity.
   if (status === 429) return 'deferred';

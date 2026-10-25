@@ -343,3 +343,23 @@ describe('visual-qa.yml typed capture failure', () => {
     expect(classify().env.QA_ERRORS_DIR).toBe('/tmp/qa-errors');
   });
 });
+
+describe('visual-qa.yml harness dependency resolution', () => {
+  test('links the app node_modules into the harness after install, before capture', () => {
+    const names = steps.map(x => x.name ?? '');
+    const install = names.findIndex(n => /^Install dependencies/.test(n));
+    const link = names.findIndex(n => /^Link app dependencies into the QA harness/.test(n));
+    const capture = names.findIndex(n => /^Capture/.test(n));
+    expect(install).toBeGreaterThan(-1);
+    expect(link).toBeGreaterThan(install);
+    expect(capture).toBeGreaterThan(link);
+    expect(steps[link].run).toContain('.qa-harness/packages/core/node_modules');
+  });
+
+  test('capture.ts pulls in packages/core/ui-verification.ts, whose zod dep lives in packages/core', () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'packages/core/package.json'), 'utf8'));
+    expect(pkg.dependencies?.zod ?? pkg.devDependencies?.zod).toBeDefined();
+    const src = readFileSync(join(__dirname, '..', 'packages/core/ui-verification.ts'), 'utf8');
+    expect(src).toMatch(/from 'zod'/);
+  });
+});

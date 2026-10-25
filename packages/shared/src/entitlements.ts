@@ -11,7 +11,7 @@
  *  - concurrency: how many MANAGED runs may execute at once (plan lever);
  *  - runner-hours: managed compute consumed this month (the meter);
  *  - self-hosted capacity: an operator's own runners, bounded only by their
- *    own settings (`accounts.maxConcurrentWorkers`, `workspaces.maxConcurrentTasks`).
+ *    own settings (runner slots, `missions.maxConcurrentTasks`).
  *    No entitlement here ever applies to a self-hosted runner.
  *
  * Public and runtime-free. Plan values live in one hosted-config module

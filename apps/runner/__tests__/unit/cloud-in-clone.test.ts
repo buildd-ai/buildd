@@ -27,7 +27,11 @@ afterEach(() => {
   if (saved === undefined) delete process.env.BUILDD_EXECUTOR;
   else process.env.BUILDD_EXECUTOR = saved;
   // Windows can hold a just-exited git process's handles for a moment (EBUSY); retry the teardown.
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  // A handle that outlives the retries is not a test failure; the OS temp dir is reaped anyway.
+  for (const dir of dirs.splice(0)) {
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); }
+    catch (e: any) { if (process.platform !== 'win32' || e?.code !== 'EBUSY') throw e; }
+  }
 });
 
 function git(cwd: string, ...args: string[]) {
@@ -42,11 +46,16 @@ function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'in-clone-'));
   dirs.push(dir);
   git(dir, 'init', '-q', '-b', 'dev');
+  // No background gc/maintenance process lingering in the temp dir after a test.
+  git(dir, 'config', 'gc.auto', '0');
+  git(dir, 'config', 'maintenance.auto', 'false');
   writeFileSync(join(dir, 'file'), 'base');
   git(dir, 'add', '.');
   commit(dir, 'base');
   const clone = join(dir, 'clone');
   git(dir, 'clone', '-q', '--single-branch', '--branch', 'dev', dir, clone);
+  git(clone, 'config', 'gc.auto', '0');
+  git(clone, 'config', 'maintenance.auto', 'false');
   return clone;
 }
 
@@ -100,9 +109,13 @@ test('cloud rejects a diverged resume candidate and uses the default base', asyn
   const clone = repo();
   const origin = dirname(clone);
   git(origin, 'checkout', '-qb', 'buildd/diverged');
+  // One git process for all 51 commits: far fewer short-lived children holding handles on Windows.
+  let stream = '';
   for (let i = 0; i < 51; i++) {
-    git(origin, '-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', `candidate ${i}`);
+    stream += `commit refs/heads/buildd/diverged\ncommitter test <test@example.com> ${1700000000 + i} +0000\ndata <<EOM\ncandidate ${i}\nEOM\n${i === 0 ? 'from refs/heads/buildd/diverged^0\n' : ''}\n`;
   }
+  execFileSync('git', ['fast-import', '--quiet'], { cwd: origin, input: stream, stdio: ['pipe', 'pipe', 'pipe'] });
+  git(origin, 'reset', '-q', '--hard', 'buildd/diverged');
   const result = await setupWorktree(clone, 'buildd/fresh', 'dev', 'diverged', { resumeBranch: 'buildd/diverged' });
   expect(result!.path).toBe(clone);
   expect(result!.branch).toBe('buildd/fresh');

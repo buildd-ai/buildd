@@ -17,7 +17,7 @@ import { cachedTeamRead } from './team-cache';
 type Row = typeof workspaces.$inferSelect;
 
 export interface WorkspaceSettingsRow extends Pick<Row,
-  'id' | 'name' | 'repo' | 'teamId' | 'gitConfig' | 'configStatus' | 'accessMode' | 'releaseConfig' | 'workTrackerConfig' | 'maxConcurrentTasks'> {
+  'id' | 'name' | 'repo' | 'teamId' | 'gitConfig' | 'configStatus' | 'accessMode' | 'releaseConfig' | 'workTrackerConfig'> {
   webhookConfig: { enabled?: unknown; events?: unknown } | null;
   /** A Date from the database, an ISO string from the cache (JSON). */
   newStartsPausedUntil: Date | string | null;
@@ -37,7 +37,6 @@ export async function loadWorkspaceSettingsUncached(teamId: string, workspaceId:
       releaseConfig: true,
       workTrackerConfig: true,
       webhookConfig: true,
-      maxConcurrentTasks: true,
       newStartsPausedUntil: true,
     },
   });
@@ -54,7 +53,6 @@ export async function loadWorkspaceSettingsUncached(teamId: string, workspaceId:
     releaseConfig: row.releaseConfig ?? null,
     workTrackerConfig: row.workTrackerConfig ?? null,
     webhookConfig: hook ? { enabled: hook.enabled, events: hook.events } : null,
-    maxConcurrentTasks: row.maxConcurrentTasks,
     newStartsPausedUntil: row.newStartsPausedUntil ?? null,
   };
 }

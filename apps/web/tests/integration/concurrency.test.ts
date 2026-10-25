@@ -76,17 +76,6 @@ describe('Concurrency Control', () => {
   beforeAll(async () => {
     workspaceId = await findFixtureWorkspace(api);
     console.log(`  Using workspace: ${workspaceId}`);
-    // Raise the per-workspace concurrency cap so these tests exercise the ACCOUNT
-    // maxConcurrentWorkers limit rather than the per-repo cap (default 3), which
-    // would otherwise bind first and block claims before the account ceiling.
-    try {
-      await api(`/api/workspaces/${workspaceId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ maxConcurrentTasks: 100 }),
-      });
-    } catch (err) {
-      console.warn(`  Could not raise maxConcurrentTasks (continuing): ${err}`);
-    }
   }, TIMEOUT);
 
   // Cleanup after each test

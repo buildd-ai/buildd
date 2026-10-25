@@ -22,6 +22,7 @@ import SpecIndexFixture from './SpecIndexFixture';
 import SpecAttachmentsFixture from './SpecAttachmentsFixture';
 import SpecImportReviewFixture from './SpecImportReviewFixture';
 import SpecDeliveryFixture from './SpecDeliveryFixture';
+import SpecPageFixture from './SpecPageFixture';
 import MissionDeliveriesFixture from './MissionDeliveriesFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
@@ -41,6 +42,7 @@ import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import CoordinationHoldFixture from './CoordinationHoldFixture';
+import StartAnywayFixture from './StartAnywayFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import RunnerIsolationFixture from './RunnerIsolationFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
@@ -91,6 +93,7 @@ import {
     SPEC_ATTACHMENTS_FIXTURE_STATE,
     SPEC_DELIVERY_FIXTURE_STATE,
     SPEC_IMPORT_REVIEW_FIXTURE_STATE,
+    SPEC_PAGE_FIXTURE_STATE,
     RUNNER_KEYS_FIXTURE_STATE,
     MISSION_DELIVERIES_FIXTURE_STATE,
     DESIGN_PREVIEW_FIXTURE_STATE,
@@ -101,6 +104,7 @@ import {
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     COORDINATION_HOLD_FIXTURE_STATE,
+    START_ANYWAY_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
@@ -198,6 +202,10 @@ export default function DevFixturesPage() {
         return <SpecImportReviewFixture />;
     }
 
+    if (state === SPEC_PAGE_FIXTURE_STATE) {
+        return <SpecPageFixture />;
+    }
+
     if (state === SPEC_DELIVERY_FIXTURE_STATE) {
         return <SpecDeliveryFixture />;
     }
@@ -254,6 +262,9 @@ export default function DevFixturesPage() {
     }
     if (state === COORDINATION_HOLD_FIXTURE_STATE) {
         return <CoordinationHoldFixture />;
+    }
+    if (state === START_ANYWAY_FIXTURE_STATE) {
+        return <StartAnywayFixture />;
     }
 
     if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {

@@ -391,6 +391,83 @@ describe('deriveMissionStateView — awaiting merge', () => {
     expect(view.nextAction).toContain('Confirm the suggested PR');
   });
 
+  // Repro (task c8092d2a / PR #5530): the detector's own suggestion already says "none of this
+  // PR's added lines were found in it" (contentRatio 0) — the headline must not still call that
+  // "likely superseded", and the next action must not ask for a one-tap Confirm on it.
+  it('does not call a zero-evidence suggestion "likely superseded"', () => {
+    const suggestion = {
+      repo: 'org/buildd', prNumber: 5479, prUrl: 'https://github.com/org/buildd/pull/5479',
+      signal: 'sibling_task' as const, why: 'merged by a sibling task in the same mission; none of this PR\'s added lines were found in it', score: 0.6,
+      contentRatio: 0,
+    };
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: 'x',
+        awaitingMerge: 1,
+        awaitingMergeDetails: [
+          { taskId: 'task-c', title: 'Merge dev into mission branch', prNumber: 5530, prUrl: 'https://github.com/org/buildd/pull/5530', closedUnsuperseded: true, suggestion },
+        ],
+      },
+    });
+
+    const waiting = gated(view);
+    if (waiting.kind !== 'pr_closed_unmerged') throw new Error('expected pr_closed_unmerged');
+    expect(waiting.label).not.toContain('likely superseded');
+    expect(waiting.label).toContain('does not carry its changes');
+    expect(view.situation.headline).not.toContain('likely superseded');
+    expect(view.nextAction).not.toContain('Confirm the suggested PR');
+    expect(view.nextAction).toContain('record_pr_supersession');
+  });
+
+  // Unavailable proof (the candidate's changes could not be read) is not negative proof.
+  it('reads an unavailable-proof suggestion as "could not be checked", distinct from "does not carry"', () => {
+    const suggestion = {
+      repo: 'org/buildd', prNumber: 9, prUrl: 'https://github.com/org/buildd/pull/9',
+      signal: 'claim' as const, why: 'GitHub did not return its changes, so its content was not compared', score: 0.9,
+      contentUnavailable: true as const,
+    };
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false, code: 'awaiting_merge', reason: 'x', awaitingMerge: 1,
+        awaitingMergeDetails: [{ taskId: 'task-c', title: 'T', prNumber: 5530, prUrl: 'https://github.com/org/buildd/pull/5530', closedUnsuperseded: true, suggestion }],
+      },
+    });
+    const waiting = gated(view);
+    if (waiting.kind !== 'pr_closed_unmerged') throw new Error('expected pr_closed_unmerged');
+    expect(waiting.label).toContain('could not be checked');
+    expect(waiting.label).not.toContain('does not carry');
+    expect(waiting.label).not.toContain('likely superseded');
+    expect(view.situation.headline).toContain('could not be checked');
+    expect(view.nextAction).not.toContain('Confirm the suggested PR');
+  });
+
+  it('reads a closed refresh PR by its own proof: landed vs unique work, with distinct next actions', () => {
+    const at = '2026-10-24T00:00:00Z';
+    const viewFor = (refreshCheck: any) => deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false, code: 'awaiting_merge', reason: 'x', awaitingMerge: 1,
+        awaitingMergeDetails: [{ taskId: 'task-c', title: 'Merge dev', prNumber: 5530, prUrl: 'https://github.com/org/buildd/pull/5530', closedUnsuperseded: true, refreshCheck }],
+      },
+    });
+    const landed = viewFor({ outcome: 'landed', branch: 'mission/m', reason: 'r', at });
+    const unique = viewFor({ outcome: 'unique_work', branch: 'mission/m', reason: 'migration not found', at });
+    const unavailable = viewFor({ outcome: 'unavailable', branch: 'mission/m', reason: 'could not read', at });
+
+    expect(landed.situation.headline).toContain('refresh work is already in');
+    expect(landed.nextAction).toContain('Refresh work is in the integration branch');
+    expect(unique.situation.headline).toContain('is missing work it carries');
+    expect(unique.nextAction).toContain('Land it through a new refresh or PR before abandoning');
+    expect(unavailable.situation.headline).toContain('could not be checked');
+    for (const v of [landed, unique, unavailable]) expect(v.situation.headline).not.toContain('likely superseded');
+    // The mission still cannot complete on any of them: a closed refresh is a person's to settle.
+    for (const v of [landed, unique, unavailable]) expect(gated(v).kind).toBe('pr_closed_unmerged');
+  });
+
   it('keeps the ordinary merge reading when only some of the unmerged PRs are closed', () => {
     const view = deriveMissionStateView({
       ...base,
