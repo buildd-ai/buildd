@@ -43,6 +43,8 @@ export interface CheckRow {
   target: string | null;
   /** The short commit the check judged, when known. */
   commit: string | null;
+  /** Screens the visual review captured, when it has run (the Checks detail). */
+  screens?: number | null;
   actor: CheckActor;
   /** `product`: the screens or the work have a problem. `system`: the check itself failed. */
   problem: 'product' | 'system' | null;
@@ -132,7 +134,7 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   const base = {
     key: 'visual', kind: 'visual' as const, label: 'Visual review',
     chip: state.blocksMerge ? 'blocks merge' : blocks ? 'blocks finish' : 'advisory',
-    blocks, target: state.branch.base, commit: short(state.branch.headSha),
+    blocks, target: state.branch.base, commit: short(state.branch.headSha), screens: state.scope.screens,
     problem: p.problem, findings: p.findings, repairs: [...(opts.repairs ?? [])], evidence: [...(opts.evidence ?? [])],
   };
   const actor: CheckActor = p.needsYou ? 'owner' : state.nextActor === 'jev' ? 'reviewer' : state.nextActor === 'none' ? 'none' : 'system';
