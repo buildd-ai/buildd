@@ -134,6 +134,14 @@ const realKernelClient = await import('@/lib/workflow/kernel-client');
 mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observeCiFailure: mockObserveCiFailure }));
 mock.module('@/lib/policy-overrides', () => ({ policyValue: () => 3, POLICY_DEFAULTS: { maxCiRetries: 3 } }));
 
+const recordRedChecksCalls: Array<{ repoFullName: string; prNumber: number; headSha: string }> = [];
+mock.module('@/lib/red-check-record', () => ({
+  recordRedChecks: mock(async (input: any) => {
+    recordRedChecksCalls.push(input);
+    return null;
+  }),
+}));
+
 const { retryCiFailureForPr } = await import('./ci-failure-retry');
 
 const meta = {
@@ -253,5 +261,19 @@ describe('retryCiFailureForPr on a red frozen release candidate', () => {
     const out = await retryCiFailureForPr({ ...input, headSha: 'amended-sha' });
     expect(out).toMatchObject({ kind: 'skipped', reason: 'release_candidate', fixTaskId: 'new-1' });
     expect(insertedRows).toHaveLength(1);
+  });
+
+  it('AC-51: recordRedChecks is called for release candidate PRs so Home can name the failing check (regression for #5539)', async () => {
+    recordRedChecksCalls.length = 0;
+    prWorkers = [workerRow];
+    prGate = candidateGate({ headSha: 'cand-sha' });
+    await retryCiFailureForPr(input);
+    expect(recordRedChecksCalls).toHaveLength(1);
+    expect(recordRedChecksCalls[0]).toMatchObject({
+      repoFullName: 'o/r',
+      prNumber: 76,
+      headSha: 'cand-sha',
+      installationId: 1,
+    });
   });
 });
