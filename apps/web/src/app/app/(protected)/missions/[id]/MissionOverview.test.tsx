@@ -197,14 +197,14 @@ describe('MissionOverview stages (Navigation R-15, AC-9; spec f7f67f1a R-11 to R
     expect(html).toContain('10 tasks merged ›');
     expect(html).not.toContain('data-testid="task-strip"');
     expect(html).not.toContain('data-testid="mission-build-summary"');
-    expect(rows(html)).toEqual(['visual:running', 'mission_pr:queued', 'criterion:queued', 'release:queued']);
+    expect(rows(html)).toEqual(['visual:running', 'merge:queued', 'release:queued', 'criterion:queued']);
     expect(rail(html)).toEqual(['build:done', 'verify:now', 'deliver:todo']);
     expect(html).not.toMatch(/Delivered|%/);
   });
 
   it('a visual finding shows its fix inside the check, and the fix is not in the build count', () => {
     const html = render('handoff-repairing');
-    expect(rows(html)[0]).toBe('visual:finding');
+    expect(rows(html)[0]).toBe('visual:failed');
     expect(html).toContain('data-testid="mission-check-repairs"');
     expect(html).toContain('filter selection resets after a refresh');
     expect(html).toContain('10 tasks merged ›');
@@ -212,9 +212,10 @@ describe('MissionOverview stages (Navigation R-15, AC-9; spec f7f67f1a R-11 to R
 
   it('reviewer merge shows no owner button; human merge names the owner but adds no Approve or Merge button here', () => {
     const reviewer = render('handoff-reviewer');
-    expect(reviewer).toContain('reviewer deciding');
+    expect(reviewer).toContain('In review');
+    expect(reviewer).not.toMatch(/reviewer deciding|Merges when/);
     const human = render('handoff-approval');
-    expect(human).toContain('approve to deliver');
+    expect(human).toContain('Needs review');
     for (const html of [reviewer, human]) {
       const card = html.slice(html.indexOf('data-testid="mission-checks"'));
       expect(card).not.toMatch(/<button[^>]*>(Approve|Merge)[^<]*<\/button>/);

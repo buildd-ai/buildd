@@ -34,7 +34,6 @@ import { buildStageSituation } from '@/lib/mission-build-notice';
 import MissionRecoveryNotice from '@/components/recovery/MissionRecoveryNotice';
 import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
-import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionDescription from './MissionDescription';
@@ -959,25 +958,13 @@ async function MissionDetailBody({
   const acceptanceBlock = acceptanceTests.length > 0 ? <MissionAcceptanceTests tests={acceptanceTests} /> : null;
   const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
 
-  const reviewSummary = displayState === 'review' ? (
-    <MissionReviewSummary
-      missionId={id}
-      tasks={allTasks
-        .filter(t => t.category !== 'review' && t.status !== 'cancelled')
-        .map(t => {
-          const w = (t.workers as any[])?.[0];
-          return {
-            id: t.id,
-            title: t.title,
-            status: t.status,
-            prUrl: w?.prUrl ?? null,
-            prNumber: w?.prNumber ?? null,
-            prMerged: !!w?.mergedAt,
-            prClosed: w?.prLifecycleStatus === 'closed',
-          };
-        })}
-    />
-  ) : null;
+  // The task PRs behind Delivery's count line (spec 072de598 I-23).
+  const deliveryTasks = allTasks
+    .filter(t => t.category !== 'review' && t.status !== 'cancelled')
+    .map(t => {
+      const w = (t.workers as any[])?.[0];
+      return { id: t.id, title: t.title, status: t.status, prUrl: w?.prUrl ?? null, prNumber: w?.prNumber ?? null, prMerged: !!w?.mergedAt, prClosed: w?.prLifecycleStatus === 'closed' };
+    });
 
   const budgetDetail = budgetUsd == null ? null : mission.status === 'budget_exhausted' ? (
     <div className="flex items-start justify-between gap-3">
@@ -1260,14 +1247,13 @@ async function MissionDetailBody({
       />
     </MissionNoticeSlot>
   );
-  const boardNotice = quietState && !missionPrCard && !scopeUpdatesBlock && !acceptanceBlock && !reviewSummary && recoveryItems.length === 0 ? null : (
+  const boardNotice = quietState && !missionPrCard && !scopeUpdatesBlock && !acceptanceBlock && recoveryItems.length === 0 ? null : (
     <MissionNoticeSlot needsYou={needsPerson}>
       {!quietState && budgetExhausted && budgetDetail}
       {recoveryItems.length > 0 && <MissionRecoveryNotice items={recoveryItems} />}
       {missionPrCard}
       {scopeUpdatesBlock}
       {acceptanceBlock}
-      {reviewSummary}
     </MissionNoticeSlot>
   );
   const boardLink = { missionId: id, from: parseMissionOrigin(from), initiativeId: initiativeId ?? null };
@@ -1438,7 +1424,7 @@ async function MissionDetailBody({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={layout}
-        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} situation={{ build: buildSituation || null, verify: verifySituation || null }} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} design={<LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed />} {...boardLink} />)}
+        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} situation={{ build: buildSituation || null, verify: verifySituation || null }} visual={boardVisual} checks={overviewChecks} deliveryTasks={deliveryTasks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} design={<LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed />} {...boardLink} />)}
         flow={layout !== 'flow' ? null : boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={layout !== 'feed' ? null : boardHeader(
           <MissionFeedLayout
