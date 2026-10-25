@@ -32,6 +32,38 @@ export function detectInfraFailure(log: string | null | undefined): string | nul
 const DB_CONNECTION_LOST = /terminating connection due to administrator command|Connection terminated unexpectedly|server closed the connection unexpectedly/i;
 
 /**
+ * scripts/run-db-tests.ts's summary. The job stops Postgres after it, and the
+ * neon-sql-shim logs `terminating connection due to administrator command` for
+ * every pooled client on the way down: that is teardown, not a cause.
+ */
+const DB_TESTS_SUMMARY = /^\[test:db\] \d+(?:\/\d+)? file\(s\) (?:failed|passed)/;
+
+/** A test's result line; bun prints a test's output before it. */
+const TEST_RESULT = /^\((?:pass|fail|skip|todo)\)\s/;
+
+/**
+ * The database dropped the connections while the tests ran, and that is all
+ * that went wrong. Matched only before the job's own summary and teardown, and
+ * every failing test must carry the termination in its own output: a test that
+ * failed without it, or a type error, is the code's, whatever the shim prints
+ * when Postgres stops.
+ */
+function dbConnectionLost(log: string): boolean {
+  const lines = ownSteps(cleanLines(log)).map(l => l.trim());
+  const summary = lines.findIndex(l => DB_TESTS_SUMMARY.test(l));
+  const run = summary === -1 ? lines : lines.slice(0, summary);
+  let lost = false;
+  let lostInThisTest = false;
+  for (const l of run) {
+    if (DB_CONNECTION_LOST.test(l)) lost = lostInThisTest = true;
+    if (/^\(fail\)\s/.test(l) && !lostInThisTest) return false;
+    if (TEST_RESULT.test(l)) lostInThisTest = false;
+    else if (ASSERTION.some(re => re.test(l))) return false;
+  }
+  return lost;
+}
+
+/**
  * What a re-run of the same code is expected to clear: the database dropping
  * its connections, or an infra signature. `ci-infra-failure.ts` re-runs on it.
  *
@@ -45,7 +77,7 @@ export function detectRerunnableFailure(log: string | null | undefined): string 
   const lines = cleanLines(log);
   const firstFailure = lines.findIndex(l => ASSERTION.some(re => re.test(l.trim())));
   const text = firstFailure === -1 ? log : lines.slice(0, firstFailure).join('\n');
-  if (DB_CONNECTION_LOST.test(text)) return 'db_connection_lost';
+  if (dbConnectionLost(log)) return 'db_connection_lost';
   return detectInfraFailure(text);
 }
 /** The job or step ran out of time. */
@@ -191,6 +223,11 @@ export interface RedJob {
   /** Failing lines (`failingLines`, or the test report's when the log names no test). */
   lines: string | null;
   rule: RedRule;
+  /**
+   * Set when the base branch's run at the same time was read: true when the
+   * job was not red there. Absent when no base run could be compared.
+   */
+  baseGreen?: boolean;
 }
 
 /** A line that shows the code itself is wrong: a failing test, a type error, a thrown assertion. */
@@ -204,7 +241,7 @@ const ASSERTION = [/^\(fail\)\s/, /^\s*x\s+\S/, /[✗✖]\s/, /\berror TS\d+:/, 
 export function classifyJob(log: string | null | undefined, lines: string | null): RedRule {
   const text = log ?? '';
   const failed = (lines ?? '').split('\n').some(l => ASSERTION.some(re => re.test(l.trim())));
-  if (DB_CONNECTION_LOST.test(text)) return 'db_connection_lost';
+  if (dbConnectionLost(text)) return 'db_connection_lost';
   const infra = detectInfraFailure(text) as RedRule | null;
   if (infra) return infra;
   if (failed) return 'test';
@@ -257,9 +294,10 @@ export function applyNotThisPr(
   ctx: { redOnBase?: ReadonlySet<string> | null; changed?: readonly string[] | null; scopes?: readonly JobPathScope[] },
 ): RedJob[] {
   return jobs.map(j => {
-    if (ctx.redOnBase?.has(j.name)) return { ...j, rule: 'red_on_base' as const };
-    if (unrelatedToDiff(j.name, ctx.changed ?? null, ctx.scopes)) return { ...j, rule: 'unrelated_to_diff' as const };
-    return j;
+    const base = ctx.redOnBase ? { baseGreen: !ctx.redOnBase.has(j.name) } : {};
+    if (ctx.redOnBase?.has(j.name)) return { ...j, ...base, rule: 'red_on_base' as const };
+    if (unrelatedToDiff(j.name, ctx.changed ?? null, ctx.scopes)) return { ...j, ...base, rule: 'unrelated_to_diff' as const };
+    return { ...j, ...base };
   });
 }
 

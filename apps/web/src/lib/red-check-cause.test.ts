@@ -229,7 +229,14 @@ describe("not this PR's code (R-3 rules)", () => {
   it('a job green on the base branch keeps its own rule', () => {
     const jobs = applyNotThisPr([windows], { redOnBase: new Set(['lint']), changed: ['apps/runner/a.ts'] });
     expect(jobs[0].rule).toBe('test');
+    expect(jobs[0].baseGreen).toBe(true);
     expect(causeOf(jobs)).toBe('failure');
+  });
+
+  it('baseGreen says whether the base run was read: absent without one, false when red there', () => {
+    expect(applyNotThisPr([windows], { changed: ['apps/web/a.ts'] })[0].baseGreen).toBeUndefined();
+    expect(applyNotThisPr([windows], { redOnBase: new Set(), changed: ['apps/web/a.ts'] })[0]).toMatchObject({ rule: 'unrelated_to_diff', baseGreen: true });
+    expect(applyNotThisPr([windows], { redOnBase: new Set(['Runner unit tests (windows)']) })[0].baseGreen).toBe(false);
   });
 
   it('the card says why, and does not call it a flake', () => {
@@ -281,6 +288,77 @@ describe('detectRerunnableFailure', () => {
     expect(detectRerunnableFailure('toomanyrequests: You have reached your pull rate limit')).toBe('registry_rate_limit');
     expect(detectRerunnableFailure('(fail) a > b')).toBeNull();
     expect(detectRerunnableFailure(null)).toBeNull();
+  });
+
+  /**
+   * A real DB-architecture failure (two tests failing on the PR's own change):
+   * the shim prints the termination line for every pooled client when the job
+   * stops Postgres, after the summary. Read as infra, it was re-run three
+   * times and never got a fix.
+   */
+  const SHIM = '[neon-sql-shim] idle client error: terminating connection due to administrator command';
+  const DB_ARCH_TEST_FAILURE = [
+    '2026-10-24T16:02:00.0000000Z ##[group]Run bun run test:db',
+    '2026-10-24T16:02:10.0000000Z tests/db/escalation-decisions.test.ts:',
+    '2026-10-24T16:02:10.1000000Z (pass) escalation decisions > files a question [12.00ms]',
+    '2026-10-24T16:02:10.2000000Z error: expect(received).toBe(expected)',
+    '2026-10-24T16:02:10.3000000Z Expected: "success"',
+    '2026-10-24T16:02:10.4000000Z Received: "pending"',
+    '2026-10-24T16:02:10.5000000Z       at <anonymous> (tests/db/escalation-decisions.test.ts:165:7)',
+    '2026-10-24T16:02:10.6000000Z (fail) escalation decisions > an approved PR reads success [30.00ms]',
+    '2026-10-24T16:02:20.0000000Z tests/db/workflow-open-pr-status.test.ts:',
+    '2026-10-24T16:02:20.1000000Z (fail) open PR status > approved and green [25.00ms]',
+    '2026-10-24T16:14:30.0000000Z [test:db] 2/188 file(s) failed:',
+    '2026-10-24T16:14:30.1000000Z   apps/web/tests/db/escalation-decisions.test.ts',
+    '2026-10-24T16:14:30.2000000Z   apps/web/tests/db/workflow-open-pr-status.test.ts',
+    `2026-10-24T16:14:31.0000000Z ${SHIM}`,
+    `2026-10-24T16:14:31.1000000Z ${SHIM}`,
+    `2026-10-24T16:14:31.2000000Z ${SHIM}`,
+    '2026-10-24T16:14:32.0000000Z ##[error]Process completed with exit code 1.',
+    CLEANUP,
+  ].join('\n');
+
+  it('never reads a DB-architecture run with failing tests as infra, whatever the shim prints at teardown', () => {
+    expect(detectRerunnableFailure(DB_ARCH_TEST_FAILURE)).toBeNull();
+    expect(classifyJob(DB_ARCH_TEST_FAILURE, failingLines(DB_ARCH_TEST_FAILURE))).toBe('test');
+  });
+
+  it('ignores termination lines after the summary even when no test is named', () => {
+    const teardownOnly = [
+      '2026-10-24T16:14:30.0000000Z [test:db] 1/188 file(s) failed:',
+      '2026-10-24T16:14:30.1000000Z   apps/web/tests/db/a.test.ts',
+      `2026-10-24T16:14:31.0000000Z ${SHIM}`,
+    ].join('\n');
+    expect(detectRerunnableFailure(teardownOnly)).toBeNull();
+  });
+
+  it('names a connection terminated mid-run, before the summary, with no failing test', () => {
+    const midRun = [
+      '2026-10-24T16:02:00.0000000Z ##[group]Run bun run test:db',
+      '2026-10-24T16:02:10.0000000Z tests/db/escalation-decisions.test.ts:',
+      '2026-10-24T16:02:10.1000000Z error: terminating connection due to administrator command',
+      '2026-10-24T16:02:10.2000000Z [test:db] 1/188 file(s) failed:',
+      '2026-10-24T16:02:10.3000000Z   apps/web/tests/db/escalation-decisions.test.ts',
+      `2026-10-24T16:02:11.0000000Z ${SHIM}`,
+      CLEANUP,
+    ].join('\n');
+    expect(detectRerunnableFailure(midRun)).toBe('db_connection_lost');
+    expect(classifyJob(midRun, failingLines(midRun))).toBe('db_connection_lost');
+  });
+
+  it('names a test failed by the termination, but not when another test failed on its own', () => {
+    const dropped = [
+      '2026-10-24T16:02:10.0000000Z (pass) store > reads [3.00ms]',
+      '2026-10-24T16:02:10.1000000Z error: terminating connection due to administrator command',
+      '2026-10-24T16:02:10.2000000Z (fail) store > writes [12.00ms]',
+    ];
+    const ownFailure = [
+      '2026-10-24T16:02:11.0000000Z error: expect(received).toBe(expected)',
+      '2026-10-24T16:02:11.1000000Z (fail) store > counts [4.00ms]',
+    ];
+    expect(detectRerunnableFailure(dropped.join('\n'))).toBe('db_connection_lost');
+    expect(detectRerunnableFailure([...dropped, ...ownFailure].join('\n'))).toBeNull();
+    expect(detectRerunnableFailure([...ownFailure, ...dropped].join('\n'))).toBeNull();
   });
 
   // e2ea3764 (#5640): a real snapshot test failure re-run as infrastructure.
