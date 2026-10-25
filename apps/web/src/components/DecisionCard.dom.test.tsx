@@ -269,4 +269,35 @@ describe('DecisionCard', () => {
     expect(acted).toEqual(['Mark all fixed']);
     expect(q('[data-answered="true"]')!.textContent).toContain('You chose Mark all fixed');
   });
+  it('criteria escalation: the asking task and its age, the requirements in words, a short question, Answer differently files the answer as mission work', async () => {
+    const { criteriaEscalationDecision } = await import('@/lib/mission-decisions');
+    const SPEC = 'Windows runner through WSL2: one guided setup';
+    const view = criteriaEscalationDecision({
+      missionId: 'm1', workspaceId: 'w1', fileWorkHref: '/app/tasks/new?missionId=m1',
+      mission: { id: 'm1', title: SPEC, href: '/app/missions/m1' },
+      asker: { id: 't9', title: 'Verify WSL2 guided setup', href: '/app/tasks/t9' },
+      askedAt: T0 - 2 * 60 * 60_000,
+      unmet: { count: 4, state: 'not checked', names: ['WSL2 install step', 'Runner starts on boot', 'Setup reports progress', 'Errors say what to change'] },
+    });
+    act(() => root.render(<DecisionCard view={view} now={T0} pageMissionId="m1" />));
+    expect(q('[data-testid="question-subject"]')!.textContent).toBe('●Verify WSL2 guided setup· asked 2h ago');
+    expect(q('[data-testid="decision-summary"]')!.textContent).toContain('4 requirements not checked: WSL2 install step, Runner starts on boot, Setup reports progress and 1 more.');
+    expect(q('[data-testid="decision-question"]')!.textContent).toBe('Ship without these 4 checks?');
+    // The spec title appears at most once on the card (here: not at all).
+    expect((container.textContent!.match(new RegExp(SPEC, 'g')) ?? []).length).toBeLessThanOrEqual(1);
+    expect(q('[data-testid="decision-not-now"]')).not.toBeNull();
+    await act(async () => { q('[data-testid="decision-answer-differently"]')!.click(); });
+    const input = q('[data-testid="decision-answer-form"] input') as HTMLInputElement;
+    await act(async () => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      set.call(input, 'Check the install step by hand on a clean machine');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { (q('[data-testid="decision-answer-form"] button[type="submit"]') as HTMLButtonElement).click(); });
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('/api/tasks');
+    expect(calls[0].body).toMatchObject({ workspaceId: 'w1', missionId: 'm1', title: 'Check the install step by hand on a clean machine' });
+    expect(q('[data-answered="true"]')!.textContent).toContain('You chose Check the install step by hand on a clean machine');
+  });
 });

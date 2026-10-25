@@ -33,7 +33,7 @@ import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, ou
 import { isClosedUnshipped, overviewCells, overviewLayout } from '@/lib/mission-overview';
 import { stripOrder } from '@/lib/mission-task-strip';
 import type { DecisionView } from '@/lib/needs-you-card';
-import type { HistoryRaised } from '@/lib/mission-decisions';
+import { historyOnScreen, type HistoryRaised } from '@/lib/mission-decisions';
 import { useRouter } from 'next/navigation';
 import { CompletionRecord, PlanningPlaceholder } from './MissionBoard';
 import { boardTaskHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
@@ -65,6 +65,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   planTasks?: readonly PlanTask[] | null;
   /** A hold or empty budget: no time promise (R-24). */
   held?: boolean;
+  /** The mission's title: a spec line repeating it is left out. */
+  missionTitle?: string | null;
   /** Titles of the selected outcome specs and the standards, by spec id, for the spec line (Navigation R-3). */
   outcomeSpecTitles?: Readonly<Record<string, string>> | null;
   /** The decisions a person must give, one card each (Navigation R-16; `missionDecisions`). */
@@ -90,7 +92,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 
 function OverviewView({
   model: serverModel, completionText = null, notice, situation, visual: _visual, review,
-  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null, design = null,
+  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null, missionTitle = null, design = null,
   decisions = [], history = null, expectedMinutes, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
@@ -138,7 +140,7 @@ function OverviewView({
     ? buildEstimate(planTasks, now, held || needs > 0 || (activeCount === 0 && waitingCount > 0))?.line ?? null
     : null;
   const where = checksSource?.branch === 'mission-branch' ? 'the mission branch' : checksSource?.target ?? 'the target branch';
-  const specLines = checksSource ? outcomeSpecLines(checksSource.criteria, handoff?.rows ?? [], outcomeSpecTitles ?? {}) : [];
+  const specLines = checksSource ? outcomeSpecLines(checksSource.criteria, handoff?.rows ?? [], outcomeSpecTitles ?? {}, missionTitle) : [];
 
   const bar = order.length > 0 && (
     <TaskStrip cells={cells} groups={groups} ticks={false} selectedId={selectedId} onSelect={setSelectedId} onOpen={openTask} label="Mission tasks, merged first" />
@@ -149,6 +151,8 @@ function OverviewView({
   const showAsk = review && !visualCard;
   const listed = (rows: NonNullable<typeof handoff>['rows']) => (visualCard ? rows.filter(r => r.kind !== 'visual') : rows);
   const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} missionId={link.missionId} />;
+  // History only for what the screen does not already show (R-37): the build rows show in Build, or once unfolded.
+  const raised = historyOnScreen(history, { buildRowsShown: stage === 'build' || showBuild, decisions });
 
   return (
     <div data-testid="mission-overview" data-stage={stage} className="flex min-w-0 flex-col gap-5">
@@ -157,7 +161,7 @@ function OverviewView({
       {stage === 'build' && (
         <>
           {cards}
-          {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {raised && <HistoryRaisedLine item={raised} missionId={link.missionId} />}
           {situation?.build}
           {notice}
           {showAsk && <MissionVisualAsk review={review} board={model} />}
@@ -175,7 +179,7 @@ function OverviewView({
             {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
           </BuildCompleteBar>
           {cards}
-          {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {raised && <HistoryRaisedLine item={raised} missionId={link.missionId} />}
           {situation?.verify}
           {notice}
           {showAsk && <MissionVisualAsk review={review} board={model} />}
