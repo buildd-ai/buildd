@@ -65,7 +65,9 @@
  *  - **A mission task starts** (`refreshMissionBranchesBeforeStart`, from the
  *    claim route): a work task cutting its branch from the integration branch
  *    starts on current trunk. Bounded and fail-open; the claim never waits on
- *    it past its budget.
+ *    it past its budget. Debounced: a start within
+ *    `START_REFRESH_MIN_INTERVAL_MS` of the last confirmed refresh merges
+ *    nothing, so a busy mission is not refreshed once per task start.
  *  - **The mission is about to land**: nothing here. The mission PR into
  *    trunk is a kernel delivery, and an approved, behind one is updated by
  *    `refresh_branch` through the landing lane.
@@ -112,6 +114,12 @@ export const BRANCH_REFRESH_LEASE_MS = 45_000;
 export const BRANCH_REFRESH_BACKSTOP_MS = 24 * 60 * 60 * 1000;
 /** The most a starting task's claim waits on its mission's refresh. */
 export const START_REFRESH_BUDGET_MS = 4_000;
+/**
+ * A start refreshes a branch at most this often. Each refresh moves the base
+ * under every open task PR and restarts its CI, so a mission whose tasks start
+ * every few minutes was being refreshed every few minutes.
+ */
+export const START_REFRESH_MIN_INTERVAL_MS = 60 * 60 * 1000;
 /** An epoch refresh that met another caller's lease waits this long, then runs again (spending no attempt). */
 export const REFRESH_IN_FLIGHT_PARK_MS = 60_000;
 
@@ -166,6 +174,8 @@ export type MissionBranchRefreshOutcome =
         | 'refresh_unverified'
         | 'in_flight'
         | 'already_current'
+        /** A start within `START_REFRESH_MIN_INTERVAL_MS` of the last confirmed refresh. */
+        | 'recently_refreshed'
         | 'no_repo'
         | 'empty_repo'
         /** The writable epoch's branch is not cut yet: the kernel cuts it from the merge commit first. */
@@ -370,6 +380,14 @@ export async function refreshMissionIntegrationBranch(
       // Freshly cut from trunk — already current by construction.
       await db.update(missions).set({ branchRefreshHeadSha: trunkSha, branchRefreshedAt: new Date() }).where(ownsLease);
       return { kind: 'skipped', reason: 'already_current' };
+    }
+
+    // Start debounce: the branch was brought current recently enough. The task
+    // starts on it as it is; the next start past the interval, or the backstop,
+    // picks up whatever trunk gained since.
+    const refreshedAt = current.branchRefreshedAt ? new Date(current.branchRefreshedAt).getTime() : null;
+    if (trigger === 'start' && refreshedAt != null && Date.now() - refreshedAt < START_REFRESH_MIN_INTERVAL_MS) {
+      return { kind: 'skipped', reason: 'recently_refreshed' };
     }
 
     // The mission PR may have merged while this ran: re-read it at the boundary.

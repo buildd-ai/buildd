@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { checkForeignClose, closesForeignPr, foreignCloseComment } from './pr-close-guard';
+import { checkForeignClose, closesForeignPr, closesOwnRetrySubject, foreignCloseComment, retrySubjectCloseRefusal } from './pr-close-guard';
 
 const ACCOUNT = { id: 'account-1' };
 const worker = (o: Record<string, unknown> = {}) => ({
@@ -24,6 +24,36 @@ describe('closesForeignPr', () => {
   it('leaves a person alone: a session user or a teammate on another account', () => {
     expect(closesForeignPr({ ...ACCOUNT, sessionUserId: 'user-1' }, worker(), 7)).toBe(false);
     expect(closesForeignPr({ id: 'person-1' }, worker(), 7)).toBe(false);
+  });
+});
+
+// Friction 0e0a8c78: a fix attempt closed the PR it was fixing once its own
+// fix was approved, leaving an orphan that was later reopened and merged stale.
+describe('closesOwnRetrySubject', () => {
+  it('is true when a fix attempt closes the PR it was filed to repair', () => {
+    expect(closesOwnRetrySubject(ACCOUNT, worker({ task: { id: 't', ciRetryPrNumber: 7 } }), 7)).toBe(true);
+    expect(closesOwnRetrySubject(ACCOUNT, worker({ task: { id: 't', conflictRetryPrNumber: 7 } }), 7)).toBe(true);
+    expect(closesOwnRetrySubject(ACCOUNT, worker({ task: { id: 't', reviewerRetryPrNumber: 7 } }), 7)).toBe(true);
+  });
+
+  it('is false for the PR the worker itself opened, even a replacement on a retry', () => {
+    expect(closesOwnRetrySubject(ACCOUNT, worker({ prNumber: 9, task: { id: 't', ciRetryPrNumber: 7 } }), 9)).toBe(false);
+    expect(closesOwnRetrySubject(ACCOUNT, worker({ prNumber: 7, task: { id: 't', ciRetryPrNumber: 7 } }), 7)).toBe(false);
+  });
+
+  it('is false for a task that is not a retry of that PR', () => {
+    expect(closesOwnRetrySubject(ACCOUNT, worker(), 7)).toBe(false);
+    expect(closesOwnRetrySubject(ACCOUNT, worker({ task: { id: 't', ciRetryPrNumber: 8 } }), 7)).toBe(false);
+  });
+
+  it('leaves a person alone', () => {
+    const fix = worker({ task: { id: 't', ciRetryPrNumber: 7 } });
+    expect(closesOwnRetrySubject({ ...ACCOUNT, sessionUserId: 'user-1' }, fix, 7)).toBe(false);
+    expect(closesOwnRetrySubject({ id: 'person-1' }, fix, 7)).toBe(false);
+  });
+
+  it('refuses with a typed 409', () => {
+    expect(retrySubjectCloseRefusal(7)).toMatchObject({ status: 409, reasonCode: 'retry_closes_subject' });
   });
 });
 

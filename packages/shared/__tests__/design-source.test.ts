@@ -20,4 +20,22 @@ describe('design screens in the context a builder gets', () => {
     expect(text).toContain('Navigation (phone), 390x844');
     expect(text).not.toContain('Navigation (desktop)');
   });
+
+  // Living Spec f43b6a61 R-15 / AC-12.
+  const ROW = { id: 'c-row', name: 'Delivery row', viewport: '360x120', kind: 'component' as const, code: 'apps/web/src/components/X.tsx' };
+  const MANY = [...Array.from({ length: 20 }, (_, i) => ({ id: `page-${i}`, name: `Page ${i}`, viewport: '1440x900' })), ROW];
+
+  it('keeps kind and code of a screen, and drops a bad kind or code', () => {
+    const ds = designSourceFromContext({ designSource: { artifactId: ID, screenInfo: [ROW, { ...ROW, id: 'w', kind: 'widget' }, { ...ROW, id: 'p', code: '../x' }] } });
+    expect(ds?.screenInfo).toEqual([ROW, { id: 'w', name: ROW.name, viewport: ROW.viewport, code: ROW.code }, { id: 'p', name: ROW.name, viewport: ROW.viewport, kind: 'component' }]);
+  });
+
+  it('lists only the screens its criteria name, each with how to read it on its own', () => {
+    const text = designArtifactLines({ artifactId: ID, revision: 2, screens: ['c-row'], screenInfo: MANY, criteria: [{ id: 'AC-12', screens: ['c-row'] }] }).join('\n');
+    expect(text).toContain('`c-row`');
+    expect(text).toContain(`manage_designs action=screen designId=${ID} revision=2 screenId=c-row`);
+    expect(text).toContain('component');
+    expect(text).toContain('apps/web/src/components/X.tsx');
+    expect(text).not.toMatch(/page-\d/);
+  });
 });

@@ -152,11 +152,29 @@ export function isRecheckAfterApproval(r: Pick<RoundSnapshot, 'scope'> | null | 
   return da != null && typeof da === 'object';
 }
 
+/**
+ * Task 81705dd8: whether a round judged anything the budget should pay for. Besides a re-check
+ * after an approval (c1d66a6a), two kinds of round spend nothing:
+ *  - one a newer push superseded before its own verdict applied: three pushes in ten minutes
+ *    filed three reviewers, only the third judged, and its request for changes escalated
+ *    review_exhausted with no fix ever dispatched (#5500). A verdict that lands on such a round
+ *    afterwards is kept for audit (`endReason` set) but never applied, so it still spends nothing.
+ *  - one opened only because the base branch was merged in (`base_refresh`) that did not ask for
+ *    changes: it re-checks the same change against a new base (#5488). One that does ask counts.
+ * `judging` is the round whose request for changes is being weighed: it is about to ask, so it counts.
+ */
+function spendsReviewBudget(r: RoundSnapshot, judging: string | undefined): boolean {
+  if (isRecheckAfterApproval(r)) return false;
+  if (r.status === 'superseded' && (r.verdict == null || r.endReason != null)) return false;
+  if (r.trigger === 'base_refresh' && r.id !== judging && r.effectiveVerdict !== 'request_changes') return false;
+  return true;
+}
+
 /** The rounds up to `upTo` (default the current one) that spend the review budget. */
-export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>, upTo?: number): number {
+export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>, upTo?: number, judging?: string): number {
   const n = upTo ?? view.delivery?.currentRound ?? 0;
-  const rechecks = new Set(view.rounds.filter((r) => r.round <= n && isRecheckAfterApproval(r)).map((r) => r.round));
-  return n - rechecks.size;
+  const free = new Set(view.rounds.filter((r) => r.round <= n && !spendsReviewBudget(r, judging)).map((r) => r.round));
+  return n - free.size;
 }
 
 /**
@@ -169,9 +187,9 @@ function recheckCycleUsed(view: Pick<KernelView, 'rounds' | 'attempts'>, round: 
 }
 
 /** Whether a request for changes at `round` spends the last of the budget (escalates instead of a fix). */
-function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'round' | 'scope'>, maxRounds: number): boolean {
+function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'id' | 'round' | 'scope'>, maxRounds: number): boolean {
   if (isRecheckAfterApproval(round)) return false;
-  return spentReviewRounds(view, round.round) >= maxRounds;
+  return spentReviewRounds(view, round.round, round.id) >= maxRounds;
 }
 
 /** The patch that carries a spent review budget into a repair that starts from its escalation. */
@@ -986,7 +1004,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const repairingCi = dd.state === 'REPAIRING' && dd.stateReason === 'ci';
       // a90fc99b: a review or policy escalation with red CI gets its CI fix first.
       const escalatedRed = dd.state === 'ESCALATED' && isRepairableEscalation(dd.stateReason);
-      if (!allowed.includes(dd.state) && !reopen && !escalatedRed && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
+      // 210caad3: a behind refresh still waiting (its lane slot, or its turn) is no repair of red
+      // CI. A red head cannot land, so it leaves the lane and gets its CI fix.
+      const laneWait = cmd.openTrunkIncidentId ? undefined : pendingBehindRefresh(c);
+      if (!allowed.includes(dd.state) && !reopen && !escalatedRed && !laneWait && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
       // §6.3 T10 guard "live check-suite read": a stale or redelivered hint for a
       // head that is not red now (re-run green, or re-running) moves nothing.
       if (cmd.liveChecks && cmd.liveChecks.failing.length === 0) return c.rejected('ci_not_red');
@@ -1005,6 +1026,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         return c.apply(`${key}:review_fix_owed`, 'CHANGES_REQUESTED', { guardHead: true, patch: ciPatch, evidence: { signature: cmd.signature, deferral: 'fix_in_flight', ...miss } });
       }
       if (c.openAttempt(['ci'])) return c.rejected('fix_in_flight');
+      const leaveLane: AttemptOp[] = laneWait ? [skipQueued(laneWait)] : [];
       const { spent, max } = c.budget('ci', cmd.maxAttempts);
       if (spent >= max) {
         // A person past the cap extends the budget explicitly (BudgetExtended), never as "iteration 0".
@@ -1012,7 +1034,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         // Already a person's: a spent CI budget does not replace why it escalated.
         if (escalatedRed) return c.rejected('budget_exhausted', { missing: [`ci ${spent} of ${max}`] });
         return c.apply(`${key}:exhausted`, 'ESCALATED', {
-          guardHead: true, patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null },
+          guardHead: true, patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null }, attempts: leaveLane,
           effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:ci:${cmd.headSha}@v${dd.version}`, payload: { family: 'ci', attempts: spent, max, headSha: cmd.headSha, signature: cmd.signature } }],
           evidence: { signature: cmd.signature, spent, max, ...miss },
         });
@@ -1022,9 +1044,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       return c.apply(`${key}:${n}`, 'REPAIRING', {
         guardHead: true,
         patch: { ...ciPatch, stateReason: 'ci', boundAttemptId: id, ...holdThroughRepair(dd) },
-        attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: cmd.headSha, triggerReason: cmd.signature, triggerFactId: cmd.triggerFactId ?? null, taskId: null, trigger: human ? 'human' : 'automatic', status: 'queued', maxAttempts: max }],
+        attempts: [...leaveLane, { op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: cmd.headSha, triggerReason: cmd.signature, triggerFactId: cmd.triggerFactId ?? null, taskId: null, trigger: human ? 'human' : 'automatic', status: 'queued', maxAttempts: max }],
         effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${dd.id}:${cmd.headSha}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: cmd.headSha, signature: cmd.signature, trigger: human ? 'human' : 'automatic' } }],
-        evidence: { signature: cmd.signature, attemptNo: n, spent: spent + 1, max, ...miss },
+        evidence: { signature: cmd.signature, attemptNo: n, spent: spent + 1, max, ...miss, ...(laneWait ? { leftLane: laneWait.id } : {}) },
       });
     }
 
@@ -1144,10 +1166,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         && (isRepairableEscalation(dd.stateReason) || dd.stateReason === 'landing_needs_human')
         && (cmd.migrationCollision === true || cmd.mergeable !== 'behind');
       if (!allowed.includes(dd.state) && !escalatedRepair) return c.stale('state_not_allowed');
-      if (dd.state === 'REPAIRING' && !cmd.mechanicalRefused) return c.rejected('fix_in_flight');
+      // 210caad3: a behind refresh still waiting for its lane slot cannot clear a real conflict
+      // (GitHub's update-branch refuses a dirty PR) or a collision; the repair for it takes over.
+      const laneWait = !cmd.mechanicalRefused && (cmd.migrationCollision === true || cmd.mergeable !== 'behind') ? pendingBehindRefresh(c) : undefined;
+      if (dd.state === 'REPAIRING' && !cmd.mechanicalRefused && !laneWait) return c.rejected('fix_in_flight');
       if (cmd.isDependencyBot) return c.rejected('dependency_bot_pr');
       const kind = cmd.migrationCollision ? 'migration' : cmd.mergeable === 'behind' ? 'behind' : 'conflict';
       return conflictRepair(c, cmd.headSha, kind, {
+        supersede: laneWait ?? null,
         key: `conflict:${dd.id}:${cmd.headSha}`,
         mechanicalRefused: cmd.mechanicalRefused === true,
         maxMechanical: cmd.maxMechanical ?? DEFAULT_MAX_MECHANICAL,
@@ -2475,6 +2501,21 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     return baseOnlyEnd(c, key, a, live!.headSha, end('noop'), { ...evidence, baseOnly: true, attemptId: a.id });
   }
 
+  // A CI fix that ran on a head nothing moved. Only a live read of the unmoved head is evidence.
+  const ciHeadUnmoved = d.state === 'REPAIRING' && a.family === 'ci' && livePrOpen(live) && live!.headSha === a.boundHeadSha && d.currentHeadSha === a.boundHeadSha;
+  // The fixer found the failure upstream: T25's block, so recovery (T26) refreshes the head. The
+  // attempt ends with no change and no new ci row is filed, so no further ci budget is spent.
+  if (ciHeadUnmoved && cmd.blockedOnBase) {
+    const { incidentId, signature } = cmd.blockedOnBase;
+    return c.apply(`trunk:${incidentId}:${d.id}`, 'BLOCKED_ON_TRUNK', {
+      guardHead: true,
+      patch: { resumeState: reviewBudgetHeld(d) ? 'ESCALATED' : headCoverage(d, d.currentHeadSha) !== 'none' ? 'APPROVED' : 'AWAITING_REVIEW', trunkIncidentId: incidentId, stateReason: signature, boundAttemptId: null, ci: 'red', ciHeadSha: a.boundHeadSha },
+      attempts: [end('noop')],
+      effects: [{ kind: 'dispatch_trunk_fix', dedupeKey: `dispatch_trunk_fix:${incidentId}`, payload: { incidentId, signature } }],
+      evidence: { ...evidence, incidentId, signature, blockedOnBase: true },
+    });
+  }
+
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
     // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
     // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
@@ -2572,6 +2613,15 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
       patch: { stateReason: reason, boundAttemptId: null }, attempts: [end('failed')],
       effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${a.family}:${a.mode}:${a.attemptNo}`, payload: { family: a.family, attempts: a.attemptNo } }],
       evidence,
+    });
+  }
+  // A CI fix that failed and left the head where it was bound did not find a failure this PR can
+  // fix; the same work on the same head would end the same way. A person decides (no new ci row).
+  if (ciHeadUnmoved && cmd.outcome === 'failed') {
+    return c.apply(key, 'ESCALATED', {
+      patch: { stateReason: 'ci_unfixed_head', boundAttemptId: null }, attempts: [end('failed')],
+      effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:ci:unfixed:${a.attemptNo}`, payload: { family: 'ci', attempts: a.attemptNo, reason: 'ci_unfixed_head' } }],
+      evidence: { ...evidence, noChange: true },
     });
   }
   const id = c.newId();
@@ -2776,6 +2826,23 @@ export function freshnessEvidence(
   };
 }
 
+/**
+ * 210caad3: the delivery's bound behind refresh, while it has not run: parked for its landing-lane
+ * slot or not yet drained. No task, no worker, no push is in flight, so it repairs nothing a red
+ * check or a real conflict at the head needs; the door that sees one replaces it.
+ */
+function pendingBehindRefresh(c: Ctx): AttemptSnapshot | undefined {
+  const d = c.d!;
+  if (d.state !== 'REPAIRING' || d.stateReason !== 'behind') return undefined;
+  const a = c.attempt(d.boundAttemptId);
+  return a && a.family === 'conflict' && a.mode === 'mechanical' && a.status === 'queued' && a.boundHeadSha === d.currentHeadSha ? a : undefined;
+}
+
+/** End a queued attempt that never started: skipped, so it spends nothing. */
+function skipQueued(a: AttemptSnapshot): AttemptOp {
+  return { op: 'update', attemptId: a.id, whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } };
+}
+
 function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'migration', o: {
   key: string; mechanicalRefused: boolean; maxMechanical: number; maxAgent: number; patch: DeliveryPatch; maxBehindRefreshes?: number;
   refusal?: Record<string, unknown> | null;
@@ -2783,11 +2850,13 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
   /** Behind only: the live base delta (S15 disjoint-delta rule). */
   baseDelta?: BaseDeltaFact | null;
   maxBaseCommits?: number;
+  /** A behind refresh that never ran, replaced by this repair: skipped, so it spends nothing. */
+  supersede?: AttemptSnapshot | null;
 }): Decision {
   const d = c.d!;
   const family: AttemptFamily = kind === 'migration' ? 'migration' : 'conflict';
-  const attempts: AttemptOp[] = [];
-  const mechAtHead = c.ledger(family, 'mechanical').filter((a) => a.boundHeadSha === head);
+  const attempts: AttemptOp[] = o.supersede ? [skipQueued(o.supersede)] : [];
+  const mechAtHead = c.ledger(family, 'mechanical').filter((a) => a.boundHeadSha === head && a.id !== o.supersede?.id);
   const openMech = mechAtHead.find((a) => OPEN_ATTEMPT.has(a.status));
   if (!o.mechanicalRefused && openMech) return c.rejected('fix_in_flight');
   if (o.mechanicalRefused && openMech) {

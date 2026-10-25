@@ -363,12 +363,29 @@ describe('setupWorktree', () => {
 
     const addIdx = syncCalls.findIndex(c => c.cmd.includes('git worktree add'));
     expect(addIdx).toBeGreaterThanOrEqual(0);
-    // Only upstream-config calls (git config) may follow the add; the install
-    // (execFileSync, tracked in fileCalls) happens after all sync calls.
+    // Only upstream-config calls (git config) and the read-only base-SHA pin may
+    // follow the add; the install (execFileSync, tracked in fileCalls) happens
+    // after all sync calls.
     expect(fileCalls.length).toBeGreaterThan(0);
     for (const c of syncCalls.slice(addIdx + 1)) {
-      expect(c.cmd).toContain('git config');
+      expect(c.cmd).toMatch(/^git (config|rev-parse --verify) /);
     }
+  });
+
+  test('returns the commit the base pointed at as baseSha', async () => {
+    __setGitOpsDeps({
+      execSync: ((cmd: string, opts: Record<string, unknown>) =>
+        cmd === 'git rev-parse --verify "origin/main^{commit}"' ? 'cafef00d\n' : mockExecSync(cmd, opts)) as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+    });
+    const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1');
+    expect(result?.base).toBe('origin/main');
+    expect(result?.baseSha).toBe('cafef00d');
   });
 
   test('falls back to an unfrozen install when the frozen lockfile install fails', async () => {

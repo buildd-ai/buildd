@@ -1858,6 +1858,13 @@ export interface ClaimTaskExclusion {
   holderTaskId?: string;
 }
 
+/** A task a claim turned away: the dispatch-loop code that held it and when the hold lifts, when known. */
+export interface ClaimDeferredTask {
+  taskId: string;
+  code: string;
+  until?: string;
+}
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
@@ -2005,6 +2012,8 @@ export interface ClaimDiagnostics {
      */
     isolation_unenforced?: number;
   };
+  /** Which tasks the claim turned away (window it read), each with its deferral code. Absent from an older server. */
+  deferredTasks?: ClaimDeferredTask[];
 }
 
 /**
@@ -2684,6 +2693,19 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
   // Direct printenv/env output that names the runner coordination key
   /\bprintenv\s+BUILDD_API_KEY\b/,
   /\benv\b.*\bBUILD_API_KEY\b/,
+] as const;
+
+// Bash commands an agent must not run with whatever GitHub login its host holds.
+// On a runner whose agents still inherit the operator's `gh` login, GitHub
+// records these as the owner, and nothing tells an agent apart from the person.
+// Dispatching the Release workflow cuts or amends a candidate (voiding its
+// checks and approvals): buildd amends a candidate itself when its fix merges,
+// and an owner-requested release goes through the `trigger_release` action,
+// which buildd records. A guard against an honest mistake, not a sandbox: the
+// credential fix is task-scoped GitHub tokens (docs/runner-github-credentials.md).
+export const OWNER_ONLY_GITHUB_COMMAND_PATTERNS = [
+  /\bgh\s+workflow\s+run\b(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+["']?release(?:\.ya?ml)?["']?(?=\s|$)/i,
+  /\/actions\/workflows\/release\.ya?ml\/dispatches\b/i,
 ] as const;
 
 // Runner capability keys — advertised in WorkerEnvironment.envKeys, matched
@@ -3663,6 +3685,8 @@ export interface RunnerQueueTask {
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
   /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
   holderTaskId?: string | null;
+  /** Its mission's cap on tasks at once (spec 0dc7c6de R-7); absent or null = no mission limit. */
+  missionCap?: number | null;
   /**
    * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
    * its mission's, else its schedule's) against the person behind the runner's
