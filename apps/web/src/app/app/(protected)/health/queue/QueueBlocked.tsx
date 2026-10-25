@@ -25,19 +25,24 @@ const taskHref = (row: HealthQueueWaitingRow) => `/app/tasks/${row.id}`;
 
 const ACTION_LABEL = { force_start: 'Force start', start_anyway: 'Start anyway' } as const;
 
+/** Every desktop row keeps the action column, so the columns line up whether or not a row has one. */
+const ACTION_COL = 'md:w-28 md:flex md:justify-end';
+
 function RowAction({ row, onStart }: { row: HealthQueueWaitingRow; onStart: (row: HealthQueueWaitingRow) => void }) {
   const action = rowAction(row);
-  if (!action) return null;
+  if (!action) return <span aria-hidden="true" className={`hidden shrink-0 ${ACTION_COL}`} />;
   return (
-    <button
-      type="button"
-      onClick={() => onStart(row)}
-      data-testid="queue-row-action"
-      data-action={action}
-      className="btn h-11 shrink-0 px-3 text-meta md:h-7"
-    >
-      {ACTION_LABEL[action]}
-    </button>
+    <span className={`shrink-0 ${ACTION_COL}`}>
+      <button
+        type="button"
+        onClick={() => onStart(row)}
+        data-testid="queue-row-action"
+        data-action={action}
+        className="btn h-11 shrink-0 px-3 text-meta md:h-7"
+      >
+        {ACTION_LABEL[action]}
+      </button>
+    </span>
   );
 }
 
@@ -91,8 +96,11 @@ export default function QueueBlocked({ view, onFilter, onPage, onStart, hrefFor 
         <p className="py-3 text-body text-text-muted" data-testid="queue-waiting-empty">Nothing blocked.</p>
       ) : (
         <>
-          <div aria-hidden="true" className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto_minmax(0,1.5fr)_auto] gap-4 pb-1.5 font-mono text-eyebrow text-text-muted">
-            <span>Task</span><span>Mission</span><span>Reason</span><span>Waiting on</span><span className="text-right">Age</span>
+          <div aria-hidden="true" className="hidden md:flex gap-2 pb-1.5 font-mono text-eyebrow text-text-muted">
+            <span className="grid min-w-0 flex-1 grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto_minmax(0,1.5fr)_auto] gap-4">
+              <span>Task</span><span>Mission</span><span>Reason</span><span>Waiting on</span><span className="text-right">Age</span>
+            </span>
+            <span className="w-28 shrink-0" />
           </div>
           <Rows rows={waiting.rows} layout="phone" onStart={onStart} hrefFor={hrefFor} />
           <Rows rows={waiting.rows} layout="desktop" onStart={onStart} hrefFor={hrefFor} />

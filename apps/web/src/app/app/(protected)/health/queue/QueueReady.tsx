@@ -24,7 +24,7 @@ export default function QueueReady({ view, now }: { view: HealthQueueResponse; n
                 <DeliveryRow delivery={readyDelivery(r)} now={now} />
                 <span
                   data-testid="queue-ready-note"
-                  className={`max-w-[9rem] truncate border-t border-border-default self-stretch flex items-center font-mono text-chip ${r.noRunner ? 'text-status-warning' : 'text-text-muted'}`}
+                  className={`flex max-w-[8rem] self-stretch items-center justify-end border-t border-border-default text-right font-mono text-chip [overflow-wrap:anywhere] md:max-w-[16rem] ${r.noRunner ? 'text-status-warning' : 'text-text-muted'}`}
                 >
                   {r.note}
                 </span>
