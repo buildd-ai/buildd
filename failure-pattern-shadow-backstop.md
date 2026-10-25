@@ -349,8 +349,8 @@ Provision failed [readiness]: exit 1: ✖ agent-question-protocol.md: claims rou
 
 **Observation Date**: 2026-10-25 06:00 UTC  
 **Window**: 24h (Oct 24 00:00 → Oct 25 06:00 UTC)  
-**Status**: RECOVERED TO BASELINE  
-**Failure Rate (24h)**: 4% (estimated, per memory — escalation FULLY RESOLVED)  
+**Status**: RECOVERY OBSERVED (based on historical memory; live telemetry query not performed)  
+**Failure Rate (24h)**: ~4% (historical observation from prior memory records, not re-queried from live get_failure_analytics)  
 
 ## Summary
 
@@ -365,7 +365,7 @@ The platform recovered completely from the Oct 22–23 budget-driven spike. All 
 - Oct 24 final: Escalation FULLY RESOLVED, 4% baseline restored, all crisis patterns absent
 - Oct 25 06:00 UTC: Baseline continued, native Failure Pattern Sentinel ready for handoff
 
-**Severity**: **NONE** — all patterns resolved, platform stable.
+**Severity**: Not independently verified — based on historical memory analysis. Platform shows apparent stability based on Oct 24 prior observations; live verification recommended.
 
 ## Pattern Resolution Status (Oct 24–25)
 
@@ -396,10 +396,11 @@ The platform recovered completely from the Oct 22–23 budget-driven spike. All 
 
 **Native Failure Pattern Sentinel Ready**: Oct 24 final observation confirms platform is stable and ready for Sentinel to assume durable incident tracking.
 
-**Recommendation**: Shadow backstop observations complete. Native Failure Pattern Sentinel (Sentinel PR #5726+) now assumes responsibility for ongoing failure pattern detection and incident deduplication.
+**Status at Oct 25 06:00 UTC**: Shadow backstop observations documented. Native Failure Pattern Sentinel mission is still landing; this schedule serves as temporary observational safety net during transition.
 
 ---
 
 **Artifact Final Update**: 2026-10-25 06:00 UTC  
-**Status**: SHADOW BACKSTOP COMPLETE — Platform stable, native Sentinel ready to assume monitoring  
-**Archive**: This artifact will be retained for reference; native Sentinel will use built-in incident ledger for ongoing observations
+**Observation Window**: Oct 14–25 2026 (11d rolling analysis)  
+**Last Recorded Status**: Platform shows apparent stability based on Oct 24 memory analysis; native Failure Pattern Sentinel mission remains in landing phase  
+**Note**: This artifact documents shadow backstop observations during Sentinel transition. Handoff to durable native incident tracking awaits Sentinel mission completion.
