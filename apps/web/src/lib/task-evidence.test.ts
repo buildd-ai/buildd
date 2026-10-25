@@ -197,6 +197,17 @@ describe('detectMismatches', () => {
     expect(detectMismatches({ ...base, summary: 'Committed and pushed' })).toEqual([]);
   });
 
+  // A push that touched only generated files (migration snapshots) counts 0
+  // reviewable files, but the head moved: the commits are the evidence.
+  it('does not flag a 0-file diff when the attempt recorded commits', () => {
+    expect(detectMismatches({ ...base, summary: 'Pushed the regenerated snapshot', diff: NO_DIFF, commits: 1 })).toEqual([]);
+  });
+
+  it('still flags a 0-file diff with no commits', () => {
+    const m = detectMismatches({ ...base, summary: 'Pushed the fix', diff: NO_DIFF, commits: 0 });
+    expect(m.map(x => x.kind)).toEqual(['pushed_without_diff']);
+  });
+
   it('flags success while a gating check is red', () => {
     const m = detectMismatches({ ...base, ciChecks: [{ name: 'unit', state: 'failed', url: null }, { name: 'lint', state: 'passed', url: null }] });
     expect(m.map(x => x.kind)).toEqual(['success_with_red_check']);

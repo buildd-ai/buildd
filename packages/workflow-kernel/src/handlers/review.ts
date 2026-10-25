@@ -143,10 +143,10 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     // §5.9: once per round that is not itself the composition's delta round.
     if (!round.scope?.composition) {
       const composed = await reviews.attestComposition(d, round);
-      if (composed?.startsWith('ok')) return { outcome: composed };
       if (composed) {
-        // 1bd26ae7: a delta the attestation found is reviewed in the round it started, which supersedes
-        // this one. If none was started (the attestation was already spent), this round still needs its reviewer.
+        // 1bd26ae7: an attestation that took the round closed it (approved the head, or started the delta's
+        // own round). One that left it open (already spent at this head, 26b969db) took nothing: this
+        // round still needs its reviewer, or it waits in AWAITING_REVIEW for one nobody files.
         const after = (await ports.store.loadView({ deliveryId: d.id })).rounds.find((r) => r.id === round.id);
         if (!after || (after.status !== 'queued' && after.status !== 'reviewing')) return { outcome: composed };
       }

@@ -11,6 +11,7 @@ import type { PriorAttemptFact, TraceOutcomeContext, TraceSettledAs } from './tr
 import { latestChecks } from './task-verdict';
 import { parseTaskShippedRecord } from './task-shipped';
 import { prListStatus, prRecord, type PrDisplayState, type PrSupersededBy } from './pr-presentation';
+import type { DeliveryView } from './workflow/projections';
 
 export interface VerdictWorkerRow {
   id: string;
@@ -165,6 +166,22 @@ export function buildVerdictInput(input: VerdictFactsInput): VerdictInput {
       ?? evidence?.keyLines?.[0]
       ?? null,
     mismatch,
+  };
+}
+
+/**
+ * The verdict inputs a kernel delivery decides, one reading for every caller (the task
+ * page and `explain`'s loader). Without them an approved PR the platform is updating or
+ * queueing to land fell through to "needs you · Review & merge" (e07ee9cf).
+ */
+export function deliveryVerdictFields(v: Pick<DeliveryView, 'state' | 'stateReason' | 'headline' | 'prState' | 'owner'> | null | undefined): Pick<VerdictInput, 'deliveryActivity' | 'awaitingCi' | 'deliveryOwner' | 'deliveryHeadline'> {
+  if (!v) return { deliveryActivity: null, awaitingCi: false, deliveryOwner: null, deliveryHeadline: null };
+  return {
+    // The platform updating the branch (or queued to), or merging: in progress, not "ready to merge".
+    deliveryActivity: (v.state === 'REPAIRING' && v.stateReason === 'behind') || v.state === 'LANDING' ? v.headline : null,
+    awaitingCi: v.prState === 'awaiting_ci',
+    deliveryOwner: v.owner,
+    deliveryHeadline: v.headline,
   };
 }
 

@@ -177,7 +177,7 @@ export interface Store {
   laneHolder(k: LaneKey): Promise<{ deliveryId: string; prNumber: number | null } | null>;
   /** Drop the lanes this delivery holds nothing in any more; returns them. */
   releaseSettledLanes(deliveryId: string): Promise<LaneKey[]>;
-  /** Make the oldest parked refresh on this lane due now; returns its delivery. */
+  /** Make the oldest parked refresh that would take this lane (not red at its head) due now; returns its delivery. */
   wakeNextLaneWaiter(k: LaneKey): Promise<string | null>;
   /**
    * §4 merge holds: make this delivery's held `merge_call` for `headSha` (a pending row
@@ -222,6 +222,8 @@ export interface GithubFactReader {
   checkRuns?(repoFullName: string, sha: string, opts?: { tests?: boolean }): Promise<CheckRunsRead | null>;
   /** The head commit of branch `ref` now; null = unreadable. */
   branchHead?(repoFullName: string, ref: string): Promise<string | null>;
+  /** Compare API: the commit where `headSha` branched from (or last took in) branch `ref`; null = unreadable. */
+  mergeBase?(repoFullName: string, ref: string, headSha: string): Promise<string | null>;
   /**
    * Names of the checks and workflows that failed on `headSha` (§6.10: a CI
    * failure a preflight would have caught is tagged `preflight_miss`).

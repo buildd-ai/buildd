@@ -106,6 +106,7 @@ function fromConflict(r: DispatchConflictRetryResult): DispatchResult {
   if (r.exhausted) return skipped('conflict_fixes_spent');
   if (r.disabled) return skipped('conflict_fixes_off');
   if (r.superseded) return skipped('already_upstream');
+  if (r.releaseCandidate) return skipped('release_candidate');
   return skipped('conflict_fix_not_filed');
 }
 

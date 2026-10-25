@@ -15,6 +15,7 @@ import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
+import { commitShaOf, releaseCandidateFixOf, verifyCandidateFixCommit, RELEASE_CANDIDATE_FIX_COMMIT_KEY, type CandidateFixLanded } from '@/lib/candidate-fix-commit';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events, hasVisibleWorkerChange } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
@@ -84,7 +85,7 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyRepairGateDeps, type LegacyReviewFixGateDeps } from '@/lib/repair-completion';
-import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, blockedOnBaseOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, submitReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
@@ -1700,6 +1701,10 @@ async function patchWorker(
   // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
   // confirms merged; snapshotted onto tasks.result for audit.
   let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
+  // Set by the pr_required gate when a red release candidate's fix task names a
+  // source-branch commit (`alreadyShippedIn: <sha>`) that carries the fix
+  // without a PR; the completion then amends the candidate (candidate-amend.ts).
+  let candidateFixLanded: CandidateFixLanded | null = null;
   // Set by the pr_required gate when a mission-branch refresh task finds its
   // integration branch already containing the trunk sha it was dispatched for
   // (the merge was pushed straight to the branch, so no PR exists or can).
@@ -2437,7 +2442,28 @@ async function patchWorker(
       // task, and this worker taking it over would confuse that PR's own
       // merge, supersession and shutdown handling.
       let alreadyShippedRefusal: string | null = null;
-      const shippedPrNumber = alreadyShippedIn == null
+      // A red release candidate's fix can land on the source branch as a plain
+      // commit (an autofix pushed straight to dev): such a task may name the
+      // commit instead of a PR. Only a candidate fix task; anywhere else a sha
+      // is still refused as not a PR number.
+      const candidateFix = releaseCandidateFixOf(terminalTaskRow[0]?.context);
+      const shippedCommit = candidateFix ? commitShaOf(alreadyShippedIn) : null;
+      if (outputReq === 'pr_required' && !hasPR && candidateFix && shippedCommit) {
+        if (!repoWithInstallation) {
+          alreadyShippedRefusal = `commit ${shippedCommit.slice(0, 12)} cannot be verified: this workspace has no linked GitHub repo with the app installed.`;
+        } else {
+          const check = await verifyCandidateFixCommit({
+            api: githubApi,
+            installationId: repoWithInstallation.installation.installationId,
+            repoFullName: repoWithInstallation.fullName,
+            sha: shippedCommit,
+            fix: candidateFix,
+          });
+          if (check.ok) candidateFixLanded = check.landed;
+          else alreadyShippedRefusal = check.refusal;
+        }
+      }
+      const shippedPrNumber = alreadyShippedIn == null || shippedCommit
         ? null
         : Number(String(alreadyShippedIn).trim().replace(/^#/, ''));
       if (outputReq === 'pr_required' && !hasPR && shippedPrNumber !== null) {
@@ -2474,7 +2500,7 @@ async function patchWorker(
       // be deleted (so the ancestry read fails) and GitHub refuses an empty
       // PR, so nothing else could ever satisfy the gate. Either is recorded on
       // the task result (docs/specs/mission-branch-refresh.md, "Conflict task").
-      if (outputReq === 'pr_required' && !hasPR && !alreadyShipped && repoWithInstallation) {
+      if (outputReq === 'pr_required' && !hasPR && !alreadyShipped && !candidateFixLanded && repoWithInstallation) {
         const refresh = integrationRefreshOf(terminalTaskRow[0]?.context);
         const refreshBranch = (terminalTaskRow[0]?.context as Record<string, unknown> | null | undefined)?.baseBranch;
         if (refresh?.trunk && refresh.trunkSha && typeof refreshBranch === 'string' && refreshBranch) {
@@ -2605,7 +2631,7 @@ async function patchWorker(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR: hasPR || !!alreadyShipped || !!refreshAlreadyLanded, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped || !!refreshAlreadyLanded || !!candidateFixLanded, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2710,13 +2736,15 @@ async function patchWorker(
         // need the same explicit discard the `auto` arm asks for.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
-        if ((!alreadyShipped && !refreshAlreadyLanded) || strandsOwnEdits) {
+        if ((!alreadyShipped && !refreshAlreadyLanded && !candidateFixLanded) || strandsOwnEdits) {
           const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-          const error = alreadyShipped || refreshAlreadyLanded
-            ? `${alreadyShipped ? `PR #${alreadyShipped.prNumber} is merged` : refreshAlreadyLanded!.evidence === 'mission_pr_merged' ? `the mission's shipping PR${refreshAlreadyLanded!.missionPrNumber ? ` #${refreshAlreadyLanded!.missionPrNumber}` : ''} is merged` : `${refreshAlreadyLanded!.branch} already contains ${refreshAlreadyLanded!.trunk}`}, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+          const error = alreadyShipped || refreshAlreadyLanded || candidateFixLanded
+            ? `${alreadyShipped ? `PR #${alreadyShipped.prNumber} is merged` : candidateFixLanded ? `commit ${candidateFixLanded.commitSha.slice(0, 12)} is on ${candidateFixLanded.sourceBranch}` : refreshAlreadyLanded!.evidence === 'mission_pr_merged' ? `the mission's shipping PR${refreshAlreadyLanded!.missionPrNumber ? ` #${refreshAlreadyLanded!.missionPrNumber}` : ''} is merged` : `${refreshAlreadyLanded!.branch} already contains ${refreshAlreadyLanded!.trunk}`}, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
             : alreadyShippedRefusal
               ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
-              : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
+              : candidateFix
+                ? `This task requires a pull request before completing. Use create_pr to open one. If the fix already landed on \`${candidateFix.sourceBranch}\`, call complete_task with \`alreadyShippedIn\` set to the merged PR or the ${candidateFix.sourceBranch} commit that carries it; that amends release candidate v${candidateFix.version}.`
+                : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
           return NextResponse.json({
             error,
             hint: 'create_pr',
@@ -2732,7 +2760,9 @@ async function patchWorker(
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'accepted',
-          reason: refreshAlreadyLanded
+          reason: candidateFixLanded
+            ? 'completion accepted under pr_required: the release candidate fix is already on its source branch as a commit'
+            : refreshAlreadyLanded
             ? refreshAlreadyLanded.evidence === 'mission_pr_merged'
               ? 'completion accepted under pr_required: the mission shipping PR merged, so the refresh is moot'
               : 'completion accepted under pr_required: mission branch already contains the refresh trunk sha'
@@ -2746,6 +2776,7 @@ async function patchWorker(
             outputRequirement: 'pr_required',
             ...(alreadyShipped ? { alreadyShippedIn: alreadyShipped.prNumber } : {}),
             ...(refreshAlreadyLanded ? { refreshAlreadyLanded } : {}),
+            ...(candidateFixLanded ? { [RELEASE_CANDIDATE_FIX_COMMIT_KEY]: candidateFixLanded } : {}),
             commits: effectiveCommits,
             dirtyWorktree: effectiveDirtyWorktree,
             ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
@@ -4346,6 +4377,9 @@ async function patchWorker(
           // The evidence a mission-branch refresh was accepted on without a PR
           // (see `refreshAlreadyLanded` above).
           ...(refreshAlreadyLanded && { refreshAlreadyLanded }),
+          // The source-branch commit a candidate fix task named; the completion
+          // subscriber reads it to amend the candidate.
+          ...(candidateFixLanded && { [RELEASE_CANDIDATE_FIX_COMMIT_KEY]: candidateFixLanded }),
         };
 
         // Snapshot unique MCP servers into task result
@@ -4367,6 +4401,10 @@ async function patchWorker(
           if (loop.startAt) {
             taskUpdate.startAt = loop.startAt;
           }
+        } else if (loop.kind === 'defer') {
+          // The kernel delivery is a person's to move (ESCALATED): no requeue, no loop failure. The
+          // task ends as reported (the kernel projects an owner's end); the webhook can still settle it.
+          taskUpdate.loopState = 'condition_unmet';
         } else {
           // Worker reported completed but loop iterations are exhausted → task is failed.
           taskUpdate.status = 'failed';
@@ -4552,6 +4590,7 @@ async function patchWorker(
           taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
           ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
+          ...(blockedOnBaseOf(body.structuredOutput) ? { blockedOnBase: true } : {}),
         }, { principal: kernelPrincipalOf({ account }) });
       };
 
@@ -5902,6 +5941,7 @@ async function handleReviewerOutcomeIfNeeded(
         prNumber,
         headSha,
         files: (currentFiles ?? []) as never,
+        trunkRef: workspace?.gitConfig?.targetBranch ?? workspace?.gitConfig?.defaultBranch ?? null,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
@@ -5987,13 +6027,14 @@ async function handleReviewerOutcomeIfNeeded(
   // after the gates above, so an escalation to a person is kept; before the
   // evidence gate, which still wins.
   if (effectiveVerdict === 'approve') {
-    const { loadDesignRequirement, applyDesignGate, parseDesignChecks } = await import('@/lib/reviewer');
+    const { loadDesignRequirement, applyDesignGate, componentScreens, parseDesignChecks } = await import('@/lib/reviewer');
     const requirement = await loadDesignRequirement(originalTaskId);
     const designGate = applyDesignGate({
       verdict: effectiveVerdict,
       required: requirement.criteria,
       checks: parseDesignChecks(output),
       feedback: output.feedback,
+      components: componentScreens(requirement.design),
     });
     if (designGate.reason) {
       console.log(`[reviewer] PR #${prNumber}: design gate turned approve into request-changes`);

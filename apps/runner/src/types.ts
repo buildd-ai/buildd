@@ -277,6 +277,12 @@ export interface LocalWorker {
    */
   worktreeBaseRef?: string;
   /**
+   * The commit `worktreeBaseRef` pointed at when the worktree was set up
+   * (SetupWorktreeResult.baseSha). A fix attempt's base is its own PR branch,
+   * which its push then moves, so git stats measure from this pinned commit.
+   */
+  worktreeBaseSha?: string;
+  /**
    * The ref this task's PR is compared against (resolvePrBaseRef). Differs from
    * `worktreeBaseRef` on a resume, where the worktree is cut from the prior
    * attempt's branch. Checkpoint sweeps measure against this one; persisted so
