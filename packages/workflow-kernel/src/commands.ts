@@ -209,6 +209,13 @@ export type Command =
        * not this fact.
        */
       baseOnly?: boolean;
+      /**
+       * A CI fixer's report that the failure is the base's, not this PR's. The host has opened or
+       * joined the trunk incident for the delivery's signature; the kernel takes T25 with it
+       * instead of burning another fix on the same head. Honoured only for a CI repair whose
+       * head is still where it was bound.
+       */
+      blockedOnBase?: { incidentId: string; signature: string } | null;
     })
   | (Base & {
       /**
