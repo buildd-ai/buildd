@@ -161,10 +161,10 @@ export function checkLine(red: RedCheckView | null, waitingMinutes?: number | nu
  */
 export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
   const text = (v?: string | null) => v?.trim() || null;
-  const subject = text(i.taskTitle) ?? text(i.missionTitle) ?? text(i.connectorName) ?? (i.prNumber != null ? `#${i.prNumber}` : null);
+  const subject = text(i.taskTitle) ?? text(i.missionTitle) ?? text(i.connectorName) ?? (i.prNumber != null ? `PR #${i.prNumber}` : null);
   const taskHref = i.taskId ? `/app/tasks/${i.taskId}` : null;
   const subjectHref = i.missionId ? `/app/missions/${i.missionId}` : taskHref;
-  const meta = i.prNumber != null ? `PR #${i.prNumber}` : i.workspaceName ?? '';
+  const meta = i.prNumber != null ? `#${i.prNumber}` : i.workspaceName ?? '';
   const make = (r: { label: string; tone: HomeAttentionItem['tone']; title: string | null; sentence: string | null; detail?: string | null; actionType: AttentionActionType; primary: AttentionLink | null; details?: AttentionLink | null }): Resolved | null => {
     if (!r.title || !r.sentence || !r.primary?.href) return null;
     const details = r.details && r.details.href !== r.primary.href ? r.details : null;
