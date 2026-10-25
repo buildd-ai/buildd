@@ -540,7 +540,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | State | `H'` equals `current_head_sha` | `H'` differs |
 |---|---|---|
 | `WORKING` | `duplicate` | record head; stay (owner pushed mid-attempt) |
-| `AWAITING_PUSH` | `duplicate` | if proof (§9) holds: `AWAITING_REVIEW`, new round, effect `dispatch_review`; else record, stay, schedule next `push_recovery` |
+| `AWAITING_PUSH` | `duplicate` | if proof (§9) holds: `AWAITING_REVIEW`, new round, effect `dispatch_review`; a conflict repair's `L` that never landed is also answered by a head whose live `mergeable_state` is not `dirty`, whoever pushed it (08d752ed: the repair owed a head without the conflict, not its own commit); else record, stay, schedule next `push_recovery` |
 | `AWAITING_REVIEW` | `duplicate` | round `r` → `superseded`; round `r+1` (delta from the last decided head if any) bound to `H'` |
 | `CHANGES_REQUESTED` | `duplicate` | cancel the unclaimed fix task; round `r+1` as above |
 | `FIXING` | `duplicate` | record head; stay `FIXING` while the attempt runs (mid-fix pushes are normal); round advances at `AttemptEnded` |
@@ -548,7 +548,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | `APPROVED` | `duplicate` | T13 carry-forward, else round `r+1`; **this replaces today's "re-review only when a merge is attempted"** |
 | `LANDING` | `duplicate` | abort landing; as `APPROVED` |
 | `BLOCKED_ON_TRUNK` | `duplicate` | record head; stay blocked (T26 re-enters). With `resume_state = APPROVED`: T13 carry-forward evidence keeps the approval (the head joins `approved_heads`); without it `resume_state` becomes `AWAITING_REVIEW`, so recovery reviews the new head instead of landing it (47be5f6c) |
-| `ESCALATED` | `duplicate` | `review_escalated` / `review_unavailable` at an older head: round `r+1`; `review_exhausted`: record only (a spent budget is final until a person acts, 2ded4e88); `push_undeliverable`: as `AWAITING_PUSH` — if proof (§9) holds against the escalated `L`, `AWAITING_REVIEW`, new round (the escalation's cause is gone: the work arrived), else record only (no new `push_recovery`: a person owns it now); `conflict_exhausted`: a head whose live `mergeable_state` is not `dirty` is `AWAITING_REVIEW`, new round (the spent budget only asked a person to resolve the conflict, and a repaired head answers that whoever pushed it; earlier no-progress conflict attempts never hold a repaired head back from review and landing), a `dirty` one is recorded only; other reasons: record only |
+| `ESCALATED` | `duplicate` | `review_escalated` / `review_unavailable` at an older head: round `r+1`; `review_exhausted`: record only (a spent budget is final until a person acts, 2ded4e88); `push_undeliverable`: as `AWAITING_PUSH` — if proof (§9) holds against the escalated `L`, `AWAITING_REVIEW`, new round (the escalation's cause is gone: the work arrived), or the bound attempt is a conflict repair and the head is not `dirty` (as `AWAITING_PUSH`), `AWAITING_REVIEW`, else record only (no new `push_recovery`: a person owns it now); `conflict_exhausted`: a head whose live `mergeable_state` is not `dirty` is `AWAITING_REVIEW`, new round (the spent budget only asked a person to resolve the conflict, and a repaired head answers that whoever pushed it; earlier no-progress conflict attempts never hold a repaired head back from review and landing), a `dirty` one is recorded only; other reasons: record only |
 | terminal | ignored (recorded) | ignored (recorded) |
 
 ### 6.5 `AttemptEnded` by outcome
@@ -1444,6 +1444,11 @@ each expires on its own:
   never past 40 minutes from its grant. A holder red at its head or with a CI attempt open
   holds nothing. A PR in that state refreshes beside the lane, neither taking nor waiting on it,
   and the wake passes it over, so the lane only goes to a head that can land (eccb6687).
+  A refresh waits in the lane at most 15 minutes from its outbox row's creation
+  (`LANE_MAX_WAIT_MS`); its next park never runs past that, and once it is spent the refresh
+  runs beside the lane (`lane:wait_spent`). A park hands its attempt back, so nothing else
+  bounds the wait, and a free lane goes to whichever refresh drains first, not the oldest
+  (221c7b95: an approved, green PR re-parked for 11.5 hours).
 
 A refresh that throws (`in_flight`, `deferred`, `semantic_deferred`) backs off 15s, doubling,
 capped at 30 minutes, and is retried by:

@@ -4155,8 +4155,11 @@ export async function handleBuilddAction(
       if (params.model !== undefined) modelParts.push(`Model: ${updateFields.model ?? 'cleared'}`);
       const pinCleared = (params.tier !== undefined && updateFields.tier === null)
         || (params.model !== undefined && updateFields.model === null);
+      // The route names a live worker when there is one: it keeps the model it
+      // was claimed with, and the reply has to say which, not just "next claim".
+      const liveModel = updated?.modelChange as { message?: string } | undefined;
       const modelInfo = modelParts.length > 0
-        ? `\n${modelParts.join('\n')}\nNote: takes effect on the next claim or retry; does not change a running session.${pinCleared ? ' Cleared pins mean routing decides the model again.' : ''}`
+        ? `\n${modelParts.join('\n')}\n${liveModel?.message ? `WARNING: ${liveModel.message}` : 'Note: takes effect on the next claim or retry; does not change a running session.'}${pinCleared ? ' Cleared pins mean routing decides the model again.' : ''}`
         : '';
 
       const startInfo = params.startAt !== undefined || params.startIn !== undefined

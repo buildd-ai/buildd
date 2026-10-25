@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { deriveHomeAttention as derive, homeAttentionCopy, homeQuestionView } from './home-attention';
+import { deriveHomeAttention as derive, homeAttentionCopy, homeQuestionView, checkLine } from './home-attention';
 import { isActionableChip } from './action-queue';
 import { deriveHomeNeedsYou } from './home-needs-you';
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
@@ -251,14 +251,16 @@ describe('a PR whose checks are failing (surface-ia §11)', () => {
   it('AC-51: the Postgres flake names the job and cause, and leads with Re-run', () => {
     const c = card(postgres);
     expect(c.label).toBe('checks failing');
-    expect(c.sentence).toBe('DB architecture (real Postgres) failed: the Postgres tests lost their database connection, which looks like a flake, not the code. 2 automatic fixes did not change the result.');
+    expect(c.sentence).toBe('✕ DB architecture (real Postgres)');
+    expect(c.detail).toBe('DB architecture (real Postgres) failed: the Postgres tests lost their database connection, which looks like a flake, not the code. 2 automatic fixes did not change the result.');
     expect(c.primary?.label).toBe('Re-run');
     expect(c.details?.label).toBe('Logs');
   });
 
   it('AC-52: the Windows failure names the runner job and its test, never build, and leads with Start fix', () => {
     const c = card(windows);
-    expect(c.sentence).toBe('Runner unit tests (windows) failed: launcher > dispatches status. 1 automatic fix pushed nothing.');
+    expect(c.sentence).toBe('✕ Runner unit tests (windows)');
+    expect(c.detail).toBe('Runner unit tests (windows) failed: launcher > dispatches status. 1 automatic fix pushed nothing.');
     expect(c.sentence).not.toMatch(/\bbuild\b/);
     expect(c.primary?.label).toBe('Start fix');
   });
@@ -267,9 +269,15 @@ describe('a PR whose checks are failing (surface-ia §11)', () => {
     expect(card(windows, true).label).toBe('Approved · checks failing');
   });
 
+  it('the check line carries the age of the red head, never a sentence', () => {
+    const at = new Date(Date.now() - 4 * 60000).toISOString();
+    expect(checkLine({ ...windows, at }, null)).toBe('✕ Runner unit tests (windows) · 4m ago');
+    expect(checkLine(null, 4)).toBe('Checks failed · 4m ago');
+  });
+
   it('with no stored reading it never says "Tests are failing." alone', () => {
     const c = card(null);
-    expect(c.sentence).not.toBe('Tests are failing.');
+    expect(c.sentence).toBe('Checks failed');
     expect(c.primary?.label).toBe('Start fix');
   });
 });

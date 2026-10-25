@@ -57,7 +57,7 @@ describe('deriveEscalationBrief', () => {
   test('actions: nothing is automatic; override needs policy and merge permission', () => {
     const v = V(D(), { findings: [F(1)] });
     const ids = deriveEscalationBrief(v)!.actions.map((a) => a.id);
-    expect(ids).toEqual(['review_findings', 'request_fix', 'force_re_review', 'approve_override']);
+    expect(ids).toEqual(['review_findings', 'request_fix', 'force_re_review', 'land_pr', 'approve_override']);
     const none = deriveEscalationBrief(v)!.actions.find((a) => a.id === 'approve_override')!;
     expect(none.available).toBe(false);
     expect(none.unavailableReason).toContain('policy');
@@ -121,5 +121,18 @@ describe('one reading across surfaces', () => {
     expect(r.needsYou).toBe(true);
     const plain = deriveDeliveryView({ view: V(D({ stateReason: 'landing_needs_human' })) } as DeliveryViewInput)!;
     expect(deliveryReading(toDeliveryDisplay(plain))!.label).toBe('Waiting on you');
+  });
+});
+
+describe('land_pr action', () => {
+  test('is offered with a review at the current head, and says it grants one review', () => {
+    const a = deriveEscalationBrief(V(D(), { findings: [F(1)] }))!.actions.find((x) => x.id === 'land_pr')!;
+    expect(a.available).toBe(true);
+    expect(a.impact).toContain('one review');
+  });
+  test('is unavailable with no review of the current head', () => {
+    const a = deriveEscalationBrief(V(D({ currentHeadSha: 'H9' }), { findings: [F(1)] }))!.actions.find((x) => x.id === 'land_pr')!;
+    expect(a.available).toBe(false);
+    expect(a.unavailableReason).toContain('No review has read');
   });
 });

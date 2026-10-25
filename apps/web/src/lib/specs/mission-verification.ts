@@ -139,13 +139,14 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
 
   const context = { finalVerification: marker, ...(base ? { baseBranch: base } : {}), retryCount: 1 };
   // decideFinalVerification re-checked in the insert itself, under a lock per
-  // (mission, fingerprint): two evaluations racing on one target used to both
+  // mission: two evaluations racing on one target used to both
   // read "no prior" and each file a verification (and so each a check set).
   // The loser inserts nothing and reuses the winner's task below.
-  const same = sql`t_fv.mission_id = ${missionId}::uuid AND t_fv.context->'finalVerification'->>'fingerprint' = ${fingerprint}`;
+  // A verification of the same revision that is still open covers this one too, whatever its fingerprint.
+  const same = sql`t_fv.mission_id = ${missionId}::uuid AND (t_fv.context->'finalVerification'->>'fingerprint' = ${fingerprint} OR t_fv.context->'finalVerification'->>'specRevisionId' = ${criterion.specRevisionId})`;
   const terminal = sql.join(TERMINAL_TASK_STATUSES.map((s) => sql`${s}`), sql`, `);
   const [, inserted] = await db.batch([
-    db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('final_verification'), hashtext(${`${missionId}:${fingerprint}`}))`),
+    db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('final_verification'), hashtext(${missionId}))`),
     db.execute(sql`
       INSERT INTO ${tasks} (workspace_id, title, description, priority, status, mode, kind, task_class, creation_source, mission_id, role_slug, output_requirement, context)
       SELECT ${mission.workspaceId}::uuid, ${title}, ${description}, 3, 'pending', 'execution', 'analysis', 'bookkeeping', 'orchestrator', ${missionId}::uuid, ${roleSlug ?? null}, 'artifact_required', ${JSON.stringify(context)}::jsonb
