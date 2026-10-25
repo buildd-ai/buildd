@@ -1,8 +1,8 @@
 'use client';
 
-import type { RunnerHeartbeat, FleetSnapshot } from '@buildd/shared';
+import type { FleetSnapshot } from '@buildd/shared';
+import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { observedAgo } from '@/lib/health-metric-grammar';
-import { countOf } from '@/lib/plural';
 import RunnerSlotsControl from '@/components/RunnerSlotsControl';
 
 interface RunnerSlotDetailProps {
@@ -44,7 +44,7 @@ export default function RunnerSlotDetail({
   return (
     <div data-testid="health-runner-detail" className="pt-3 space-y-2">
       <dl data-testid="health-runner-dimensions" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
-        <dt className="text-text-muted">Runner</dt>
+        <dt className="text-text-muted">Owner</dt>
         <dd data-testid="health-runner-owner" className="text-text-primary">{ownerLabel}</dd>
         <dt className="text-text-muted">Work</dt>
         <dd className="text-text-primary">per slot: yours, a teammate's, or unattributed</dd>
@@ -85,8 +85,8 @@ export default function RunnerSlotDetail({
       </p>
       <p data-testid="health-runner-failures" className={`text-xs ${failed.length > 0 ? 'text-status-warning' : 'text-text-muted'}`}>
         {failed.length > 0
-          ? `${countOf(failed.length, 'slot')} last ended in failure`
-          : 'No failed last runs on these slots'}
+          ? <>Failed: {failed.length} {failed.length === 1 ? 'slot' : 'slots'} last ended in failure · <a href="/app/health/failures" className="underline hover:text-text-primary">Failures</a></>
+          : 'Failed: none on these slots'}
       </p>
     </div>
   );
