@@ -17,7 +17,7 @@ export const CHECK_STATE_WORD: Record<CheckRowStatus, string> = {
 
 const TONE: Record<CheckRowStatus, string> = {
   passed: 'text-status-success',
-  running: 'text-accent-text',
+  running: 'text-status-info',
   queued: 'text-text-muted',
   skipped: 'text-text-muted',
   failed: 'text-status-error',
@@ -74,7 +74,7 @@ export default function CheckRow({ name, status, stateWord, detail, href, action
       data-status={status}
       data-steps={steps || undefined}
       aria-current={current ? 'step' : undefined}
-      className={`group/check relative flex min-w-0 items-center gap-x-3 px-3 py-1 ${current ? 'shadow-[inset_2px_0_0_var(--accent)]' : ''} ${className}`}
+      className={`group/check relative flex min-w-0 items-center gap-x-3 px-3 py-1 ${current ? 'md:shadow-[inset_0_2px_0_var(--status-info)]' : ''} ${className}`}
     >
       {href
         ? <a href={href} className={`${layout} flex-1 after:absolute after:inset-0 after:content-[''] hover:text-text-primary`}>{body}</a>
