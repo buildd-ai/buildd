@@ -14,14 +14,15 @@
  *   phone + desktop, where the pages come from, whether a browser runner is
  *   online) and one action, "Run visual review".
  * - An audit on the mission: the sheet is the review itself (the Tray, whose
- *   thumbnails open the deck). No second audit is offered; a re-check is a
- *   new round, opened by marking a screen as an issue in the review.
+ *   thumbnails open the deck), with one "Check again" that files a new check
+ *   of the branch as it is now.
  */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import SideSheet from '@/components/SideSheet';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import {
+  CHECK_AGAIN_LABEL,
   RUN_VISUAL_REVIEW_LABEL,
   VIEWPORT_LABEL,
   browserRunnerNote,
@@ -114,11 +115,7 @@ export function VisualReviewSheetBody({ missionId, onClose }: { missionId: strin
       <div className="flex min-w-0 flex-col gap-3" data-testid="visual-review-surface" data-phase={review.model.phase}>
         {outcome && <OutcomeLine outcome={outcome} />}
         <MissionVisualTray review={closingDeck(review, onClose)} columns="one" />
-        {review.model.phase === 'reviewed' && (
-          <p className="text-meta text-text-muted">
-            To check a screen again, mark it as an issue in the review. Its fix opens the next round.
-          </p>
-        )}
+        <CheckAgain missionId={missionId} onDone={setOutcome} />
         {details}
       </div>
     );
@@ -192,6 +189,31 @@ export function VisualReviewSheetBody({ missionId, onClose }: { missionId: strin
         </div>
       )}
       {details}
+    </div>
+  );
+}
+
+/** Files a new check of the branch as it is now; the page reloads its model after. */
+function CheckAgain({ missionId, onDone }: { missionId: string; onDone: (o: VisualReviewRequestOutcome) => void }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        data-testid="visual-review-check-again"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          const next = await requestMissionVisualReview(missionId, fetch, { recheck: true });
+          onDone(next);
+          setBusy(false);
+          if (visualReviewOnMission(next)) router.refresh();
+        }}
+        className="inline-flex min-h-11 items-center justify-center border-2 border-border-strong bg-surface-3 px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-4 disabled:opacity-50 md:min-h-9"
+      >
+        {busy ? 'Adding…' : CHECK_AGAIN_LABEL}
+      </button>
     </div>
   );
 }

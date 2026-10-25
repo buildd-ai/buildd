@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missionStartState } from '@/lib/mission-start-state';
 import { after } from 'next/server';
+import { scheduleOwedVisualReview } from '@/lib/mission-summary-home';
 import { loadBuildEstimateRows } from '@/lib/mission-build-estimates';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, specs, users } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
@@ -810,6 +811,11 @@ async function MissionDetailBody({
     }),
   ]);
   if (surfaceAuditWaiver) surfaceAuditWaiver.actorLabel = waiverActorName(surfaceAuditWaiver.actorLabel, user?.email, waiverNames);
+  // An out-of-date review with no audit behind it files the next one now, not at the next sweep.
+  // Idempotent: a live audit is returned, never duplicated.
+  if (visualReviewState?.status === 'needed' && visualReviewState.nextActor === 'system') {
+    after(() => scheduleOwedVisualReview(id));
+  }
   if (visualReviewState?.waiver) visualReviewState.waiver.actorLabel = waiverActorName(visualReviewState.waiver.actorLabel, user?.email, waiverNames);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
@@ -857,7 +863,9 @@ async function MissionDetailBody({
   // Visual review: the model is passed whenever an audit exists (no
   // "shots only" guard), so a queued, runner-less, boot-failed or stalled
   // audit is on the page. The Visual step is an adapter over the same model.
-  const boardVisual: VisualReviewModel | null = visualModel && visualModel.phase !== 'off' ? visualModel : null;
+  const boardVisual: VisualReviewModel | null = visualModel && visualModel.phase !== 'off'
+    ? (visualReviewState?.staleEvidence && visualModel.phase === 'reviewed' ? { ...visualModel, onEarlierCommit: true } : visualModel)
+    : null;
   // "Waive visual audit" (a person's call): offered beside the Visual review
   // control and on the audit task's drawer whenever the mission has an audit,
   // is blocked on a missing one, or already carries a waiver.
