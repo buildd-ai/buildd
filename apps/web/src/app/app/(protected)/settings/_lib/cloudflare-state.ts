@@ -44,6 +44,5 @@ export function cloudflareState(cred: CloudflareCredentialView | null): Cloudfla
   }
 }
 
-/** Terminal deploy (apps/cloud-runner/README.md), for someone with a checkout of the buildd repo. */
+/** Terminal deploy, for someone with a checkout of the buildd repo. `--help` prints the steps. */
 export const CLOUD_RUNNER_DEPLOY_COMMAND = 'bun apps/cloud-runner/scripts/deploy.ts --help';
-export const CLOUD_RUNNER_DEPLOY_DOCS = 'https://github.com/buildd-ai/buildd/blob/dev/apps/cloud-runner/README.md#deploy-with-your-cloudflare-token';
