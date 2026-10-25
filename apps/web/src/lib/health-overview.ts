@@ -104,9 +104,11 @@ export function overviewStatusRows(
             href: RUNNERS_HREF,
           };
 
-  const budgetRow: OverviewStatusRow = budget.paused.length > 0
+  const budgetRow: OverviewStatusRow | null = budget.paused.length > 0
     ? { key: 'budget', label: 'Budget', value: pausedValue(budget.paused), tone: 'warning', href: RUNNERS_HREF }
-    : budget.monthly
+    // Only real (per-token) spend can use up a dollar budget. With none this
+    // month there is nothing to show, so the row is absent.
+    : budget.monthly && budget.monthly.spentUsd > 0
       ? {
           key: 'budget',
           label: 'Budget',
@@ -114,7 +116,7 @@ export function overviewStatusRows(
           tone: budget.monthly.pctUsed >= 90 ? 'error' : budget.monthly.pctUsed >= 70 ? 'warning' : 'ok',
           href: BUDGETS_HREF,
         }
-      : { key: 'budget', label: 'Budget', value: 'No monthly limit set', tone: 'muted', href: BUDGETS_HREF };
+      : null;
 
   return [runnerRow, budgetRow].filter((row): row is OverviewStatusRow => row !== null);
 }
