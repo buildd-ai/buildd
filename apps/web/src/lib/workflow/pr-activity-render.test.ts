@@ -4,6 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  ownerParkedIn,
   parseRenderVersion,
   renderDeliveryActivity,
   renderVersionMarker,
@@ -84,6 +85,25 @@ describe('transitions → timeline', () => {
       ['changes_pushed', null], ['fix_ended', null], ['review_escalated', 'review budget spent'],
       ['changes_pushed', null], ['review_escalated', 'review budget spent'],
       ['trunk_recovered', null], ['review_escalated', 'review budget spent'],
+    ]);
+  });
+
+  // 08d752ed (#5580, #5647): an owner's hand-off to a person at PR open is not a push that failed.
+  test('an attempt end that escalates says why, and only a lost PR head reads as "never reached GitHub"', () => {
+    const ts = [
+      T('AttemptEnded', 'WORKING', 'ESCALATED', { outcome: 'success', live: live('H1'), policyEvidence: { headSha: 'H1', reason: 'destructive migration' }, reason: 'destructive migration' }, 1),
+      T('AttemptEnded', 'WORKING', 'ESCALATED', { outcome: 'success', live: live('H1'), signature: 'ci:unit', spent: 3, max: 3 }, 2),
+      T('AttemptEnded', 'FIXING', 'ESCALATED', { outcome: 'failed', live: live('H1') }, 3),
+      T('AttemptEnded', 'REPAIRING', 'ESCALATED', { outcome: 'failed', live: live('H1') }, 4),
+      T('AttemptEnded', 'WORKING', 'ESCALATED', { outcome: 'failed', live: null, note: 'no_open_pr_head' }, 5),
+    ];
+    const entries = transitionsToActivityEntries(ts, [], []);
+    expect(entries.filter((e) => e.kind !== 'fix_ended').map((e) => [e.kind, e.detail ?? null])).toEqual([
+      ['human_review_required', 'destructive migration'],
+      ['ci_exhausted', null],
+      ['review_escalated', 'fix budget spent'],
+      ['review_escalated', 'repair budget spent'],
+      ['push_undeliverable', null],
     ]);
   });
 
@@ -242,6 +262,44 @@ describe('58c8961e: why each review round started', () => {
 
   test('a round recorded before triggers keeps its plain label', () => {
     expect(transitionsToActivityEntries(log, rounds, attempts).filter((e) => e.kind === 'review_queued').map((e) => e.detail)).toEqual(['round 1', 'round 2']);
+  });
+});
+
+describe('WORKING with the owner parked in the queue (loop pass, requeue) is not "Agent working"', () => {
+  const working = (ts: ActivityTransition[]) =>
+    renderDeliveryActivity({ view: { delivery: D({ state: 'WORKING', version: 9 }), rounds: [], attempts: [] }, transitions: ts, timezone: 'UTC' });
+
+  test('a loop hold requeue, then CI readings, still reads as waiting for the next pass', () => {
+    v = 0;
+    const ts = [
+      T('DeliveryOpened', null, 'WORKING', {}, 0),
+      T('AttemptStarted', 'WORKING', 'WORKING', { start: true, taskId: 't1' }, 1),
+      T('AttemptRequeued', 'WORKING', 'WORKING', { requeue: true, reason: 'loop_hold', taskId: 't1' }, 2),
+      T('CiObserved', 'WORKING', 'WORKING', { verdict: 'red' }, 3),
+    ];
+    expect(ownerParkedIn(ts)).toBe(true);
+    const body = working(ts);
+    expect(body).toContain("Waiting for the agent's next pass");
+    expect(body).not.toContain('Agent working');
+  });
+
+  test('the next claim starts it: Agent working again', () => {
+    v = 0;
+    const ts = [
+      T('DeliveryOpened', null, 'WORKING', {}, 0),
+      T('AttemptRequeued', 'WORKING', 'WORKING', { requeue: true, reason: 'loop_hold', taskId: 't1' }, 1),
+      T('AttemptStarted', 'WORKING', 'WORKING', { start: true, taskId: 't1' }, 2),
+    ];
+    expect(ownerParkedIn(ts)).toBe(false);
+    expect(working(ts)).toContain('Agent working');
+  });
+
+  test('an end the task retries, and a reopen to pending, park it; a reopen to assigned does not', () => {
+    v = 0;
+    expect(ownerParkedIn([T('AttemptEnded', 'WORKING', 'WORKING', { outcome: 'failed', requeue: true }, 1)])).toBe(true);
+    expect(ownerParkedIn([T('AttemptReopened', 'WORKING', 'WORKING', { reopen: true, to: 'pending' }, 2)])).toBe(true);
+    expect(ownerParkedIn([T('AttemptReopened', 'WORKING', 'WORKING', { reopen: true, to: 'assigned' }, 3)])).toBe(false);
+    expect(ownerParkedIn([T('DeliveryOpened', null, 'WORKING', {}, 0)])).toBe(false);
   });
 });
 

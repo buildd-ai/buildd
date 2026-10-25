@@ -5,6 +5,7 @@ import {
   impactScope,
   planIncidentAlert,
   shouldFileFixTask,
+  isTransientOrBudgetPattern,
   triageIncident,
   IMPACT_SCOPE_THRESHOLDS,
   type FixTaskDraft,
@@ -324,6 +325,10 @@ describe('shouldFileFixTask', () => {
     expect(shouldFileFixTask(budget, triage({ source: 'rule', classification: 'page_now', confidence: null, reasonCode: 'critical_floor_repeated_failure' }))).toMatchObject({ file: false, reason: 'transient_or_budget' });
     expect(shouldFileFixTask(budget, triage({ reasonCode: 'cause_budget_or_quota' })).file).toBe(false);
     expect(shouldFileFixTask(budget, triage({ reasonCode: 'cause_platform_defect' })).file).toBe(true);
+    // Claude's subscription walls read "session limit" / "weekly limit", not "usage limit".
+    const session = (await open(port, repeatedCandidate(10, "You've hit your session limit · resets 3am (UTC)"))).incident;
+    expect(shouldFileFixTask(session, triage({ source: 'rule', classification: 'page_now', confidence: null, reasonCode: 'critical_floor_repeated_failure' }))).toMatchObject({ file: false, reason: 'transient_or_budget' });
+    expect(isTransientOrBudgetPattern(session)).toBe(true);
     const net = (await open(port, repeatedCandidate(5, 'fetch failed: ECONNRESET socket hang up'))).incident;
     expect(shouldFileFixTask(net, triage({})).file).toBe(true); // model says platform defect
     expect(shouldFileFixTask(net, triage({ reasonCode: 'cause_transient_infra' })).file).toBe(false);

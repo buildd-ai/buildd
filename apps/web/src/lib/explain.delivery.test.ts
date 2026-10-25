@@ -25,6 +25,7 @@ const mockExecute = mock(async (q: unknown) => {
   const text = dialect.sqlToQuery(q as Parameters<PgDialect['sqlToQuery']>[0]).sql;
   if (text.includes('-- workflow:delivery_views')) return { rows: deliveryRows };
   if (text.includes('-- workflow:mission_epochs')) return { rows: epochRows };
+  if (text.includes('-- workflow:delivery_owner_for_pr')) return { rows: deliveryRows.map(r => ({ owner_task_id: r.delivery.owner_task_id, pr_number: r.delivery.pr_number })) };
   return { rows: [] };
 });
 
@@ -52,7 +53,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@buildd/core/dispatch-outbox', () => ({ latestDispatchForTask: mock(async () => null) }));
 mock.module('@buildd/core/db/schema', () => ({
   workspaces: { id: 'id' },
-  missions: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
+  missions: { id: 'id', workspaceId: 'workspaceId', status: 'status', workingBranch: 'workingBranch' },
   tasks: { id: 'id', missionId: 'missionId', parentTaskId: 'parentTaskId', workspaceId: 'workspaceId', status: 'status' },
   workers: { id: 'id', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef', mergedAt: 'mergedAt', startedAt: 'startedAt' },
   gateEvents: { taskId: 'taskId', occurredAt: 'occurredAt' },
@@ -71,6 +72,8 @@ mock.module('drizzle-orm', () => ({
 }));
 mock.module('@/lib/mission-completion', () => ({ canCompleteMission: mock(async () => completionDecision) }));
 mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mock(async () => null) }));
+// The landing path merges an approved PR here; a person-merges rule would make every APPROVED read "yours".
+mock.module('@/modules', () => ({ APPROVED_MERGE_RULE: () => false }));
 mock.module('@/lib/runner-heartbeats', () => ({ loadBrowserRunnerHeartbeats: mock(async () => []) }));
 
 // Imported AFTER the mocks (as explain.test.ts does).
@@ -243,5 +246,97 @@ describe('a fix attempt of a delivery whose latest verdict is request-changes is
     const answer = (await explainTask('owner', { userId: 'u' }))!.subjects[0]!;
     notReady(answer);
     expect(answer.delivery).toMatchObject({ state: 'ESCALATED' });
+  });
+});
+
+/**
+ * Task 8d440b64: explain disagreed with itself and with GitHub. Its headline
+ * and needsYou follow the delivery whenever one exists; an attempt's failure
+ * never overrides a live delivery; "ready to merge" needs green checks; a PR
+ * number resolves to the delivery's owner.
+ */
+describe('explain follows the delivery, and ready to merge needs green checks', () => {
+  const PR = 60;
+  const prUrl = `https://github.com/acme/app/pull/${PR}`;
+  const prArgs = (taskId: string, over: Row = {}) => ({
+    id: 'wx', taskId, workspaceId: 'ws-1', prNumber: PR, prUrl, branch: null, prBaseRef: 'dev', prLifecycleStatus: 'pr_open',
+    conflictDetectedAt: null, prOpenedBaseSha: null, mergedAt: null, observedTouches: null, createdAt: null, ...over,
+  });
+  const approved = (ci: string | null) => deliveryRow('owner', PR, 'APPROVED', { approved_heads: ['H1'], approval_basis: 'verdict', ci, ci_head_sha: ci ? 'H1' : null });
+
+  beforeEach(() => {
+    taskRows = [task({ id: 'owner', missionId: null, workers: [worker({ id: 'wo', prNumber: PR, prUrl, prLifecycleStatus: 'pr_open' })] })];
+  });
+
+  it('presentation.needsYou is the delivery\'s: an approved, green PR the landing path merges is not yours (#5648)', async () => {
+    deliveryRows = [approved('green')];
+    const answer = (await explainTask('owner', { userId: 'u' }))!.subjects[0]!;
+    expect(answer.delivery?.needsYou).toBe(false);
+    expect(answer.presentation.needsYou).toBe(answer.delivery!.needsYou);
+  });
+
+  it('an approved PR with failing checks is not ready to merge (#5642)', async () => {
+    deliveryRows = [approved('red')];
+    const answer = (await explainTask('owner', { userId: 'u' }))!.subjects[0]!;
+    expect(answer.state).not.toBe('awaiting_merge');
+    expect((answer.waitingOn as { kind?: string } | null)?.kind).toBe('landing_blocked');
+    expect(JSON.stringify([answer.waitingOn, answer.situation])).not.toMatch(/(?<!not )ready to merge/i);
+  });
+
+  it('an approved PR whose checks are still running is not ready to merge', async () => {
+    deliveryRows = [approved(null)];
+    const answer = (await explainTask('owner', { userId: 'u' }))!.subjects[0]!;
+    expect(answer.state).not.toBe('awaiting_merge');
+    expect((answer.waitingOn as { cause?: string } | null)?.cause).toBe('ci_pending');
+  });
+
+  it('a legacy PR (no delivery) with red or running checks is not ready to merge (#5642)', async () => {
+    for (const lifecycle of ['ci_failed', 'ci_running']) {
+      taskRows = [task({ id: 'owner', missionId: null, taskClass: 'bookkeeping', workers: [worker({ id: 'wo', prNumber: PR, prUrl, prLifecycleStatus: lifecycle })] })];
+      const answer = (await explainPr(prArgs('owner', { prLifecycleStatus: lifecycle }), { userId: 'u' }))!.subjects[0]!;
+      expect(answer.state).not.toBe('awaiting_merge');
+      expect(JSON.stringify([answer.waitingOn, answer.situation])).not.toMatch(/(?<!not )ready to merge/i);
+    }
+  });
+
+  it('a legacy PR with green checks still reads ready to merge', async () => {
+    taskRows = [task({ id: 'owner', missionId: null, workers: [worker({ id: 'wo', prNumber: PR, prUrl, prLifecycleStatus: 'ci_green' })] })];
+    const answer = (await explainTask('owner', { userId: 'u' }))!.subjects[0]!;
+    expect(answer.state).toBe('awaiting_merge');
+  });
+
+  it('two escalated PRs read the same whether or not a fix attempt failed (#5639 / #5640)', async () => {
+    const esc = () => {
+      const row = deliveryRow('owner', PR, 'ESCALATED', { state_reason: 'review_exhausted' });
+      row.attempt_tasks = [
+        { id: 'owner', role: 'owner', status: 'completed', created_at: '2026-01-01T00:00:00.000Z' },
+        { id: 'fix', role: 'fix', status: 'failed', created_at: '2026-01-02T00:00:00.000Z' },
+      ];
+      return row;
+    };
+    deliveryRows = [esc()];
+    const clean = (await explainTask('owner', { userId: 'u' }))!.subjects[0]!;
+    taskRows.push(task({ id: 'fix', title: '[builder · after review #2] Wire the route', taskClass: 'attempt', parentTaskId: 'owner', status: 'failed',
+      workers: [worker({ id: 'wf', status: 'failed', prNumber: PR, prUrl, error: 'agent gave up' })] }));
+    deliveryRows = [esc()];
+    const withFailedFix = (await explainTask('owner', { userId: 'u' }))!.subjects[0]!;
+    expect(withFailedFix.state).toBe(clean.state);
+    expect(withFailedFix.state).not.toBe('failing');
+    expect(withFailedFix.presentation.state).toBe(clean.presentation.state);
+    expect(withFailedFix.presentation.needsYou).toBe(true);
+  });
+
+  it('explain prNumber= resolves to the delivery owner, even from a task that is not an attempt (#5580)', async () => {
+    taskRows.push(task({ id: 'person', title: 'Resolve conflicts on #60 and merge', missionId: null, workers: [worker({ id: 'wp', prNumber: PR, prUrl })] }));
+    deliveryRows = [deliveryRow('owner', PR, 'AWAITING_REVIEW')];
+    const answer = (await explainPr(prArgs('person'), { userId: 'u' }))!.subjects[0]!;
+    expect(answer.subject.taskId).toBe('owner');
+    expect(answer.delivery).toMatchObject({ state: 'AWAITING_REVIEW' });
+  });
+
+  it('a PR into a mission branch names that mission even when its task has none (#5623)', async () => {
+    missionRow = { id: 'mission-9', title: 'Auth', workspaceId: 'ws-1', status: 'active', schedule: null, integrationBranchEnabled: true, workingBranch: 'mission/auth' };
+    const answer = (await explainPr(prArgs('owner', { prBaseRef: 'mission/auth' }), { userId: 'u' }))!.subjects[0]!;
+    expect(answer.subject.missionId).toBe('mission-9');
   });
 });

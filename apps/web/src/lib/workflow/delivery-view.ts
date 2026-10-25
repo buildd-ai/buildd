@@ -180,13 +180,15 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
     taskId: String(t.id), role: t.role == null ? 'attempt' : String(t.role), status: String(t.status), createdAt: iso(t.created_at),
     ownerQuestion: typeof t.owner_question === 'string' && t.owner_question.trim() ? t.owner_question.trim() : null,
   }));
+  const delivery = toDeliverySnapshot(row.delivery as J);
   const view = deriveDeliveryView({
-    view: { delivery: toDeliverySnapshot(row.delivery as J), rounds, attempts, findings },
+    view: { delivery, rounds, attempts, findings },
     lastTransition,
     attemptTasks,
     remediation: remediationFrom(row.remediation as J | null, now),
     approvedNeedsPerson: (row.delivery as J).state === 'APPROVED' ? approvedNeedsPerson(row) : false,
     laneWait: laneWaitFrom(row.lane_wait),
+    ownerParked: delivery.state === 'WORKING' && attemptTasks.some((t) => t.taskId === delivery.ownerTaskId && t.status === 'pending'),
     ...(escalationPermissions ? { escalationPermissions } : {}),
   });
   return view ? withMergeContradiction(view, row.merge_contradiction as J | null | undefined) : null;
@@ -422,4 +424,17 @@ LIMIT ${limit}`);
  */
 export async function getOwnerDeliveryDisplays(taskIds: string[], exec: Exec = dbExec): Promise<Map<string, DeliveryDisplay>> {
   return ownerDeliveryDisplays(await getDeliveryViewsForTasks(taskIds, exec));
+}
+
+/** The owner task of the kernel delivery bound to this PR, or null. Never throws. */
+export async function kernelDeliveryOwnerForPr(workspaceId: string, prUrl: string | null, prNumber: number): Promise<string | null> {
+  const repo = prUrl ? /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/.exec(prUrl)?.[1] ?? null : null;
+  if (!repo) return null;
+  const res = await dbExec(sql`-- workflow:delivery_owner_for_pr
+SELECT owner_task_id, pr_number FROM workflow_deliveries
+WHERE workspace_id = ${workspaceId}::uuid AND repo_full_name = ${repo}::text AND pr_number = ${prNumber}::int AND authority = 'kernel'
+ORDER BY created_at DESC LIMIT 1`).catch(() => null);
+  const row = ((res as { rows?: Array<{ owner_task_id?: unknown; pr_number?: unknown }> } | null)?.rows ?? [])
+    .find(r => Number(r.pr_number) === prNumber);
+  return typeof row?.owner_task_id === 'string' ? row.owner_task_id : null;
 }

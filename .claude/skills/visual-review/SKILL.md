@@ -223,6 +223,16 @@ QA_OUTPUT=/tmp/qa-ci bun scripts/qa/judge.ts prepare   # judge-input.json: desig
    anything else (a fixture). `QA_VIEWPORT` says what the shots were taken at when
    `captures.json` does not record it (trunk before this change). Exit 6: a named
    screen is not in the file.
+
+   A **component** screen (`"screens": { "<id>": { "kind": "component", "code": "<repo path>" } }`
+   in the plan, or `data-kind="component"` on its section) specifies one component,
+   not a page. Capture its dev fixture (`/app/dev/fixtures?state=…`, the one that
+   renders its `code`) at the screen's own size (`viewport=<W>x<H>`), and list the
+   fixtures under `routes`, one per state: `"routes": { "c-stage-meter":
+   ["/app/dev/fixtures?state=stage-meter&variant=idle", "…&variant=failed"] }`. It
+   never pairs with a real route; with no `routes` entry it pairs with the fixture
+   named like the screen (`c-stage-meter` ↔ `state=stage-meter`) or its code file
+   (`UiStageMeter.tsx` ↔ `state=ui-stage-meter`). Cite the screen and the fixture URL.
 4. Read `side-by-side/*.png`. Judge differences that matter to the criterion
    (layout, content order, words, states shown), not pixels; cite the screen id.
    Upload the side-by-side image (and the design shot for `designShotIds`) with

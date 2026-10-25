@@ -43,6 +43,7 @@ import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import CoordinationHoldFixture from './CoordinationHoldFixture';
 import StartAnywayFixture from './StartAnywayFixture';
+import QueueComponentsFixture from './QueueComponentsFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import RunnerIsolationFixture from './RunnerIsolationFixture';
 import RunnerRowFixture from './RunnerRowFixture';
@@ -64,6 +65,7 @@ import ServiceStatusFixture from './ServiceStatusFixture';
 import ClosedPrFixture from './ClosedPrFixture';
 import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import DesignPreviewFixture from './DesignPreviewFixture';
+import CapacityAndIdleAlertFixture, { CAPACITY_FIXTURE_STATE } from './CapacityAndIdleAlertFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -106,6 +108,7 @@ import {
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     COORDINATION_HOLD_FIXTURE_STATE,
     START_ANYWAY_FIXTURE_STATE,
+    QUEUE_COMPONENTS_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
@@ -267,6 +270,9 @@ export default function DevFixturesPage() {
     if (state === START_ANYWAY_FIXTURE_STATE) {
         return <StartAnywayFixture />;
     }
+    if (state === QUEUE_COMPONENTS_FIXTURE_STATE) {
+        return <QueueComponentsFixture />;
+    }
 
     if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {
         return <ToolBreakdownFixture />;
@@ -349,6 +355,10 @@ export default function DevFixturesPage() {
 
     if (state === CLOSED_PR_FIXTURE_STATE) {
         return <ClosedPrFixture />;
+    }
+
+    if (state === CAPACITY_FIXTURE_STATE) {
+        return <CapacityAndIdleAlertFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {
