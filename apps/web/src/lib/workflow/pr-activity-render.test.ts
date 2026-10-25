@@ -338,7 +338,7 @@ describe('escalation after a fix that pushed', () => {
   });
 
   test('a CI repair that spent its budget is ci_exhausted', () => {
-    const ci: AttemptSnapshot[] = [{ ...attempts[0]!, id: 'c1', family: 'ci' }];
+    const ci: AttemptSnapshot[] = [1, 2, 3].map((n) => ({ ...attempts[0]!, id: `c${n}`, attemptNo: n, family: 'ci' as const }));
     const ts = [
       T('FixClaimed', 'REPAIRING', 'REPAIRING', { attemptId: 'c1', live: live('H1') }, 3),
       T('AttemptEnded', 'REPAIRING', 'ESCALATED', { outcome: 'failed', live: live('H1') }, 4),
@@ -346,6 +346,29 @@ describe('escalation after a fix that pushed', () => {
     const ks = transitionsToActivityEntries(ts, rounds, ci).map((e) => e.kind);
     expect(ks).toContain('ci_exhausted');
     expect(ks).not.toContain('push_undeliverable');
+  });
+
+  test('an attempt that ended in success but escalated does not claim the budget was spent', () => {
+    const ts = [
+      T('FixClaimed', 'CHANGES_REQUESTED', 'FIXING', { attemptId: 'a1', roundId: 'r1', live: live('H1') }, 3),
+      T('AttemptEnded', 'FIXING', 'ESCALATED', { outcome: 'success', live: live('H2') }, 4),
+    ];
+    const e = transitionsToActivityEntries(ts, rounds, attempts).find((x) => x.kind === 'review_escalated');
+    expect(e?.detail).not.toContain('budget spent');
+  });
+
+  test('a spent review-fix ledger says the fix budget is spent', () => {
+    const spent: AttemptSnapshot[] = [1, 2, 3].map((n) => ({ ...attempts[0]!, id: n === 1 ? 'a1' : `a${n}`, attemptNo: n }));
+    const ts = [
+      T('FixClaimed', 'CHANGES_REQUESTED', 'FIXING', { attemptId: 'a1', roundId: 'r1', live: live('H1') }, 3),
+      T('AttemptEnded', 'FIXING', 'ESCALATED', { outcome: 'success', live: live('H2') }, 4),
+    ];
+    expect(transitionsToActivityEntries(ts, rounds, spent).find((x) => x.kind === 'review_escalated')?.detail).toBe('fix budget spent');
+  });
+
+  test('no attempt on record and red CI names CI, not a vague ending', () => {
+    const ts = [T('AttemptEnded', 'WORKING', 'ESCALATED', { outcome: 'failed', liveChecks: { failing: ['build'] } }, 4)];
+    expect(transitionsToActivityEntries(ts, rounds, attempts).find((x) => x.kind === 'review_escalated')?.detail).toBe('CI is red');
   });
 
   test('PushRecoveryExhausted still says the push never arrived', () => {

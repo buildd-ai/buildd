@@ -78,6 +78,23 @@ export function roundLabel(r: RoundSnapshot): string {
   return parts.join(' · ');
 }
 
+/**
+ * Why an ended attempt escalated, read from what the transition recorded: the review budget
+ * flag, the attempt's family against its own cap in the ledger, and the live CI read.
+ */
+function attemptEscalation(ev: Record<string, unknown>, a: AttemptSnapshot | undefined, attempts: AttemptSnapshot[]): Omit<PrActivityEntry, 'at'> {
+  if (ev.reviewBudgetSpent) return { kind: 'review_escalated', detail: 'review budget spent' };
+  if (a) {
+    const spent = attempts.filter((x) => x.family === a.family && x.mode === a.mode && x.status !== 'skipped').length >= a.maxAttempts;
+    if (spent) return a.family === 'ci' ? { kind: 'ci_exhausted' } : { kind: 'review_escalated', detail: a.family === 'review_fix' ? 'fix budget spent' : `${a.family} fix budget spent` };
+    if (ev.noChange) return { kind: 'review_escalated', detail: `the ${a.family === 'review_fix' ? 'review' : a.family} fix left the PR unchanged` };
+    return { kind: 'review_escalated', detail: `the ${a.family === 'review_fix' ? 'review' : a.family} fix ended and the head is still not mergeable` };
+  }
+  const failing = (ev.liveChecks as { failing?: unknown } | undefined)?.failing;
+  if (Array.isArray(failing) && failing.length > 0) return { kind: 'review_escalated', detail: 'CI is red' };
+  return { kind: 'review_escalated', detail: 'the fix ended and a person has to decide' };
+}
+
 /** Map the transition log to timeline entries, oldest first. */
 export function transitionsToActivityEntries(
   transitions: ActivityTransition[],
@@ -159,15 +176,9 @@ export function transitionsToActivityEntries(
           push({ kind: 'push_pending' });
         }
         // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
-        // An attempt that ended and escalated pushed (or tried to); only a delivery that never saw
-        // a head move says "never reached GitHub" (PushRecoveryExhausted). Name the budget instead.
-        if (t.toState === 'ESCALATED') {
-          if (ev.reviewBudgetSpent) push({ kind: 'review_escalated', detail: 'review budget spent' });
-          else if (t.fromState === 'FIXING') push({ kind: 'review_escalated', detail: 'fix budget spent' });
-          else if (fixAttempt?.family === 'ci') push({ kind: 'ci_exhausted' });
-          else if (fixAttempt) push({ kind: 'review_escalated', detail: `${fixAttempt.family} fix budget spent` });
-          else push({ kind: 'review_escalated', detail: 'the fix ended and a person has to decide' });
-        }
+        // Name the real reason, from the ledger and the evidence; only PushRecoveryExhausted says
+        // "never reached GitHub".
+        if (t.toState === 'ESCALATED') push(attemptEscalation(ev, fixAttempt, attempts));
         break;
       }
       case 'PushRecoveryExhausted':

@@ -9,6 +9,7 @@
  * and dispatched to a connected runner via pusher.
  */
 
+import { VERIFY_BEFORE_PUSH } from '@/lib/verify-before-push';
 import { isOpenTaskStatus } from '@buildd/shared';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { lineageStamp } from '@/lib/attempt-lineage';
@@ -287,7 +288,7 @@ ${logSection}## Instructions
 1. Check out the existing branch — your worktree is based on the previous attempt's work
 2. ${ciRunId ? 'Pull the failing logs with the command above and read them carefully' : 'Read the failure summary above carefully'}
 3. Fix the failing tests/build/lint issues
-4. Run the verification command locally before completing
+4. Run the verification command locally before completing. ${VERIFY_BEFORE_PUSH}
 5. Push your fixes to ${bound ? `\`${bound.head}\`` : 'the existing branch'} (the PR will auto-update)
 6. Confirm the PR's own checks are green: \`${prChecksCommand}\`. A local run, or a
    type check of one file, is not enough: it does not run the checks that gate

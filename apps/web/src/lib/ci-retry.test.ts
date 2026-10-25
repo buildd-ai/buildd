@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { VERIFY_BEFORE_PUSH } from './verify-before-push';
 import { buildCIRetryTask, summarizePrFixAttempts } from './ci-retry';
 
 const baseParams = {
@@ -16,6 +17,10 @@ const baseParams = {
 };
 
 describe('buildCIRetryTask', () => {
+  it('tells the CI fix to pass the type check and build before it pushes', () => {
+    expect(buildCIRetryTask(baseParams)!.description).toContain(VERIFY_BEFORE_PUSH);
+  });
+
   it('log commands use no gh flag that older installed gh versions reject', () => {
     for (const ciFailedJobId of [67890, undefined]) {
       const t = buildCIRetryTask({ ...baseParams, ciRunId: 12345, ciFailedJobId });
