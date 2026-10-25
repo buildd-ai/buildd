@@ -75,7 +75,7 @@ const PERSISTED_FIELDS = [
   'pathClaimMode', 'pathCollision',
   // The refs a checkpoint sweep measures against. Without them a restored
   // worker sweeps with an empty committed half.
-  'worktreeBaseRef', 'prBaseRef',
+  'worktreeBaseRef', 'worktreeBaseSha', 'prBaseRef',
   // Authoritative working set: what the server acknowledged holding for this
   // session, so a restart replays deltas instead of starting from nothing.
   // Bounded by the task's own change set, never the repo.
@@ -345,6 +345,7 @@ export function loadAllWorkers(opts: { reconcileRestart?: boolean } = {}): Local
         output: (data.output as LocalWorker['output']) || [],
         worktreePath: data.worktreePath as string | undefined,
         worktreeBaseRef: data.worktreeBaseRef as string | undefined,
+        worktreeBaseSha: data.worktreeBaseSha as string | undefined,
         prBaseRef: data.prBaseRef as string | undefined,
         promptSuggestions: data.promptSuggestions as string[] | undefined,
         lastAssistantMessage: data.lastAssistantMessage as string | undefined,
@@ -419,6 +420,7 @@ export function loadWorker(workerId: string): LocalWorker | null {
       output: (data.output as LocalWorker['output']) || [],
       worktreePath: data.worktreePath as string | undefined,
       worktreeBaseRef: data.worktreeBaseRef as string | undefined,
+      worktreeBaseSha: data.worktreeBaseSha as string | undefined,
       prBaseRef: data.prBaseRef as string | undefined,
       promptSuggestions: data.promptSuggestions as string[] | undefined,
       lastAssistantMessage: data.lastAssistantMessage as string | undefined,

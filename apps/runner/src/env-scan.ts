@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir, platform, arch, hostname } from 'os';
 import type { WorkerEnvironment, WorkerTool } from '@buildd/shared';
 import { CAPABILITY_BROWSER, CAPABILITY_MCP_GROUP_TOOLS, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
+import { runnerHostName } from './runner-host';
 
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
@@ -292,7 +293,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
       type: 'local',
       os: platform(),
       arch: arch(),
-      hostname: hostname(),
+      hostname: runnerHostName({ hostname: hostname() }),
     },
     scannedAt: new Date().toISOString(),
     browserProvider: getBrowserProviderProbe(),

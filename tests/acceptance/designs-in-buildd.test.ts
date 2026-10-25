@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { exportCanvas } from '../../scripts/design/export-canvas';
 import { designScreensFromHtml, mapRoutesToScreens, parseDesignPlan } from '../../scripts/qa/design';
 import { designHref } from '../../scripts/qa/design-capture';
+import { assembleVerdicts, buildJudgeInput, renderReport } from '../../scripts/qa/judge-format';
 import { planStore, resolveRevision } from '../../apps/web/src/lib/designs/store';
 import { parseScreens } from '../../apps/web/src/lib/designs/screens';
 import { designPreviewHref } from '../../apps/web/src/lib/design-preview';
@@ -147,5 +148,45 @@ describe('verify: design beside built', () => {
     expect(desktop.pairs.map(p => p.screen)).toEqual(['desktop-mission']);
     expect(phone.pairs.map(p => p.screen)).toEqual(['phone-mission']);
     expect(desktop.pairs[0].criteria).toEqual(['AC-4']);
+  });
+});
+
+describe('AC-14: a component screen is checked on its dev fixture', () => {
+  const fixture = '/app/dev/fixtures?state=stage-meter&variant=failed';
+  const plan = parseDesignPlan(JSON.stringify({
+    design: { file: '/tmp/design.html', artifactId: ARTIFACT, revision: 2 },
+    criteria: [{ id: 'AC-14', text: 'The stage meter shows each stage.', screens: ['c-stage-meter'] }, { id: 'AC-4', screens: ['phone-mission'] }],
+    screens: { 'c-stage-meter': { kind: 'component', code: 'apps/web/src/components/UiStageMeter.tsx' } },
+    routes: { 'c-stage-meter': [fixture] },
+  }));
+  const inFile = designScreensFromHtml(`${exported.html}<section data-screen="c-stage-meter" data-viewport="480x160"></section>`);
+  const captures = [
+    { id: 'meter', path: fixture, screenshotFile: 'meter.png', viewport: { width: 480, height: 900 } },
+    { id: 'mission', path: '/app/missions/m1', screenshotFile: 'mission.png', viewport: { width: 390, height: 844 } },
+  ];
+
+  test('the component pairs with its fixture at its width, the page screen with the real route', () => {
+    const { pairs } = mapRoutesToScreens(plan, inFile, captures);
+    expect(pairs.map(p => [p.screen, p.route, p.kind])).toEqual([
+      ['c-stage-meter', fixture, 'component'],
+      ['phone-mission', '/app/missions/m1', 'page'],
+    ]);
+  });
+
+  test('the verdict names the screen and the fixture URL', () => {
+    const { pairs } = mapRoutesToScreens(plan, inFile, captures);
+    const design = {
+      design: { artifactId: ARTIFACT, revision: 2, sha256: 'a'.repeat(64), source: 'file' as const },
+      criteria: plan.criteria,
+      shots: [{ screen: 'c-stage-meter', file: 'designs/c-stage-meter.png', viewport: { width: 480, height: 160 }, theme: null, kind: 'component' as const }],
+      pairs: pairs.filter(p => p.screen === 'c-stage-meter').map(p => ({ ...p, designImage: 'designs/c-stage-meter.png', builtImage: 'screenshots/meter.png' })),
+      unmatchedScreens: [],
+    };
+    const caps = [{ id: 'meter', path: fixture, screenshotFile: 'meter.png' }];
+    const input = buildJudgeInput({ routes: [] }, caps as any, design);
+    const pass = ['renders', 'first-screen', 'no-overflow', 'tap-targets'].map(id => ({ id, verdict: 'pass' }));
+    const report = renderReport(assembleVerdicts(input, { meter: { summary: 's', expectations: pass, designChecks: [{ screen: 'c-stage-meter', verdict: 'pass', reason: 'ok' }] } }, caps as any));
+    expect(report).toContain('**c-stage-meter** (AC-14)');
+    expect(report).toContain(`on fixture [${fixture}]`);
   });
 });

@@ -99,7 +99,7 @@ describe('release.yml: the flow switch', () => {
   test('least privilege: nothing by default, write only where a job pushes', () => {
     expect(wf.permissions).toEqual({});
     expect(wf.jobs.mode.permissions).toEqual({});
-    expect(wf.jobs.cut.permissions).toEqual({ contents: 'write', 'pull-requests': 'write' });
+    expect(wf.jobs.cut.permissions).toEqual({ contents: 'write', 'pull-requests': 'write', checks: 'read' });
   });
 
   test('cuts are serialised and never cancelled half-way', () => {
@@ -114,6 +114,14 @@ describe('release.yml: the flow switch', () => {
     expect(cut.env.SOURCE_SHA).toBe('${{ github.sha }}');
     // Inputs reach the shell only as env, never interpolated into the script.
     for (const k of ['FORCE', 'DRY_RUN', 'AMEND', 'AMEND_CONFIRM']) expect(String(cut.env[k])).toMatch(/^\$\{\{ inputs\.\w+ \}\}$/);
+  });
+
+  test('a cut (not an amend) waits for a green build: it walks back to the newest dev commit whose build passed', () => {
+    const cut = step(RELEASE, 'cut', (s) => s.id === 'cut');
+    const run = String(cut.run);
+    expect(run).toContain('bun scripts/release-candidate.ts cut --require-check build');
+    expect(run).not.toMatch(/amend[^\n]*--require-check/);
+    expect(cut.env.GH_CHECKS_TOKEN).toBe('${{ github.token }}');
   });
 
   test('the App key is used only to mint a token, and only outside dry runs', () => {

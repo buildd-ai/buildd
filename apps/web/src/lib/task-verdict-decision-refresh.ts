@@ -14,7 +14,8 @@ import { db } from '@buildd/core/db';
 import { missionNotes, tasks, workerErrorTraces, workers } from '@buildd/core/db/schema';
 import { loadOpenAttempt } from '@/lib/explain';
 import { deriveTaskVerdict, parseStoredVerdictDecision, type StoredVerdictDecision, type TaskVerdict } from './task-verdict';
-import { buildVerdictInput, traceOutcomeOf } from './task-verdict-facts';
+import { buildVerdictInput, deliveryVerdictFields, traceOutcomeOf } from './task-verdict-facts';
+import { getDeliveryViewsForTasks } from './workflow/delivery-view';
 import { decideTaskVerdict, unclearTraceFacts, verdictFingerprint, VERDICT_LOG_PREFIX, type DecideVerdictDeps, type VerdictRecord } from './task-verdict-decision';
 import { classifyTracesByRule, priorAttemptFactsOf, type ConsequenceTrace } from './trace-consequence';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -49,7 +50,7 @@ export async function loadVerdictRecord(taskId: string): Promise<{ record: Verdi
   const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
   const prOpen = !!prWorker && !prWorker.mergedAt && prWorker.prLifecycleStatus !== 'closed';
 
-  const [ciAttempts, openAttempt, questions, traceRows] = await Promise.all([
+  const [ciAttempts, openAttempt, questions, traceRows, deliveries] = await Promise.all([
     prWorker?.prNumber
       ? db.query.tasks.findMany({
           where: sqlWhere(and(eq(tasks.parentTaskId, taskId), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha))),
@@ -66,7 +67,10 @@ export async function loadVerdictRecord(taskId: string): Promise<{ record: Verdi
       .where(eq(workerErrorTraces.taskId, taskId))
       .orderBy(desc(workerErrorTraces.ts))
       .limit(TRACE_LIMIT),
+    // The kernel delivery, as the task page reads it: never throws, an empty map degrades to the columns.
+    prWorker ? getDeliveryViewsForTasks([taskId]) : Promise.resolve(new Map()),
   ]);
+  const deliveryView = deliveries.get(taskId) ?? null;
 
   const input = buildVerdictInput({
     task: { status: task.status, mode: task.mode, result: task.result },
@@ -76,8 +80,10 @@ export async function loadVerdictRecord(taskId: string): Promise<{ record: Verdi
     openQuestion: questions.length > 0,
     // Release attribution only changes a shipped headline, which asks nothing.
     inRelease: false,
+    deliveryPrState: deliveryView?.prState ?? null,
+    deliverySupersededBy: deliveryView?.supersededBy ?? null,
   });
-  const verdict = deriveTaskVerdict(input);
+  const verdict = deriveTaskVerdict({ ...input, ...deliveryVerdictFields(deliveryView) });
   if (!verdict) return { record: null, verdict: null, stored };
 
   const traces: ConsequenceTrace[] = traceRows;

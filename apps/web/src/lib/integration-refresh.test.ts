@@ -15,6 +15,7 @@ import {
   COMPARE_FILES_CAP,
   refreshFiledFor,
   requeueBranchContext,
+  refreshPrIsEmpty,
 } from './integration-refresh';
 
 const REFRESH_CTX = { requireMergeCommit: true, refreshTrunk: 'dev', refreshTrunkSha: 'dev-2', refreshMissionHeadSha: 'm-1' };
@@ -107,6 +108,47 @@ describe('effectiveDeltaFiles', () => {
     expect(await effectiveDeltaFiles(1, 'o/r', 'dev', 'h', async () => ({}))).toBeNull();
     const many = Array.from({ length: COMPARE_FILES_CAP }, (_, i) => ({ filename: `f${i}`, status: 'added', additions: 1, deletions: 0 }));
     expect(await effectiveDeltaFiles(1, 'o/r', 'dev', 'h', async () => ({ files: many }))).toBeNull();
+  });
+});
+
+// Friction 0e0a8c78: three writers merged dev into one mission branch within
+// two minutes, and the refresh PR then opened with a 0-file diff and merged.
+describe('refreshPrIsEmpty: a refresh PR another writer already did is superseded before it opens', () => {
+  const answer = (o: { contains: boolean | 'fail'; files: unknown[] | 'fail' }) => {
+    const paths: string[] = [];
+    const api = async (_i: number, path: string) => {
+      paths.push(path);
+      if (path.includes('/compare/dev-2...')) {
+        if (o.contains === 'fail') throw new Error('GitHub API error: 502');
+        return { status: o.contains ? 'ahead' : 'diverged' };
+      }
+      if (o.files === 'fail') throw new Error('GitHub API error: 502');
+      return { files: o.files };
+    };
+    return { api, paths };
+  };
+  const ask = (api: any, context: unknown = REFRESH_CTX) =>
+    refreshPrIsEmpty({ installationId: 1, repoFullName: 'o/r', context, base: 'mission/a', head: 'buildd/r', api });
+
+  it('is empty when the base already contains the trunk sha and the head adds no file', async () => {
+    const { api, paths } = answer({ contains: true, files: [] });
+    expect(await ask(api)).toEqual({ trunk: 'dev', trunkSha: 'dev-2' });
+    expect(paths).toEqual(['/repos/o/r/compare/dev-2...mission/a', '/repos/o/r/compare/mission/a...buildd/r']);
+  });
+
+  it('opens as before when the base is still missing the trunk sha', async () => {
+    expect(await ask(answer({ contains: false, files: [] }).api)).toBeNull();
+  });
+
+  it('opens as before when the head carries a file of its own (a conflict resolution)', async () => {
+    expect(await ask(answer({ contains: true, files: [{ filename: 'a.ts', status: 'modified', additions: 1, deletions: 1 }] }).api)).toBeNull();
+  });
+
+  it('fails open on a read failure, and for a PR that is not a refresh', async () => {
+    expect(await ask(answer({ contains: 'fail', files: [] }).api)).toBeNull();
+    expect(await ask(answer({ contains: true, files: 'fail' }).api)).toBeNull();
+    expect(await ask(answer({ contains: true, files: [] }).api, { baseBranch: 'mission/a' })).toBeNull();
+    expect(await ask(answer({ contains: true, files: [] }).api, { requireMergeCommit: true })).toBeNull();
   });
 });
 

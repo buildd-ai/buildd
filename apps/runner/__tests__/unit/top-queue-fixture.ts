@@ -54,7 +54,7 @@ export function queueState(over: Partial<TopState> = {}): TopState {
   ] });
   s = reduce(s, { type: 'queue', queue: QUEUE });
   s = reduce(s, { type: 'claim_outcome', taskId: 'q-review', outcome: {
-    at: NOW - 60_000, reason: 'budget_exhausted', walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: iso(THU_MIDNIGHT) }],
+    at: NOW - 60_000, reason: 'budget_exhausted', walls: [{ kind: 'runner_seat', backend: 'claude', resetsAt: iso(THU_MIDNIGHT) }],
   } });
   return { ...s, view: 'queue', ...over };
 }

@@ -154,6 +154,7 @@ async function maybeDispatchReviewer(
       headSha: pr.head.sha,
       files: prFiles,
       baseRef: pr.base?.ref ?? null,
+      trunkRef: workspace.gitConfig?.targetBranch ?? workspace.gitConfig?.defaultBranch ?? null,
       ...(deltaBase ? { deltaBase } : {}),
     });
 

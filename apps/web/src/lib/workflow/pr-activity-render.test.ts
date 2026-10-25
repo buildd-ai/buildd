@@ -283,3 +283,45 @@ describe('WORKING with the owner parked in the queue (loop pass, requeue) is not
     expect(ownerParkedIn([T('DeliveryOpened', null, 'WORKING', {}, 0)])).toBe(false);
   });
 });
+
+describe('a long delivery: more rows than the comment keeps', () => {
+  // Five review rounds, each changes-requested then a fix: well past MAX_ACTIVITY_ENTRIES.
+  const many = (): { ts: ActivityTransition[]; rs: RoundSnapshot[]; as: AttemptSnapshot[] } => {
+    v = 0;
+    const rs: RoundSnapshot[] = [];
+    const as: AttemptSnapshot[] = [];
+    const ts: ActivityTransition[] = [T('DeliveryOpened', null, 'WORKING', {}, 0)];
+    let min = 1;
+    for (let n = 1; n <= 5; n++) {
+      const head = `H${n}`;
+      rs.push({ id: `r${n}`, round: n, headSha: head, kind: n === 1 ? 'full' : 'delta', status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes', failureCount: 0 });
+      as.push({ id: `a${n}`, family: 'review_fix', attemptNo: n, mode: 'agent', boundHeadSha: head, triggerReason: `r${n}`, taskId: `ft${n}`, status: 'ended', outcome: 'delivered', maxAttempts: 9, reportedShas: [] });
+      ts.push(T('AttemptEnded', n === 1 ? 'WORKING' : 'FIXING', 'AWAITING_REVIEW', { outcome: 'success', live: live(head) }, min++));
+      ts.push(T('ReviewVerdictRecorded', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', { roundId: `r${n}`, verdict: 'request_changes', effectiveVerdict: 'request_changes' }, min++));
+      ts.push(T('FixClaimed', 'CHANGES_REQUESTED', 'FIXING', { attemptId: `a${n}`, roundId: `r${n}`, live: live(head) }, min++));
+    }
+    return { ts, rs, as };
+  };
+
+  test('"Started" is the delivery start, a fold line links the task, and the round label is the delivery round', () => {
+    const { ts, rs, as } = many();
+    const body = renderDeliveryActivity({
+      view: { delivery: D({ state: 'FIXING', currentRound: 5, ownerTaskId: 'owner-task' }), rounds: rs, attempts: as },
+      transitions: ts, timezone: 'UTC',
+    });
+    expect(body).toContain('Started Oct 6, 10:00 UTC');
+    expect(body).toMatch(/^- \d+ earlier events · \[see Buildd\]\([^)]*\/app\/tasks\/owner-task\)$/m);
+    const queued = body.split('\n').filter((l) => l.includes('Re-review queued') || l.includes('Review queued'));
+    expect(queued[queued.length - 1]).toContain('round 5');
+    // No row is offset from a kept row: the first kept row is well past 0m.
+    expect(body).not.toContain('`0m`');
+  });
+
+  test('rounds with no transition here (imported with a legacy PR): the newest queued row is still the delivery round', () => {
+    const { ts, rs, as } = many();
+    // Drop the first two rounds' transitions; their rounds remain in the view.
+    const tail = [ts[0], ...ts.slice(7)];
+    const entries = transitionsToActivityEntries(tail, rs, as);
+    expect(entries.filter((e) => e.kind === 'review_queued').map((e) => e.detail)).toEqual(['round 3', 'round 4', 'round 5']);
+  });
+});

@@ -76,7 +76,13 @@ SELECT to_jsonb(d.*) AS delivery,
      WHERE t.workspace_id = d.workspace_id AND d.pr_number IS NOT NULL AND t.conflict_retry_pr_number = d.pr_number
        AND t.status IN ('pending', 'assigned', 'in_progress')
      ORDER BY t.created_at DESC LIMIT 1) AS remediation,
-  (SELECT e.outcome FROM workflow_effects e
+  -- The parked refresh, and its place in the lane: wakeNextWaiterSql wakes the oldest first.
+  (SELECT jsonb_build_object('outcome', e.outcome, 'position',
+       (SELECT count(*) FROM workflow_effects e2 JOIN workflow_deliveries d2 ON d2.id = e2.delivery_id
+         WHERE e2.kind = 'refresh_branch' AND e2.status = 'pending' AND e2.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
+           AND d2.repo_full_name = d.repo_full_name AND d2.base_ref = d.base_ref
+           AND (e2.created_at, e2.id) <= (e.created_at, e.id)))
+     FROM workflow_effects e
      WHERE e.delivery_id = d.id AND e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
      ORDER BY e.created_at DESC LIMIT 1) AS lane_wait,
   -- The workspace's config and the owner task feed only the APPROVED merge rule (ApprovedMergeRule).
@@ -144,11 +150,19 @@ async function approvedMergeRule(): Promise<ApprovedMergeRule> {
   }
 }
 
-/** Pure: a parked refresh's outcome (`parked:lane_busy:#N`) as the PR it waits behind. */
-export function laneWaitFrom(outcome: unknown): { behindPr: number | null } | null {
+/**
+ * Pure: a parked refresh's outcome (`parked:lane_busy:#N`) as the PR it waits behind,
+ * with its place in the lane when the loader counted it (`{ outcome, position }`).
+ */
+export function laneWaitFrom(raw: unknown): { behindPr: number | null; position?: number | null } | null {
+  const row = raw && typeof raw === 'object' ? raw as J : null;
+  const outcome = row ? row.outcome : raw;
   if (typeof outcome !== 'string' || !outcome.startsWith(LANE_PARKED_OUTCOME)) return null;
   const m = /#(\d+)$/.exec(outcome);
-  return { behindPr: m ? Number(m[1]) : null };
+  const behindPr = m ? Number(m[1]) : null;
+  if (!row) return { behindPr };
+  const position = Number(row.position);
+  return { behindPr, position: Number.isInteger(position) && position > 0 ? position : null };
 }
 
 export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson: ApprovedMergeRule = PERSON_MERGES, escalationPermissions?: EscalationBriefPermissions): DeliveryView | null {
@@ -410,4 +424,17 @@ LIMIT ${limit}`);
  */
 export async function getOwnerDeliveryDisplays(taskIds: string[], exec: Exec = dbExec): Promise<Map<string, DeliveryDisplay>> {
   return ownerDeliveryDisplays(await getDeliveryViewsForTasks(taskIds, exec));
+}
+
+/** The owner task of the kernel delivery bound to this PR, or null. Never throws. */
+export async function kernelDeliveryOwnerForPr(workspaceId: string, prUrl: string | null, prNumber: number): Promise<string | null> {
+  const repo = prUrl ? /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/.exec(prUrl)?.[1] ?? null : null;
+  if (!repo) return null;
+  const res = await dbExec(sql`-- workflow:delivery_owner_for_pr
+SELECT owner_task_id, pr_number FROM workflow_deliveries
+WHERE workspace_id = ${workspaceId}::uuid AND repo_full_name = ${repo}::text AND pr_number = ${prNumber}::int AND authority = 'kernel'
+ORDER BY created_at DESC LIMIT 1`).catch(() => null);
+  const row = ((res as { rows?: Array<{ owner_task_id?: unknown; pr_number?: unknown }> } | null)?.rows ?? [])
+    .find(r => Number(r.pr_number) === prNumber);
+  return typeof row?.owner_task_id === 'string' ? row.owner_task_id : null;
 }
