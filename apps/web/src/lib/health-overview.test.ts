@@ -59,8 +59,8 @@ describe('overviewStatusRows', () => {
     expect(rowsNormal.find(r => r.key === 'runners')).toMatchObject({ value: 'None online', tone: 'error' });
   });
 
-  it('has no credentials row: there is nothing to store', () => {
-    expect(overviewStatusRows(STATE).map(r => r.key)).toEqual(['runners', 'budget']);
+  it('has no credentials row, and no budget row without real spend', () => {
+    expect(overviewStatusRows(STATE).map(r => r.key)).toEqual(['runners']);
   });
 
   it('budget: a paused provider wins, then real monthly spend, else no row', () => {
