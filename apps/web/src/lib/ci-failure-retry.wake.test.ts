@@ -175,6 +175,11 @@ describe('retryCiFailureForPr on a kernel-owned PR (§5.7, T10)', () => {
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'head_not_current', current: { state: 'AWAITING_REVIEW' } } })).toMatchObject({ reason: 'kernel_owned' });
   });
 
+  it('210caad3: a delivery waiting in the landing lane is not a fix in flight: T10 replaces the wait with the CI fix', () => {
+    // T10 now applies on REPAIRING(behind) with its refresh unrun, so the door reads a dispatch.
+    expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'REPAIRING' } }, attemptTaskId: 'ci-fix-1' })).toEqual({ kind: 'dispatched', taskId: 'ci-fix-1' });
+  });
+
   it('S24: a trunk-blocked delivery is a blocked_on_trunk skip: the sweep files no per-PR retry and does not come back for it', () => {
     expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } })).toEqual({ kind: 'skipped', reason: 'blocked_on_trunk', detail: 'trunk_incident' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'BLOCKED_ON_TRUNK' } } })).toMatchObject({ kind: 'skipped', reason: 'blocked_on_trunk' });

@@ -693,6 +693,32 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'lane (210caad3): a behind refresh still waiting is not a fix in flight: red CI gets its CI fix, a real conflict its conflict repair',
+    async run(host) {
+      const behind = (s: Delivery) => s.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'behind', maxAgentAttempts: 3 });
+      const refreshOf = async (s: Delivery) => (await s.view()).attempts.find((a) => a.mode === 'mechanical' && a.triggerReason === 'behind')!;
+
+      const a = await (await new Delivery(host, 131).open()).approvedAt('H1');
+      applied(await behind(a), 'REPAIRING', 'waiting to update the branch');
+      notApplied(await behind(a), 'rejected', 'fix_in_flight', 'a second behind reading waits on the same refresh');
+      const red = await a.ciRed('H1');
+      applied(red, 'REPAIRING', 'red CI at the waiting head');
+      eq((await a.d()).stateReason, 'ci', 'it is a CI repair now, out of the lane window');
+      eq(pick(await refreshOf(a), ['status', 'outcome']), { status: 'skipped', outcome: 'noop' }, 'the refresh that never ran is skipped, spending nothing');
+      eq(await a.count('dispatch_ci_fix'), 1, 'one CI fix dispatched');
+      eq((await a.view()).attempts.filter((x) => x.family === 'ci').map((x) => x.status), ['queued'], 'and bound');
+
+      const b = await (await new Delivery(host, 132).open()).approvedAt('H1');
+      applied(await behind(b), 'REPAIRING', 'waiting to update the branch');
+      applied(await b.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'REPAIRING', 'the waiting PR now conflicts');
+      eq((await b.d()).stateReason, 'conflict', 'a conflict repair, not more lane waiting');
+      eq((await refreshOf(b)).status, 'skipped', 'the waiting refresh is skipped');
+      const repair = (await b.view()).attempts.find((x) => x.triggerReason === 'conflict')!;
+      eq(pick(repair, ['mode', 'status']), { mode: 'mechanical', status: 'queued' }, 'mechanical first (the base-merge recheck), outside the lane');
+      notApplied(await b.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'rejected', 'fix_in_flight', 'that repair is the one in flight');
+    },
+  },
+  {
     name: 'handlers/landing: a merge owed for a head that is no longer current never calls GitHub',
     async run(host) {
       const s = await (await new Delivery(host).open()).approvedAt('H1');
