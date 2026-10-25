@@ -19,7 +19,7 @@ import { world, type OpenedPr, type World } from './workflow-scenarios-world';
 const { landPr } = await import('../../src/lib/pr-landing');
 const { drainDelivery } = await import('../../src/lib/workflow/seam');
 const { applyCommand } = await import('../../src/lib/workflow/kernel');
-const { LANE_MAX_TENURE_MS } = await import('../../src/lib/workflow/landing-lane');
+const { LANE_MAX_TENURE_MS, LANE_MAX_WAIT_MS } = await import('../../src/lib/workflow/landing-lane');
 
 let w: World;
 afterEach(() => w?.dispose());
@@ -260,6 +260,35 @@ describe('landing lane: one behind-refresh in flight per base', () => {
     expect(updateBranchCalls(b)).toHaveLength(1);
     const [lane] = await q<{ delivery_id: string }>(sql`SELECT delivery_id FROM landing_lanes WHERE repo_full_name = ${w.repo}`);
     expect(lane.delivery_id).toBe(b.deliveryId);
+  });
+
+  // 221c7b95: a park hands its attempt back, so nothing else bounded the wait. #5658 re-parked
+  // for 11.5h, approved and green, while other PRs kept taking the lane.
+  test('enforce: a waiter parked past LANE_MAX_WAIT_MS refreshes beside a lane still held, and both land once', async () => {
+    w = await world({ gitConfig: { landingLane: 'enforce' } });
+    const { a, b } = await twoBehind();
+    await sweep(a);
+    await w.deliver();
+    await sweep(b);
+    await w.deliver();
+    expect(updateBranchCalls(b)).toHaveLength(0);
+
+    // A still holds the lane (lease running, tenure not spent); B's row is older than the wait bound.
+    await q(sql`UPDATE workflow_effects SET created_at = now() - make_interval(secs => ${LANE_MAX_WAIT_MS / 1000 + 60}::int), not_before = now()
+      WHERE delivery_id = ${b.deliveryId}::uuid AND kind = 'refresh_branch'`);
+    await drainDelivery(b.deliveryId);
+    expect(updateBranchCalls(b)).toHaveLength(1);
+    expect((await refreshEffects(b))[0]).toMatchObject({ status: 'done', outcome: `ok:updated(lane:wait_spent:#${a.prNumber})` });
+    const [lane] = await q<{ delivery_id: string }>(sql`SELECT delivery_id FROM landing_lanes WHERE repo_full_name = ${w.repo}`);
+    expect(lane.delivery_id).toBe(a.deliveryId);
+
+    await landBoth(a, b);
+    expect(w.gh.pr(w.repo, a.prNumber).merged).toBe(true);
+    expect(w.gh.pr(w.repo, b.prNumber).merged).toBe(true);
+    expect(updateBranchCalls(a)).toHaveLength(1);
+    expect(w.mergeCalls(a)).toHaveLength(1);
+    expect(w.mergeCalls(b)).toHaveLength(1);
+    expect(w.gh.unsupported).toEqual([]);
   });
 
   test('shadow: nothing waits; the refresh that would have records whom it would have waited for', async () => {

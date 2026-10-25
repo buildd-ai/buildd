@@ -48,6 +48,8 @@ export interface CriterionCheckMarker {
   command: string;
   /** Set on a mission's run: the run belongs to the mission, and `subjectTaskId` is the verification that first filed it. */
   missionId?: string;
+  /** Set on a mission's run: the integrated target (`targetKey` of mission-verification) the run was filed for. */
+  targetKey?: string;
 }
 
 const MAX_EXCERPT = 2000;
@@ -77,10 +79,10 @@ export interface RegisteredCheckMarker {
 const markerOf = (context: unknown): CriterionCheckMarker | null => {
   const m = asRecord(asRecord(context)?.specCriterionCheck);
   if (!m) return null;
-  const { subjectTaskId, specRevisionId, criterionId, headSha, command, missionId } = m;
+  const { subjectTaskId, specRevisionId, criterionId, headSha, command, missionId, targetKey } = m;
   return typeof subjectTaskId === 'string' && typeof specRevisionId === 'string' && typeof criterionId === 'string'
     && typeof headSha === 'string' && typeof command === 'string'
-    ? { subjectTaskId, specRevisionId, criterionId, headSha, command, ...(typeof missionId === 'string' ? { missionId } : {}) }
+    ? { subjectTaskId, specRevisionId, criterionId, headSha, command, ...(typeof missionId === 'string' ? { missionId } : {}), ...(typeof targetKey === 'string' ? { targetKey } : {}) }
     : null;
 };
 
@@ -105,7 +107,7 @@ async function defaultWake(task: { id: string; title: string; workspaceId: strin
  * a withdrawn test or revision cannot still grade the mission.
  */
 async function pinnedChecks(taskId: string): Promise<
-  { ok: true; workspaceId: string; specRevisionId: string; checks: CriterionCheck[]; registered: PlannedRegisteredCheck[]; missionId?: string } | { ok: false; reason: string }
+  { ok: true; workspaceId: string; specRevisionId: string; checks: CriterionCheck[]; registered: PlannedRegisteredCheck[]; missionId?: string; targetKey?: string } | { ok: false; reason: string }
 > {
   if (!isUuid(taskId)) return { ok: false, reason: 'not a task id' };
   const [task] = await db.select({ workspaceId: tasks.workspaceId, context: tasks.context, missionId: tasks.missionId, creationSource: tasks.creationSource }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
@@ -113,6 +115,7 @@ async function pinnedChecks(taskId: string): Promise<
   const final = asRecord(asRecord(task.context)?.finalVerification);
   let pin = asRecord(asRecord(task.context)?.specSource);
   let missionId: string | undefined;
+  let targetKey: string | undefined;
   if (final) {
     if (task.creationSource !== 'orchestrator' || final.missionId !== task.missionId || !task.missionId) return { ok: false, reason: 'not a platform final verification' };
     const mission = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, task.missionId)) });
@@ -120,6 +123,7 @@ async function pinnedChecks(taskId: string): Promise<
     if (!selected || mission?.workspaceId !== task.workspaceId) return { ok: false, reason: 'the mission no longer selects this revision' };
     pin = { ...selected };
     missionId = task.missionId;
+    if (typeof final.targetKey === 'string') targetKey = final.targetKey;
   }
   if (!pin || typeof pin.specRevisionId !== 'string') return { ok: false, reason: 'the task is not pinned to a Living Spec revision' };
   const read = await readPinnedSpecRevision(pin);
@@ -145,6 +149,7 @@ async function pinnedChecks(taskId: string): Promise<
     ok: true, workspaceId: task.workspaceId, specRevisionId: pin.specRevisionId, checks,
     registered: missionId ? [] : plannedBindings(taskId, task.workspaceId, pin.specRevisionId, read.body).filter((r) => answers(r.criterionId)),
     ...(missionId ? { missionId } : {}),
+    ...(targetKey ? { targetKey } : {}),
   };
 }
 
@@ -160,6 +165,34 @@ function plannedBindings(taskId: string, workspaceId: string, specRevisionId: st
   }
 }
 
+export interface PriorMissionRun {
+  headSha: string;
+  /** The integrated target the run was filed for; null on a run filed before targets were recorded. */
+  targetKey: string | null;
+  terminal: boolean;
+  /** A pass or fail verdict was recorded from this run. */
+  concluded: boolean;
+}
+
+/**
+ * Pure: should a mission's check of one criterion at `headSha` be filed, given
+ * the earlier runs of the same (mission, revision, criterion, command)?
+ *
+ * - A direct mission (`merges:` target) is verified once against its merge
+ *   result: a later trunk commit is not a new target, and neither is a run
+ *   filed before targets were recorded. Only a new set of merged PRs is.
+ * - Otherwise a new head is a new run, unless every earlier run ended without
+ *   a pass or fail (a missing test file, a run that never started): the same
+ *   inconclusive cause would come back, so nothing is filed. The spec changing
+ *   (a new revision or command) or an explicit re-run files again.
+ */
+export function shouldFileMissionRun(prior: readonly PriorMissionRun[], headSha: string, targetKey: string | null): boolean {
+  if (prior.length === 0) return true;
+  if (prior.some((r) => r.headSha === headSha)) return false;
+  if (targetKey?.startsWith('merges:')) return !prior.some((r) => r.targetKey === null || r.targetKey === targetKey);
+  return !(prior.every((r) => r.terminal && !r.concluded));
+}
+
 const sameRun = (key: Record<string, unknown>) =>
   sql`${tasks.context} @> ${JSON.stringify(key)}::jsonb`;
 
@@ -169,7 +202,7 @@ const sameRun = (key: Record<string, unknown>) =>
  * head serialize on a per-key lock, so exactly one run is filed and woken.
  */
 export async function dispatchCriterionChecks(
-  opts: { taskId: string; headSha: string; headBranch: string | null },
+  opts: { taskId: string; headSha: string; headBranch: string | null; /** An explicit request to check again despite an earlier inconclusive run. */ rerun?: boolean },
   deps: CheckDeps = {},
 ): Promise<{ dispatched: number; reason?: string }> {
   const headSha = opts.headSha.toLowerCase();
@@ -180,11 +213,12 @@ export async function dispatchCriterionChecks(
   const wake = deps.wake ?? defaultWake;
 
   const runs: FiledRun[] = [
-    ...p.checks.map((check) => commandRun(opts, p.specRevisionId, headSha, check, p.missionId)),
+    ...p.checks.map((check) => commandRun(opts, p.specRevisionId, headSha, check, p.missionId, p.targetKey)),
     ...p.registered.map((planned) => registeredRun(opts, headSha, planned)),
   ];
   let dispatched = 0;
   for (const run of runs) {
+    if (run.mission && !opts.rerun && !shouldFileMissionRun(await priorMissionRuns(p.workspaceId, run.mission), headSha, p.targetKey ?? null)) continue;
     const [existing] = await db.select({ id: tasks.id }).from(tasks).where(and(eq(tasks.workspaceId, p.workspaceId), sameRun(run.key))).limit(1);
     if (existing) continue;
 
@@ -223,6 +257,24 @@ interface FiledRun {
   description: string;
   loopConfig: Record<string, unknown> | null;
   context: Record<string, unknown>;
+  /** A mission's run: what earlier runs of the same check are looked up by. */
+  mission?: { missionId: string; specRevisionId: string; criterionId: string; command: string };
+}
+
+async function priorMissionRuns(workspaceId: string, m: NonNullable<FiledRun['mission']>): Promise<PriorMissionRun[]> {
+  const rows = await db.select({ id: tasks.id, status: tasks.status, context: tasks.context }).from(tasks)
+    .where(and(eq(tasks.workspaceId, workspaceId), sameRun({ specCriterionCheck: m }))).limit(200);
+  if (!rows.length) return [];
+  const concluded = await db.select({ taskId: sql<string>`${specOutcomeVerdicts.evidence}->>'verificationTaskId'` }).from(specOutcomeVerdicts)
+    .where(and(eq(specOutcomeVerdicts.missionId, m.missionId), eq(specOutcomeVerdicts.criterionId, m.criterionId), sql`${specOutcomeVerdicts.verdict} IN ('pass', 'fail')`));
+  const done = new Set(concluded.map((r) => r.taskId));
+  return rows.flatMap((r) => {
+    const marker = markerOf(r.context);
+    return marker ? [{
+      headSha: marker.headSha, targetKey: marker.targetKey ?? null,
+      terminal: ['completed', 'failed', 'cancelled'].includes(r.status), concluded: done.has(r.id),
+    }] : [];
+  });
 }
 
 type DispatchTarget = { taskId: string; headBranch: string | null };
@@ -235,10 +287,11 @@ type DispatchTarget = { taskId: string; headBranch: string | null };
  * command also comes from the spec's verified_by paths, which can change
  * within one revision.
  */
-function commandRun(opts: DispatchTarget, specRevisionId: string, headSha: string, check: CriterionCheck, missionId?: string): FiledRun {
+function commandRun(opts: DispatchTarget, specRevisionId: string, headSha: string, check: CriterionCheck, missionId?: string, targetKey?: string): FiledRun {
   const marker: CriterionCheckMarker = {
     subjectTaskId: opts.taskId, specRevisionId, criterionId: check.criterionId, headSha, command: check.command,
     ...(missionId ? { missionId } : {}),
+    ...(missionId && targetKey ? { targetKey } : {}),
   };
   const key = missionId
     ? { missionId, specRevisionId, criterionId: check.criterionId, headSha, command: check.command }
@@ -257,6 +310,7 @@ function commandRun(opts: DispatchTarget, specRevisionId: string, headSha: strin
       'The runner re-runs the command itself after you finish and reports its exit code. That exit code, not your summary, ' +
       `is the verdict on ${check.criterionId}. Keep your turn short.`,
     loopConfig: { exitCondition: { type: 'command', command }, maxLoops: 1 },
+    ...(missionId ? { mission: { missionId, specRevisionId, criterionId: check.criterionId, command: check.command } } : {}),
     context: {
       specCriterionCheck: marker,
       verificationCommand: command,

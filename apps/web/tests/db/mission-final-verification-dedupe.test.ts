@@ -108,4 +108,16 @@ describe('one final verification per (mission, selection, target)', () => {
     expect(results.filter((r) => r.kind === 'dispatched')).toHaveLength(1);
     expect(new Set(results.map((r) => ('taskId' in r ? r.taskId : r.reason)))).toEqual(new Set([rows[0].id]));
   });
+
+  test('a second revision-matching verification is refused while one is open, even with a different fingerprint', async () => {
+    const { missionId, criterion } = await selectingMission();
+    const standing = { target: { kind: 'integration', headSha: HEAD1, branch: 'mission/x' }, scope: [], standings: [], title: 'Checkout' } as any;
+    const results = await Promise.all([
+      ensureFinalVerification(missionId, criterion, standing),
+      ensureFinalVerification(missionId, { ...criterion, waived: [{ criterionId: 'R-1', reason: 'n/a', waivedBy: 'u', waivedAt: new Date().toISOString() }] } as any, standing),
+    ]);
+    expect(results.filter((r) => r.kind === 'dispatched')).toHaveLength(1);
+    const rows = await q<{ id: string }>(sql`SELECT id FROM tasks WHERE mission_id = ${missionId}::uuid AND context ? 'finalVerification'`);
+    expect(rows).toHaveLength(1);
+  });
 });

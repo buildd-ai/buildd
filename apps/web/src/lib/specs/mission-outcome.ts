@@ -18,7 +18,7 @@ import { requestingPerson } from '@/lib/request-person';
 import { mergedDeliveryCommits } from '@/lib/workflow/delivery-view';
 import { isUuid } from '@/lib/uuid';
 import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
-import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTarget, type MissionVerdictRow } from './mission-outcome-fold';
+import { describeStandings, foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTarget, type MissionVerdictRow } from './mission-outcome-fold';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
@@ -198,7 +198,7 @@ export async function readMissionSpecStanding(mission: MissionRow, c: LivingSpec
   const target = await resolveMissionTarget(mission, rows.map((r) => r.headSha).filter((h): h is string => !!h), api);
   const unaccepted = await unacceptedAcceptanceTestPaths(mission.id);
   const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target, requiredBindings, unacceptedTestPaths: unaccepted });
-  return { ...folded, target, scope: scope.criteria, title: scope.title };
+  return { ...folded, standings: describeStandings(folded.standings, scope.criteria, rows), target, scope: scope.criteria, title: scope.title };
 }
 
 /**
