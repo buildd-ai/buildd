@@ -872,8 +872,8 @@ async function releaseCandidateCiFailure(
     prNumber: input.prNumber,
     entry: {
       kind: 'ci_fixing',
-      detail: `fix on ${cls.sourceBranch}, then amend`,
-      note: `A release candidate is not fixed on its branch. The fix goes to \`${cls.sourceBranch}\`; once it merges, amend this candidate through the Release workflow (amend: v${cls.version}).`,
+      detail: `fix on ${cls.sourceBranch}, then amend automatically`,
+      note: `A release candidate is not fixed on its branch. The fix goes to \`${cls.sourceBranch}\`. Once the fix PR merges, this candidate will be amended automatically and checks will restart on the new head.`,
       url: ciLogs.runUrl,
       taskUrl: taskActivityUrl(fix.id),
       taskTitle: built.title,
