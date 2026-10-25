@@ -8876,7 +8876,7 @@ describe('PATCH /api/workers/[id]', () => {
         await PATCH(createMockRequest({
           method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
           body: {
-            status: 'completed', costUsd: 0,
+            status: 'completed', costUsd: 0, costBasis: 'real',
             resultMeta: { modelUsage: { 'claude-sonnet-4-6': { inputTokens: 0, outputTokens: 1_000_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 } } },
           },
         }), { params: mockParams });
@@ -8914,7 +8914,7 @@ describe('PATCH /api/workers/[id]', () => {
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
         body: {
           status: 'completed',
-          costUsd: 0,
+          costUsd: 0, costBasis: 'real',
           resultMeta: {
             modelUsage: {
               'claude-sonnet-4-6': {
@@ -8953,7 +8953,7 @@ describe('PATCH /api/workers/[id]', () => {
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
         body: {
           status: 'completed',
-          costUsd: 0,
+          costUsd: 0, costBasis: 'real',
           resultMeta: {
             modelUsage: {
               'claude-sonnet-4-6': {
@@ -8994,7 +8994,7 @@ describe('PATCH /api/workers/[id]', () => {
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
         body: {
-          status: 'completed',
+          status: 'completed', costBasis: 'real',
           // No costUsd at all — the runner omits it when the backend reported $0.
           actualModel: 'claude-sonnet-4-6',
           resultMeta: {
@@ -9062,7 +9062,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed', costUsd: 10 },
+        body: { status: 'completed', costUsd: 10, costBasis: 'real' },
       });
       const res = await PATCH(req, { params: mockParams });
 
@@ -9085,7 +9085,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed', costUsd: 20 },
+        body: { status: 'completed', costUsd: 20, costBasis: 'real' },
       });
       const res = await PATCH(req, { params: mockParams });
 
@@ -9108,7 +9108,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed', costUsd: 50 },
+        body: { status: 'completed', costUsd: 50, costBasis: 'real' },
       });
       const res = await PATCH(req, { params: mockParams });
 
@@ -9151,7 +9151,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const req = createMockRequest({
         method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'completed', costUsd: 10 },
+        body: { status: 'completed', costUsd: 10, costBasis: 'real' },
       });
       const res = await PATCH(req, { params: mockParams });
 
