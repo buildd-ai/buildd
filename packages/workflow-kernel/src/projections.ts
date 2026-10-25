@@ -116,9 +116,20 @@ export interface DeliveryViewInput {
   escalationPermissions?: EscalationBriefPermissions;
   /**
    * A behind refresh parked in the landing lane (lib/workflow/landing-lane.ts):
-   * the PR holding the lane on this base, when known. Absent or null = not parked.
+   * the PR holding the lane on this base, when known, and this PR's place among the
+   * parked refreshes on that base (1 = next). Absent or null = not parked.
    */
-  laneWait?: { behindPr: number | null } | null;
+  laneWait?: LaneWait | null;
+  /**
+   * The owner task is back in the queue with no worker on it (a loop pass waiting
+   * on its backoff, a retry): WORKING then names the wait, not an agent at work.
+   */
+  ownerParked?: boolean;
+}
+
+export interface LaneWait {
+  behindPr: number | null;
+  position?: number | null;
 }
 
 export type DeliveryCta =
@@ -200,6 +211,11 @@ export interface DeliveryView {
   reviewApproval?: { state: 'success' | 'failure' | 'pending'; description: string } | null;
   /** What a person is asked to decide on a review escalation: its cause, findings by state, and the actions open to them. Null otherwise. */
   escalation?: EscalationBrief | null;
+  /**
+   * A behind refresh parked in the landing lane: queued behind another PR on the
+   * same base, no repair running. Null when not parked. Owner is `landing` then.
+   */
+  laneWait?: LaneWait | null;
 }
 
 /**
@@ -284,6 +300,7 @@ const ESCALATION_COPY: Record<string, string> = {
   review_exhausted: 'Review budget spent without an approval',
   review_unavailable: 'No valid review verdict could be produced',
   ci_exhausted: 'CI fix budget spent',
+  ci_unfixed_head: 'A CI fix ended without changing the head; another on the same head would repeat it',
   conflict_exhausted: 'Conflict fix budget spent',
   push_undeliverable: 'The fix never reached GitHub',
   landing_needs_human: 'Merge blocked: a person has to merge it',
@@ -311,6 +328,22 @@ export function reviewExhaustedCopy(rounds: RoundSnapshot[]): string {
   // The last verdict approved, but left findings unverified, and the verification round did not fit.
   if (refused === 0) return 'Approved, but findings it left unverified ran out of review rounds';
   return `Approved${approvals.length > 1 ? ` ${timesWord(approvals.length)}` : ''}, then a later change was refused${refused > 1 ? ` ${timesWord(refused)}` : ''}`;
+}
+
+/**
+ * `review_escalated` names who escalated. A server gate (migration safety, a hard path rule,
+ * the confidence bar) can override an approve after the reviewer decided; the round keeps the
+ * reviewer's own verdict beside the effective one, so the copy says it was the gate, not the
+ * reviewer, that sent the PR to a person.
+ */
+export function reviewEscalatedCopy(rounds: RoundSnapshot[]): string {
+  const last = rounds.filter((r) => r.status === 'decided' && r.effectiveVerdict).sort((a, b) => b.round - a.round)[0];
+  if (last?.effectiveVerdict === 'escalate' && last.verdict && last.verdict !== 'escalate') {
+    return last.verdict === 'approve'
+      ? 'The reviewer approved; a merge gate escalated this PR'
+      : 'A merge gate escalated this PR';
+  }
+  return ESCALATION_COPY.review_escalated!;
 }
 
 /** c1d66a6a / AC-17: open findings a push already touched, waiting for a review to verify them. */
@@ -394,6 +427,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
 
   const conflictOnHead = d.mergeable === 'dirty' && d.mergeableHeadSha === d.currentHeadSha;
   const repairKind = d.state === 'REPAIRING' ? d.stateReason : null;
+  const laneWait = repairKind === 'behind' ? input.laneWait ?? null : null;
   const conflictBlocked = repairKind === 'conflict' || repairKind === 'migration'
     || (conflictOnHead && !['MERGED', 'SUPERSEDED', 'ABANDONED', 'FAILED', 'CLOSED_UNMERGED'].includes(d.state));
 
@@ -408,7 +442,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
   const pr = d.prNumber != null ? `PR #${d.prNumber}` : 'the PR';
 
   switch (d.state) {
-    case 'WORKING': headline = 'Agent working'; break;
+    case 'WORKING': headline = input.ownerParked ? "Waiting for the agent's next pass" : 'Agent working'; break;
     case 'AWAITING_PUSH':
       headline = 'Waiting for the fix to reach GitHub';
       detail = `${pr} is still at ${short(d.currentHeadSha)}; the platform is re-checking for the pushed commit`;
@@ -425,10 +459,16 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     // updating the branch from its base (docs/specs/task-page.md). Parked in the
     // landing lane, it says which PR is landing on that base first.
     case 'REPAIRING':
-      if (repairKind === 'behind' && input.laneWait) {
+      if (laneWait) {
+        // Parked, not repairing: nothing runs on this PR until the lane frees, and the
+        // landing lane (not a worker) owns the next move.
         const base = d.baseRef ?? 'its base';
-        headline = 'Waiting to update branch';
-        detail = input.laneWait.behindPr != null ? `PR #${input.laneWait.behindPr} is merging into ${base} first` : `another PR is merging into ${base} first`;
+        const approved = d.currentHeadSha != null && d.approvedHeads.includes(d.currentHeadSha);
+        const behind = laneWait.behindPr != null ? `PR #${laneWait.behindPr}` : 'another PR';
+        headline = approved ? `Approved · queued to land behind ${behind}` : 'Waiting to update branch';
+        const place = laneWait.position != null && laneWait.position > 0 ? `; position ${laneWait.position} in the queue` : '';
+        detail = `${behind} is merging into ${base} first${place}`;
+        owner = 'landing';
       } else {
         headline = repairKind === 'ci' ? 'Fixing CI' : repairKind === 'behind' ? 'Updating branch' : 'Repairing';
       }
@@ -460,7 +500,9 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       if (d.stateReason === 'landing_needs_human') {
         ({ headline, detail } = landingEscalationCopy(input.lastTransition));
       } else {
-        headline = d.stateReason === 'review_exhausted' ? reviewExhaustedCopy(input.view.rounds) : ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
+        headline = d.stateReason === 'review_exhausted' ? reviewExhaustedCopy(input.view.rounds)
+          : d.stateReason === 'review_escalated' ? reviewEscalatedCopy(input.view.rounds)
+          : ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
         detail = [evidenceDetail(input.lastTransition), addressedNote(input.view.findings ?? [])].filter(Boolean).join('; ') || null;
       }
       // 08d752ed (#5539): whatever it escalated for, a red head is part of what the person decides on.
@@ -551,6 +593,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     findingTotals: findingTotals(input.view.findings),
     reviewApproval: reviewApprovalOf(input.view),
     escalation: deriveEscalationBrief(input.view, input.escalationPermissions),
+    laneWait,
   };
 }
 

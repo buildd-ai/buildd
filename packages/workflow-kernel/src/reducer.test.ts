@@ -788,11 +788,20 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(applied(end(repairing(), { attemptId: 'c1', localHeadSha: 'H2', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
     const cf = applied(end(repairing({}, { approvedHeads: ['H1'], approvalBasis: 'composition', compositionHeads: ['H1'] }), { attemptId: 'c1', localHeadSha: 'H2', live: live('H2'), carryForward: 'content_equivalent' }));
     expect(cf.toState).toBe('APPROVED');
-    const retry = applied(end(repairing(), { attemptId: 'c1', outcome: 'failed' }));
+    // Failed with the head where it was bound: no second attempt on the same head.
+    const unmoved = applied(end(repairing(), { attemptId: 'c1', outcome: 'failed' }));
+    expect(unmoved.toState).toBe('ESCALATED');
+    expect(unmoved.patch.stateReason).toBe('ci_unfixed_head');
+    expect(unmoved.attempts.some((x) => x.op === 'insert')).toBe(false);
+    expect(effectKinds(unmoved)).not.toContain('dispatch_ci_fix');
+    // Failed after the head moved (someone pushed meanwhile): the next ledger row, bound to the old head.
+    const retry = applied(end(repairing(), { attemptId: 'c1', outcome: 'failed', live: live('H9') }));
     expect(retry.toState).toBe('REPAIRING');
     expect(retry.attempts[1]).toMatchObject({ op: 'insert', family: 'ci', attemptNo: 2, status: 'queued' });
     expect(retry.patch.boundAttemptId).toBe((retry.attempts[1] as { id: string }).id);
     expect(effectKinds(retry)).toContain('dispatch_ci_fix');
+    // Lost (infrastructure) is not the fixer's conclusion: it still re-files.
+    expect(applied(end(repairing(), { attemptId: 'c1', outcome: 'lost' })).toState).toBe('REPAIRING');
     const mech = applied(end(repairing({ family: 'conflict', mode: 'mechanical' }), { attemptId: 'c1', outcome: 'failed' }));
     expect(effectKinds(mech)).toContain('refresh_branch');
     const migr = applied(end(repairing({ family: 'migration', mode: 'mechanical' }), { attemptId: 'c1', outcome: 'failed' }));
@@ -809,7 +818,18 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     // A skipped row (revalidation found nothing to do) spends nothing: attempt 3 after a skip is not the last.
     const skipped = repairing({ attemptNo: 3 });
     const withSkip = { ...skipped, attempts: [A({ id: 'p1', family: 'ci', attemptNo: 1, status: 'ended' }), A({ id: 'p2', family: 'ci', attemptNo: 2, status: 'skipped' }), ...skipped.attempts] };
-    expect(applied(end(withSkip, { attemptId: 'c1', outcome: 'failed' })).toState).toBe('REPAIRING');
+    expect(applied(end(withSkip, { attemptId: 'c1', outcome: 'failed', live: live('H9') })).toState).toBe('REPAIRING');
+  });
+  test('REPAIRING: a fixer blocked on base → BLOCKED_ON_TRUNK, no further ci row', () => {
+    const blocked = applied(end(repairing(), { attemptId: 'c1', outcome: 'success', commitCount: 0, localHeadSha: null, blockedOnBase: { incidentId: 'inc1', signature: 'sig' } }));
+    expect(blocked.toState).toBe('BLOCKED_ON_TRUNK');
+    expect(blocked.patch).toMatchObject({ trunkIncidentId: 'inc1', resumeState: 'AWAITING_REVIEW', boundAttemptId: null });
+    expect(blocked.attempts.some((x) => x.op === 'insert')).toBe(false);
+    expect(effectKinds(blocked)).toContain('dispatch_trunk_fix');
+    expect(effectKinds(blocked)).not.toContain('dispatch_ci_fix');
+    // A head that moved is not "blocked": the report is not honoured.
+    const moved = applied(end(repairing(), { attemptId: 'c1', outcome: 'failed', live: live('H9'), blockedOnBase: { incidentId: 'inc1', signature: 'sig' } }));
+    expect(moved.toState).toBe('REPAIRING');
   });
 });
 
@@ -2904,6 +2924,55 @@ describe('c1d66a6a: a re-check after an approval does not spend the review budge
   });
 });
 
+// Task 81705dd8 (#5500): three pushes in ten minutes each replaced the open review; only round 3
+// judged, and its request for changes escalated review_exhausted with no fix dispatched. #5488
+// spent its budget on rounds opened only because the base branch was merged in.
+describe('81705dd8: superseded and base-refresh rounds do not spend the review budget', () => {
+  const gone = (round: number, o: Partial<RoundSnapshot> = {}) => R({ id: `r${round}`, round, headSha: `H${round}`, status: 'superseded', endReason: 'superseded_by_push', trigger: 'superseded_by_push', ...o });
+  const rc = (round: number, o: Partial<RoundSnapshot> = {}) => R({ id: `r${round}`, round, headSha: `H${round}`, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes', ...o });
+  const ap = (round: number, o: Partial<RoundSnapshot> = {}) => R({ id: `r${round}`, round, headSha: `H${round}`, status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', ...o });
+  const asksAt = (round: number, rounds: RoundSnapshot[]) => applied(run(
+    V(D({ state: 'AWAITING_REVIEW', currentRound: round, currentHeadSha: `H${round}` }), [...rounds, R({ id: `r${round}`, round, headSha: `H${round}`, kind: 'delta' })]),
+    { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: `r${round}`, verdict: 'request_changes', effectiveVerdict: 'request_changes', headBound: `H${round}` },
+  ));
+
+  test('two rounds superseded before any verdict: round 3\'s request for changes gets a fix, not an escalation', () => {
+    const dec = asksAt(3, [gone(1, { trigger: 'first_pass' }), gone(2)]);
+    expect(dec.toState).toBe('CHANGES_REQUESTED');
+    expect(effectKinds(dec)).toContain('dispatch_fix');
+    expect(effectKinds(dec)).not.toContain('escalate_exhaustion');
+  });
+
+  test('a late verdict kept on a superseded round still spends nothing; a decided round later retired does', () => {
+    const late = gone(1, { verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+    expect(spentReviewRounds({ delivery: D({ currentRound: 3 }), rounds: [late, gone(2), R({ id: 'r3', round: 3 })] })).toBe(1);
+    // BaseChanged retires the decided rounds at the head (status superseded, no endReason): they judged.
+    const retired = rc(1, { status: 'superseded' });
+    expect(spentReviewRounds({ delivery: D({ currentRound: 2 }), rounds: [retired, R({ id: 'r2', round: 2 })] })).toBe(2);
+  });
+
+  test('a base-refresh round that did not ask for changes spends nothing; one that asks counts', () => {
+    const rounds = [rc(1), ap(2, { trigger: 'base_refresh' }), R({ id: 'r3', round: 3, trigger: 'base_refresh', status: 'superseded', endReason: 'superseded_by_push' })];
+    expect(spentReviewRounds({ delivery: D({ currentRound: 3 }), rounds })).toBe(1);
+    expect(spentReviewRounds({ delivery: D({ currentRound: 2 }), rounds: [rc(1), rc(2, { trigger: 'base_refresh' })] })).toBe(2);
+    // Round 4 asks for changes after base-only re-checks: only rounds 1 and 4 counted.
+    expect(asksAt(4, [rc(1), ap(2, { trigger: 'base_refresh' }), ap(3, { trigger: 'base_refresh' })]).toState).toBe('CHANGES_REQUESTED');
+    // A base-refresh round that itself asks for changes is judged like any other: the third escalates.
+    const third = asksAt(3, [rc(1), rc(2)]);
+    expect({ to: third.toState, why: third.patch.stateReason }).toEqual({ to: 'ESCALATED', why: 'review_exhausted' });
+    const viaBase = applied(run(
+      V(D({ state: 'AWAITING_REVIEW', currentRound: 3, currentHeadSha: 'H3' }), [rc(1), rc(2), R({ id: 'r3', round: 3, headSha: 'H3', trigger: 'base_refresh' })]),
+      { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r3', verdict: 'request_changes', effectiveVerdict: 'request_changes', headBound: 'H3' },
+    ));
+    expect(viaBase.patch.stateReason).toBe('review_exhausted');
+  });
+
+  test('three requests for changes that each judged still escalate (2ded4e88)', () => {
+    const dec = asksAt(5, [gone(1, { trigger: 'first_pass' }), rc(2), gone(3), rc(4)]);
+    expect({ to: dec.toState, why: dec.patch.stateReason }).toEqual({ to: 'ESCALATED', why: 'review_exhausted' });
+  });
+});
+
 describe('b6cfdbb9: a close or a merge names the queued work it makes moot', () => {
   const closeCmd: Command = { type: 'PrClosedUnmerged', actor: 'webhook', live: live('H1', { state: 'closed', updatedAt: 'u1' }), closeCause: 'manual' };
   const cancelPayload = (dec: ApplyDecision) => dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload;
@@ -3000,7 +3069,7 @@ describe('295486ba: a cancelled CI fix that never started spends nothing; a gree
     expect(rows.map((a) => attemptOrdinal(rows, a))).toEqual([1, null, 2, 3]);
     // Every dispatch the reducer files is numbered within its budget.
     const dec = applied(run(V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c3' }), [], [...history, ci({ status: 'running' })]),
-      { type: 'AttemptEnded', actor: 'runner', workerId: 'w3', attemptId: 'c3', outcome: 'failed', localHeadSha: null, commitCount: 0, live: live('H1') }));
+      { type: 'AttemptEnded', actor: 'runner', workerId: 'w3', attemptId: 'c3', outcome: 'failed', localHeadSha: null, commitCount: 0, live: live('H9') }));
     const row = inserts(dec)[0] as AttemptSnapshot & { op: 'insert' };
     const after = [...history, ci({ status: 'ended', outcome: 'failed' }), { ...row, reportedShas: [], outcome: null }];
     expect(attemptOrdinal(after, after.at(-1)!)).toBeLessThanOrEqual(row.maxAttempts);

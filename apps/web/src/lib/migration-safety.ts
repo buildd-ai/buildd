@@ -161,17 +161,77 @@ function unwrapIdempotentDoBlock(statement: string): string | null {
 }
 
 /**
+ * Functions and triggers a base already defines, so the classifier can tell a
+ * new trigger (additive) from a redefinition of a live one (a behaviour change
+ * nothing reverses). Names are normalised by `routineName`.
+ */
+export interface KnownDbObjects {
+  functions: ReadonlySet<string>;
+  triggers: ReadonlySet<string>;
+}
+
+const NAME = String.raw`((?:"?[a-zA-Z_][\w$]*"?\.)?"?[a-zA-Z_][\w$]*"?)`;
+const CREATE_FUNCTION = new RegExp(String.raw`^CREATE\s+(OR\s+REPLACE\s+)?FUNCTION\s+${NAME}`, 'i');
+const DROP_FUNCTION = new RegExp(String.raw`^DROP\s+FUNCTION(?:\s+IF\s+EXISTS)?\s+${NAME}`, 'i');
+const CREATE_TRIGGER = new RegExp(String.raw`^CREATE\s+(OR\s+REPLACE\s+)?TRIGGER\s+${NAME}[\s\S]*?\sON\s+${NAME}`, 'i');
+const DROP_TRIGGER = new RegExp(String.raw`^DROP\s+TRIGGER(?:\s+IF\s+EXISTS)?\s+${NAME}\s+ON\s+${NAME}`, 'i');
+
+/** `"public"."Foo"` and `foo` name the same routine. */
+function routineName(value: string): string {
+  return identifier(value).toLowerCase().replace(/^public\./, '');
+}
+
+/** The functions and triggers a sequence of migrations leaves defined, in order. Pure. */
+export function definedDbObjects(sqls: readonly string[]): KnownDbObjects {
+  const functions = new Set<string>();
+  const triggers = new Set<string>();
+  for (const sql of sqls) {
+    for (const raw of statements(sql)) {
+      const statement = unwrapIdempotentDoBlock(raw) ?? raw;
+      let m = CREATE_FUNCTION.exec(statement);
+      if (m) functions.add(routineName(m[2]));
+      m = DROP_FUNCTION.exec(statement);
+      if (m) functions.delete(routineName(m[1]));
+      m = CREATE_TRIGGER.exec(statement);
+      if (m) triggers.add(routineName(m[2]));
+      m = DROP_TRIGGER.exec(statement);
+      if (m) triggers.delete(routineName(m[1]));
+    }
+  }
+  return { functions, triggers };
+}
+
+/**
  * Conservatively classify generated Postgres migration SQL.
  *
  * Returns EXPAND for purely additive, reversible changes.
  * Returns CONTRACT for any destructive or irreversible statement.
  * Unknown statements fail closed: CONTRACT.
  */
-export function classifyMigrationSql(sql: string): MigrationSafety {
+export function classifyMigrationSql(
+  sql: string,
+  /**
+   * What the base already defines. Without it a CREATE OR REPLACE of a
+   * function or trigger, or a DROP TRIGGER guarding a re-create, cannot be told
+   * from a redefinition of a live one, and fails closed.
+   */
+  existing?: KnownDbObjects,
+): MigrationSafety {
   const parsed = statements(sql);
   if (parsed.length === 0) {
     return { safe: false, operationClass: 'CONTRACT', reason: 'generated migration contains no SQL statements' };
   }
+
+  // Triggers this file (re)creates, by name and table: a DROP TRIGGER IF EXISTS
+  // in front of one is drizzle-style idempotency, not a removal.
+  const recreated = new Set<string>();
+  for (const raw of parsed) {
+    const m = CREATE_TRIGGER.exec(raw);
+    if (m) recreated.add(`${routineName(m[2])} ON ${routineName(m[3])}`);
+  }
+  const definedHere = new Set<string>();
+  const isNew = (kind: 'functions' | 'triggers', name: string) =>
+    definedHere.has(`${kind}:${name}`) || (existing !== undefined && !existing[kind].has(name));
 
   // A data statement doesn't end the scan: a later destructive statement in
   // the same file must win, so a backfill can't hide a DROP behind it.
@@ -189,6 +249,50 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
 
     match = /^DROP\s+TYPE(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$]*"?(?:\."?[a-zA-Z_][\w$]*"?)?)/i.exec(statement);
     if (match) return { safe: false, operationClass: 'CONTRACT', reason: `drops type ${identifier(match[1])}` };
+
+    match = DROP_FUNCTION.exec(statement);
+    if (match) return { safe: false, operationClass: 'CONTRACT', reason: `drops function ${routineName(match[1])}` };
+
+    match = DROP_TRIGGER.exec(statement);
+    if (match) {
+      const name = routineName(match[1]);
+      const table = routineName(match[2]);
+      if (!(recreated.has(`${name} ON ${table}`) && isNew('triggers', name))) {
+        return { safe: false, operationClass: 'CONTRACT', reason: `drops trigger ${name} on ${table}` };
+      }
+      continue;
+    }
+
+    // A new function or trigger is additive: nothing calls it until this
+    // migration wires it in. Replacing one the base already has changes live
+    // behaviour, so that stays CONTRACT.
+    match = CREATE_FUNCTION.exec(statement);
+    if (match) {
+      const name = routineName(match[2]);
+      if (match[1] && !isNew('functions', name)) {
+        return {
+          safe: false,
+          operationClass: 'CONTRACT',
+          reason: `replaces function ${name}, which ${existing ? 'the base already defines' : 'may already exist on the base'}`,
+        };
+      }
+      definedHere.add(`functions:${name}`);
+      continue;
+    }
+
+    match = CREATE_TRIGGER.exec(statement);
+    if (match) {
+      const name = routineName(match[2]);
+      if (match[1] && !isNew('triggers', name)) {
+        return {
+          safe: false,
+          operationClass: 'CONTRACT',
+          reason: `replaces trigger ${name}, which ${existing ? 'the base already defines' : 'may already exist on the base'}`,
+        };
+      }
+      definedHere.add(`triggers:${name}`);
+      continue;
+    }
 
     match =
       /^ALTER\s+TABLE\s+(?:ONLY\s+)?("?[a-zA-Z_][\w$]*"?)\s+DROP\s+CONSTRAINT(?:\s+IF\s+EXISTS)?\s+("?[a-zA-Z_][\w$]*"?)/i.exec(
@@ -349,6 +453,8 @@ export function classifyPullRequestMigrations(
    * treating a collision as theirs to report.
    */
   prNumber?: number,
+  /** Functions and triggers on the PR's base (see `classifyMigrationSql`). */
+  existing?: KnownDbObjects,
 ): MigrationSafety {
   const migrations = files.filter((file) => isGeneratedMigrationPath(file.filename));
 
@@ -371,7 +477,7 @@ export function classifyPullRequestMigrations(
       };
     }
 
-    results.push(classifyMigrationSql(migration.content));
+    results.push(classifyMigrationSql(migration.content, existing));
 
     const number = getMigrationNumber(migration.filename);
     if (!collision && number !== null) {

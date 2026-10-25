@@ -97,6 +97,8 @@ describe('dispatchVerdictAction', () => {
     expect(await dispatchVerdictAction(target({ action: 'conflict_fix' }), deps().d)).toEqual({ kind: 'dispatched', taskId: 'conflict-task' });
     const h = deps({ conflictRetry: async () => ({ dispatched: false, exhausted: true }) });
     expect(await dispatchVerdictAction(target({ action: 'conflict_fix' }), h.d)).toEqual({ kind: 'skipped', cause: 'conflict_fixes_spent' });
+    const rc = deps({ conflictRetry: async () => ({ dispatched: false, releaseCandidate: 'PR #1 is a frozen release candidate' }) });
+    expect(await dispatchVerdictAction(target({ action: 'conflict_fix' }), rc.d)).toEqual({ kind: 'skipped', cause: 'release_candidate' });
   });
 
   it('a stranded landing is queued for the landing sweep', async () => {

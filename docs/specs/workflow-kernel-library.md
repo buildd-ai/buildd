@@ -901,9 +901,12 @@ recorded as such, never as an approval.
   `buildd/landing` is no longer written; heads published before it was
   retired may still carry it, and readers that skip buildd's own status skip
   that name too. It is `success` only
-  when the kernel would land that head (approved or landing, covered, no open
-  verdict), `pending` while review of that head has not finished (so ongoing
-  review never reads as failing CI), and `failure` while a required finding is
+  when the kernel would land that head now (approved or landing, covered, no open
+  verdict, and CI recorded green at that head: the `CiObserved` reading, or the
+  merge effect's own rails read just before it publishes), `pending` while review
+  of that head has not finished (so ongoing review never reads as failing CI) and
+  while an approved head waits on CI ("Approved, waiting to merge: … waiting for
+  CI on <sha>"), and `failure` while a required finding is
   open, a verdict stands against the head, or a person has to decide. Its
   description leads with one plain term (R-43): "Review in progress",
   "Changes requested", "Unresolved review finding: <the finding>", "Ready to
@@ -918,8 +921,9 @@ recorded as such, never as an approval.
   newer answer, and an effect that runs out of retries publishes `failure`,
   never leaves a success standing. It is one GitHub App and one commit-status
   check, separate from CI: no second App and no native GitHub self-approval.
-  CI is not part of it: CI has its own checks,
-  and the merge rails never read either name as CI. Making `Buildd / Review approval` a required
+  It does not replace CI's own checks: it waits on them, so a person reading
+  GitHub never sees "Ready to merge" while required CI is still running, and the
+  merge rails never read either name as CI. Making `Buildd / Review approval` a required
   check on trunk is an owner decision (today `main` requires `build` and
   `release candidate verified`, `dev` has no rule, and admins are not
   enforced, so a manual GitHub merge on `dev` over an open finding is not

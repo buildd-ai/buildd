@@ -504,3 +504,66 @@ describe('sweepDeadZonePrs on a kernel-owned PR', () => {
     expect(result.sparked).toBe(1);
   });
 });
+
+// A frozen release candidate (release/vX.Y.Z → prodBranch) is never pushed to:
+// the sweep files no conflict fix for it on either path, kernel or legacy.
+describe('sweepDeadZonePrs on a frozen release candidate', () => {
+  const RELEASE_CONFIG = {
+    enabled: true, strategy: 'workflow_dispatch', prodBranch: 'main',
+    candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+  };
+  const WORKSPACE = {
+    id: 'ws1', repo: 'owner/repo', gitConfig: {}, releaseConfig: RELEASE_CONFIG,
+    githubRepo: { installation: { installationId: 123 } },
+  };
+  const CANDIDATE_PR = { ...DIRTY_PR, head: { sha: 'deadbeef', ref: 'release/v0.381.0' }, base: { ref: 'main' } };
+
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubApi.mockReset();
+    mockBuildConflictRetryTask.mockReset();
+    mockDispatchConflictRetry.mockReset();
+    mockKernelDeliveryForPr.mockReset();
+    mockWakeTask.mockClear();
+    mockInsertValues.length = 0;
+    mockTasksFindMany.mockResolvedValue([]);
+    mockWorkersFindMany.mockResolvedValue([deadZoneWorker({ branch: 'release/v0.381.0' })]);
+    mockWorkspacesFindFirst.mockResolvedValue(WORKSPACE);
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+    mockGithubApi.mockResolvedValue(CANDIDATE_PR);
+    mockBuildConflictRetryTask.mockReturnValue({
+      workspaceId: 'ws1', title: 't', description: 'd', parentTaskId: 't1', missionId: null, creationSource: 'webhook',
+      context: { conflictIteration: 1, maxConflictIterations: 3 }, conflictRetryPrNumber: 42, conflictRetryHeadSha: 'deadbeef',
+    });
+  });
+
+  afterAll(() => {
+    mockKernelDeliveryForPr.mockReset();
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+  });
+
+  it.each([['legacy', null], ['kernel-owned', 'delivery-1']])('a dirty %s candidate gets no conflict fix', async (_label, delivery) => {
+    mockKernelDeliveryForPr.mockResolvedValue(delivery);
+
+    const result = await sweepDeadZonePrs();
+
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    expect(mockBuildConflictRetryTask).not.toHaveBeenCalled();
+    expect(mockInsertValues).toHaveLength(0);
+    expect(mockWakeTask).not.toHaveBeenCalled();
+    expect(result.sparked).toBe(0);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('an ordinary dirty PR in the same workspace still gets its retry', async () => {
+    mockGithubApi.mockResolvedValue({ ...DIRTY_PR, head: { sha: 'deadbeef', ref: 'feat/x' }, base: { ref: 'dev' } });
+    mockWorkersFindMany.mockResolvedValue([deadZoneWorker()]);
+
+    const result = await sweepDeadZonePrs();
+
+    expect(mockInsertValues).toHaveLength(1);
+    expect(result.sparked).toBe(1);
+  });
+});
