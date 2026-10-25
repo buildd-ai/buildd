@@ -89,7 +89,9 @@ export type CiRetrySkipReason =
   /** A frozen release candidate: never fixed on its branch; the fix is filed against its source branch instead. */
   | 'release_candidate'
   /** GitHub did not name the PR's head branch: a fix filed without it cannot be pinned to the PR. */
-  | 'pr_unreadable';
+  | 'pr_unreadable'
+  /** The kernel owner was parked on a future loop pass: that pass starts now and fixes CI, no separate attempt. */
+  | 'owner_pass_started';
 
 /** Fixed text per code: the ledger coalesces on (gate, outcome, reason), so the PR number lives in `detail`. */
 const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
@@ -110,6 +112,7 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
   blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
   release_candidate: 'no CI retry: a frozen release candidate is fixed on its source branch and then amended, never pushed to',
+  owner_pass_started: "no CI retry: the PR owner's next pass was waiting on a timer and starts now to fix CI",
   pr_unreadable: 'no CI retry yet: the PR head branch could not be read, and a fix is never filed without it',
 };
 
@@ -397,9 +400,18 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   // legacy decision below MUST NOT run beside it (one authority per delivery).
   const kernel = await observeKernelCiFailure(input, task.workspaceId);
   if (kernel) {
-    if (kernel.kind === 'skipped') recordSkip(skipCtx, kernel.reason, { kernel: kernel.detail });
+    // WORKING means the owner holds the next move, but an owner parked on a
+    // loop pass hours away is not working: nothing pushes until that timer runs
+    // out. CI going red is the reason for the pass, so it starts now.
+    const ownerHolds = kernel.kind === 'skipped' && kernel.reason === 'fix_in_flight' && kernel.kernelState === 'WORKING';
+    if (ownerHolds && await startParkedOwnerPass(task)) {
+      recordSkip(skipCtx, 'owner_pass_started', { kernel: kernel.detail, holderTaskId: task.id, parkedUntil: task.startAt ?? null });
+      await lookAgain(skipCtx);
+      return { kind: 'skipped', reason: 'owner_pass_started', inFlightTaskId: task.id };
+    }
+    if (kernel.kind === 'skipped') recordSkip(skipCtx, kernel.reason, { kernel: kernel.detail, ...(ownerHolds ? { holderTaskId: task.id } : {}) });
     if (kernel.kind === 'skipped' && kernel.reason === 'fix_in_flight') await lookAgain(skipCtx);
-    return kernel.kind === 'skipped' ? { kind: 'skipped', reason: kernel.reason } : kernel;
+    return kernel.kind === 'skipped' ? { kind: 'skipped', reason: kernel.reason, ...(ownerHolds ? { inFlightTaskId: task.id } : {}) } : kernel;
   }
 
   // A failed or cancelled owner must not spawn retry children: failed is what
@@ -493,6 +505,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       conflictRetryPrNumber: tasks.conflictRetryPrNumber,
       context: tasks.context,
       createdAt: tasks.createdAt,
+      startAt: tasks.startAt,
     })
     .from(tasks)
     .where(and(
@@ -518,7 +531,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     );
     // If that attempt finishes without pushing, GitHub never reports this head
     // again — the sweep is the only thing that will come back for it.
-    recordSkip(skipCtx, 'fix_in_flight', { inFlightTaskId: inFlight.id, inFlightStatus: inFlight.status });
+    recordSkip(skipCtx, 'fix_in_flight', { inFlightTaskId: inFlight.id, inFlightStatus: inFlight.status, holderTaskId: inFlight.id });
     await lookAgain(skipCtx);
     return { kind: 'skipped', reason: 'fix_in_flight', inFlightTaskId: inFlight.id };
   }
@@ -873,7 +886,8 @@ async function releaseCandidateCiFailure(
 
 type KernelCiOutcome =
   | { kind: 'dispatched'; taskId: string }
-  | { kind: 'skipped'; reason: CiRetrySkipReason; detail: string };
+  /** `kernelState`: the delivery's state when T10 did not act (WORKING: the owner holds the move). */
+  | { kind: 'skipped'; reason: CiRetrySkipReason; detail: string; kernelState?: string | null };
 
 /**
  * The kernel door of a CI failure: T10 through the kernel client, mapped onto the
@@ -898,6 +912,31 @@ async function observeKernelCiFailure(input: CiFailureInput, workspaceId: string
   return kernelCiOutcome(seen);
 }
 
+/**
+ * A kernel owner task parked on a loop pass (`condition_unmet`, `startAt` in the
+ * future) starts now: its PR went red, which is what the pass is for. Guarded on
+ * the row still being exactly that, so a claimed, cancelled or already-due task
+ * is untouched; the claim route's gates (budget, capacity) still apply. Answers
+ * whether it moved.
+ */
+export async function startParkedOwnerPass(task: { id: string; deliveryRole?: string | null }): Promise<boolean> {
+  if (task.deliveryRole !== 'owner') return false;
+  const moved = await db
+    .update(tasks)
+    .set({ startAt: new Date(), updatedAt: new Date() })
+    .where(and(
+      eq(tasks.id, task.id),
+      eq(tasks.status, 'pending'),
+      eq(tasks.deliveryRole, 'owner'),
+      eq(tasks.loopState, 'condition_unmet'),
+      sql`${tasks.startAt} > now()`,
+    ))
+    .returning({ id: tasks.id });
+  if (moved.length === 0) return false;
+  await wakeTask(task.id, 'ci.retry');
+  return true;
+}
+
 /** Exported for tests: what a kernel T10 result means to the CI doors. */
 export function kernelCiOutcome(seen: { result: { result: string; reason?: string; current?: { state: string | null } | null; decision?: { toState: string } }; attemptTaskId?: string | null }): KernelCiOutcome {
   const r = seen.result;
@@ -916,7 +955,7 @@ export function kernelCiOutcome(seen: { result: { result: string; reason?: strin
   const state = r.current?.state ?? null;
   if (state === 'BLOCKED_ON_TRUNK') return { kind: 'skipped', reason: 'blocked_on_trunk', detail: `${r.result}:${r.reason ?? ''}` };
   if (r.reason === 'fix_in_flight' || state === 'REPAIRING' || state === 'FIXING' || state === 'WORKING' || state === 'AWAITING_PUSH') {
-    return { kind: 'skipped', reason: 'fix_in_flight', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}` };
+    return { kind: 'skipped', reason: 'fix_in_flight', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}`, kernelState: state };
   }
   return { kind: 'skipped', reason: 'kernel_owned', detail: `${r.result}:${r.reason ?? ''}:${state ?? ''}` };
 }

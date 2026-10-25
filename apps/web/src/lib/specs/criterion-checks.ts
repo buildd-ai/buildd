@@ -24,7 +24,9 @@ import { planRegisteredChecks, type PlannedRegisteredCheck } from './registered-
  * in `spec_outcome_verdicts` at the head it ran on and authored by the check.
  *
  * One run per (task, revision, criterion, head): a redelivered webhook or a
- * second event for the same head finds the run already filed. Criteria with no
+ * second event for the same head finds the run already filed. A mission's
+ * final verification runs one per (mission, revision, criterion, command,
+ * head), whichever verification task asks. Criteria with no
  * check stay graded by the reviewer or a person. Advisory (D-5): a failed
  * check reads as a failed outcome and blocks nothing.
  *
@@ -44,6 +46,8 @@ export interface CriterionCheckMarker {
   criterionId: string;
   headSha: string;
   command: string;
+  /** Set on a mission's run: the run belongs to the mission, and `subjectTaskId` is the verification that first filed it. */
+  missionId?: string;
 }
 
 const MAX_EXCERPT = 2000;
@@ -73,10 +77,10 @@ export interface RegisteredCheckMarker {
 const markerOf = (context: unknown): CriterionCheckMarker | null => {
   const m = asRecord(asRecord(context)?.specCriterionCheck);
   if (!m) return null;
-  const { subjectTaskId, specRevisionId, criterionId, headSha, command } = m;
+  const { subjectTaskId, specRevisionId, criterionId, headSha, command, missionId } = m;
   return typeof subjectTaskId === 'string' && typeof specRevisionId === 'string' && typeof criterionId === 'string'
     && typeof headSha === 'string' && typeof command === 'string'
-    ? { subjectTaskId, specRevisionId, criterionId, headSha, command }
+    ? { subjectTaskId, specRevisionId, criterionId, headSha, command, ...(typeof missionId === 'string' ? { missionId } : {}) }
     : null;
 };
 
@@ -176,7 +180,7 @@ export async function dispatchCriterionChecks(
   const wake = deps.wake ?? defaultWake;
 
   const runs: FiledRun[] = [
-    ...p.checks.map((check) => commandRun(opts, p.specRevisionId, headSha, check)),
+    ...p.checks.map((check) => commandRun(opts, p.specRevisionId, headSha, check, p.missionId)),
     ...p.registered.map((planned) => registeredRun(opts, headSha, planned)),
   ];
   let dispatched = 0;
@@ -223,13 +227,28 @@ interface FiledRun {
 
 type DispatchTarget = { taskId: string; headBranch: string | null };
 
-function commandRun(opts: DispatchTarget, specRevisionId: string, headSha: string, check: CriterionCheck): FiledRun {
-  const key = { subjectTaskId: opts.taskId, specRevisionId, criterionId: check.criterionId, headSha };
+/**
+ * A PR task's run belongs to that task. A mission's run belongs to the
+ * mission: every final verification of one target (a re-filed one, or two
+ * filed by racing evaluations) reuses the run the first one filed, instead of
+ * filing its own set. The command is in the mission key because a mission's
+ * command also comes from the spec's verified_by paths, which can change
+ * within one revision.
+ */
+function commandRun(opts: DispatchTarget, specRevisionId: string, headSha: string, check: CriterionCheck, missionId?: string): FiledRun {
+  const marker: CriterionCheckMarker = {
+    subjectTaskId: opts.taskId, specRevisionId, criterionId: check.criterionId, headSha, command: check.command,
+    ...(missionId ? { missionId } : {}),
+  };
+  const key = missionId
+    ? { missionId, specRevisionId, criterionId: check.criterionId, headSha, command: check.command }
+    : { subjectTaskId: opts.taskId, specRevisionId, criterionId: check.criterionId, headSha };
   const command = checkCommandAt(check.command, headSha);
-  const marker: CriterionCheckMarker = { ...key, command: check.command };
   return {
     key: { specCriterionCheck: key },
-    lockKey: `${opts.taskId}:${specRevisionId}:${check.criterionId}:${headSha}`,
+    lockKey: missionId
+      ? `mission:${missionId}:${specRevisionId}:${check.criterionId}:${headSha}`
+      : `${opts.taskId}:${specRevisionId}:${check.criterionId}:${headSha}`,
     title: `${TITLE_PREFIX} ${check.criterionId} at ${headSha.slice(0, 7)}`,
     description:
       '## Spec criterion check\n\n' +
@@ -300,6 +319,7 @@ export async function handleCriterionCheckOutcome(
   const p = await pinnedChecks(marker.subjectTaskId);
   if (!p.ok) return { recorded: false, reason: p.reason };
   const check = p.checks.find((c) => c.criterionId === marker.criterionId);
+  if (marker.missionId !== undefined && marker.missionId !== p.missionId) return { recorded: false, reason: 'the run is not this mission\'s' };
   if (p.workspaceId !== task.workspaceId || p.specRevisionId !== marker.specRevisionId || !check || check.command !== marker.command) {
     return { recorded: false, reason: 'the pinned revision no longer names this check' };
   }

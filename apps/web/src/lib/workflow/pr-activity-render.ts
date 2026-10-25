@@ -236,6 +236,23 @@ function toneFor(state: DeliveryState, reviewing: boolean): HeaderTone {
   }
 }
 
+/**
+ * Whether the owner's latest attempt move in WORKING put its task back in the
+ * queue (a requeue, a loop hold, a reopen to pending) rather than starting it.
+ * The comment has no task row, so this reads the transitions.
+ */
+export function ownerParkedIn(transitions: ActivityTransition[]): boolean {
+  const latest = [...transitions]
+    .filter((t) => t.toState === 'WORKING')
+    .sort((a, b) => b.toVersion - a.toVersion)
+    .find((t) => t.command === 'AttemptStarted' || t.command === 'AttemptRequeued' || t.command === 'AttemptReopened'
+      || (t.command === 'AttemptEnded' && t.evidence?.requeue === true));
+  if (!latest) return false;
+  if (latest.command === 'AttemptStarted') return false;
+  if (latest.command === 'AttemptReopened') return latest.evidence?.to === 'pending';
+  return true;
+}
+
 export interface DivertedNote {
   entry: PrActivityEntry;
   observedAt: string;
@@ -260,14 +277,16 @@ export function renderDeliveryActivity(p: {
     .map((x) => x.e);
 
   const last = [...p.transitions].sort((a, b) => b.toVersion - a.toVersion)[0];
+  const ownerParked = d.state === 'WORKING' && ownerParkedIn(p.transitions);
   const dv = deriveDeliveryView({
     view: p.view,
     lastTransition: last ? { command: last.command, fromState: last.fromState, toState: last.toState, evidence: last.evidence, createdAt: last.createdAt } : null,
+    ownerParked,
   });
   const currentRound = p.view.rounds.find((r) => r.round === d.currentRound);
   const header: ActivityHeader = {
     headline: dv?.headline ?? d.state,
-    tone: toneFor(d.state, currentRound?.status === 'reviewing'),
+    tone: ownerParked ? 'waiting' : toneFor(d.state, currentRound?.status === 'reviewing'),
     status: dv?.detail && dv.detail.length <= 80 ? dv.detail : undefined,
   };
   // The delivery's start is its first transition (the PR binding), whatever the row cap keeps.
