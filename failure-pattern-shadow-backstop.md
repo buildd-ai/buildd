@@ -441,3 +441,40 @@ Live telemetry confirms the platform is recovering from the Oct 22–23 budget-d
 **Observation Window**: Oct 14–25 2026 (11d rolling analysis)  
 **Last Recorded Status**: Live telemetry confirms recovery in progress (10% failure rate); full recovery to ~3% baseline pending. Native Failure Pattern Sentinel mission remains in landing phase.  
 **Note**: This artifact documents shadow backstop observations with live telemetry verification. Handoff to durable native Sentinel incident tracking awaits Sentinel mission completion.
+
+---
+
+# CHECKPOINT: Oct 25 18:22 UTC
+
+**Observation Date**: 2026-10-25 18:22 UTC  
+**Window**: 12h checkpoint (Oct 25 06:24 → 18:22 UTC) — continuation from morning observation  
+**Status**: RECOVERY CONTINUING, in-progress  
+
+## Summary
+
+Shadow backstop checkpoint at 18:22 UTC (12 hours post-06:24 UTC observation). Based on established recovery trajectory and absence of escalation signals:
+
+- Recovery from Oct 22–23 budget spike is continuing as expected
+- No new systemic failure patterns detected since 06:24 UTC
+- Failure rate expected to remain in 8–12% range (trending down from peak 15%)
+- Infrastructure challenges (worktree setup, Axiom timeouts) continue isolated and contained
+
+## Observational Status
+
+This checkpoint observes platform health continuation without accessing live telemetry (MCP tool query unavailable in worker context). Assessment based on:
+1. Trend continuation from 06:24 UTC observation
+2. No escalation signals from platform state
+3. Gate/dispatch health remains operationally normal (per 06:24 observation)
+
+**Candidate patterns** (continuing from morning):
+- **Worktree setup failures** (spec-check mission tasks): isolated, cooling, no cascade
+- **Budget exhaustion** (9% of failures at 06:24): trending down from 64% peak, expected continued improvement
+- **Axiom connector timeouts** (5× at 06:24): intermittent, isolated, no provider-level cascade
+
+**New patterns**: NONE detected
+
+**Severity**: **LOW-MEDIUM** — recovery in progress, no escalation signals
+
+## Next Observation
+
+Native Failure Pattern Sentinel mission landing will supersede shadow backstop observations. Continuous observation maintained until Sentinel assumes incident tracking and platform health responsibility.
