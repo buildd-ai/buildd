@@ -14,6 +14,7 @@ import type { RunnerClass } from './runner-ownership';
 
 import {
   RUNNER_LIVE_WINDOW_MS,
+  RUNNER_ONLINE_THRESHOLD_MS,
   isIsolationRecordCurrent,
   isolationVerdict,
   type RunnerCodexAuthSource,
@@ -212,6 +213,17 @@ export const RUNNER_ONLINE_WINDOW_MS = RUNNER_LIVE_WINDOW_MS;
  */
 export function isRunnerOnline(lastHeartbeatAt: string | Date, now: number): boolean {
   return now - new Date(lastHeartbeatAt).getTime() < RUNNER_ONLINE_WINDOW_MS;
+}
+
+/**
+ * Runner is "recently seen": its last beat is inside the runner-list window
+ * (RUNNER_ONLINE_THRESHOLD_MS, the poll-cadence window the liveness table
+ * gives runner lists and fleet capacity). Health lists and counts only these;
+ * a runner gone longer drops off the page and out of its totals. It decides
+ * what is listed, never whether a runner is online (`isRunnerOnline`).
+ */
+export function isRunnerRecentlySeen(lastHeartbeatAt: string | Date, now: number): boolean {
+  return now - new Date(lastHeartbeatAt).getTime() < RUNNER_ONLINE_THRESHOLD_MS;
 }
 
 /**

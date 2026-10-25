@@ -26,7 +26,7 @@ mock.module('@buildd/core/db', () => ({ db }));
 mock.module('./pin', () => ({ readPinnedSpecRevision: async () => ({ ok: true, body }) }));
 mock.module('./outcome', () => ({ recordCheckVerdict: async (...args: unknown[]) => { taskWrites.push(args); return { ok: true }; } }));
 
-const { dispatchCriterionChecks, handleCriterionCheckOutcome, registerMissionVerdictRecorder } = await import('./criterion-checks');
+const { dispatchCriterionChecks, handleCriterionCheckOutcome, registerMissionVerdictRecorder, shouldFileMissionRun } = await import('./criterion-checks');
 registerMissionVerdictRecorder(async (...args: unknown[]) => { missionWrites.push(args); return serverOk ? { ok: true } : { ok: false, error: 'stale integrated target' }; });
 const subject = () => ({ workspaceId: 'ws', missionId: 'mission', creationSource: 'orchestrator', context: { finalVerification: { missionId: 'mission', specRevisionId: 'revision' } } });
 const run = () => ({ id: ID, workspaceId: 'ws', status: 'completed', creationSource: 'orchestrator', context: { specCriterionCheck: { subjectTaskId: SUBJECT, specRevisionId: 'revision', criterionId: 'AC-1', headSha: SHA, command: COMMAND } }, loopConfig: { exitCondition: { type: 'command', command: checkCommandAt(COMMAND, SHA) } } });
@@ -45,6 +45,30 @@ describe('runner checks on the merged mission result', () => {
     expect(batches).toHaveLength(1);
     expect(woke).toHaveLength(1);
     expect(woke[0]).toMatchObject({ missionId: 'mission' });
+  });
+  it('keys a mission run by the mission, so a second final verification of the same target reuses the first one\'s run', async () => {
+    selected.criteria = ['AC-1'];
+    const OTHER = '00000000-0000-4000-8000-000000000003';
+    const keysOf = (b: any) => (b[1].queryChunks as unknown[]).filter((c): c is string => typeof c === 'string' && c.includes('specCriterionCheck') && !c.includes('verificationCommand'));
+    reads = [[subject()], []];
+    await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} });
+    reads = [[subject()], []];
+    await dispatchCriterionChecks({ taskId: OTHER, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} });
+    expect(batches).toHaveLength(2);
+    const [first, second] = batches.map(keysOf);
+    expect(first).toEqual(second);
+    const key = JSON.parse(first[0]).specCriterionCheck;
+    expect(key).toEqual({ missionId: 'mission', specRevisionId: 'revision', criterionId: 'AC-1', headSha: SHA, command: COMMAND });
+    // The run still names who filed it, for the outcome handler to re-read the selection through.
+    const ctx = JSON.parse((batches[1][1].queryChunks as unknown[]).find((c): c is string => typeof c === 'string' && c.includes('verificationCommand'))!);
+    expect(ctx.specCriterionCheck).toMatchObject({ subjectTaskId: OTHER, missionId: 'mission' });
+  });
+  it('refuses a mission run whose marker names another mission', async () => {
+    const r = run();
+    (r.context.specCriterionCheck as Record<string, unknown>).missionId = 'another';
+    reads = [[r], [subject()], []];
+    expect(await handleCriterionCheckOutcome(ID, { reportedVia: 'runner', outcome: 'ok', exitCode: 0 })).toMatchObject({ recorded: false });
+    expect(missionWrites).toHaveLength(0);
   });
   for (const [outcome, exitCode, verdict] of [['ok', 0, 'pass'], ['failed', 1, 'fail'], ['exec_error', undefined, 'inconclusive'], ['timeout', undefined, 'inconclusive'], ['failed', 125, 'inconclusive']] as const) {
     it(`AC-127: ${outcome}/${exitCode} records ${verdict} for the mission at the merged SHA`, async () => {
@@ -110,5 +134,27 @@ describe('registered verify: bindings on the task path (R-6)', () => {
     reads = [[subject()]];
     expect(await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} })).toEqual({ dispatched: 0, reason: 'no criterion this task answers for names a check' });
     expect(batches).toHaveLength(0);
+  });
+});
+
+describe('a mission check at a new head', () => {
+  const HEAD2 = 'b'.repeat(40);
+  const run = (over: Partial<{ headSha: string; targetKey: string | null; terminal: boolean; concluded: boolean }> = {}) =>
+    ({ headSha: SHA, targetKey: null, terminal: true, concluded: false, ...over });
+  it('files the first run', () => expect(shouldFileMissionRun([], SHA, null)).toBe(true));
+  it('files nothing new at a new head when every earlier run ended without a pass or fail', () => {
+    expect(shouldFileMissionRun([run(), run({ headSha: HEAD2 })], 'c'.repeat(40), `head:${'c'.repeat(40)}`)).toBe(false);
+  });
+  it('files again at a new head once an earlier run reached a verdict', () => {
+    expect(shouldFileMissionRun([run({ concluded: true })], HEAD2, null)).toBe(true);
+  });
+  it('files again at a new head while the earlier run is still open', () => {
+    expect(shouldFileMissionRun([run({ terminal: false })], HEAD2, null)).toBe(true);
+  });
+  it('never repeats the same head', () => expect(shouldFileMissionRun([run({ concluded: true })], SHA, null)).toBe(false));
+  it('checks a merged mission once, whatever later trunk commits land', () => {
+    expect(shouldFileMissionRun([run({ concluded: true, targetKey: 'merges:a,b' })], HEAD2, 'merges:a,b')).toBe(false);
+    expect(shouldFileMissionRun([run({ concluded: true })], HEAD2, 'merges:a,b')).toBe(false);
+    expect(shouldFileMissionRun([run({ concluded: true, targetKey: 'merges:a' })], HEAD2, 'merges:a,b')).toBe(true);
   });
 });

@@ -555,6 +555,24 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
 
+  {
+    name: 'lane: a holder red at its head yields the lane to the next waiter, and a re-run does not take it back',
+    async run(host) {
+      const a = await (await new Delivery(host, 11).open()).approvedAt('A1');
+      const b = await (await new Delivery(host, 12).open()).approvedAt('B1');
+      const k = { repoFullName: a.repo, baseRef: 'dev' };
+      eq(await acquireLaneOn(host.store, { ...k, deliveryId: a.deliveryId, headSha: 'A1' }), { acquired: true }, 'A takes the lane');
+      eq((await acquireLaneOn(host.store, { ...k, deliveryId: b.deliveryId, headSha: 'B1' })).acquired, false, 'B waits on A');
+      // eccb6687: CI red on A's head, recorded with A still APPROVED (T10 did not act).
+      applied(await a.submit({ type: 'CiObserved', actor: 'webhook:ci_reading', headSha: 'A1', verdict: 'red', liveChecks: { complete: true, failing: ['build'] } }), 'APPROVED', 'red reading');
+      eq(await host.store.laneHolder(k), null, 'a red holder holds nothing');
+      await settleLanesOn(host.store, a.deliveryId);
+      eq(await acquireLaneOn(host.store, { ...k, deliveryId: b.deliveryId, headSha: 'B1' }), { acquired: true }, 'B takes it while A is red');
+      applied(await a.submit({ type: 'CiObserved', actor: 'webhook:ci_reading', headSha: 'A1', verdict: 'running', liveChecks: { complete: false, failing: [] } }), 'APPROVED', 'A re-runs');
+      eq((await acquireLaneOn(host.store, { ...k, deliveryId: a.deliveryId, headSha: 'A1' })).acquired, false, 'A re-running waits on B');
+    },
+  },
+
   // ── Decide (AC-27, AC-28, AC-29) ──────────────────────────────────────────
   {
     name: 'AC-27: a decider\'s answer is recorded as a fact with its id before the transition that uses it, which links it',
@@ -672,6 +690,32 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(await outcomesOf(host, c, 'merge_call'), ['ok:behind:applied'], 'behind applied as T16');
       eq(await c.count('verify_merge'), 0, 'nothing to verify');
       ok((await c.d()).state !== 'LANDING', 'left LANDING for the repair');
+    },
+  },
+  {
+    name: 'lane (210caad3): a behind refresh still waiting is not a fix in flight: red CI gets its CI fix, a real conflict its conflict repair',
+    async run(host) {
+      const behind = (s: Delivery) => s.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'behind', maxAgentAttempts: 3 });
+      const refreshOf = async (s: Delivery) => (await s.view()).attempts.find((a) => a.mode === 'mechanical' && a.triggerReason === 'behind')!;
+
+      const a = await (await new Delivery(host, 131).open()).approvedAt('H1');
+      applied(await behind(a), 'REPAIRING', 'waiting to update the branch');
+      notApplied(await behind(a), 'rejected', 'fix_in_flight', 'a second behind reading waits on the same refresh');
+      const red = await a.ciRed('H1');
+      applied(red, 'REPAIRING', 'red CI at the waiting head');
+      eq((await a.d()).stateReason, 'ci', 'it is a CI repair now, out of the lane window');
+      eq(pick(await refreshOf(a), ['status', 'outcome']), { status: 'skipped', outcome: 'noop' }, 'the refresh that never ran is skipped, spending nothing');
+      eq(await a.count('dispatch_ci_fix'), 1, 'one CI fix dispatched');
+      eq((await a.view()).attempts.filter((x) => x.family === 'ci').map((x) => x.status), ['queued'], 'and bound');
+
+      const b = await (await new Delivery(host, 132).open()).approvedAt('H1');
+      applied(await behind(b), 'REPAIRING', 'waiting to update the branch');
+      applied(await b.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'REPAIRING', 'the waiting PR now conflicts');
+      eq((await b.d()).stateReason, 'conflict', 'a conflict repair, not more lane waiting');
+      eq((await refreshOf(b)).status, 'skipped', 'the waiting refresh is skipped');
+      const repair = (await b.view()).attempts.find((x) => x.triggerReason === 'conflict')!;
+      eq(pick(repair, ['mode', 'status']), { mode: 'mechanical', status: 'queued' }, 'mechanical first (the base-merge recheck), outside the lane');
+      notApplied(await b.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'rejected', 'fix_in_flight', 'that repair is the one in flight');
     },
   },
   {
@@ -2809,6 +2853,32 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await n.push('H3'), 'AWAITING_REVIEW', 'fix 2');
       applied(await n.verdict('request_changes'), 'ESCALATED', 'round 3 escalates');
       eq((await n.d()).stateReason, 'review_exhausted', 'as before');
+    },
+  },
+  {
+    // Task 81705dd8, the #5500 sequence: three pushes in ten minutes each replaced the open review,
+    // only round 3 judged anything, and its request for changes escalated review_exhausted with no
+    // fix ever dispatched. The fix that addressed it was pushed and never re-reviewed.
+    name: '81705dd8: rounds superseded before their verdict spend no review budget; the only real request for changes gets its fix and its re-review',
+    async run(host) {
+      const s = await new Delivery(host, 121).open({ maxRounds: 3 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const r1 = (await s.latestRound()).id;
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'a second push replaces round 1');
+      applied(await s.push('H3'), 'AWAITING_REVIEW', 'a third push replaces round 2');
+      eq((await s.view()).rounds.map((r) => r.status), ['superseded', 'superseded', 'queued'], 'two rounds superseded before any verdict');
+      // Round 1's reviewer answers after its head moved: kept for audit, never applied, spends nothing.
+      notApplied(await s.verdict('request_changes', r1), 'stale', 'round_superseded', 'a late verdict on a superseded round');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 3 asks for changes');
+      eq(pick(await s.d(), ['currentRound', 'stateReason']), { currentRound: 3, stateReason: null }, 'not escalated');
+      eq({ fixes: await s.count('dispatch_fix'), told: await s.count('escalate_exhaustion') }, { fixes: 1, told: 0 }, 'a fix, nobody told the budget is spent');
+      applied(await s.push('H4'), 'AWAITING_REVIEW', 'the fix is pushed');
+      eq(await s.count('dispatch_review'), 4, 'and re-reviewed');
+      // The budget still counts the rounds that judged: rounds 3, 4 and 5.
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 4 asks again');
+      applied(await s.push('H5'), 'AWAITING_REVIEW', 'fix 2');
+      applied(await s.verdict('request_changes'), 'ESCALATED', 'round 5 spends the budget');
+      eq((await s.d()).stateReason, 'review_exhausted', 'a person\'s, as before');
     },
   },
   {

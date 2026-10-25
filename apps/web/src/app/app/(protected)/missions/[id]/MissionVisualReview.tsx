@@ -27,6 +27,7 @@ import VisualReviewDeck from '@/components/visual-review/VisualReviewDeck';
 import VisualReviewAsk, { type OnAnswer } from '@/components/visual-review/VisualReviewAsk';
 import VisualReviewTray from '@/components/visual-review/VisualReviewTray';
 import type { MissionBoardModel } from '@/lib/mission-board';
+import { requestMissionVisualReview, visualReviewOnMission, visualReviewOutcomeText } from '@/lib/mission-visual-review-request';
 import {
   createHttpVisualReviewTransport,
   useVisualReviewDecisions,
@@ -196,7 +197,7 @@ export function MissionVisualReviewProvider({ missionId, visual, reviewLayout, t
   const review = useVisualReviewDecisions(visual ?? fallback, t);
   const wide = useSyncExternalStore(subscribeWide, readWide, () => false);
   const layout: VisualReviewLayout = reviewLayout ?? (wide ? 'dialog' : 'sheet');
-  const [deck, setDeck] = useState<{ startKey: string | null; compare: boolean } | null>(null);
+  const [deck, setDeck] = useState<{ startKey: string | null; compare: boolean; seq: number } | null>(null);
   const savedScroll = useRef<number | null>(null);
 
   const openDeck = useCallback((startKey: string | null, opts: { compare?: boolean } = {}) => {
@@ -207,7 +208,8 @@ export function MissionVisualReviewProvider({ missionId, visual, reviewLayout, t
       savedScroll.current = el?.scrollTop ?? (typeof window !== 'undefined' ? window.scrollY : 0);
       requestAnimationFrame(() => { el?.scrollTo?.(0, 0); if (typeof window !== 'undefined') window.scrollTo?.(0, 0); });
     }
-    setDeck({ startKey, compare: opts.compare === true });
+    // `seq`: opening again at the same screen still opens it afresh, never a silent no-op.
+    setDeck(prev => ({ startKey, compare: opts.compare === true, seq: (prev?.seq ?? 0) + 1 }));
   }, [layout]);
   const closeDeck = useCallback(() => {
     setDeck(null);
@@ -232,9 +234,15 @@ export function MissionVisualReviewProvider({ missionId, visual, reviewLayout, t
     layout,
   } : null), [visual, missionId, review.model, openDeck, review.decide, review.undo, actions, layout]);
 
+  const checkAgain = useCallback(async () => {
+    const o = await requestMissionVisualReview(missionId, fetch, { recheck: true });
+    if (visualReviewOnMission(o)) router.refresh();
+    return { ok: visualReviewOnMission(o), message: o.kind === 'created' ? 'Check added.' : visualReviewOutcomeText(o) };
+  }, [missionId, router]);
+
   const deckEl = value && deck ? (
     <VisualReviewDeck
-      key={`${deck.startKey ?? ''}:${deck.compare}`}
+      key={`${deck.startKey ?? ''}:${deck.compare}:${deck.seq}`}
       model={value.model}
       layout={layout}
       open
@@ -243,6 +251,7 @@ export function MissionVisualReviewProvider({ missionId, visual, reviewLayout, t
       onClose={closeDeck}
       onDecide={value.decide}
       onUndo={value.undo}
+      onCheckAgain={checkAgain}
     />
   ) : null;
 

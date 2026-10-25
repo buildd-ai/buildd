@@ -171,7 +171,8 @@ describe('CloudflareSection', () => {
     await click(terminal);
     const deploy = host.querySelector('[data-testid="cloudflare-deploy"]')!;
     expect(deploy.textContent).toContain('bun apps/cloud-runner/scripts/deploy.ts --help');
-    expect(deploy.querySelector('a')!.getAttribute('href')).toContain('apps/cloud-runner/README.md');
+    // No GitHub link: there is no docs.buildd.dev page for it yet.
+    expect(deploy.innerHTML).not.toContain('github.com');
 
     const gateway = toggle('AI Gateway (optional)');
     expect(gateway.getAttribute('aria-expanded')).toBe('false');

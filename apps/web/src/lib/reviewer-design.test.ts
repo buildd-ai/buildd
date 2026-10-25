@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { applyDesignGate, isFixtureRoute, parseDesignChecks, renderDesignGuidance, screenNamedCriteria } from './reviewer-design';
+import { applyDesignGate, componentScreens, isFixtureRoute, parseDesignChecks, renderDesignGuidance, screenNamedCriteria, withScreenInfo } from './reviewer-design';
 
 const DESIGN = { kind: 'artifact', ref: 'art-1', version: '1' };
 const BODY = '# Nav\n- AC-4: the mission page.\n  - screen: phone-mission, desktop-mission\n- AC-5: copy only.';
@@ -66,5 +66,33 @@ describe('renderDesignGuidance', () => {
   it('is empty without a design or screen-named criteria', () => {
     expect(renderDesignGuidance({ design: null, criteria: REQUIRED })).toBe('');
     expect(renderDesignGuidance({ design: DESIGN, criteria: [] })).toBe('');
+  });
+});
+
+describe('component screens (R-17)', () => {
+  const COMP = [{ criterionId: 'AC-14', screens: ['c-stage-meter'] }];
+  const design = withScreenInfo(DESIGN, [{ id: 'c-stage-meter', name: 'Stage meter', viewport: '480x160', kind: 'component', code: 'apps/web/src/components/UiStageMeter.tsx' }]);
+  const comp = (over: Record<string, unknown> = {}) => check({ criterionId: 'AC-14', screen: 'c-stage-meter', ...over });
+
+  it("merges the design's screen kinds onto the pinned design", () => {
+    expect(design.screens).toEqual([{ id: 'c-stage-meter', name: 'Stage meter', kind: 'component', code: 'apps/web/src/components/UiStageMeter.tsx' }]);
+    expect(componentScreens(design)).toEqual(['c-stage-meter']);
+    expect(componentScreens(DESIGN)).toEqual([]);
+  });
+  it('a component screen counts only on its dev fixture, with the state it shows; a real route does not count', () => {
+    const gate = (c: Record<string, unknown>) => applyDesignGate({ verdict: 'approve', required: COMP, checks: [comp(c)], components: componentScreens(design) });
+    const real = gate({ route: '/app/activity' });
+    expect(real.verdict).toBe('request-changes');
+    expect(real.reason).toContain('AC-14: c-stage-meter');
+    expect(real.reason).toContain('component');
+    expect(gate({ route: '/app/dev/fixtures?state=stage-meter' }).verdict).toBe('request-changes');
+    expect(gate({ route: '/app/dev/fixtures?state=stage-meter', fixtureReason: 'the failed state' })).toMatchObject({ verdict: 'approve', reason: null });
+  });
+  it('the guidance sends a component screen to its fixture at its size and keeps page screens on the route', () => {
+    const text = renderDesignGuidance({ design, criteria: [...COMP, ...REQUIRED] });
+    expect(text).toContain('c-stage-meter (Stage meter; a component, code apps/web/src/components/UiStageMeter.tsx)');
+    expect(text).toContain('/app/dev/fixtures');
+    expect(text).toContain('fixtureReason');
+    expect(renderDesignGuidance({ design: DESIGN, criteria: REQUIRED })).not.toContain('component');
   });
 });

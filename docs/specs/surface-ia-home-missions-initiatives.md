@@ -2,7 +2,7 @@
 title: Surface IA — Home, Missions, Initiatives
 status: active
 owner: max
-last_verified: 2026-10-23
+last_verified: 2026-10-25
 summary: Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/home/page.tsx, apps/web/src/app/app/(protected)/missions/page.tsx, apps/web/src/lib/initiative-view.ts]
@@ -442,10 +442,14 @@ flight. A PR with a fix in flight keeps its agent-handled card, unchanged.
   the GitHub App. It records who re-ran what and when, and the card names the re-run.
   When the re-run fails again with the same signature, Start fix becomes primary
   and the card says it failed twice.
-- **R-5 Plain, specific words.** The sentence names the check and the cause:
-  "Postgres tests lost their database connection.", "Windows runner tests
-  failed: <test name>." It never reads "Tests are failing." alone, and no
-  stock phrasing (Product voice d4613613).
+- **R-5 A check line, then the cause.** The line under the title is the check
+  line, never a sentence: "✕ Unit tests (2/3) · 4m ago", the failing job (two
+  at most, then "+N") and how long ago the head went red. With no reading it
+  is "Checks failed · 4m ago". The PR number sits at the right as "#5539" and
+  the title is one line. The cause ("the Postgres tests lost their database
+  connection", "Windows runner tests failed: <test name>") and what earlier
+  fixes did sit behind Details, in plain words and never "Tests are failing."
+  alone (Product voice d4613613).
 - **R-6 The same words as Mission checks.** The card's label follows Mission
   checks (072de598) I-12: a PR whose review approved it reads "Approved ·
   checks failing", and the stage stays Verify. Other PRs read "Checks failing".
@@ -454,9 +458,9 @@ flight. A PR with a fix in flight keeps its agent-handled card, unchanged.
 
 - **AC-51**: GIVEN a PR whose only failed job is the real-Postgres job with
   "terminating connection due to administrator command" in its log and two
-  earlier automatic fixes, WHEN Home renders its card, THEN the sentence names
-  the job and says the Postgres tests lost their database connection, says the
-  two fixes did not change the result, and Re-run is the primary action with
+  earlier automatic fixes, WHEN Home renders its card, THEN the check line
+  names the job, Details says the Postgres tests lost their database
+  connection and that the two fixes did not change the result, and Re-run is the primary action with
   Start fix beside it.
 - **AC-52**: GIVEN a PR whose failed jobs are `build` (step "All build parts
   passed") and "Runner unit tests (windows)", WHEN Home renders its card, THEN

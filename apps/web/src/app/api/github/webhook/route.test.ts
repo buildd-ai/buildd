@@ -1451,6 +1451,9 @@ describe('POST /api/github/webhook', () => {
           draft: false,
           state: prState === 'open' ? 'open' : 'closed',
           merged: prState === 'merged',
+          // GitHub always names an open PR's head: a CI fix is never filed without it (e2ea3764).
+          head: { ref: 'buildd/abc12345-fix', sha: 'abc123' },
+          base: { ref: 'dev' },
         });
       });
     }
@@ -2207,7 +2210,7 @@ describe('POST /api/github/webhook', () => {
             commit: { author: { email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' } },
           });
         }
-        return Promise.resolve({ draft: false });
+        return Promise.resolve({ draft: false, head: { ref: 'release/v1.2.3', sha: 'abc123' }, base: { ref: 'dev' } });
       });
 
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));

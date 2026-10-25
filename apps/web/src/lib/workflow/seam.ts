@@ -43,12 +43,13 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkFixLandedGreen, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
 import { endingWorkerIsCurrentSql, isAttemptRow, notOwnerTaskSql, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectReopenSql, projectRequeueSql, projectWithdrawSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { taskPrOf } from './task-pr';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
@@ -442,7 +443,7 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
  * retried request, a door re-sent after an unknown outcome) carries the same id, so the kernel
  * answers it with the transition it already made.
  */
-export function humanDecision(action: 'request_fix' | 'force_re_review' | 'approve_override', headSha: string, version: number): { id: string; headSha: string } {
+export function humanDecision(action: 'request_fix' | 'force_re_review' | 'land_pr' | 'approve_override', headSha: string, version: number): { id: string; headSha: string } {
   return { id: `${action}:${headSha}:v${version}`, headSha };
 }
 
@@ -477,6 +478,8 @@ export async function applyRecommendationThroughKernel(p: {
    * answered by the first (`duplicate`), and a head that moved refuses it (`decision_head_stale`).
    */
   decisionHeadSha?: string | null;
+  /** Which decision the card named: a bounded fix by default, or the landing task (`land_pr`). */
+  decisionAction?: 'request_fix' | 'land_pr';
 }, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
   const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
   if (!repo) return null;
@@ -499,7 +502,7 @@ export async function applyRecommendationThroughKernel(p: {
   const result = await applyCommand(
     {
       type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined,
-      ...(p.decisionHeadSha ? { decision: humanDecision('request_fix', p.decisionHeadSha, expectedVersion) } : {}),
+      ...(p.decisionHeadSha ? { decision: humanDecision(p.decisionAction ?? 'request_fix', p.decisionHeadSha, expectedVersion) } : {}),
     },
     { ref: { deliveryId }, exec: deps.exec },
   );
@@ -515,6 +518,44 @@ export async function applyRecommendationThroughKernel(p: {
     current: await currentOf(),
     attempt: human ? { id: human.id, attemptNo: human.attemptNo, maxAttempts: human.maxAttempts, taskId: human.taskId } : null,
   };
+}
+
+/**
+ * What the one landing task is told to do, from the delivery as it stands: merge the base in when
+ * the PR is behind or conflicted, fix red CI, and answer each open required finding by name.
+ * Nothing here is a number or a path from outside the delivery; the task still verifies each claim.
+ */
+export function landingInstructions(view: Pick<KernelView, 'delivery' | 'findings'>): string {
+  const d = view.delivery;
+  const open = (view.findings ?? []).filter((f) => f.required && (f.status === 'open' || f.status === 'addressed'));
+  const lines = ['Get this PR landable. Work on the PR branch only; do not open a new PR.'];
+  lines.push('1. Merge the base branch into the PR branch and resolve any conflict, if it is behind or conflicted.');
+  if (d?.ci === 'red') lines.push('2. CI is red on the current head: find the failing check and fix it.');
+  else lines.push('2. Confirm CI is green after the merge; fix anything it flags.');
+  if (open.length > 0) {
+    lines.push('3. Address every open review finding:');
+    for (const f of open) lines.push(`   - ${f.title.replace(/\s+/g, ' ').slice(0, 200)}${f.path ? ` (${f.path}${f.line != null ? `:${f.line}` : ''})` : ''}`);
+  }
+  lines.push('Push once when done. One review of the pushed head is granted; the review budget is otherwise spent.');
+  return lines.join('\n');
+}
+
+/**
+ * "Get this PR landable" on a kernel-owned PR's escalation: one T23 HumanResolve filing a single
+ * human-triggered fix task on the PR branch with `landingInstructions`, bound to the head and
+ * version the card showed. The fix leaves the delivery out of the held-budget state, so its push
+ * starts exactly one review round (the only review a post-escalation push ever gets, and only
+ * because a person asked). Null = not the kernel's PR.
+ */
+export async function landEscalatedThroughKernel(p: {
+  workspaceId: string; prNumber: number; actor: string; expectedVersion?: number | null; decisionHeadSha?: string | null;
+}, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const instructions = landingInstructions(await loadView({ deliveryId }, deps.exec));
+  return applyRecommendationThroughKernel({ ...p, instructions, decisionAction: 'land_pr' }, deps);
 }
 
 /**
@@ -1929,7 +1970,7 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
   return s;
 }
 
-type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string };
+type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string; trunk_fix_task_id?: string | null };
 
 /**
  * One incident's recheck, the floor's and the recheck queue's alike: read the base head now and resolve
@@ -1946,8 +1987,12 @@ async function recheckTrunkIncident(inc: TrunkIncidentRow, deps: SeamDeps, s: Tr
     readBase = !!reader;
     const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
     const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
-    // Unknown, or the incident's checks still running, is never read as recovered.
-    if (trunkRecoveredOnRuns(inc.signature, runs)) {
+    // Unknown, or the incident's checks still running, is never read as recovered. A base head with
+    // no runs at all (a mission branch has no CI of its own) is recovered by its fix PR landing green.
+    if (trunkRecoveredOnRuns(inc.signature, runs) || (head && reader && runs === null && inc.trunk_fix_task_id && await trunkFixLandedGreen({
+      repoFullName: inc.repo_full_name, baseRef: inc.base_ref, baseHead: head, signature: inc.signature, reader,
+      fixPrNumber: (await taskPrOf(String(inc.trunk_fix_task_id), exec))?.prNumber ?? null,
+    }))) {
       const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
       if (won) s.resolved++;
       return { resolved: true, readBase };

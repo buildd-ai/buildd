@@ -19,7 +19,7 @@ import { applyCommandOn } from '../command-runner';
 import type { Command, LivePr } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { landingStatusOf } from '../landing-gate';
-import { acquireLaneOn, laneOutcome, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME } from '../landing-lane';
+import { acquireLaneOn, laneOutcome, laneWait, refreshTakesLane, LANE_PARKED_OUTCOME } from '../landing-lane';
 import { laneQueuedWords, publishLandingStatusIfChanged } from './landing';
 import { githubOf, type ClaimedEffect, type GithubFactReader, type GithubFacts, type KernelPorts } from '../ports';
 import type { AttemptSnapshot, DeliverySnapshot } from '../types';
@@ -28,7 +28,7 @@ import { attemptOrdinal } from '../reducer';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
 
-interface Bound { d: WithPr; attempt: AttemptSnapshot & { boundHeadSha: string }; reader: GithubFacts; live: LivePr }
+interface Bound { d: WithPr; attempt: AttemptSnapshot & { boundHeadSha: string }; attempts: AttemptSnapshot[]; reader: GithubFacts; live: LivePr }
 
 export function conflictHandlers(ports: KernelPorts): EffectHandlers {
   const apply = (deliveryId: string, cmd: Command) => applyCommandOn(ports.store, cmd, { ref: { deliveryId }, newId: ports.newId });
@@ -61,7 +61,7 @@ export function conflictHandlers(ports: KernelPorts): EffectHandlers {
       await observeHead(d, source, { ...reader, readPr: async () => live }, e.kind);
       return { outcome: 'skipped:head_moved' };
     }
-    return { d, attempt: attempt as Bound['attempt'], reader, live };
+    return { d, attempt: attempt as Bound['attempt'], attempts: view.attempts, reader, live };
   }
 
   const notNeeded = async (b: Bound, source: string, reason: string) => {
@@ -118,18 +118,22 @@ export function conflictHandlers(ports: KernelPorts): EffectHandlers {
     // here through T16 without the conflict doors' own check; no agent may push either, so a person lands it.
     if (await conflicts.botOwned(b.d)) return mechanicalFailed(b, source, 'dependency_bot_pr: the platform does not push to a dependency bot\'s branch');
     // The landing lane: one behind-refresh in flight per repo + base. A conflict refresh is not
-    // racing for a quiet base, so only `behind` repairs take it.
+    // racing for a quiet base, so only `behind` repairs take it. A PR red at its head, or with a
+    // CI fix in flight, refreshes beside the lane: it would hold the lane on a head that needs a fix.
     let laneNote = '';
     const laneMode = b.attempt.triggerReason === 'behind' && b.d.baseRef ? (await need(ports, 'policy', e.kind).forWorkspace(b.d.workspaceId)).landingLane : 'off';
-    if (laneMode !== 'off') {
+    if (laneMode !== 'off' && !refreshTakesLane(b.d, b.attempts)) laneNote = '(lane:bypassed_not_landable)';
+    else if (laneMode !== 'off') {
       const lane = await acquireLaneOn(ports.store, { repoFullName: b.d.repoFullName, baseRef: b.d.baseRef!, deliveryId: b.d.id, headSha: b.attempt.boundHeadSha });
       if (!lane.acquired) {
-        if (laneMode === 'enforce') {
+        const wait = laneMode === 'enforce' ? laneWait(e.ageMs) : null;
+        if (wait && wait !== 'wait_spent') {
           // Say on GitHub that it is queued, not "Branch update in progress": nothing runs until the lane frees.
           await announceParked(b, lane.holder).catch((err) => console.warn('[workflow] parked status not published:', err instanceof Error ? err.message : err));
-          return { outcome: laneOutcome(LANE_PARKED_OUTCOME, lane.holder), park: { delayMs: LANE_PARK_BACKSTOP_MS } };
+          return { outcome: laneOutcome(LANE_PARKED_OUTCOME, lane.holder), park: { delayMs: wait.park } };
         }
-        laneNote = `(${laneOutcome('lane:would_wait', lane.holder)})`;
+        // Shadow never waits; enforce waits LANE_MAX_WAIT_MS at most, then refreshes beside the lane.
+        laneNote = `(${laneOutcome(wait === 'wait_spent' ? 'lane:wait_spent' : 'lane:would_wait', lane.holder)})`;
       }
     }
     const out = await conflicts.refresh(b.d, b.attempt);

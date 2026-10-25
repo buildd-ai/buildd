@@ -742,6 +742,7 @@ async function submitDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'
 
 export const landThroughKernel = (p: KernelOps['land']['input'], c: DoorCall) => door('land', p, c);
 export const applyRecommendationThroughKernel = (p: KernelOps['apply_recommendation']['input'], c: DoorCall) => door('apply_recommendation', p, c);
+export const landEscalatedThroughKernel = (p: KernelOps['land_escalated']['input'], c: DoorCall) => door('land_escalated', p, c);
 export const policyMergeThroughKernel = (p: KernelOps['policy_merge']['input'], c: DoorCall) => door('policy_merge', p, c);
 export const requestReview = (p: KernelOps['request_review']['input'], c: DoorCall) => door('request_review', p, c);
 export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: DoorCall) => door('request_ci_retry', p, c);

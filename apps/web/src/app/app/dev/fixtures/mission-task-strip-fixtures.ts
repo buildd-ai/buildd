@@ -19,7 +19,7 @@
  *                         (spec f7f67f1a R-1, R-5): mixed waiting causes, and a
  *                         surface audit in the checks group from 10 tasks up
  *   &select=<letter>      a DAG variant opens with that task selected
- *   &variant=outcome-spec-passing|open|narrowed|proposed|verifying
+ *   &variant=outcome-spec-passing|open|narrowed|proposed|verifying|files-missing
  *                         the mission's selected outcome spec in Verify and
  *                         in the goal criteria row
  *
@@ -43,7 +43,7 @@ export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
 export const MISSION_TASK_STRIP_VARIANTS = [
   'mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery', 'overview-2', 'overview-10', 'overview-20', 'overview-64',
   'handoff-building', 'handoff-verifying', 'handoff-repairing', 'handoff-approval', 'handoff-reviewer', 'handoff-delivered', 'handoff-deploy-failed', 'handoff-budget', 'handoff-local',
-  'outcome-spec-passing', 'outcome-spec-open', 'outcome-spec-narrowed', 'outcome-spec-proposed', 'outcome-spec-verifying',
+  'outcome-spec-passing', 'outcome-spec-open', 'outcome-spec-narrowed', 'outcome-spec-proposed', 'outcome-spec-verifying', 'outcome-spec-files-missing',
 ] as const;
 export type MissionTaskStripVariant = (typeof MISSION_TASK_STRIP_VARIANTS)[number];
 
@@ -456,7 +456,7 @@ export function handoffFixture(variant: HandoffVariant, base: { now: number; mis
 
 // ── Outcome spec: the mission's selected Living Spec (spec f7f67f1a R-29 to R-31) ──
 
-export const OUTCOME_SPEC_VARIANTS = ['outcome-spec-passing', 'outcome-spec-open', 'outcome-spec-narrowed', 'outcome-spec-proposed', 'outcome-spec-verifying'] as const;
+export const OUTCOME_SPEC_VARIANTS = ['outcome-spec-passing', 'outcome-spec-open', 'outcome-spec-narrowed', 'outcome-spec-proposed', 'outcome-spec-verifying', 'outcome-spec-files-missing'] as const;
 export type OutcomeSpecVariant = (typeof OUTCOME_SPEC_VARIANTS)[number];
 export const isOutcomeSpecVariant = (v: string): v is OutcomeSpecVariant => v.startsWith('outcome-spec-');
 
@@ -492,11 +492,17 @@ export function outcomeSpecFixture(variant: OutcomeSpecVariant, base: { now: num
     if (variant === 'outcome-spec-open') return id === 'R-3' ? 'inconclusive' : id === 'R-4' ? 'stale' : id === 'AC-2' ? 'waived' : 'pass';
     if (variant === 'outcome-spec-verifying') return id === 'R-1' || id === 'R-2' ? 'pass' : 'missing';
     if (variant === 'outcome-spec-proposed') return id === 'R-1' ? 'pass' : 'missing';
+    if (variant === 'outcome-spec-files-missing') return 'inconclusive';
     return 'pass';
   };
-  const standings: LivingSpecCriterionStanding[] = inScope.map(id => ({ criterionId: id, standing: standingOf(id), headSha: standingOf(id) === 'missing' ? null : INTEGRATED_HEAD }));
+  // Every check ended because its test file is not in the repo: the final verification is still open.
+  const filesMissing = variant === 'outcome-spec-files-missing';
+  const standings: LivingSpecCriterionStanding[] = inScope.map(id => ({
+    criterionId: id, standing: standingOf(id), headSha: standingOf(id) === 'missing' ? null : INTEGRATED_HEAD,
+    ...(filesMissing ? { text: `Requirement ${id} of the billing exports spec.`, reason: 'test file not found' as const } : {}),
+  }));
   const allPass = standings.every(s => s.standing === 'pass');
-  const verdict: CriterionVerdict = variant === 'outcome-spec-verifying' ? 'PENDING' : allPass ? 'pass' : 'UNVERIFIED';
+  const verdict: CriterionVerdict = variant === 'outcome-spec-verifying' || filesMissing ? 'PENDING' : allPass ? 'pass' : 'UNVERIFIED';
   const command = handoff.checks!.criteria[0];
   const criteria: GoalCriterion[] = [command, criterion];
   const criteriaState: GoalCriteriaState = {
@@ -511,7 +517,7 @@ export function outcomeSpecFixture(variant: OutcomeSpecVariant, base: { now: num
         verdict,
         evidence: '',
         fingerprint: criterionFingerprint(criterion),
-        ...(variant === 'outcome-spec-verifying' ? { workerTaskId: stripFixtureId(962) } : {}),
+        ...(variant === 'outcome-spec-verifying' || filesMissing ? { workerTaskId: stripFixtureId(962) } : {}),
         // Build complete: the stored state says so, as the evaluator writes it.
         spec: { specId: criterion.specId, revision: criterion.revision, targetSha: INTEGRATED_HEAD, standings, buildDone: true },
       },

@@ -5,8 +5,24 @@
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { workers as workersTable } from '@buildd/core/db/schema';
 
 let workerRow: any = null;
+/**
+ * Replay mode: every worker stamped with the PR, oldest first, and each task's
+ * marker. findFirst honours the query's createdAt order and the update applies
+ * the compare-and-set to the task it targets, as Postgres would.
+ */
+let prWorkers: any[] | null = null;
+let markers: Map<string, string> | null = null;
+function pickWorker(args: any) {
+  if (!prWorkers) return workerRow;
+  const terms = args?.orderBy ? [args.orderBy(workersTable)].flat() : [];
+  const order = terms.length ? new PgDialect().sqlToQuery(sql.join(terms, sql`, `)).sql : '';
+  const row = /\basc\b/.test(order) ? prWorkers[0] : prWorkers.at(-1);
+  return args?.columns ? { taskId: row.task.id } : row;
+}
 let insertedRows: any[] = [];
 let workspaceRow: any = null;
 let markerRows: Array<{ id: string }> = [{ id: 't1' }];
@@ -14,7 +30,7 @@ const updates: Array<{ set: any; where: any }> = [];
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      workers: { findFirst: async () => workerRow },
+      workers: { findFirst: async (args: any) => pickWorker(args) },
       workspaces: { findFirst: async () => workspaceRow },
     },
     select: () => ({ from: () => ({ where: async () => [] }) }),
@@ -22,7 +38,15 @@ mock.module('@buildd/core/db', () => ({
       set: (set: any) => ({
         where: (where: any) => {
           updates.push({ set, where });
-          return { returning: async () => markerRows };
+          if (!markers) return { returning: async () => markerRows };
+          const [taskId, , headSha] = new PgDialect().sqlToQuery(where).params as string[];
+          return {
+            returning: async () => {
+              if (markers!.get(taskId) === headSha) return [];
+              markers!.set(taskId, headSha);
+              return [{ id: taskId }];
+            },
+          };
         },
       }),
     }),
@@ -139,6 +163,8 @@ describe('retryCiFailureForPr on a red frozen release candidate', () => {
     activity.length = 0;
     gateEvents.length = 0;
     markerRows = [{ id: 't1' }];
+    prWorkers = null;
+    markers = null;
     failedJobNames = ['Integration'];
     kernelSeen = { handled: true, attemptTaskId: 'k1', result: { result: 'applied', decision: { toState: 'REPAIRING' } } };
     mockObserveCiFailure.mockClear();
@@ -196,5 +222,45 @@ describe('retryCiFailureForPr on a red frozen release candidate', () => {
     const out = await retryCiFailureForPr({ ...input, headSha: 'abc' });
     expect(out).toEqual({ kind: 'dispatched', taskId: 'k1' });
     expect(mockObserveCiFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays two red reports for one head with a conflict attempt stamped in between: one fix task', async () => {
+    // v0.381.0: the adopted owner's report filed a fix; a conflict attempt's
+    // worker was then stamped with the PR, so the next report resolved that
+    // attempt as owner and found no marker on it.
+    markers = new Map();
+    prWorkers = [workerRow];
+    const first = await retryCiFailureForPr(input);
+    expect(first).toMatchObject({ kind: 'skipped', reason: 'release_candidate', fixTaskId: 'new-1' });
+
+    prWorkers.push({
+      id: 'w2', branch: 'release/v1.2.3', prNumber: 76, prLifecycleStatus: 'open',
+      task: { id: 't2', title: '[builder · after conflict #1] Release v1.2.3', description: null, workspaceId: 'ws1', missionId: null, status: 'completed', context: {}, result: null },
+    });
+    const second = await retryCiFailureForPr({ ...input, surface: 'sweep:ci_red' as any });
+    expect(second).toMatchObject({ kind: 'skipped', reason: 'release_candidate' });
+    expect((second as any).fixTaskId).toBeUndefined();
+    expect(insertedRows).toHaveLength(1);
+    expect([...markers.keys()]).toEqual(['t1']);
+    expect(gateEvents.at(-1).detail).toMatchObject({ skipReason: 'release_candidate', alreadyFiled: true });
+  });
+
+  it('a new candidate head after an amendment still gets its own fix', async () => {
+    markers = new Map([['t1', 'cand-sha']]);
+    prWorkers = [workerRow];
+    const amended = { ...meta, candidateSha: 'amended-sha', amendment: 1, previousCandidateSha: 'cand-sha' };
+    prGate = candidateGate({ headSha: 'amended-sha', body: `Release\n\n<!-- release-candidate ${JSON.stringify(amended)} -->` });
+    const out = await retryCiFailureForPr({ ...input, headSha: 'amended-sha' });
+    expect(out).toMatchObject({ kind: 'skipped', reason: 'release_candidate', fixTaskId: 'new-1' });
+    expect(insertedRows).toHaveLength(1);
+  });
+
+  it('the activity comment says the amendment is automatic', async () => {
+    await retryCiFailureForPr(input);
+    expect(activity).toHaveLength(1);
+    const entry = activity[0].entry;
+    expect(entry.detail).toContain('amend automatically');
+    expect(entry.note).toContain('will be amended automatically');
+    expect(entry.note).toContain('checks will restart on the new head');
   });
 });

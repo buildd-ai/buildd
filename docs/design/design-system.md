@@ -152,6 +152,13 @@ Tailwind class in brackets where one exists. Night is `:root` /
 prototype names its tokens differently; the last column of each table gives
 that name, so a prototype value can be found here.
 
+`apps/web/src/design/tokens.json` is the machine-readable copy of the Night and
+Day custom properties in `globals.css`, generated and never hand-edited. It is
+what a claude.ai Design System is built from. After changing a token run
+`bun run design:tokens -- --write`; CI runs `bun run design:tokens` and fails
+on a stale file. Pass design HTML files or a tokens file to the same command to
+see which tokens differ from `globals.css`.
+
 ### 2.1 Surfaces
 
 | Token | Night | Day | Tailwind | Use | Prototype |

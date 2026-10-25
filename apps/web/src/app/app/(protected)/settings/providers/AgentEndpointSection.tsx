@@ -638,7 +638,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4
           onToggle={(id, on) => setChosen((prev) => { const next = new Set(prev); if (on) next.add(id); else next.delete(id); return next; })} />
       )}
       <div className="space-y-2">
-        {radio('anthropic', 'Anthropic (default)', 'Your Claude key or subscription.')}
+        {radio('anthropic', 'Anthropic (default)', "Your Claude key or the runner's own login.")}
         {radio('gateway', 'Use the team gateway', hasGateway ? 'The LiteLLM gateway in Team keys.' : 'Connect a LiteLLM gateway in Team keys first.', !hasGateway)}
         {radio('openrouter', 'OpenRouter')}
         {radio('anthropic-compatible', 'Anthropic-compatible URL', 'Any proxy that serves /v1/messages.')}

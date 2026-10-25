@@ -13,52 +13,40 @@ import {
   ADMINS_ONLY,
   SHAPE_NOUN,
   cardView,
-  detectPaste,
   maskedValue,
   rowState,
-  type ProviderGroup,
+  type ProviderRowItem,
 } from './providers-view';
 
 const INPUT = 'w-full h-11 md:h-10 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-body';
 const TONE = { error: 'text-status-error', success: 'text-status-success', muted: 'text-text-muted' } as const;
 
 /**
- * One provider (or one group, like Claude: key and subscription) at one scope
- * tab, as a single row: name, a status word, the masked key, one action.
- * Everything else opens inline on tap. Values are write-only: a row shows its
- * last four characters.
+ * One provider at one scope, as a single row: its name and one action, with a
+ * status word and the masked key once something is set. Everything else opens
+ * inline on tap. Values are write-only: a row shows its last four characters.
  */
-export default function ProviderRow({ group, scope, data, workspaceId, onChanged, open, onToggle, signIn = null, form: formSlot = null }: {
-  group: ProviderGroup;
+export default function ProviderRow({ item, scope, data, workspaceId, onChanged, open, onToggle, form: formSlot = null }: {
+  item: ProviderRowItem;
   scope: ProviderApiScope;
   data: ListProvidersResponse;
   workspaceId: string | null;
   onChanged: () => Promise<void>;
   open: boolean;
   onToggle: (open: boolean) => void;
-  /** The provider's subscription and runner sign-ins, drawn in the opened detail under the keys. */
-  signIn?: ReactNode;
   /** A provider set up with a form (gateway, custom endpoint): the form, drawn in the opened detail. */
   form?: ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
-  const views = group.members.map((p) => ({ p, v: cardView(p, scope, data) }));
-  const rows = views.flatMap(({ v }) => v.rows);
-  const inherited = views.flatMap(({ v }) => v.inherited);
-  const closedAll = views.every(({ v }) => v.closed);
-  const closed = closedAll ? views[0].v.closed : null;
-  const readOnly = views.find(({ v }) => v.readOnly)?.v.readOnly ?? null;
-  const paste = views.filter(({ v }) => v.edit.kind === 'paste');
-  const form = views.find(({ v }) => v.edit.kind === 'form');
-  const state = rowState(rows, inherited, closed, data.teamName);
-  const grouped = group.members.length > 1;
+  const { rows, inherited, closed, readOnly, edit } = cardView(item.provider, scope, data);
+  const paste = edit.kind === 'paste' ? edit : null;
+  const form = edit.kind === 'form';
+  const state = rowState(rows, inherited, data.teamName);
   // Set up only through a form this page does not draw (the gateway on a
   // workspace page), with nothing set or inherited: no row, not a dead "Not set".
   if (form && !formSlot && !closed && rows.length === 0 && inherited.length === 0) return null;
 
-  const action = paste.length > 0
-    ? (rows.length > 0 ? 'Replace' : grouped ? `Connect ${group.label}` : 'Add key')
-    : null;
+  const action = paste ? (rows.length > 0 ? 'Replace' : 'Add key') : null;
 
   function startEdit() {
     setEditing(true);
@@ -66,7 +54,7 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
   }
 
   return (
-    <li data-testid={`provider-card-${group.id}`} data-scope={scope} data-set={rows.length > 0 ? 'true' : 'false'}>
+    <li data-testid={`provider-card-${item.id}`} data-scope={scope} data-set={rows.length > 0 ? 'true' : 'false'}>
       <div className="flex items-center gap-3 min-h-12 py-1.5">
         <button
           type="button"
@@ -75,15 +63,15 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
           data-testid="provider-row-toggle"
           onClick={() => onToggle(!open)}
         >
-          <span className="text-body font-semibold text-text-primary">{group.label}</span>
-          <span className={`text-meta ${TONE[state.tone]}`} data-testid="provider-card-state">{state.word}</span>
+          <span className="text-body font-semibold text-text-primary">{item.label}</span>
+          {state.word && <span className={`text-meta ${TONE[state.tone]}`} data-testid="provider-card-state">{state.word}</span>}
           {rows[0] && <span className={`text-meta text-text-muted ${maskedValue(rows[0]).startsWith('…') ? 'font-mono' : ''}`} data-testid="provider-masked">{maskedValue(rows[0])}</span>}
         </button>
         {/* 44px to tap below md, the usual 32px .btn from md. */}
         {action && !editing && (
           <button type="button" className="btn shrink-0 min-h-11 md:min-h-0" onClick={startEdit}>{action}</button>
         )}
-        {!action && form && formSlot && !form.v.closed && !form.v.readOnly && rows.length === 0 && !open && (
+        {!action && form && formSlot && rows.length === 0 && !open && (
           <button type="button" className="btn shrink-0 min-h-11 md:min-h-0" onClick={() => onToggle(true)}>Set up</button>
         )}
       </div>
@@ -101,11 +89,10 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
           {/* "Admins can change this" is said once, at the top of the page
               (SettingsPage readOnly); a reason only this row has is said here. */}
           {readOnly && readOnly !== ADMINS_ONLY && <p className="text-meta text-text-muted" data-testid="provider-read-only">{readOnly}</p>}
-          {editing && paste.length > 0 && (
+          {editing && paste && (
             <PasteEditor
-              group={group}
-              shape={!grouped ? (paste[0].v.edit as { shape: ProviderShapeId }).shape : null}
-              provider={!grouped ? paste[0].p.id : null}
+              item={item}
+              shape={paste.shape}
               scope={scope}
               teamId={data.teamId}
               workspaceId={workspaceId}
@@ -113,14 +100,12 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
               onDone={async (saved) => { setEditing(false); if (saved) await onChanged(); }}
             />
           )}
-          {editing && group.id === 'openrouter' && rows.length === 0 && scope !== 'workspace' && (
+          {editing && item.id === 'openrouter' && rows.length === 0 && scope !== 'workspace' && (
             <ConnectOpenRouterButton scope={scope === 'mine' ? 'user' : 'team'} teamId={data.teamId} returnTo={scope === 'mine' ? '/app/settings/keys' : '/app/settings/models'} />
           )}
           {form && formSlot}
         </div>
       )}
-      {/* Mounted while the row is shut: a device-code sign-in in progress survives a collapse. */}
-      {signIn && <div hidden={!open} data-testid="provider-sign-in" className="pb-3 space-y-3">{signIn}</div>}
     </li>
   );
 }
@@ -177,15 +162,10 @@ async function errorText(res: Response, fallback: string): Promise<string> {
   return body.reason ?? body.error ?? fallback;
 }
 
-/**
- * One input. For a group (Claude, OpenAI) the pasted value's format decides
- * the provider and shape; for a single provider it is that provider's paste
- * shape.
- */
-function PasteEditor({ group, provider, shape, scope, teamId, workspaceId, hasRow, onDone }: {
-  group: ProviderGroup;
-  provider: string | null;
-  shape: ProviderShapeId | null;
+/** One input: the provider's key. */
+function PasteEditor({ item, shape, scope, teamId, workspaceId, hasRow, onDone }: {
+  item: ProviderRowItem;
+  shape: ProviderShapeId;
   scope: ProviderApiScope;
   teamId: string;
   workspaceId: string | null;
@@ -195,19 +175,17 @@ function PasteEditor({ group, provider, shape, scope, teamId, workspaceId, hasRo
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const inputId = `provider-${group.id}-${scope}`;
-  const label = group.id === 'claude' ? 'Claude API key or setup token' : group.id === 'openai' ? 'OpenAI API key' : `${group.label} ${SHAPE_NOUN[shape ?? 'api_key'].toLowerCase().replace(/^api/, 'API')}`;
+  const inputId = `provider-${item.id}-${scope}`;
+  const label = `${item.label} ${SHAPE_NOUN[shape].toLowerCase().replace(/^api/, 'API')}`;
 
   async function save() {
-    const target = provider && shape ? { provider, shape } : detectPaste(group.id, value);
-    if ('error' in target) { setErr(target.error); return; }
     setBusy(true);
     setErr(null);
     try {
       const res = await fetch('/api/providers', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teamId, provider: target.provider, shape: target.shape, scope, ...(scope === 'workspace' ? { workspaceId } : {}), value: value.trim() }),
+        body: JSON.stringify({ teamId, provider: item.provider.id, shape, scope, ...(scope === 'workspace' ? { workspaceId } : {}), value: value.trim() }),
       });
       if (!res.ok) throw new Error(await errorText(res, 'Could not save.'));
       setValue('');

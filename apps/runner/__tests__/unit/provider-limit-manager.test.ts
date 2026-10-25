@@ -196,6 +196,7 @@ describe('provider limit warning', () => {
   function setup(backend: 'claude' | 'codex' = 'claude') {
     initTestWorkspace();
     manager = new WorkerManager(makeConfig());
+    (manager as any).codexAuth = 'machine_login'; // the runner can start Codex, so a held Claude login leaves it polling
     const worker = makeWorker();
     worker.taskBackend = backend as any;
     injectWorker(manager, worker);
