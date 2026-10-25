@@ -319,6 +319,39 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(other.toState).toBe('ESCALATED');
     expect(other.patch).toMatchObject({ currentHeadSha: 'H7' });
   });
+  // 08d752ed (#5539): a conflict fix's push failed on credentials, so its local merge never reached
+  // GitHub. Other heads did, from the owner, and one of them resolved the conflict. What the repair
+  // owed was a head without the conflict, so that head answers it, whoever pushed it.
+  describe('a conflict repair whose own push never landed is answered by any head that is not conflicted', () => {
+    const repairEnded = A({ id: 'c1', family: 'conflict', triggerReason: 'dirty', status: 'ended', outcome: 'unproven', boundHeadSha: 'H1', reportedShas: ['LM'] });
+    const awaiting = (o: Partial<DeliverySnapshot> = {}) => V(D({ state: 'AWAITING_PUSH', currentRound: 2, currentHeadSha: 'H1', boundAttemptId: 'c1', ...o }), [], [repairEnded]);
+    test('AWAITING_PUSH: a clean foreign head opens a review round; a dirty one re-arms recovery', () => {
+      const ok = applied(h(awaiting(), 'H5', { live: live('H5', { mergeableState: 'clean' }) }));
+      expect(ok.toState).toBe('AWAITING_REVIEW');
+      expect(ok.patch).toMatchObject({ currentHeadSha: 'H5', currentRound: 3, stateReason: null, boundAttemptId: null });
+      expect(ok.evidence).toMatchObject({ conflictAnswered: true, proof: { holds: false, reason: 'live_head_missing_local' } });
+      const dirty = applied(h(awaiting(), 'H5', { live: live('H5', { mergeableState: 'dirty' }) }));
+      expect(dirty.toState).toBe('AWAITING_PUSH');
+      expect(effectKinds(dirty)).toContain('push_recovery');
+    });
+    test('ESCALATED(push_undeliverable): the clean head clears it, back to the spent review budget it was held under', () => {
+      const v = awaiting({ state: 'ESCALATED', stateReason: 'push_undeliverable', resumeState: 'ESCALATED', currentRound: 3 });
+      const ok = applied(h(v, 'H6', { live: live('H6', { mergeableState: 'clean' }) }));
+      expect(ok.toState).toBe('ESCALATED');
+      expect(ok.patch).toMatchObject({ currentHeadSha: 'H6', stateReason: 'review_exhausted' });
+      expect(effectKinds(ok)).not.toContain('dispatch_review');
+      // Without the hold it is reviewed.
+      const free = applied(h(awaiting({ state: 'ESCALATED', stateReason: 'push_undeliverable' }), 'H6', { live: live('H6', { mergeableState: 'clean' }) }));
+      expect(free.toState).toBe('AWAITING_REVIEW');
+      // Still dirty: only recorded.
+      const dirty = applied(h(v, 'H6', { live: live('H6', { mergeableState: 'dirty' }) }));
+      expect({ to: dirty.toState, patch: dirty.patch }).toEqual({ to: 'ESCALATED', patch: { currentHeadSha: 'H6' } });
+    });
+    test('a review fix keeps the §9 rule: a foreign head without its commit is not delivery', () => {
+      const v = V(D({ state: 'AWAITING_PUSH', currentRound: 1, boundAttemptId: 'a1' }), [decidedRC], [A({ status: 'ended', outcome: 'unproven', reportedShas: ['L2'] })]);
+      expect(applied(h(v, 'X9', { live: live('X9', { mergeableState: 'clean' }) })).toState).toBe('AWAITING_PUSH');
+    });
+  });
   test('ESCALATED(conflict_exhausted): a repaired head that is not conflicted re-enters review; a dirty one is only recorded', () => {
     // The spent conflict budget was the only reason a person was asked. A head someone else
     // repaired answers it, so it gets a review round instead of waiting on the dashboard.
@@ -818,6 +851,19 @@ describe('T11 / §8.3: an agent conflict repair that only merged the base keeps 
     expect(dec.rounds.filter((r) => r.op === 'insert')).toEqual([]);
     expect(effectKinds(dec)).not.toContain('dispatch_review');
   };
+
+  // 08d752ed (#5539): the push failed, but another actor's head already resolved the conflict.
+  test('an unpushed end while the live head is a different, clean head resumes there instead of AWAITING_PUSH', () => {
+    const v = conflictRepair({ approvedHeads: [], approvalBasis: null, currentHeadSha: 'H5' });
+    const dec = applied(end(v, { outcome: 'unproven', localHeadSha: 'LM', commitCount: 2, live: live('H5', { mergeableState: 'clean' }) }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.patch).toMatchObject({ currentHeadSha: 'H5', boundAttemptId: null, stateReason: null });
+    expect(dec.attempts[0]).toMatchObject({ attemptId: 'c1', set: { status: 'ended', outcome: 'unproven' } });
+    expect(effectKinds(dec)).not.toContain('push_recovery');
+    // The head is still the bound one, or still conflicted: the unpushed work is the only answer.
+    expect(applied(end(v, { outcome: 'unproven', localHeadSha: 'LM', commitCount: 2, live: live('H1', { mergeableState: 'clean' }) })).toState).toBe('AWAITING_PUSH');
+    expect(applied(end(v, { outcome: 'unproven', localHeadSha: 'LM', commitCount: 2, live: live('H5', { mergeableState: 'dirty' }) })).toState).toBe('AWAITING_PUSH');
+  });
 
   test('content-equivalent evidence on the end → APPROVED at H2, no round, no review dispatched', () => {
     const dec = applied(end(conflictRepair(), { carryForward: 'content_equivalent' }));
