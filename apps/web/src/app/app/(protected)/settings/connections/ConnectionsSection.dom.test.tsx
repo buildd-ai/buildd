@@ -127,7 +127,7 @@ describe('ConnectionsSection', () => {
     await mount({}, person.id);
     await click(container.querySelector('[aria-label="Remove blog"]'));
     expect(calls).toEqual([{ kind: 'patch', id: person.id, body: { removeWorkspaceIds: ['w4'], ifRevision: 2 } }]);
-    expect(q('connection-saved')!.textContent).toContain('from its next request, with no need to reconnect');
+    expect(q('connection-saved')!.textContent).toContain('uses the new access from its next request');
   });
 
   it('will not remove the last workspace; that is a revoke', async () => {

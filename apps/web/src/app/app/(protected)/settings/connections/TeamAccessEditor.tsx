@@ -98,7 +98,7 @@ export default function TeamAccessEditor({
             {review.lines.map((l) => <p key={l} className="text-body text-text-primary">{l}</p>)}
           </div>
         ) : (
-          <p className="text-body text-text-muted">No change yet.</p>
+          <p className="text-body text-text-muted">Pick a different option to see what changes.</p>
         )}
       </div>
 

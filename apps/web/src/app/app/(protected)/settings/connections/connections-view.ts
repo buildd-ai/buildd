@@ -168,5 +168,5 @@ export function reviewTeamEdit(args: {
 
 /** The confirmation after a save: when it applies, without the app reconnecting. */
 export function savedMessage(clientName: string): string {
-  return `Saved. ${clientName} uses the new access from its next request, with no need to reconnect.`;
+  return `Saved. ${clientName} uses the new access from its next request.`;
 }

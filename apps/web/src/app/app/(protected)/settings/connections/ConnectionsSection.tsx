@@ -54,6 +54,8 @@ export interface ConnectionsApi {
   revoke(id: string): Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
+const UNREACHABLE = 'Could not reach buildd. Check your connection and try again.';
+
 async function failureOf(res: Response, fallback: string): Promise<PatchFailure> {
   try {
     const body = await res.json();
@@ -78,7 +80,7 @@ export const fetchConnectionsApi: ConnectionsApi = {
         body: JSON.stringify(body),
       });
     } catch {
-      return { ok: false, error: 'Could not reach buildd. Check your connection and try again.' };
+      return { ok: false, error: UNREACHABLE };
     }
     if (!res.ok) return failureOf(res, 'Could not save the change. Try again.');
     return { ok: true, connection: (await res.json()).connection };
@@ -88,7 +90,7 @@ export const fetchConnectionsApi: ConnectionsApi = {
     try {
       res = await fetch(`/api/mcp-grants/${encodeURIComponent(id)}`, { method: 'DELETE' });
     } catch {
-      return { ok: false, error: 'Could not reach buildd. Check your connection and try again.' };
+      return { ok: false, error: UNREACHABLE };
     }
     if (!res.ok) return { ok: false, error: (await failureOf(res, 'Could not revoke it. Try again.')).error };
     return { ok: true };
