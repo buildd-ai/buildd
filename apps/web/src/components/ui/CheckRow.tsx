@@ -57,12 +57,16 @@ export default function CheckRow({ name, status, stateWord, detail, href, action
   const body = (
     <>
       <CheckIcon status={status} />
-      <span className="min-w-0 truncate font-medium text-text-primary">{name}</span>
-      <span className={`shrink-0 text-meta ${TONE[status]}`}>{word}</span>
-      {detail && <span className="min-w-0 truncate font-mono text-meta text-text-muted md:basis-full md:pl-[26px]">{detail}</span>}
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex min-w-0 items-baseline gap-x-2.5">
+          <span className="min-w-0 truncate font-medium text-text-primary">{name}</span>
+          <span className={`shrink-0 text-meta ${TONE[status]}`}>{word}</span>
+        </span>
+        {detail && <span className="min-w-0 truncate font-mono text-meta text-text-muted">{detail}</span>}
+      </span>
     </>
   );
-  const layout = 'flex min-h-11 min-w-0 items-center gap-x-2.5 text-body md:flex-wrap md:min-h-0 md:py-1';
+  const layout = 'flex min-h-11 min-w-0 items-center gap-x-2.5 py-1.5 text-body';
   return (
     <div
       data-testid="check-row"
