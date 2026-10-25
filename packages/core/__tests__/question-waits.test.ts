@@ -132,24 +132,24 @@ describe('the card lines', () => {
   test('every task and spec in the summary is a link; criterion ids stay in the data', () => {
     const parts = waitsSummary(waits({ mission: { id: 'm', title: 'M' }, criteria: { specId: 's', specTitle: 'S', affected: ['R-1'], total: 3 } }));
     expect(parts.filter(p => p.href).map(p => p.href)).toEqual(['/app/tasks/b', '/app/specs/s']);
-    expect(partsText(parts)).toBe('Waits on this: Repair. Affects the evidence for 1 of 3 criteria in S.');
+    expect(partsText(parts)).toBe('Blocks Repair. Affects the evidence for 1 of 3 criteria in S.');
   });
 
   test('the footer: expiry and default, or nothing without an open question', () => {
     const now = Date.parse('2026-10-24T12:00:00Z');
-    expect(waitsFooter(waits({ expiresAt: '2026-10-24T13:00:00Z', onExpiry: { action: 'ends', option: null } }), now)).toBe('Expires in 1 hour, then the task stops waiting and ends.');
-    expect(waitsFooter(waits({ expiresAt: '2026-10-24T11:00:00Z', onExpiry: { action: 'restart', option: null } }), now)).toBe('Expired: at the next check the task starts again and the agent decides for itself.');
+    expect(waitsFooter(waits({ expiresAt: '2026-10-24T13:00:00Z', onExpiry: { action: 'ends', option: null } }), now)).toBe('Expires in 1h. Task ends.');
+    expect(waitsFooter(waits({ expiresAt: '2026-10-24T11:00:00Z', onExpiry: { action: 'restart', option: null } }), now)).toBe('Expired. Task restarts.');
     expect(waitsFooter(waits(), now)).toBeNull();
   });
 
   test('the push line is the summary', () => {
-    expect(waitsNotificationLine(waits())).toBe('Waits on this: Repair.');
+    expect(waitsNotificationLine(waits())).toBe('Blocks Repair.');
     expect(waitsNotificationLine(waits({ waiting: [] }))).toBe('Nothing else waits on this answer.');
   });
 
   test('the notification carries the line after the question', () => {
-    const n = questionNotificationText({ prompt: 'Ship it?' }, { waitsLine: 'Waits on this: Repair.' });
-    expect(n.message).toBe('Ship it?\nWaits on this: Repair.');
+    const n = questionNotificationText({ prompt: 'Ship it?' }, { waitsLine: 'Blocks Repair.' });
+    expect(n.message).toBe('Ship it?\nBlocks Repair.');
     expect(questionNotificationText({ prompt: 'Ship it?' }, { sensitive: true, waitsLine: 'x' }).message).toBe('Agent waiting for input');
   });
 });

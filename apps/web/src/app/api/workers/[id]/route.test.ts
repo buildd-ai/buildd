@@ -3128,7 +3128,7 @@ describe('PATCH /api/workers/[id]', () => {
     await new Promise(r => setTimeout(r, 0));
     expect(mockLoadQuestionWaits.mock.calls[0][0]).toMatchObject({ taskId: 'task-1', viewer: { kind: 'member' } });
     const call = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs input');
-    expect(call![0].message.split('\n')).toEqual(['Ship it?', "Waits on this: Repair the totals and 1 task you can't see."]);
+    expect(call![0].message.split('\n')).toEqual(['Ship it?', "Blocks Repair the totals and 1 task you can't see."]);
   });
 
   // Held questions (lib/question-hold.ts): the gate said `hold`, so nobody is

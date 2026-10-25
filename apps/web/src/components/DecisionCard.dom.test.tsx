@@ -94,7 +94,7 @@ describe('DecisionCard', () => {
     const subject = q('[data-testid="question-subject"]')!;
     expect(subject.textContent).toBe('●Mirror the runner image to Docker Hub· asked 4m ago');
     expect(subject.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/t1');
-    expect(q('[data-testid="decision-summary"]')!.textContent).toContain("Waits on this: The release publishes an image digest, then A runner bundle on every release and 1 task you can't see.");
+    expect(q('[data-testid="decision-summary"]')!.textContent).toContain("Blocks The release publishes an image digest, then A runner bundle on every release and 1 task you can't see.");
     expect(q('[data-testid="decision-question"]')!.textContent).toBe('How should Docker Hub credentials be set up?');
     const options = qa('[data-testid="decision-option"]');
     expect(options.map(o => o.textContent)).toEqual([
@@ -121,7 +121,7 @@ describe('DecisionCard', () => {
     act(() => root.render(<DecisionCard view={decision()} now={T0} />));
     const links = [...q('[data-testid="decision-waits"]')!.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')]);
     expect(links).toEqual([['The release publishes an image digest', '/app/tasks/d1'], ['A runner bundle on every release', '/app/tasks/d2']]);
-    expect(q('[data-testid="decision-expiry"]')!.textContent).toBe('Expires in 3 hours 30 minutes, then the task starts again and the agent goes with Provide a token.');
+    expect(q('[data-testid="decision-expiry"]')!.textContent).toBe('Expires in 3h 30m. Goes with Provide a token.');
     // No id in the text, and the chain named once in the summary.
     expect(container.textContent).not.toMatch(/\bd[12]\b/);
     expect(container.textContent!.split('A runner bundle on every release').length - 1).toBe(1);
