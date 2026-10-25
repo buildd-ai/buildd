@@ -78,6 +78,22 @@ export function roundLabel(r: RoundSnapshot): string {
   return parts.join(' · ');
 }
 
+/**
+ * Why an attempt's end handed the delivery to a person, read from the evidence the reducer wrote.
+ * 08d752ed: only an owner end with no open PR head to hand on is "never reached GitHub"; a policy
+ * hand-off at PR open (#5580, #5647) or a spent budget is not a failed push.
+ */
+function attemptEscalation(fromState: string | null, ev: Record<string, unknown>): Omit<PrActivityEntry, 'at'> {
+  // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
+  if (ev.reviewBudgetSpent) return { kind: 'review_escalated', detail: 'review budget spent' };
+  if (ev.policyEvidence) return { kind: 'human_review_required', detail: str(ev.reason) };
+  if (ev.note === 'no_open_pr_head') return { kind: 'push_undeliverable' };
+  if (fromState === 'WORKING' && str(ev.signature)) return { kind: 'ci_exhausted' };
+  if (fromState === 'FIXING') return { kind: 'review_escalated', detail: 'fix budget spent' };
+  if (fromState === 'REPAIRING') return { kind: 'review_escalated', detail: 'repair budget spent' };
+  return { kind: 'review_escalated', detail: null };
+}
+
 /** Map the transition log to timeline entries, oldest first. */
 export function transitionsToActivityEntries(
   transitions: ActivityTransition[],
@@ -158,8 +174,7 @@ export function transitionsToActivityEntries(
         } else if (t.toState === 'AWAITING_PUSH') {
           push({ kind: 'push_pending' });
         }
-        // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
-        if (t.toState === 'ESCALATED') push(ev.reviewBudgetSpent ? { kind: 'review_escalated', detail: 'review budget spent' } : { kind: 'push_undeliverable' });
+        if (t.toState === 'ESCALATED') push(attemptEscalation(t.fromState, ev));
         break;
       }
       case 'PushRecoveryExhausted':
