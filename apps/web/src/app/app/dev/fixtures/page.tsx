@@ -53,6 +53,7 @@ import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
 import ActivityDeliveryFixture from './ActivityDeliveryFixture';
 import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import SkipRowFixture from './SkipRowFixture';
+import CheckRowFixture from './CheckRowFixture';
 import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
@@ -104,6 +105,7 @@ import {
     STAGE_METER_FIXTURE_STATE,
     DELIVERY_ROW_FIXTURE_STATE,
     YOU_STRIP_PIPELINE_FIXTURE_STATE,
+    CHECK_ROW_FIXTURE_STATE,
     DELIVERY_BAR_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
@@ -176,6 +178,10 @@ export default function DevFixturesPage() {
 
     if (state === SURFACE_AUDIT_WAIVER_FIXTURE_STATE) {
         return <SurfaceAuditWaiverFixture />;
+    }
+
+    if (state === CHECK_ROW_FIXTURE_STATE) {
+        return <CheckRowFixture />;
     }
 
     if (state === SKIP_ROW_FIXTURE_STATE) {
