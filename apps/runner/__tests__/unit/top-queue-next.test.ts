@@ -47,25 +47,25 @@ function stateWith(slots: number, running: number, queue: RunnerQueueTask[], est
 describe('AC-41: 8 free slots, 9 waiting, 8 deferred for overlapping files', () => {
   const s = stateWith(9, 1, AC41);
 
-  test('only the first row reads "now"; the other 8 name it', () => {
-    const rows = queueSections(s, NOW)[0].rows;
-    expect(rows[0].starts).toBe('now');
+  test('only the first row is Queued; the other 8 are Blocked and name it', () => {
+    const rows = queueSections(s, NOW)[0].rows.filter(r => r.status !== 'running');
+    expect(rows[0].starts).toBe('Queued');
     for (const r of rows.slice(1)) {
-      expect(r.starts).toBe('when #1 ends (same files)');
+      expect(r.starts).toBe('Blocked · after #1');
       expect(r.wait).toBe('same_files');
     }
   });
 
   test('the Next line names the one that starts and counts the 8 that wait', () => {
-    expect(queueNextLine(s, NOW)).toBe('Next: #1 starts now · 8 wait for work on the same files');
+    expect(queueNextLine(s, NOW)).toBe('Next: #1 takes a free slot · 8 wait for work on the same files');
   });
 
   test('the frame draws it under the Queue header', () => {
     const lines = renderFrame(s, { cols: 120, rows: 30, now: NOW, palette: plain }).map(l => stripAnsi(l));
-    const at = lines.findIndex(l => l.includes('Next: #1 starts now · 8 wait for work on the same files'));
+    const at = lines.findIndex(l => l.includes('Next: #1 takes a free slot · 8 wait for work on the same files'));
     expect(at).toBeGreaterThan(0);
     expect(lines.findIndex(l => l.includes('next for this runner'))).toBeGreaterThan(at);
-    expect(lines.filter(l => /\bnow\s*$/.test(l) && /^\s*›?\s*\d/.test(l))).toHaveLength(1);
+    expect(lines.filter(l => /Queued\s*$/.test(l) && /^\s*›?\s*\d/.test(l))).toHaveLength(1);
   });
 });
 
@@ -76,7 +76,7 @@ describe('the Next line (R-59)', () => {
       task({ id: 'b1', holds: ['advisory_manifest'], holderTaskId: 'a1' }),
       task({ id: 'c1', missionId: null, holds: ['deps_blocked'], dependsOn: ['x'] }),
     ]);
-    expect(queueNextLine(s, NOW)).toBe('Next: #1 and #2 start now · 1 waits for work on the same files · 1 waits for its dependency');
+    expect(queueNextLine(s, NOW)).toBe('Next: #1 and #2 take a free slot · 1 waits for work on the same files · 1 waits for its dependency');
   });
 
   test('nothing can start: every waiting task waits for work on the same files', () => {
@@ -93,8 +93,8 @@ describe('the Next line (R-59)', () => {
     expect(queueNextLine(stateWith(9, 0, []), NOW)).toBeNull();
   });
 
-  test('a row the server did not mark still starts now (older server)', () => {
+  test('a row the server did not mark still takes a free slot (older server)', () => {
     const s = stateWith(9, 0, [task({ id: 'a1' }), task({ id: 'a2' })]);
-    expect(queueNextLine(s, NOW)).toBe('Next: #1 and #2 start now');
+    expect(queueNextLine(s, NOW)).toBe('Next: #1 and #2 take a free slot');
   });
 });

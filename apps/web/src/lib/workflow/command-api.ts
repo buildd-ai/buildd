@@ -76,6 +76,8 @@ export type KernelPrincipal =
 export interface KernelOps {
   land: { input: Parameters<Seam['landThroughKernel']>[0]; result: Awaited<ReturnType<Seam['landThroughKernel']>> };
   apply_recommendation: { input: Parameters<Seam['applyRecommendationThroughKernel']>[0]; result: Awaited<ReturnType<Seam['applyRecommendationThroughKernel']>> };
+  /** A person files one landing task from an escalation: merge base, fix CI, address findings, one review on push. */
+  land_escalated: { input: Parameters<Seam['landEscalatedThroughKernel']>[0]; result: Awaited<ReturnType<Seam['landEscalatedThroughKernel']>> };
   policy_merge: { input: Parameters<Seam['policyMergeThroughKernel']>[0]; result: Awaited<ReturnType<Seam['policyMergeThroughKernel']>> };
   request_review: { input: Parameters<Seam['requestReview']>[0]; result: Awaited<ReturnType<Seam['requestReview']>> };
   request_ci_retry: { input: Parameters<Seam['requestCiRetry']>[0]; result: Awaited<ReturnType<Seam['requestCiRetry']>> };
@@ -153,6 +155,7 @@ export type KernelOp = keyof KernelOps;
 const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Promise<KernelOps[K]['result']> } = {
   land: (s, i) => s.landThroughKernel(i),
   apply_recommendation: (s, i) => s.applyRecommendationThroughKernel(i),
+  land_escalated: (s, i) => s.landEscalatedThroughKernel(i),
   policy_merge: (s, i) => s.policyMergeThroughKernel(i),
   request_review: (s, i) => s.requestReview(i),
   request_ci_retry: (s, i) => s.requestCiRetry(i),
@@ -222,7 +225,7 @@ const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drai
  * Ops only a signed-in person may submit, as `human:<their id>`: an agent, an API key or a grant
  * session is refused here, before the reach check, whatever actor string its input names.
  */
-export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding', 'approve_override']);
+export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding', 'approve_override', 'land_escalated']);
 /** Why `principal` may not submit `op`, or null: a person-only op needs a `user` whose id is the input's `human:` actor. */
 export function personOpRefusal(op: KernelOp, input: unknown, principal: KernelPrincipal | null): string | null {
   if (!PERSON_OPS.has(op)) return null;

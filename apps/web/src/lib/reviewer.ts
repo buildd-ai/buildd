@@ -33,9 +33,9 @@ import {
 } from './workspace-policy';
 import { inheritPhaseFromParent } from './mission-phase';
 import { DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
-import { renderDesignGuidance, screenNamedCriteria, type DesignScreenCriterion, type PinnedDesignRef } from './reviewer-design';
+import { renderDesignGuidance, screenNamedCriteria, withScreenInfo, type DesignScreenCriterion, type PinnedDesignRef } from './reviewer-design';
 // Re-exported so the worker route reaches the design gate through this module, which it already imports.
-export { applyDesignGate, parseDesignChecks } from './reviewer-design';
+export { applyDesignGate, componentScreens, parseDesignChecks } from './reviewer-design';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
@@ -1504,6 +1504,15 @@ export function specVerdictInstruction(taskId: string, criteriaIds: readonly str
   ].join('\n');
 }
 
+/** A pinned artifact design with its screens' kind and code (R-17); unchanged when they cannot be read. */
+async function withDesignScreenInfo(design: PinnedDesignRef): Promise<PinnedDesignRef> {
+  if (design.kind !== 'artifact') return design;
+  const revision = Number(design.version);
+  const { loadDesignScreenInfo } = await import('@/lib/designs/screen-info');
+  const info = await loadDesignScreenInfo({ artifactId: design.ref, ...(Number.isInteger(revision) && revision > 0 ? { revision } : {}) }).catch(() => []);
+  return withScreenInfo(design, info);
+}
+
 /**
  * The screen-named criteria the reviewed task answers for, and the design they
  * point at, read from its pinned spec revision. Empty when the task is pinned
@@ -1520,7 +1529,7 @@ export async function loadDesignRequirement(originalTaskId: string): Promise<{ d
     const { specCriteria } = await import('@buildd/spec-contract/requirements');
     const { inScope } = await import('@buildd/spec-contract/scope');
     const ids = inScope(specSource as Record<string, unknown>, specCriteria(pinned.body)).map((c) => c.id);
-    const design = pinned.design as PinnedDesignRef;
+    const design = await withDesignScreenInfo(pinned.design as PinnedDesignRef);
     return { design, criteria: screenNamedCriteria({ body: pinned.body, design, inScopeIds: ids }) };
   } catch (err) {
     console.warn(`[reviewer] Failed to read the design requirement for task ${originalTaskId}:`, err);
@@ -1556,7 +1565,7 @@ export async function renderSpecConformanceGuidance(params: {
       const { specCriteria } = await import('@buildd/spec-contract/requirements');
       const { inScope } = await import('@buildd/spec-contract/scope');
       criteriaIds = inScope(specSource as Record<string, unknown>, specCriteria(pinned.body)).map((c) => c.id);
-      const design = pinned.design as PinnedDesignRef | null | undefined;
+      const design = pinned.design ? await withDesignScreenInfo(pinned.design as PinnedDesignRef) : null;
       designGuidance = renderDesignGuidance({ design, criteria: screenNamedCriteria({ body: pinned.body, design, inScopeIds: criteriaIds }) });
     } else {
       label = `Living Spec ${specSource.specId}`;

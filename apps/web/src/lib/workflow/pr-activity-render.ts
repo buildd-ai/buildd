@@ -78,6 +78,22 @@ export function roundLabel(r: RoundSnapshot): string {
   return parts.join(' · ');
 }
 
+/**
+ * Why an attempt's end handed the delivery to a person, read from the evidence the reducer wrote.
+ * 08d752ed: only an owner end with no open PR head to hand on is "never reached GitHub"; a policy
+ * hand-off at PR open (#5580, #5647) or a spent budget is not a failed push.
+ */
+function attemptEscalation(fromState: string | null, ev: Record<string, unknown>): Omit<PrActivityEntry, 'at'> {
+  // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
+  if (ev.reviewBudgetSpent) return { kind: 'review_escalated', detail: 'review budget spent' };
+  if (ev.policyEvidence) return { kind: 'human_review_required', detail: str(ev.reason) };
+  if (ev.note === 'no_open_pr_head') return { kind: 'push_undeliverable' };
+  if (fromState === 'WORKING' && str(ev.signature)) return { kind: 'ci_exhausted' };
+  if (fromState === 'FIXING') return { kind: 'review_escalated', detail: 'fix budget spent' };
+  if (fromState === 'REPAIRING') return { kind: 'review_escalated', detail: 'repair budget spent' };
+  return { kind: 'review_escalated', detail: null };
+}
+
 /** Map the transition log to timeline entries, oldest first. */
 export function transitionsToActivityEntries(
   transitions: ActivityTransition[],
@@ -158,8 +174,7 @@ export function transitionsToActivityEntries(
         } else if (t.toState === 'AWAITING_PUSH') {
           push({ kind: 'push_pending' });
         }
-        // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
-        if (t.toState === 'ESCALATED') push(ev.reviewBudgetSpent ? { kind: 'review_escalated', detail: 'review budget spent' } : { kind: 'push_undeliverable' });
+        if (t.toState === 'ESCALATED') push(attemptEscalation(t.fromState, ev));
         break;
       }
       case 'PushRecoveryExhausted':
@@ -236,6 +251,23 @@ function toneFor(state: DeliveryState, reviewing: boolean): HeaderTone {
   }
 }
 
+/**
+ * Whether the owner's latest attempt move in WORKING put its task back in the
+ * queue (a requeue, a loop hold, a reopen to pending) rather than starting it.
+ * The comment has no task row, so this reads the transitions.
+ */
+export function ownerParkedIn(transitions: ActivityTransition[]): boolean {
+  const latest = [...transitions]
+    .filter((t) => t.toState === 'WORKING')
+    .sort((a, b) => b.toVersion - a.toVersion)
+    .find((t) => t.command === 'AttemptStarted' || t.command === 'AttemptRequeued' || t.command === 'AttemptReopened'
+      || (t.command === 'AttemptEnded' && t.evidence?.requeue === true));
+  if (!latest) return false;
+  if (latest.command === 'AttemptStarted') return false;
+  if (latest.command === 'AttemptReopened') return latest.evidence?.to === 'pending';
+  return true;
+}
+
 export interface DivertedNote {
   entry: PrActivityEntry;
   observedAt: string;
@@ -260,14 +292,16 @@ export function renderDeliveryActivity(p: {
     .map((x) => x.e);
 
   const last = [...p.transitions].sort((a, b) => b.toVersion - a.toVersion)[0];
+  const ownerParked = d.state === 'WORKING' && ownerParkedIn(p.transitions);
   const dv = deriveDeliveryView({
     view: p.view,
     lastTransition: last ? { command: last.command, fromState: last.fromState, toState: last.toState, evidence: last.evidence, createdAt: last.createdAt } : null,
+    ownerParked,
   });
   const currentRound = p.view.rounds.find((r) => r.round === d.currentRound);
   const header: ActivityHeader = {
     headline: dv?.headline ?? d.state,
-    tone: toneFor(d.state, currentRound?.status === 'reviewing'),
+    tone: ownerParked ? 'waiting' : toneFor(d.state, currentRound?.status === 'reviewing'),
     status: dv?.detail && dv.detail.length <= 80 ? dv.detail : undefined,
   };
   // The delivery's start is its first transition (the PR binding), whatever the row cap keeps.

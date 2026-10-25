@@ -19,7 +19,7 @@
  * conflict family's handler: one handler per kind.
  */
 import type { EffectHandler, EffectHandlers } from '../effects';
-import { githubOf, type KernelPorts } from '../ports';
+import { githubOf, type CheckRunsRead, type KernelPorts } from '../ports';
 import { signatureCheckNames, signatureChecks, trunkRecoveredFrom } from '../trunk-signature';
 import { need } from './ports-of';
 
@@ -41,6 +41,7 @@ export function trunkFixDescription(p: { repoFullName: string; baseRef: string; 
     '## Instructions',
     `1. Branch from the current \`${p.baseRef}\` and reproduce the failure locally.`,
     '2. Fix the cause on the base branch itself (a time-dependent test, a broken dependency, a bad merge). Change nothing unrelated.',
+    '   If the base took the failure in from the trunk and the trunk has fixed it since, merging the trunk into the base is the fix.',
     `3. Open a PR into \`${p.baseRef}\`. Once it merges and CI on \`${p.baseRef}\` is green, every blocked PR resumes on its own.`,
     '',
     p.prNumbers.length ? `Blocked PRs: ${p.prNumbers.map((n) => `#${n}`).join(', ')}` : '',
@@ -59,6 +60,20 @@ export function trunkSteerNote(p: { incidentId: string; baseRef: string; signatu
   };
 }
 
+/**
+ * The base head no longer fails the incident's checks and has finished running them: every run
+ * finished, or the list of runs still going names none of them. An incident opened on an
+ * inherited failure (its PR branched from a red commit the trunk has fixed since) meets a busy
+ * base that is rarely finished everywhere; a fix filed against it would find nothing to fix.
+ */
+export function baseGreenFor(incidentSignature: string, runs: CheckRunsRead, signatureOf: (failing: string[]) => string): boolean {
+  if (!trunkRecoveredFrom(incidentSignature, signatureOf(runs.tests ?? runs.failing))) return false;
+  if (runs.complete) return true;
+  if (!runs.pending) return false;
+  const checks = new Set(signatureCheckNames(incidentSignature));
+  return !signatureCheckNames(signatureOf(runs.pending)).some((c) => checks.has(c));
+}
+
 export const BLOCKED_ON_TRUNK_SUMMARY = 'Skipped: the base branch is red on the same checks (trunk incident)';
 
 export function trunkHandlers(ports: KernelPorts): EffectHandlers {
@@ -73,7 +88,7 @@ export function trunkHandlers(ports: KernelPorts): EffectHandlers {
     const baseHead = reader.branchHead ? await reader.branchHead(inc.repoFullName, inc.baseRef) : null;
     // §10.5 at dispatch: a base that is already green owes no fix; the recovery sweep resolves the incident.
     const runs = baseHead && reader.checkRuns ? await reader.checkRuns(inc.repoFullName, baseHead, { tests: true }) : null;
-    if (runs?.complete && trunkRecoveredFrom(inc.signature, trunk.signatureOf(runs.tests ?? runs.failing))) return { outcome: 'skipped:trunk_green' };
+    if (runs && baseGreenFor(inc.signature, runs, trunk.signatureOf)) return { outcome: 'skipped:trunk_green' };
 
     const anchor = await trunk.fixAnchor(inc.id);
     const taskId = anchor?.taskId ?? inc.id;

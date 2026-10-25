@@ -8,7 +8,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, reapedOwnerAttemptIsCurrentSql, isAttemptRow, isAttemptRowSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
 import { projectRequeueSql, requeueingAttemptIsCurrentSql, requeueTaskProjectionCtes } from './task-projection';
 import { ownerClaimOpenSql, projectAttemptStartSql, startTaskProjectionCtes } from './task-projection';
-import { escalatesCi, escalationTaskProjectionCtes, projectLoopExitSql } from './task-projection';
+import { ciGreenTaskProjectionCtes, escalatesCi, escalationTaskProjectionCtes, projectLoopExitSql } from './task-projection';
 import { notOwnerTaskSql, projectReopenSql, projectWithdrawSql, reopenTaskProjectionCtes, withdrawTaskProjectionCtes } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
@@ -293,6 +293,20 @@ describe('AC-1 slice 8: an exhausted CI repair and a loop exit', () => {
     // The same end projects failed, not the success it reported.
     const [cte] = attemptEndTaskProjectionCtes({ command: 'AttemptEnded', fromState: 'WORKING', evidence: { outcome: 'success' }, idempotencyKey: 'end:w-1', effects: ciEscalation }, 'd');
     expect(render(sql`WITH ${cte} SELECT 1`).params).toContain('failed');
+  });
+
+  test('ciGreenTaskProjectionCtes: CI green after a CI escalation completes the failed owner task', () => {
+    const [cte] = ciGreenTaskProjectionCtes({ command: 'CiObserved', evidence: { verdict: 'green', cleared: 'ci_exhausted' } }, 'd');
+    const { sql: t } = render(sql`WITH ${cte} SELECT 1`);
+    expect(t).toContain("t_ci_green AS (\n  UPDATE tasks tk SET status = 'completed'");
+    expect(t).toContain("tk.status = 'failed'");
+    expect(t).toContain("d.ci = 'green'");
+    expect(ciGreenTaskProjectionCtes({ command: 'CiGreenObserved', evidence: {} })).toHaveLength(1);
+  });
+
+  test('ciGreenTaskProjectionCtes: a green reading that cleared no escalation projects nothing', () => {
+    expect(ciGreenTaskProjectionCtes({ command: 'CiObserved', evidence: { verdict: 'green' } })).toEqual([]);
+    expect(ciGreenTaskProjectionCtes({ command: 'CiObserved', evidence: { verdict: 'red' } })).toEqual([]);
   });
 
   test('projectLoopExitSql: only the parked owner task, loop satisfied, no live attempt', () => {

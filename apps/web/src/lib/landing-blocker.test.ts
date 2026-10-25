@@ -173,3 +173,53 @@ describe('deriveLandingBlocker — conflict takes precedence over review states'
     expect(blocker?.label).toContain('repair is running');
   });
 });
+
+describe('deriveLandingBlocker — ready to merge needs green checks (task 8d440b64)', () => {
+  const base = { taskId: 'task-1', prNumber: 42, prUrl: 'https://github.com/org/repo/pull/42' };
+  const approved = (prState: 'ci_failed' | 'ci_running' | 'awaiting_ci' | 'ci_passed', owner: 'landing' | 'human' = 'landing') => ({
+    state: 'APPROVED' as const, headline: 'Approved', prState, headSha: 'abc123', detail: null, currentAttempt: null, owner,
+  });
+
+  it('an approved delivery with red checks is blocked, the platform\'s move unless a person owns it', () => {
+    expect(deriveLandingBlocker({ ...base, delivery: approved('ci_failed') })).toMatchObject({ cause: 'ci_failed', owner: 'platform' });
+    expect(deriveLandingBlocker({ ...base, delivery: approved('ci_failed', 'human') })).toMatchObject({ cause: 'ci_failed', owner: 'person' });
+  });
+
+  it('an approved delivery still checking waits on CI', () => {
+    expect(deriveLandingBlocker({ ...base, delivery: approved('ci_running') })?.cause).toBe('ci_pending');
+    expect(deriveLandingBlocker({ ...base, delivery: approved('awaiting_ci') })?.cause).toBe('ci_pending');
+  });
+
+  it('an approved delivery with green checks is not blocked', () => {
+    expect(deriveLandingBlocker({ ...base, delivery: approved('ci_passed') })).toBeNull();
+  });
+
+  it('a legacy PR reads its lifecycle: red and running block, open and green do not', () => {
+    expect(deriveLandingBlocker({ ...base, prLifecycleStatus: 'ci_failed' })).toMatchObject({ cause: 'ci_failed', owner: 'person', derivedFrom: 'workers.prLifecycleStatus' });
+    expect(deriveLandingBlocker({ ...base, prLifecycleStatus: 'ci_running' })?.cause).toBe('ci_pending');
+    // A repo with no CI never leaves pr_open, so it is not read as pending.
+    expect(deriveLandingBlocker({ ...base, prLifecycleStatus: 'pr_open' })).toBeNull();
+    expect(deriveLandingBlocker({ ...base, prLifecycleStatus: 'ci_green' })).toBeNull();
+  });
+});
+
+// e07ee9cf: approved PRs parked in the landing lane read as "a repair is running" with no worker or repair.
+describe('deriveLandingBlocker — a behind refresh is not a repair', () => {
+  const base = { taskId: 'task-1', prNumber: 5660, prUrl: 'https://github.com/org/repo/pull/5660' };
+  const behind = (o: Record<string, unknown> = {}) => ({
+    state: 'REPAIRING' as const, stateReason: 'behind', headline: 'Updating branch', prState: 'awaiting_ci' as const,
+    headSha: 'abc123def456', detail: null, currentAttempt: { taskId: 'task-1', role: 'owner', status: 'completed', createdAt: '2026-10-24T15:00:00Z' }, owner: 'landing' as const, ...o,
+  });
+
+  it('parked in the lane: queued behind the PR landing first, owned by the platform', () => {
+    const b = deriveLandingBlocker({ ...base, delivery: behind({ laneWait: { behindPr: 5657, position: 2 } }) });
+    expect(b).toMatchObject({ cause: 'lane_queued', owner: 'platform', label: 'PR #5660 is queued to land behind PR #5657, position 2' });
+    expect(`${b?.label} ${b?.nextAction}`).not.toMatch(/repair/i);
+  });
+
+  it('refreshing: the platform updates the branch, never "a repair is running"', () => {
+    const b = deriveLandingBlocker({ ...base, delivery: behind() });
+    expect(b).toMatchObject({ cause: 'branch_updating', owner: 'platform' });
+    expect(b?.label).not.toMatch(/repair/i);
+  });
+});

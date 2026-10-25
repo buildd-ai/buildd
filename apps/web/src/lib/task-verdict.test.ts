@@ -332,6 +332,20 @@ describe('completed task with an open PR: who is the next actor', () => {
     const v = deriveTaskVerdict({ ...base, pr: { ...pr, lifecycle: 'ci_green' }, deliveryOwner: owner })!;
     expect(v.headline).not.toMatch(/^Merging/);
     expect(v.cause ?? '').not.toContain('without you');
-    expect(v.state).toBe('needs_you');
+    expect(v.state).toBe(owner === 'trunk' || owner === 'worker' ? 'in_progress' : 'needs_you');
+  });
+
+  // e07ee9cf: an approved PR queued in the landing lane read "needs you · no checks reported yet · Review & merge".
+  it.each(['trunk', 'worker', 'platform'])('a platform-owned delivery (%s) never reads as needs you or "no checks reported"', (owner) => {
+    const v = deriveTaskVerdict({ ...base, deliveryOwner: owner, deliveryHeadline: 'Fixing CI' })!;
+    expect(v.state).toBe('in_progress');
+    expect(v.headline).toBe('Fixing CI · PR #9');
+    expect(v.headline).not.toContain('no checks reported');
+    expect(v.actions.some(a => a.label === 'Review & merge')).toBe(false);
+  });
+
+  it('a PR queued in the landing lane reads as the delivery says, not waiting on you', () => {
+    const v = deriveTaskVerdict({ ...base, deliveryOwner: 'landing', deliveryActivity: 'Approved · queued to land behind PR #5657' })!;
+    expect(v).toMatchObject({ state: 'in_progress', headline: 'Approved · queued to land behind PR #5657' });
   });
 });

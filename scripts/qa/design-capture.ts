@@ -7,6 +7,7 @@
  * Writes, beside screenshots/ and captures.json:
  *   designs/<screen-id>.png              the screen, as drawn
  *   side-by-side/<capture>--<screen>.png design | built, one image a person can read
+ *                                        (a component screen's "built" is its dev fixture)
  *   design-captures.json                 shots, pairs (route ↔ screen), unmatched screens;
  *                                        `judge.ts prepare` reads it
  *
@@ -45,6 +46,7 @@ import {
   type DesignPair,
   type DesignPlan,
   type PairableCapture,
+  type ScreenKind,
   type ScreenToCapture,
   type Viewport,
 } from './design';
@@ -62,6 +64,8 @@ export interface DesignShot {
   file?: string;
   viewport: Viewport | null;
   theme: string | null;
+  /** `component`: compared with its dev fixture, not a route (R-17). */
+  kind?: ScreenKind;
   /** The artifact viewer at this screen and revision, for a person to open. */
   href?: string;
   blockedRequests?: number;
@@ -137,7 +141,7 @@ export async function captureDesignScreens(
   mkdirSync(join(opts.outDir, 'designs'), { recursive: true });
   const shots: DesignShot[] = [];
   for (const s of opts.screens) {
-    const base = { screen: s.id, viewport: s.viewport, theme: s.theme };
+    const base = { screen: s.id, viewport: s.viewport, theme: s.theme, ...(s.kind ? { kind: s.kind } : {}) };
     if (!s.viewport) {
       shots.push({ ...base, error: 'no_viewport', detail: 'no data-viewport on the section and no phone-/desktop- prefix' });
       continue;
@@ -189,6 +193,8 @@ export interface ComposePair {
   builtViewport: Viewport | null;
   /** Who drew it, e.g. `6356e80d r1`. */
   label?: string;
+  /** A component screen: the dev fixture the built image is of. */
+  fixture?: string;
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -212,7 +218,7 @@ export async function composeSideBySide(browser: BrowserLike, pairs: readonly Co
         figure{margin:0} figcaption{margin:0 0 8px;font-weight:600} img{display:block;outline:1px solid rgba(0,0,0,.2)}
       </style></head><body>
         ${figure(`Design · ${p.screen}${p.label ? ` · ${p.label}` : ''}${p.criteria.length ? ` · ${p.criteria.join(', ')}` : ''}`, p.designImage, dw)}
-        ${figure(`Built · ${p.route}`, p.builtImage, bw)}
+        ${figure(p.fixture ? `Built · fixture ${p.fixture}` : `Built · ${p.route}`, p.builtImage, bw)}
       </body></html>`, { waitUntil: 'load' });
       const file = `side-by-side/${p.captureId}--${p.screen}.png`;
       await page.screenshot({ path: join(outDir, file), fullPage: true });
@@ -326,7 +332,12 @@ if (import.meta.main) {
   }
   await browser.close();
   for (const s of result!.shots) console.log(s.error ? `[design] MISS  ${s.screen}: ${s.error}` : `[design] OK    ${s.screen} → ${s.file}${s.blockedRequests ? ` (${s.blockedRequests} request(s) blocked)` : ''}`);
-  for (const p of result!.pairs) console.log(`[design] PAIR  ${p.captureId} ↔ ${p.screen}${p.sideBySide ? ` → ${p.sideBySide}` : ''}${p.themeMismatch ? ' [other theme: layout and words only]' : ''}`);
-  for (const s of result!.unmatchedScreens) console.log(`[design] NONE  ${s}: no capture of its route at its width (set routes.${s} in QA_DESIGN, or capture it)`);
+  for (const p of result!.pairs) console.log(`[design] PAIR  ${p.captureId} ↔ ${p.screen}${p.fixture ? ` (component, on ${p.fixture})` : ''}${p.sideBySide ? ` → ${p.sideBySide}` : ''}${p.themeMismatch ? ' [other theme: layout and words only]' : ''}`);
+  for (const s of result!.unmatchedScreens) {
+    const shot = result!.shots.find((x) => x.screen === s);
+    console.log(shot?.kind === 'component'
+      ? `[design] NONE  ${s}: a component, and no dev fixture capture at ${shot.viewport ? `${shot.viewport.width}px` : 'its width'} (capture /app/dev/fixtures?state=<its fixture> at ${shot.viewport ? `${shot.viewport.width}x${shot.viewport.height}` : 'its size'}, and set routes.${s} to it)`
+      : `[design] NONE  ${s}: no capture of its route at its width (set routes.${s} in QA_DESIGN, or capture it)`);
+  }
   if (result!.shots.some((s) => s.error)) process.exit(6);
 }

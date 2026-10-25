@@ -34,6 +34,12 @@
  * through (a person merging on GitHub) is recorded once and stops further
  * dispatches instead of opening a new PR for the same conflict on every merge.
  *
+ * A 201 is not always a usable branch: Drizzle v1 migration folders never
+ * conflict as text, so trunk's and the mission's new migrations merge cleanly
+ * onto one parent and fork the snapshot chain. That repair takes the same
+ * one-task slot (`lib/refresh-migration-fork.ts` detects it; the task runs
+ * `migrations:regenerate`, which needs a checkout the server does not have).
+ *
  * ## Debounce
  *
  * Two independent mechanisms, because a burst of dev merges arrives both
@@ -98,6 +104,7 @@ import { findMissionPrOwner } from '@/lib/mission-pr';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
 import { integrationRefreshOf, verifyRefreshLanded } from '@/lib/integration-refresh';
+import { detectRefreshMigrationFork, type MigrationFork } from '@/lib/refresh-migration-fork';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import type { EpochEffectHandlers, RefreshTrigger } from '@/lib/workflow/epoch-effects';
 
@@ -176,7 +183,12 @@ export type MissionBranchRefreshOutcome =
       detail?: string;
       conflictTaskId?: string;
     }
-  | { kind: 'merged'; headSha: string }
+  | {
+      kind: 'merged';
+      headSha: string;
+      /** The merge forked the Drizzle snapshot chain; this task regenerates it. */
+      migrationRepairTaskId?: string;
+    }
   | { kind: 'conflict'; conflictTaskId: string; dispatched: boolean }
   | { kind: 'error'; detail: string };
 
@@ -391,7 +403,7 @@ export async function refreshMissionIntegrationBranch(
       .returning({ id: missions.id });
     if (!renewed) return whyFenced();
 
-    let merged: { sha?: string } | null;
+    let merged: MergesApiCommit | null;
     try {
       merged = await githubApi(installationId, `/repos/${repo.fullName}/merges`, {
         method: 'POST',
@@ -449,10 +461,88 @@ export async function refreshMissionIntegrationBranch(
       detail: { branch, trunk, mergeCommitSha: merged.sha ?? null },
     });
     await postRefreshNote(missionId, `Merged \`${trunk}\` into \`${branch}\` cleanly (${merged.sha?.slice(0, 7) ?? 'no sha'}).`);
+
+    // A clean merge can still fork the Drizzle snapshot chain: migration
+    // folders never conflict as text. The branch is not usable until it is
+    // regenerated, so that repair takes the mission's one refresh-task slot.
+    const fork = await migrationForkOf({ installationId, repoFullName: repo.fullName, merged, trunkSha });
+    if (fork) {
+      const repair = await dispatchBranchRefreshConflictTask({
+        mission, branch, trunk, trunkSha, installationId, workspaceId: workspace.id, repoFullName: repo.fullName,
+        leaseToken, stillEligible, migrationFork: fork,
+      });
+      if (repair.kind === 'task') {
+        fireGateEvent({
+          gate: GATE_SLUGS.MISSION_BRANCH_REFRESH,
+          surface: 'mission-branch-refresh',
+          outcome: 'stranded',
+          reason: `${trunk} merged into ${branch} cleanly but forked the migration chain in ${fork.drizzleDir}`,
+          workspaceId: workspace.id,
+          missionId,
+          callerOrigin: 'system',
+          detail: { branch, trunk, invariant: 'migration_chain', ...fork, repairTaskId: repair.taskId, dispatched: repair.dispatched },
+        });
+        return { kind: 'merged', headSha: trunkSha, migrationRepairTaskId: repair.taskId };
+      }
+    }
     return { kind: 'merged', headSha: trunkSha };
   } finally {
     await releaseLease().catch(() => {});
   }
+}
+
+/** The merges API's 201 body: the merge commit, whose first parent is the branch head it merged onto. */
+interface MergesApiCommit {
+  sha?: string;
+  parents?: Array<{ sha?: string }>;
+}
+
+/**
+ * The migration fork a clean refresh merge left, or null. Fail-open: an
+ * unreadable answer files nothing, and the merge-ref commute check on the next
+ * PR into the branch still catches a real fork.
+ */
+async function migrationForkOf(args: {
+  installationId: number;
+  repoFullName: string;
+  merged: MergesApiCommit;
+  trunkSha: string;
+}): Promise<MigrationFork | null> {
+  const { installationId, repoFullName, merged, trunkSha } = args;
+  try {
+    let missionHeadSha = merged.parents?.[0]?.sha;
+    if (!missionHeadSha && merged.sha) {
+      const commit = await githubApi(installationId, `/repos/${repoFullName}/commits/${merged.sha}`);
+      missionHeadSha = commit?.parents?.[0]?.sha;
+    }
+    if (!missionHeadSha) return null;
+    return await detectRefreshMigrationFork({ installationId, repoFullName, missionHeadSha, trunkSha });
+  } catch (err) {
+    console.error(`[mission-branch-refresh] could not check ${repoFullName} for a migration fork after a refresh:`, err);
+    return null;
+  }
+}
+
+/** The brief for a refresh that merged cleanly but forked the migration chain. */
+function migrationForkDescription(args: { branch: string; trunk: string; trunkSha: string; fork: MigrationFork }): string {
+  const { branch, trunk, trunkSha, fork } = args;
+  const list = (names: string[]) => names.map((n) => `\`${n}\``).join(', ');
+  return `buildd merged \`${trunk}\` into this mission's integration branch \`${branch}\` without a text conflict, but both sides had added Drizzle migrations to \`${fork.drizzleDir}\`. Each side's first new snapshot names the same parent, so the chain now forks: \`drizzle-kit check\` fails and every PR into \`${branch}\` fails its schema-matches-snapshot check until this is fixed.
+
+- Mission migrations not on \`${trunk}\`: ${list(fork.missionOnly)}
+- \`${trunk}\` migrations not on the mission before the merge: ${list(fork.trunkOnly)}
+
+## Instructions
+
+1. Branch from the integration branch itself:
+   \`\`\`bash
+   git fetch origin
+   git checkout -b <your-branch> origin/${branch}
+   \`\`\`
+2. Run \`bun run migrations:regenerate --base=origin/${trunk}\`. It takes \`${trunk}\`'s drizzle files as-is and regenerates this mission's schema change on top of \`${trunk}\`'s newest snapshot. If it says the regenerated SQL differs from the SQL it replaced, re-add the missing hand-written statement with \`bun db:generate --custom\`, never by editing an existing file. Never rename, renumber or edit a migration folder, \`.sql\` or snapshot by hand.
+3. Check the chain is linear: \`bun run migrations:layout-check\`, \`bun run migrations:commute\`, and \`bun db:generate\` (run in the drizzle package) must report no changes.
+4. Run \`bun run test\` and \`bun run type-check\` — all green.
+5. Commit, push your branch and open a PR with base \`${branch}\`. Land it as a merge commit (every buildd merge door does this on its own). After it merges, buildd checks that \`${branch}\` still contains \`${trunk}\` ${trunkSha.slice(0, 7)} before it counts the refresh as done.`;
 }
 
 /** Mission feed visibility. Best-effort — a failed note must never affect the refresh. */
@@ -605,8 +695,10 @@ async function dispatchBranchRefreshConflictTask(args: {
   /** The mission-state fence (`stillEligible` in the caller). */
   stillEligible: SQL | undefined;
   reservedTaskId?: string;
+  /** The merge landed cleanly but forked the migration chain: the task regenerates instead of resolving. */
+  migrationFork?: MigrationFork;
 }): Promise<{ kind: 'task'; taskId: string; dispatched: boolean } | { kind: 'fenced' }> {
-  const { mission, branch, trunk, trunkSha, installationId, workspaceId, repoFullName, leaseToken, stillEligible, reservedTaskId } = args;
+  const { mission, branch, trunk, trunkSha, installationId, workspaceId, repoFullName, leaseToken, stillEligible, reservedTaskId, migrationFork } = args;
 
   // Reserve the pointer before insertion. A missing task behind this pointer
   // is a reservation, never permission to dispatch a second task.
@@ -633,7 +725,7 @@ async function dispatchBranchRefreshConflictTask(args: {
     missionHeadSha = typeof ref?.object?.sha === 'string' ? ref.object.sha : null;
   } catch { /* best effort — verification then checks the trunk side only */ }
 
-  const description = `Merging \`${trunk}\` into this mission's integration branch \`${branch}\` hit merge conflicts. This is routine upkeep (docs/design/mission-delivery-arc.md P5, superseded) — dev is kept merged into every active mission branch automatically, and this is the one case that needs a person's judgment.
+  const description = migrationFork ? migrationForkDescription({ branch, trunk, trunkSha, fork: migrationFork }) : `Merging \`${trunk}\` into this mission's integration branch \`${branch}\` hit merge conflicts. This is routine upkeep (docs/design/mission-delivery-arc.md P5, superseded) — dev is kept merged into every active mission branch automatically, and this is the one case that needs a person's judgment.
 
 ## Instructions
 
@@ -647,6 +739,7 @@ async function dispatchBranchRefreshConflictTask(args: {
 3. Resolve what it lists on the merits — keep both intents, do NOT use blanket \`--ours\`/\`--theirs\` — then run \`bun run conflicts:generated\` again to finish the generated files it was waiting on. If it says a regenerated migration's SQL differs from the one it replaced, re-add the missing hand-written statement with \`bun db:generate --custom\`, never by editing an existing file.
    Without that script: if both sides added Drizzle migrations at the same index, do NOT hand-resolve the journal/snapshot conflict. Resolve the rest, then run \`bun run migrations:regenerate --base=origin/${trunk}\`: it takes \`${trunk}\`'s drizzle files as-is and regenerates this branch's migration on top.
    These two scripts are the only sanctioned way to move a migration. Never rename, renumber or edit a migration \`.sql\`, journal or snapshot by hand: the merge-safety check accepts a moved migration only when the new file holds exactly the old one's SQL, and treats anything else as rewriting migration history, which needs a person.
+   Migration folders from both sides never conflict as text, so a merge with no conflicted drizzle file can still fork the snapshot chain. Where the repo has it, run \`bun run migrations:commute\` after resolving; if it fails, run \`bun run migrations:regenerate --base=origin/${trunk}\` and commit the result.
 4. Run \`bun run test\`, \`bun run type-check\`, \`bun run specs:check\` — all green.
 5. Push your branch and open a PR with base \`${branch}\`.
 
@@ -659,7 +752,9 @@ async function dispatchBranchRefreshConflictTask(args: {
       .values({
         id: taskId,
         workspaceId,
-        title: `chore(mission): merge ${trunk} into the ${mission.title} integration branch`,
+        title: migrationFork
+          ? `chore(mission): regenerate migrations on the ${mission.title} integration branch after merging ${trunk}`
+          : `chore(mission): merge ${trunk} into the ${mission.title} integration branch`,
         description,
         missionId: mission.id,
         taskClass: 'work',
@@ -678,10 +773,16 @@ async function dispatchBranchRefreshConflictTask(args: {
           refreshTrunk: trunk,
           refreshTrunkSha: trunkSha,
           refreshMissionHeadSha: missionHeadSha,
-          failureContext: {
-            summary: `${branch} has merge conflicts with ${trunk}. Merge the integration branch in and resolve on the merits.`,
-            errorType: 'merge_conflict' as const,
-          },
+          failureContext: migrationFork
+            ? {
+                summary: `Merging ${trunk} into ${branch} forked the migration chain in ${migrationFork.drizzleDir}. Regenerate the mission's migrations against ${trunk}.`,
+                errorType: 'merge_conflict' as const,
+              }
+            : {
+                summary: `${branch} has merge conflicts with ${trunk}. Merge the integration branch in and resolve on the merits.`,
+                errorType: 'merge_conflict' as const,
+              },
+          ...(migrationFork ? { migrationFork } : {}),
         },
       })
       .onConflictDoNothing()
@@ -705,8 +806,12 @@ async function dispatchBranchRefreshConflictTask(args: {
   await wakeTask(newTask.id, 'conflict.retry').catch(() => {});
   await postRefreshNote(
     mission.id,
-    `\`${branch}\` has merge conflicts with \`${trunk}\`. Dispatched a conflict-resolution task: ${newTask.id}. ` +
-      `No further refresh attempts until it finishes.`,
+    migrationFork
+      ? `Merging \`${trunk}\` into \`${branch}\` brought migrations from both sides into \`${migrationFork.drizzleDir}\`, which forks the snapshot chain. ` +
+        `Dispatched a task to regenerate this mission's migrations against \`${trunk}\`: ${newTask.id}. No further refresh attempts until it finishes.`
+      : `\`${branch}\` has merge conflicts with \`${trunk}\`. Dispatched a conflict-resolution task: ${newTask.id}. ` +
+        `No further refresh attempts until it finishes.`,
+    migrationFork ? 'Integration branch migrations need regenerating' : undefined,
   );
   console.log(`[mission-branch-refresh] dispatched conflict task ${newTask.id} for mission ${mission.id} (${repoFullName})`);
   return { kind: 'task', taskId: newTask.id, dispatched: true };

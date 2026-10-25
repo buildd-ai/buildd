@@ -7,7 +7,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion, ClaimDeferredTask } from '@buildd/shared';
 import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp, parseRunnerLoginUse, pickLoginBackend } from '@buildd/shared';
 import { claudeDefaultTaskIds } from './login-mode-gate';
 import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot, RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
@@ -1224,12 +1224,19 @@ export async function POST(req: NextRequest) {
   // counter on one row instead of a fresh row every few seconds. This is the
   // durable half of the `deferrals` counters above, which die with the
   // response object once this request returns.
+  const deferredTasks: ClaimDeferredTask[] = [];
   const deferTask = (
     task: { id: string; workspaceId: string; missionId?: string | null },
     reasonKey: keyof typeof deferrals,
     detail?: Record<string, unknown>,
   ) => {
     deferrals[reasonKey]++;
+    // Which task, not just how many: the runner marks each one refused. Only
+    // the window this claim read, so it is bounded by the candidate page.
+    if (!deferredTasks.some(d => d.taskId === task.id)) {
+      const lift = detail?.until ?? detail?.resetsAt;
+      deferredTasks.push({ taskId: task.id, code: reasonKey, ...(typeof lift === 'string' ? { until: lift } : {}) });
+    }
     // A missing key is a stated pending reason on the task, not just a counter.
     const credBlock = credentialBlockFromDeferral(reasonKey, detail);
     const stamped = ((task as any).context as Record<string, unknown> | null | undefined)?.[CREDENTIAL_BLOCK_CONTEXT_KEY];
@@ -3276,6 +3283,7 @@ export async function POST(req: NextRequest) {
         pendingTasks: claimableTasks.length,
         matchedTasks: filteredTasks.length,
         ...(totalDeferrals > 0 ? { deferrals: nonZeroDeferrals } : {}),
+        ...(deferredTasks.length > 0 ? { deferredTasks } : {}),
         ...(firstBlockingPr ? { blockedByPr: firstBlockingPr } : {}),
         ...(explicitTaskExclusion ? { taskExclusion: explicitTaskExclusion } : {}),
       } satisfies ClaimDiagnostics,
