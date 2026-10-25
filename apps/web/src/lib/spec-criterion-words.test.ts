@@ -69,6 +69,10 @@ describe('goalCriteriaUnmet (the page assembly)', () => {
     const u = goalCriteriaUnmet({ criteria: [{ ...spec, waived: [{ criterionId: 'R-3', reason: 'later' }] } as never], state: null, texts });
     expect(u).toEqual({ count: 2, state: 'not checked', names: ['WSL2 install step', 'Runner starts on boot'] });
   });
+  it('the words kept with the evaluation win over the spec_criteria texts; a check that could not run reads not checked', () => {
+    const state = entry([{ criterionId: 'R-1', standing: 'inconclusive', text: 'Setup installs WSL2 from one script' } as never, { criterionId: 'R-2', standing: 'missing' }]);
+    expect(goalCriteriaUnmet({ criteria: [spec as never], state, texts })).toEqual({ count: 2, state: 'not checked', names: ['Runner starts on boot', 'Setup installs WSL2 from one script'] });
+  });
   it('another criterion is named by its label; a passing mission has none open', () => {
     const cmd = { type: 'command', command: 'bun run test', label: 'Unit tests pass' } as never;
     const state = { evaluatedAt: 'x', evaluatedBy: 'auto', overall: 'fail', criteria: [{ index: 0, type: 'command', verdict: 'fail' }] } as never;

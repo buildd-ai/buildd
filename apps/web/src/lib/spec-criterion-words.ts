@@ -35,13 +35,17 @@ export function criterionShortName(text: string, max = NAME_MAX): string {
   return `${(space > max / 2 ? clipped.slice(0, space) : clipped).replace(/[\s,;:.]+$/, '')}…`;
 }
 
-/** What the open requirements have in common, as words after `N requirements`. */
+/**
+ * What the open requirements have in common, as words after `N requirements`:
+ * the spec row's results (`CriterionLine`), so a check that could not run
+ * reads `not checked` on both.
+ */
 const STATE_WORDS: Record<OpenStanding, string> = {
   fail: 'not met',
   missing: 'not checked',
   stale: 'out of date',
-  inconclusive: 'could not be checked',
-  unsupported: 'cannot be checked',
+  inconclusive: 'not checked',
+  unsupported: 'not checked',
 };
 
 export interface UnmetRequirements {
@@ -59,10 +63,10 @@ export function unmetRequirements(input: {
 }): UnmetRequirements {
   const groups = input.open.filter(g => g.criterionIds.length > 0);
   const ids = groups.flatMap(g => g.criterionIds);
-  const standings = new Set(groups.map(g => g.standing));
+  const states = new Set(groups.map(g => STATE_WORDS[g.standing]));
   return {
     count: ids.length,
-    state: standings.size === 1 ? STATE_WORDS[[...standings][0]] : 'not passing',
+    state: states.size === 1 ? [...states][0] : 'not passing',
     names: ids.flatMap(id => {
       const text = input.texts.get(id);
       return text ? [criterionShortName(text)] : [];
@@ -82,9 +86,12 @@ export function unmetSummary(u: UnmetRequirements, shown = 3): string {
 
 /**
  * Every requirement the mission's goal criteria still hold open, in words: a
- * spec's open criteria by their own texts (keyed by `criterionTextKey`), every
- * in-scope one when the spec was never checked, and any other criterion by its
- * label. Standards and passing criteria are left out. Null when none is open.
+ * spec's open criteria by their own texts, every in-scope one when the spec
+ * was never checked, and any other criterion by its label. A spec criterion's
+ * words are the ones kept with its evaluation (`CriterionLine.text`, the spec
+ * row's source), else `texts` (from `spec_criteria`, keyed by
+ * `criterionTextKey`). Standards and passing criteria are left out. Null when
+ * none is open.
  */
 export function goalCriteriaUnmet(input: {
   criteria: readonly GoalCriterion[];
@@ -98,6 +105,7 @@ export function goalCriteriaUnmet(input: {
     if (isStandardCriterion(c) || entry?.standard || entry?.verdict === 'pass') return;
     if (c.type === 'living_spec') {
       const view = outcomeSpecView(c, entry);
+      for (const line of view.criteria) if (line.text) texts.set(criterionTextKey(c.specId, line.id), line.text);
       if (view.total > 0) {
         for (const g of view.open) open.push({ standing: g.standing, criterionIds: g.criterionIds.map(id => criterionTextKey(c.specId, id)) });
         return;
