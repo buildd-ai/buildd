@@ -49,8 +49,8 @@ describe('RunnerSlotsControl', () => {
     await click('runner-slots-save');
     expect(calls).toEqual([{ url: '/api/runners/rid-1/slots', body: { slots: 8 } }]);
     // Online: saved and taken on the next check-in; the draft no longer differs, so no save button.
-    expect(q('runner-slots-waiting')!.textContent).toContain('Saved: 8 slots');
-    expect(q('runner-slots-waiting')!.textContent).not.toContain('Waiting for this runner');
+    expect(q('runner-slots-waiting')!.textContent).toContain('Saving 8 slots. The runner applies it within seconds.');
+    expect(q('runner-slots-waiting')!.textContent).not.toContain('Applies when it checks in');
     expect(q('runner-slots-save')).toBeNull();
   });
 
@@ -58,7 +58,7 @@ describe('RunnerSlotsControl', () => {
     await mount({ online: false });
     await click('runner-slots-minus'); await click('runner-slots-minus'); await click('runner-slots-minus'); await click('runner-slots-minus');
     await click('runner-slots-save');
-    expect(q('runner-slots-waiting')!.textContent).toBe('Saved: 8 slots. Waiting for this runner to check in.');
+    expect(q('runner-slots-waiting')!.textContent).toBe('Saved: 8 slots. Applies when it checks in.');
   });
 
   it('stays within 1 to 50', async () => {

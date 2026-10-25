@@ -48,8 +48,8 @@ export function slotsView(opts: { active: number; reported: number; online: bool
   }
   const waiting = pending
     ? online
-      ? `Saved: ${word(desired)}. The runner takes it on its next check-in, within a minute.`
-      : `Saved: ${word(desired)}. Waiting for this runner to check in.`
+      ? `Saving ${word(desired)}. The runner applies it within seconds.`
+      : `Saved: ${word(desired)}. Applies when it checks in.`
     : null;
   return { busy, origin, waiting, shown };
 }
