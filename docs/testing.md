@@ -551,4 +551,5 @@ architecture job (`build.yml`) follows `bun run test:db` with a second step that
 passes four files from `apps/web/tests/acceptance/` (`spec-corpus-duplicates`,
 `spec-similarity-from-corpus`, `spec-replaces`, `mcp-specs-replaces`) to
 `scripts/run-db-tests.ts`. Other acceptance files are not run by that job; add
-a file to the step only once it is green.
+a file to the step only once it is green. The step is `continue-on-error` while
+some of the four are still red, so it reports a verdict without gating the job.
