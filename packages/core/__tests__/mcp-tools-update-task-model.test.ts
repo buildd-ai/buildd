@@ -25,22 +25,6 @@ describe('update_task tier / model pin', () => {
     expect(result.content[0].text).toMatch(/next claim or retry/);
   });
 
-  it('re-tiering a task with a live worker warns which tier that worker is still running at', async () => {
-    const message = 'Worker w-1 (running) is still running at standard, claude-sonnet-5-5; the new tier/model applies to the next attempt only. To rerun at it now, set status: pending.';
-    const api = mock(() => Promise.resolve({
-      id: TASK_ID, title: 'Pin me', status: 'in_progress', priority: 5,
-      modelChange: { appliesTo: 'next_attempt', workerId: 'w-1', workerStatus: 'running', runningTier: 'standard', runningModel: 'claude-sonnet-5-5', message },
-    }));
-    const result = await handleBuilddAction(api as unknown as ApiFn, 'update_task', {
-      taskId: TASK_ID, tier: 'premium',
-    }, ctx);
-
-    const text = result.content[0].text;
-    expect(text).toContain('Tier: premium');
-    expect(text).toContain(`WARNING: ${message}`);
-    expect(text).not.toMatch(/Note: takes effect/);
-  });
-
   it('patches a model id', async () => {
     const api = okTask();
     const result = await handleBuilddAction(api as unknown as ApiFn, 'update_task', {

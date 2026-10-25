@@ -45,7 +45,6 @@ import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
 import { TIERS } from '@buildd/core/model-tier-defaults';
-import { liveModelChangeNotice, pendingModelChangeRecord, PENDING_MODEL_CHANGE_KEY, type LiveModelChangeNotice } from '@/lib/live-model-change';
 import { appBaseUrl } from '@/lib/app-url';
 import { TASK_RESERVATION_KEY, buildReservation } from '../../workers/claim/held-gate';
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
@@ -478,7 +477,6 @@ export async function PATCH(
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
     };
-    let modelChange: LiveModelChangeNotice | null = null;
 
     if (title !== undefined) updateData.title = title;
     if (description !== undefined) updateData.description = description;
@@ -542,29 +540,12 @@ export async function PATCH(
       if (ceilingRejection) return ceilingRejection;
       if (tier !== undefined) updateData.tier = tier;
 
-      // A live agent keeps the model it was claimed with. Say so in the reply,
-      // with the tier it is actually running at, so a re-tier mid-run is not
-      // read later as the tier the run used.
-      const liveWorker = await db.query.workers.findFirst({
-        where: sqlWhere(and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
-        columns: { id: true, status: true },
-      });
-      if (liveWorker) modelChange = liveModelChangeNotice(task, liveWorker);
-
       const baseCtx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
       if (model !== undefined && model !== null) {
         updateData.context = { ...baseCtx, model: (model as string).trim(), modelPinned: true };
       } else if (model === null || (tier && readModelPin(baseCtx) !== null)) {
         const { model: _dropped, ...rest } = baseCtx;
         updateData.context = { ...rest, modelPinned: false };
-      }
-      // Kept on the task until the next claim clears it, so the task page can
-      // say the live run is still on the old tier.
-      if (modelChange) {
-        updateData.context = {
-          ...((updateData.context ?? baseCtx) as Record<string, unknown>),
-          [PENDING_MODEL_CHANGE_KEY]: pendingModelChangeRecord(modelChange, { tier, model }),
-        };
       }
     }
     if (project !== undefined) updateData.project = project;
@@ -971,7 +952,7 @@ export async function PATCH(
       });
     }
 
-    return NextResponse.json(modelChange && updated ? { ...updated, modelChange } : updated);
+    return NextResponse.json(updated);
   } catch (error) {
     console.error('Update task error:', error);
     return NextResponse.json({ error: 'Failed to update task' }, { status: 500 });

@@ -39,8 +39,6 @@ export interface RouterInput {
   spikeThreshold?: number;
   /** Task priority (higher = more urgent). Priority > 0 bypasses the 95%+ pause. */
   priority?: number;
-  /** Task title — a diagnosis title (see isDiagnosisTitle) gets an Opus floor. */
-  title?: string | null;
 }
 
 export interface RouterDecision {
@@ -53,7 +51,6 @@ export interface RouterDecision {
     | 'budget_downshift'
     | 'spike_downshift'
     | 'role_floor_clamp'
-    | 'diagnosis_floor'
     | 'paused';
   /** True if a downshift was applied relative to the baseline. */
   downshifted: boolean;
@@ -113,20 +110,6 @@ export function normalizeTaskKind(value: unknown): TaskKind | null {
   return 'engineering';
 }
 
-/**
- * Titles of diagnosis work: friction reports, incidents and release-candidate
- * fixes. Their filer picks whatever kind comes to mind (usually engineering or
- * analysis, often with no complexity), which the matrix routes to Sonnet, and a
- * shallow diagnosis is worse than none: it reads as investigated. They get an
- * Opus floor, and budget/spike pressure does not downshift them — only the 95%+
- * pause still applies. An explicit tasks.tier or pin still outranks this.
- */
-const DIAGNOSIS_TITLE_RE = /^\s*(?:\[friction\]|\[incident\]|fix\(release\):)/i;
-
-export function isDiagnosisTitle(title: string | null | undefined): boolean {
-  return typeof title === 'string' && DIAGNOSIS_TITLE_RE.test(title);
-}
-
 const COMPLEXITIES: ReadonlySet<string> = new Set(['simple', 'normal', 'complex']);
 
 const TIER_ORDER: Tier[] = ['haiku', 'sonnet', 'opus'];
@@ -150,7 +133,6 @@ export function resolveEffectiveModel(input: RouterInput): RouterDecision {
     recentClaimCount = 0,
     spikeThreshold = 20,
     priority = 0,
-    title,
   } = input;
 
   // 1. Explicit override wins unconditionally.
@@ -169,20 +151,11 @@ export function resolveEffectiveModel(input: RouterInput): RouterDecision {
   const kind: TaskKind = normalizeTaskKind(kindInput) ?? 'engineering';
   const complexity: TaskComplexity =
     complexityInput && COMPLEXITIES.has(complexityInput) ? complexityInput : 'normal';
-  const matrix = BASELINE[kind]?.[complexity] ?? BASELINE.engineering[complexity];
-  const diagnosis = isDiagnosisTitle(title);
-  const baseline: Tier = diagnosis ? 'opus' : matrix;
+  const baseline = BASELINE[kind]?.[complexity] ?? BASELINE.engineering[complexity];
 
   // 2. Budget-pressure gate — see the table in plans/buildd/smart-model-routing.md.
   let tier = baseline;
-  let reason: RouterDecision['reason'] = diagnosis && matrix !== 'opus' ? 'diagnosis_floor' : 'baseline';
-
-  if (diagnosis) {
-    if (dailyBudgetPct >= 0.95 && priority <= 0) {
-      return { model: 'paused', reason: 'paused', downshifted: true, baseline };
-    }
-    return { model: baseline, reason, downshifted: false, baseline };
-  }
+  let reason: RouterDecision['reason'] = 'baseline';
 
   if (dailyBudgetPct >= 0.95) {
     // 95%+: coordination forced to Sonnet; everything else pauses unless

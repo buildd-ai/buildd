@@ -1,6 +1,5 @@
 import type { ModelDivergence, ScanBounds } from './usage-stats';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
-import { readPendingModelChange, type PendingModelChange } from './live-model-change';
 /**
  * Turning the three model values a task carries into something a person reads.
  *
@@ -53,7 +52,6 @@ export function roleModelLabel(model: string | null | undefined): string {
 const REASON_LABELS: Record<string, string> = {
   explicit_override: 'pinned',
   budget_downshift: 'budget downshift',
-  diagnosis_floor: 'diagnosis floor',
   paused: 'routing paused',
 };
 
@@ -99,12 +97,6 @@ export interface TaskModelSummary {
    * means "never recorded".
    */
   divergedTo: string | null;
-  /**
-   * Set when the tier or model was changed while an agent was running: the
-   * live run keeps its claimed model, so the change only applies to the next
-   * attempt. Null otherwise.
-   */
-  nextAttemptLabel: string | null;
   /** True when there is nothing to render, so callers omit the row entirely. */
   isEmpty: boolean;
 }
@@ -141,21 +133,6 @@ function readContext(context: unknown): {
     resolvedTier: typeof r.tier === 'string' && r.tier.trim() ? r.tier.trim().toLowerCase() : null,
     source: typeof r.source === 'string' && r.source.trim() ? r.source.trim() : null,
   };
-}
-
-function nextAttemptLabelOf(pending: PendingModelChange | null): string | null {
-  if (!pending) return null;
-  const requested = pending.model
-    ? getModelDisplayName(pending.model)
-    : pending.tier !== undefined
-      ? (pending.tier ? titleCase(ALIAS_TO_TIER[pending.tier] ?? pending.tier) : 'Routing default')
-      : null;
-  if (!requested) return null;
-  const running = pending.runningTier ? titleCase(pending.runningTier)
-    : pending.runningModel ? getModelDisplayName(pending.runningModel) : null;
-  return running
-    ? `${requested} applies to the next attempt; the current run is on ${running}`
-    : `${requested} applies to the next attempt`;
 }
 
 export function deriveTaskModel(inputs: TaskModelInputs): TaskModelSummary {
@@ -203,7 +180,6 @@ export function deriveTaskModel(inputs: TaskModelInputs): TaskModelSummary {
     actualModelId: primary,
     actualModelCount: all.length,
     divergedTo: verdict.verdict === 'diverged' ? getModelDisplayName(primary) : null,
-    nextAttemptLabel: nextAttemptLabelOf(readPendingModelChange(inputs.context)),
     isEmpty: !modelId && !tier && !requestedTier,
   };
 }

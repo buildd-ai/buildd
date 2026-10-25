@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveEffectiveModel, normalizeTaskKind, isDiagnosisTitle } from '../model-router';
+import { resolveEffectiveModel, normalizeTaskKind } from '../model-router';
 
 describe('resolveEffectiveModel', () => {
   it('explicit override bypasses every gate', () => {
@@ -215,42 +215,5 @@ describe('normalizeTaskKind', () => {
     expect(normalizeTaskKind(null)).toBeNull();
     expect(normalizeTaskKind(undefined)).toBeNull();
     expect(normalizeTaskKind('')).toBeNull();
-  });
-});
-
-describe('diagnosis floor', () => {
-  it('a [friction] engineering task with no complexity routes to opus (premium)', () => {
-    const d = resolveEffectiveModel({ kind: 'engineering', title: '[friction] a tier change on an active task' });
-    expect(d.model).toBe('opus');
-    expect(d.reason).toBe('diagnosis_floor');
-    expect(d.downshifted).toBe(false);
-  });
-
-  it('complex analysis on a release-candidate fix is raised to opus', () => {
-    const d = resolveEffectiveModel({ kind: 'analysis', complexity: 'complex', title: 'fix(release): CI is red on release candidate v1.2.3' });
-    expect(d.model).toBe('opus');
-  });
-
-  it('budget and spike pressure do not downshift a diagnosis task', () => {
-    expect(resolveEffectiveModel({ kind: 'engineering', title: '[friction] x', dailyBudgetPct: 0.92 }).model).toBe('opus');
-    expect(resolveEffectiveModel({ kind: 'analysis', title: '[incident] y', dailyBudgetPct: 0.75 }).model).toBe('opus');
-    expect(resolveEffectiveModel({ kind: 'engineering', title: '[friction] x', recentClaimCount: 99 }).model).toBe('opus');
-  });
-
-  it('the 95%+ pause still applies unless the task has priority', () => {
-    expect(resolveEffectiveModel({ title: '[friction] x', dailyBudgetPct: 0.97 }).model).toBe('paused');
-    expect(resolveEffectiveModel({ title: '[friction] x', dailyBudgetPct: 0.97, priority: 1 }).model).toBe('opus');
-  });
-
-  it('an explicit model still wins over the floor', () => {
-    expect(resolveEffectiveModel({ explicitModel: 'claude-haiku-4-5', title: '[friction] x' }).model).toBe('claude-haiku-4-5');
-  });
-
-  it('recognises only the prefixes, case-insensitively', () => {
-    expect(isDiagnosisTitle('[Friction] thing')).toBe(true);
-    expect(isDiagnosisTitle('  [incident] thing')).toBe(true);
-    expect(isDiagnosisTitle('fix: mention [friction] later')).toBe(false);
-    expect(isDiagnosisTitle(null)).toBe(false);
-    expect(resolveEffectiveModel({ kind: 'engineering', title: 'Add a button' }).model).toBe('sonnet');
   });
 });

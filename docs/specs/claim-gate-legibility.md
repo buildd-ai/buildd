@@ -102,12 +102,9 @@ only real check was "does this backend have a credential" was removed in PR
 therefore has no task-level `gateReason`, and must not be given one.
 
 That gap is now closed at configuration time instead, by
-`apps/web/src/lib/backend-strand.ts` — one module, three read-only surfaces, no
-gate:
-- **Settings → Models**, in each provider's row (`AgentBackendsSection.tsx`, fed by
-  `GET /api/teams/[id]/backend-readiness`): each backend card states how many
-  **pending** tasks are routed to it with no credential, and links to them. The
-  count is the consequence a bare "not configured" chip failed to convey.
+`apps/web/src/lib/backend-strand.ts` — one module, two read-only surfaces, no
+gate (Settings → Models had a third, the per-backend sign-in card; it went with
+the stored subscription logins, whose fix is a login on the runner):
 - **Health → Problems** (`HealthClient.tsx`): one row per backend that is
   stranding work, with the existing "Fix in Settings" affordance. Without it the
   page asserts "All systems healthy" while a queue can never drain.
@@ -258,7 +255,7 @@ pause: it also blocks the interactive claim, so it was never a fit for that.
   become claimable.
 - AC-56: GIVEN a pending task whose effective backend has no credential THEN
   `/api/cron/queue-stall` reports `backend_credential_missing` (not
-  `no_gate_identified`) AND Settings → Models counts it against that
+  `no_gate_identified`) AND Health → Problems counts it against that
   backend AND `/start` still returns no `gateReason` for it.
 
 **Code surface**:
@@ -277,8 +274,7 @@ pause: it also blocks the interactive claim, so it was never a fit for that.
   `apps/web/src/components/StageChip.tsx` — `deriveStage()`
 - Watchdog: `apps/web/src/app/api/cron/queue-stall/route.ts`
 - Configuration-time surfacing (no gate): `apps/web/src/lib/backend-strand.ts`,
-  `packages/core/backend-policy.ts` — `resolveEffectiveBackend()`,
-  `apps/web/src/app/api/teams/[id]/backend-readiness/route.ts`
+  `packages/core/backend-policy.ts` — `resolveEffectiveBackend()`
 
 ---
 

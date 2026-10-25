@@ -30,7 +30,6 @@ import { resolveCodexApiKey } from '@/lib/codex-credential';
 import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
-import { PENDING_MODEL_CHANGE_KEY } from '@/lib/live-model-change';
 import { pickRoleRowForTask, resolveClaimModelInputs, roleFloorTier, type RoleModelRow } from '@buildd/core/role-model-routing';
 import { codingPolicyLoader } from '@buildd/core/coding-policy-store';
 import { codingPolicyAudit, decideCodingPolicy } from './coding-policy-gate';
@@ -2323,7 +2322,6 @@ export async function POST(req: NextRequest) {
       dailyBudgetPct,
       recentClaimCount,
       priority: task.priority ?? 0,
-      title: task.title,
     });
 
     if (routingDecision.model === 'paused') {
@@ -2702,8 +2700,6 @@ export async function POST(req: NextRequest) {
     delete (patchedContext as Record<string, unknown>)[TASK_RESERVATION_KEY];
     // Claimed: it no longer waits on an entitlement.
     delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
-    // A re-tier made during the previous attempt applies from this claim on.
-    delete (patchedContext as Record<string, unknown>)[PENDING_MODEL_CHANGE_KEY];
     delete (patchedContext as Record<string, unknown>)[CREDENTIAL_BLOCK_CONTEXT_KEY];
     // This claim's isolation decision, or none: a previous attempt's never carries over.
     delete (patchedContext as Record<string, unknown>)[TASK_ISOLATION_CONTEXT_KEY];
