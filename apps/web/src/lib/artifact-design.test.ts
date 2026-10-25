@@ -29,4 +29,23 @@ describe('validateDesignMetadata', () => {
   it('refuses duplicate screen ids', () => {
     expect(validateDesignMetadata({ kind: 'design', screens: [screen(), screen()] })).toContain('metadata.screens[1].id');
   });
+
+  // Living Spec f43b6a61 R-14 / AC-11.
+  it('accepts a component screen naming its code, and a page screen', () => {
+    expect(validateDesignMetadata({ kind: 'design', screens: [
+      { id: 'c-row', name: 'Row', kind: 'component', code: 'apps/web/src/components/X.tsx', viewport: '360x120' },
+      screen({ id: 'home', kind: 'page' }),
+      screen({ id: 'route', code: 'apps/web/src/app/app/(protected)/tasks/[id]/page.tsx' }),
+    ] })).toBeNull();
+  });
+
+  it('refuses a kind other than component or page, naming kind', () => {
+    expect(validateDesignMetadata({ kind: 'design', screens: [screen({ kind: 'widget' })] })).toContain('metadata.screens[0].kind');
+  });
+
+  it('refuses a code that is not a repo path, naming code', () => {
+    for (const code of ['', '/etc/passwd', '../x.ts', 'a/../../b.ts', 'a//b.ts', 'dir/', 'has space.ts', 5]) {
+      expect(validateDesignMetadata({ kind: 'design', screens: [screen({ code })] })).toContain('metadata.screens[0].code');
+    }
+  });
 });

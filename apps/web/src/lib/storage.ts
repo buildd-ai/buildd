@@ -108,11 +108,13 @@ export async function objectExists(key: string): Promise<boolean> {
   }
 }
 
-export async function generateDownloadUrl(key: string): Promise<string> {
+/** `contentType` overrides the type the signed response is served as (a design stored as inert text, opened as HTML). */
+export async function generateDownloadUrl(key: string, opts: { contentType?: string } = {}): Promise<string> {
   const client = getClient();
   const command = new GetObjectCommand({
     Bucket: config.storageBucket,
     Key: key,
+    ...(opts.contentType ? { ResponseContentType: opts.contentType } : {}),
   });
   return getSignedUrl(client, command, { expiresIn: 3600 }); // 1 hour
 }
