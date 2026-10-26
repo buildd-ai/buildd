@@ -56,7 +56,7 @@ const DOT_STYLE: Record<PipelineDotPattern, CSSProperties> = {
   verify: { background: 'var(--status-info)' },
   deliver: { background: 'var(--status-success)' },
   fixing: { backgroundImage: HATCH, boxShadow: 'inset 0 0 0 1px var(--accent)' },
-  'cant-run': { boxShadow: 'inset 0 0 0 1.5px var(--faint)', borderRadius: 2 },
+  'cant-run': { boxShadow: 'inset 0 0 0 1.5px var(--faint)', borderRadius: 3 },
   // The only orange-red on the Pipeline, as on the meter and the YouStrip.
   waiting: { background: 'var(--status-error)' },
 };

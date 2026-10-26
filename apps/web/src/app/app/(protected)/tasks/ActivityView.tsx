@@ -379,7 +379,7 @@ function MissionsInMotion({ missions }: { missions: readonly MissionInMotion[] }
               <span className="shrink-0 font-mono text-meta text-text-muted">{m.landed}/{m.total}</span>
             </span>
             <span aria-hidden="true" className="flex flex-wrap gap-[2px]">
-              {m.segments.map((s, i) => <i key={i} data-segment={s} className={`block h-1.5 w-2.5 rounded-[1px] ${SEGMENT_STYLE[s]}`} />)}
+              {m.segments.map((s, i) => <i key={i} data-segment={s} className={`block h-1.5 w-2.5 rounded-[3px] ${SEGMENT_STYLE[s]}`} />)}
             </span>
           </>
         );
