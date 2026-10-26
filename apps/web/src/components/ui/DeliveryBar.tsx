@@ -96,7 +96,7 @@ export default function DeliveryBar({
       <span
         aria-hidden="true"
         data-end-mark={outcome}
-        className="absolute top-0 flex h-[14px] w-[14px] -translate-x-1/2 items-center justify-center rounded-[3px] font-mono text-[10px] font-bold leading-none"
+        className="absolute top-0 flex h-[14px] w-[14px] -translate-x-1/2 items-center justify-center rounded-[3px] font-mono text-[11px] font-bold leading-none"
         style={{ left: pct(e), background: OUTCOME_COLOR[outcome], color: 'var(--on-ink)' }}
       >
         {DELIVERY_END_MARK[outcome]}

@@ -138,7 +138,7 @@ export default function StageMeter({ stage, state, fixRounds = 0, label, classNa
             data-segment={s}
             data-pattern={pattern}
             data-mark={here && mark ? mark : undefined}
-            className={`flex h-[14px] items-center justify-center border font-mono text-[10px] leading-none rounded-[3px] min-w-0 ${here && mark ? 'flex-[1.6]' : 'flex-1'}`}
+            className={`flex h-[14px] items-center justify-center border font-mono text-[11px] leading-none rounded-[3px] min-w-0 ${here && mark ? 'flex-[1.6]' : 'flex-1'}`}
             style={segmentStyle(pattern, state)}
           >
             {here ? mark : null}
