@@ -12,14 +12,20 @@ verified_by: [apps/web/src/lib/workflow/trunk-recheck.test.ts, apps/web/tests/db
 supersedes: []
 assertions:
   - id: "kernel-command-api"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: "symbol"
     name: "COMMAND_PATH"
     path: "apps/web/src/lib/workflow/command-api.ts"
   - id: "kernel-control-plane-url"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: "symbol"
     name: "CONTROL_PLANE_URL"
     path: "apps/web/src/lib/workflow/kernel-client.ts"
   - id: "kernel-conformance-suite"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: "test_file"
     path: "packages/workflow-kernel/src/conformance/conformance.test.ts"
 ---

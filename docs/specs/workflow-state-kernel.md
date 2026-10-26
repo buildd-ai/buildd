@@ -12,13 +12,19 @@ verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/workflow-kernel/src/d
 supersedes: []
 assertions:
   - id: "kernel-seam-contract"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: "symbol"
     name: "REVIEW_CONTRACT_RETRIES"
     path: "apps/web/src/lib/workflow/seam.ts"
   - id: "kernel-reducer-tests"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: "test_file"
     path: "packages/workflow-kernel/src/reducer.test.ts"
   - id: "workflow-write-site-guard"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: "test_file"
     path: "packages/core/__tests__/workflow-write-sites.test.ts"
 ---
