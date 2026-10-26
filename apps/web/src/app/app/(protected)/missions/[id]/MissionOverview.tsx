@@ -40,7 +40,8 @@ import { boardTaskHref, useLiveBoard, useNow, type BoardLinkContext } from './Mi
 import { useMissionLayout } from './MissionLayoutShell';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { PlanTask } from '@/lib/mission-plan';
-import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines, StandardsLineView } from './MissionChecks';
+import { deliveryBlock, deliveryChecks, type DeliveryTask } from '@/lib/mission-delivery-checks';
+import { BuildCompleteBar, CheckRail, ChecksCard, DeliveryChecks, OutcomeSpecLines, StandardsLineView } from './MissionChecks';
 import MissionBuildStage from './MissionBuildStage';
 import { MissionStageProvider } from '@/components/design-stage';
 
@@ -75,6 +76,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   history?: HistoryRaised | null;
   /** Task id → expected minutes (task estimates), for the summary's `finish depends on` (Navigation R-22). */
   expectedMinutes?: Readonly<Record<string, number | null | undefined>>;
+  /** The task PRs behind the Delivery count line (spec 072de598 I-23). */
+  deliveryTasks?: readonly DeliveryTask[];
   /** The mission's design, closed: one fixed place after the current stage, on every mission (Navigation R-3). */
   design?: ReactNode;
 }
@@ -92,7 +95,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 
 function OverviewView({
   model: serverModel, completionText = null, notice, situation, visual: _visual, review,
-  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null, missionTitle = null, design = null,
+  checks: checksSource = null, deliveryTasks = [], planTasks = null, held = false, outcomeSpecTitles = null, missionTitle = null, design = null,
   decisions = [], history = null, expectedMinutes, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
@@ -150,6 +153,24 @@ function OverviewView({
   const visualCard = decisions.some(d => d.answer.kind === 'visual');
   const showAsk = review && !visualCard;
   const listed = (rows: NonNullable<typeof handoff>['rows']) => (visualCard ? rows.filter(r => r.kind !== 'visual') : rows);
+  // Visual review, Merge into dev and Release as CheckRows; goal criteria keep their own card (I-22).
+  type HandoffRow = NonNullable<typeof handoff>['rows'][number];
+  const checksBlock = (rows: readonly HandoffRow[], withDelivery: boolean) => {
+    const views = deliveryChecks(rows, {
+      prNumber: checksSource?.integrationPr?.prNumber ?? null,
+      tier: checksSource?.mergeTier ?? 'agent-review',
+      target: checksSource?.target ?? null,
+      releaseHref: checksSource?.evidence?.release?.[0]?.href ?? null,
+      screensHref: checksSource?.evidence?.visual?.[0]?.href ?? null,
+    });
+    const criteria = rows.filter(r => r.kind === 'criterion');
+    return (
+      <>
+        <DeliveryChecks checks={views} delivery={withDelivery ? deliveryBlock(deliveryTasks) : null} timelineHref={`/app/missions/${encodeURIComponent(link.missionId)}?layout=feed`} onOpenTask={openTask} />
+        {criteria.length > 0 && <ChecksCard rows={criteria} onOpenTask={openTask} />}
+      </>
+    );
+  };
   const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} missionId={link.missionId} />;
   // History only for what the screen does not already show (R-37): the build rows show in Build, or once unfolded.
   const raised = historyOnScreen(history, { buildRowsShown: stage === 'build' || showBuild, decisions });
@@ -168,7 +189,7 @@ function OverviewView({
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
           {bar}
           {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
-          {handoff && listed(handoff.rows).some(r => STARTED.has(r.status)) && <ChecksCard rows={listed(handoff.rows).filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
+          {handoff && listed(handoff.rows).some(r => STARTED.has(r.status)) && checksBlock(listed(handoff.rows).filter(r => STARTED.has(r.status)), false)}
           {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
         </>
       )}
@@ -183,7 +204,7 @@ function OverviewView({
           {situation?.verify}
           {notice}
           {showAsk && <MissionVisualAsk review={review} board={model} />}
-          {handoff && <ChecksCard rows={listed(handoff.rows)} onOpenTask={openTask} />}
+          {handoff && checksBlock(listed(handoff.rows), true)}
           {standards && <StandardsLineView line={standards} />}
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
@@ -204,7 +225,7 @@ function OverviewView({
             </summary>
             <div className="mt-2 flex flex-col gap-3">
               <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>{bar}</BuildCompleteBar>
-              <ChecksCard rows={handoff.rows} onOpenTask={openTask} />
+              {checksBlock(handoff.rows, true)}
             </div>
           </details>
           {standards && <StandardsLineView line={standards} />}

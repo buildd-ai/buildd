@@ -3,7 +3,7 @@ GlobalRegistrator.register({ url: 'http://localhost/app/tasks' });
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as rules from '@buildd/core/mission-helpers';
 import { buildActivityNow, type ActivityNow, type ActivityTaskInput, type NowGroup } from '@/lib/activity-delivery';
-import { ACTIVITY_FIXTURE_NOW, activityContextFixture, activityFixture, activityStatesFixture } from '../../dev/fixtures/activity-delivery-fixtures';
+import { ACTIVITY_FIXTURE_NOW, activityFixture, activityStatesFixture } from '../../dev/fixtures/activity-delivery-fixtures';
 import { anchorShift } from './stable-live';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const { act } = await import('react');
@@ -43,64 +43,49 @@ function moveRow(now: ActivityNow, id: string, toMission: string | null): Activi
   return { ...now, groups: groups.filter(g => g.rows.length > 0) };
 }
 
+/** The same Now with one delivery moved on to another kind (and so another stage). */
+function toKind(now: ActivityNow, id: string, kind: NowGroup['rows'][number]['delivery']['kind']): ActivityNow {
+  return { ...now, groups: now.groups.map(g => ({ ...g, rows: g.rows.map(r => (r.id === id ? { ...r, delivery: { ...r.delivery, kind } } : r)) })) };
+}
+
 describe('a live update keeps what the reader opened', () => {
-  it('a meaningful transition updates the row in place, with its evidence still open', () => {
+  it('a meaningful transition updates the row in place', () => {
     render(activityFixture(3).now);
     const before = row('fx-t34')!;
-    act(() => head('fx-t34').click());
-    expect(head('fx-t34').getAttribute('aria-expanded')).toBe('true');
-    const lineBefore = before.textContent;
+    const meterBefore = before.querySelector('[data-testid="delivery-meter"]')!.getAttribute('aria-label');
     // The repair pushed: step 3 → 4.
     render(activityFixture(4).now);
     expect(row('fx-t34')).toBe(before);
-    expect(row('fx-t34')!.textContent).not.toBe(lineBefore);
-    expect(head('fx-t34').getAttribute('aria-expanded')).toBe('true');
-    expect(row('fx-t34')!.querySelector('[data-testid="activity-evidence"]')).not.toBeNull();
+    expect(row('fx-t34')!.querySelector('[data-testid="delivery-meter"]')!.getAttribute('aria-label')).not.toBe(meterBefore);
   });
 
-  it('a row that moves to another group comes back open, its attempts and verification too', () => {
-    const now = activityFixture(6).now;
-    render(now);
-    act(() => head('fx-t34').click());
-    const toggle = (testid: string) => row('fx-t34')!.querySelector<HTMLButtonElement>(`[data-testid="${testid}"] button`)!;
-    act(() => toggle('activity-verification').click());
-    expect(toggle('activity-verification').getAttribute('aria-expanded')).toBe('true');
-    render(moveRow(now, 'fx-t34', null));
-    expect(row('fx-t34')!.closest('[data-testid="activity-group"]')!.getAttribute('data-mission')).toBe('standalone');
-    expect(head('fx-t34').getAttribute('aria-expanded')).toBe('true');
-    expect(toggle('activity-verification').getAttribute('aria-expanded')).toBe('true');
+  it('the queued fold stays open across an update that changes what is queued', () => {
+    const { tasks, missions } = activityFixture(4);
+    render(buildActivityNow({ tasks, missions, rules, now: ACTIVITY_FIXTURE_NOW }));
+    const toggle = () => container.querySelector<HTMLButtonElement>('[data-testid="activity-stage"][data-stage="queued"] button')!;
+    act(() => toggle().click());
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+    const extra: ActivityTaskInput = { id: 'fx-late', title: 'Queued later', status: 'pending', missionId: null, createdAt: '2026-10-08T11:09:00.000Z', updatedAt: '2026-10-08T11:09:00.000Z', workers: [] };
+    render(buildActivityNow({ tasks: [...tasks, extra], missions, rules, now: ACTIVITY_FIXTURE_NOW }));
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+    expect(row('fx-late')).not.toBeNull();
   });
 
-  it('a folded chain stays unfolded across an update', () => {
-    const ctx = activityContextFixture();
-    render(ctx.now);
-    const chain = () => row('fx-chain')!.querySelector<HTMLButtonElement>('[data-testid="activity-derived"] button')!;
-    act(() => chain().click());
-    expect(chain().getAttribute('aria-expanded')).toBe('true');
-    render(moveRow(ctx.now, 'fx-chain', null));
-    expect(chain().getAttribute('aria-expanded')).toBe('true');
-    expect(row('fx-chain')!.querySelectorAll('[data-testid="activity-derived-child"]')).toHaveLength(5);
-  });
-
-  it("History keeps its pages and an episode's earlier steps open", () => {
+  it('History keeps its pages and shows a new delivery once', () => {
     const now = { groups: [], inMotion: 0, liveAgents: 0 };
     const history = Array.from({ length: 25 }, (_, i) => ({
       id: `ep-${i}`, title: `Delivery ${i}`, href: `/app/tasks/ep-${i}`, missionId: null, missionTitle: null,
-      kind: 'landed' as const, repairRounds: 0, at: ACTIVITY_FIXTURE_NOW - i * 3_600_000,
-      steps: Array.from({ length: 9 }, (_, s) => ({ at: ACTIVITY_FIXTURE_NOW - i * 3_600_000 - (9 - s) * 60_000, text: `step ${s}`, tone: 'muted' as const })),
+      kind: 'landed' as const, repairRounds: 0, at: ACTIVITY_FIXTURE_NOW - i * 86_400_000,
+      steps: [{ at: ACTIVITY_FIXTURE_NOW - i * 86_400_000 - 600_000, text: 'Build started', tone: 'muted' as const, void: false }],
     }));
     render(now, 'history', history);
     act(() => container.querySelector<HTMLButtonElement>('[data-testid="activity-history-more"]')!.click());
-    const earlier = () => [...container.querySelectorAll<HTMLButtonElement>('[data-testid="activity-episode"] button')].find(b => b.textContent?.includes('earlier'));
-    act(() => earlier()!.click());
-    const shownSteps = () => container.querySelector('[data-testid="activity-episode"] ol')!.children.length;
-    expect(shownSteps()).toBe(9);
-    // A new delivery lands at the top of History.
+    expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(25);
+    // A new delivery lands at the top of History; the pages already shown stay.
     const next = [{ ...history[0], id: 'ep-new', title: 'Delivery new', at: ACTIVITY_FIXTURE_NOW }, ...history];
     render(now, 'history', next);
     expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(26);
-    const ep0 = [...container.querySelectorAll('[data-testid="activity-episode"]')].find(e => e.textContent?.includes('Delivery 0'))!;
-    expect(ep0.querySelector('ol')!.children.length).toBe(9);
+    expect([...container.querySelectorAll('[data-testid="activity-episode"]')].filter(e => e.textContent?.includes('Delivery new'))).toHaveLength(1);
   });
 });
 
@@ -112,12 +97,16 @@ describe('a live update keeps focus and scroll', () => {
     expect(document.activeElement).toBe(head('fx-t34'));
   });
 
-  it('focus follows a row whose element was replaced', () => {
+  it('focus follows a row whose element was replaced (it moved to another stage)', () => {
     const now = activityFixture(4).now;
     render(now);
-    head('fx-s07').focus();
-    render(moveRow(now, 'fx-s07', null));
-    expect(document.activeElement).toBe(head('fx-s07'));
+    const before = head('fx-t34');
+    before.focus();
+    expect(row('fx-t34')!.closest('[data-testid="activity-stage"]')!.getAttribute('data-stage')).not.toBe('deliver');
+    render(toKind(now, 'fx-t34', 'landing'));
+    expect(row('fx-t34')!.closest('[data-testid="activity-stage"]')!.getAttribute('data-stage')).toBe('deliver');
+    expect(head('fx-t34')).not.toBe(before);
+    expect(document.activeElement).toBe(head('fx-t34'));
   });
 
   it('focus the reader moved off the view is not taken back', async () => {
@@ -146,15 +135,13 @@ describe('a live update keeps focus and scroll', () => {
   });
 });
 
-it('the visual QA fixture (`&data=states`) shows every state a row can carry', () => {
+it('the visual QA fixture (`&data=states`) folds every chain and shows no row detail', () => {
   render(activityStatesFixture().now);
-  expect(container.querySelectorAll('[data-testid="activity-new"]').length).toBeGreaterThan(0);
-  expect(row('fx-chain')!.querySelector('[data-testid="activity-derived"]')).not.toBeNull();
-  const states = [...container.querySelectorAll('[data-testid="activity-verification"]')].map(v => v.getAttribute('data-state'));
-  expect(new Set(states)).toEqual(new Set(['passed', 'failed', 'stale', 'unverified']));
-  const known = [...container.querySelectorAll('[data-testid="activity-attribution"]')].map(a => a.getAttribute('data-known'));
-  expect(known).toContain('true');
-  expect(known).toContain('false');
+  expect(row('fx-chain')).not.toBeNull();
+  for (const gone of ['activity-new', 'activity-derived', 'activity-verification', 'activity-attribution']) {
+    expect(container.querySelector(`[data-testid="${gone}"]`)).toBeNull();
+  }
+  expect(container.textContent).not.toContain('Unattributed');
 });
 
 describe('no delivery shows twice', () => {
@@ -184,5 +171,6 @@ describe('no delivery shows twice', () => {
     const doubled = { ...now, groups: now.groups.map(g => g.missionId === null ? { ...g, rows: [r, ...g.rows] } : g) };
     render(doubled);
     expect(rowIds().filter(id => id === 'fx-t34')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="activity-now-card"][data-row="fx-t34"]')).toHaveLength(1);
   });
 });
