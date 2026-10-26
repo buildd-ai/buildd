@@ -1228,7 +1228,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   /* The card answers to the width it is given, not the window's: the docked Ask column
      is 400px and the peek min(600px, 100vw - 7rem), both inside a desktop window. The
      wrapper is the container; narrower than 420px the rows stack label over value. */
-  [data-testid="approval-card"] { container: approval-card / inline-size; }
+  [data-testid="approval-card"], [data-testid="approval-rows"] { container: approval-card / inline-size; }
   @container approval-card (min-width: 420px) {
     .kit-card.buildd-approval:not(.kit-approval-row) { padding: 0 20px 16px; }
     .buildd-approval > .kit-card-head { margin: 0 -20px; padding: 12px 20px; }

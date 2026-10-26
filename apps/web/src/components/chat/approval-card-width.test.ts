@@ -21,7 +21,7 @@ describe('approval card responds to its own width', () => {
   const wide = blockAfter('@container approval-card (min-width: 420px)');
 
   it('the wrapper is an inline-size container', () => {
-    expect(GLOBALS).toMatch(/\[data-testid="approval-card"\] \{ container: approval-card \/ inline-size; \}/);
+    expect(GLOBALS).toMatch(/\[data-testid="approval-card"\], \[data-testid="approval-rows"\] \{ container: approval-card \/ inline-size; \}/);
   });
 
   it('two columns, desktop padding and title size only apply in a wide container', () => {
