@@ -19,7 +19,7 @@
  *     canonical state and its current attempt, never from the worst attempt.
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
-import { findingLine, findingTotals, openRequiredFindings, shortFindingId, type FindingTotals } from './findings';
+import { findingLine, findingTotals, isRoundFinding, openRequiredFindings, shortFindingId, type FindingTotals } from './findings';
 import { deriveEscalationBrief, type EscalationBrief, type EscalationBriefPermissions } from './escalation-brief';
 import { landingStatusOf } from './landing-gate';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
@@ -239,6 +239,8 @@ export interface ReadingFinding {
   restatedCount: number;
   /** The one-line form: "`ab12cd34:0` src/a.ts:4: off by one (restated twice)". */
   text: string;
+  /** The finding a request for changes with nothing structured stands for: its words are the review's prose. */
+  standsForRound: boolean;
 }
 
 export interface ReviewReading {
@@ -262,7 +264,7 @@ const REVIEW_ESCALATIONS = new Set(['review_escalated', 'review_exhausted', 'rev
 function readingFinding(f: FindingSnapshot): ReadingFinding {
   return {
     id: f.id, shortId: shortFindingId(f.id), path: f.path, line: f.line, title: f.title, status: f.status,
-    remedyClass: f.remedyClass ?? 'code_fix', restatedCount: f.restatedCount ?? 0, text: findingLine(f),
+    remedyClass: f.remedyClass ?? 'code_fix', restatedCount: f.restatedCount ?? 0, text: findingLine(f), standsForRound: isRoundFinding(f),
   };
 }
 
