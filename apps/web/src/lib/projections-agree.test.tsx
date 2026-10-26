@@ -116,12 +116,14 @@ describe('AC-43: get_pr names what a stuck PR waits on and what the reader may d
   };
   test('the question, why it stopped, each finding by name, and only the actions open now', () => {
     const report = prDeliveryReport(deriveDeliveryView({ view: esc })!);
-    const { decisionLine, roundsLine } = formatGetPrDelivery({ reviews: null, delivery: report });
+    const { decisionLine, findingsLine, roundsLine } = formatGetPrDelivery({ reviews: null, delivery: report });
     expect(decisionLine).toContain('Decision: How should the two unresolved findings be settled?');
     expect(decisionLine).toContain('Automation stopped after three review rounds');
-    expect(decisionLine).toContain('Still open: Mutation tests do not cover the new guard');
-    expect(decisionLine).toContain('Fixed, waiting for a review: Verify against a real Postgres');
     expect(decisionLine).toContain('Open on the task page: Review findings, Request another fix, Request a forced re-review');
+    // fa62b865 R-48: each finding once, in the findings line, never again in the decision.
+    expect(findingsLine).toContain('Mutation tests do not cover the new guard');
+    expect(findingsLine).toContain('Verify against a real Postgres');
+    expect(`${decisionLine}\n${findingsLine}`.split('Mutation tests do not cover the new guard').length).toBe(2);
     expect(decisionLine).not.toMatch(/approve/i);
     expect(roundsLine).toContain('Round 3 at H3: changes requested');
   });

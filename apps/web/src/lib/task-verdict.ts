@@ -85,6 +85,12 @@ export interface VerdictInput {
   /** The delivery's own headline, for a PR whose next move is the platform's and no rule above named it. */
   deliveryHeadline?: string | null;
   /**
+   * Living Spec fa62b865 R-52: the delivery's review reading says approved, and it is not escalated,
+   * asking for changes or in conflict with its base. `false` never reads "Ready to merge", whatever
+   * CI says. Absent: no delivery, the row-level facts decide.
+   */
+  deliveryReady?: boolean | null;
+  /**
    * The delivery is parked on a review escalation (kernel `deriveEscalationBrief`): the
    * cause label, what is left and what a person may choose. The verdict names it instead
    * of saying only that something waits on a person.
@@ -424,6 +430,17 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
         cause: 'Nothing is waiting on you.',
         actions: [link(`View PR #${pr.number}`, pr.url)],
         causeKey: `in_progress:delivery_${input.deliveryOwner}`,
+      };
+    }
+    // R-52 (#5714): green CI is a fact beside the delivery's state, never in place of it.
+    if (input.deliveryReady === false && input.deliveryHeadline) {
+      return {
+        ...base,
+        state: 'needs_you',
+        headline: `${input.deliveryHeadline} · PR #${pr.number}`,
+        cause: null,
+        actions: [link(`Open PR #${pr.number}`, pr.url, 'primary')],
+        causeKey: 'needs_you:delivery',
       };
     }
     return {

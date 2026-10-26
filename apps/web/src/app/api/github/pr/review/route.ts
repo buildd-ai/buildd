@@ -49,6 +49,7 @@ import {
 import { requestingPerson } from '@/lib/request-person';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { decisionRefusalReason } from '@buildd/workflow-kernel/decision-refusal';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
@@ -666,6 +667,17 @@ export async function GET(req: NextRequest) {
     waitSeconds,
   });
 
+  // Living Spec fa62b865 R-50: a kernel-owned PR answers with the one review reading the task page,
+  // get_pr and the sticky comment show: the same state line, rounds and open findings.
+  const delivery = owningWorker?.taskId
+    ? (await getDeliveryViewsForTasks([owningWorker.taskId]).catch(() => new Map())).get(owningWorker.taskId) ?? null
+    : null;
+  const reading = delivery ? {
+    stateLine: delivery.review.stateLine, verdict: delivery.review.verdict, round: delivery.review.round,
+    roundsSpent: delivery.review.roundsSpent, roundBudget: delivery.review.roundBudget, blocks: delivery.review.blocks,
+    openFindings: delivery.review.openFindings.map((f: { text: string }) => f.text),
+  } : null;
+
   return NextResponse.json({
     ok: true,
     prNumber,
@@ -674,5 +686,6 @@ export async function GET(req: NextRequest) {
     autoMergeExpected,
     timedOut,
     status,
+    reading,
   });
 }
