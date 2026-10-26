@@ -44,7 +44,7 @@ const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ?
  * placeholders.
  */
 export function describeVisualPhase(
-  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> & { needsYou?: VisualReviewNeedsYou | null; waitingOn?: VisualReviewModel['waitingOn'] },
+  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> & { needsYou?: VisualReviewNeedsYou | null; waitingOn?: VisualReviewModel['waitingOn']; onEarlierCommit?: boolean },
 ): { label: string; detail: string } {
   const { summary: s, progress } = model;
   switch (model.phase) {
@@ -99,6 +99,8 @@ export function describeVisualPhase(
       const ok = s.effectiveOk ?? s.ok;
       const issues = s.effectiveIssues ?? s.issues;
       const head = `${ok} of ${s.shots} ok`;
+      // The check says the branch moved: these counts are history, so say so in the same breath.
+      if (model.onEarlierCommit) return { label: `${head} on an earlier commit`, detail: 'The branch changed after these screens were taken.' };
       const parts: string[] = [];
       if (issues > 0) parts.push(plural(issues, 'issue'));
       if (s.reviewed > 0) parts.push(`${s.reviewed} reviewed`);

@@ -260,6 +260,7 @@ function computeRoutingPreviewCore(input: RoutingPreviewInput): RoutingPreview {
     dailyBudgetPct: 0,
     recentClaimCount: 0,
     priority: 0,
+    title: input.title,
   });
   // Budget/spike gates are the only paths that can return 'paused', and both
   // are fed zeroes above, so this is always a plain haiku/sonnet/opus alias.
@@ -283,6 +284,9 @@ function computeRoutingPreviewCore(input: RoutingPreviewInput): RoutingPreview {
       ? ''
       : ` Pass complexity:"complex" or tier:"premium" for a higher tier.`;
     reason = `no ${missing} given — defaulted to ${inference.kind}/${inference.complexity} → ${matrixTier} (${matrixLabel}).${bump}`;
+  }
+  if (decision.reason === 'diagnosis_floor') {
+    reason = `${reason}; a diagnosis title ([friction], [incident], fix(release):) gets the ${matrixTier} floor and is never downshifted`;
   }
   if (floorRaises) {
     reason = `${reason}; role "${input.roleSlug}" floor ${floor} raised ${matrixTier} → ${tier} (${modelLabel})`;

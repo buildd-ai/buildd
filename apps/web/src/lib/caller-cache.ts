@@ -60,6 +60,11 @@ export const callerDep = {
   task: (id: string): CallerDep => `task:${id}`,
   /** The schedules of a workspace: their delegations. */
   workspaceSchedules: (workspaceId: string): CallerDep => `schedules:${workspaceId}`,
+  /**
+   * Which workspaces a team holds: one created in it, moved into or out of it,
+   * or deleted. A grant covering the team as a whole rests on it.
+   */
+  teamWorkspaces: (teamId: string): CallerDep => `team-workspaces:${teamId}`,
   /** Which of a team's workspaces are open to its accounts: a workspace created open, opened, closed or moved. */
   teamOpenWorkspaces: (teamId: string): CallerDep => `team-open:${teamId}`,
 };

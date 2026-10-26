@@ -20,7 +20,7 @@ export const ESCALATION_CAUSE_LABEL: Record<EscalationCause, string> = {
   review_required: 'Review required',
 };
 
-export type EscalationActionId = 'review_findings' | 'request_fix' | 'force_re_review' | 'approve_override';
+export type EscalationActionId = 'review_findings' | 'request_fix' | 'force_re_review' | 'land_pr' | 'approve_override';
 
 export interface EscalationAction {
   id: EscalationActionId;
@@ -122,6 +122,8 @@ export function deriveEscalationBrief(view: KernelView, perms: EscalationBriefPe
       : 'No automatic review can settle this PR. Nothing runs again until you choose.';
 
   const hasHead = d.currentHeadSha != null;
+  // The kernel files the task against the round the person is looking at (T23 `no_review_at_head`).
+  const round0 = hasHead && view.rounds.some((r) => r.headSha === d.currentHeadSha && r.round === d.currentRound);
   const actions: EscalationAction[] = [
     {
       id: 'review_findings', label: 'Review findings',
@@ -141,6 +143,14 @@ export function deriveEscalationBrief(view: KernelView, perms: EscalationBriefPe
       requires: 'Workspace member',
       available: hasHead,
       unavailableReason: hasHead ? null : 'The PR has no recorded head to review.',
+    },
+    {
+      id: 'land_pr', label: 'Get this PR landable',
+      impact: 'Files one task on the PR branch that merges the base branch in, fixes red CI and addresses the open findings. When it pushes, one review of the new head is granted even though the review budget is spent; it does not merge.',
+      requires: 'Workspace member',
+      available: hasHead && round0,
+      unavailableReason: !hasHead ? 'The PR has no recorded head to land.'
+        : round0 ? null : 'No review has read the current head yet, so there is nothing for the task to answer. Ask for a review of it first.',
     },
     {
       id: 'approve_override', label: 'Approve and override',

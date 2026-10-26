@@ -53,8 +53,10 @@ export type DecisionAnswer =
   /**
    * The mission's goal-criteria escalation: the primary option files the work
    * (a link), the alternative waives and completes (a PATCH on the mission).
+   * Answer differently files the person's words as a task on the mission in
+   * `workspaceId` (filing work is what clears the escalation); null hides it.
    */
-  | { kind: 'criteria'; missionId: string; fileWorkHref: string };
+  | { kind: 'criteria'; missionId: string; workspaceId: string | null; fileWorkHref: string };
 
 export interface DecisionView {
   key: string;

@@ -13,6 +13,11 @@ export const isGrantUuid = (v: unknown): v is string => typeof v === 'string' &&
 export const MAX_WORKSPACES_PER_CHANGE = 500;
 
 export type ConnectionAccess = 'read' | 'read-write';
+/** What a connection reaches in one team: all current and future workspaces, or specific ones. */
+export type ConnectionTeamMode = 'all' | 'specific';
+
+/** Upper bound on team changes in one request. */
+export const MAX_TEAMS_PER_CHANGE = 100;
 
 export interface ConnectionWorkspace {
   id: string;
@@ -34,10 +39,27 @@ export interface ConnectionSummary {
    */
   lastActiveAt: string | null;
   expiresAt: string | null;
-  /** Granted workspaces the owner can still reach, sorted by team then name. */
+  /** Workspaces it reaches now, sorted by team then name. */
   workspaces: ConnectionWorkspace[];
-  /** Granted workspaces the owner no longer reaches (left the team, moved). Count only. */
+  /**
+   * Per team it reaches, how: 'all' (every current and future workspace of
+   * the team) or 'specific'. `workspaces` is what it reaches there now; for an
+   * 'all' team that list grows and shrinks with the team.
+   */
+  teams: ConnectionTeam[];
+  /** Workspaces granted one by one that the owner no longer reaches (left the team, moved). Count only. */
   unreachableCount: number;
+  /** Teams on all workspaces that the owner has since left. Count only. */
+  unreachableTeamCount: number;
+  /** Bumped by every change; an edit sends the revision it was made against. */
+  revision: number;
+}
+
+export interface ConnectionTeam {
+  teamId: string;
+  teamName: string;
+  mode: ConnectionTeamMode;
+  workspaces: ConnectionWorkspace[];
 }
 
 /** A per-workspace connection from before account-level grants. */
@@ -54,15 +76,30 @@ export interface UserConnections {
 
 // ── Editing ──────────────────────────────────────────────────────────────────
 
+/**
+ * Set one team's mode. 'all' covers every current and future workspace of the
+ * team. 'specific' freezes exactly `workspaceIds` (each in that team) as what
+ * the connection reaches there; switching from 'all' sends the workspaces it
+ * reached there, after the person reviewed them. 'none' takes the team out of
+ * the connection altogether.
+ */
+export type TeamModeChange =
+  | { teamId: string; mode: 'all' }
+  | { teamId: string; mode: 'specific'; workspaceIds: string[] }
+  | { teamId: string; mode: 'none' };
+
 export interface GrantPatch {
   addWorkspaceIds: string[];
   removeWorkspaceIds: string[];
+  teams: TeamModeChange[];
   access?: ConnectionAccess;
   /** Only ever a downgrade: 'person' is refused before it gets here. */
   actsAs?: 'agent';
+  /** The revision the edit was made against; a newer grant refuses it (409). */
+  ifRevision?: number;
 }
 
-export type ManageError = { ok: false; status: 400 | 403 | 404; code: string; error: string };
+export type ManageError = { ok: false; status: 400 | 403 | 404 | 409; code: string; error: string; connection?: ConnectionSummary };
 
 export const PERSON_NEEDS_CONSENT: ManageError = {
   ok: false,
@@ -77,6 +114,25 @@ export const WORKSPACE_NOT_ACCESSIBLE: ManageError = {
   code: 'workspace_not_accessible',
   error: 'One of the chosen workspaces is not available to you. Nothing was changed.',
 };
+export const TEAM_NOT_ACCESSIBLE: ManageError = {
+  ok: false,
+  status: 403,
+  code: 'team_not_accessible',
+  error: 'One of the chosen teams is not available to you. Nothing was changed.',
+};
+export const INHERITED_FROM_TEAM: ManageError = {
+  ok: false,
+  status: 409,
+  code: 'inherited_from_team',
+  error: 'That workspace is included because this app has every workspace in its team. Switch the team to specific workspaces to remove it.',
+};
+export const staleConnection = (connection?: ConnectionSummary): ManageError => ({
+  ok: false,
+  status: 409,
+  code: 'stale_connection',
+  error: 'This connection changed since you opened it. Review what it has now and make your change again.',
+  ...(connection ? { connection } : {}),
+});
 export const invalidGrantPatch = (error: string): ManageError => ({ ok: false, status: 400, code: 'invalid_request', error });
 const bad = invalidGrantPatch;
 
@@ -96,8 +152,8 @@ function idList(v: unknown, field: string): string[] | ManageError {
 export function parseGrantPatch(body: unknown): { ok: true; patch: GrantPatch } | ManageError {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return bad('Send a JSON object.');
   const b = body as Record<string, unknown>;
-  const known = new Set(['addWorkspaceIds', 'removeWorkspaceIds', 'access', 'actsAs']);
-  if (Object.keys(b).some((k) => !known.has(k))) return bad('Unknown field. Allowed: addWorkspaceIds, removeWorkspaceIds, access, actsAs.');
+  const known = new Set(['addWorkspaceIds', 'removeWorkspaceIds', 'teams', 'access', 'actsAs', 'ifRevision']);
+  if (Object.keys(b).some((k) => !known.has(k))) return bad('Unknown field. Allowed: addWorkspaceIds, removeWorkspaceIds, teams, access, actsAs, ifRevision.');
 
   if (b.actsAs !== undefined && b.actsAs !== 'agent') {
     return b.actsAs === 'person' ? PERSON_NEEDS_CONSENT : bad('actsAs can only be "agent".');
@@ -109,16 +165,56 @@ export function parseGrantPatch(body: unknown): { ok: true; patch: GrantPatch } 
   const remove = idList(b.removeWorkspaceIds, 'removeWorkspaceIds');
   if (!Array.isArray(remove)) return remove;
   if (add.some((id) => remove.includes(id))) return bad('A workspace cannot be both added and removed.');
-  if (add.length === 0 && remove.length === 0 && b.access === undefined && b.actsAs === undefined) return bad('Nothing to change.');
+
+  const teams = teamChanges(b.teams);
+  if (!Array.isArray(teams)) return teams;
+  const frozen = teams.flatMap((t) => (t.mode === 'specific' ? t.workspaceIds : []));
+  if (remove.some((id) => frozen.includes(id))) return bad('A workspace cannot be both removed and chosen.');
+
+  if (b.ifRevision !== undefined && !(typeof b.ifRevision === 'number' && Number.isInteger(b.ifRevision) && b.ifRevision >= 0)) {
+    return bad('ifRevision must be a whole number.');
+  }
+  if (add.length === 0 && remove.length === 0 && teams.length === 0 && b.access === undefined && b.actsAs === undefined) return bad('Nothing to change.');
 
   return {
     ok: true,
     patch: {
       addWorkspaceIds: add,
       removeWorkspaceIds: remove,
+      teams,
       access: b.access as ConnectionAccess | undefined,
       actsAs: b.actsAs === 'agent' ? 'agent' : undefined,
+      ...(typeof b.ifRevision === 'number' ? { ifRevision: b.ifRevision } : {}),
     },
   };
+}
+
+function teamChanges(v: unknown): TeamModeChange[] | ManageError {
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) return bad('teams must be a list.');
+  if (v.length > MAX_TEAMS_PER_CHANGE) return bad(`Change at most ${MAX_TEAMS_PER_CHANGE} teams at a time.`);
+  const out: TeamModeChange[] = [];
+  const seen = new Set<string>();
+  for (const raw of v) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return bad('Each team change must be an object.');
+    const t = raw as Record<string, unknown>;
+    if (Object.keys(t).some((k) => k !== 'teamId' && k !== 'mode' && k !== 'workspaceIds')) return bad('Unknown field in a team change. Allowed: teamId, mode, workspaceIds.');
+    if (typeof t.teamId !== 'string' || !isGrantUuid(t.teamId.trim())) return bad('Each team change needs a team id.');
+    const teamId = t.teamId.trim().toLowerCase();
+    if (seen.has(teamId)) return bad('Name each team once.');
+    seen.add(teamId);
+    if (t.mode === 'all' || t.mode === 'none') {
+      if (t.workspaceIds !== undefined) return bad('Only a team on specific workspaces takes a workspace list.');
+      out.push({ teamId, mode: t.mode });
+    } else if (t.mode === 'specific') {
+      const ids = idList(t.workspaceIds, 'workspaceIds');
+      if (!Array.isArray(ids)) return ids;
+      if (ids.length === 0) return bad('Choose at least one workspace for a team on specific workspaces.');
+      out.push({ teamId, mode: 'specific', workspaceIds: ids });
+    } else {
+      return bad('mode must be "all", "specific" or "none".');
+    }
+  }
+  return out;
 }
 

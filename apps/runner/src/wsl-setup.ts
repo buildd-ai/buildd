@@ -7,6 +7,7 @@
  * Ubuntu only after the operator says yes in their own terminal.
  */
 import { spawnSync } from 'child_process';
+import { WSL2_DOCS_URL } from '@buildd/shared';
 export interface CommandResult { code: number; stdout: string; missing?: boolean }
 export type RunCommand = (file: string, args: string[]) => CommandResult;
 const clean = (s: string) => s.replace(/\0/g, '').replace(/^\uFEFF/, '');
@@ -38,12 +39,12 @@ const LINUX_NEXT_STEPS = [
   'Inside Linux: claude login; buildd login --device',
   'Verify: bun ~/.buildd/apps/runner/src/isolation-check.ts --verify-wsl',
   'Only after verification passes: buildd (foreground). Check this runner in buildd top and its current dashboard heartbeat.',
-  'Follow apps/runner/WSL2.md for Linux repository paths and draining/removing a competing Windows service before startup.',
+  `Follow ${WSL2_DOCS_URL} for Linux repository paths and draining/removing a competing Windows service before startup.`,
 ];
 export function inspectWsl(platform: string, requested: string | undefined, run: RunCommand): { code: number; lines: string[] } {
   const lines = [CONFINEMENT];
   const fail = (message: string) => ({ code: 1, lines: [...lines, message] });
-  if (platform !== 'win32') return fail('Run this Windows preflight from PowerShell. Inside WSL use the verification command in apps/runner/WSL2.md.');
+  if (platform !== 'win32') return fail(`Run this Windows preflight from PowerShell. Inside WSL use the verification command in ${WSL2_DOCS_URL}#verify`);
   const list = run('wsl.exe', ['--list', '--verbose']);
   if (list.missing) return fail(install);
   if (list.code !== 0) return fail(`WSL enumeration failed: ${clean(list.stdout).trim()}. Run wsl --list --verbose from an unrestricted PowerShell under the same Windows user; resolve that error before setup. No distribution readiness was established.`);
@@ -62,7 +63,7 @@ export function inspectWsl(platform: string, requested: string | undefined, run:
   const missing = PREREQUISITES.filter(c => !found.includes(c));
   lines.push(missing.length ? `Missing Linux prerequisites: ${missing.join(', ')}.` : 'Linux commands found. This is not confinement verification.');
   lines.push(`Next: wsl --distribution ${quoted}`);
-  if (missing.length) lines.push('Operator installation steps for Ubuntu/Debian (inside Linux; see apps/runner/WSL2.md):',
+  if (missing.length) lines.push(`Operator installation steps for Ubuntu/Debian (inside Linux; see ${WSL2_DOCS_URL}):`,
     '  sudo apt-get update && sudo apt-get install -y git curl unzip bubblewrap socat',
     '  curl -fsSL https://bun.sh/install | bash',
     '  curl -fsSL https://claude.ai/install.sh | bash',

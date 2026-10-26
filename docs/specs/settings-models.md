@@ -83,16 +83,18 @@ connected providers) and **Tiers**.
 
 ## Providers: one list
 
-Every provider a team can connect is one row in one list, in registry order:
-Claude (key or subscription), OpenAI (key or ChatGPT sign-in), OpenRouter,
-LiteLLM gateway, and a custom Anthropic-compatible endpoint.
+Every provider buildd stores a credential for is one row in one list, in
+registry order: Claude (API key), OpenAI (API key), OpenRouter, LiteLLM
+gateway, and a custom Anthropic-compatible endpoint. A subscription (Claude or
+ChatGPT) signs a runner in on its own machine, so it has no row.
 
 **Invariants**
 
 - The LiteLLM gateway and the custom endpoint are rows in the list, connected,
   tested and removed the same way as a key; neither has a section of its own.
 - A row shows whether it is connected and, at most, a count of members with
-  their own key for it. It never shows a key beyond its last four characters.
+  their own key for it. A row with nothing set is its name and one action
+  (Add key, Set up), with no status word. It never shows a key beyond its last four characters.
 
 **Acceptance criteria**
 
@@ -127,9 +129,9 @@ Decisions.
 
 - AC-4: GIVEN only OpenRouter connected WHEN the page loads THEN no "Used for"
   table renders, and one line reads "OpenRouter is used for …".
-- AC-5: GIVEN OpenRouter and a Claude subscription connected WHEN the page
-  loads THEN the "Used for" table renders a row per surface and a Decisions
-  row; on the Chat row the subscription option is disabled with what it needs.
+- AC-5: GIVEN OpenRouter and an OpenAI key connected WHEN the page loads THEN
+  the "Used for" table renders a row per surface and a Decisions row; on the
+  Claude agents row the OpenAI option is disabled with what it needs.
 - AC-6: GIVEN Chat set to OpenRouter while an Anthropic key is also connected
   WHEN a chat turn resolves a credential THEN the OpenRouter credential is
   used.

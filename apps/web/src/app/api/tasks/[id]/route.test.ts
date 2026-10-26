@@ -1609,6 +1609,29 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(sets[0].context).toBeUndefined();
     });
 
+    it('re-tiering a task with a live worker returns a modelChange naming the tier it is still running at', async () => {
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-live', status: 'running' });
+      const { res, sets } = await patch(
+        { ...baseTask({ model: 'claude-sonnet-5-5', resolvedTier: { tier: 'standard', provider: 'anthropic' } }), status: 'in_progress', predictedModel: 'claude-sonnet-5-5' },
+        { tier: 'premium' },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBe('premium');
+      const body = await res.json();
+      expect(body.modelChange).toMatchObject({
+        appliesTo: 'next_attempt', workerId: 'w-live', runningTier: 'standard', runningModel: 'claude-sonnet-5-5',
+      });
+      expect(body.modelChange.message).toMatch(/still running at standard.*next attempt/);
+      expect(sets[0].context.pendingModelChange).toMatchObject({ tier: 'premium', runningTier: 'standard', workerId: 'w-live' });
+      expect(sets[0].context.resolvedTier).toEqual({ tier: 'standard', provider: 'anthropic' });
+    });
+
+    it('re-tiering a task with no live worker carries no modelChange', async () => {
+      const { res } = await patch(baseTask(), { tier: 'premium' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).modelChange).toBeUndefined();
+    });
+
     it('tier: null clears the tier override', async () => {
       const { res, sets } = await patch({ ...baseTask(), tier: 'premium' }, { tier: null });
       expect(res.status).toBe(200);

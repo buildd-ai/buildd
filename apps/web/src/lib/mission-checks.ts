@@ -155,7 +155,7 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   if (state.status === 'passed') {
     // Closed: the pass stands as the record, and the row says which commit it judged.
     if (state.passedOnEarlierCommit) return row('stale', 'passed on an earlier commit', earlierCommitDetail(state), 'none');
-    if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last pass. It checks again.', 'system');
+    if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last pass. A new check is being filed.', 'system');
     return row('passed', 'passed', p.record?.detail ?? p.detail, 'none');
   }
   if (state.status === 'blocked') {
@@ -177,7 +177,7 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   if (state.recapture && state.recapture.next !== 'decide' && state.status !== 'running') {
     return row('queued', 'waiting for a new screenshot', sentence(p.label, p.detail));
   }
-  if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last check. It checks again.');
+  if (state.staleEvidence) return row('stale', 'out of date', state.nextActor === 'system' ? 'The branch changed after the last check. A new check is being filed.' : 'The branch changed after the last check. None is scheduled; Check again starts one.');
   if (state.status === 'running') {
     const pr = state.progress;
     const text = pr?.expected ? `capturing ${pr.captured} of ${pr.expected}` : 'checking';
@@ -428,16 +428,24 @@ export function waiverActorEmails(labels: readonly (string | null | undefined)[]
 
 export interface OutcomeSpecLine { specId: string; title: string; revision: string; status: string; href: string }
 
+const sameTitle = (a: string, b: string) => {
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').replace(/[.!?\s]+$/, '').trim();
+  return norm(a) === norm(b);
+};
+
 /**
  * One line per selected outcome spec, under the stage rail: its title, the
  * revision it is pinned to and the same status its Verify row shows. A spec
- * whose title could not be read still gets its line, named by revision.
+ * whose title could not be read still gets its line, named by revision. A
+ * spec titled as the mission is has no line: the page title already says it
+ * (f7f67f1a R-37, each fact once).
  */
-export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: readonly CheckRow[], titles: Readonly<Record<string, string>>): OutcomeSpecLine[] {
+export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: readonly CheckRow[], titles: Readonly<Record<string, string>>, missionTitle?: string | null): OutcomeSpecLine[] {
   const out: OutcomeSpecLine[] = [];
   criteria.forEach((c, i) => {
     // A standard is not the mission's outcome: it is listed with Standards, not here.
     if (c.type !== 'living_spec' || isStandardCriterion(c)) return;
+    if (missionTitle && titles[c.specId] && sameTitle(titles[c.specId], missionTitle)) return;
     const row = rows.find(r => r.key === `criterion-${i}`);
     out.push({
       specId: c.specId,

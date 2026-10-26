@@ -84,7 +84,7 @@ describe('QuestionHero with a question brief', () => {
       options: [{ label: 'UTC', consequence: 'Simpler.' }, { label: 'Local time', consequence: 'Own calendar.', recommended: true }],
     }, waits);
     const summary = host.querySelector('[data-testid="question-waits"]')!;
-    expect(summary.textContent).toBe('Waits on this: Invoice rounding. Affects the evidence for 2 of 4 criteria in Billing totals.');
+    expect(summary.textContent).toBe('Blocks Invoice rounding. Affects the evidence for 2 of 4 criteria in Billing totals.');
     expect([...summary.querySelectorAll('a')].map(a => a.getAttribute('href'))).toEqual(['/app/tasks/b1', '/app/specs/s1']);
     const opts = [...host.querySelectorAll('[data-testid="question-option"]')];
     expect(opts[0].textContent).toContain('Local time');
@@ -92,7 +92,7 @@ describe('QuestionHero with a question brief', () => {
       'Finishes the task: Invoice rounding starts',
       'Changes what it delivers: Invoice rounding starts on the changed result',
     ]);
-    expect(host.querySelector('[data-testid="question-expiry"]')!.textContent).toBe('Expires in 1 hour 30 minutes, then the task starts again and the agent goes with Local time.');
+    expect(host.querySelector('[data-testid="question-expiry"]')!.textContent).toBe('Expires in 1h 30m. Goes with Local time.');
     await unmount();
   });
 

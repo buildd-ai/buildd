@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
 /**
- * Settings → Models is one page: Providers (sign-ins, the gateway and the
+ * Settings → Models is one page: Providers (keys, the gateway and the
  * endpoint live in the provider rows), Used for, Tiers, in that order, each with an anchor, and the old anchors from
  * /app/settings/providers, /app/settings/ai and Runners still land.
  */
@@ -43,6 +43,18 @@ describe('Settings → Models page', () => {
     expect(page).not.toContain('MyMaximumSection');
     const keys = await Bun.file(new URL('../keys/page.tsx', import.meta.url)).text();
     expect(keys).toContain('<MyMaximumSection');
+  });
+
+  it('has no subscription sign-in, stored-login notice or Moving state', async () => {
+    const card = await Bun.file(new URL('../providers/ProviderCard.tsx', import.meta.url)).text();
+    for (const src of [page, client, card]) {
+      for (const gone of ['signIns', 'StoredSeatNotice', 'AgentBackendsSection', 'Moving to your runner', 'Connect ${', 'setup token', 'self-hosted runner only']) {
+        expect(`${gone}: ${src.includes(gone)}`).toBe(`${gone}: false`);
+      }
+    }
+    for (const gone of ['AgentBackendsSection.tsx', 'StoredSeatNotice.tsx']) {
+      expect(`${gone}: ${await Bun.file(new URL(`../${gone}`, import.meta.url)).exists()}`).toBe(`${gone}: false`);
+    }
   });
 
   it('has no decision features, chat retros or goal grading controls', () => {
