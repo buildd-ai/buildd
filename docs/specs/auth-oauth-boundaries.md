@@ -2,7 +2,7 @@
 title: Auth & OAuth Boundaries
 status: active
 owner: max
-last_verified: 2026-10-16
+last_verified: 2026-10-25
 summary: Inbound credentials MUST resolve to an account and apply claim limits according to how the runner pays for model usage.
 domain: auth
 surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/app/api/workers/claim/route.ts]
@@ -196,6 +196,13 @@ model billing. buildd coordinates the agent; it does not provide model access.
 
 Provider tokens, consent, grants, transport confinement and connection
 management are defined in [OAuth Provider & Signing Keys](oauth-provider-and-jwks.md).
+An account-level connection reaches, per team its user chose, either all
+current and future workspaces (the default a new consent gives a chosen team)
+or specific workspaces; see "Team access modes" there. Either way it reaches a
+workspace only while the user is a member of its team, so this contract's
+membership and role rules (AC-70, AC-71) bound it unchanged, and an OAuth
+session that reaches more than one workspace stays under the multi-workspace
+guard above.
 
 ## Device-code authentication
 

@@ -536,9 +536,7 @@ export function HealthClient({
               total: runners.length,
               online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now)).length,
               busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0),
-              slots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0),
             },
-            credentials: { total: credentialHealth.length, broken: brokenCredentials.length },
             budget: {
               monthly: budgetForecast?.monthly
                 ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
@@ -707,7 +705,7 @@ export function HealthClient({
                   <p className="text-sm font-medium text-text-primary">
                     {hb.accountName || 'Runner'} offline
                   </p>
-                  <p className="text-xs text-text-muted">last beat {timeAgo(hb.lastHeartbeatAt, now)}</p>
+                  <p className="text-xs text-text-muted">Last seen {timeAgo(hb.lastHeartbeatAt, now)}</p>
                 </div>
               </div>
             ))}

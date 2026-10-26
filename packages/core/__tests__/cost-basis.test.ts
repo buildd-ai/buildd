@@ -78,13 +78,13 @@ describe('countsTowardMissionBudget', () => {
 });
 
 describe('countsTowardAgentSdkCreditPool with a cost basis', () => {
-  it('real usage never draws on the pool', () => {
-    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'oauth', costBasis: 'real' })).toBe(false);
+  it('real usage is the only usage that counts', () => {
+    expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'oauth', costBasis: 'real' })).toBe(true);
   });
 
-  it('virtual, mixed, unknown and absent bases draw on it as before', () => {
+  it('virtual, mixed, unknown and absent bases never count', () => {
     for (const costBasis of ['virtual', 'mixed', 'unknown', null] as const) {
-      expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'api', costBasis })).toBe(true);
+      expect(countsTowardAgentSdkCreditPool({ backend: 'claude', authType: 'api', costBasis })).toBe(false);
     }
   });
 });

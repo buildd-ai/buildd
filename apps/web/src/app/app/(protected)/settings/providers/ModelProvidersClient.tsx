@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { ListProvidersResponse, ProviderApiScope } from '@buildd/shared';
 import { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
@@ -10,9 +10,9 @@ import Notice from '@/components/ui/Notice';
 import StoredPolicyNotice from './StoredPolicyNotice';
 import ProviderRow from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
-import AgentBackendsSection, { type SignInSlots } from '../AgentBackendsSection';
+import ProviderRoutingToggle from './ProviderRoutingToggle';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
-import { connectedProviders, groupProviders, keyRuleLine, providersTitle, storedPolicyLine, usesTeamLine } from './providers-view';
+import { connectedProviders, keyRuleLine, providerRows, providersTitle, storedPolicyLine, usesTeamLine } from './providers-view';
 import UsedForSection from './UsedForSection';
 import type { DecisionsQaFixture } from '../models/qa-state';
 
@@ -27,27 +27,24 @@ import type { DecisionsQaFixture } from '../models/qa-state';
  * Settings › You › Keys: your own keys and nothing of the team's to change,
  * with the key rule as a line. No page mixes scopes.
  *
- * Every model provider in registry order, one row each (Claude and OpenAI each
- * group their key and subscription into one row). Whose key has no setting:
+ * Every provider buildd stores a credential for (a key, a gateway, an
+ * endpoint), in registry order, one row each. Whose key has no setting:
  * a person's own key goes first, the team's is the fallback. Only a team that
  * stored another policy sees a line about it, with a way back to the default.
  * Built on `/api/providers`: what a provider serves, the
  * scopes it can be stored at and what each stored row serves today come from
  * the response, never from a copy here. Keys never come back beyond last4.
  *
- * On Models a provider row shows every way it is connected in its opened
- * detail: the key, a subscription sign-in and a runner sign-in (`signIns`, the
- * Claude and Codex logins, at the row's scope). There is no separate sign-ins
- * section.
- *
  * The LiteLLM gateway and a custom endpoint are rows like any other; their
  * forms open in the row. A gateway change reloads the rows and the decision
- * model, so all of it lives in one component. The decision model is a platform
+ * model, so all of it lives in one component. With a Claude and a Codex
+ * provider both connected, Used for also holds the provider routing switch.
+ * The decision model is a platform
  * operator control (lib/admin/platform-operator-caller.ts): its Used for row renders for an
  * operator only, editable when they also hold the `manage_team_settings` its
  * route checks.
  */
-export default function ModelProvidersClient({ teamId, isAdmin, operator = false, qaDecisions = null, workspaces = [], signIns, scope = 'team', workspaceId: fixedWorkspaceId = null }: {
+export default function ModelProvidersClient({ teamId, isAdmin, operator = false, qaDecisions = null, workspaces = [], scope = 'team', workspaceId: fixedWorkspaceId = null }: {
   teamId: string;
   /** Fallback for the Routing section until the list loads. */
   isAdmin: boolean;
@@ -57,8 +54,6 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
   qaDecisions?: DecisionsQaFixture | null;
   /** The team's workspaces, for Workspace keys and the agent endpoint. */
   workspaces?: EndpointWorkspace[];
-  /** Props for the sign-ins folded into the Claude and OpenAI rows. Omitted: the rows hold keys only. */
-  signIns?: Pick<ComponentProps<typeof AgentBackendsSection>, 'workspaces' | 'currentTeamId' | 'manageableTeamIds' | 'canManage' | 'canManageRouting'>;
   /** Whose keys this page holds: the team's (Models), one workspace's (its settings page) or yours (Keys). */
   scope?: 'team' | 'workspace' | 'mine';
   /** With scope "workspace": the workspace whose own keys these are. */
@@ -72,8 +67,9 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
   const [error, setError] = useState<string | null>(null);
   // Bumped when the gateway changes: the sections that route through it reload.
   const [gatewayRev, setGatewayRev] = useState(0);
-  // One row open at a time, across both lists: `<scope>:<group>`.
+  // One row open at a time, across both lists: `<scope>:<row>`.
   const [openRow, setOpenRow] = useState<string | null>(null);
+  const [routingOpen, setRoutingOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -105,23 +101,22 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
   const flow = providerFlowMessage(params);
   const canManageRouting = data ? data.caller.can.manage_inference_providers : isAdmin;
 
-  const list = (rowScope: ProviderApiScope, slots: SignInSlots | null, testId: string) => (
+  const list = (rowScope: ProviderApiScope, testId: string) => (
     data
       ? (
         <ul className="border-y border-border-default divide-y divide-border-default" data-testid={testId}>
-          {groupProviders(data.providers).map((g) => {
+          {providerRows(data.providers).map((g) => {
             const key = `${rowScope}:${g.id}`;
             return (
               <ProviderRow
                 key={key}
-                group={g}
+                item={g}
                 scope={rowScope}
                 data={data}
                 workspaceId={workspaceId}
                 onChanged={load}
                 open={openRow === key}
                 onToggle={(o) => setOpenRow(o ? key : null)}
-                signIn={!slots ? null : g.id === 'claude' ? slots.claude : g.id === 'openai' ? slots.openai : null}
                 form={rowScope === 'workspace'
                   ? (g.id === 'custom-endpoint' ? <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces.filter((w) => w.id === workspaceId)} rev={gatewayRev} embedded scope={{ workspaceId: workspaceId! }} /> : null)
                   : rowScope !== 'team' ? null
@@ -157,13 +152,32 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
           {data && (
             <p className="text-body text-text-secondary" data-testid="credential-policy-line">{keyRuleLine(data.policy)}</p>
           )}
-          {list('mine', null, 'provider-list-mine')}
+          {list('mine', 'provider-list-mine')}
         </div>
       </Section>
     );
   }
 
-  const render = (slots: SignInSlots | null) => (
+  if (scope === 'workspace') {
+    const own = !!data && data.providers.some((p) => (p.set.workspace ?? []).length > 0);
+    const canOverride = !!data && (data.caller.can.manage_team_credentials || data.caller.can.manage_team_model_keys);
+    return (
+      <Section title="Models" id="models" className="scroll-mt-20">
+        <div className="space-y-3">
+          {status}
+          {data && !own && !overriding && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="workspace-uses-team">
+              <p className="text-body text-text-secondary">{usesTeamLine(data.teamName)}</p>
+              {canOverride && <button type="button" className="btn" onClick={() => setOverriding(true)}>Override</button>}
+            </div>
+          )}
+          {(own || overriding) && list('workspace', 'provider-list-workspace')}
+        </div>
+      </Section>
+    );
+  }
+
+  return (
     <>
       <Section title={providersTitle(data)} id="keys" className="scroll-mt-20">
         <span id="providers" aria-hidden="true" />
@@ -172,13 +186,11 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
         <span id="advanced" aria-hidden="true" />
         {/* Old links: /app/settings/providers and #provider-keys land here. */}
         <span id="provider-keys" aria-hidden="true" />
-        {/* Old links: #sign-ins, #agent-backends (the sign-ins section these rows now hold). */}
+        {/* Old links: #sign-ins, #agent-backends (the removed sign-ins section). */}
         <span id="sign-ins" aria-hidden="true" />
         <span id="agent-backends" aria-hidden="true" />
         <div className="space-y-6">
           {status}
-
-          {slots?.notice}
 
           {data && storedPolicyLine(data.policy) && (
             <StoredPolicyNotice
@@ -189,7 +201,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
             />
           )}
 
-          {list('team', slots, 'provider-list-team')}
+          {list('team', 'provider-list-team')}
 
           {data && <WorkspacesWithKeys ids={data.workspacesWithKeys ?? []} workspaces={workspaces} />}
         </div>
@@ -201,44 +213,20 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
           data={data}
           canManage={data.caller.can.manage_team_settings}
           decisions={operator ? <DecisionModelPicker teamId={teamId} canManage={data.caller.can.manage_team_settings} rev={gatewayRev} embedded fixture={qaDecisions} /> : undefined}
-          extra={slots && bothBackends(data) ? <div className="border-y border-border-default">{slots.routing}</div> : null}
+          extra={bothBackends(data) && workspaces[0] ? (
+            <div className="border-y border-border-default">
+              <ProviderRoutingToggle
+                teamId={teamId}
+                workspaceId={workspaces[0].id}
+                open={routingOpen}
+                onToggle={() => setRoutingOpen((v) => !v)}
+                readOnly={!data.caller.can.manage_team_settings}
+              />
+            </div>
+          ) : null}
         />
       )}
-
-
     </>
-  );
-
-  if (scope === 'workspace') {
-    const own = !!data && data.providers.some((p) => (p.set.workspace ?? []).length > 0);
-    const canOverride = !!data && (data.caller.can.manage_team_credentials || data.caller.can.manage_team_model_keys);
-    const body = (slots: SignInSlots | null) => (
-      <Section title="Models" id="models" className="scroll-mt-20">
-        <div className="space-y-3">
-          {status}
-          {data && !own && !overriding && (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="workspace-uses-team">
-              <p className="text-body text-text-secondary">{usesTeamLine(data.teamName)}</p>
-              {canOverride && <button type="button" className="btn" onClick={() => setOverriding(true)}>Override</button>}
-            </div>
-          )}
-          {(own || overriding) && list('workspace', slots, 'provider-list-workspace')}
-        </div>
-      </Section>
-    );
-    if (!signIns || !workspaceId) return body(null);
-    return (
-      <AgentBackendsSection {...signIns} scope="workspace" workspaceId={workspaceId}>
-        {(wsSlots) => body(wsSlots)}
-      </AgentBackendsSection>
-    );
-  }
-
-  if (!signIns || signIns.workspaces.length === 0) return render(null);
-  return (
-    <AgentBackendsSection {...signIns} scope="team" workspaceId={null}>
-      {(teamSlots) => render(teamSlots)}
-    </AgentBackendsSection>
   );
 }
 
@@ -264,5 +252,5 @@ const LOAD_ERROR = "Couldn't load your providers.";
 /** The Claude / Codex switch only means something when the team can run both. */
 function bothBackends(data: Pick<ListProvidersResponse, 'providers'>): boolean {
   const ids = connectedProviders(data).map((p) => p.id);
-  return ids.some((id) => id === 'anthropic' || id === 'claude-subscription') && ids.some((id) => id === 'openai' || id === 'codex-subscription');
+  return ids.includes('anthropic') && ids.includes('openai');
 }

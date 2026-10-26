@@ -19,6 +19,18 @@ export function displayWorkspaceName(name: string): string {
   return name;
 }
 
+/**
+ * A team as a person reads it: its name, or, when the name is blank or
+ * missing, "Unnamed team" with the first 8 characters of its id so two such
+ * teams still read apart. Never an empty string.
+ */
+export function displayTeamName(name: string | null | undefined, id: string | null | undefined): string {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (trimmed) return trimmed;
+  const short = typeof id === 'string' ? id.slice(0, 8) : '';
+  return short ? `Unnamed team ${short}` : 'Unnamed team';
+}
+
 // ============================================================================
 // ENUMS & CONSTANTS
 // ============================================================================

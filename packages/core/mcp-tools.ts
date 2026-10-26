@@ -1,4 +1,4 @@
-import { formatTaskEstimate, type TaskEstimatePayload } from '@buildd/shared';
+import { formatTaskEstimate, displayTeamName, type TaskEstimatePayload } from '@buildd/shared';
 import { hasTokenScope, requiredScopeForAction } from './token-scopes';
 import { detectProviderAccessAsk, providerAccessRefusal } from './provider-access-ask';
 import { detectInteractiveSessionAsk, interactiveSessionRefusal } from './interactive-session-ask';
@@ -430,7 +430,8 @@ export function renderWorkspaceListing(rows: WorkspaceListing[], params: Record<
   for (const r of page) {
     const key = r.teamId ?? null;
     let t = teams.find((x) => x.teamId === key);
-    if (!t) { t = { teamId: key, teamName: r.teamName ?? null, workspaces: [] }; teams.push(t); }
+    // A team is never shown nameless: a blank name reads "Unnamed team <id8>".
+    if (!t) { t = { teamId: key, teamName: key || r.teamName ? displayTeamName(r.teamName, key) : null, workspaces: [] }; teams.push(t); }
     t.workspaces.push({
       id: r.workspaceId,
       name: r.name,
@@ -2606,7 +2607,8 @@ export async function handleBuilddAction(
         name: w.name,
         repo: w.repo ?? null,
         teamId: w.teamId ?? null,
-        teamName: w.team?.name ?? null,
+        // GET /api/workspaces sends the team's name as `teamName`; `team.name` is the older shape.
+        teamName: w.teamName ?? w.team?.name ?? null,
         level,
       }));
       return text(renderWorkspaceListing(rows, params));
@@ -4155,8 +4157,11 @@ export async function handleBuilddAction(
       if (params.model !== undefined) modelParts.push(`Model: ${updateFields.model ?? 'cleared'}`);
       const pinCleared = (params.tier !== undefined && updateFields.tier === null)
         || (params.model !== undefined && updateFields.model === null);
+      // The route names a live worker when there is one: it keeps the model it
+      // was claimed with, and the reply has to say which, not just "next claim".
+      const liveModel = updated?.modelChange as { message?: string } | undefined;
       const modelInfo = modelParts.length > 0
-        ? `\n${modelParts.join('\n')}\nNote: takes effect on the next claim or retry; does not change a running session.${pinCleared ? ' Cleared pins mean routing decides the model again.' : ''}`
+        ? `\n${modelParts.join('\n')}\n${liveModel?.message ? `WARNING: ${liveModel.message}` : 'Note: takes effect on the next claim or retry; does not change a running session.'}${pinCleared ? ' Cleared pins mean routing decides the model again.' : ''}`
         : '';
 
       const startInfo = params.startAt !== undefined || params.startIn !== undefined

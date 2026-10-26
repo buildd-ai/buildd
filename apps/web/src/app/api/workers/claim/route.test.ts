@@ -5504,6 +5504,21 @@ describe('POST /api/workers/claim', () => {
         expect(res.predictedModel).toBe('claude-sonnet-5');
       });
 
+      it('a [friction] engineering task with no complexity routes to the premium tier', async () => {
+        const res = await claimOnce({ workspace, title: '[friction] tier change on an active task', complexity: null });
+        expect(res.context.routingReason).toBe('diagnosis_floor');
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      });
+
+      it('a re-tier recorded during the previous attempt is cleared by the next claim', async () => {
+        const res = await claimOnce({
+          workspace, tier: 'premium',
+          context: { pendingModelChange: { tier: 'premium', runningTier: 'standard', runningModel: null, workerId: 'w-old', at: '2026-10-24T00:00:00Z' } },
+        });
+        expect(res.context.pendingModelChange).toBeUndefined();
+        expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      });
+
       it('an inferred role floor does not raise the model', async () => {
         mockWorkspaceSkillsFindMany.mockResolvedValue([
           { slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1' },

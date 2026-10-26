@@ -7,8 +7,7 @@ const CALM: OverviewAttention = {
 };
 
 const STATE: OverviewState = {
-  runners: { total: 1, online: 1, busySlots: 1, slots: 10 },
-  credentials: { total: 2, broken: 0 },
+  runners: { total: 1, online: 1, busySlots: 1 },
   budget: { monthly: null, paused: [] },
 };
 
@@ -35,22 +34,23 @@ describe('overviewStatusRows', () => {
   };
 
   it('budget links to Billing and budgets while capacity links to Runners', () => {
-    expect(byKey(STATE).budget.href).toBe('/app/settings/billing');
+    const withSpend = { ...STATE, budget: { monthly: { spentUsd: 5, budgetUsd: 100, pctUsed: 5 }, paused: [] } };
+    expect(byKey(withSpend).budget.href).toBe('/app/settings/billing');
     expect(byKey(STATE).runners.href).toBe('/app/health/runners');
   });
 
-  it('runners: online count and agents running, tone by how many are up', () => {
-    expect(byKey(STATE).runners).toMatchObject({ value: '1 of 1 online · 1 of 10 agents running', tone: 'ok' });
-    expect(byKey({ ...STATE, runners: { total: 2, online: 1, busySlots: 0, slots: 6 } }).runners)
-      .toMatchObject({ value: '1 of 2 online · 0 of 6 agents running', tone: 'warning' });
-    expect(byKey({ ...STATE, runners: { total: 1, online: 0, busySlots: 0, slots: 0 } }).runners)
+  it('runners: how many are online and how many agents are running, tone by how many are up', () => {
+    expect(byKey(STATE).runners).toMatchObject({ value: '1 online · 1 running', tone: 'ok' });
+    expect(byKey({ ...STATE, runners: { total: 2, online: 1, busySlots: 0 } }).runners)
+      .toMatchObject({ value: '1 online · 0 running', tone: 'warning' });
+    expect(byKey({ ...STATE, runners: { total: 1, online: 0, busySlots: 0 } }).runners)
       .toMatchObject({ value: 'None online', tone: 'error' });
-    expect(byKey({ ...STATE, runners: { total: 0, online: 0, busySlots: 0, slots: 0 } }).runners)
+    expect(byKey({ ...STATE, runners: { total: 0, online: 0, busySlots: 0 } }).runners)
       .toMatchObject({ value: 'None connected', tone: 'error' });
   });
 
   it('when offline runners are already shown in Problems, hide the error tone runners row from At a glance', () => {
-    const offlineState = { ...STATE, runners: { total: 2, online: 0, busySlots: 0, slots: 0 } };
+    const offlineState = { ...STATE, runners: { total: 2, online: 0, busySlots: 0 } };
     // When offline runners are shown in Problems list, don't duplicate in At a glance
     const rowsWhenHidden = overviewStatusRows(offlineState, { hideOfflineRunners: true });
     expect(rowsWhenHidden.find(r => r.key === 'runners')).toBeUndefined();
@@ -59,21 +59,21 @@ describe('overviewStatusRows', () => {
     expect(rowsNormal.find(r => r.key === 'runners')).toMatchObject({ value: 'None online', tone: 'error' });
   });
 
-  it('credentials: working, broken, or none stored (runners may use their own sign-in)', () => {
-    expect(byKey(STATE).credentials).toMatchObject({ value: '2 working', tone: 'ok' });
-    expect(byKey({ ...STATE, credentials: { total: 2, broken: 1 } }).credentials)
-      .toMatchObject({ value: '1 needs attention', tone: 'error' });
-    expect(byKey({ ...STATE, credentials: { total: 3, broken: 2 } }).credentials.value).toBe('2 need attention');
-    expect(byKey({ ...STATE, credentials: { total: 0, broken: 0 } }).credentials)
-      .toMatchObject({ value: 'None stored', tone: 'muted' });
+  it('has no credentials row, and no budget row without real spend', () => {
+    expect(overviewStatusRows(STATE).map(r => r.key)).toEqual(['runners']);
   });
 
-  it('budget: a paused provider wins, then the monthly limit, else no limit', () => {
-    expect(byKey(STATE).budget).toMatchObject({ value: 'No monthly limit set', tone: 'muted' });
+  it('budget: a paused provider wins, then real monthly spend, else no row', () => {
+    expect(byKey(STATE).budget).toBeUndefined();
+    // A cap with no real spend (a team on subscription logins) shows nothing.
+    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 0, budgetUsd: 100, pctUsed: 0 }, paused: [] } }).budget).toBeUndefined();
     expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 42, budgetUsd: 100, pctUsed: 42 }, paused: [] } }).budget)
       .toMatchObject({ value: '$42 of $100 this month', tone: 'ok' });
     expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 75, budgetUsd: 100, pctUsed: 75 }, paused: [] } }).budget.tone).toBe('warning');
     expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 95, budgetUsd: 100, pctUsed: 95 }, paused: [] } }).budget.tone).toBe('error');
+    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 175, budgetUsd: 100, pctUsed: 175 }, paused: [] } }).budget)
+      .toMatchObject({ value: '$175 of $100 this month · Over budget', tone: 'error' });
+    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 100, budgetUsd: 100, pctUsed: 100 }, paused: [] } }).budget.value).toBe('$100 of $100 this month');
     expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 10, budgetUsd: 100, pctUsed: 10 }, paused: [{ label: 'Codex', resetsInMs: 7 * 3600_000 }] } }).budget)
       .toMatchObject({ value: 'Codex paused · resets in 7h', tone: 'warning' });
   });
