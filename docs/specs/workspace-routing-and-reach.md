@@ -10,6 +10,24 @@ related: [capability-requests, team-permissions, credential-isolation, mission-h
 keywords: [workspace routing, home workspace, task token reach, bldt_, delegation, schedule delegation, task delegation, filingTargets, readsFrom, analytics:read, tasks:create, delegation_required, delegation_unmet, FORBIDDEN, not visible to this key, __coordination, schedule move, re-home, wrong workspace]
 verified_by: [packages/core/__tests__/token-delegation.test.ts, apps/web/src/lib/schedule-delegation-scenario.test.ts, apps/web/src/lib/task-delegation-scenario.test.ts, apps/web/src/lib/task-token-routes.test.ts]
 supersedes: []
+assertions:
+  - id: "delegation-claim-gate-symbol"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "symbol"
+    name: "checkDelegationGate"
+    path: "apps/web/src/app/api/workers/claim/delegation-gate.ts"
+  - id: "task-token-reach-check"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "symbol"
+    name: "taskScopeAllowsWorkspace"
+    path: "apps/web/src/lib/task-token-auth.ts"
+  - id: "delegation-regression-tests"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "test_file"
+    path: "packages/core/__tests__/token-delegation.test.ts"
 ---
 # Workspace Routing and Reach
 
