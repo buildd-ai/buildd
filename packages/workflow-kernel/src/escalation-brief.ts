@@ -10,7 +10,7 @@
  * brief only says which are open to them, what each does and what it needs.
  */
 import { findingTotals, type FindingTotals } from './findings';
-import type { AttemptSnapshot, FindingSnapshot, KernelView } from './types';
+import type { AttemptSnapshot, FindingSnapshot, KernelView, RemedyClass } from './types';
 
 /** The two causes a spent review budget can have. Other review escalations are `review_required` too: a person's read is what is missing. */
 export type EscalationCause = 'fixes_exhausted' | 'review_required';
@@ -41,6 +41,10 @@ export interface BriefFinding {
   line: number | null;
   /** Addressed only: the push that touched it is not the current head, so the touch may be stale. */
   stale?: boolean;
+  /** Who can fix it (Living Spec fa62b865 §11.1). */
+  remedyClass: RemedyClass;
+  /** How many later rounds restated it (R-48): shown as "restated n times", never as the prose again. */
+  restatedCount: number;
 }
 
 export interface EscalationBrief {
@@ -87,7 +91,7 @@ export interface EscalationBriefPermissions {
 const REVIEW_FAMILY_REASONS = new Set(['review_escalated', 'review_exhausted', 'review_unavailable']);
 
 const brief = (f: FindingSnapshot, head: string | null): BriefFinding => ({
-  id: f.id, title: f.title, path: f.path, line: f.line,
+  id: f.id, title: f.title, path: f.path, line: f.line, remedyClass: f.remedyClass ?? 'code_fix', restatedCount: f.restatedCount ?? 0,
   ...(f.status === 'addressed' ? { stale: f.addressedBySha != null && head != null && f.addressedBySha !== head } : {}),
 });
 

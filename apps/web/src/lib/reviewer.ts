@@ -133,7 +133,11 @@ export interface ReviewerTaskOutput {
    * prompt listed as still open. They survive every push and completion until
    * a later round lists them in `resolvedFindings`.
    */
-  findings?: Array<{ id?: string; path?: string; line?: number; title: string; required?: boolean; remedyClass?: RemedyClass; remedyEvidence?: RemedyEvidence }>;
+  findings?: Array<{
+    id?: string; path?: string; line?: number; title: string; required?: boolean; remedyClass?: RemedyClass; remedyEvidence?: RemedyEvidence;
+    /** `evidence` findings: what buildd captures (Living Spec fa62b865 R-46). */
+    evidence?: { criterionId?: string; screen: string; route?: string };
+  }>;
   /** The ids of the listed open findings this review verified as fixed at this head. */
   resolvedFindings?: string[];
   /** Listed open findings handed to another task, with why (`taskId` when one exists). */
@@ -206,7 +210,7 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
     criteriaFindings: REVIEWER_CRITERIA_FINDINGS_SCHEMA,
     findings: {
       type: 'array',
-      description: 'request-changes: one entry per distinct issue, pinned to the file and line it is about. Restate a still-open listed finding with its id.',
+      description: 'request-changes: one entry per distinct issue, pinned to the file and line it is about. Restate a still-open listed finding with its id; a restatement is the same finding.',
       items: {
         type: 'object',
         required: ['title'],
@@ -219,7 +223,13 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
           remedyClass: {
             type: 'string',
             enum: [...REMEDY_CLASSES],
-            description: 'Required on every finding of an escalation. capability_gap and operational_run also need remedyEvidence.',
+            description: 'Who can fix it. Required unless the finding names a path (then code_fix). evidence needs `evidence`; capability_gap and operational_run need remedyEvidence.',
+          },
+          evidence: {
+            type: 'object',
+            description: 'evidence only: the design screen buildd captures beside the built page.',
+            required: ['screen'],
+            properties: { criterionId: { type: 'string' }, screen: { type: 'string' }, route: { type: 'string' } },
           },
           remedyEvidence: {
             type: 'object',

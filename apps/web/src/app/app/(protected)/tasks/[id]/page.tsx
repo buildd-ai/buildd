@@ -950,6 +950,8 @@ async function TaskDetailPage({
   // The runs the timeline links to, by when each last did something (R-8).
   const eventTimes = new Map<string, Date | null>(ciAttemptTasks.map(t => [t.id, t.workers[0]?.completedAt ?? t.workers[0]?.startedAt ?? null]));
   for (const r of linkedRunTimes) if (r.taskId && !eventTimes.has(r.taskId)) eventTimes.set(r.taskId, r.completedAt ?? r.startedAt ?? null);
+  // Task Page AC-28 / AC-30: the delivery's review reading says the review blocks; it leads the page.
+  const reviewLeads = !activeWorker && !!checksSection && checksSection.checks.reviewOpen === true;
   const timeline = buildTaskTimeline({
     task, workers: taskWorkers,
     kind: deliveryView ? projectKernelState(deliveryView.state) : prLife.mergedAt ? 'landed' : 'build',
@@ -1656,15 +1658,19 @@ async function TaskDetailPage({
           <TaskVerdictBlock verdict={!activeWorker && prWorker?.prUrl ? { ...verdict, actions: verdict.actions.filter(a => a.href !== prWorker.prUrl || a.tone !== 'quiet') } : verdict} displayStatus={displayStatus} />
         )}
         {deliveryView?.escalation && deliveryView.prNumber != null && subject.kind === 'deliverable' && (
-          <EscalationDecision brief={deliveryView.escalation} copy={escalationCopy!} prNumber={deliveryView.prNumber} workspaceId={task.workspaceId} />
+          <EscalationDecision brief={deliveryView.escalation} copy={escalationCopy!} prNumber={deliveryView.prNumber} workspaceId={task.workspaceId} findingsBelow={reviewLeads} />
         )}
+
+        {/* Task Page AC-28 / AC-30 (mobile-decision-flow §3.7's rule): a review that blocks is never
+            buried under history. Its checks, with Code review open, come before the timeline. */}
+        {reviewLeads && <TaskChecksSection section={checksSection!} currentTaskId={task.id} />}
 
         {!activeWorker && <TaskTimeline groups={timeline} />}
         {!activeWorker && stoppedSummary && <p aria-label="Summary" className="mb-4 text-body text-text-secondary line-clamp-2">{stoppedSummary}</p>}
         {!activeWorker && prWorker?.prUrl && <a href={prWorker.prUrl} target="_blank" rel="noopener noreferrer" className="flex min-h-11 items-center justify-center border border-border-default mb-5 text-body hover:bg-surface-2">PR #{prWorker.prNumber} ↗</a>}
 
         {/* Checks on the delivery's current head, by round (task-page spec). */}
-        {checksSection && <TaskChecksSection section={checksSection} currentTaskId={task.id} />}
+        {checksSection && !reviewLeads && <TaskChecksSection section={checksSection} currentTaskId={task.id} />}
 
         <ServiceStatusList statuses={taskServiceStatus} showWork={false} />
         {runnerReach && (

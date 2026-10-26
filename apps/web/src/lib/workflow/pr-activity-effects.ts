@@ -2,9 +2,8 @@
  * buildd's activity render, the `Notify.activity` port of `render_activity`
  * (docs/specs/workflow-state-kernel.md §12.1; the handler is the package's,
  * packages/workflow-kernel/src/handlers/activity.ts): regenerate the PR
- * activity comment of a kernel-owned delivery from the delivery row, its full
- * `workflow_transitions` log and the legacy notes diverted into
- * `workflow_facts` (kind `activity_note`). Never appends, never reads the
+ * activity comment of a kernel-owned delivery from the delivery row and its
+ * `workflow_transitions` log: one state line (Living Spec fa62b865 R-51). Never appends, never reads the
  * comment as data: the only thing read back from GitHub is the render-version
  * marker, so a stale render can delay the right text but never leave a wrong
  * one (rule 3; the follow-up render owed when the version moved on is the
@@ -25,7 +24,7 @@ import { loadView, type Exec } from './kernel';
 import { postgresStore } from './postgres-store';
 import { workspaceKernelOnSql } from './authority';
 import { workspaceRepo, type WorkspaceRepo } from './github-facts';
-import { parseRenderVersion, renderDeliveryActivity, type ActivityTransition, type DivertedNote } from './pr-activity-render';
+import { parseRenderVersion, renderDeliveryActivity, type ActivityTransition } from './pr-activity-render';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -45,12 +44,6 @@ export function transitionsSql(deliveryId: string): SQL {
   return sql`-- workflow:activity_transitions
 SELECT command, from_state, to_state, to_version, evidence, created_at
 FROM workflow_transitions WHERE delivery_id = ${deliveryId}::uuid ORDER BY to_version`;
-}
-
-export function activityNotesSql(deliveryId: string): SQL {
-  return sql`-- workflow:activity_notes
-SELECT payload, observed_at FROM workflow_facts
-WHERE delivery_id = ${deliveryId}::uuid AND kind = 'activity_note' ORDER BY observed_at, id`;
 }
 
 async function defaultGithub(): Promise<GithubApi> {
@@ -97,12 +90,9 @@ export function activityNotify(deps: RenderDeps = {}): Pick<Notify, 'activity'> 
         command: String(r.command), fromState: r.from_state == null ? null : String(r.from_state), toState: String(r.to_state),
         toVersion: Number(r.to_version), evidence: (r.evidence as Record<string, unknown> | null) ?? null, createdAt: iso(r.created_at),
       }));
-      const nRows = ((await exec(activityNotesSql(d.id))).rows ?? []) as J[];
-      const notes: DivertedNote[] = nRows
-        .filter((r) => r.payload && typeof (r.payload as J).kind === 'string')
-        .map((r) => ({ entry: r.payload as PrActivityEntry, observedAt: iso(r.observed_at) }));
       const timezone = await (deps.timezone ?? defaultTimezone)(d.workspaceId);
-      const body = renderDeliveryActivity({ view, transitions, notes, timezone });
+      // R-51: one state line. Diverted notes stay recorded for Buildd; the comment does not list them.
+      const body = renderDeliveryActivity({ view, transitions, timezone });
 
       const comments = await findActivityComments(api, repo.installationId, d.repoFullName, d.prNumber);
       const [keep, ...extra] = comments;
