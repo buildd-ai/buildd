@@ -8,7 +8,7 @@ import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SEQUENCE, activityContextFixture, activi
 /**
  * Activity Now/History on fabricated data (activity-delivery-fixtures.ts).
  * `&step=0..7` walks task 34 through audit fail → repair → re-audit → land;
- * `&view=history` opens History. Task 34's evidence starts expanded, and so does the kernel-owned row's.
+ * `&view=history` opens History.
  * `&data=scale` swaps in a busy workspace's 30 days (`&data=quiet`: the same, with
  * nothing retried still in motion, so Had retries is empty in Now only), `&data=context` live work with
  * its context (a new mission already building, a five-generation chain, a new standalone task), `&data=states`
@@ -54,7 +54,6 @@ export default function ActivityDeliveryFixture() {
         history={data.history}
         nowMs={ACTIVITY_FIXTURE_NOW}
         hrefs={{ now: href('now'), history: href('history') }}
-        openRowIds={['fx-t34', 'fx-k']}
         loadError={variant.error}
         initialFilters={variant.outcome ? { outcome: variant.outcome } : undefined}
         identityFilters
