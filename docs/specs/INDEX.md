@@ -10,7 +10,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
-- [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-16
+- [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-25
   Inbound credentials MUST resolve to an account and apply claim limits according to how the runner pays for model usage.
 - [Capability Requests and Grants](./capability-requests.md) · @max — verified 2026-10-23
   An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
@@ -22,7 +22,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 - [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-23
   A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
-- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-15
+- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-25
   OAuth tokens MUST be PKCE-protected and confined to their grant or legacy workspace, connection changes MUST apply on the next request, and JWKS MUST publish public assertion keys.
 - [Team Permissions](./team-permissions.md) · @max — verified 2026-10-15
   Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
@@ -191,8 +191,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An authorised human answer MUST reach a live session or a new attempt of the same task, and MUST never be applied twice or silently dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-15
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
-- [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-23
-  Creation-manifest decisions MUST stay record-only without a committed promotion and fall back to the rule; the claim hold/start question is retired and its ledger stays readable.
+- [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-15
+  Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a measured model's confident START to its three advisory gates; both fall back to the rule.
 - [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-11
   Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-10-07
@@ -235,8 +235,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ## Superseded (8)
 
-- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-22
-  Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract. → replaced by Living Spec `75217f55`
+- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-18
+  Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live. → replaced by Living Spec `Overlap scheduling: serial lanes and file locks`
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-15
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped. → replaced by `agent-question-protocol`
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-10-09

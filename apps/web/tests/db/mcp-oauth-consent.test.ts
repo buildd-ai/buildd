@@ -5,8 +5,10 @@
  * The browser path end to end: GET the consent page for the account-level
  * resource, POST the person's choice back, exchange the code at the token
  * endpoint, and check the grant row that results. Covers the consent token
- * (CSRF), same origin, state, PKCE S256, a tampered workspace selection, a
- * tampered kind, the agent default, a downgrade, and pagination carrying a
+ * (CSRF), same origin, state, PKCE S256, a tampered workspace or team
+ * selection, a tampered kind, the agent default, a downgrade, the per-team
+ * access choice (all current and future workspaces by default for a chosen
+ * team, specific workspaces as the opt-out), and pagination carrying a
  * selection across pages.
  */
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
@@ -113,6 +115,17 @@ function setField(fields: Array<[string, string]>, name: string, values: string[
   return [...fields.filter(([k]) => k !== name), ...values.map((v) => [name, v] as [string, string])];
 }
 
+/** Set each team's access choice and the ticked workspaces, as the person would. */
+function pick(fields: Array<[string, string]>, modes: Record<string, 'none' | 'all' | 'specific'>, ws: string[] = []): Array<[string, string]> {
+  let out = setField(fields, 'ws', ws);
+  for (const [teamId, mode] of Object.entries(modes)) out = setField(out, `tmode.${teamId}`, [mode]);
+  return out;
+}
+
+async function grantTeams(grantId: string) {
+  return (await q<{ team_id: string }>(sql`SELECT team_id FROM mcp_oauth_grant_teams WHERE grant_id = ${grantId}::uuid`)).map((r) => r.team_id).sort();
+}
+
 function codeFrom(html: string): { code: string; state: string | null } {
   const href = unescape(html.match(/<a href="([^"]+)"/)![1]);
   const u = new URL(href);
@@ -135,7 +148,7 @@ async function grantWorkspaces(grantId: string) {
 }
 
 describe('the consent page', () => {
-  test('lists every team with its workspaces, preselects one, defaults to agent, issues nothing', async () => {
+  test('lists every team with its workspaces, chooses no team when there are several, defaults to agent, issues nothing', async () => {
     const { userId, a, b, outside, clientId } = await setup();
     const res = await getPage(authorizeQuery(clientId));
     expect(res.status).toBe(200);
@@ -145,8 +158,9 @@ describe('the consent page', () => {
     expect(html).toContain(b.workspaceId);
     expect(html).not.toContain(outside.workspaceId);
     expect(html).not.toContain('code=');
-    const checked = formOf(html).filter(([k]) => k === 'ws');
-    expect(checked.length).toBe(1);
+    expect(formOf(html).filter(([k]) => k === 'ws')).toEqual([]);
+    expect(formOf(html)).toContainEqual([`tmode.${a.teamId}`, 'none']);
+    expect(formOf(html)).toContainEqual([`tmode.${b.teamId}`, 'none']);
     expect(formOf(html)).toContainEqual(['acts_as', 'agent']);
     expect(html).not.toContain('id="kind-person"');
     expect(await grantRows(userId)).toEqual([]);
@@ -168,6 +182,8 @@ describe('the consent page', () => {
     const named = await (await getPage(authorizeQuery(clientId, { workspace: coord.id }))).text();
     expect(named).toContain(coord.id);
     expect(formOf(named).filter(([k]) => k === 'ws')).toEqual([['ws', coord.id]]);
+    // an internal workspace is never part of "all": its team starts on specific workspaces
+    expect(formOf(named)).toContainEqual([`tmode.${a.teamId}`, 'specific']);
   });
 
   test('PKCE is S256 only: plain or a missing challenge redirects with invalid_request', async () => {
@@ -182,10 +198,35 @@ describe('the consent page', () => {
 });
 
 describe('approving', () => {
+  test('a chosen team defaults to all current and future workspaces: a whole-team grant, and the token reaches a workspace created later', async () => {
+    const { userId, a, clientId } = await setup();
+    const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
+    const res = await post([...pick(page, { [a.teamId]: 'all' }), ['decision', 'approve']]);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('all current and future workspaces in');
+    const { code } = codeFrom(html);
+    const [row] = await grantRows(userId);
+    expect(await grantTeams(row.id)).toEqual([a.teamId]);
+    expect(await grantWorkspaces(row.id)).toEqual([]);
+    expect((await exchange(clientId, code)).status).toBe(200);
+    const [later] = await addWorkspaces(a.teamId, 1);
+    expect((await grants.resolveGrantedWorkspaces(row.id, userId)).map((w) => w.workspaceId).sort()).toEqual([a.workspaceId, later].sort());
+  });
+
+  test('a team the person is not on, posted as a choice, is refused and writes nothing', async () => {
+    const { userId, a, outside, clientId } = await setup();
+    const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
+    const res = await post([...pick(page, { [a.teamId]: 'all', [outside.teamId]: 'all' }), ['decision', 'approve']]);
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain(outside.teamId);
+    expect(await grantRows(userId)).toEqual([]);
+  });
+
   test('creates an agent grant over the chosen workspaces; the code carries state and exchanges for a grant token', async () => {
     const { userId, a, b, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const res = await post([...setField(page, 'ws', [a.workspaceId, b.workspaceId]), ['decision', 'approve']]);
+    const res = await post([...pick(page, { [a.teamId]: 'specific', [b.teamId]: 'specific' }, [a.workspaceId, b.workspaceId]), ['decision', 'approve']]);
     expect(res.status).toBe(200);
     const { code, state } = codeFrom(await res.text());
     expect(state).toBe('st-123');
@@ -195,6 +236,7 @@ describe('approving', () => {
     expect(rows[0].acts_as).toBe('agent');
     expect(rows[0].scopes).toEqual(['read', 'write']);
     expect(await grantWorkspaces(rows[0].id)).toEqual([a.workspaceId, b.workspaceId].sort());
+    expect(await grantTeams(rows[0].id)).toEqual([]);
 
     const tok = await exchange(clientId, code);
     expect(tok.status).toBe(200);
@@ -207,7 +249,7 @@ describe('approving', () => {
   test('a wrong PKCE verifier is refused at the token endpoint', async () => {
     const { a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const { code } = codeFrom(await (await post([...setField(page, 'ws', [a.workspaceId]), ['decision', 'approve']])).text());
+    const { code } = codeFrom(await (await post([...pick(page, { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']])).text());
     const tok = await exchange(clientId, code, 'w'.repeat(64));
     expect(tok.status).toBe(400);
     expect((await tok.json()).error).toBe('invalid_grant');
@@ -217,7 +259,7 @@ describe('approving', () => {
     const { userId, a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId, { scope: 'mcp buildd:act-as-person' }))).text());
     expect(page).toContainEqual(['acts_as', 'person']);
-    await post([...setField(page, 'ws', [a.workspaceId]), ['decision', 'approve']]);
+    await post([...pick(page, { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']]);
     const [row] = await grantRows(userId);
     expect(row.acts_as).toBe('person');
     const resolved = await grants.resolveGrant(row.id, userId, clientId);
@@ -227,7 +269,7 @@ describe('approving', () => {
   test('a person request downgraded to agent, and write unticked, is honoured', async () => {
     const { userId, a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId, { scope: 'mcp buildd:act-as-person' }))).text());
-    const fields = setField(setField(setField(page, 'acts_as', ['agent']), 'perm_write', []), 'ws', [a.workspaceId]);
+    const fields = pick(setField(setField(page, 'acts_as', ['agent']), 'perm_write', []), { [a.teamId]: 'specific' }, [a.workspaceId]);
     const res = await post([...fields, ['decision', 'approve']]);
     expect(res.status).toBe(200);
     const [row] = await grantRows(userId);
@@ -238,7 +280,7 @@ describe('approving', () => {
   test('a tampered kind (person not requested) is refused and writes nothing', async () => {
     const { userId, a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const res = await post([...setField(setField(page, 'acts_as', ['person']), 'ws', [a.workspaceId]), ['decision', 'approve']]);
+    const res = await post([...pick(setField(page, 'acts_as', ['person']), { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']]);
     expect(res.status).toBe(400);
     expect(await grantRows(userId)).toEqual([]);
   });
@@ -247,10 +289,10 @@ describe('approving', () => {
     const { userId, a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId, { scope: 'buildd:read' }))).text());
     // flipping scope invalidates the consent token
-    const widened = await post([...setField(setField(page, 'scope', ['mcp buildd:act-as-person']), 'ws', [a.workspaceId]), ['acts_as', 'person'], ['decision', 'approve']]);
+    const widened = await post([...pick(setField(page, 'scope', ['mcp buildd:act-as-person']), { [a.teamId]: 'specific' }, [a.workspaceId]), ['acts_as', 'person'], ['decision', 'approve']]);
     expect(widened.status).toBe(403);
     // ticking write the client did not ask for is refused
-    const write = await post([...setField(page, 'ws', [a.workspaceId]), ['perm_write', 'on'], ['decision', 'approve']]);
+    const write = await post([...pick(page, { [a.teamId]: 'specific' }, [a.workspaceId]), ['perm_write', 'on'], ['decision', 'approve']]);
     expect(write.status).toBe(400);
     expect(await grantRows(userId)).toEqual([]);
   });
@@ -258,7 +300,7 @@ describe('approving', () => {
   test('a workspace the user cannot reach is refused, nothing is written, no id is named', async () => {
     const { userId, a, outside, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const res = await post([...setField(page, 'ws', [a.workspaceId, outside.workspaceId]), ['decision', 'approve']]);
+    const res = await post([...pick(page, { [a.teamId]: 'specific' }, [a.workspaceId, outside.workspaceId]), ['decision', 'approve']]);
     expect(res.status).toBe(403);
     expect(await res.text()).not.toContain(outside.workspaceId);
     expect(await grantRows(userId)).toEqual([]);
@@ -268,17 +310,20 @@ describe('approving', () => {
     const { userId, b, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
     await q(sql`DELETE FROM team_members WHERE team_id = ${b.teamId}::uuid AND user_id = ${userId}::uuid`);
-    const res = await post([...setField(page, 'ws', [b.workspaceId]), ['decision', 'approve']]);
+    const res = await post([...pick(page, { [b.teamId]: 'specific' }, [b.workspaceId]), ['decision', 'approve']]);
     expect(res.status).toBe(403);
     expect(await grantRows(userId)).toEqual([]);
   });
 
-  test('an empty selection shows the page again with a message', async () => {
-    const { userId, clientId } = await setup();
+  test('no team chosen, or a specific team with nothing ticked, shows the page again with a message', async () => {
+    const { userId, a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const res = await post([...setField(page, 'ws', []), ['decision', 'approve']]);
-    expect(res.status).toBe(400);
-    expect(await res.text()).toContain('Choose at least one workspace.');
+    const none = await post([...setField(page, 'ws', []), ['decision', 'approve']]);
+    expect(none.status).toBe(400);
+    expect(await none.text()).toContain('Choose at least one team');
+    const empty = await post([...pick(page, { [a.teamId]: 'specific' }, []), ['decision', 'approve']]);
+    expect(empty.status).toBe(400);
+    expect(await empty.text()).toContain('Tick at least one workspace in');
     expect(await grantRows(userId)).toEqual([]);
   });
 
@@ -297,15 +342,15 @@ describe('CSRF', () => {
   test('a missing or forged consent token is refused', async () => {
     const { userId, a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    expect((await post([...setField(setField(page, 'csrf_token', []), 'ws', [a.workspaceId]), ['decision', 'approve']])).status).toBe(403);
-    expect((await post([...setField(setField(page, 'csrf_token', ['1.forged']), 'ws', [a.workspaceId]), ['decision', 'approve']])).status).toBe(403);
+    expect((await post([...pick(setField(page, 'csrf_token', []), { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']])).status).toBe(403);
+    expect((await post([...pick(setField(page, 'csrf_token', ['1.forged']), { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']])).status).toBe(403);
     expect(await grantRows(userId)).toEqual([]);
   });
 
   test('a foreign or missing Origin is refused', async () => {
     const { userId, a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const fields: Array<[string, string]> = [...setField(page, 'ws', [a.workspaceId]), ['decision', 'approve']];
+    const fields: Array<[string, string]> = [...pick(page, { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']];
     expect((await post(fields, 'https://evil.example')).status).toBe(403);
     expect((await post(fields, null)).status).toBe(403);
     expect(await grantRows(userId)).toEqual([]);
@@ -317,24 +362,25 @@ describe('CSRF', () => {
     const other = await user();
     await member(a.teamId, other);
     currentUser = other;
-    expect((await post([...setField(page, 'ws', [a.workspaceId]), ['decision', 'approve']])).status).toBe(403);
+    expect((await post([...pick(page, { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']])).status).toBe(403);
     expect(await grantRows(other)).toEqual([]);
   });
 
   test('a tampered state or redirect is refused', async () => {
     const { a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    expect((await post([...setField(setField(page, 'state', ['other']), 'ws', [a.workspaceId]), ['decision', 'approve']])).status).toBe(403);
+    expect((await post([...pick(setField(page, 'state', ['other']), { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']])).status).toBe(403);
   });
 });
 
 describe('pagination and selection across pages', () => {
-  test('a large team pages, carries a selection to the next page, and select all takes every workspace', async () => {
+  test('a large team on specific workspaces pages, carries its choice and ticks to the next page, and tick all listed takes the team\'s workspaces of now', async () => {
     const { userId, a, b, clientId } = await setup();
     const extra = await addWorkspaces(a.teamId, 30); // team a now has 31
-    let page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const firstChecked = page.filter(([k]) => k === 'ws').map(([, v]) => v);
-    expect(firstChecked.length).toBe(1);
+    const firstPage = await (await getPage(authorizeQuery(clientId))).text();
+    const firstOffered = [...firstPage.matchAll(new RegExp(`<input type="checkbox" name="ws" value="([^"]+)"`, 'g'))].map((m) => m[1]);
+    const firstChecked = [firstOffered.find((id) => id !== b.workspaceId)!];
+    let page = pick(formOf(firstPage), { [a.teamId]: 'specific', [b.teamId]: 'all' }, firstChecked);
 
     // turn team a to page 2: the page-1 selection is carried as a hidden field
     const res = await post([...page, ['nav', `page:${a.teamId}:2`]]);
@@ -342,6 +388,8 @@ describe('pagination and selection across pages', () => {
     const html2 = await res.text();
     expect(html2).toContain('page 2 of 2');
     expect(html2).toContain(`<input type="hidden" name="ws" value="${firstChecked[0]}">`);
+    expect(html2).toMatch(new RegExp(`name="tmode\\.${a.teamId}" value="specific" checked`));
+    expect(html2).toMatch(new RegExp(`name="tmode\\.${b.teamId}" value="all" checked`));
     page = formOf(html2);
 
     // tick one on page 2 as well and approve
@@ -351,12 +399,13 @@ describe('pagination and selection across pages', () => {
     expect(res2.status).toBe(200);
     const [row] = await grantRows(userId);
     expect(await grantWorkspaces(row.id)).toEqual([firstChecked[0], onPage2[0]].sort());
+    expect(await grantTeams(row.id)).toEqual([b.teamId]);
 
-    // select all, from a fresh page, takes all 32 reachable workspaces
-    const fresh = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const all = formOf(await (await post([...fresh, ['nav', 'select_all']])).text());
+    // tick all listed in team a, from a fresh page, ticks all 31 of its workspaces of now: ids, not the team
+    const fresh = pick(formOf(await (await getPage(authorizeQuery(clientId))).text()), { [a.teamId]: 'specific' });
+    const all = formOf(await (await post([...fresh, ['nav', `team_all:${a.teamId}`]])).text());
     const chosen = all.filter(([k]) => k === 'ws').map(([, v]) => v).sort();
-    expect(chosen).toEqual([a.workspaceId, b.workspaceId, ...extra].sort());
+    expect(chosen).toEqual([a.workspaceId, ...extra].sort());
   });
 
   test('search narrows the list and a page action never approves', async () => {
@@ -430,7 +479,7 @@ describe('older per-workspace address', () => {
   test('a grant code is refused for an older per-workspace resource', async () => {
     const { a, clientId } = await setup();
     const page = formOf(await (await getPage(authorizeQuery(clientId))).text());
-    const { code } = codeFrom(await (await post([...setField(page, 'ws', [a.workspaceId]), ['decision', 'approve']])).text());
+    const { code } = codeFrom(await (await post([...pick(page, { [a.teamId]: 'specific' }, [a.workspaceId]), ['decision', 'approve']])).text());
     const res = await tokenRoute.POST(new NextRequest(`${ORIGIN}/api/oauth/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
