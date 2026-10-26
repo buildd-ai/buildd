@@ -46,6 +46,7 @@ import StartAnywayFixture from './StartAnywayFixture';
 import QueueComponentsFixture from './QueueComponentsFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import RunnerIsolationFixture from './RunnerIsolationFixture';
+import RunnerRowFixture from './RunnerRowFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
@@ -325,6 +326,9 @@ export default function DevFixturesPage() {
 
     if (state === RUNNER_SIZE_FIXTURE_STATE) {
         return <RunnerSizeFixture />;
+    }
+    if (state === 'runner-row') {
+        return <RunnerRowFixture />;
     }
     if (state === RUNNER_ISOLATION_FIXTURE_STATE) {
         return <RunnerIsolationFixture />;
