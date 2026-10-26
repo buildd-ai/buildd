@@ -153,6 +153,19 @@ export const REVIEW_LOOP_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: '§11 AC-58: a round that asks for changes in prose again is news: its review is posted, not skipped as a restatement',
+    async run(host) {
+      const s = await new Delivery(host, 5409).open({ maxRounds: 3 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdictWith('request_changes', {}), 'CHANGES_REQUESTED', 'round 1 asks in prose');
+      const fix = await s.startFix();
+      applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix pushed');
+      applied(await s.verdictWith('request_changes', {}), 'CHANGES_REQUESTED', 'round 2 asks in prose again');
+      const lists = (await host.effects(s.deliveryId)).filter((e) => e.kind === 'post_review').map((e) => (e.payload.findingIds as unknown[]).length);
+      eq(lists, [1, 1], 'each prose round names the round finding, so each review is posted');
+    },
+  },
+  {
     name: '§11 handlers: the capture goes to the capture role at the round head, never to the builder',
     async run(host) {
       const s = await new Delivery(host, 5406).open();

@@ -27,7 +27,7 @@ import type {
 import { deltaApprovalEligibility, emptyDeltaCarry, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
 import {
   addressFindings, applyVerdictToFindings, byRemedyRoute, describeFinding, evidenceRoundFindingIds, isEvidenceRound, isOpenFinding, isTaskId,
-  openRequiredFindings, remedyOf, remedyRoute,
+  openRequiredFindings, remedyOf, remedyRoute, isRoundFinding,
 } from './findings';
 import {
   isHumanActor,
@@ -1906,9 +1906,13 @@ function verdictDecided(
     evidence: { roundId: round.id, headSha: round.headSha, verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, ...findingsEvidence },
   };
   // R-49: a GitHub review names the code findings this round raised or changed, once each. A round
-  // that only restates what is already posted names none, and its handler posts nothing.
+  // that only restates what is already posted names none, and its handler posts nothing. The round
+  // finding (a request for changes with no structured findings) stands for this round's own text, so a
+  // round that asks for changes in prose again is news every time.
   const news = new Set([...f.raised, ...f.changed]);
-  const reviewFindingIds = f.stillOpen.filter((x) => news.has(x.id) && remedyRoute(remedyOf(x)) === 'fix').map((x) => x.id);
+  const prose = cmd.effectiveVerdict === 'request_changes' && !(cmd.findings?.length);
+  const reviewFindingIds = f.stillOpen
+    .filter((x) => (news.has(x.id) || (prose && isRoundFinding(x))) && remedyRoute(remedyOf(x)) === 'fix').map((x) => x.id);
   const postReview = (event: 'APPROVE' | 'REQUEST_CHANGES'): EffectSpec => ({
     kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`,
     payload: { commitId: round.headSha, event, roundId: round.id, ...(event === 'REQUEST_CHANGES' ? { findingIds: reviewFindingIds } : {}) },
