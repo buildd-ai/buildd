@@ -13,9 +13,10 @@
  *  - AC-58 / AC-59 (kernel half): a restatement counts on the finding, and a round that only
  *    restates names no finding for a GitHub review.
  */
-import type { CommandResult } from '../ports';
+import { NO_ROLE, type CommandResult } from '../ports';
+import { deriveDeliveryView } from '../projections';
 import { spentReviewRounds } from '../reducer';
-import { ConformanceFailure, Delivery, eq, type ConformanceHost, type ConformanceScenario } from './scenarios';
+import { ConformanceFailure, Delivery, drainKernel, eq, fakePorts, type ConformanceHost, type ConformanceScenario } from './scenarios';
 
 function ok(cond: unknown, label: string): void {
   if (!cond) throw new ConformanceFailure(label);
@@ -148,6 +149,76 @@ export const REVIEW_LOOP_SCENARIOS: ConformanceScenario[] = [
       const f = (await s.view()).findings!.find((x) => x.id === id)!;
       eq({ restatedCount: f.restatedCount, title: f.title, n: (await s.view()).findings!.length }, { restatedCount: 1, title: 'off by one', n: 1 }, 'one finding, restated once');
       eq((await reviews()).at(-1), [], 'round 2 names nothing new');
+    },
+  },
+  {
+    name: '§11 handlers: the capture goes to the capture role at the round head, never to the builder',
+    async run(host) {
+      const s = await new Delivery(host, 5406).open();
+      await s.ownerPushed('H1');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      applied(await s.verdictWith('request_changes', { findings: [evidenceFinding('s1', 'AC-1')] }), 'AWAITING_REVIEW', 'routed to evidence');
+      await drainKernel(host, s, f.ports);
+      const roles = f.work.requested.map((r) => r.role);
+      ok(roles.includes('capture') && !roles.includes('fix'), `a capture and no fix: ${roles}`);
+      const cap = f.work.requested.find((r) => r.role === 'capture')!;
+      eq({ head: cap.target.headSha, screens: (cap.detail!.findings as Array<{ screen: string }>).map((x) => x.screen) }, { head: 'H1', screens: ['s1'] }, 'the capture names the head and the screen');
+      eq(f.github.written.filter((w) => w.op === 'postReview').length, 0, 'an evidence finding is never posted as a GitHub review');
+      const view = deriveDeliveryView({ view: await s.view() })!;
+      eq({ line: view.review.stateLine, verdict: view.review.verdict, blocks: view.review.blocks }, { line: 'Collecting evidence', verdict: 'collecting_evidence', blocks: false }, 'the reading says buildd is collecting evidence');
+      eq(view.reviewApproval?.state, 'pending', 'the commit status is pending, not a refusal');
+    },
+  },
+  {
+    name: '§11 handlers: a host with no way to capture escalates the finding as a missing capability',
+    async run(host) {
+      const s = await new Delivery(host, 5407).open();
+      await s.ownerPushed('H1');
+      const f = fakePorts(host, { work: { capture: { skipped: NO_ROLE } } });
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      applied(await s.verdictWith('request_changes', { findings: [evidenceFinding('s1', 'AC-1')] }), 'AWAITING_REVIEW', 'routed to evidence');
+      await drainKernel(host, s, f.ports);
+      const d = await s.d();
+      eq({ state: d.state, reason: d.stateReason }, { state: 'ESCALATED', reason: 'review_escalated' }, 'a person settles it');
+      eq((await s.view()).findings![0]!.remedyClass, 'capability_gap', 'named as a missing capability');
+      eq(spentReviewRounds(await s.view()), 0, 'no round spent');
+    },
+  },
+  {
+    name: '§11 handlers: the fix brief and the GitHub review list only code findings, once each; a restatement posts nothing',
+    async run(host) {
+      const s = await new Delivery(host, 5408).open({ maxRounds: 3 });
+      await s.ownerPushed('H1');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      applied(await s.verdictWith('request_changes', {
+        findings: [{ path: 'src/a.ts', line: 4, title: 'off by one' }, { title: 'which plan tier gets this?', remedyClass: 'person_decision' }],
+      }), 'CHANGES_REQUESTED', 'round 1');
+      await drainKernel(host, s, f.ports);
+      const fix = f.work.requested.find((r) => r.role === 'fix')!;
+      eq((fix.detail!.findings as Array<{ title: string }>).map((x) => x.title), ['off by one'], 'the fix is asked only for the code');
+      const posted = () => f.github.written.filter((w) => w.op === 'postReview');
+      eq(posted().length, 1, 'one review posted');
+      const body = String(posted()[0]!.body);
+      ok(body.includes('src/a.ts:4: off by one') && !body.includes('plan tier'), `the review lists the code finding only: ${body}`);
+      // Round 2 restates the code finding unchanged at a new head.
+      const id = await s.findingId('src/a.ts');
+      const attempt = (await s.view()).attempts.find((a) => a.family === 'review_fix')!;
+      applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: attempt.id, revalidation: { live: s.live('H1'), approved: false } }), 'FIXING', 'claimed');
+      applied(await s.fixEnded(attempt.id, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'pushed');
+      f.github.setPr(s.repo, s.prNumber, s.live('H2'));
+      await drainKernel(host, s, f.ports);
+      applied(await s.verdictWith('request_changes', { findings: [{ id, path: 'src/a.ts', line: 4, title: 'off by one' }] }), 'CHANGES_REQUESTED', 'round 2 restates');
+      await drainKernel(host, s, f.ports);
+      eq(posted().length, 1, 'round 2 posted no second review');
+      const outcomes = (await host.effects(s.deliveryId)).filter((e) => e.kind === 'post_review').map((e) => e.outcome);
+      ok(outcomes.includes('skipped:restated_only'), `the restatement is recorded as skipped: ${outcomes}`);
+      const fix2 = f.work.requested.filter((r) => r.role === 'fix').at(-1)!;
+      eq((fix2.detail!.findings as Array<{ restatedCount: number }>).map((x) => x.restatedCount), [1], 'the second fix sees the finding once, restated once');
     },
   },
 ];

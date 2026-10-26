@@ -155,6 +155,27 @@ export function describeFinding(f: Pick<FindingSnapshot, 'path' | 'line' | 'titl
   return where ? `${where}: ${f.title}` : f.title;
 }
 
+/** A finding's short id, as every surface prints it: the raising round's first 8 characters and the ordinal. */
+export function shortFindingId(id: string): string {
+  const i = id.lastIndexOf(':');
+  return i > 0 ? `${id.slice(0, Math.min(8, i))}:${id.slice(i + 1)}` : id.slice(0, 12);
+}
+
+/** "restated 2 times", or null when it was never restated (R-48). */
+export function restatedPhrase(n: number | null | undefined): string | null {
+  if (!n || n < 1) return null;
+  return n === 1 ? 'restated once' : `restated ${n} times`;
+}
+
+/**
+ * Living Spec fa62b865 R-48: one open finding as every surface lists it, once: short id,
+ * `path:line`, what to fix, and how often it was restated. Never the reviewer's prose again.
+ */
+export function findingLine(f: Pick<FindingSnapshot, 'id' | 'path' | 'line' | 'title' | 'restatedCount'>): string {
+  const restated = restatedPhrase(f.restatedCount);
+  return `\`${shortFindingId(f.id)}\` ${describeFinding(f)}${restated ? ` (${restated})` : ''}`;
+}
+
 /**
  * Is a round's approval a verification of every finding it did not name? Only
  * for an unscoped round whose reviewer did not report per-finding resolution:
