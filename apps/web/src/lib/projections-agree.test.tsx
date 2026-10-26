@@ -152,8 +152,8 @@ describe('AC-24: GitHub COMMENTED is shown beside, never as, buildd\'s changes r
   });
 });
 
-describe('AC-43 / AC-44 / AC-48: the PR activity comment carries the decision', () => {
-  test('the #4996 shape: question, why, named findings, actions open now, no approval', () => {
+describe('fa62b865 R-51 (replaces AC-43/AC-48 in the comment): the PR activity comment states the state, the decision lives in Buildd', () => {
+  test('the #4996 shape: the state line and Open in Buildd; no question, findings or actions on GitHub', () => {
     const esc: KernelView = {
       delivery: { ...delivery, state: 'ESCALATED', stateReason: 'review_exhausted', currentHeadSha: 'H3', currentRound: 3 },
       rounds: [round(1, 'H1'), round(2, 'H2'), round(3, 'H3')],
@@ -167,11 +167,8 @@ describe('AC-43 / AC-44 / AC-48: the PR activity comment carries the decision', 
       ],
     };
     const body = renderDeliveryActivity({ view: esc, transitions: [] });
-    expect(body).toContain('**How should the two unresolved findings be settled?**');
-    expect(body).toContain('Automation stopped after three review rounds');
-    expect(body).toContain('Still open: Mutation tests do not cover the new guard');
-    expect(body).toContain('Fixed, waiting for a review: Verify against a real Postgres');
-    expect(body).toContain('Open on the task page: Review findings, Request another fix, Request a forced re-review');
-    expect(body).not.toMatch(/Approve and override/);
+    expect(body).toContain(`**${deriveDeliveryView({ view: esc })!.review.stateLine}**`);
+    expect(body).toContain('Open in Buildd');
+    expect(body).not.toMatch(/How should|Automation stopped|Still open|Open on the task page|Mutation tests/);
   });
 });
