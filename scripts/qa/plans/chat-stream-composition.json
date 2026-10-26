@@ -77,5 +77,23 @@
   },
   {
     "route": "/app/dev/chat?state=rows-done&pane=closed"
+  },
+  {
+    "route": "/app/dev/chat?state=propose&pane=closed&width=400"
+  },
+  {
+    "route": "/app/dev/chat?state=propose&pane=closed&width=600"
+  },
+  {
+    "route": "/app/dev/chat?state=confirmed&pane=closed&width=400"
+  },
+  {
+    "route": "/app/dev/chat?state=confirmed&pane=closed&width=600"
+  },
+  {
+    "route": "/app/dev/chat?state=rows&pane=closed&width=400"
+  },
+  {
+    "route": "/app/dev/chat?state=rows&pane=closed&width=600"
   }
 ]
