@@ -1225,7 +1225,11 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .kit-card.buildd-approval.kit-approval-rows[data-state="done"] { border-top: 1px solid var(--chat-rule-strong); }
   .buildd-approval.kit-approval-rows[data-state="done"] .kit-card-head > .kit-eyebrow { color: var(--chat-muted); }
   .buildd-approval.kit-approval-rows[data-state="done"] .kit-card-head > .kit-eyebrow::before { background: var(--chat-muted); }
-  @media (min-width: 768px) {
+  /* The card answers to the width it is given, not the window's: the docked Ask column
+     is 400px and the peek min(600px, 100vw - 7rem), both inside a desktop window. The
+     wrapper is the container; narrower than 420px the rows stack label over value. */
+  [data-testid="approval-card"] { container: approval-card / inline-size; }
+  @container approval-card (min-width: 420px) {
     .kit-card.buildd-approval:not(.kit-approval-row) { padding: 0 20px 16px; }
     .buildd-approval > .kit-card-head { margin: 0 -20px; padding: 12px 20px; }
     .buildd-approval > .kit-card-title { font-size: 20px; }
