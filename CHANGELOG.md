@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- OAuth: MCP connections can cover all current and future workspaces of a chosen team (#5737)
+- Escalation: one owner action files a landing task and grants one re-review on push (#5726)
+- Runner: Queue rows read Running, Queued or Blocked, with the claim's words, and render the provider hold sentence for runner-seat walls (#5705, #5706)
+- Claim: a broad claim names the tasks it turned away (#5641)
+- Runner: Windows runner through WSL2 with one guided setup (#5652)
+- Designs in buildd: component screens and per-screen reads (#5701)
+
+### Changed
+
+- Models: the subscription-login UI is removed; Health counts recent runners only (#5731)
+
+### Fixed
+
+- Budgets: only real API spend counts toward the dollar budget (#5729)
+- Runner: Windows dependency handover treats a changed directory as replaced (#5733)
+- Runner: claim polls pause while every provider the runner can start is held (#5709, #5708)
+- Runner: a WSL runner reports a distinct hostname, so pins no longer collide (#5704)
+- Runner: a fix attempt's diff is measured from its start, not its pushed PR branch (#5664)
+- Routing: a mid-run re-tier says the live run keeps its tier; diagnosis titles get an Opus floor (#5678)
+- Claim: a runner pin matches the name `list_runners` shows, and `create_task` refuses a pin nothing answers to (#5654)
+- Release: a candidate is cut only from a green dev commit and amended when its fix landed as a direct commit; one candidate fix task per head; a red candidate's fix task must ship a PR (#5673, #5686, #5653)
+- Release: workers cannot dispatch the Release workflow, and an amend says who dispatched it (#5684)
+- Conflict: no conflict or refresh attempt is dispatched for a frozen release candidate (#5670)
+- Landing: an approved PR queued in the landing lane reads as queued; a head that will not land soon neither holds nor takes the lane; a refresh waits at most 15 minutes (#5680, #5690, #5715)
+- Landing: a migration PR whose snapshot chain forks from the base's folders is refused (#5661)
+- Migrations: a trunk migration is inherited on a PR into a stale mission branch; a clean refresh that forks the chain files a regenerate task; new triggers and functions classify EXPAND (#5656, #5659, #5665)
+- CI: a red CI inherited from the base gets a refresh, not CI-fix builders; known flakes are re-run instead of spending a fix attempt; failing DB-architecture tests are not read as a lost connection (#5674, #5669, #5679)
+- Kernel: review approval is success only once CI is green at the head; superseded rounds spend no review budget; an owner loop stands down while its delivery is escalated; a failed CI fix on an unmoved head escalates (#5657, #5668, #5666, #5677)
+- Missions: fewer writers on a mission branch; coordinate-only organizer prompt; the criteria decision card names its task and requirements; no repeated criterion checks for inconclusive missions (#5672, #5685, #5719, #5716, #5663)
+- `get_pr` and `explain` read the PR owner's delivery, attempts and evidence (#5689, #5671)
+- PR activity: rows keep the real start when folded, number rounds from the delivery, and mark a queued fix as superseded once a later push lands (#5660, #5681)
+- Visual review: walks every screen with one-tap rows and an honest out-of-date state (#5718, #5724)
+- Copy: the Home red-check card and parked session-end card read as facts (#5722)
+- Sentinel: a provider session or weekly limit counts as budget exhaustion and never files a fix task
+
 ## [0.376.0] - 2026-10-22
 
 ### Fixed
