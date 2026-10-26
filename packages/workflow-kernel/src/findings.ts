@@ -80,7 +80,8 @@ export function isEvidenceRound(r: Pick<RoundSnapshot, 'scope'> | null | undefin
 
 /** The finding ids an evidence round captures. */
 export function evidenceRoundFindingIds(r: Pick<RoundSnapshot, 'scope'> | null | undefined): string[] {
-  return isEvidenceRound(r) ? ((r!.scope!.evidence as { findingIds: unknown[] }).findingIds.map(String)) : [];
+  const ids = (r?.scope?.evidence as { findingIds?: unknown } | undefined)?.findingIds;
+  return Array.isArray(ids) ? ids.map(String) : [];
 }
 
 const evidenceTargetOf = (fi: FindingInput): EvidenceTarget | null =>

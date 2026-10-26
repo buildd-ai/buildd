@@ -26,7 +26,7 @@ export interface PrDeliveryReport {
   /** R-43: the `Buildd / Review approval` status on the head, apart from CI; null when none is published. */
   reviewApproval: { state: 'success' | 'failure' | 'pending'; description: string } | null;
   /** Living Spec fa62b865 R-50: the one review reading, as the task page and the sticky comment read it. */
-  reading: { stateLine: string; verdict: string; round: number; roundsSpent: number; roundBudget: number; blocks: boolean; openFindings: string[] };
+  reading: { stateLine: string; verdict: string; round: number; roundsSpent: number; roundBudget: number; blocks: boolean; openFindings: string[] } | null;
 }
 
 export function prDeliveryReport(v: DeliveryView): PrDeliveryReport {
@@ -51,10 +51,10 @@ export function prDeliveryReport(v: DeliveryView): PrDeliveryReport {
     decision: decisionOf(v),
     repairs,
     reviewApproval: v.reviewApproval ?? null,
-    reading: {
+    reading: v.review ? {
       stateLine: v.review.stateLine, verdict: v.review.verdict, round: v.review.round, roundsSpent: v.review.roundsSpent,
       roundBudget: v.review.roundBudget, blocks: v.review.blocks, openFindings: v.review.openFindings.map((f) => f.text),
-    },
+    } : null,
   };
 }
 

@@ -13,6 +13,7 @@
  *  - AC-58 / AC-59 (kernel half): a restatement counts on the finding, and a round that only
  *    restates names no finding for a GitHub review.
  */
+import { evidenceRoundFindingIds } from '../findings';
 import { NO_ROLE, type CommandResult } from '../ports';
 import { deriveDeliveryView } from '../projections';
 import { spentReviewRounds } from '../reducer';
@@ -41,7 +42,7 @@ async function owedCapture(host: ConformanceHost, s: Delivery) {
 async function captured(s: Delivery): Promise<CommandResult> {
   const view = await s.view();
   const round = view.rounds.at(-1)!;
-  const ids = ((round.scope?.evidence as { findingIds: string[] } | undefined)?.findingIds) ?? [];
+  const ids = evidenceRoundFindingIds(round);
   return s.submit({ type: 'EvidenceRecorded', actor: 'kernel', roundId: round.id, captures: ids.map((findingId, i) => ({ findingId, artifactId: `art-${round.round}-${i}` })) });
 }
 

@@ -672,10 +672,10 @@ export async function GET(req: NextRequest) {
   const delivery = owningWorker?.taskId
     ? (await getDeliveryViewsForTasks([owningWorker.taskId]).catch(() => new Map())).get(owningWorker.taskId) ?? null
     : null;
-  const reading = delivery ? {
-    stateLine: delivery.review.stateLine, verdict: delivery.review.verdict, round: delivery.review.round,
-    roundsSpent: delivery.review.roundsSpent, roundBudget: delivery.review.roundBudget, blocks: delivery.review.blocks,
-    openFindings: delivery.review.openFindings.map((f: { text: string }) => f.text),
+  const r = delivery?.review ?? null;
+  const reading = r ? {
+    stateLine: r.stateLine, verdict: r.verdict, round: r.round, roundsSpent: r.roundsSpent, roundBudget: r.roundBudget, blocks: r.blocks,
+    openFindings: r.openFindings.map((f: { text: string }) => f.text),
   } : null;
 
   return NextResponse.json({

@@ -19,7 +19,7 @@
  *     canonical state and its current attempt, never from the worst attempt.
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
-import { findingLine, findingTotals, isRoundFinding, openRequiredFindings, shortFindingId, type FindingTotals } from './findings';
+import { evidenceRoundFindingIds, findingLine, findingTotals, isRoundFinding, openRequiredFindings, shortFindingId, type FindingTotals } from './findings';
 import { deriveEscalationBrief, type EscalationBrief, type EscalationBriefPermissions } from './escalation-brief';
 import { landingStatusOf } from './landing-gate';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
@@ -530,8 +530,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       const round = input.view.rounds.find((r) => r.round === d.currentRound);
       if (d.stateReason === 'evidence') {
         // §11.1 R-46: buildd is capturing what an evidence finding needs; no builder is asked, no round spent.
-        const n = Array.isArray((round?.scope?.evidence as { findingIds?: unknown[] } | undefined)?.findingIds)
-          ? (round!.scope!.evidence as { findingIds: unknown[] }).findingIds.length : 0;
+        const n = evidenceRoundFindingIds(round).length;
         headline = 'Collecting evidence';
         detail = `capturing ${n === 1 ? 'one design screen' : `${countWord(n)} design screens`} at ${short(round?.headSha ?? d.currentHeadSha)}`;
         owner = 'platform';
