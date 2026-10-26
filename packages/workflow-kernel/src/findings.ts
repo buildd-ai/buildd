@@ -240,11 +240,22 @@ export function applyVerdictToFindings(
 
   const restatedInputs: FindingInput[] = [];
   const newInputs: FindingInput[] = [];
+  // R-48: a finding the reviewer restates without its id is still the same finding: the open one with
+  // the same evidence target (criterion and screen), or the same path and words.
+  const sameAs = (fi: FindingInput): FindingSnapshot | undefined => {
+    const ev = evidenceTargetOf(fi);
+    const title = fi.title.trim();
+    const path = fi.path?.trim() || null;
+    return all.find((f) => isOpenFinding(f) && (
+      ev && f.evidence ? f.evidence.screen === ev.screen && (f.evidence.criterionId ?? null) === ev.criterionId
+        : path != null && f.path === path && f.title === title.slice(0, 500)));
+  };
+  const claimed = new Set<string>();
   for (const fi of v.findings ?? []) {
     if (!fi?.title?.trim()) continue;
-    const prior = fi.id ? byId.get(fi.id) : undefined;
-    if (prior) restatedInputs.push(fi);
-    else newInputs.push(fi);
+    const prior = fi.id ? byId.get(fi.id) : sameAs(fi);
+    if (prior && !claimed.has(prior.id)) { claimed.add(prior.id); restatedInputs.push(fi.id ? fi : { ...fi, id: prior.id }); }
+    else if (!fi.id || !prior) newInputs.push(fi);
   }
   const restatedIds = new Set(restatedInputs.map((fi) => fi.id!));
 

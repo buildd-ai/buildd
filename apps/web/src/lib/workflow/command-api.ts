@@ -127,6 +127,8 @@ export interface KernelOps {
   observe_ci_green: { input: Parameters<Seam['observeCiGreen']>[0]; result: Awaited<ReturnType<Seam['observeCiGreen']>> };
   /** T6: a kernel review round's verdict, reported by the worker PATCH. Only a delivery of `workspaceId` is acted on. */
   record_review_verdict: { input: Parameters<Seam['recordReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['recordReviewVerdict']>> };
+  /** Living Spec fa62b865 R-46: buildd's capture task for an evidence round ended. Only a delivery of `workspaceId` is acted on. */
+  record_capture_evidence: { input: Parameters<Seam['recordCaptureEvidence']>[0]; result: Awaited<ReturnType<Seam['recordCaptureEvidence']>> };
   /** A verdict from a reviewer outside the kernel's rounds on a PR the kernel owns (00d288fd), adopted. Same workspace rule. */
   adopt_review_verdict: { input: Parameters<Seam['adoptReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['adoptReviewVerdict']>> };
   /** T12: a conflict (or migration collision) a door saw on a kernel-owned PR; the control plane reads the live PR and applies ConflictObserved. */
@@ -196,6 +198,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   observe_ci_green: (s, i) => s.observeCiGreen(i),
   // The reach check judged `workspaceId`; the seam acts only on a delivery of that workspace.
   record_review_verdict: (s, i) => s.recordReviewVerdict(i),
+  record_capture_evidence: (s, i) => s.recordCaptureEvidence(i),
   adopt_review_verdict: (s, i) => s.adoptReviewVerdict(i),
   observe_conflict: (s, i) => s.observeConflict(i),
   claim_fix: (s, { task, workspaceId }) => {

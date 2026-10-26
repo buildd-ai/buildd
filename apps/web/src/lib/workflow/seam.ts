@@ -53,7 +53,7 @@ import { taskPrOf } from './task-pr';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
-import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
+import { diffTouchesFindings, isRemedyClass, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 import { wakeHeldMergesOn } from '@buildd/workflow-kernel/merge-hold';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -1388,6 +1388,47 @@ export async function recordReviewVerdict(p: {
 }
 
 /**
+ * Living Spec fa62b865 R-46: buildd's capture task for an evidence round ended. Its stored
+ * captures (`structuredOutput.evidence: [{ findingId, artifactId }]`) attach to the findings and
+ * send the round to its reviewer; a failed task, or one that stored nothing, records why, and the
+ * findings become a missing capability a person settles. Never a builder's round.
+ */
+export async function recordCaptureEvidence(p: {
+  /** The workspace the capture is for: a delivery of any other is not acted on. */
+  workspaceId: string;
+  task: { id: string; deliveryId: string | null; context: unknown };
+  status: 'completed' | 'failed';
+  output?: unknown;
+  error?: string | null;
+}, deps: SeamDeps = {}): Promise<CommandResult | null> {
+  const roundId = ctxOf(p.task).workflowRoundId as string | undefined;
+  if (!p.task.deliveryId || !roundId) return null;
+  const deliveryId = await kernelDeliveryInWorkspace(p.task.deliveryId, p.workspaceId, deps.exec);
+  if (!deliveryId) return null;
+  const captures = captureEvidenceOf(p.output);
+  const failure = p.status === 'failed'
+    ? (p.error?.trim() || 'the capture task failed')
+    : captures.length === 0 ? 'the capture task ended without a stored screenshot' : null;
+  const result = await applyCommand({
+    type: 'EvidenceRecorded', actor: `capture:${p.task.id}`, roundId,
+    ...(failure ? { failure: failure.slice(0, 300) } : { captures }),
+  }, { ref: { deliveryId }, exec: deps.exec });
+  await drainDelivery(deliveryId, deps);
+  return result;
+}
+
+/** A capture task's `structuredOutput.evidence`, read defensively: `[{ findingId, artifactId }]`. */
+export function captureEvidenceOf(output: unknown): Array<{ findingId: string; artifactId: string }> {
+  const o = (output && typeof output === 'object' ? output : {}) as Record<string, unknown>;
+  if (!Array.isArray(o.evidence)) return [];
+  return o.evidence.flatMap((e) => {
+    const r = (e && typeof e === 'object' ? e : {}) as Record<string, unknown>;
+    return typeof r.findingId === 'string' && r.findingId && typeof r.artifactId === 'string' && r.artifactId
+      ? [{ findingId: r.findingId, artifactId: r.artifactId }] : [];
+  });
+}
+
+/**
  * 00d288fd: a reviewer that ran outside the kernel's rounds (filed by a door
  * before the delivery opened) judged a PR the kernel owns. Its verdict at the
  * current head is the kernel's to keep: recorded as a decided round while the
@@ -1472,10 +1513,17 @@ export function verdictFindingsOf(output: unknown): VerdictFindings {
       const r = (f && typeof f === 'object' ? f : {}) as Record<string, unknown>;
       const title = str(r.title);
       if (!title) return [];
+      // Living Spec fa62b865 §11.1: who can fix it, and for evidence what buildd captures. A class the
+      // kernel does not know is dropped (the finding reads as a code fix), never guessed at.
+      const remedyClass = isRemedyClass(r.remedyClass) ? r.remedyClass : null;
+      const ev = (r.evidence && typeof r.evidence === 'object' ? r.evidence : null) as Record<string, unknown> | null;
+      const screen = ev ? str(ev.screen) : null;
       return [{
         ...(str(r.id) ? { id: str(r.id) } : {}),
         path: str(r.path), line: typeof r.line === 'number' && Number.isFinite(r.line) ? Math.trunc(r.line) : null, title,
         ...(r.required === false ? { required: false } : {}),
+        ...(remedyClass ? { remedyClass } : {}),
+        ...(remedyClass === 'evidence' && screen ? { evidence: { screen, criterionId: str(ev!.criterionId), route: str(ev!.route) } } : {}),
       }];
     });
   }
