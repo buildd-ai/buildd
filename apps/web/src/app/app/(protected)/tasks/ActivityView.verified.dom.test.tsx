@@ -10,7 +10,11 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ActivityView } = await import('./ActivityView');
 
-/** Activity: verified results, meaningful History and attribution (spec 9430a28f R-4, R-5, R-6, AC-4, AC-5). */
+/**
+ * Activity: verification and attribution (spec 9430a28f r2 R-19, R-20, AC-4, AC-5).
+ * Both stay in the data; neither is printed on a Now row (that detail is on the
+ * task page), and History offers the identity filters only where they are reliable.
+ */
 
 const T = (hhmm: string) => `2026-10-08T${hhmm}:00.000Z`;
 const nowMs = Date.parse(T('12:00'));
@@ -43,33 +47,19 @@ function mount() {
 }
 
 describe('R-6: verification claims', () => {
-  it('a Now row shows the claim: state, spec revision and commit, criteria on demand', () => {
-    const now = buildActivityNow({ tasks: [live('t1', { verification: claim('passed') })], missions: [], rules, now: nowMs });
-    const m = mount();
-    try {
-      m.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={hrefs} />);
-      const v = m.container.querySelector('[data-row="t1"] [data-testid="activity-verification"]')!;
-      expect(v.getAttribute('data-state')).toBe('passed');
-      expect(v.textContent).toContain('Verified');
-      expect(v.textContent).toContain('revision 1');
-      expect(v.textContent).toContain(H2.slice(0, 7));
-      act(() => v.querySelector('button')!.click());
-      const crit = v.querySelector('[data-testid="activity-verification-criterion"]')!;
-      expect(crit.textContent).toContain('R-1');
-      expect(crit.textContent).toContain('Passes');
-      expect(v.querySelector('a')?.getAttribute('href')).toBe('/app/specs/spec-1');
-    } finally { m.done(); }
-  });
-
-  it('a stale claim never reads Verified', () => {
-    const now = buildActivityNow({ tasks: [live('t1', { verification: claim('stale') })], missions: [], rules, now: nowMs });
-    const m = mount();
-    try {
-      m.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={hrefs} />);
-      const v = m.container.querySelector('[data-testid="activity-verification"]')!;
-      expect(v.getAttribute('data-state')).toBe('stale');
-      expect(v.textContent).not.toContain('Verified');
-    } finally { m.done(); }
+  it('R-20: a Now row shows no claim; a passed or stale verdict is only the meter, and never "Verified"', () => {
+    for (const state of ['passed', 'stale'] as const) {
+      const now = buildActivityNow({ tasks: [live('t1', { verification: claim(state) })], missions: [], rules, now: nowMs });
+      expect(now.groups[0].rows[0].verification?.state).toBe(state);
+      const m = mount();
+      try {
+        m.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={hrefs} />);
+        expect(m.container.querySelector('[data-row="t1"]')).not.toBeNull();
+        expect(m.container.querySelector('[data-testid="activity-verification"]')).toBeNull();
+        expect(m.container.textContent).not.toContain('Verified');
+        expect(m.container.textContent).not.toContain(H2.slice(0, 7));
+      } finally { m.done(); }
+    }
   });
 
   it('a merged delivery with no recorded outcome shows no verification at all', () => {
@@ -83,53 +73,32 @@ describe('R-6: verification claims', () => {
   });
 });
 
-describe('R-5: History highlights, full chronology on demand', () => {
-  it('Highlights by default leave detail steps out; All activity tells every step', () => {
-    const tasks: ActivityTaskInput[] = [
-      finished('t1', { workers: [{ ...finished('t1').workers[0] }] }),
-      { id: 'fx1', title: '[builder · after review #1] Done t1', status: 'completed', taskClass: 'attempt', parentTaskId: 't1', missionId: null, createdAt: T('10:20'), updatedAt: T('10:30'),
-        workers: [{ status: 'completed', startedAt: T('10:20'), completedAt: T('10:30'), updatedAt: T('10:30'), lastCommitSha: H2 }] },
-    ];
-    const history = buildActivityEpisodes({ tasks, missions: [], rules });
-    const m = mount();
-    try {
-      m.render(<ActivityView mode="history" now={{ groups: [], inMotion: 0, liveAgents: 0 }} history={history} nowMs={nowMs} hrefs={hrefs} />);
-      const text = () => m.container.querySelector('[data-testid="activity-episode"]')!.textContent ?? '';
-      const lens = (label: string) => [...m.container.querySelectorAll('[data-testid="activity-history-lens"] button')].find(b => b.textContent === label)!;
-      expect(lens('Highlights').getAttribute('aria-pressed')).toBe('true');
-      expect(text()).toContain('Automatic repair 1');
-      expect(text()).not.toContain('New head');
-      act(() => lens('All activity').click());
-      expect(text()).toContain('New head');
-    } finally { m.done(); }
-  });
-});
-
-describe('R-4 / AC-4: attribution and identity filters', () => {
+describe('R-19 / AC-4: attribution and identity filters', () => {
   const tasks = [
-    live('mine', { attribution: attributionOf({ createdByUserId: 'me', requesterSource: 'explicit' }, 'me', names) }),
-    live('adas', { attribution: attributionOf({ createdByUserId: 'ada', requesterSource: 'parent', createdByWorkerId: 'w' }, 'me', names) }),
-    live('unknown'),
+    finished('mine', { attribution: attributionOf({ createdByUserId: 'me', requesterSource: 'explicit' }, 'me', names) }),
+    finished('adas', { attribution: attributionOf({ createdByUserId: 'ada', requesterSource: 'parent', createdByWorkerId: 'w' }, 'me', names) }),
+    finished('unknown'),
   ];
-  const now = buildActivityNow({ tasks, missions: [], rules, now: nowMs });
+  const history = buildActivityEpisodes({ tasks, missions: [], rules });
+  const now = buildActivityNow({ tasks: [live('l1', { attribution: tasks[0].attribution }), live('l2')], missions: [], rules, now: nowMs });
 
-  it('each row says who it is for, and unknown work says Unattributed', () => {
+  it('Now rows never say who work is for, known or not, and Now has no identity filter', () => {
     const m = mount();
     try {
       m.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={hrefs} identityFilters />);
-      const who = (id: string) => m.container.querySelector(`[data-row="${id}"] [data-testid="activity-attribution"]`)?.textContent;
-      expect(who('mine')).toBe('Filed by you');
-      expect(who('adas')).toBe('For Ada · filed by an agent');
-      expect(who('unknown')).toBe('Unattributed');
+      expect(m.container.querySelectorAll('[data-testid="activity-now-row"]')).toHaveLength(2);
+      expect(m.container.querySelector('[data-testid="activity-attribution"]')).toBeNull();
+      expect(m.container.querySelector('[data-testid="activity-who"]')).toBeNull();
+      expect(m.container.textContent).not.toMatch(/Unattributed|Filed by you/);
     } finally { m.done(); }
   });
 
-  it('identity filters appear only when reliable', () => {
+  it('History offers identity filters only when reliable', () => {
     const m = mount();
     try {
-      m.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={hrefs} />);
+      m.render(<ActivityView mode="history" now={now} history={history} nowMs={nowMs} hrefs={hrefs} />);
       expect(m.container.querySelector('[data-testid="activity-who"]')).toBeNull();
-      m.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={hrefs} identityFilters />);
+      m.render(<ActivityView mode="history" now={now} history={history} nowMs={nowMs} hrefs={hrefs} identityFilters />);
       expect(m.container.querySelector('[data-testid="activity-who"]')).not.toBeNull();
     } finally { m.done(); }
   });
@@ -137,16 +106,16 @@ describe('R-4 / AC-4: attribution and identity filters', () => {
   it('a narrower filter says how much unattributed work it leaves out, and All brings it back', () => {
     const m = mount();
     try {
-      m.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={hrefs} identityFilters />);
-      const rows = () => [...m.container.querySelectorAll('[data-testid="activity-now-row"]')].map(r => r.getAttribute('data-row')).sort();
-      expect(rows()).toEqual(['adas', 'mine', 'unknown']);
+      m.render(<ActivityView mode="history" now={now} history={history} nowMs={nowMs} hrefs={hrefs} identityFilters />);
+      const bars = () => m.container.querySelectorAll('[data-testid="activity-episode"]').length;
+      expect(bars()).toBe(3);
       const chip = (label: string) => [...m.container.querySelectorAll('[data-testid="activity-who"] button')].find(b => b.textContent === label)!;
       act(() => chip('Filed by me').click());
-      expect(rows()).toEqual(['mine']);
+      expect(bars()).toBe(1);
       const note = m.container.querySelector('[data-testid="activity-unattributed-hidden"]')!;
       expect(note.textContent).toContain('1 unattributed');
       act(() => note.querySelector('button')!.click());
-      expect(rows()).toEqual(['adas', 'mine', 'unknown']);
+      expect(bars()).toBe(3);
       expect(chip('All').getAttribute('aria-pressed')).toBe('true');
     } finally { m.done(); }
   });
