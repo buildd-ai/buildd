@@ -1,4 +1,4 @@
-import { formatTaskEstimate, type TaskEstimatePayload } from '@buildd/shared';
+import { formatTaskEstimate, displayTeamName, type TaskEstimatePayload } from '@buildd/shared';
 import { hasTokenScope, requiredScopeForAction } from './token-scopes';
 import { detectProviderAccessAsk, providerAccessRefusal } from './provider-access-ask';
 import { detectInteractiveSessionAsk, interactiveSessionRefusal } from './interactive-session-ask';
@@ -430,7 +430,8 @@ export function renderWorkspaceListing(rows: WorkspaceListing[], params: Record<
   for (const r of page) {
     const key = r.teamId ?? null;
     let t = teams.find((x) => x.teamId === key);
-    if (!t) { t = { teamId: key, teamName: r.teamName ?? null, workspaces: [] }; teams.push(t); }
+    // A team is never shown nameless: a blank name reads "Unnamed team <id8>".
+    if (!t) { t = { teamId: key, teamName: key || r.teamName ? displayTeamName(r.teamName, key) : null, workspaces: [] }; teams.push(t); }
     t.workspaces.push({
       id: r.workspaceId,
       name: r.name,
@@ -2606,7 +2607,8 @@ export async function handleBuilddAction(
         name: w.name,
         repo: w.repo ?? null,
         teamId: w.teamId ?? null,
-        teamName: w.team?.name ?? null,
+        // GET /api/workspaces sends the team's name as `teamName`; `team.name` is the older shape.
+        teamName: w.teamName ?? w.team?.name ?? null,
         level,
       }));
       return text(renderWorkspaceListing(rows, params));

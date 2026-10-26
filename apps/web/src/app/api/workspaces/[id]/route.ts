@@ -576,7 +576,7 @@ export async function DELETE(
     // Delete the workspace (cascade will handle tasks, workers, etc.)
     await db.delete(workspaces).where(eq(workspaces.id, id));
     await invalidateWorkspacePermissionsCache(id);
-    await clearCallerCache(callerDep.workspace(id));
+    await clearCallerCache(callerDep.workspace(id), callerDep.teamWorkspaces(access.teamId));
     await clearWorkspaceSettingsCache(id);
 
     return NextResponse.json({ success: true });

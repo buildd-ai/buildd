@@ -14,7 +14,10 @@ import {
   parseRequestedAccess,
   readConsentForm,
   renderAccountConsentPage,
+  validateAccountApproval,
   validateApproval,
+  describeGrantedTeams,
+  renderGrantInterstitial,
   type ConsentTeam,
 } from './account-consent';
 
@@ -51,19 +54,33 @@ describe('requested access from scope', () => {
 });
 
 describe('initial state', () => {
-  it('defaults to agent and preselects exactly one workspace', () => {
+  it('defaults to agent and, with several teams and no hint, chooses no team: the person picks', () => {
     const s = initialConsentState(teams, agentOnly, null);
     expect(s.actsAs).toBe('agent');
-    expect(s.selected).toEqual(['ta-w000']);
+    expect(s.selected).toEqual([]);
+    expect(s.teamModes).toEqual({});
   });
-  it('is person only when asked, and honours a reachable hint (on its page)', () => {
+  it('a hinted team starts on all current and future workspaces, with the hint ticked on its page', () => {
     const s = initialConsentState(teams, both, 'ta-w030');
     expect(s.actsAs).toBe('person');
+    expect(s.teamModes).toEqual({ ta: 'all' });
     expect(s.selected).toEqual(['ta-w030']);
     expect(s.pages.ta).toBe(2);
   });
-  it('ignores a hint the user cannot reach', () => {
-    expect(initialConsentState(teams, agentOnly, 'elsewhere').selected).toEqual(['ta-w000']);
+  it('the only team starts on all current and future workspaces', () => {
+    const solo: ConsentTeam[] = [{ id: 'ts', name: 'Solo', role: 'owner', workspaces: ws('ts', 3) }];
+    expect(initialConsentState(solo, agentOnly, null).teamModes).toEqual({ ts: 'all' });
+  });
+  it('a hinted internal workspace is never part of all: its team starts on specific with it ticked', () => {
+    const t = pickerTeams(sysTeams, 'coord-a');
+    const s = initialConsentState(t, agentOnly, 'coord-a');
+    expect(s.teamModes).toEqual({ ta: 'specific' });
+    expect(s.selected).toEqual(['coord-a']);
+  });
+  it('ignores a hint the user cannot reach, and chooses no other team for it', () => {
+    const s = initialConsentState(teams, agentOnly, 'elsewhere');
+    expect(s.selected).toEqual([]);
+    expect(s.teamModes).toEqual({});
   });
 });
 
@@ -281,7 +298,7 @@ describe('telling workspaces apart', () => {
     const s = applyNav(readConsentForm(form([['q', 'zzz']]), teams, agentOnly), 'search', teams);
     const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams, state: s, requested: agentOnly });
     expect(html).toContain('data-empty="search"');
-    expect(html).toContain('No workspaces match');
+    expect(html).toContain('No teams or workspaces match');
   });
 });
 
@@ -413,7 +430,7 @@ describe('narrow widths', () => {
   const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams, state: initialConsentState(teams, agentOnly, null), requested: agentOnly });
 
   it('puts the team name and its chips in one head that wraps, so the chips drop below the name', () => {
-    expect(html).toMatch(/<summary><span class="team-head"><span class="team-name">Alpha<\/span><span class="team-chips"><span class="chip">[^<]+<\/span><span class="chip">[^<]+<\/span><\/span><\/span><\/summary>/);
+    expect(html).toMatch(/<summary><span class="team-head"><span class="team-name">Alpha<\/span><span class="team-chips"><span class="chip">[^<]+<\/span><span class="chip">[^<]+<\/span><span class="chip mode" data-mode-chip>(<span class="m-[a-z]+">[^<]+<\/span>){3}<\/span><\/span><\/span><\/summary>/);
     expect(rule('.team-head')).toContain('flex-wrap: wrap');
     expect(rule('.team-chips')).toContain('flex-wrap: wrap');
   });
@@ -437,22 +454,120 @@ describe('narrow widths', () => {
   });
 });
 
-describe('one team', () => {
+describe('select all is never future inclusion', () => {
   const solo: ConsentTeam[] = [{ id: 'ts', name: 'Solo', role: 'owner', workspaces: ws('ts', 3) }];
   const render = (t: ConsentTeam[]) => renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams: t, state: initialConsentState(t, agentOnly, null), requested: agentOnly });
 
-  it('shows one select pair, not a second one inside the only team', () => {
-    const html = render(solo);
-    expect(html).toContain('value="select_all"');
-    expect(html).toContain('value="clear_all"');
-    expect(html).not.toContain('team_all:');
-    expect(html).not.toContain('team_clear:');
-    expect(html).not.toContain('<div class="team-actions">');
+  it('the account page has no page-wide Select all: ticking is per team, under Specific workspaces, and says it is the workspaces of now', () => {
+    for (const t of [solo, teams]) {
+      const html = render(t);
+      expect(html).not.toContain('value="select_all"');
+      expect(html).toContain(`value="team_all:${t[0].id}"`);
+      expect(html).toContain('>Tick all listed</button>');
+      expect(html).toContain('covers the workspaces of now only');
+    }
   });
-  it('keeps each team its own pair when there are several', () => {
-    const html = render(teams);
-    expect(html).toContain('value="select_all"');
-    expect(html).toContain('value="team_all:ta"');
-    expect(html).toContain('value="team_clear:tb"');
+});
+
+describe('team access choice', () => {
+  const page = (state = initialConsentState(teams, agentOnly, null), t = teams) =>
+    renderAccountConsentPage({ clientName: 'ChatGPT', redirectHost: 'chatgpt.com', hidden: [], teams: t, state, requested: agentOnly });
+
+  it('offers each team No access, All current and future workspaces and Specific workspaces, as one radio group per team', () => {
+    const html = page();
+    for (const id of ['ta', 'tb']) {
+      expect(html).toContain(`name="tmode.${id}" value="none" checked`);
+      expect(html).toContain(`name="tmode.${id}" value="all"`);
+      expect(html).toContain(`name="tmode.${id}" value="specific"`);
+    }
+    expect(html).toContain('<legend class="sr-only">What Alpha access covers</legend>');
+    expect(html).toContain('any created in or moved into it later, with the permissions below');
+    expect(html).toContain('No team chosen yet.');
+  });
+
+  it('the summary names the team, the mode and a count that does not read as fixed', () => {
+    const html = page({ ...initialConsentState(teams, agentOnly, null), teamModes: { ta: 'all', tb: 'specific' }, selected: ['tb-w001'] });
+    expect(html).toContain('<strong>Alpha</strong>: all current and future workspaces, 45 workspaces now');
+    expect(html).toContain('<strong>Beta</strong>: <span class="cnt1 mono"></span> ticked, none added later');
+    expect(html).toMatch(/name="tmode.ta" value="all" checked/);
+    expect(html).toMatch(/name="tmode.tb" value="specific" checked/);
+    // read/write and acts-as stay in the same summary
+    expect(html).toContain('<dt>Can</dt>');
+    expect(html).not.toContain('data-sum-none');
+  });
+
+  it('a team hidden by a search keeps its choice and ticks as hidden fields, and stays in the summary', () => {
+    const s = { ...initialConsentState(teams, agentOnly, null), teamModes: { tb: 'specific' as const, ta: 'all' as const }, selected: ['tb-w000'], query: 'ta ws 04' };
+    const html = page(s);
+    expect(html).toContain('<input type="hidden" name="tmode.tb" value="specific">');
+    expect(html).toContain('<input type="hidden" name="ws" value="tb-w000">');
+    expect(html).toContain('<li class="sum-row on" data-sum-static="specific"><strong>Beta</strong>: 1 ticked, none added later</li>');
+    // a round trip with those fields keeps both choices
+    const back = readConsentForm(form([['tmode.tb', 'specific'], ['tmode.ta', 'all'], ['ws', 'tb-w000']]), teams, agentOnly);
+    expect(back.teamModes).toEqual({ tb: 'specific', ta: 'all' });
+    expect(back.selected).toEqual(['tb-w000']);
+  });
+
+  it('turning a page or searching carries team choices and ticks', () => {
+    const s0 = readConsentForm(form([['tmode.ta', 'specific'], ['ws', 'ta-w001'], ['tmode.tb', 'all']]), teams, agentOnly);
+    const s1 = applyNav(s0, 'page:ta:2', teams);
+    expect(s1.teamModes).toEqual({ ta: 'specific', tb: 'all' });
+    expect(s1.selected).toEqual(['ta-w001']);
+    const s2 = applyNav({ ...s1, query: 'ws 03' }, 'search', teams);
+    expect(s2.teamModes).toEqual({ ta: 'specific', tb: 'all' });
+    expect(s2.selected).toEqual(['ta-w001']);
+  });
+
+  it('reading a page action drops an unknown team or value', () => {
+    const s = readConsentForm(form([['tmode.elsewhere', 'all'], ['tmode.ta', 'everything'], ['tmode.tb', 'all']]), teams, agentOnly);
+    expect(s.teamModes).toEqual({ tb: 'all' });
+  });
+});
+
+describe('account approval', () => {
+  it('a team on all current and future workspaces is a whole-team grant; specific teams give their ticks', () => {
+    const r = validateAccountApproval(form([['tmode.ta', 'all'], ['tmode.tb', 'specific'], ['ws', 'tb-w001']]), teams, agentOnly);
+    expect(r.ok && r.teamIds).toEqual(['ta']);
+    expect(r.ok && r.workspaceIds).toEqual(['tb-w001']);
+  });
+  it('ticks in a team that is not on specific workspaces are not part of the approval', () => {
+    const r = validateAccountApproval(form([['tmode.ta', 'all'], ['ws', 'ta-w003'], ['tmode.tb', 'none'], ['ws', 'tb-w000']]), teams, agentOnly);
+    expect(r.ok && r.teamIds).toEqual(['ta']);
+    expect(r.ok && r.workspaceIds).toEqual([]);
+  });
+  it('refuses a team that was not offered (a tampered or stale id) with 403, naming nothing', () => {
+    const r = validateAccountApproval(form([['tmode.ta', 'all'], ['tmode.tz', 'all']]), teams, agentOnly);
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.status).toBe(403); expect(r.showPage).toBe(false); expect(r.message).not.toContain('tz'); }
+  });
+  it('refuses an unknown or repeated choice with 400', () => {
+    for (const pairs of [[['tmode.ta', 'everything']], [['tmode.ta', 'all'], ['tmode.ta', 'specific']]] as Array<Array<[string, string]>>) {
+      const r = validateAccountApproval(form(pairs), teams, agentOnly);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.status).toBe(400);
+    }
+  });
+  it('asks again for a specific team with nothing ticked, and for no team at all', () => {
+    const a = validateAccountApproval(form([['tmode.ta', 'specific']]), teams, agentOnly);
+    expect(!a.ok && a.showPage && a.message).toContain('Tick at least one workspace in Alpha');
+    const b = validateAccountApproval(form([['ws', 'ta-w000']]), teams, agentOnly);
+    expect(!b.ok && b.showPage && b.message).toContain('Choose at least one team');
+  });
+  it('keeps the shared checks: an unreachable workspace, an unrequested kind or write', () => {
+    expect(validateAccountApproval(form([['tmode.ta', 'all'], ['ws', 'elsewhere']]), teams, agentOnly)).toMatchObject({ ok: false, status: 403 });
+    expect(validateAccountApproval(form([['tmode.ta', 'all'], ['acts_as', 'person']]), teams, agentOnly)).toMatchObject({ ok: false, status: 400 });
+    expect(validateAccountApproval(form([['tmode.ta', 'all'], ['perm_write', 'on']]), teams, { write: false, person: false })).toMatchObject({ ok: false, status: 400 });
+    const ro = validateAccountApproval(form([['tmode.ta', 'all']]), teams, agentOnly);
+    expect(ro.ok && ro.scopes).toEqual(['read']);
+  });
+});
+
+describe('confirmation', () => {
+  it('says a whole-team grant grows, and a specific one is a set', () => {
+    expect(describeGrantedTeams([{ name: 'Alpha', mode: 'all', count: 45 }])).toBe('all current and future workspaces in Alpha (45 now)');
+    expect(describeGrantedTeams([{ name: 'Alpha', mode: 'all', count: 45 }, { name: 'Beta', mode: 'specific', count: 1 }]))
+      .toBe('all current and future workspaces in Alpha (45 now) and 1 workspace in Beta');
+    const html = renderGrantInterstitial({ clientName: 'C', redirectUrl: 'https://c.example/cb', teams: [{ name: '<b>', mode: 'specific', count: 2 }], actsAs: 'agent' });
+    expect(html).toContain('2 workspaces in &lt;b&gt;');
   });
 });
