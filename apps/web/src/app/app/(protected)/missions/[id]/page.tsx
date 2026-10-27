@@ -769,7 +769,7 @@ async function MissionDetailBody({
   const completionNote = mission.status === 'completed' ? r1.completionNote ?? null : null;
   const shippedRow = mission.status === 'completed' ? r1.shippedRow ?? null : null;
   const feedNoteRows = r1.feedNotes ?? [];
-  const [releaseFooterData, carryingReleaseId, surfaceAuditWaiver, visualReviewState, estimateRows, outcomeSpecTitles, waiverNames] = await Promise.all([
+  const [releaseFooterData, carryingReleaseId, surfaceAuditWaiver, visualReviewState, estimateRows, outcomeSpecTitles, waiverNames, acceptanceHolds] = await Promise.all([
     // The mission reads only its own Shipped fact from this (D6); the
     // workspace queue and the Release now trigger are not rendered here.
     shouldQueryRelease(releaseArchetype) && releaseWorkspace
@@ -810,6 +810,8 @@ async function MissionDetailBody({
         .catch(() => [] as { email: string; name: string | null }[]);
       return Object.fromEntries(rows.flatMap(r => (r.name ? [[r.email.toLowerCase(), r.name]] : [])));
     }),
+    // Acceptance test holds from acceptance-test edits awaiting approval.
+    loadAcceptanceHolds(id).catch(() => []),
   ]);
   if (surfaceAuditWaiver) surfaceAuditWaiver.actorLabel = waiverActorName(surfaceAuditWaiver.actorLabel, user?.email, waiverNames);
   // An out-of-date review with no audit behind it files the next one now, not at the next sweep.
@@ -966,7 +968,6 @@ async function MissionDetailBody({
     ? <MissionPrLine pr={missionIntegrationPr} />
     : null;
   const acceptanceTests = testsFromContext(decisionTasks.find(t => (t.context as Record<string, unknown> | null)?.acceptanceTests != null)?.context as Record<string, unknown> | null);
-  const acceptanceHolds = await loadAcceptanceHolds(id).catch(() => []);
   const acceptanceBlock = acceptanceTests.length > 0 || acceptanceHolds.length > 0
     ? <>{acceptanceHolds.length > 0 && <MissionAcceptanceHolds holds={acceptanceHolds} readonly={isTerminal} />}{acceptanceTests.length > 0 && <MissionAcceptanceTests tests={acceptanceTests} />}</>
     : null;
