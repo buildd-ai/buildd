@@ -413,3 +413,21 @@ describe('merged and waiting tasks — tasks/[id]/page.tsx', () => {
     expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 ? (');
   });
 });
+
+// Task Page AC-28 / AC-30 (Living Spec b84aa682 r4): a blocking review leads, never buried under history.
+describe('a blocking review leads the page — tasks/[id]/page.tsx', () => {
+  const src = pageSource;
+  it('the decision card, then the checks with Code review open, then the timeline', () => {
+    const card = src.indexOf('<EscalationDecision');
+    const leading = src.indexOf('{reviewLeads && <TaskChecksSection');
+    const timeline = src.indexOf('<TaskTimeline groups={timeline} />');
+    expect(card).toBeGreaterThan(0);
+    expect(leading).toBeGreaterThan(card);
+    expect(timeline).toBeGreaterThan(leading);
+    // Drawn once: the later slot stands down while the review leads.
+    expect(src).toContain('{checksSection && !reviewLeads && <TaskChecksSection');
+    expect(src).toContain('const reviewLeads = !activeWorker && !!checksSection && checksSection.checks.reviewOpen === true;');
+    // The card does not name the findings the open row lists below it (R-48).
+    expect(src).toContain('findingsBelow={reviewLeads}');
+  });
+});

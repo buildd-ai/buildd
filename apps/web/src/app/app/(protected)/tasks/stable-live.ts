@@ -118,6 +118,8 @@ export function useScrollAnchor(rootRef: RefObject<HTMLElement | null>) {
     if (scroller.scrollTop <= 0) { anchor.current = null; return; }
     for (const el of root.querySelectorAll<HTMLElement>(`[${ANCHOR}]`)) {
       const r = el.getBoundingClientRect();
+      // A layout that is not displayed (Now's phone or desktop arrangement) has no box to hold.
+      if (r.height === 0 && r.width === 0) continue;
       if (r.bottom > viewTop) { anchor.current = { key: el.getAttribute(ANCHOR)!, top: r.top }; return; }
     }
     anchor.current = null;

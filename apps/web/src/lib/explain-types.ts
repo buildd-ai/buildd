@@ -261,6 +261,8 @@ export interface ExplainAnswer {
     headline: string;
     detail: string | null;
     attempts: string | null;
+    /** Living Spec fa62b865 R-50: the review reading every surface shows, the same words and counts. */
+    review?: { stateLine: string; verdict: string; round: number; roundsSpent: number; roundBudget: number; openFindings: string[] };
   };
   derivedFrom: ExplainProvenance;
 }

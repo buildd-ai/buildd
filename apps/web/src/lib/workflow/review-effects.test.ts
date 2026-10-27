@@ -192,7 +192,7 @@ describe('fixWork (Work, role fix)', () => {
     ownerRow = { ...ownerRow, description: 'It performs no work of its own.', kind: 'coordination', roleSlug: null };
     const b = await fixWork(fixReq({ round: 1, findings: [{ id: 'r1:0', path: 'a.ts', line: 2, title: 'fix the copy', status: 'open' }] }) as any) as any;
     expect(b.values).toMatchObject({ roleSlug: 'builder', kind: 'engineering' });
-    expect(b.values.description).toContain('- `r1:0` `a.ts:2`: fix the copy');
+    expect(b.values.description).toContain('- `r1:0` a.ts:2: fix the copy');
     expect(b.values.description).not.toContain('performs no work');
     expect(b.values.context).toMatchObject({ resumeBranch: 'mission/m-1', repairTarget: { prNumber: 7, headRef: 'mission/m-1', headSha: 'H1', baseRef: 'dev' } });
   });

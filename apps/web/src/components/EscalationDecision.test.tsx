@@ -52,6 +52,16 @@ describe('EscalationDecision', () => {
 });
 
 describe('EscalationDecision approve and override (#5209)', () => {
+  // Living Spec fa62b865 R-48: on the task page the open Code review row lists the findings; the card does not repeat them.
+  test('with findingsBelow, the card keeps its actions and names no finding', () => {
+    const brief = deriveEscalationBrief(view)!;
+    const copy = decisionCopy(brief, { rounds: view.rounds, ledger: view.attempts });
+    const html = renderToStaticMarkup(<EscalationDecision brief={brief} copy={copy} prNumber={7} workspaceId="w1" findingsBelow />);
+    expect(html).not.toContain('Mutation tests do not cover the new guard');
+    expect(html).not.toContain('data-testid="decision-unresolved"');
+    expect(html).toContain('data-testid="decision-action-request_fix"');
+  });
+
   test('shown only when the server says this viewer may, as a secondary action', () => {
     const brief = deriveEscalationBrief(view, { overridePermitted: true, hasMergePermission: true })!;
     const copy = decisionCopy(brief, { rounds: view.rounds, ledger: view.attempts });

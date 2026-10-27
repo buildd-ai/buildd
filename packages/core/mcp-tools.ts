@@ -160,10 +160,12 @@ export function formatGetPrDelivery(data: {
     decision?: { question: string; why: string; unresolved: { open: string[]; awaitingVerification: string[] }; actions: Array<{ label: string }> } | null;
     repairs: Array<{ label: string; words: string }>;
     reviewApproval?: { state: string; description: string } | null;
+    /** Living Spec fa62b865 R-50: the review reading every surface shows (rounds spent, each open finding once). */
+    reading?: { round: number; roundsSpent: number; roundBudget: number; openFindings: string[] } | null;
   } | null;
   /** The mission-level merge gate (`guardMissionPrMerge`), present only when it holds the PR. */
   mergeGate?: { blocks: boolean; reason: string | null } | null;
-}): { standingLine: string; reviewLine: string; roundsLine: string; decisionLine: string; repairsLine: string; approvalLine: string; mergeGateLine: string } {
+}): { standingLine: string; reviewLine: string; roundsLine: string; decisionLine: string; findingsLine: string; repairsLine: string; approvalLine: string; mergeGateLine: string } {
   const d = data.delivery;
   // Spec 072de598 I-12: an approval is not "ready to merge" while a merge door would refuse the PR.
   const gate = data.mergeGate?.blocks ? data.mergeGate : null;
@@ -174,21 +176,25 @@ export function formatGetPrDelivery(data: {
   const github = approved > 0 || changes > 0
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
-  if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', repairsLine: '', approvalLine: '', mergeGateLine };
+  if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', findingsLine: '', repairsLine: '', approvalLine: '', mergeGateLine };
   const githubStates = githubReviewStatesLine(r) ?? '';
   const dec = d.decision;
+  // The findings are listed once, below (R-48); the decision names the question and the choices.
   const decisionLine = dec
     ? [
         `Decision: ${dec.question} ${dec.why}`,
-        dec.unresolved.open.length > 0 ? `${DECISION_LABELS.open}: ${dec.unresolved.open.join('; ')}` : '',
-        dec.unresolved.awaitingVerification.length > 0 ? `${DECISION_LABELS.awaitingVerification}: ${dec.unresolved.awaitingVerification.join('; ')}` : '',
         `${DECISION_LABELS.choicesOnTaskPage}: ${dec.actions.map(a => a.label).join(', ')}`,
-      ].filter(Boolean).join('\n')
+      ].join('\n')
+    : '';
+  const reading = d.reading;
+  const findingsLine = reading && reading.openFindings.length > 0
+    ? [`Open findings (round ${reading.round}, ${reading.roundsSpent} of ${reading.roundBudget} review rounds spent):`, ...reading.openFindings.map((f) => `- ${f}`)].join('\n')
     : '';
   return {
     standingLine: `Where it stands: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
     reviewLine: d.review ? `Reviews: ${d.review.line}` : 'Reviews: no review round yet',
     decisionLine,
+    findingsLine,
     // AC-24: GitHub's formal states beside buildd's verdicts, never in place of them.
     roundsLine: [
       d.rounds ? `Review rounds: ${d.rounds.line}.${d.rounds.githubNote ? ` ${d.rounds.githubNote}` : ''}` : '',
@@ -3796,7 +3802,7 @@ export async function handleBuilddAction(
         ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
-      const { standingLine, reviewLine, roundsLine, decisionLine, repairsLine, approvalLine, mergeGateLine } = formatGetPrDelivery(data);
+      const { standingLine, reviewLine, roundsLine, decisionLine, findingsLine, repairsLine, approvalLine, mergeGateLine } = formatGetPrDelivery(data);
 
       const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
@@ -3889,6 +3895,7 @@ export async function handleBuilddAction(
         reviewLine,
         roundsLine,
         decisionLine,
+        findingsLine,
         repairsLine,
         statsLine,
         supersededLine,
@@ -3989,12 +3996,17 @@ export async function handleBuilddAction(
 
       const data = await api(`/api/github/pr/review?${query.toString()}`);
       const s = data.status ?? {};
+      // Living Spec fa62b865 R-48/R-50: a kernel-owned PR reads as every other surface does, each open
+      // finding once by id; the reviewer's prose is not repeated beside them.
+      const reading = data.reading as { stateLine: string; round: number; roundsSpent: number; roundBudget: number; openFindings: string[] } | null | undefined;
 
       const lines = [
         `**PR #${data.prNumber} review — ${s.state}** (terminal: ${s.terminal ? 'yes' : 'no'})`,
+        reading ? `Where it stands: ${reading.stateLine} (round ${reading.round}, ${reading.roundsSpent} of ${reading.roundBudget} review rounds spent)` : null,
+        reading && reading.openFindings.length > 0 ? ['Open findings:', ...reading.openFindings.map((f) => `- ${f}`)].join('\n') : null,
         s.verdict ? `Verdict: ${s.verdict}${typeof s.confidence === 'number' ? ` (confidence ${s.confidence})` : ''}` : null,
         s.summary ? `Summary: ${s.summary}` : null,
-        s.feedback ? `Feedback: ${s.feedback}` : null,
+        s.feedback && !(reading && reading.openFindings.length > 0) ? `Feedback: ${s.feedback}` : null,
         s.escalationReason ? `Escalation: ${s.escalationReason}` : null,
         s.state === 'review_failed'
           ? `Reason: ${s.failureReason ?? 'no verdict was produced and no failure reason was recorded'}`

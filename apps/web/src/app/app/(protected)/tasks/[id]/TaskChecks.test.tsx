@@ -123,3 +123,61 @@ describe('TaskChecks — the review status link lands on the findings (R-43)', (
     expect(reviewItem(html)).toContain(ID);
   });
 });
+
+// Task Page AC-28 / AC-29 (Living Spec b84aa682 r4): the rule mobile-decision-flow §3.7 states for
+// the mission timeline, applied here. A review that blocks is open without a tap, with its verdict,
+// the round and each open finding once; an approved or merged review stays a closed disclosure.
+describe('TaskChecks — a blocking review is open, an approved one is not', () => {
+  const { deriveDeliveryView } = require('@/lib/workflow/projections') as typeof import('@/lib/workflow/projections');
+  const delivery = {
+    id: 'd1', workspaceId: 'w1', ownerTaskId: 't1', repoFullName: 'example/app', prNumber: 4562, baseRef: 'dev',
+    stateReason: null, version: 5, currentHeadSha: HEAD, currentRound: 2, maxRounds: 3,
+    boundAttemptId: null, resumeState: null, trunkIncidentId: null, approvedHeads: [], approvalBasis: null,
+    compositionHeads: [], ci: null, ciHeadSha: null, mergeable: null, mergeableHeadSha: null, mergedAt: null,
+    mergeCommitSha: null, supersededByPr: null,
+  } as const;
+  const finding = {
+    id: 'round1abcd:0', originRoundId: 'round1abcd', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: 4, title: 'off by one',
+    required: true, status: 'open' as const, lastRound: 2, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+    remedyClass: 'code_fix' as const, restatedCount: 2,
+  };
+  const rc = R({ id: 'r2', round: 2, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+  const viewOf = (d: Partial<typeof delivery> & { state: string }, rounds = [rc], findings = [finding]) =>
+    deriveDeliveryView({ view: { delivery: { ...delivery, ...d } as never, rounds, attempts: [], findings } })!;
+
+  for (const [name, d] of [
+    ['changes requested', { state: 'CHANGES_REQUESTED' }],
+    ['a review escalation', { state: 'ESCALATED', stateReason: 'review_escalated' }],
+    ['a spent review budget', { state: 'ESCALATED', stateReason: 'review_exhausted' }],
+  ] as const) {
+    test(`${name}: open without a tap, the round and each open finding once`, () => {
+      const li = reviewItem(render(viewOf(d as never)));
+      expect(li).toMatch(/<details[^>]*\sopen=""/);
+      expect(li).toContain('Round 2 · head 9adf94e');
+      expect(li).toContain('2 of 3 review rounds spent');
+      expect(li).toContain('src/a.ts:4: off by one');
+      expect(li).toContain('restated 2 times');
+      expect(li.split('off by one').length).toBe(2);
+    });
+  }
+
+  test('a failed round: open, and says the run ended without a verdict', () => {
+    const li = reviewItem(render(viewOf({ state: 'AWAITING_REVIEW' }, [R({ id: 'r2', round: 2, status: 'failed' })], [])));
+    expect(li).toMatch(/<details[^>]*\sopen=""/);
+    expect(li).toContain('The review run ended before giving a verdict');
+  });
+
+  test('approved: a closed disclosure that opens on tap or at the findings anchor', () => {
+    const ok = R({ id: 'r2', round: 2, status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+    const li = reviewItem(render(viewOf({ state: 'APPROVED', approvedHeads: [HEAD] as never, approvalBasis: 'verdict' as never }, [ok], [])));
+    expect(li).toContain('<details');
+    expect(li).not.toMatch(/<details[^>]*\sopen=""/);
+    expect(li).toContain(`id="${REVIEW_FINDINGS_ANCHOR}"`);
+  });
+
+  test('merged: closed', () => {
+    const ok = R({ id: 'r2', round: 2, status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+    const li = reviewItem(render(viewOf({ state: 'MERGED' }, [ok], [])));
+    expect(li).not.toMatch(/<details[^>]*\sopen=""/);
+  });
+});

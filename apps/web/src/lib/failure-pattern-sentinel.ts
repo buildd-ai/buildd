@@ -31,6 +31,7 @@ import type {
   FailureIncidentRule,
   FailureIncidentSeverity,
 } from '@buildd/shared';
+import { EMPTY_SIGNATURE } from '@buildd/core/error-signature';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
 import type { CaptureFailureComponent } from '@buildd/core/visual-qa-page-source';
@@ -488,7 +489,14 @@ function ruleRepeatedFailure(facts: SentinelFacts, t: SentinelThresholds): Incid
     !NON_FAILURE_EXITS.has(f.exitCause ?? ''),
   );
   const out: IncidentCandidate[] = [];
-  for (const [signature, group] of groupBy(rows, f => f.signature)) {
+  // "(no error message)" says nothing about sameness: every messageless failure
+  // would share it. Key those by exit cause, and drop them when that is unknown too.
+  const keyed = rows.flatMap(f => {
+    if (f.signature !== EMPTY_SIGNATURE) return [{ key: f.signature, f }];
+    return f.exitCause ? [{ key: `${EMPTY_SIGNATURE} [${f.exitCause}]`, f }] : [];
+  });
+  for (const [signature, entries] of groupBy(keyed, e => e.key)) {
+    const group = entries.map(e => e.f);
     const lineages = new Set(group.map(lineageOf));
     if (lineages.size < t.repeatedFailureMinTasks) continue;
     const severity: FailureIncidentSeverity =

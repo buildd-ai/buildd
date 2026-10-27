@@ -59,7 +59,8 @@ export function TaskPageFixture() {
           {f.track && <Lifecycle state={f.track.state} phrase={f.track.phrase} className="mt-3" />}
         </div>
         {f.verdict && <TaskVerdictBlock verdict={f.verdict} displayStatus="completed" />}
-        {f.escalation && <EscalationDecision brief={f.escalation.brief} copy={f.escalation.copy} prNumber={1234} workspaceId="example" />}
+        {/* As the page: the open Code review row below lists the findings, so the card does not (Task Page AC-28). */}
+        {f.escalation && <EscalationDecision brief={f.escalation.brief} copy={f.escalation.copy} prNumber={1234} workspaceId="example" findingsBelow={f.checks.reviewOpen === true} />}
         <TaskChecks
           checks={f.checks}
           prNumber={f.view.prNumber}

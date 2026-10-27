@@ -21,6 +21,8 @@
 import { createContext, useContext, useId, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import Card from '@/components/ui/Card';
+import CheckRowView, { CheckIcon } from '@/components/ui/CheckRow';
+import type { DeliveryCheckView, DeliveryView } from '@/lib/mission-delivery-checks';
 import { VISUAL_REVIEW_SKIP_REASONS, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
 import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
@@ -183,14 +185,100 @@ export function CriterionLines({ lines }: { lines: readonly CriterionLine[] }) {
 
 const LIVE: ReadonlySet<CheckStatus> = new Set(['running', 'finding', 'owner', 'unable', 'stale']);
 
-/** The checks that apply, one row each (R-16). */
+/** A finding's repair tasks, shown inside their check (I-6), never in the build count. */
+function RepairList({ repairs, onOpenTask }: { repairs: readonly { id: string; title: string; done: boolean }[]; onOpenTask?: (id: string) => void }) {
+  return (
+          <ul data-testid="mission-check-repairs" aria-label="Fixes" className="flex flex-col gap-1.5 rounded-[var(--radius-card)] border-l-2 border-status-error px-3 py-2 [background:var(--inset)]">
+            {repairs.map(f => (
+              <li key={f.id} className="flex min-w-0 items-center gap-2.5 text-body">
+                <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 rounded-[var(--radius-cell)]" data-tone={f.done ? 'ok' : 'act'} data-pattern={f.done ? 'solid' : 'hatch-bold'} />
+                {onOpenTask
+                  ? <button type="button" onClick={() => onOpenTask(f.id)} className="min-h-11 min-w-0 text-left md:min-h-0 text-text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]">{f.title}</button>
+                  : <span className="min-w-0 text-text-primary [overflow-wrap:anywhere]">{f.title}</span>}
+                <span className="ml-auto shrink-0 font-mono text-meta text-text-muted">{f.done ? 'merged' : 'fixing'}</span>
+              </li>
+            ))}
+          </ul>
+  );
+}
+
+/**
+ * Delivery beside Checks (spec 072de598 I-20 to I-24). Delivery is one mono
+ * count line, a row per PR and `Timeline ›`; Checks are Visual review, Merge
+ * into dev and Release as CheckRows, stacked on a phone and three steps side
+ * by side on desktop with the current one marked. Labels, never sentences;
+ * a part with nothing to show renders nothing.
+ */
+export function DeliveryChecks({ checks, delivery, timelineHref, onOpenTask }: { checks: readonly DeliveryCheckView[]; delivery: DeliveryView | null; timelineHref: string; onOpenTask?: (id: string) => void }) {
+  const [skipping, setSkipping] = useState<string | null>(null);
+  if (checks.length === 0 && !delivery) return null;
+  return (
+    <SkipContext.Provider value={{ skipping, setSkipping }}>
+      <section data-testid="mission-delivery-checks" className={`grid min-w-0 gap-5 ${delivery && checks.length > 0 ? 'md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]' : ''}`}>
+        {delivery && (
+          <div data-testid="mission-delivery" className="flex min-w-0 flex-col gap-2">
+            <div className="flex items-baseline justify-between gap-3">
+              <h2 className="text-meta text-text-muted">Delivery</h2>
+              {delivery.line && <p data-testid="mission-delivery-line" className="font-mono text-meta text-text-secondary">{delivery.line}</p>}
+            </div>
+            {delivery.prs.length > 0 && (
+              <ul className="overflow-hidden rounded-[var(--radius-card)] border border-border-default bg-card">
+                {delivery.prs.map(p => {
+                  const body = (
+                    <>
+                      <CheckIcon status={p.status} />
+                      <span className="min-w-0 flex-1 truncate text-body text-text-primary">{p.title}</span>
+                      {p.number != null && <span className="shrink-0 font-mono text-meta text-text-muted">#{p.number}</span>}
+                    </>
+                  );
+                  const cls = 'flex min-h-11 min-w-0 items-center gap-2.5 px-3 md:min-h-9';
+                  return (
+                    <li key={p.key} data-testid="mission-delivery-pr" data-status={p.status} className="border-t border-[var(--line-soft)] first:border-t-0">
+                      {p.href ? <a href={p.href} target="_blank" rel="noopener noreferrer" className={`${cls} hover:bg-card-hover`}>{body}</a> : <div className={cls}>{body}</div>}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <a href={timelineHref} data-testid="mission-delivery-timeline" className="flex min-h-11 items-center justify-between font-mono text-meta text-text-secondary hover:text-text-primary md:min-h-9"><span>Timeline</span> <span aria-hidden="true">›</span></a>
+          </div>
+        )}
+        {checks.length > 0 && (
+          <div data-testid="mission-checks" className="flex min-w-0 flex-col gap-2">
+            <h2 className="text-meta text-text-muted">Checks</h2>
+            <ul className="overflow-hidden rounded-[var(--radius-card)] border border-border-default bg-card md:grid md:overflow-visible md:border-0 md:bg-transparent md:[grid-template-columns:repeat(var(--steps),minmax(0,1fr))] md:gap-3" style={{ '--steps': checks.length } as React.CSSProperties}>
+              {checks.map(c => (
+                <li key={c.key} data-testid="mission-check" data-kind={c.key} data-status={c.status} data-current={c.current || undefined} className="border-t border-[var(--line-soft)] first:border-t-0 md:rounded-[var(--radius-card)] md:border md:border-border-default md:bg-card md:first:border-t">
+                  <CheckRowView
+                    name={c.name}
+                    status={c.status}
+                    stateWord={c.stateWord}
+                    detail={c.detail}
+                    href={c.href}
+                    current={c.current}
+                    steps
+                    action={c.skippable ? <CheckSkip.Trigger row={c.key} /> : undefined}
+                  />
+                  {c.skippable && <div className="px-3 pb-3"><CheckSkip.Form row={c.key} /></div>}
+                  {c.repairs.length > 0 && <div className="px-3 pb-3"><RepairList repairs={c.repairs} onOpenTask={onOpenTask} /></div>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+    </SkipContext.Provider>
+  );
+}
+
+/** The goal criteria, one row each (R-16). */
 export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; onOpenTask?: (id: string) => void }) {
   const [skipping, setSkipping] = useState<string | null>(null);
   if (rows.length === 0) return null;
   return (
     <SkipContext.Provider value={{ skipping, setSkipping }}>
     <section data-testid="mission-checks" aria-labelledby="mission-checks-title" className="flex flex-col gap-2">
-      <h2 id="mission-checks-title" className="text-meta text-text-muted">Checks</h2>
+      <h2 id="mission-checks-title" className="text-meta text-text-muted">Goals</h2>
       <ul className="overflow-hidden rounded-[var(--radius-card)] border border-border-default bg-card">
         {rows.map(r => (
           <li
@@ -221,19 +309,7 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
             {r.waivable && <CheckSkip.Form row={r.key} />}
             {(r.repairs.length > 0 || r.evidence.length > 0) && (
               <div className="col-start-2 mt-1 flex flex-col gap-2 md:col-[2/4]">
-                {r.repairs.length > 0 && (
-                  <ul data-testid="mission-check-repairs" aria-label="Fixes" className="flex flex-col gap-1.5 rounded-[var(--radius-card)] border-l-2 border-status-error px-3 py-2 [background:var(--inset)]">
-                    {r.repairs.map(f => (
-                      <li key={f.id} className="flex min-w-0 items-center gap-2.5 text-body">
-                        <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 rounded-[var(--radius-cell)]" data-tone={f.done ? 'ok' : 'act'} data-pattern={f.done ? 'solid' : 'hatch-bold'} />
-                        {onOpenTask
-                          ? <button type="button" onClick={() => onOpenTask(f.id)} className="min-h-11 min-w-0 text-left md:min-h-0 text-text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]">{f.title}</button>
-                          : <span className="min-w-0 text-text-primary [overflow-wrap:anywhere]">{f.title}</span>}
-                        <span className="ml-auto shrink-0 font-mono text-meta text-text-muted">{f.done ? 'merged' : 'fixing'}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                {r.repairs.length > 0 && <RepairList repairs={r.repairs} onOpenTask={onOpenTask} />}
                 {r.evidence.length > 0 && (
                   <p className="flex flex-wrap gap-x-4 font-mono text-meta">
                     {r.evidence.map(e => (

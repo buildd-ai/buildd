@@ -35,7 +35,7 @@ export const KERNEL_HANDLED_EFFECTS: readonly EffectKind[] = [
   'render_activity',
   'merge_call', 'verify_merge', 'emit_pr_merged', 'finalize_mission_pr', 'publish_landing_status', 'dispatch_external_merge_fix',
   'dispatch_ci_fix', 'capture_ci_evidence', 'dispatch_trunk_fix',
-  'dispatch_review', 'dispatch_fix', 'post_review', 'mission_note', 'notify', 'push_recovery', 'release_attribution', 'gate_event',
+  'dispatch_review', 'dispatch_fix', 'dispatch_capture', 'post_review', 'mission_note', 'notify', 'push_recovery', 'release_attribution', 'gate_event',
   'refresh_branch', 'renumber_migration', 'dispatch_conflict_fix',
   'escalate_exhaustion', 'cancel_open_attempts',
 ];

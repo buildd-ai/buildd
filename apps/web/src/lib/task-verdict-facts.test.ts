@@ -92,10 +92,17 @@ describe('traceOutcomeOf', () => {
 describe('deliveryVerdictFields (e07ee9cf)', () => {
   it('a behind refresh parked in the lane is platform activity, owned by landing', () => {
     expect(deliveryVerdictFields({ state: 'REPAIRING', stateReason: 'behind', headline: 'Approved · queued to land behind PR #5657', prState: 'ci_passed', owner: 'landing' }))
-      .toEqual({ deliveryActivity: 'Approved · queued to land behind PR #5657', awaitingCi: false, deliveryOwner: 'landing', deliveryHeadline: 'Approved · queued to land behind PR #5657' });
+      .toEqual({ deliveryActivity: 'Approved · queued to land behind PR #5657', awaitingCi: false, deliveryOwner: 'landing', deliveryHeadline: 'Approved · queued to land behind PR #5657', deliveryReady: null });
   });
   it('no delivery: nothing from the kernel', () => {
-    expect(deliveryVerdictFields(null)).toEqual({ deliveryActivity: null, awaitingCi: false, deliveryOwner: null, deliveryHeadline: null });
+    expect(deliveryVerdictFields(null)).toEqual({ deliveryActivity: null, awaitingCi: false, deliveryOwner: null, deliveryHeadline: null, deliveryReady: null });
+  });
+  it('fa62b865 R-52: ready only when the review reading approved and nothing holds the delivery', () => {
+    const base = { stateReason: null, headline: 'x', prState: 'ci_passed' as const, owner: 'human' as const };
+    expect(deliveryVerdictFields({ ...base, state: 'APPROVED', review: { verdict: 'approved' } }).deliveryReady).toBe(true);
+    expect(deliveryVerdictFields({ ...base, state: 'ESCALATED', review: { verdict: 'approved' } }).deliveryReady).toBe(false);
+    expect(deliveryVerdictFields({ ...base, state: 'APPROVED', prState: 'conflict', review: { verdict: 'approved' } }).deliveryReady).toBe(false);
+    expect(deliveryVerdictFields({ ...base, state: 'AWAITING_REVIEW', review: { verdict: 'queued' } }).deliveryReady).toBe(false);
   });
   it('a CI repair is not activity, but says whose move it is', () => {
     expect(deliveryVerdictFields({ state: 'REPAIRING', stateReason: 'ci', headline: 'Fixing CI', prState: 'ci_failed', owner: 'worker' }))
