@@ -3043,6 +3043,12 @@ export interface VisualReviewCell {
   fixCheck?: VisualReviewFixCheck | null;
   /** Server-derived (`standingOf`). Absent only on a model built before the field existed. */
   standing?: VisualReviewStanding;
+  /**
+   * Earlier shots of this same screen (route, viewport and known state) that a
+   * later capture replaced. Viewable, never a current screen: not counted, not
+   * in the queue. Absent when there are none.
+   */
+  earlier?: VisualReviewCellEntry[];
 }
 
 export interface VisualReviewSummary {

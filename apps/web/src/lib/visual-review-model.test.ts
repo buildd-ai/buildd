@@ -405,8 +405,13 @@ describe('buildVisualReviewModel: after a fix merges (fixCheck)', () => {
       shots: [row('s1', 'w1', 'inv-eur-desktop.png', 'issue', 1), row('s1b', 'w1', 'inv-jpy-desktop.png', 'ok', 2), row('s2', 'w2', 'inv-desktop.png', 'ok', 120)],
       tasks: [audit('t1', 1, 'completed', 'w1'), round2],
     }));
-    expect(m.resolvedElsewhere.map(r => r.key)).toEqual(['/inv|desktop|pay-dialog · eur']);
-    expect(m.summary).toMatchObject({ issues: 0 });
+    // An earlier ok shot of the same screen steps back too: one screen, its latest shot.
+    expect(m.resolvedElsewhere.map(r => r.key).sort()).toEqual(['/inv|desktop|pay-dialog · eur', '/inv|desktop|pay-dialog · jpy']);
+    expect(m.summary).toMatchObject({ issues: 0, shots: 1 });
+    expect(m.queue).toEqual([]);
+    // Viewable, not leading: the screen that replaced them lists them as earlier.
+    expect(m.cells).toHaveLength(1);
+    expect(m.cells[0].earlier?.map(e => e.shot.id).sort()).toEqual(['s1', 's1b']);
   });
 });
 
@@ -465,6 +470,16 @@ describe('buildVisualReviewModel: a merged fix waiting for a screenshot (spec 07
     const t3 = audit('t3', 3, 'pending', 'w3', { createdAt: at(130), workers: [] });
     const m = buildVisualReviewModel(input({ shots: [...round1, sibling], tasks: [t1, t2, t3, ...fixes] }));
     expect(m.recapture?.next).toBe('queued');
+  });
+
+  it('I-15: a queued recapture is waiting, never an owner question, even with the round-cap note open', () => {
+    const t3 = audit('t3', 3, 'pending', 'w3', { createdAt: at(130), workers: [] });
+    const m = buildVisualReviewModel(input({ shots: [...round1, sibling], tasks: [t1, t2, t3, ...fixes], roundCapOpen: true }));
+    expect(m.recapture?.next).toBe('queued');
+    expect(m.phase).toBe('queued');
+    expect(m.roundCapOpen).toBe(false);
+    expect(m.needsYou).toBeNull();
+    expect(m.queue).toEqual([]);
   });
 
   it('I-15: once a recapture audit finished without them, a person decides: Fixed or Still broken, in the queue', () => {
