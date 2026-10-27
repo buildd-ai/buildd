@@ -114,6 +114,23 @@ describe('prSubjectFor', () => {
     expect(rule.owner).toBe('person');
     expect(rule.rail).toBe('no_next_step');
   });
+
+  it('ESCALATED PR dirty but not spent fixes should be conflict_fix', () => {
+    // Scenario: PR is ESCALATED (e.g., reviewer_escalated) and dirty with a live conflict.
+    // Head moved and mergeable hasn't been re-read yet (prState is 'awaiting_ci'), but
+    // lifecycle still shows 'conflict'. The rule should return conflict_fix, not wait_ci.
+    const s = prSubjectFor(input({
+      escalated: { reason: 'Some reviewer concern' },
+      conflictFixesSpent: false,
+      headSha: 'new-push',
+      kernel: { stateReason: null, prState: 'awaiting_ci', detail: null, headline: null },
+      lifecycle: 'conflict',
+    }));
+
+    const rule = escalationRule(s);
+    expect(rule.action).toBe('conflict_fix');
+  });
+
 });
 
 describe('prSubjectFor: data migrations', () => {
