@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dashboardCaller } from '@/lib/specs/caller';
-import { setTeamPasskeyRequired } from '@/lib/passkeys/presence';
+import { setTeamPasskeyRequired } from '@/lib/passkeys/guard';
 
 type Ctx = { params: Promise<{ id: string }> };
 

@@ -206,7 +206,7 @@ export const teams = pgTable('teams', {
   // Living Spec b7fc9316 R-20: approving, retiring and restoring a spec in
   // this team's workspaces needs a passkey assertion (WebAuthn, user present)
   // bound to that exact confirm. Off by default; only an owner changes it,
-  // with their own passkey. Read through apps/web/src/lib/passkeys/presence.ts.
+  // with their own passkey. Read through apps/web/src/lib/passkeys/guard.ts.
   specPasskeyRequired: boolean('spec_passkey_required').default(false).notNull(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),

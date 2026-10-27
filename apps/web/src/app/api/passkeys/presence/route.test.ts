@@ -14,7 +14,7 @@ mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => user }));
 mock.module('@/lib/task-token-auth', () => ({ authenticateTaskScopedCaller: async () => null }));
 const seen: Array<[string, unknown[]]> = [];
 const record = (name: string, reply: unknown) => async (...args: unknown[]) => { seen.push([name, args]); return reply; };
-mock.module('@/lib/passkeys/presence', () => ({
+mock.module('@/lib/passkeys/guard', () => ({
   issuePresenceChallenge: record('issuePresenceChallenge', { ok: true, options: { challenge: 'c' } }),
   issueRegistrationChallenge: record('issueRegistrationChallenge', { ok: true, options: { challenge: 'r' } }),
   registerPasskey: record('registerPasskey', { ok: false, status: 403, code: 'presence_required', error: 'needs one', presence: { pin: { op: 'add_passkey' }, addUrl: 'x' } }),

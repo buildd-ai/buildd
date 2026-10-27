@@ -9,7 +9,7 @@ import { repoFileOf, restoredRepoNote, retiredRepoLine, retirementRow, type Reti
 import type { RepoCopyDeps } from './repo-copy';
 import { appBaseUrl } from '@/lib/app-url';
 import { signSpecStatusRequest, specStatusConfirmPath, verifySpecStatusRequest, type SpecStatusRequest } from './status-request';
-import { checkSpecPresence } from '@/lib/passkeys/presence';
+import { checkSpecPresence } from '@/lib/passkeys/guard';
 
 /**
  * Retiring a Living Spec (docs/specs/living-specs.md §22): a person takes a
@@ -36,7 +36,7 @@ import { checkSpecPresence } from '@/lib/passkeys/presence';
  * Presence (R-20): when the workspace's team requires a passkey, a retire or
  * restore from a dashboard session (direct, or confirming a link) also needs a
  * passkey assertion over the spec, its version, its status and the act, checked
- * last before the write (lib/passkeys/presence.ts). Superseding on approval
+ * last before the write (lib/passkeys/guard.ts). Superseding on approval
  * rides on the approval's own check.
  *
  * Repo file (R-78 to R-80, ./retire-repo-file.ts): after a retirement commits,

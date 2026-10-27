@@ -5,7 +5,7 @@ import KeyboardHintsSetting from './KeyboardHintsSetting';
 import StandingRulesSection from './StandingRulesSection';
 import YourTeams from './YourTeams';
 import PasskeysSection from './PasskeysSection';
-import { listPasskeys } from '@/lib/passkeys/presence';
+import { listPasskeys } from '@/lib/passkeys/guard';
 import SettingsPage from '../_components/SettingsPage';
 import Section from '@/components/ui/Section';
 import { loadSettingsContext } from '../_lib/settings-context';

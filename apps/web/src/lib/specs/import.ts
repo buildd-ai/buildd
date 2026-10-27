@@ -22,7 +22,7 @@ import { FILE_METADATA_KEYS, updateSpecMetadata } from './metadata';
 import { parseSpecFrontmatter } from '@buildd/spec-contract/repo-spec';
 import { specShortId } from '@buildd/spec-contract/repo-copy';
 import { retireSpec } from './retire';
-import { checkSpecPresence } from '@/lib/passkeys/presence';
+import { checkSpecPresence } from '@/lib/passkeys/guard';
 import { confirmedRetirements, planImportRetirements, type ImportRetirement } from './import-retire';
 
 /**

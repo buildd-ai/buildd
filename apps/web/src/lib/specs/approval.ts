@@ -15,7 +15,7 @@ import type { ApprovalRetirement } from './retire';
 import type { SpecApprovalRecord, SpecGateResult } from '@buildd/core/db/schema';
 import { users } from '@buildd/core/db/schema';
 import { specApprovalInboxUrl, specPageUrl } from './approval-inbox';
-import { checkSpecPresence } from '@/lib/passkeys/presence';
+import { checkSpecPresence } from '@/lib/passkeys/guard';
 
 /** What a request tells the approver: the confirm page's address and the gate's verdict. */
 export interface ApprovalRequestedNotice {
@@ -48,7 +48,7 @@ export interface ApprovalRequestedNotice {
  *
  * Presence (spec b7fc9316 R-20): when the workspace's team requires a passkey,
  * the stamp from a dashboard session also needs a passkey assertion over this
- * exact revision, version and content hash (lib/passkeys/presence.ts). It is
+ * exact revision, version and content hash (lib/passkeys/guard.ts). It is
  * the last check before the stamp, on every path that stamps: the spec page,
  * an inbox row, a confirm link and an import confirm.
  */

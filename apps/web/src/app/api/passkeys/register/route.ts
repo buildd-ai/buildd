@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dashboardCaller } from '@/lib/specs/caller';
-import { registerPasskey } from '@/lib/passkeys/presence';
+import { registerPasskey } from '@/lib/passkeys/guard';
 
 /**
  * POST /api/passkeys/register { response, name?, presence? }: store the
- * passkey the browser just created (lib/passkeys/presence.ts registerPasskey).
+ * passkey the browser just created (lib/passkeys/guard.ts registerPasskey).
  * A dashboard session only; any Authorization header is a 403. A person who
  * already has a passkey and belongs to a team that requires one must also send
  * `presence`, an assertion by an existing passkey: without it the reply is a

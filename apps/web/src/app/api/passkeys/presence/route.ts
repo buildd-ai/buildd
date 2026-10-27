@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dashboardCaller } from '@/lib/specs/caller';
-import { issuePresenceChallenge } from '@/lib/passkeys/presence';
+import { issuePresenceChallenge } from '@/lib/passkeys/guard';
 import { parsePresencePin } from '@/lib/passkeys/binding';
 
 /**

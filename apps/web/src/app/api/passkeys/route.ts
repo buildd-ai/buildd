@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dashboardCaller } from '@/lib/specs/caller';
-import { listPasskeys } from '@/lib/passkeys/presence';
+import { listPasskeys } from '@/lib/passkeys/guard';
 
 /**
- * GET /api/passkeys: the signed-in person's passkeys (lib/passkeys/presence.ts;
+ * GET /api/passkeys: the signed-in person's passkeys (lib/passkeys/guard.ts;
  * Living Spec b7fc9316 R-20). A dashboard session only: any Authorization
  * header is a 403, so no token reads or changes a person's passkeys.
  */

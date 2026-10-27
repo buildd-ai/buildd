@@ -11,7 +11,7 @@ import { nativeSourceOn } from './repo-copy';
 import { attachmentSources, type AttachmentSource } from './attachments';
 import { liveReplaced } from './replaces';
 import { runApprovalGate } from './approval-gate';
-import { specPasskeyRequired } from '@/lib/passkeys/presence';
+import { specPasskeyRequired } from '@/lib/passkeys/guard';
 import type { SpecGateResult } from '@buildd/core/db/schema';
 import type { RevisionReview } from './revision-changes';
 import { explanationCoverage, sectionWordChanges, type ExplanationCoverage, type SpecExplanation } from '@buildd/spec-contract/explanation';

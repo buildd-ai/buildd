@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dashboardCaller } from '@/lib/specs/caller';
-import { issueRegistrationChallenge } from '@/lib/passkeys/presence';
+import { issueRegistrationChallenge } from '@/lib/passkeys/guard';
 
 /**
  * POST /api/passkeys/register/options: the WebAuthn options to create a

@@ -25,7 +25,7 @@ const { createSpecDraft, reviseSpecDraft } = await import('../../src/lib/specs/s
 const { approveSpecRevision, confirmSpecApproval, approveFromInbox, specApprovalDeps } = await import('../../src/lib/specs/approval');
 const { retireSpec, restoreSpec, confirmSpecStatusChange } = await import('../../src/lib/specs/retire');
 const { confirmImportedSpecs } = await import('../../src/lib/specs/import');
-const presence = await import('../../src/lib/passkeys/presence');
+const presence = await import('../../src/lib/passkeys/guard');
 const { passkeyRelyingParty } = await import('../../src/lib/passkeys/config');
 type PresencePin = import('../../src/lib/passkeys/binding').PresencePin;
 
