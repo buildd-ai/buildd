@@ -19,7 +19,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Select } from '@/components/ui/Select';
-import { fitScale, frameSrc, type DesignScreen } from '@/lib/design-preview';
+import { deviceForWidth, fitScale, frameSrc, pickStartScreen, type DesignScreen } from '@/lib/design-preview';
+import { useMissionStage } from '@/components/design-stage';
 
 export interface DesignPreviewProps {
   artifactId: string;
@@ -58,10 +59,15 @@ export default function DesignPreview({
   fileName,
   sizeLabel,
 }: DesignPreviewProps) {
-  const [screenId, setScreenId] = useState<string | null>(() => {
-    if (initialScreenId && screens.some((s) => s.id === initialScreenId)) return initialScreenId;
-    return screens[0]?.id ?? null;
-  });
+  const stage = useMissionStage();
+  const [screenId, setScreenId] = useState<string | null>(() => pickStartScreen(screens, { initialId: initialScreenId }));
+  // The device is only known in the browser: pick the stage's screen for it once mounted,
+  // unless the link named a screen or the viewer already chose one.
+  const chosen = useRef(false);
+  useEffect(() => {
+    if (chosen.current || (initialScreenId && screens.some((s) => s.id === initialScreenId))) return;
+    setScreenId(pickStartScreen(screens, { device: deviceForWidth(window.innerWidth), stage }));
+  }, [screens, stage, initialScreenId]);
   const [zoom, setZoom] = useState<Zoom>('fit');
   const [columnWidth, setColumnWidth] = useState<number | null>(null);
   // The frame is cross-origin and sandboxed, so `load` is all we can know of it.
@@ -86,9 +92,18 @@ export default function DesignPreview({
 
   const scale = zoom === 'full' || !viewport || !columnWidth ? 1 : fitScale(viewport.width, columnWidth);
   const label = `Design preview · ${title} · revision ${revision}`;
+  const shortLabel = `Revision ${revision}`; // the page H1 already carries the title
   const src = frameUrl ? frameSrc(frameUrl, screenId) : null;
 
-  const loaded = !!src && loadedSrc === artifactId;
+  // `load` fires before a sandboxed, scaled frame has necessarily painted: hold the
+  // status overlay two more frames so a not-yet-painted frame reads as loading, never blank.
+  const [painted, setPainted] = useState<string | null>(null);
+  useEffect(() => {
+    if (loadedSrc !== artifactId) return;
+    const id = requestAnimationFrame(() => requestAnimationFrame(() => setPainted(artifactId)));
+    return () => cancelAnimationFrame(id);
+  }, [loadedSrc, artifactId]);
+  const loaded = !!src && loadedSrc === artifactId && painted === artifactId;
   useEffect(() => {
     setSlow(false);
     if (!src || loaded) return;
@@ -97,6 +112,7 @@ export default function DesignPreview({
   }, [src, loaded]);
 
   const pick = useCallback((id: string) => {
+    chosen.current = true;
     setScreenId(id);
     syncScreenParam(id);
   }, []);
@@ -105,11 +121,11 @@ export default function DesignPreview({
     <div data-testid="design-preview" className="min-w-0">
       {/* Chrome: label, picker, zoom, download. Tokens only, both themes. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-3">
-        <p className="text-meta text-text-secondary min-w-0 flex-1 basis-full sm:basis-auto truncate" data-testid="design-preview-label">
-          {label}
+        <p className="text-meta text-text-secondary min-w-0 flex-1 basis-full sm:basis-auto line-clamp-2 break-words" data-testid="design-preview-label" title={label}>
+          {shortLabel}
         </p>
         {screens.length > 0 ? (
-          <div className="flex items-center gap-2 text-meta text-text-secondary min-w-0">
+          <div className="flex items-center gap-2 text-meta text-text-secondary min-w-0 shrink">
             <span className="sr-only sm:not-sr-only" aria-hidden="true">Screen</span>
             <Select
               testId="design-screen-picker"
@@ -118,10 +134,13 @@ export default function DesignPreview({
               onChange={pick}
               options={screens.map((s) => ({
                 value: s.id,
-                label: `${s.name}${s.viewport ? ` · ${s.viewport.width}×${s.viewport.height}` : ''}`,
+                label: s.name,
               }))}
-              className="max-w-[60vw] sm:max-w-xs"
+              className="max-w-[44vw] sm:max-w-xs"
             />
+            {viewport ? (
+              <span data-testid="design-viewport" className="shrink-0 font-mono text-text-muted">{viewport.width}×{viewport.height}</span>
+            ) : null}
           </div>
         ) : null}
         {viewport ? (
@@ -167,7 +186,7 @@ export default function DesignPreview({
           data-testid="design-frame-box"
           className="relative overflow-hidden bg-surface-2"
           style={
-            viewport
+            viewport && src
               ? { width: Math.round(viewport.width * scale), height: Math.round(viewport.height * scale) }
               : undefined
           }
@@ -202,8 +221,8 @@ export default function DesignPreview({
           {!src ? (
             <div
               data-testid="design-frame-unavailable"
-              className="flex items-center justify-center h-full min-h-[160px] p-4 text-center text-body text-text-muted"
-              style={viewport ? undefined : { height: '40vh' }}
+              className="flex items-center justify-center w-full min-h-[160px] p-4 text-center text-body text-text-muted"
+              style={{ minHeight: viewport ? Math.min(viewport.height, 320) : undefined, height: viewport ? undefined : '40vh' }}
             >
               Preview unavailable: file storage is not configured here. Download the file to open it.
             </div>

@@ -2,14 +2,32 @@
 title: Workflow Kernel Library and Single Host
 status: draft
 owner: max
-last_verified: 2026-10-23
+last_verified: 2026-10-26
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
 surfaces: [apps/web/src/lib/override-permission.ts, apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [apps/web/src/lib/workflow/trunk-recheck.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/workflow-probe-killswitch.test.ts, apps/web/tests/db/epoch-effects.test.ts, apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
+verified_by: [apps/web/src/lib/workflow/trunk-recheck.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/workflow-probe-killswitch.test.ts, apps/web/tests/db/epoch-effects.test.ts, apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
 supersedes: []
+assertions:
+  - id: "kernel-command-api"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "symbol"
+    name: "COMMAND_PATH"
+    path: "apps/web/src/lib/workflow/command-api.ts"
+  - id: "kernel-control-plane-url"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "symbol"
+    name: "CONTROL_PLANE_URL"
+    path: "apps/web/src/lib/workflow/kernel-client.ts"
+  - id: "kernel-conformance-suite"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "test_file"
+    path: "packages/workflow-kernel/src/conformance/conformance.test.ts"
 ---
 # Workflow Kernel Library and Single Host
 
@@ -897,11 +915,16 @@ recorded as such, never as an approval.
   one opens (or adopts) its delivery first; "legacy" merges end at slice S3.
 - GitHub enforces the verdict: on every kernel-owned PR head the kernel's
   `publish_landing_status` effect publishes the commit status
-  `Buildd / Review approval` (also under its former name `buildd/landing`,
-  written with the same answer until nothing reads it). It is `success` only
-  when the kernel would land that head (approved or landing, covered, no open
-  verdict), `pending` while review of that head has not finished (so ongoing
-  review never reads as failing CI), and `failure` while a required finding is
+  `Buildd / Review approval`, under that one name. Its former name
+  `buildd/landing` is no longer written; heads published before it was
+  retired may still carry it, and readers that skip buildd's own status skip
+  that name too. It is `success` only
+  when the kernel would land that head now (approved or landing, covered, no open
+  verdict, and CI recorded green at that head: the `CiObserved` reading, or the
+  merge effect's own rails read just before it publishes), `pending` while review
+  of that head has not finished (so ongoing review never reads as failing CI) and
+  while an approved head waits on CI ("Approved, waiting to merge: … waiting for
+  CI on <sha>"), and `failure` while a required finding is
   open, a verdict stands against the head, or a person has to decide. Its
   description leads with one plain term (R-43): "Review in progress",
   "Changes requested", "Unresolved review finding: <the finding>", "Ready to
@@ -916,8 +939,9 @@ recorded as such, never as an approval.
   newer answer, and an effect that runs out of retries publishes `failure`,
   never leaves a success standing. It is one GitHub App and one commit-status
   check, separate from CI: no second App and no native GitHub self-approval.
-  CI is not part of it: CI has its own checks,
-  and the merge rails never read either name as CI. Making `Buildd / Review approval` a required
+  It does not replace CI's own checks: it waits on them, so a person reading
+  GitHub never sees "Ready to merge" while required CI is still running, and the
+  merge rails never read either name as CI. Making `Buildd / Review approval` a required
   check on trunk is an owner decision (today `main` requires `build` and
   `release candidate verified`, `dev` has no rule, and admins are not
   enforced, so a manual GitHub merge on `dev` over an open finding is not
@@ -1268,14 +1292,14 @@ push, refresh, completion or owner change can make it disappear.
   escalated cannot be waived from the dashboard; the reducer accepts it in any
   state. Who may waive is workspace membership, as for a re-review.
 - The landing gate (`reviewGate`), T15, the policy-merge rule (D11) and
-  `buildd/landing` read open required findings and name the first
+  `Buildd / Review approval` read open required findings and name the first
   one. Only a person's verdict override or their own approval of the head
   passes one. An external merge records `merged_over_open_findings` for an
   open finding even when the newest round approved, and the trunk fix names
   the findings.
-- The activity comment lists every finding with its disposition, the commit
-  that addressed it and the round that verified it (`renderFindingsSummary`);
-  `DeliveryView` carries `findings` and `openFindings` for S7.
+- Findings are listed in Buildd, not in the activity comment (§7.1, Living Spec
+  r9 R-51): the task page, get_pr and get_pr_review show each open one once.
+  `DeliveryView` carries `findings`, `openFindings` and the review reading.
 - Existing deliveries have no findings: their open verdicts keep blocking
   through the newest decided round, as before.
 - Deviation: a finding of a PR that closes unmerged is not moved to the
@@ -1815,6 +1839,91 @@ as a candidate whatever its worker row says.
 | Criterion AC-69 | `packages/workflow-kernel/src/findings.test.ts` › "findingTotals"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "AC-47"; `packages/workflow-kernel/src/delivery-summary.test.ts` › "AC-47"; `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/lib/workflow/delivery-view.test.ts` › "follow-up 22" |
 | Criterion AC-72 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
 
+### 7.1 One review loop (Living Spec r9 §11, built ahead of approval)
+
+Owner direction 2026-10-25 (PR #5727). Replaces the per-surface patches with
+one design: findings say who can fix them, a restated finding is one row, and
+one reading feeds every surface. Ids below are the Living Spec's (fa62b865 r9);
+the repo criteria that implement them are AC-88 to AC-93.
+
+**Who can fix a finding (R-44 to R-47).** Every finding carries a remedy class
+(`workflow_findings.remedy_class`): `code_fix` (the builder), `evidence`
+(buildd), or a person's (`person_decision`, `capability_gap`,
+`operational_run`). A request-changes finding with a path and no class is a code
+fix; one with neither refuses the verdict (`reviewer-remedy.ts`, doctrine v2).
+`verdictDecided` and `reenterVerdict` both route through `routeByRemedy`:
+
+- a code finding open: the fix loop, as before; the fix brief lists only code
+  findings;
+- otherwise evidence buildd can still capture at the head: an *evidence round*
+  (`scope.evidence.findingIds`), whose first move is `dispatch_capture`, not a
+  reviewer. `dispatch_capture` files role `capture` through `Work`
+  (`captureWork`: a visual-auditor task, never the builder). Its end is
+  `EvidenceRecorded` (`record_capture_evidence` on the control plane): captures
+  attach to the findings (`workflow_findings.evidence`) and the round goes to
+  its reviewer; a failure turns the findings into `capability_gap` and
+  escalates `review_escalated`;
+- otherwise a person decides: `ESCALATED(review_escalated)`.
+
+A round that routed this way is `budgetFree` (stored in `scope`), and an evidence
+round never spends (`spendsReviewBudget`), so evidence or a person's decision can
+never exhaust the review budget. A blanket approval never closes a person's
+finding, nor evidence buildd has not captured. The design gate
+(`applyDesignGate`) raises one evidence finding per screen with no real-route
+comparison instead of turning the verdict into changes requested; a comparison
+that found a mismatch is a code finding. The floor owes `dispatch_capture` for
+an evidence round with no reviewer dispatch yet (`enqueueMissingEffects`). While
+buildd captures, the delivery reads "Collecting evidence" and the commit status
+is pending.
+
+**A restated finding is the same finding (R-48, R-49).** A restatement, by id
+or unnamed with the same evidence target or the same path and words, updates
+the row and bumps `restated_count`; its words change only when the reviewer
+changed them. Every list prints `findingLine`: short id, `path:line`, the fix,
+"restated n times". `post_review` names only the code findings a round raised
+or changed (`payload.findingIds`) and posts nothing for a restated-only round
+(`skipped:restated_only`); approvals post nothing.
+
+**One reading, every surface (R-50 to R-52).** `reviewReadingOf` is
+`DeliveryView.review`: state line, verdict, round, rounds spent of the budget,
+open findings, `blocks`, the decision brief. The sticky comment is that state
+line and "Open in Buildd" (`renderDeliveryActivity`, `renderStateLineComment`);
+its timeline, decision prose and findings summary are deleted. get_pr prints
+each open finding once (`findingsLine`) and its decision line keeps only the
+question and the choices; get_pr_review answers with the reading; explain's
+delivery block carries it; the task verdict reads `deliveryReady`, so green CI
+never says "Ready to merge" over an escalated, changes-requested or conflicted
+delivery (#5714).
+
+- AC-88 (implements AC-54, AC-55): GIVEN an evidence-only request for changes,
+  and the #5727 sequence replayed, WHEN the kernel runs them THEN no fix is
+  filed, no round is spent, a capture is owed for each screen, and the delivery
+  never reaches `review_exhausted`.
+- AC-89 (implements AC-56, AC-57): GIVEN a code and a person finding, and a
+  capture that fails, WHEN the kernel runs them THEN the fix lists only the code,
+  the person finding escalates once the code is verified, and a failed capture
+  is `capability_gap` with the budget unchanged.
+- AC-90 (implements AC-58, AC-59): GIVEN a finding restated unchanged WHEN the
+  fix brief, the GitHub review and the brief are rendered THEN it appears once
+  with its count, and the restated-only round posts no review.
+- AC-91 (implements AC-60, AC-62): GIVEN a delivery WHEN the sticky comment is
+  rendered THEN it is one state line equal to the reading's, with no timeline,
+  `<details>` or finding text.
+- AC-92 (implements AC-61): GIVEN an escalated delivery with green CI WHEN the
+  task verdict is derived THEN it states the delivery and never "Ready to merge".
+- AC-93 (implements Designs AC-17): GIVEN an approve with no real-route
+  comparison for a screen-named criterion WHEN the design gate runs THEN the
+  head is not approved and one evidence finding per screen is raised.
+
+| AC | Test |
+| --- | --- |
+| Criterion AC-88 | `packages/workflow-kernel/src/conformance/review-loop-scenarios.ts` › "AC-54", "AC-55"; `apps/web/src/lib/workflow/enqueue-missing.test.ts` › "R-46" |
+| Criterion AC-89 | `packages/workflow-kernel/src/conformance/review-loop-scenarios.ts` › "AC-56", "AC-57", "a host with no way to capture" |
+| Criterion AC-90 | `packages/workflow-kernel/src/conformance/review-loop-scenarios.ts` › "AC-58/AC-59", "the fix brief and the GitHub review"; `packages/workflow-kernel/src/findings.test.ts` › "R-48" |
+| Criterion AC-91 | `apps/web/src/lib/workflow/pr-activity-render.test.ts`; `apps/web/src/lib/projections-agree.test.tsx` › "R-51" |
+| Criterion AC-92 | `apps/web/src/lib/task-verdict.test.ts` › "R-52"; `apps/web/src/lib/task-verdict-facts.test.ts` › "R-52" |
+| Criterion AC-93 | `apps/web/src/lib/reviewer-design.test.ts` › "AC-17"; `apps/web/src/lib/reviewer-remedy.test.ts` › "#5727 shape" |
+
 ## 8. Order of work
 
 Each slice is one or more reviewed PRs to trunk, built locally (mission
@@ -2251,6 +2360,7 @@ column outside the kernel; S3 and S4 remove or route each one.
 - `packages/workflow-kernel/src/open-pr-status.ts`, `apps/web/src/lib/workflow/open-pr-status.ts`, `apps/web/src/lib/release/open-pr-review.ts` (every open PR carries the review status)
 - `packages/core/pr-facts.ts` (S4)
 - `packages/workflow-kernel/src/delivery-summary.ts`, `apps/web/src/lib/delivery-overlay.ts`, `apps/web/src/lib/pr-delivery-report.ts` (S7)
+- `packages/workflow-kernel/src/findings.ts`, `apps/web/src/lib/workflow/pr-activity-render.ts`, `apps/web/src/lib/reviewer-design.ts`, `apps/web/src/lib/workflow/review-effects.ts` (§7.1)
 - `packages/core/__tests__/workflow-write-sites.test.ts`,
   `state-ownership.test.ts` (kernel path changes in S1)
 

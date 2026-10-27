@@ -22,6 +22,20 @@
 import type { VisualReviewAuditTask, VisualReviewCell, VisualReviewModel, VisualReviewNeedsYou } from '@buildd/shared';
 import { findingIsStillThere, fixStatusLabel } from './visual-fix-label';
 
+/**
+ * The `data-verify-block` role of a phase's `detail` where a card shows it: the
+ * sentence that says how to get out of a failure is `recovery`, what the audit
+ * waits on is `prerequisite`, what a boot failure meant is `consequence`.
+ */
+export function visualPhaseDetailRole(phase: VisualReviewModel['phase']): 'body' | 'consequence' | 'prerequisite' | 'recovery' {
+  switch (phase) {
+    case 'stalled': case 'failed': return 'recovery';
+    case 'waiting_deps': case 'waiting_on_failed_work': case 'queued': case 'no_browser_runner': return 'prerequisite';
+    case 'boot_failed': return 'consequence';
+    default: return 'body';
+  }
+}
+
 const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 
 /**
@@ -30,7 +44,7 @@ const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ?
  * placeholders.
  */
 export function describeVisualPhase(
-  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> & { needsYou?: VisualReviewNeedsYou | null; waitingOn?: VisualReviewModel['waitingOn'] },
+  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> & { needsYou?: VisualReviewNeedsYou | null; waitingOn?: VisualReviewModel['waitingOn']; onEarlierCommit?: boolean },
 ): { label: string; detail: string } {
   const { summary: s, progress } = model;
   switch (model.phase) {
@@ -85,6 +99,8 @@ export function describeVisualPhase(
       const ok = s.effectiveOk ?? s.ok;
       const issues = s.effectiveIssues ?? s.issues;
       const head = `${ok} of ${s.shots} ok`;
+      // The check says the branch moved: these counts are history, so say so in the same breath.
+      if (model.onEarlierCommit) return { label: `${head} on an earlier commit`, detail: 'The branch changed after these screens were taken.' };
       const parts: string[] = [];
       if (issues > 0) parts.push(plural(issues, 'issue'));
       if (s.reviewed > 0) parts.push(`${s.reviewed} reviewed`);

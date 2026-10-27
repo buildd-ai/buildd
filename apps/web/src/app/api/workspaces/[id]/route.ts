@@ -192,7 +192,7 @@ export async function PATCH(
     const body = await req.json();
     const {
       name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass,
-      gitConfig, maxConcurrentTasks, connectorAdvisoryMode, webhookConfig,
+      gitConfig, connectorAdvisoryMode, webhookConfig,
     } = body;
 
     // A workspace changes team only through the checked move: POST
@@ -216,9 +216,8 @@ export async function PATCH(
     // sessions), plus an admin-level API key. Checked before any write so a
     // mixed body is all-or-nothing.
     // webhookConfig decides where the workspace's tasks are sent (and carries
-    // the bearer token for it), so it is an admin setting too. So is the
-    // concurrency cap: it bounds how much the workspace runs at once.
-    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig, maxConcurrentTasks]
+    // the bearer token for it), so it is an admin setting too.
+    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig]
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
@@ -281,13 +280,6 @@ export async function PATCH(
     if (dataClass !== undefined && (dataClass === 'standard' || dataClass === 'sensitive')) {
       updates.dataClass = dataClass;
     }
-    // Max parallel workers per repo-backed workspace (>= 1). Worktree isolation makes
-    // parallel work safe; this just bounds branch fan-out. Clamp to a sane floor of 1.
-    if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null) {
-      const n = Math.floor(Number(maxConcurrentTasks));
-      if (!Number.isNaN(n)) updates.maxConcurrentTasks = Math.max(1, n);
-    }
-
     // Connector degraded mode (docs/design/connector-availability-degraded-mode.md
     // Phase 1: ship the machinery, opt in per workspace, default stays block).
     // This is the flag's only writer: with it, a task whose role names a failing
@@ -584,7 +576,7 @@ export async function DELETE(
     // Delete the workspace (cascade will handle tasks, workers, etc.)
     await db.delete(workspaces).where(eq(workspaces.id, id));
     await invalidateWorkspacePermissionsCache(id);
-    await clearCallerCache(callerDep.workspace(id));
+    await clearCallerCache(callerDep.workspace(id), callerDep.teamWorkspaces(access.teamId));
     await clearWorkspaceSettingsCache(id);
 
     return NextResponse.json({ success: true });

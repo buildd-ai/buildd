@@ -150,7 +150,7 @@ describe('Part 2 — repeated claim-loop deferrals', () => {
     activeAgents: 1,
     deferrals: [{
       taskId: 'task-stuck',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       consecutiveDeferrals: n,
       firstDeferredAt: new Date(Date.now() - elapsedMs).toISOString(),
     }],
@@ -161,12 +161,12 @@ describe('Part 2 — repeated claim-loop deferrals', () => {
 
     const fact = factOfKind(view.outstanding, 'claim_deferral');
     if (fact.kind !== 'claim_deferral') throw new Error('unreachable');
-    expect(fact.reason).toBe('workspace_cap');
+    expect(fact.reason).toBe('mission_concurrent');
     expect(fact.consecutiveDeferrals).toBe(13);
     expect(fact.taskIds).toEqual(['task-stuck']);
     // The reason in the gate's own words (Navigation R-14), never its slug.
-    expect(view.situation.headline).toContain('every agent slot in the workspace is in use');
-    expect(view.situation.headline).not.toContain('workspace_cap');
+    expect(view.situation.headline).toContain('the mission is already running as many tasks as it allows');
+    expect(view.situation.headline).not.toContain('mission_concurrent');
     expect(view.situation.headline).toContain('13 times in a row');
     expect(view.situation.derivedFrom).toBe('gateEvents.claimLoopDeferral');
   });
@@ -235,7 +235,7 @@ describe('Part 2 — repeated claim-loop deferrals', () => {
       activeAgents: 1,
       deferrals: [{
         taskId: 'task-stuck',
-        reason: 'workspace_cap',
+        reason: 'mission_concurrent',
         consecutiveDeferrals: 13,
         firstDeferredAt: new Date(Date.now() - SURFACE_DEFERRAL_MS * 2).toISOString(),
       }],

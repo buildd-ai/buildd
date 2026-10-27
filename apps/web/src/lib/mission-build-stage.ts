@@ -15,6 +15,7 @@
 import { termWord } from '@buildd/shared';
 import { BOARD_LANDED, formatAge, type BoardTask, type MissionBoardModel } from './mission-board';
 import { formatCountdown, isClosedUnshipped, overviewCellState, overviewStatus, overviewWaitCause } from './mission-overview';
+import { displayTaskTitle } from './task-title';
 import { stripOrder } from './mission-task-strip';
 import { whenLabel } from './mission-task-hold';
 
@@ -109,10 +110,11 @@ export function buildRowState(model: Model, id: string): BuildRowState {
 const ORDER: Record<BuildRowState, number> = { decision: 0, approval: 0, failed: 0, closed: 0, running: 1, fixing: 2, waiting: 3, queued: 4, merged: 5 };
 
 const blockerName = (model: Model, t: BoardTask): string | null => {
+  // The name the list shows the task by: no label chip in brackets, no internal title.
   const on = t.blockers.map(id => model.tasks[id]?.title).find(Boolean);
-  if (on) return on;
+  if (on) return displayTaskTitle(on);
   const off = t.offStrip[0];
-  return off ? `${off.title}${off.otherMission ? ' (another mission)' : ''}` : null;
+  return off ? `${displayTaskTitle(off.title)}${off.otherMission ? ' (another mission)' : ''}` : null;
 };
 
 /** The row's words for one task (R-14): one word, at most one short cause, time in state. */
@@ -135,7 +137,9 @@ export function buildRowLine(model: Model, id: string, state: BuildRowState, now
       const since = s.since ?? t.startedAt;
       const elapsed = since != null ? formatAge(now - since) : null;
       const step = s.cause ? lower(s.cause) : null;
-      const updated = s.lastEventAt != null ? `updated ${agoShort(now - s.lastEventAt)} ago` : null;
+      // Every running row says how fresh it is; before its first event that is the start (R-5).
+      const lastEvent = s.lastEventAt ?? since;
+      const updated = lastEvent != null ? `updated ${agoShort(now - lastEvent)} ago` : null;
       const head = s.word === 'Fixing'
         ? `Fixing${step ? ` · ${step}` : ''}${elapsed ? ` · running ${elapsed}` : ''}`
         : `Running${elapsed ? ` ${elapsed}` : ''}${step ? ` · ${step}` : ''}`;
@@ -219,7 +223,7 @@ export function buildStage(model: Model, now: number, opts: BuildStageOptions): 
     }
     waitingGroups = [...byBlocker].map(([key, members]) => {
       const t = model.tasks[members[0]];
-      const title = model.tasks[key]?.title ?? t.offStrip[0]?.title ?? 'a task';
+      const title = displayTaskTitle(model.tasks[key]?.title ?? t.offStrip[0]?.title ?? 'a task');
       return { blockerId: key, blockerTitle: title, ids: members, line: `Waiting on ${title} · ${members.length} ›` };
     });
   }

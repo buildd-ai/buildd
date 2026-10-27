@@ -19,7 +19,7 @@ import { loadVisualReview } from '@/lib/visual-review-load';
 import type { VisualReviewModel } from '@buildd/shared';
 import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
-import { autoRetriesLeft, type ScheduleAudit } from './visual-review-schedule';
+import { autoRetriesLeft, planVisualReviewSchedule, type ScheduleAudit } from './visual-review-schedule';
 import {
   deriveMissionVisualReview,
   integrationPrFromDeliveryState,
@@ -186,5 +186,22 @@ export async function getMissionVisualReviewState(
     captureConfigError: latestAudit?.captureConfigError ?? null,
     branch: { headSha, base, integrationPr, workLanded: uiBuilders.length > 0 && uiBuilders.every(t => isTerminalTaskStatus(t.status)) },
   });
-  return holdReason ? { ...state, holdReason } : state;
+  const withHold = holdReason ? { ...state, holdReason } : state;
+  // A `needed` review is waiting for the scheduler to file an audit. When the
+  // scheduler's own answer is "blocked", nothing will run: say so, and name who acts.
+  if (state.status === 'needed' && state.nextActor === 'system') {
+    const plan = planVisualReviewSchedule({
+      state, impact: null, audits: ledger, browserRunnerOnline: null,
+      executorLocal: false, now: Date.now(),
+    });
+    if (plan.action === 'blocked') {
+      return { ...withHold, nextActor: plan.nextActor, scheduleBlock: { cause: plan.cause, reason: plan.reason } };
+    }
+    // The scheduler files nothing while build work is still open, so a new
+    // commit on a mission with unfinished tasks is not "about to be audited".
+    if (plan.action === 'none' && plan.why === 'work_not_landed') {
+      return { ...withHold, holdReason: withHold.holdReason ?? 'The mission still has build work open. The new commit is reviewed once it finishes.' };
+    }
+  }
+  return withHold;
 }

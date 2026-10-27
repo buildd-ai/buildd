@@ -337,27 +337,19 @@ describe('planClaimBatch — score', () => {
     expect(picks(r)).toEqual(['urgent', 'big-unblocker', 'small']);
   });
 
-  it('pressure flips size above unblocking (OAuth at the parallelism floor with good confidence)', () => {
+  it('pressure from the daily budget downgrade threshold flips size above unblocking', () => {
     const r = planClaimBatch(input({
       capacity: 2,
-      pressure: { dailyBudgetPct: null, oauthPressure: 0.5, confidence: 'good' },
+      pressure: { dailyBudgetPct: DAILY_BUDGET_DOWNGRADE_FRACTION },
       candidates: [sized('big-unblocker', 20, 3), sized('small', 1)],
     }));
     expect(picks(r)).toEqual(['small', 'big-unblocker']);
     expect(r.underPressure).toBe(true);
   });
 
-  it('pressure from the daily budget downgrade threshold flips too', () => {
+  it('daily spend below the downgrade threshold is not pressure', () => {
     const r = planClaimBatch(input({
-      pressure: { dailyBudgetPct: DAILY_BUDGET_DOWNGRADE_FRACTION, oauthPressure: null, confidence: null },
-      candidates: [sized('big-unblocker', 20, 3), sized('small', 1)],
-    }));
-    expect(picks(r)).toEqual(['small', 'big-unblocker']);
-  });
-
-  it('OAuth pressure without good confidence is not pressure', () => {
-    const r = planClaimBatch(input({
-      pressure: { dailyBudgetPct: 0.1, oauthPressure: 0.9, confidence: 'low' },
+      pressure: { dailyBudgetPct: 0.1 },
       candidates: [sized('big-unblocker', 20, 3), sized('small', 1)],
     }));
     expect(r.underPressure).toBe(false);
@@ -492,7 +484,7 @@ function randomInput(seed: number): ClaimPlanInput {
     candidates,
     inFlight,
     capacity: Math.floor(r() * 8) - 1,
-    pressure: { dailyBudgetPct: r(), oauthPressure: r(), confidence: r() < 0.5 ? 'good' : 'low' },
+    pressure: { dailyBudgetPct: r() },
     thresholds,
   };
 }

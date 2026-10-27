@@ -11,7 +11,11 @@ describe('resolveClaudeRoute', () => {
     expect(r.state).toBe('eligible');
     expect(r.eligibleVia).toEqual(['local_login']);
     expect(r.managedKey).toBe('unavailable');
-    expect(r.summary).toContain('does not block');
+    expect(r.summary).toBe("Claude uses each runner's sign-in. The stored API key isn't working.");
+  });
+  it('local OAuth with no managed key names the route and nothing else', () => {
+    expect(resolveClaudeRoute([live('oauth')], [], NOW).summary)
+      .toBe("Claude uses each runner's sign-in.");
   });
   it('managed key alone is eligible', () => {
     expect(resolveClaudeRoute([live('api')], [key('healthy')], NOW).eligibleVia).toEqual(['managed_key']);

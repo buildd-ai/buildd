@@ -20,6 +20,7 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { loadQuestionWaits } from './question-waits';
 import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
@@ -50,7 +51,7 @@ import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { presentMissionState } from '@/lib/mission-state-presentation';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
-import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { getDeliveryViewsForTasks, kernelDeliveryOwnerForPr, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
 import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/delivery-overlay';
 import { attemptLine } from '@/lib/workflow/projections';
@@ -1079,20 +1080,23 @@ function prDeliveryView(m: ReadonlyMap<string, DeliveryView>, taskId: string, pr
  */
 export function kernelUnmergedPr(
   task: { id: string; title: string; status: string },
-  worker: { prUrl?: string | null; supersessionScan?: { suggestion?: unknown } | null } | undefined,
+  worker: { prUrl?: string | null; supersessionScan?: { suggestion?: unknown; refreshCheck?: unknown } | null } | undefined,
   d: Pick<DeliveryView, 'state' | 'prNumber'>,
 ): NonNullable<StateBecauseExtras['unmergedPrs']> {
   if (task.status === 'cancelled' || task.status === 'pending' || d.prNumber == null) return [];
   if (d.state === 'MERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'FAILED') return [];
   const closed = d.state === 'CLOSED_UNMERGED';
   const suggestion = closed ? worker?.supersessionScan?.suggestion : undefined;
+  const refreshCheck = closed ? worker?.supersessionScan?.refreshCheck : undefined;
   return [{
     taskId: task.id,
     title: task.title,
     prNumber: d.prNumber,
     prUrl: worker?.prUrl ?? null,
+    ...(task.status === 'failed' ? { taskFailed: true as const } : {}),
     ...(closed ? { closedUnsuperseded: true as const } : {}),
     ...(suggestion ? { suggestion: suggestion as never } : {}),
+    ...(refreshCheck ? { refreshCheck: refreshCheck as never } : {}),
   }];
 }
 
@@ -1217,9 +1221,6 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
       })) as any as LoadedTask[],
   });
   const historyTasks = [...new Map([...lineage, ...family].map(t => [t.id, t])).values()];
-  // Family scope: the attempts ARE this task's work, so they count here even
-  // though mission-scope health (deliverables only) ignores them.
-  const health = deriveTaskHealthSignal({}, family, { scope: 'family' });
   const activeAgents = family.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
 
   const worker = task.workers?.[0];
@@ -1244,6 +1245,9 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
           ...(worker.prLifecycleStatus === 'closed' ? { closedUnsuperseded: true as const } : {}),
           ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.suggestion
             ? { suggestion: worker.supersessionScan.suggestion }
+            : {}),
+          ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.refreshCheck
+            ? { refreshCheck: worker.supersessionScan.refreshCheck }
             : {}),
         }]
       : [];
@@ -1287,12 +1291,25 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
       ? [{ id: openAttempt.taskId, status: openAttempt.status, title: openAttempt.title }]
       : [];
   // S35: a failed attempt the kernel already carried past is history, not a failure.
+  // While the PR's delivery is live it owns the state, so no failed row in the
+  // family overrides it: two PRs escalated on one rule read alike whether or not
+  // a fix attempt failed on the way (task 8d440b64).
+  const deliveryLive = !!prDelivery && !deliverySettled(prDelivery);
   const replaced = replacedFailedTaskIds(deliveries, family.filter(t => t.status === 'failed').map(t => t.id));
-  const failedTasks = family.filter(t => t.status === 'failed' && !replaced.has(t.id));
+  const failedTasks = deliveryLive ? [] : family.filter(t => t.status === 'failed' && !replaced.has(t.id));
+  // Family scope: the attempts ARE this task's work, so they count here even
+  // though mission-scope health (deliverables only) ignores them.
+  const health = deriveTaskHealthSignal({}, deliveryLive ? family.filter(t => t.status !== 'failed') : family, { scope: 'family' });
 
   // Why the unmerged PR cannot land, from stored landing facts (§13.11 rule 3).
   const openPr = unmergedPr.find(p => !p.closedUnsuperseded) ?? null;
-  const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, prDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
+  const ciRed = deriveCiRedChains(
+    unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (prDelivery ? { ...p, ciRed: prDelivery.prState === 'ci_failed' } : p)),
+    family,
+  );
+  // An exhausted CI-fix chain says more than "its checks are failing", so it keeps the reading.
+  const landingBlocked = (openPr ? await loadLandingBlocker(task, openPr, prDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [])
+    .filter(b => b.cause !== 'ci_failed' || !ciRed.some(c => c.prNumber === b.prNumber));
 
   const runnerOnline = await runnerOnlineFor(family, task.workspaceId, executor === 'local');
   const missingBrowser = await missingBrowserFor(family, task.workspaceId, executor === 'local');
@@ -1321,17 +1338,13 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
     })),
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
     landingBlocked,
-    ciRed: deriveCiRedChains(
-      unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (prDelivery ? { ...p, ciRed: prDelivery.prState === 'ci_failed' } : p)),
-      family,
-    ),
+    ciRed,
     completion: unmergedPr.length > 0 && !openAttempt
       ? {
           ok: false,
           code: 'awaiting_merge',
-          reason: unmergedPr[0].closedUnsuperseded
-            ? `Task completed but PR #${unmergedPr[0].prNumber} closed unmerged, no supersession recorded`
-            : `Task completed but PR #${unmergedPr[0].prNumber} has not merged`,
+          reason: `${unmergedPr[0].taskFailed ? 'Task failed, but' : 'Task completed but'} PR #${unmergedPr[0].prNumber} `
+            + (unmergedPr[0].closedUnsuperseded ? 'closed unmerged, no supersession recorded' : 'has not merged'),
           awaitingMerge: 1,
           awaitingMergeDetails: unmergedPr,
         }
@@ -1395,12 +1408,23 @@ async function holdsForViewer(
  * `actor` is who the inline evidence list is audited to. Reach is the caller's
  * job: GET /api/explain has already decided the actor can read the workspace.
  */
-/** Attach the kernel's DeliveryView reading when the task's delivery is kernel-owned (S28). */
+/**
+ * Attach the kernel's DeliveryView reading when the task's delivery is kernel-owned (S28).
+ * While the delivery is live it names the owner of the next move, so the
+ * presentation's needsYou is the delivery's: one answer never says both (task 8d440b64).
+ */
 function withDelivery(answer: ExplainAnswer, v: DeliveryView | null): ExplainAnswer {
   if (!v) return answer;
   return {
     ...answer,
-    delivery: { state: v.state, owner: v.owner, needsYou: v.needsYou, headline: v.headline, detail: v.detail, attempts: attemptLine(v.attempts) },
+    ...(deliverySettled(v) ? {} : { presentation: { ...answer.presentation, needsYou: v.needsYou } }),
+    delivery: {
+      state: v.state, owner: v.owner, needsYou: v.needsYou, headline: v.headline, detail: v.detail, attempts: attemptLine(v.attempts),
+      ...(v.review ? { review: {
+        stateLine: v.review.stateLine, verdict: v.review.verdict, round: v.review.round, roundsSpent: v.review.roundsSpent,
+        roundBudget: v.review.roundBudget, openFindings: v.review.openFindings.map((f) => f.text),
+      } } : {}),
+    },
   };
 }
 
@@ -1473,7 +1497,10 @@ export async function explainTask(taskId: string, actor: EvidenceActor, viewer: 
   const withCoordination = holds.length > 0 ? { ...answer, coordination: { holds } } : answer;
   const withAccess = access.length > 0 ? { ...withCoordination, access } : withCoordination;
   const withWait = queueWait ? { ...withAccess, queueWait } : withAccess;
-  return { scope: 'task', subjects: [verdict ? { ...withWait, verdict } : withWait] };
+  // An open question: what waits on its answer, the same projection the cards read (spec 1b257609 R-10).
+  const questionWaits = await loadQuestionWaits({ taskId, viewer, requireQuestion: true }).catch(() => null);
+  const withWaits = questionWaits ? { ...withWait, questionWaits } : withWait;
+  return { scope: 'task', subjects: [verdict ? { ...withWaits, verdict } : withWaits] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────
@@ -1536,6 +1563,16 @@ async function loadBaseSideMerges(input: {
   });
 }
 
+/** The mission whose integration branch a PR targets, for a PR whose task names none (#5623). */
+async function missionForBaseRef(workspaceId: string, baseRef: string | null): Promise<string | null> {
+  if (!baseRef) return null;
+  const m = await db.query.missions.findFirst({
+    where: sqlWhere(and(eq(missions.workspaceId, workspaceId), eq(missions.workingBranch, baseRef))),
+    columns: { id: true, integrationBranchEnabled: true, workingBranch: true },
+  }).catch(() => null);
+  return m && m.integrationBranchEnabled && m.workingBranch === baseRef ? m.id : null;
+}
+
 /**
  * The task a PR ships: the owner of its kernel delivery, else the task that
  * opened it. Every fix attempt on the PR (a CI fix, a review fix) records the
@@ -1543,7 +1580,11 @@ async function loadBaseSideMerges(input: {
  * be an attempt's; read as the subject, a cancelled CI fix reported an open,
  * red PR as complete. An attempt that opened a PR of its own keeps it.
  */
-export async function prOwnerTaskId(taskId: string, prNumber: number): Promise<string> {
+export async function prOwnerTaskId(taskId: string, prNumber: number, pr?: { workspaceId: string; prUrl: string | null }): Promise<string> {
+  // The PR's own delivery first: a person's "resolve conflicts and merge" task
+  // also records the PR number, and is neither the owner nor an attempt (#5580).
+  const byPr = pr ? await kernelDeliveryOwnerForPr(pr.workspaceId, pr.prUrl, prNumber) : null;
+  if (byPr) return byPr;
   const dv = (await getDeliveryViewsForTasks([taskId])).get(taskId);
   if (dv && dv.prNumber === prNumber) return dv.ownerTaskId;
   let id = taskId;
@@ -1586,10 +1627,11 @@ export async function explainPr(worker: {
 }, actor: EvidenceActor, viewer: DependencyViewer = { kind: 'member' }): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
-  const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
+  const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber, worker);
   const loaded = await viewForTask(taskId, viewer);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries, prDelivery } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, deliveries, prDelivery } = loaded;
+  const missionId = loaded.missionId ?? await missionForBaseRef(workspaceId ?? worker.workspaceId, worker.prBaseRef);
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'pr',

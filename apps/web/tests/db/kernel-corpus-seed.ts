@@ -96,7 +96,7 @@ async function fixLoop(ws: string) {
   return s;
 }
 
-/** CI goes red; both repair attempts fail; the family escalates. The owner task failed and a gate refused it. */
+/** CI goes red; both repair attempts end (the first lost: a failed fix on an unmoved head escalates at once); the family escalates. The owner task failed and a gate refused it. */
 async function ciExhausted(ws: string) {
   const s = await open(ws);
   s.head('h1');
@@ -110,7 +110,7 @@ async function ciExhausted(ws: string) {
     await q(sql`UPDATE workflow_attempts SET task_id = ${ciTask}::uuid WHERE id = ${a.id}::uuid`);
     const ciGreen = (await s.github.ciGreen!(SEED_REPO, s.current())) === true;
     must(await applyCommand({ type: 'FixClaimed', actor: `claim:${ciTask}`, attemptId: a.id, revalidation: { live: await s.live(), approved: false, ciGreen } }, { ref: s.ref }), `ci claim ${i}`);
-    must(await applyCommand({ type: 'AttemptEnded', actor: 'runner', workerId: randomUUID(), attemptId: a.id, taskId: ciTask, outcome: 'failed', localHeadSha: null, commitCount: 0, live: await s.live() }, { ref: s.ref }), `ci end ${i}`);
+    must(await applyCommand({ type: 'AttemptEnded', actor: 'runner', workerId: randomUUID(), attemptId: a.id, taskId: ciTask, outcome: i === 1 ? 'lost' : 'failed', localHeadSha: null, commitCount: 0, live: await s.live() }, { ref: s.ref }), `ci end ${i}`);
   }
   await q(sql`UPDATE tasks SET status = 'failed' WHERE id = ${s.taskId}::uuid`);
   await q(sql`INSERT INTO gate_events (gate, surface, workspace_id, task_id, outcome, reason, detail)

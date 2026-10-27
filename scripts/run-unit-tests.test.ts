@@ -112,6 +112,26 @@ describe('selectTestFiles', () => {
     // or uncollected directory would otherwise report green over zero tests.
     expect(() => selectTestFiles(['apps/nope/'], discovered)).toThrow(/apps\/nope/);
   });
+
+  it('fails loudly when every named test file is dropped', () => {
+    // A spec `check:` line naming only acceptance-only (or non-unit) files used
+    // to print "No unit test files selected." and exit 0: a pass over nothing.
+    expect(() => selectTestFiles(['tests/e2e/dashboard.test.ts'], discovered)).toThrow(/tests\/e2e\/dashboard\.test\.ts/);
+    expect(() => selectTestFiles(['tests/e2e/a.test.ts', 'apps/web/tests/integration/x.test.ts'], discovered)).toThrow(/selected none/);
+    // Dropping some of them is still fine: CI's affected list is already filtered.
+    expect(selectTestFiles(['apps/web/src/lib/a.test.ts', 'tests/e2e/dashboard.test.ts'], discovered))
+      .toEqual(['apps/web/src/lib/a.test.ts']);
+  });
+});
+
+describe('run-unit-tests exit code', () => {
+  it('exits non-zero when named test files select nothing', () => {
+    const run = Bun.spawnSync(['bun', 'scripts/run-unit-tests.ts', 'tests/e2e/not-a-unit.test.ts'], { stdout: 'pipe', stderr: 'pipe' });
+    expect(run.exitCode).toBe(1);
+    // One plain line naming the files, not an uncaught stack trace.
+    expect(run.stderr.toString()).toContain('run-unit-tests: named test files selected none: tests/e2e/not-a-unit.test.ts');
+    expect(run.stdout.toString()).not.toContain('No unit test files selected.');
+  }, 60_000);
 });
 
 describe('getTestConcurrency', () => {
@@ -912,5 +932,19 @@ describe('start gate', () => {
     expect(startGateWaitMs(undefined)).toBe(60_000);
     expect(startGateWaitMs('0')).toBe(0);
     expect(startGateWaitMs('abc')).toBe(60_000);
+  });
+});
+
+describe('contention triage rerun', () => {
+  it('rerunFailedLimit is off unless a positive number is set', () => {
+    const { rerunFailedLimit } = require('./run-unit-tests');
+    expect(rerunFailedLimit(undefined)).toBe(0);
+    expect(rerunFailedLimit('')).toBe(0);
+    expect(rerunFailedLimit('abc')).toBe(0);
+    expect(rerunFailedLimit('5')).toBe(5);
+  });
+  it('classifyRerun separates files that pass alone from deterministic failures', () => {
+    const { classifyRerun } = require('./run-unit-tests');
+    expect(classifyRerun([{ file: 'b', exitCode: 0 }, { file: 'a', exitCode: 1 }])).toEqual({ contention: ['b'], deterministic: ['a'] });
   });
 });

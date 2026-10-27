@@ -26,21 +26,24 @@ import Link from 'next/link';
 import { termWord, type VisualReviewModel } from '@buildd/shared';
 import TaskStrip from '@/components/ui/TaskStrip';
 import DecisionCard from '@/components/DecisionCard';
+import { useVisualDecisionAct } from './visual-decision-act';
 import { useMissionFocusSnapshot } from '@/components/missions/mission-focus-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementsCount, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
 import { isClosedUnshipped, overviewCells, overviewLayout } from '@/lib/mission-overview';
 import { stripOrder } from '@/lib/mission-task-strip';
 import type { DecisionView } from '@/lib/needs-you-card';
-import type { HistoryRaised } from '@/lib/mission-decisions';
+import { historyOnScreen, type HistoryRaised } from '@/lib/mission-decisions';
 import { useRouter } from 'next/navigation';
 import { CompletionRecord, PlanningPlaceholder } from './MissionBoard';
 import { boardTaskHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
 import { useMissionLayout } from './MissionLayoutShell';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { PlanTask } from '@/lib/mission-plan';
-import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines, StandardsLineView } from './MissionChecks';
+import { deliveryBlock, deliveryChecks, type DeliveryTask } from '@/lib/mission-delivery-checks';
+import { BuildCompleteBar, CheckRail, ChecksCard, DeliveryChecks, OutcomeSpecLines, StandardsLineView } from './MissionChecks';
 import MissionBuildStage from './MissionBuildStage';
+import { MissionStageProvider } from '@/components/design-stage';
 
 /** What the page knows about the checks; the build counts and repairs come from the live board. */
 export type MissionChecksSource = Omit<MissionChecksInput, 'build' | 'repairs'>;
@@ -50,6 +53,12 @@ export interface MissionOverviewProps extends BoardLinkContext {
   completionText?: string | null;
   /** What the strip cannot say (a decision gate, the integration PR). */
   notice?: ReactNode;
+  /**
+   * The mission's situation, by stage. Build draws none of a failed task, an
+   * unmet criterion or the visual audit (rows, a decision card and Verify
+   * own those, R-14 to R-20); Verify and Deliver draw all of it.
+   */
+  situation?: { build: ReactNode; verify: ReactNode };
   visual?: VisualReviewModel | null;
   /** The checks that apply after the build (spec f7f67f1a R-11 to R-22). Absent: the build view only. */
   checks?: MissionChecksSource | null;
@@ -57,6 +66,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   planTasks?: readonly PlanTask[] | null;
   /** A hold or empty budget: no time promise (R-24). */
   held?: boolean;
+  /** The mission's title: a spec line repeating it is left out. */
+  missionTitle?: string | null;
   /** Titles of the selected outcome specs and the standards, by spec id, for the spec line (Navigation R-3). */
   outcomeSpecTitles?: Readonly<Record<string, string>> | null;
   /** The decisions a person must give, one card each (Navigation R-16; `missionDecisions`). */
@@ -65,6 +76,10 @@ export interface MissionOverviewProps extends BoardLinkContext {
   history?: HistoryRaised | null;
   /** Task id → expected minutes (task estimates), for the summary's `finish depends on` (Navigation R-22). */
   expectedMinutes?: Readonly<Record<string, number | null | undefined>>;
+  /** The task PRs behind the Delivery count line (spec 072de598 I-23). */
+  deliveryTasks?: readonly DeliveryTask[];
+  /** The mission's design, closed: one fixed place after the current stage, on every mission (Navigation R-3). */
+  design?: ReactNode;
 }
 
 /** Checks already at work before the build ends (R-13) are shown under the list. */
@@ -79,8 +94,8 @@ export default function MissionOverview(props: MissionOverviewProps) {
 }
 
 function OverviewView({
-  model: serverModel, completionText = null, notice, visual: _visual, review,
-  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null,
+  model: serverModel, completionText = null, notice, situation, visual: _visual, review,
+  checks: checksSource = null, deliveryTasks = [], planTasks = null, held = false, outcomeSpecTitles = null, missionTitle = null, design = null,
   decisions = [], history = null, expectedMinutes, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
@@ -128,12 +143,37 @@ function OverviewView({
     ? buildEstimate(planTasks, now, held || needs > 0 || (activeCount === 0 && waitingCount > 0))?.line ?? null
     : null;
   const where = checksSource?.branch === 'mission-branch' ? 'the mission branch' : checksSource?.target ?? 'the target branch';
-  const specLines = checksSource ? outcomeSpecLines(checksSource.criteria, handoff?.rows ?? [], outcomeSpecTitles ?? {}) : [];
+  const specLines = checksSource ? outcomeSpecLines(checksSource.criteria, handoff?.rows ?? [], outcomeSpecTitles ?? {}, missionTitle) : [];
 
   const bar = order.length > 0 && (
     <TaskStrip cells={cells} groups={groups} ticks={false} selectedId={selectedId} onSelect={setSelectedId} onOpen={openTask} label="Mission tasks, merged first" />
   );
-  const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} />;
+  // A review waiting on a person is one decision card (R-16); the screens and fixes are evidence behind
+  // its Review screens, not a second ask or a Checks row (R-18).
+  const visualCard = decisions.some(d => d.answer.kind === 'visual');
+  const showAsk = review && !visualCard;
+  const listed = (rows: NonNullable<typeof handoff>['rows']) => (visualCard ? rows.filter(r => r.kind !== 'visual') : rows);
+  // Visual review, Merge into dev and Release as CheckRows; goal criteria keep their own card (I-22).
+  type HandoffRow = NonNullable<typeof handoff>['rows'][number];
+  const checksBlock = (rows: readonly HandoffRow[], withDelivery: boolean) => {
+    const views = deliveryChecks(rows, {
+      prNumber: checksSource?.integrationPr?.prNumber ?? null,
+      tier: checksSource?.mergeTier ?? 'agent-review',
+      target: checksSource?.target ?? null,
+      releaseHref: checksSource?.evidence?.release?.[0]?.href ?? null,
+      screensHref: checksSource?.evidence?.visual?.[0]?.href ?? null,
+    });
+    const criteria = rows.filter(r => r.kind === 'criterion');
+    return (
+      <>
+        <DeliveryChecks checks={views} delivery={withDelivery ? deliveryBlock(deliveryTasks) : null} timelineHref={`/app/missions/${encodeURIComponent(link.missionId)}?layout=feed`} onOpenTask={openTask} />
+        {criteria.length > 0 && <ChecksCard rows={criteria} onOpenTask={openTask} />}
+      </>
+    );
+  };
+  const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} missionId={link.missionId} />;
+  // History only for what the screen does not already show (R-37): the build rows show in Build, or once unfolded.
+  const raised = historyOnScreen(history, { buildRowsShown: stage === 'build' || showBuild, decisions });
 
   return (
     <div data-testid="mission-overview" data-stage={stage} className="flex min-w-0 flex-col gap-5">
@@ -142,13 +182,14 @@ function OverviewView({
       {stage === 'build' && (
         <>
           {cards}
-          {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {raised && <HistoryRaisedLine item={raised} missionId={link.missionId} />}
+          {situation?.build}
           {notice}
-          {review && <MissionVisualAsk review={review} board={model} />}
+          {showAsk && <MissionVisualAsk review={review} board={model} />}
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
           {bar}
           {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
-          {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
+          {handoff && listed(handoff.rows).some(r => STARTED.has(r.status)) && checksBlock(listed(handoff.rows).filter(r => STARTED.has(r.status)), false)}
           {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
         </>
       )}
@@ -159,10 +200,11 @@ function OverviewView({
             {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
           </BuildCompleteBar>
           {cards}
-          {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {raised && <HistoryRaisedLine item={raised} missionId={link.missionId} />}
+          {situation?.verify}
           {notice}
-          {review && <MissionVisualAsk review={review} board={model} />}
-          {handoff && <ChecksCard rows={handoff.rows} onOpenTask={openTask} />}
+          {showAsk && <MissionVisualAsk review={review} board={model} />}
+          {handoff && checksBlock(listed(handoff.rows), true)}
           {standards && <StandardsLineView line={standards} />}
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
@@ -174,6 +216,7 @@ function OverviewView({
             <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 self-center rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
             {`${termWord('mission.done')} · merged into ${checksSource?.target ?? where}`}
           </p>
+          {situation?.verify}
           {notice}
           <details data-testid="mission-requirements-fold" className="group">
             <summary className="flex min-h-11 cursor-pointer list-none items-baseline gap-x-2 text-body md:min-h-0">
@@ -182,13 +225,14 @@ function OverviewView({
             </summary>
             <div className="mt-2 flex flex-col gap-3">
               <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>{bar}</BuildCompleteBar>
-              <ChecksCard rows={handoff.rows} onOpenTask={openTask} />
+              {checksBlock(handoff.rows, true)}
             </div>
           </details>
           {standards && <StandardsLineView line={standards} />}
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
       )}
+      {design && <MissionStageProvider value={stage}>{design}</MissionStageProvider>}
     </div>
   );
 }
@@ -198,12 +242,17 @@ function OverviewView({
  * on the first phone screen. The rest are reached from it, one line that
  * opens them in place.
  */
-function LeadDecision({ decisions, now }: { decisions: readonly DecisionView[]; now: number }) {
+function MissionDecisionCard({ view, now, missionId }: { view: DecisionView; now: number; missionId: string }) {
+  const visualAct = useVisualDecisionAct(view);
+  return <DecisionCard view={view} now={now} pageMissionId={missionId} visualAct={visualAct} />;
+}
+
+function LeadDecision({ decisions, now, missionId }: { decisions: readonly DecisionView[]; now: number; missionId: string }) {
   const [open, setOpen] = useState(false);
   const rest = decisions.length - 1;
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <DecisionCard view={decisions[0]} now={now} />
+      <MissionDecisionCard view={decisions[0]} now={now} missionId={missionId} />
       {rest > 0 && !open && (
         <button
           type="button"
@@ -214,16 +263,9 @@ function LeadDecision({ decisions, now }: { decisions: readonly DecisionView[]; 
           {`${rest} more ${rest === 1 ? 'decision' : 'decisions'} ›`}
         </button>
       )}
-      {open && decisions.slice(1).map(d => <DecisionCard key={d.key} view={d} now={now} />)}
+      {open && decisions.slice(1).map(d => <MissionDecisionCard key={d.key} view={d} now={now} missionId={missionId} />)}
     </div>
   );
-}
-
-/** `21 of 21 met`: the requirements that count, folded to one line once delivered. */
-function requirementsCount(rows: readonly { kind: string; status: CheckStatus }[]): string {
-  const counted = rows.filter(r => (r.kind === 'criterion' || r.kind === 'visual') && r.status !== 'not_applicable');
-  const met = counted.filter(r => r.status === 'passed').length;
-  return counted.length === 0 ? 'nothing to check' : `${met} of ${counted.length} met`;
 }
 
 /**

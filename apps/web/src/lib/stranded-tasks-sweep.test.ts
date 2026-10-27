@@ -175,11 +175,11 @@ describe('sweepStrandedTasks', () => {
   it('flags a task via a stale deferral streak when it has no startAt at all', async () => {
     candidateRows = [{
       id: TASK,
-      title: 'Perpetually mission-paced task',
+      title: 'Perpetually mission-capped task',
       workspaceId: 'ws-1',
       missionId: 'mission-1',
       startAt: null,
-      reason: 'mission_paced',
+      reason: 'mission_concurrent',
       // A handful of deferrals over 3 hours at the real, measured claim
       // cadence (p50 over 5 minutes) — nowhere near the OLD 200-poll
       // threshold, which is exactly why that threshold could never fire.
@@ -189,7 +189,7 @@ describe('sweepStrandedTasks', () => {
     const result = await sweepStrandedTasks();
 
     expect(result.stranded).toBe(1);
-    expect(firedEvents[0].reason).toBe('mission_paced');
+    expect(firedEvents[0].reason).toBe('mission_concurrent');
   });
 
   it('does NOT flag a fast-but-brief deferral streak — this is the bug the old poll-count threshold had backwards', async () => {
@@ -202,7 +202,7 @@ describe('sweepStrandedTasks', () => {
       workspaceId: 'ws-1',
       missionId: 'mission-1',
       startAt: null,
-      reason: 'mission_paced',
+      reason: 'mission_concurrent',
       detail: { consecutiveDeferrals: 250, firstDeferredAt: new Date(Date.now() - 5 * 60 * 1000).toISOString() },
     }];
 
@@ -219,7 +219,7 @@ describe('sweepStrandedTasks', () => {
       workspaceId: 'ws-1',
       missionId: 'mission-1',
       startAt: null,
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       detail: { consecutiveDeferrals: 1, firstDeferredAt: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString() },
     }];
 

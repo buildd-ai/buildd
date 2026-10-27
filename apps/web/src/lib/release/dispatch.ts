@@ -251,6 +251,16 @@ export async function releasePreflight(
     );
     if (Array.isArray(prs) && prs.length > 0) {
       out.openReleasePr = { number: prs[0].number, url: prs[0].html_url, title: prs[0].title };
+    } else {
+      // A frozen candidate's head is its own `release/vX.Y.Z` branch, never `ref`.
+      const open = await githubApi(
+        installationId,
+        `/repos/${owner}/${name}/pulls?base=${encodeURIComponent(prodBranch)}&state=open&per_page=30`,
+      );
+      const cand = Array.isArray(open)
+        ? open.find((p: { head?: { ref?: string } }) => /^release\/v\d/.test(p.head?.ref ?? ''))
+        : undefined;
+      if (cand) out.openReleasePr = { number: cand.number, url: cand.html_url, title: cand.title };
     }
   } catch {
     // ignore — open-PR detection is advisory.

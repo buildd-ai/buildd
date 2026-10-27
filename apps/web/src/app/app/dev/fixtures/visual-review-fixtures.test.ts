@@ -42,7 +42,7 @@ function expectValidModel(m: VisualReviewModel) {
 
 describe('visual review fixture', () => {
   it('is a fixture view alongside the worker states, without joining mockWorkers', () => {
-    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'goal-criteria', 'task-evidence', 'evidence-storage', 'model-providers', 'model-providers-lone', 'model-providers-stored-policy', 'operator-access', 'task-shipped', 'commit-checks', 'task-page', 'answer-states', 'agent-access', 'failure-kinds', 'entitlement-blocked', 'coordination-hold', 'onboarding', 'mission-task-strip', 'mission-plan', 'tool-breakdown', 'runner-size', 'runner-isolation', 'interactive-sessions', 'workspaces-list', 'hosted-runner', 'service-status', 'delivery-states', 'surface-audit-waiver', 'skip-row', 'delivery-review-actions', 'delivery-dock', 'delivery-run-fix', 'activity-delivery', 'team-members', 'refined-components', 'mission-flow', 'mission-detail-compact', 'run-activity', 'home-cards', 'mcp-connections', 'task-error-evidence', 'spec-surface', 'branch-panel', 'spec-index', 'spec-attachments', 'spec-delivery', 'spec-import-review', 'runner-keys', 'mission-deliveries', 'design-preview']);
+    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'goal-criteria', 'task-evidence', 'evidence-storage', 'model-providers', 'model-providers-lone', 'model-providers-stored-policy', 'operator-access', 'task-shipped', 'commit-checks', 'task-page', 'answer-states', 'agent-access', 'failure-kinds', 'entitlement-blocked', 'coordination-hold', 'start-anyway', 'onboarding', 'mission-task-strip', 'mission-plan', 'tool-breakdown', 'runner-size', 'runner-isolation', 'interactive-sessions', 'workspaces-list', 'hosted-runner', 'service-status', 'delivery-states', 'surface-audit-waiver', 'skip-row', 'delivery-review-actions', 'delivery-dock', 'delivery-run-fix', 'activity-delivery', 'team-members', 'refined-components', 'mission-flow', 'mission-detail-compact', 'run-activity', 'home-cards', 'mcp-connections', 'task-error-evidence', 'spec-surface', 'branch-panel', 'spec-index', 'spec-attachments', 'spec-delivery', 'spec-import-review', 'runner-keys', 'mission-deliveries', 'spec-page', 'closed-pr', 'design-preview', 'stage-meter', 'delivery-row', 'delivery-bar', 'you-strip-pipeline', 'check-row']);
     expect(VISUAL_REVIEW_FIXTURE_STATE in mockWorkers).toBe(false);
     expect(isFixtureView('visual-review')).toBe(true);
     expect(isFixtureView('waiting-input')).toBe(true);
@@ -99,6 +99,11 @@ describe('visual review fixture', () => {
     const hrefs = visualReviewFixtureLinks().map(l => l.href);
     expect(hrefs.some(h => h.endsWith('view=fix-check'))).toBe(true);
     expect(hrefs.some(h => h.endsWith('view=fix-merged'))).toBe(true);
+    // The tray view of the same set: the deck stays closed, the settled thumbnail shows in the tray.
+    const tray = parseVisualReviewFixtureParams(new URLSearchParams('view=fix-merged-tray'));
+    expect(tray).toMatchObject({ view: 'fix-merged-tray', phase: 'needs_you', startKey: null, compare: false });
+    expect(buildVisualReviewFixtureModel(tray.phase, tray.options).cells.some(c => c.fixCheck?.state === 'awaiting_capture')).toBe(true);
+    expect(hrefs.some(h => h.endsWith('view=fix-merged-tray'))).toBe(true);
     // Plain words: a link label never names a round.
     expect(visualReviewFixtureLinks().filter(l => /fix/.test(l.label)).every(l => !/round/i.test(l.label))).toBe(true);
   });

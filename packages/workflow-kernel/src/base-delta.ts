@@ -40,9 +40,9 @@ const CI_WORKFLOW = /^\.github\/workflows\//;
 const REPO_INVARIANT_TEST = /^scripts\/[^/]+\.test\.ts$/;
 
 /**
- * A migration or the schema. Their risk is ordering and drift against the
- * PR's own migration or schema change, so on the base side of a gap they are
- * risky only when the PR side has one too (92a439a6).
+ * A migration or the schema. Their risk is ordering and drift between the two
+ * sides, so on either side of a gap they are risky only when the other side
+ * has one too (base side 92a439a6; PR side after #5522).
  */
 export function isSchemaLandingPath(path: string): boolean {
   return MIGRATION_PATH.test(path) || path === SCHEMA_FILE;
@@ -50,7 +50,7 @@ export function isSchemaLandingPath(path: string): boolean {
 
 /**
  * Paths where a change is never "unrelated" to a PR: migrations and the
- * schema (ordering and drift; base-side only against the PR's own, see
+ * schema (ordering and drift; only against one on the other side, see
  * `isSchemaLandingPath`), lockfiles and package manifests (the whole build
  * resolves through them), CI workflows (they decide what "green" means) and
  * repo-wide invariant tests. All but the first pair are risky on either side,
@@ -140,9 +140,15 @@ export function judgeBaseDelta(fact: BaseDeltaFact, maxBaseCommits: number): Bas
     return { tolerated: false, cause: 'refresh_exhausted', reason: 'could not list the files on one side of the gap' };
   }
   const bumps = new Set(fact.versionBumpFiles ?? []);
+  // A migration or the schema is risky only against one on the other side: ordering and
+  // drift need both. The PR's own was already applied on top of every base migration up to
+  // the tree its CI tested (the merge-ref migrate-from-empty run), and a gap with none leaves
+  // that proof standing; the T15 stale-parent inspector re-checks the chain at merge time.
   const prSchema = fact.prFiles.some(isSchemaLandingPath);
+  const baseSchema = fact.baseFiles.some((f) => !bumps.has(f) && isSchemaLandingPath(f));
   const baseRisky = fact.baseFiles.filter((f) => !bumps.has(f) && isRiskyLandingPath(f) && (prSchema || !isSchemaLandingPath(f)));
-  const risky = [...new Set([...baseRisky, ...fact.prFiles.filter(isRiskyLandingPath)])].sort();
+  const prRisky = fact.prFiles.filter((f) => isRiskyLandingPath(f) && (baseSchema || !isSchemaLandingPath(f)));
+  const risky = [...new Set([...baseRisky, ...prRisky])].sort();
   if (risky.length) {
     return { tolerated: false, cause: 'refresh_unsafe', basis: 'risky_path', reason: `the gap involves a migration, schema, lockfile, manifest, CI workflow or repo-wide test (${risky.join(', ')})`, files: risky };
   }

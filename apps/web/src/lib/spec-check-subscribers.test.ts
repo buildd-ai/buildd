@@ -49,4 +49,8 @@ describe('specCheckSubscribers', () => {
     await emit({ ...report, taskId: 'v2' }, { subscribers: specCheckSubscribers });
     expect(handled).toEqual([['v1', { outcome: 'ok' }]]);
   });
+
+  it('R-6: registered checks have no PR subscriber of their own; the criterion-check dispatch is the one PR ready/push entry', () => {
+    expect(specCheckSubscribers.map(s => s.label)).toEqual(['spec-checks-on-open', 'spec-checks-on-push', 'late-runner-evidence', 'spec-check-outcome']);
+  });
 });

@@ -76,6 +76,8 @@ export type KernelPrincipal =
 export interface KernelOps {
   land: { input: Parameters<Seam['landThroughKernel']>[0]; result: Awaited<ReturnType<Seam['landThroughKernel']>> };
   apply_recommendation: { input: Parameters<Seam['applyRecommendationThroughKernel']>[0]; result: Awaited<ReturnType<Seam['applyRecommendationThroughKernel']>> };
+  /** A person files one landing task from an escalation: merge base, fix CI, address findings, one review on push. */
+  land_escalated: { input: Parameters<Seam['landEscalatedThroughKernel']>[0]; result: Awaited<ReturnType<Seam['landEscalatedThroughKernel']>> };
   policy_merge: { input: Parameters<Seam['policyMergeThroughKernel']>[0]; result: Awaited<ReturnType<Seam['policyMergeThroughKernel']>> };
   request_review: { input: Parameters<Seam['requestReview']>[0]; result: Awaited<ReturnType<Seam['requestReview']>> };
   request_ci_retry: { input: Parameters<Seam['requestCiRetry']>[0]; result: Awaited<ReturnType<Seam['requestCiRetry']>> };
@@ -125,6 +127,8 @@ export interface KernelOps {
   observe_ci_green: { input: Parameters<Seam['observeCiGreen']>[0]; result: Awaited<ReturnType<Seam['observeCiGreen']>> };
   /** T6: a kernel review round's verdict, reported by the worker PATCH. Only a delivery of `workspaceId` is acted on. */
   record_review_verdict: { input: Parameters<Seam['recordReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['recordReviewVerdict']>> };
+  /** Living Spec fa62b865 R-46: buildd's capture task for an evidence round ended. Only a delivery of `workspaceId` is acted on. */
+  record_capture_evidence: { input: Parameters<Seam['recordCaptureEvidence']>[0]; result: Awaited<ReturnType<Seam['recordCaptureEvidence']>> };
   /** A verdict from a reviewer outside the kernel's rounds on a PR the kernel owns (00d288fd), adopted. Same workspace rule. */
   adopt_review_verdict: { input: Parameters<Seam['adoptReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['adoptReviewVerdict']>> };
   /** T12: a conflict (or migration collision) a door saw on a kernel-owned PR; the control plane reads the live PR and applies ConflictObserved. */
@@ -153,6 +157,7 @@ export type KernelOp = keyof KernelOps;
 const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Promise<KernelOps[K]['result']> } = {
   land: (s, i) => s.landThroughKernel(i),
   apply_recommendation: (s, i) => s.applyRecommendationThroughKernel(i),
+  land_escalated: (s, i) => s.landEscalatedThroughKernel(i),
   policy_merge: (s, i) => s.policyMergeThroughKernel(i),
   request_review: (s, i) => s.requestReview(i),
   request_ci_retry: (s, i) => s.requestCiRetry(i),
@@ -193,6 +198,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   observe_ci_green: (s, i) => s.observeCiGreen(i),
   // The reach check judged `workspaceId`; the seam acts only on a delivery of that workspace.
   record_review_verdict: (s, i) => s.recordReviewVerdict(i),
+  record_capture_evidence: (s, i) => s.recordCaptureEvidence(i),
   adopt_review_verdict: (s, i) => s.adoptReviewVerdict(i),
   observe_conflict: (s, i) => s.observeConflict(i),
   claim_fix: (s, { task, workspaceId }) => {
@@ -222,7 +228,7 @@ const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drai
  * Ops only a signed-in person may submit, as `human:<their id>`: an agent, an API key or a grant
  * session is refused here, before the reach check, whatever actor string its input names.
  */
-export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding', 'approve_override']);
+export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding', 'approve_override', 'land_escalated']);
 /** Why `principal` may not submit `op`, or null: a person-only op needs a `user` whose id is the input's `human:` actor. */
 export function personOpRefusal(op: KernelOp, input: unknown, principal: KernelPrincipal | null): string | null {
   if (!PERSON_OPS.has(op)) return null;

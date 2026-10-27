@@ -476,7 +476,11 @@ describe('DEFAULT_ROLES', () => {
       const role = bySlug.organizer;
       const row = { id: 'organizer-row', slug: 'organizer', source: 'system',
         contentHash: 'feaff128442aff056114b6401392527a5525886595cd6b2b5de97944f656b641', metadata: {} };
-      expect(planDefaultRoleResync([row])).toMatchObject([{ id: row.id, content: role.content, version: 2 }]);
+      expect(planDefaultRoleResync([row])).toMatchObject([{ id: row.id, content: role.content, version: 3 }]);
+      // Both v2s (request_capability, serial lanes) resync to the merged v3.
+      for (const v2 of ['c1bba1ab81a8892a2f65d595cdc41b3eddfed131d7204859d5e338049f773d07', '0c35b1f8fe8aeb75e8c0449a5c8b9f60c771cce8f48a2e3575cd8559dba2e05d']) {
+        expect(planDefaultRoleResync([{ ...row, contentHash: v2, metadata: { defaultRoleVersion: 2 } }])).toMatchObject([{ id: row.id, version: 3 }]);
+      }
       expect(planDefaultRoleResync([{ ...row, contentHash: roleContentHash('custom organizer') }])).toEqual([]);
     });
 

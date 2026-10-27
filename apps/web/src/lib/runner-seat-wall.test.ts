@@ -6,7 +6,6 @@ import {
   parseClaudeLoginId,
   resolveRunnerSeatWallKey,
   runnerSeatKey,
-  type RunnerSeatWallDeps,
   type RunnerSeatWallInput,
 } from './runner-seat-wall';
 
@@ -16,18 +15,7 @@ const input = (over: Partial<RunnerSeatWallInput> = {}): RunnerSeatWallInput => 
   backend: 'claude',
   error: WEEKLY,
   runner: 'headless://box-a',
-  claimedByCloud: false,
   tenantId: null,
-  accountId: 'account-1',
-  teamId: 'team-1',
-  workspaceId: 'ws-1',
-  ...over,
-});
-
-const deps = (over: Partial<RunnerSeatWallDeps> = {}): RunnerSeatWallDeps => ({
-  heartbeatModelAuthSource: async () => 'machine_login',
-  teamClaudeCredentialVisible: async () => false,
-  teamEndpointWins: async () => false,
   ...over,
 });
 
@@ -63,131 +51,52 @@ describe('isMachineLoginWallError', () => {
 });
 
 describe('resolveRunnerSeatWallKey', () => {
-  it("scopes a weekly wall to the runner when it ran on its own machine login and the team stores no Claude credential", async () => {
-    const out = await resolveRunnerSeatWallKey(input(), deps());
-    expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
+  const RUNNER = runnerSeatKey('headless://box-a');
+
+  it('scopes a weekly or session wall to the runner that hit it', () => {
+    expect(resolveRunnerSeatWallKey(input()).seatKey).toBe(RUNNER);
+    expect(resolveRunnerSeatWallKey(input({ error: "You've hit your session limit · resets 4pm (UTC)" })).seatKey).toBe(RUNNER);
   });
 
-  it('scopes a wall from a machine token (CLAUDE_CODE_OAUTH_TOKEN) the same way', async () => {
-    const out = await resolveRunnerSeatWallKey(input(), deps({ heartbeatModelAuthSource: async () => 'machine_token' }));
-    expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
-  });
-
-  it('asks the heartbeat for exactly this account and runner', async () => {
-    const seen: unknown[] = [];
-    await resolveRunnerSeatWallKey(input(), deps({
-      heartbeatModelAuthSource: async (accountId, runner) => { seen.push([accountId, runner]); return 'machine_login'; },
-    }));
-    expect(seen).toEqual([['account-1', 'headless://box-a']]);
-  });
-
-  // Fail-safe: a login identity we cannot establish keeps the account-wide wall.
-  it('keeps the wall shared when the runner reports no model auth (an older runner)', async () => {
-    const out = await resolveRunnerSeatWallKey(input(), deps({ heartbeatModelAuthSource: async () => null }));
-    expect(out.seatKey).toBeNull();
-  });
-
-  it('keeps the wall shared when the runner reports an API key or no login', async () => {
-    for (const source of ['api_key', 'none'] as const) {
-      const out = await resolveRunnerSeatWallKey(input(), deps({ heartbeatModelAuthSource: async () => source }));
-      expect(out.seatKey).toBeNull();
+  // R-10: a team never shares a subscription wall, whatever the run used.
+  it('scopes the wall to the runner for every login the run reports, the stored team credential included', () => {
+    for (const loginUsed of ['machine_login', 'machine_token', 'stored', null] as const) {
+      expect(resolveRunnerSeatWallKey(input({ loginUsed })).seatKey).toBe(RUNNER);
     }
   });
 
-  it('keeps the wall shared when the team stores a Claude credential every runner may draw on', async () => {
-    const out = await resolveRunnerSeatWallKey(input(), deps({ teamClaudeCredentialVisible: async () => true }));
+  it('keeps tenant, Codex and unnamed-runner walls shared', () => {
+    expect(resolveRunnerSeatWallKey(input({ tenantId: 'tenant-1' })).seatKey).toBeNull();
+    expect(resolveRunnerSeatWallKey(input({ backend: 'codex' })).seatKey).toBeNull();
+    expect(resolveRunnerSeatWallKey(input({ runner: 'runner' })).seatKey).toBeNull();
+    expect(resolveRunnerSeatWallKey(input({ runner: null })).seatKey).toBeNull();
+  });
+
+  it('keeps an API-style rate limit shared', () => {
+    const out = resolveRunnerSeatWallKey(input({ error: '429 rate_limit_error: per-minute rate limit' }));
     expect(out.seatKey).toBeNull();
   });
 
-  it("keeps the wall shared when the team's agent model endpoint carries Claude", async () => {
-    const out = await resolveRunnerSeatWallKey(input(), deps({ teamEndpointWins: async () => true }));
-    expect(out.seatKey).toBeNull();
-  });
-
-  it('keeps tenant, Codex, cloud and unnamed-runner walls shared', async () => {
-    expect((await resolveRunnerSeatWallKey(input({ tenantId: 'tenant-1' }), deps())).seatKey).toBeNull();
-    expect((await resolveRunnerSeatWallKey(input({ backend: 'codex' }), deps())).seatKey).toBeNull();
-    expect((await resolveRunnerSeatWallKey(input({ claimedByCloud: true }), deps())).seatKey).toBeNull();
-    expect((await resolveRunnerSeatWallKey(input({ runner: 'runner' }), deps())).seatKey).toBeNull();
-    expect((await resolveRunnerSeatWallKey(input({ runner: null }), deps())).seatKey).toBeNull();
-    expect((await resolveRunnerSeatWallKey(input({ teamId: null }), deps())).seatKey).toBeNull();
-  });
-
-  it('keeps an API-style rate limit shared even from a machine-login runner', async () => {
-    const out = await resolveRunnerSeatWallKey(input({ error: '429 rate_limit_error' }), deps());
-    expect(out.seatKey).toBeNull();
-  });
-
-  it('keeps the wall shared when any lookup fails', async () => {
-    const boom = async () => { throw new Error('db down'); };
-    expect((await resolveRunnerSeatWallKey(input(), deps({ heartbeatModelAuthSource: boom }))).seatKey).toBeNull();
-    expect((await resolveRunnerSeatWallKey(input(), deps({ teamClaudeCredentialVisible: boom }))).seatKey).toBeNull();
-    expect((await resolveRunnerSeatWallKey(input(), deps({ teamEndpointWins: boom }))).seatKey).toBeNull();
-  });
-
-  // Spec "A runner" (34a48877) R-9, R-10, AC-1, AC-2, AC-3. The run itself says
-  // which login it used. A runner on its own machine login
-  // walls only itself, even when the team also stores a Claude credential that
-  // this run did not use: one machine's session limit held every runner of the
-  // team for hours because a stored token existed somewhere.
-  describe('the login the run reports it used', () => {
-    it("scopes a machine-login run's wall to its runner even though the team stores a Claude credential", async () => {
-      for (const loginUsed of ['machine_login', 'machine_token'] as const) {
-        const out = await resolveRunnerSeatWallKey(
-          input({ loginUsed }),
-          deps({ teamClaudeCredentialVisible: async () => true, teamEndpointWins: async () => true, heartbeatModelAuthSource: async () => null }),
-        );
-        expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
-      }
-    });
-
-    it('keeps the wall shared when the run used the stored team credential', async () => {
-      const out = await resolveRunnerSeatWallKey(input({ loginUsed: 'stored' }), deps());
-      expect(out.seatKey).toBeNull();
-      expect(out.reason).toContain('stored');
-    });
-
-    it('still keeps tenant, Codex, cloud, unnamed-runner and API rate-limit walls shared', async () => {
-      const m = { loginUsed: 'machine_login' as const };
-      expect((await resolveRunnerSeatWallKey(input({ ...m, tenantId: 'tenant-1' }), deps())).seatKey).toBeNull();
-      expect((await resolveRunnerSeatWallKey(input({ ...m, backend: 'codex' }), deps())).seatKey).toBeNull();
-      expect((await resolveRunnerSeatWallKey(input({ ...m, claimedByCloud: true }), deps())).seatKey).toBeNull();
-      expect((await resolveRunnerSeatWallKey(input({ ...m, runner: 'runner' }), deps())).seatKey).toBeNull();
-      expect((await resolveRunnerSeatWallKey(input({ ...m, error: '429 rate_limit_error' }), deps())).seatKey).toBeNull();
-    });
-
-    it('needs no lookup when the run named its machine login', async () => {
-      const boom = async () => { throw new Error('db down'); };
-      const out = await resolveRunnerSeatWallKey(
-        input({ loginUsed: 'machine_login' }),
-        deps({ heartbeatModelAuthSource: boom, teamClaudeCredentialVisible: boom, teamEndpointWins: boom }),
-      );
-      expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
-    });
-  });
-
-  // Two runners on one Claude login (two processes reading one ~/.claude) share
-  // that login's limit. The runner reports a one-way hash of the login's
-  // account id; the wall is keyed on it so the first runner's wall holds both.
+  // Two runners on one host can read one ~/.claude and so share one login.
+  // The runner reports a one-way hash of the login's account id; the wall is
+  // keyed on it so the first runner's wall holds both.
   describe('the login identity the run reports', () => {
     const LOGIN = 'a'.repeat(32);
-    it('keys a machine-login wall on the login, not the runner', async () => {
-      const a = await resolveRunnerSeatWallKey(input({ loginUsed: 'machine_login', loginId: LOGIN }), deps());
-      const b = await resolveRunnerSeatWallKey(input({ runner: 'headless://box-b', loginUsed: 'machine_login', loginId: LOGIN }), deps());
+    it('keys a machine-login wall on the login, not the runner', () => {
+      const a = resolveRunnerSeatWallKey(input({ loginUsed: 'machine_login', loginId: LOGIN }));
+      const b = resolveRunnerSeatWallKey(input({ runner: 'headless://box-b', loginUsed: 'machine_login', loginId: LOGIN }));
       expect(a.seatKey).toBe(claudeLoginSeatKey(LOGIN));
       expect(b.seatKey).toBe(a.seatKey);
-      const other = await resolveRunnerSeatWallKey(input({ loginUsed: 'machine_login', loginId: 'b'.repeat(32) }), deps());
+      const other = resolveRunnerSeatWallKey(input({ loginUsed: 'machine_login', loginId: 'b'.repeat(32) }));
       expect(other.seatKey).not.toBe(a.seatKey);
     });
 
-    it('falls back to the runner key when the login identity is unknown', async () => {
-      const out = await resolveRunnerSeatWallKey(input({ loginUsed: 'machine_token', loginId: null }), deps());
-      expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
+    it('falls back to the runner key when the login identity is unknown', () => {
+      expect(resolveRunnerSeatWallKey(input({ loginUsed: 'machine_token', loginId: null })).seatKey).toBe(RUNNER);
     });
 
-    it('ignores a login identity on a stored-credential run, which stays shared', async () => {
-      const out = await resolveRunnerSeatWallKey(input({ loginUsed: 'stored', loginId: LOGIN }), deps());
-      expect(out.seatKey).toBeNull();
+    it('keys a stored-credential run on its runner, not on a machine login identity', () => {
+      expect(resolveRunnerSeatWallKey(input({ loginUsed: 'stored', loginId: LOGIN })).seatKey).toBe(RUNNER);
     });
 
     it('accepts only the 32-hex-character hash shape', () => {

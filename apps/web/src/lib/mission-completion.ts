@@ -6,7 +6,7 @@ import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { countedGoalCriteria, isDeliverableTask } from '@buildd/core/mission-helpers';
 import { standardsHoldOf, type StandardsHold } from '@/lib/specs/mission-standards-gate';
-import { deriveLineageSupersession, isPrUnshipped, prShipState, withDeliveryShip, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { deriveLineageSupersession, isPrUnshipped, prShipState, withDeliveryShip, type RefreshCheck, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { deliveryShipsForPrs, epochCompletionHold, missionEpochsOf, shipKey } from '@/lib/workflow/delivery-ship';
 import { claimMissionCompletion, readMissionEpochFingerprint } from '@/lib/workflow/mission-completion-write';
 import { MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
@@ -136,6 +136,8 @@ export interface MissionCompletionDecision {
      * a person to confirm — it never clears the gate on its own.
      */
     suggestion?: SupersessionSuggestion;
+    /** Closed-unsuperseded integration-refresh PR only: its own proof, instead of a suggestion. */
+    refreshCheck?: RefreshCheck;
   }>;
   /**
    * Terminal deliverables whose PR closed unmerged but is recorded as
@@ -672,6 +674,7 @@ export async function canCompleteMission(
       // actually landed.
       const closedUnsuperseded = prShipState(w) === 'closed_unsuperseded';
       const suggestion = closedUnsuperseded ? w?.supersessionScan?.suggestion : null;
+      const refreshCheck = closedUnsuperseded ? w?.supersessionScan?.refreshCheck : null;
       return {
         taskId: t.id,
         title: t.title,
@@ -679,6 +682,7 @@ export async function canCompleteMission(
         prUrl: w?.prUrl ?? null,
         ...(closedUnsuperseded ? { closedUnsuperseded: true as const } : {}),
         ...(suggestion ? { suggestion } : {}),
+        ...(refreshCheck ? { refreshCheck } : {}),
       };
     });
     const named = base.awaitingMergeDetails

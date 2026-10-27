@@ -1323,6 +1323,30 @@ describe('buildMissionContext', () => {
     expect(result!.context.decompositionSkipped).toBe(true);
   });
 
+  it('injects coordinate-only instructions from the persisted mission flag when the caller passes no context (schedule cron path)', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-none',
+      title: 'Decomposition none mission',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      lastEvaluationTaskId: null,
+      contextArtifactIds: [],
+      decompositionSkipped: true,
+    });
+    mockFindMany.mockResolvedValueOnce([]);
+    mockFindMany.mockResolvedValueOnce([]);
+    mockFindMany.mockResolvedValueOnce([]);
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+
+    const result = await buildMissionContext('obj-none', { triggerSource: 'cron' });
+
+    expect(result!.description).toContain('COORDINATE-ONLY MODE');
+    expect(result!.context.decompositionSkipped).toBe(true);
+  });
+
   it('coordinate-only checklist leaves retries and PR conflicts to the platform', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-coord-trim',

@@ -129,6 +129,9 @@ mock.module('@/lib/task-dependency-reach', () => ({
   dependencyViewerOf: (user: any, account: any) => (account ? { kind: 'account', account } : user ? { kind: 'person', userId: user.id } : { kind: 'member' }),
 }));
 
+const mockLoadQuestionWaits = mock(async (_i: any): Promise<any> => null);
+mock.module('@/lib/question-waits', () => ({ loadQuestionWaits: mockLoadQuestionWaits }));
+
 // Mock team-access
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
@@ -326,6 +329,30 @@ describe('GET /api/tasks/[id]', () => {
     expect(await response.json()).toEqual({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
     expect(mockTasksFindFirst.mock.calls[0][0].with).toBeUndefined();
     expect(mockTasksFindFirst.mock.calls[0][0].columns.context).toBeUndefined();
+  });
+
+  // Living Spec 1b257609 AC-8: get_task on a waiting task returns what waits on the answer as data.
+  it('a task with an open question carries questionWaits, resolved for the caller', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'in_progress' });
+    const askedAt = new Date('2026-10-24T11:30:00.000Z');
+    const waitingFor = { type: 'question', prompt: 'Ship?', options: [{ label: 'Ship', outcome: 'finishes' }] };
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w1', status: 'waiting_input', runner: 'r1', updatedAt: askedAt, waitingFor }]);
+    const waits = { taskId: TASK_ID, waiting: [{ id: 'b', title: 'B', depth: 1 }], hiddenCount: 1, beyondCount: 0, criteria: { specId: 's', specTitle: 'S', affected: ['R-1'], total: 2 }, expiresAt: '2026-10-24T15:30:00.000Z', onExpiry: { action: 'default', option: 'Ship' }, options: [{ label: 'Ship', outcome: 'finishes', effect: '"B" starts when this task is done.', recommended: false }] };
+    mockLoadQuestionWaits.mockResolvedValueOnce(waits);
+    const body = await (await callHandler(GET, createMockRequest({ search: '?include=workers' }), TASK_ID)).json();
+    expect(body.questionWaits).toEqual(waits);
+    expect(mockLoadQuestionWaits.mock.calls.at(-1)![0]).toEqual({ taskId: TASK_ID, viewer: { kind: 'person', userId: 'user-1' }, worker: { runner: 'r1', updatedAt: askedAt, waitingFor } });
+  });
+
+  it('a task with no open question carries no questionWaits and loads none', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'in_progress' });
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w1', status: 'running', runner: 'r1', updatedAt: new Date(), waitingFor: null }]);
+    mockLoadQuestionWaits.mockClear();
+    const body = await (await callHandler(GET, createMockRequest({ search: '?include=workers' }), TASK_ID)).json();
+    expect(body).not.toHaveProperty('questionWaits');
+    expect(mockLoadQuestionWaits).not.toHaveBeenCalled();
   });
 
   it('returns task for API key auth', async () => {
@@ -1580,6 +1607,29 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(200);
       expect(sets[0].tier).toBe('budget');
       expect(sets[0].context).toBeUndefined();
+    });
+
+    it('re-tiering a task with a live worker returns a modelChange naming the tier it is still running at', async () => {
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-live', status: 'running' });
+      const { res, sets } = await patch(
+        { ...baseTask({ model: 'claude-sonnet-5-5', resolvedTier: { tier: 'standard', provider: 'anthropic' } }), status: 'in_progress', predictedModel: 'claude-sonnet-5-5' },
+        { tier: 'premium' },
+      );
+      expect(res.status).toBe(200);
+      expect(sets[0].tier).toBe('premium');
+      const body = await res.json();
+      expect(body.modelChange).toMatchObject({
+        appliesTo: 'next_attempt', workerId: 'w-live', runningTier: 'standard', runningModel: 'claude-sonnet-5-5',
+      });
+      expect(body.modelChange.message).toMatch(/still running at standard.*next attempt/);
+      expect(sets[0].context.pendingModelChange).toMatchObject({ tier: 'premium', runningTier: 'standard', workerId: 'w-live' });
+      expect(sets[0].context.resolvedTier).toEqual({ tier: 'standard', provider: 'anthropic' });
+    });
+
+    it('re-tiering a task with no live worker carries no modelChange', async () => {
+      const { res } = await patch(baseTask(), { tier: 'premium' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).modelChange).toBeUndefined();
     });
 
     it('tier: null clears the tier override', async () => {

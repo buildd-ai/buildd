@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput } from './mission-board';
-import { dependentNames, historyRaised, missionDecisions, type OpenQuestionNote } from './mission-decisions';
+import { historyRaised, missionDecisions, type OpenQuestionNote } from './mission-decisions';
+import type { QuestionWaits } from '@buildd/core/question-waits';
 
 const T0 = Date.UTC(2026, 9, 22, 12, 0, 0);
 const min = (n: number) => T0 + n * 60_000;
@@ -56,17 +57,28 @@ const asking = task(1, 'Mirror the runner image to Docker Hub', {
 const digest = task(2, 'The release publishes an image digest', { dependsOn: [id(1)] });
 const bundle = task(3, 'A runner bundle on every release', { dependsOn: [id(1)] });
 
+/** The projection's answer for the asking task (lib/question-waits.ts); the page passes it in by task. */
+const projected: QuestionWaits = {
+  taskId: id(1), mission: null, hiddenCount: 0, beyondCount: 0, lanes: [], criteria: null,
+  waiting: [
+    { id: id(2), title: 'The release publishes an image digest', depth: 1, missionId: null, missionTitle: null, workspaceName: null, after: null, alsoWaitsOnOther: false },
+    { id: id(3), title: 'A runner bundle on every release', depth: 1, missionId: null, missionTitle: null, workspaceName: null, after: null, alsoWaitsOnOther: false },
+  ],
+  askedAt: null, expiresAt: null, onExpiry: { action: 'restart', option: null }, options: [],
+};
+
 describe('missionDecisions (R-16, AC-10)', () => {
   const model = board([asking, digest, bundle]);
-  const views = missionDecisions({ model, notes: [], mission, hrefFor });
+  const views = missionDecisions({ model, notes: [], mission, hrefFor, waitsByTask: new Map([[id(1), projected]]) });
 
-  it('a parked worker’s question is one card: its task, the brief, both options, and what waits on it by name', () => {
+  it('a parked worker’s question is one card: its task, the brief, both options, and what waits on it from the projection', () => {
     expect(views).toHaveLength(1);
     const v = views[0];
     expect(v.kind).toBe('decision');
     expect(v.task).toEqual({ id: id(1), title: 'Mirror the runner image to Docker Hub', href: `/app/tasks/${id(1)}` });
     expect(v.question).toBe('How should Docker Hub credentials be set up?');
-    expect(v.summary).toBe('CI has no Docker Hub secrets, so every release skips the image mirror. The release publishes an image digest and A runner bundle on every release wait on this.');
+    expect(v.summary).toBe('CI has no Docker Hub secrets, so every release skips the image mirror.');
+    expect(v.waits).toBe(projected);
     expect(v.options.map(o => `${o.label}: ${o.effect}`)).toEqual(['Provide a token: Stored as a team secret, revocable', "I'll set them myself: Resumes when CI sees them"]);
     expect(v.answer).toEqual({ kind: 'worker', workerId: 'w-ask', taskId: id(1), noteId: null });
     expect(v.askedAt).toBe(min(116));
@@ -100,22 +112,23 @@ describe('missionDecisions (R-16, AC-10)', () => {
     expect(missionDecisions({ model: board([digest]), notes, mission, hrefFor })).toEqual([]);
   });
 
-  it('dependentNames lists who waits, in strip order', () => {
-    expect(dependentNames(model, id(1))).toEqual(['The release publishes an image digest', 'A runner bundle on every release']);
-    expect(dependentNames(model, id(2))).toEqual([]);
+  it('never derives its own list: without the projection a card names no waiting work (spec 1b257609 R-5)', () => {
+    const bare = missionDecisions({ model, notes: [], mission, hrefFor });
+    expect(bare[0].waits).toBeNull();
+    expect(bare[0].summary).toBe('CI has no Docker Hub secrets, so every release skips the image mirror.');
   });
 });
 
 describe('historyRaised (R-6, AC-8)', () => {
   it('an open organizer decision raises History and names it', () => {
     const model = board([digest]);
-    const r = historyRaised(model, [{ type: 'question', status: 'open', title: 'Keep the legacy export?', subjectTaskId: id(2) }]);
-    expect(r).toEqual({ kind: 'decision', text: 'Decision open: Keep the legacy export?', taskId: id(2) });
+    const r = historyRaised(model, [{ id: 'n1', type: 'question', status: 'open', title: 'Keep the legacy export?', subjectTaskId: id(2) }]);
+    expect(r).toEqual({ kind: 'decision', text: 'Decision open: Keep the legacy export?', taskId: id(2), noteId: 'n1' });
   });
 
   it('a failure a person must fix raises it; a dependency failure does not', () => {
     const failed = task(5, 'Mirror the runner image', { status: 'failed', workers: [worker({ status: 'failed', completedAt: min(5), updatedAt: min(5) })] });
-    expect(historyRaised(board([failed]), [])).toEqual({ kind: 'failed', text: 'Failed: Mirror the runner image', taskId: id(5) });
+    expect(historyRaised(board([failed]), [])).toEqual({ kind: 'failed', text: 'Failed: Mirror the runner image', taskId: id(5), noteId: null });
   });
 
   it('a reopened task raises it; a quiet mission raises nothing', () => {
@@ -126,7 +139,7 @@ describe('historyRaised (R-6, AC-8)', () => {
         worker({ startedAt: min(1), completedAt: min(3), updatedAt: min(3), mergedAt: min(3), prNumber: 401, prLifecycleStatus: 'merged' }),
       ],
     });
-    expect(historyRaised(board([reopened]), [])).toEqual({ kind: 'reopened', text: 'Reopened: feat: reopened', taskId: id(6) });
+    expect(historyRaised(board([reopened]), [])).toEqual({ kind: 'reopened', text: 'Reopened: feat: reopened', taskId: id(6), noteId: null });
     expect(historyRaised(board([digest]), [{ type: 'question', status: 'answered', title: 'Old' }])).toBeNull();
   });
 });

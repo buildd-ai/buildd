@@ -84,6 +84,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   get_budget_forecast: 'analytics:read', get_usage_stats: 'analytics:read', get_manifest_coverage: 'analytics:read', get_path_claim_stats: 'analytics:read', get_decision_stats: 'analytics:read', list_runners: 'analytics:read', probe_budget_wall: 'tasks:write', list_connectors: 'analytics:read',
   resolve_capability: 'analytics:read',
   request_capability: 'tasks:write',
+  invoke_model_inference: 'tasks:write',
   list_releases: 'releases', get_release: 'releases', release_status: 'releases', trigger_release: 'releases',
   manage_missions: 'missions:admin', manage_initiatives: 'missions:admin', link_tracker: 'missions:admin', get_visual_review: 'missions:admin', adjudicate_discrepancy: 'missions:admin', promote_discrepancy: 'missions:admin',
   list_skills: 'tasks:read', get_skill: 'tasks:read', register_skill: 'skills:admin', update_skill: 'skills:admin', delete_skill: 'skills:admin',
@@ -97,6 +98,7 @@ export function requiredScopeForAction(action: string, params: Record<string, un
   // help (docs and workflow guidance) is a read: any token that reads tasks.
   if (action === 'help') return 'tasks:read';
   if (['manage_missions', 'manage_initiatives', 'manage_workspaces', 'manage_designs'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
+  if (action === 'manage_designs' && params.action === 'screen') return 'tasks:read';
   // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
   if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
   if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff', 'comments', 'attachments', 'history', 'awaiting_approval'].includes(String(params.action))) return 'tasks:read';

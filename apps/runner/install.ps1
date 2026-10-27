@@ -139,6 +139,13 @@ if /i "%SUBCMD%"=="login" (
     exit /b !ERRORLEVEL!
 )
 
+REM `buildd codex login`: Codex's own login through the binary the runner's Codex
+REM SDK installed, as in the bash launcher (codex-login.ts). No Node needed.
+if /i "%SUBCMD%"=="codex" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\codex-login.ts" !REST!
+    exit /b !ERRORLEVEL!
+)
+
 REM `buildd status`, `buildd logout` and `buildd init <workspace-id>` run the same
 REM launcher-commands.ts the bash launcher does; the runner rejects them.
 if /i "%SUBCMD%"=="status" (
@@ -163,6 +170,12 @@ if /i "%SUBCMD%"=="install" (
 REM `buildd service install|uninstall|status|logs` manages the background Scheduled Task.
 if /i "%SUBCMD%"=="service" (
     bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\service.ts" !REST!
+    exit /b !ERRORLEVEL!
+)
+
+REM `buildd wsl migrate` hands over to the runner inside WSL2 (apps/runner/WSL2.md).
+if /i "%SUBCMD%"=="wsl" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\wsl.ts" !REST!
     exit /b !ERRORLEVEL!
 )
 

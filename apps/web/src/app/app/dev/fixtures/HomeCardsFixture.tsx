@@ -14,7 +14,8 @@ import { useEffect, useState } from 'react';
 import { AgentsPanel } from '../../(protected)/home/AgentsPanel';
 import { LandedThisWeek, type LandedMission } from '../../(protected)/home/LandedThisWeek';
 import { HomeBody } from '../../(protected)/home/HomeBody';
-import { deriveHomeAttention } from '@/lib/home-attention';
+import { deriveHomeAttention, homeQuestionView } from '@/lib/home-attention';
+import { WAITS_FIXTURE_QUESTION, WAITS_FIXTURE_TASK, waitsFixture } from './question-waits-fixture';
 import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/escalation-note-title';
 import { redCheckView, type RedCheckRecord } from '@/lib/red-check-cause';
@@ -88,8 +89,17 @@ const STRANDS = [
   { id: 'st1', title: 'Quarantine flaky tests' },
   { id: 'st2', title: 'Docs: runner install on Windows' },
 ].map(({ id, title }) => ({ view: { id, title, href: '#' }, model: { strand: { missionId: id, quietMs: 5 * H, blockedReason: null } } }));
-const DECISIONS = deriveHomeAttention({ queue: QUEUE, missions: STRANDS as never, questions: [], held: [], isActionable: () => true });
-const ONE = deriveHomeAttention({ queue: QUEUE.slice(0, 1), missions: [], questions: [], held: [], isActionable: () => true });
+// An agent's question with what waits on it (spec 1b257609), as the projection returns it.
+// On the real clock: the card ticks its age and expiry from now, not from the fixture's NOW.
+const ASKED_NOW = Date.now();
+const QUESTION = {
+  workerId: 'fixture-worker', taskId: WAITS_FIXTURE_TASK, href: '#', label: 'Acceptance tests for autostart', runnerName: null,
+  askedAt: new Date(ASKED_NOW - 30 * 60_000).toISOString(),
+  question: homeQuestionView({ waitingFor: WAITS_FIXTURE_QUESTION })!,
+  waits: waitsFixture(ASKED_NOW),
+};
+const DECISIONS = deriveHomeAttention({ queue: QUEUE, missions: STRANDS as never, questions: [QUESTION], held: [], isActionable: () => true });
+const ONE = deriveHomeAttention({ queue: [], missions: [], questions: [QUESTION], held: [], isActionable: () => true });
 const COUNTS: DeliveryCounts = { openMissions: 11, executingMissions: 3, liveAgents: 3, slots: { used: 3, total: 4 } };
 const COUNTS_EMPTY: DeliveryCounts = { openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 4 } };
 
@@ -108,7 +118,7 @@ const CHECKS = deriveHomeAttention({
 // `&data=red-checks`: the two cards Home showed on 2026-10-23 as "Tests are failing.", as they read now.
 const RED = (n: number, title: string, record: Omit<RedCheckRecord, 'headSha' | 'runId' | 'runAttempt' | 'at' | 'signature'>, history: { pushedNothing: number; noChange: number }, reviewApproved = false): ActionQueueItem => ({
   subjectKey: `red${n}`, chip: 'BLOCKED', prNumber: n, workspaceId: 'ws', taskTitle: title, prUrl: PR(n),
-  ciGate: { kind: 'blocked', reason: 'CI failing', recommendation: null, red: redCheckView({ headSha: 'h', runId: 1, runAttempt: 1, at: '', signature: 's', ...record }, history), ...(reviewApproved ? { reviewApproved } : {}) },
+  ciGate: { kind: 'blocked', reason: 'CI failing', recommendation: null, red: redCheckView({ headSha: 'h', runId: 1, runAttempt: 1, at: new Date(Date.now() - 4 * 60000).toISOString(), signature: 's', ...record }, history), ...(reviewApproved ? { reviewApproved } : {}) },
 } as ActionQueueItem);
 const RED_CHECKS = deriveHomeAttention({
   queue: [

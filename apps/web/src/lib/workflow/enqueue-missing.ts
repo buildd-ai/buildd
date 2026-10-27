@@ -15,10 +15,13 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { EffectSpec } from './commands';
+import { evidenceRoundFindingIds, isEvidenceRound } from '@buildd/workflow-kernel/findings';
 import { currentPushEntry, PUSH_RECOVERY_BACKOFF_MS, pushChainId } from './reducer';
 import type { KernelView, RoundSnapshot } from './types';
 
 const OPEN_ATTEMPT = new Set(['queued', 'running']);
+
+const MAX_FLOOR_REARMS = 5;
 
 const LIVE_EFFECT = new Set(['pending', 'delivering']);
 
@@ -57,6 +60,16 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       const prior = lastDecidedBefore(current.round)?.round ?? null;
       const payload = { roundId: current.id, round: current.round, headSha: current.headSha, kind: current.kind, priorRound: prior, scope: current.scope ?? null };
       const base = `dispatch_review:${d.id}:${current.round}`;
+      // Living Spec fa62b865 R-46: an evidence round's first move is buildd's capture. Its reviewer is
+      // dispatched by EvidenceRecorded (under `base`), so with no `base` key the capture is what is owed.
+      if (isEvidenceRound(current) && !existing.has(base)) {
+        const ids = evidenceRoundFindingIds(current);
+        owed.push({
+          kind: 'dispatch_capture', dedupeKey: `dispatch_capture:${d.id}:${current.round}`,
+          payload: { roundId: current.id, round: current.round, headSha: current.headSha, findings: (view.findings ?? []).filter((f) => ids.includes(f.id)).map((f) => ({ id: f.id, title: f.title, ...(f.evidence ?? {}) })) },
+        });
+        break;
+      }
       if (!existing.has(base)) {
         owed.push({ kind: 'dispatch_review', dedupeKey: base, payload });
         break;
@@ -69,7 +82,14 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       if (current.reviewerTaskId) break;
       const keys = [...existing].filter((k) => k === base || k.startsWith(`${base}:`));
       if (!keys.every((k) => status.get(k) === 'done')) break;
-      owed.push({ kind: 'dispatch_review', dedupeKey: `${base}:floor:v${d.version}`, payload });
+      // The re-arm's key is held for good once inserted, and a rejected ask never moves the
+      // version, so a floor dispatch that also finished without a reviewer (a skipped
+      // dispatch_refused, no role) would owe the very same key and the insert would conflict
+      // forever: the round stranded in AWAITING_REVIEW. Number each re-arm at a version; a
+      // bounded count keeps a permanently unservable round from filing dispatches without end.
+      const floors = keys.filter((k) => k.startsWith(`${base}:floor:v${d.version}`)).length;
+      if (floors >= MAX_FLOOR_REARMS) break;
+      owed.push({ kind: 'dispatch_review', dedupeKey: floors === 0 ? `${base}:floor:v${d.version}` : `${base}:floor:v${d.version}:${floors + 1}`, payload });
       break;
     }
     case 'AWAITING_PUSH': {

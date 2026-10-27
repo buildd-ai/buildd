@@ -109,7 +109,7 @@ export function verifyDependencyHandover(options: {
     const remove = (path: string) => {
       if (wasRemoved(path)) return;
       if (protectedPath(path, trackedPaths)) throw new Error('tracked_dependency_changed');
-      rmSync(join(repoRoot, path), { recursive: true, force: true }); report.entriesDeleted++; removedPaths.add(path);
+      rmSync(join(repoRoot, path), { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); report.entriesDeleted++; removedPaths.add(path);
     };
     for (const path of new Set([...old.keys(), ...now.keys()])) {
       const a = old.get(path), b = now.get(path);
@@ -117,7 +117,8 @@ export function verifyDependencyHandover(options: {
       if (JSON.stringify(a) === JSON.stringify(b)) continue;
       report.entriesChanged++;
       if (!b) { report.entriesExplained++; continue; } // frozen install repairs removed files
-      if (a?.kind === 'directory' && b.kind === 'directory' && a.ino === b.ino && a.dev === b.dev) {
+      // Windows has no mode bits and its 64-bit file ids lose precision as numbers, so a same-id directory is not proof it is the original.
+      if (process.platform !== 'win32' && a?.kind === 'directory' && b.kind === 'directory' && a.ino === b.ino && a.dev === b.dev) {
         if (a.mode !== b.mode) chmodSync(join(repoRoot, path), a.mode & 0o7777); report.entriesExplained++; continue;
       }
       if (b.kind !== 'file' || !a || a.ino !== b.ino || a.dev !== b.dev || a.kind !== 'file') {

@@ -225,8 +225,13 @@ describe('publish-runner-image workflow', () => {
       const wf = parse(WORKFLOW);
       const names = wf.jobs.publish.steps.map((s: any) => s.name);
       expect(names.indexOf('Mirror to Docker Hub')).toBeGreaterThan(names.indexOf('Push'));
-      expect(wf.jobs.publish.outputs.dockerhub_ref).toBe('${{ steps.dockerhub.outputs.ref }}');
-      expect(step('publish', 'Mirror to Docker Hub').run).toContain('ref=docker.io/$DOCKERHUB_IMAGE@$DIGEST');
+      // GitHub drops a job output containing a secret's value; the ref embeds
+      // the namespace (= DOCKERHUB_USERNAME), so only the digest crosses jobs.
+      expect(wf.jobs.publish.outputs.dockerhub_digest).toBe('${{ steps.dockerhub.outputs.digest }}');
+      expect(wf.jobs.publish.outputs.dockerhub_ref).toBeUndefined();
+      const run = step('publish', 'Mirror to Docker Hub').run;
+      expect(run).toContain('digest=$DIGEST');
+      expect(run).not.toMatch(/GITHUB_OUTPUT.*DOCKERHUB_IMAGE|DOCKERHUB_IMAGE.*>> "\$GITHUB_OUTPUT"/);
     });
 
     test('only the bundle job writes release assets, after publish, from the tag', () => {
@@ -239,10 +244,17 @@ describe('publish-runner-image workflow', () => {
       expect(attach.run).toContain('apps/cloud-runner/scripts/build-release-bundle.ts');
       expect(attach.run).toContain('cloud-runner-$TAG.json');
       expect(attach.run).toContain('gh release upload "$TAG"');
-      expect(attach.env.DOCKERHUB_REF).toBe('${{ needs.publish.outputs.dockerhub_ref }}');
+      expect(attach.env.DOCKERHUB_DIGEST).toBe('${{ needs.publish.outputs.dockerhub_digest }}');
+      expect(attach.env.DOCKERHUB_IMAGE).toBe('${{ vars.DOCKERHUB_IMAGE }}');
+      expect(attach.run).toContain('DOCKERHUB_REF="docker.io/$DOCKERHUB_IMAGE@$DOCKERHUB_DIGEST"');
       // Always passed: the builder refuses an empty ref rather than bundling a placeholder.
       expect(attach.run).toContain('--image "$DOCKERHUB_REF"');
       expect(attach.run).not.toContain('${DOCKERHUB_REF:+');
+    });
+
+    test('no job output carries the namespace, which GitHub masks when it equals a secret', () => {
+      const outs = Object.values(parse(WORKFLOW).jobs.publish.outputs as Record<string, string>);
+      for (const o of outs) expect(o).not.toMatch(/dockerhub\.outputs\.ref|docker\.io/);
     });
 
     test('the bundle builder refuses to write an asset without a digest-pinned image', () => {

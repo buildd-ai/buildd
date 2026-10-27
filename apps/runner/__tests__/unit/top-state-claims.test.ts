@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  NO_MISSION, eventChangesQueue, localLiftTime, providerHolds, reduce, taskRows, waitingReason, type ClaimOutcome,
+  NO_MISSION, eventChangesQueue, liveTaskOutcome, localLiftTime, providerHolds, reduce, taskRows, waitingReason, type ClaimOutcome,
 } from '../../src/top/state';
 import { NOW, TASKS, fixtureState } from './top-fixture';
 
@@ -29,9 +29,7 @@ describe('waiting reasons from the last claim (R-25)', () => {
       [{ exclusion: 'task_reserved' }, 'taken by your session'],
       [{ exclusion: 'already_claimed' }, 'another runner has it'],
       [{ exclusion: 'active_worker' }, 'another runner has it'],
-      [{ exclusion: 'workspace_cap' }, 'workspace is at its task limit'],
       [{ exclusion: 'mission_concurrent' }, 'mission is at its task limit'],
-      [{ exclusion: 'mission_paced' }, 'mission is paced'],
       [{ exclusion: 'codex_single_flight' }, 'one Codex run per workspace at a time'],
       [{ exclusion: 'path_overlap' }, 'waits for work on the same files'],
       [{ exclusion: 'role_mismatch' }, 'needs a role this runner lacks'],
@@ -101,6 +99,34 @@ describe('waiting reasons from the last claim (R-25)', () => {
 
   test('a claim outcome refetches the task list', () => {
     expect(eventChangesQueue(fixtureState(), { type: 'claim_outcome', outcome: { at: NOW, reason: 'race_lost' } })).toBe(true);
+  });
+});
+
+describe('a broad claim names the tasks it turned away (parallelism limits R-13, R-14, AC-6)', () => {
+  const broadDeferred = (deferredTasks?: Array<{ taskId: string; code: string; until?: string }>) => reduce(fixtureState(), {
+    type: 'claim_outcome',
+    outcome: { at: NOW - 5_000, reason: 'all_candidates_deferred', deferrals: { role_env_unsatisfied: 2 }, ...(deferredTasks ? { deferredTasks } : {}) },
+  });
+
+  test('each named task reads as refused for that code, not as starting', () => {
+    const s = broadDeferred([{ taskId: 't-loose', code: 'role_env_unsatisfied' }, { taskId: 't-top', code: 'role_env_unsatisfied' }]);
+    for (const id of ['t-loose', 't-top']) {
+      const t = s.tasks.find(x => x.id === id)!;
+      expect(liveTaskOutcome(t, s, NOW)).toMatchObject({ reason: 'all_candidates_deferred', exclusion: 'role_env_unsatisfied' });
+      expect(waitingReason(t, s, NOW)).not.toMatch(/ready|not tried/);
+    }
+    expect(liveTaskOutcome(s.tasks.find(x => x.id === 't-docs')!, s, NOW)).toBeNull();
+  });
+
+  test('a lift time rides along and the outcome expires with it', () => {
+    const until = new Date(NOW + 60_000).toISOString();
+    const s = broadDeferred([{ taskId: 't-loose', code: 'role_env_unsatisfied', until }]);
+    expect(liveTaskOutcome(loose(), s, NOW)?.until).toBe(until);
+    expect(liveTaskOutcome(loose(), s, NOW + 120_000)).toBeNull();
+  });
+
+  test('an older server sends no deferredTasks: nothing is recorded per task', () => {
+    expect(broadDeferred().claimOutcomes.tasks).toEqual({});
   });
 });
 
@@ -192,7 +218,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
   });
 
   test('deferral codes are said in words, never as the raw code', () => {
-    for (const code of ['budget_paused', 'oauth_parallelism', 'duplicate_worker', 'sibling_retry_open', 'fix_not_needed', 'a_code_from_the_future']) {
+    for (const code of ['budget_paused', 'duplicate_worker', 'sibling_retry_open', 'fix_not_needed', 'a_code_from_the_future']) {
       const s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { [code]: 3 } });
       const got = waitingReason(loose(), s, NOW);
       expect(got).not.toContain('_');
@@ -205,7 +231,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
   });
 
   test('a row keeps its own reason, and a mixed deferral is not pinned on a row it may not describe', () => {
-    let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, workspace_cap: 1 } });
+    let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, mission_concurrent: 1 } });
     expect(waitingReason(loose(), s, NOW)).toBe('skipped at the last claim, for reasons it did not tie to this task');
     s = reduce(s, { type: 'claim_outcome', taskId: 't-loose', outcome: { at: NOW - 500, reason: 'no_pending_tasks', exclusion: 'mission_local' } });
     expect(waitingReason(loose(), s, NOW)).toBe('your session');

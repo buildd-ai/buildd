@@ -23,7 +23,7 @@ import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
 import { makeWaitingReason, orderWaitingReasons, type WaitingReason } from '@buildd/core/waiting-reason';
 import { dependencySatisfied } from '@/app/api/workers/claim/deps-gate';
 import { checkMissionLocal } from '@/app/api/workers/claim/held-gate';
-import { BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, hasBypassFlag } from '@/lib/bypass-flags';
+import { BYPASS_HELD_GATE_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { evaluateCoordinationGates } from '@/app/api/workers/claim/coordination-gates';
 import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from '@/app/api/workers/claim/coordination-snapshot';
 import { ORDERED_BEHIND_REASON } from '@/app/api/workers/claim/claim-plan-store';
@@ -147,7 +147,6 @@ const LIVE_TASK_STATUSES = new Set(['assigned', 'in_progress']);
 async function dependencyReasons(task: ProbeTask): Promise<WaitingReason[]> {
   const deps = ((task.dependsOn as string[] | null) ?? []).filter(id => id !== task.id).slice(0, DEP_CAP);
   if (deps.length === 0) return [];
-  if (hasBypassFlag(task.context as Record<string, unknown> | null, BYPASS_DEPS_GATE_KEY)) return [];
   const unmet = await unsatisfiedDeps(task.id, deps);
   if (unmet.size === 0) return [];
   const rows = await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, [...unmet])), columns: { id: true, status: true } }).catch(() => []);

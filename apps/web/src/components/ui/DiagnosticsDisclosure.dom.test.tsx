@@ -47,15 +47,15 @@ function openAll() {
 }
 
 const REASON: WaitingReason = {
-  kind: 'mission_paced',
+  kind: 'mission_concurrent',
   class: 'capacity',
   strength: 'hard',
   intent: 'intentional',
-  blocker: { type: 'mission', id: 'm-1', label: 'mission pacing', href: '/app/missions/m-1' },
+  blocker: { type: 'mission', id: 'm-1', label: 'mission limit', href: '/app/missions/m-1' },
   provenance: { source: 'ledger', derivedFrom: 'claim_loop_deferral', firstSeenAt: '2026-10-17T10:00:00Z' },
   because: 'the mission starts a task at most every 10 min',
   releasesWhen: { event: 'time', text: "the mission's pacing interval passes" },
-  action: { owner: 'system', force: { scope: 'member', lifts: 'mission_paced', railsRemaining: [], mechanism: 'start_context' } },
+  action: { owner: 'system', force: { scope: 'member', lifts: 'mission_concurrent', railsRemaining: [], mechanism: 'start_context' } },
 } as WaitingReason;
 
 describe('canSeeDiagnostics', () => {
@@ -101,7 +101,7 @@ describe('WaitingLine adopts it', () => {
     expect(text).toContain('the mission starts a task at most every 10 min');
     expect(text).toContain("starts when the mission's pacing interval passes");
     expect(container.querySelector('[data-testid="task-waiting-diagnostics"]')).toBeNull();
-    for (const internal of ['mission_paced', 'override', 'claim log', 'claim_loop_deferral', 'Diagnostics', 'forced']) {
+    for (const internal of ['mission_concurrent', 'override', 'claim log', 'claim_loop_deferral', 'Diagnostics', 'forced']) {
       expect(text).not.toContain(internal);
     }
   });
@@ -110,7 +110,7 @@ describe('WaitingLine adopts it', () => {
     render(h(DiagnosticsAudienceProvider, { visible: true }, h(WaitingLine, { reasons: [REASON] })));
     openAll();
     const diag = container.querySelector('[data-testid="task-waiting-diagnostics"]')?.textContent ?? '';
-    expect(diag).toContain('mission_paced');
+    expect(diag).toContain('mission_concurrent');
     expect(diag).toContain('override: member');
     expect(diag).toContain('Source: claim log');
     expect(diag).toContain('first seen 2026-10-17T10:00:00Z');

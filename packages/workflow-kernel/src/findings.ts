@@ -16,7 +16,7 @@
  * next approval still has to verify it.
  */
 import type { FindingInput, FindingOp, VerdictFindings } from './commands';
-import { OPEN_FINDING_STATUSES, type FindingSnapshot, type KernelView, type RoundSnapshot, type Verdict } from './types';
+import { OPEN_FINDING_STATUSES, REMEDY_CLASSES, type EvidenceTarget, type FindingSnapshot, type KernelView, type RemedyClass, type RoundSnapshot, type Verdict } from './types';
 
 /** The stable id of the `ordinal`-th finding raised by round `roundId`. */
 export function findingId(roundId: string, ordinal: number): string {
@@ -39,6 +39,55 @@ export const isRoundFinding = (f: Pick<FindingSnapshot, 'path' | 'title'>): bool
 export function openFindings(view: Pick<KernelView, 'findings'>): FindingSnapshot[] {
   return (view.findings ?? []).filter(isOpenFinding);
 }
+
+/** Living Spec fa62b865 §11.1: who can fix a finding. A finding recorded before classes were is a code fix. */
+export function remedyOf(f: Pick<FindingSnapshot, 'remedyClass'>): RemedyClass {
+  return f.remedyClass ?? 'code_fix';
+}
+
+/** The route a remedy class takes: the fix loop, buildd's capture, or a person. */
+export type RemedyRoute = 'fix' | 'evidence' | 'person';
+export function remedyRoute(c: RemedyClass): RemedyRoute {
+  return c === 'code_fix' ? 'fix' : c === 'evidence' ? 'evidence' : 'person';
+}
+
+export const isRemedyClass = (v: unknown): v is RemedyClass => typeof v === 'string' && (REMEDY_CLASSES as readonly string[]).includes(v);
+
+/** Findings split by the route their class takes (R-45): only `fix` is fix work and spends a round. */
+export function byRemedyRoute<F extends Pick<FindingSnapshot, 'remedyClass'>>(findings: readonly F[]): Record<RemedyRoute, F[]> {
+  const out: Record<RemedyRoute, F[]> = { fix: [], evidence: [], person: [] };
+  for (const f of findings) out[remedyRoute(remedyOf(f))].push(f);
+  return out;
+}
+
+/**
+ * Whether a verdict may close `f` without naming it: a code finding, or an evidence finding
+ * whose capture is attached and judged by a round scoped to that evidence (R-46). A person's
+ * finding is never closed by a reviewer's blanket approval: the person decides it.
+ */
+function blanketClosable(f: FindingSnapshot, round: Pick<RoundSnapshot, 'scope'>): boolean {
+  const route = remedyRoute(remedyOf(f));
+  if (route === 'fix') return true;
+  if (route === 'evidence') return !!f.evidence?.artifactId && isEvidenceRound(round);
+  return false;
+}
+
+/** A round opened to judge buildd's captures for evidence findings (R-46). */
+export function isEvidenceRound(r: Pick<RoundSnapshot, 'scope'> | null | undefined): boolean {
+  const ev = r?.scope?.evidence as { findingIds?: unknown } | undefined;
+  return ev != null && typeof ev === 'object' && Array.isArray(ev.findingIds);
+}
+
+/** The finding ids an evidence round captures. */
+export function evidenceRoundFindingIds(r: Pick<RoundSnapshot, 'scope'> | null | undefined): string[] {
+  const ids = (r?.scope?.evidence as { findingIds?: unknown } | undefined)?.findingIds;
+  return Array.isArray(ids) ? ids.map(String) : [];
+}
+
+const evidenceTargetOf = (fi: FindingInput): EvidenceTarget | null =>
+  fi.evidence && typeof fi.evidence.screen === 'string' && fi.evidence.screen.trim()
+    ? { criterionId: fi.evidence.criterionId ?? null, screen: fi.evidence.screen.trim(), route: fi.evidence.route ?? null }
+    : null;
 
 /** The open findings that block landing. */
 export function openRequiredFindings(view: Pick<KernelView, 'findings'>): FindingSnapshot[] {
@@ -107,6 +156,27 @@ export function describeFinding(f: Pick<FindingSnapshot, 'path' | 'line' | 'titl
   return where ? `${where}: ${f.title}` : f.title;
 }
 
+/** A finding's short id, as every surface prints it: the raising round's first 8 characters and the ordinal. */
+export function shortFindingId(id: string): string {
+  const i = id.lastIndexOf(':');
+  return i > 0 ? `${id.slice(0, Math.min(8, i))}:${id.slice(i + 1)}` : id.slice(0, 12);
+}
+
+/** "restated 2 times", or null when it was never restated (R-48). */
+export function restatedPhrase(n: number | null | undefined): string | null {
+  if (!n || n < 1) return null;
+  return n === 1 ? 'restated once' : `restated ${n} times`;
+}
+
+/**
+ * Living Spec fa62b865 R-48: one open finding as every surface lists it, once: short id,
+ * `path:line`, what to fix, and how often it was restated. Never the reviewer's prose again.
+ */
+export function findingLine(f: Pick<FindingSnapshot, 'id' | 'path' | 'line' | 'title' | 'restatedCount'>): string {
+  const restated = restatedPhrase(f.restatedCount);
+  return `\`${shortFindingId(f.id)}\` ${describeFinding(f)}${restated ? ` (${restated})` : ''}`;
+}
+
 /**
  * Is a round's approval a verification of every finding it did not name? Only
  * for an unscoped round whose reviewer did not report per-finding resolution:
@@ -128,6 +198,8 @@ export interface VerdictFindingsOutcome {
   resolved: string[];
   restated: string[];
   raised: string[];
+  /** Restated ids whose words or class this round changed (R-49: a changed finding is news; an unchanged restatement is not). */
+  changed: string[];
   deferred: string[];
   /** Deferrals that named no resolvable task: refused, the finding stays open. */
   unresolvedDeferrals: Array<{ id: string; taskId: string | null }>;
@@ -153,7 +225,7 @@ export function applyVerdictToFindings(
   const byId = new Map(all.map((f) => [f.id, f]));
   const touched = new Set<string>();
   const ops: FindingOp[] = [];
-  const out: VerdictFindingsOutcome = { ops, stillOpen: [], resolved: [], restated: [], raised: [], deferred: [], unresolvedDeferrals: [] };
+  const out: VerdictFindingsOutcome = { ops, stillOpen: [], resolved: [], restated: [], raised: [], changed: [], deferred: [], unresolvedDeferrals: [] };
   const closed = new Map<string, FindingSnapshot['status']>();
 
   for (const d of v.deferredFindings ?? []) {
@@ -169,17 +241,28 @@ export function applyVerdictToFindings(
 
   const restatedInputs: FindingInput[] = [];
   const newInputs: FindingInput[] = [];
+  // R-48: a finding the reviewer restates without its id is still the same finding: the open one with
+  // the same evidence target (criterion and screen), or the same path and words.
+  const sameAs = (fi: FindingInput): FindingSnapshot | undefined => {
+    const ev = evidenceTargetOf(fi);
+    const title = fi.title.trim();
+    const path = fi.path?.trim() || null;
+    return all.find((f) => isOpenFinding(f) && (
+      ev && f.evidence ? f.evidence.screen === ev.screen && (f.evidence.criterionId ?? null) === ev.criterionId
+        : path != null && f.path === path && f.title === title.slice(0, 500)));
+  };
+  const claimed = new Set<string>();
   for (const fi of v.findings ?? []) {
     if (!fi?.title?.trim()) continue;
-    const prior = fi.id ? byId.get(fi.id) : undefined;
-    if (prior) restatedInputs.push(fi);
-    else newInputs.push(fi);
+    const prior = fi.id ? byId.get(fi.id) : sameAs(fi);
+    if (prior && !claimed.has(prior.id)) { claimed.add(prior.id); restatedInputs.push(fi.id ? fi : { ...fi, id: prior.id }); }
+    else if (!fi.id || !prior) newInputs.push(fi);
   }
   const restatedIds = new Set(restatedInputs.map((fi) => fi.id!));
 
   const resolveIds = new Set<string>();
   if (verdict === 'approve' && blanketVerifies(round, v)) {
-    for (const f of all) if (isOpenFinding(f) && !restatedIds.has(f.id)) resolveIds.add(f.id);
+    for (const f of all) if (isOpenFinding(f) && !restatedIds.has(f.id) && blanketClosable(f, round)) resolveIds.add(f.id);
   }
   for (const id of v.resolvedFindings ?? []) if (!restatedIds.has(id)) resolveIds.add(id);
   // The stand-in for a request for changes that named nothing has no id a reviewer is likely to
@@ -187,7 +270,7 @@ export function applyVerdictToFindings(
   // change, or when it verified every structured finding still open.
   const scoped = !!round.scope && (round.scope.composition === true || round.scope.refresh === true);
   if (verdict === 'approve' && !scoped) {
-    const structured = all.filter((f) => isOpenFinding(f) && !isRoundFinding(f) && !restatedIds.has(f.id));
+    const structured = all.filter((f) => isOpenFinding(f) && !isRoundFinding(f) && !restatedIds.has(f.id) && blanketClosable(f, round));
     const coversStructured = structured.every((f) => resolveIds.has(f.id) || closed.has(f.id));
     for (const f of all) {
       if (!isOpenFinding(f) || !isRoundFinding(f) || restatedIds.has(f.id)) continue;
@@ -208,21 +291,40 @@ export function applyVerdictToFindings(
     if (touched.has(f.id)) continue;
     touched.add(f.id);
     out.restated.push(f.id);
+    // R-48: a restatement is the same finding, counted; its first words stand unless the reviewer changed them.
+    const title = fi.title.trim().slice(0, 500);
+    const cls = isRemedyClass(fi.remedyClass) ? fi.remedyClass : undefined;
+    const changedWords = title !== f.title;
+    const changedClass = cls !== undefined && cls !== remedyOf(f);
+    if (changedWords || changedClass) out.changed.push(f.id);
+    const ev = cls === 'evidence' || (cls === undefined && remedyOf(f) === 'evidence') ? evidenceTargetOf(fi) : null;
     // Restated: open again (an `addressed` one was not fixed after all), and its newest round is this one.
     // A closed one a reviewer restates comes back: the change it asked for is missing again.
     ops.push({
       op: 'update', findingId: f.id, whenStatus: ['open', 'addressed', 'resolved', 'deferred'],
-      set: { status: 'open', lastRound: round.round, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null, ...(fi.required === false ? { required: false } : {}) },
+      set: {
+        status: 'open', lastRound: round.round, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+        restatedCount: (f.restatedCount ?? 0) + 1,
+        ...(changedWords ? { title } : {}),
+        ...(changedClass ? { remedyClass: cls } : {}),
+        ...(ev ? { evidence: { ...ev, artifactId: f.evidence?.artifactId ?? null, capturedAt: f.evidence?.capturedAt ?? null } } : {}),
+        ...(fi.required === false ? { required: false } : {}),
+      },
     });
   }
 
   const raise = (fi: FindingInput, ordinal: number) => {
     const id = findingId(round.id, ordinal);
     out.raised.push(id);
+    const remedyClass: RemedyClass = isRemedyClass(fi.remedyClass) ? fi.remedyClass : 'code_fix';
+    const evidence = remedyClass === 'evidence' ? evidenceTargetOf(fi) : null;
     ops.push({
       op: 'insert', id, originRoundId: round.id, originRound: round.round, originHeadSha: round.headSha, ordinal,
       path: fi.path?.trim() || null, line: typeof fi.line === 'number' && Number.isFinite(fi.line) ? Math.trunc(fi.line) : null,
       title: fi.title.trim().slice(0, 500), required: fi.required !== false,
+      // An evidence finding with nothing to capture is not evidence buildd can collect: a code fix.
+      remedyClass: remedyClass === 'evidence' && !evidence ? 'code_fix' : remedyClass,
+      ...(evidence ? { evidence } : {}),
     });
   };
   if (verdict === 'request_changes') newInputs.forEach((fi, i) => raise(fi, i));
@@ -237,7 +339,11 @@ export function applyVerdictToFindings(
     const fi = restatedInputs.find((x) => x.id === f.id);
     return fi?.required === false ? false : f.required;
   };
-  out.stillOpen = all.filter((f) => after(f) && required(f));
+  // What stays open reads as this verdict leaves it: a restated finding with its new class and count.
+  out.stillOpen = all.filter((f) => after(f) && required(f)).map((f) => {
+    const op = ops.find((o): o is Extract<FindingOp, { op: 'update' }> => o.op === 'update' && o.findingId === f.id);
+    return op ? { ...f, ...Object.fromEntries(Object.entries(op.set).filter(([, x]) => x !== undefined)) } as FindingSnapshot : f;
+  });
   if (verdict === 'request_changes') {
     const raisedRequired = newInputs.some((fi) => fi.required !== false);
     if (!raisedRequired && out.stillOpen.length === 0) {
@@ -251,6 +357,7 @@ export function applyVerdictToFindings(
           id: op.id, originRoundId: op.originRoundId, originRound: op.originRound, originHeadSha: op.originHeadSha, ordinal: op.ordinal,
           path: op.path, line: op.line, title: op.title, required: true, status: 'open', lastRound: round.round,
           addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+          remedyClass: op.remedyClass ?? 'code_fix', restatedCount: 0, evidence: op.evidence ?? null,
         });
       }
     }

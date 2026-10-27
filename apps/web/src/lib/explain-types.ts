@@ -246,6 +246,12 @@ export interface ExplainAnswer {
    */
   verdict?: Pick<import('./task-verdict').TaskVerdict, 'state' | 'headline' | 'cause' | 'actions' | 'wordedBy'>;
   /**
+   * Task scope, with a question open: what waits on its answer, its expiry
+   * and each option's outcome kind (Living Spec 1b257609 R-10), from the one
+   * projection every decision card reads (lib/question-waits.ts).
+   */
+  questionWaits?: import('@buildd/core/question-waits').QuestionWaits;
+  /**
    * Why the task runs (or last ran) on a backend other than the one it was
    * filed with: a claim-time flip (budget failover, provider toggle) or a
    * worker-report failover. Absent when nothing moved it. `describeBackendRouting`
@@ -265,6 +271,8 @@ export interface ExplainAnswer {
     headline: string;
     detail: string | null;
     attempts: string | null;
+    /** Living Spec fa62b865 R-50: the review reading every surface shows, the same words and counts. */
+    review?: { stateLine: string; verdict: string; round: number; roundsSpent: number; roundBudget: number; openFindings: string[] };
   };
   derivedFrom: ExplainProvenance;
 }

@@ -44,6 +44,29 @@ describe('applyVerdictToFindings', () => {
     expect(out.stillOpen.map((f) => f.id)).toEqual(['r1:1']);
     expect(out.ops.find((o) => o.op === 'update' && o.findingId === 'r1:1')).toMatchObject({ set: { status: 'open', lastRound: 2, addressedBySha: null } });
   });
+  test('fa62b865 R-48: a restatement counts on the finding; an unnamed one with the same path and words, or the same evidence target, is the same finding', () => {
+    const view = { findings: [F({ restatedCount: 1 }), F({ id: 'r1:1', path: null, title: 'compare s1', remedyClass: 'evidence', evidence: { criterionId: 'AC-1', screen: 's1', route: null } })] };
+    const out = applyVerdictToFindings(view, round(), 'request_changes', {
+      findings: [{ path: 'a.ts', title: 'x' }, { title: 'compare s1 again', remedyClass: 'evidence', evidence: { criterionId: 'AC-1', screen: 's1' } }],
+    }, 'reviewer');
+    expect(out.raised).toEqual([]);
+    expect(out.restated).toEqual(['r1:0', 'r1:1']);
+    expect(out.ops.find((o) => o.op === 'update' && o.findingId === 'r1:0')).toMatchObject({ set: { restatedCount: 2 } });
+    // Unchanged words are not news for a GitHub review; changed words are.
+    expect(out.changed).toEqual(['r1:1']);
+  });
+  test('fa62b865 R-44: a raised finding keeps its class; an evidence finding with nothing to capture is a code fix', () => {
+    const out = applyVerdictToFindings({ findings: [] }, round(), 'request_changes', {
+      findings: [{ title: 'which tier?', remedyClass: 'person_decision' }, { title: 'compare', remedyClass: 'evidence' }],
+    }, 'reviewer');
+    expect(out.ops.map((o) => (o.op === 'insert' ? o.remedyClass : null))).toEqual(['person_decision', 'code_fix']);
+  });
+  test('fa62b865 R-46: a blanket approval never closes a person\'s finding, nor evidence buildd has not captured', () => {
+    const view = { findings: [F(), F({ id: 'r1:1', remedyClass: 'person_decision' }), F({ id: 'r1:2', remedyClass: 'evidence', evidence: { criterionId: null, screen: 's', route: null } })] };
+    const out = applyVerdictToFindings(view, round(), 'approve', {}, 'reviewer');
+    expect(out.resolved).toEqual(['r1:0']);
+    expect(out.stillOpen.map((f) => f.id)).toEqual(['r1:1', 'r1:2']);
+  });
   const TASK = ['8237cfa9', '0000', '4000', '8000', '000000000001'].join('-');
   test('a deferral needs a reason and a resolved task; an unknown id is ignored; no finding is written twice', () => {
     const out = applyVerdictToFindings({ findings: [F()] }, round(), 'approve', {

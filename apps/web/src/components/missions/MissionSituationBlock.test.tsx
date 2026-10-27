@@ -82,7 +82,7 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
       activeAgents: 1,
       deferrals: [{
         taskId: 'task-stuck',
-        reason: 'workspace_cap',
+        reason: 'mission_concurrent',
         consecutiveDeferrals: 13,
         firstDeferredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
       }],
@@ -90,8 +90,8 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
 
     expect(html).toContain('13 times in a row');
     // The reason in the gate's own words (Navigation R-14), never its slug.
-    expect(html).toContain('every agent slot in the workspace is in use');
-    expect(html).not.toContain('workspace_cap');
+    expect(html).toContain('the mission is already running as many tasks as it allows');
+    expect(html).not.toContain('mission_concurrent');
   });
 });
 
@@ -406,9 +406,82 @@ describe('mission header — a deliverable PR closed without merging', () => {
     expect(html).toContain('data-testid="closed-pr-abandon"');
   });
 
+  // Repro (task c8092d2a / PR #5530): the suggestion's own `why` already says "none of this PR's
+  // added lines were found in it" — Confirm must not be styled as the recommended primary action
+  // for a candidate the content check found zero evidence for, and the headline must not call it
+  // "likely superseded".
+  it('a zero-evidence suggestion offers Confirm without primary styling, and skips "likely superseded"', () => {
+    const { html } = render(closed({
+      repo: 'org/kb', prNumber: 5479, prUrl: 'https://github.com/org/kb/pull/5479',
+      signal: 'sibling_task', why: 'merged by a sibling task; none of this PR\'s added lines were found in it', score: 0.6,
+      contentRatio: 0,
+    }));
+    expect(html).not.toContain('likely superseded');
+    expect(html).toContain('data-testid="closed-pr-confirm"');
+    expect(html).toContain('data-testid="closed-pr-dismiss"');
+    expect(html).toContain('data-testid="closed-pr-abandon"');
+    const confirmButton = html.slice(html.indexOf('data-testid="closed-pr-confirm"') - 400, html.indexOf('data-testid="closed-pr-confirm"') + 200);
+    expect(confirmButton).not.toContain('btn-primary');
+    expect(confirmButton).toContain('data-verify-prominence="secondary"');
+  });
+
+  // Unavailable proof is not negative proof (task c8092d2a review): a candidate whose changes
+  // GitHub would not return must read as "could not be checked", never "does not carry".
+  it('an unavailable-proof suggestion reads "could not be checked", not "does not carry" or "likely superseded"', () => {
+    const { html } = render(closed({
+      repo: 'org/kb', prNumber: 9, prUrl: 'https://github.com/org/kb/pull/9',
+      signal: 'claim', why: 'a comment names #9; GitHub did not return its changes, so its content was not compared', score: 0.9,
+      contentUnavailable: true,
+    }));
+    expect(html).toContain('could not be checked');
+    expect(html).not.toContain('does not carry');
+    expect(html).not.toContain('likely superseded');
+    expect(html).toContain('data-testid="closed-pr-proof-unavailable"');
+    const confirmButton = html.slice(html.indexOf('data-testid="closed-pr-confirm"') - 400, html.indexOf('data-testid="closed-pr-confirm"') + 200);
+    expect(confirmButton).not.toContain('btn-primary');
+  });
+
+  it('a closed refresh PR whose work is verified in the branch says so, and offers no replacement to confirm', () => {
+    const input = closed();
+    input.completion!.awaitingMergeDetails![0].refreshCheck = { outcome: 'landed', branch: 'mission/acceptance', reason: 'ancestry and migration verified', at: '2026-10-24T00:00:00Z' };
+    const { html } = render(input);
+    expect(html).toContain('refresh work is already in');
+    expect(html).not.toContain('likely superseded');
+    expect(html).not.toContain('data-testid="closed-pr-confirm"');
+  });
+
+  it('a closed refresh PR carrying unique migration work says the branch is missing it', () => {
+    const input = closed();
+    input.completion!.awaitingMergeDetails![0].refreshCheck = { outcome: 'unique_work', branch: 'mission/acceptance', reason: 'migration not found in mission/acceptance with identical SQL: drizzle/x/migration.sql', at: '2026-10-24T00:00:00Z' };
+    const { html } = render(input);
+    expect(html).toContain('is missing work it carries');
+    expect(html).not.toContain('refresh work is already in');
+  });
+
   it('with no suggestion, offers only Mark abandoned — never a guess to confirm', () => {
     const { html } = render(closed());
     expect(html).toContain('data-testid="closed-pr-abandon"');
     expect(html).not.toContain('data-testid="closed-pr-confirm"');
+  });
+
+  it('the row under the headline says only what the headline does not (R-13)', () => {
+    const suggested = render(closed({
+      repo: 'org/kb', prNumber: 3366, prUrl: 'https://github.com/org/kb/pull/3366', signal: 'sibling_task', why: 'merged by a sibling task', score: 0.6,
+    })).html;
+    const row = (html: string) => html.slice(html.indexOf('data-testid="closed-pr-row"'));
+    expect(row(suggested)).not.toContain('superseded');
+    expect(row(suggested)).not.toContain('PR #6');
+    expect(row(suggested)).toContain('merged by a sibling task');
+    const none = row(render(closed()).html);
+    expect(none).not.toContain('closed without merging');
+    expect(none).toContain('Mission blocked until this work is accounted for.');
+  });
+
+  it('keeps Review the closed PR a secondary link, so Confirm is the one filled button', () => {
+    const { html } = render(closed({
+      repo: 'org/kb', prNumber: 3366, prUrl: 'https://github.com/org/kb/pull/3366', signal: 'sibling_task', why: 'merged by a sibling task', score: 0.6,
+    }));
+    expect(html.match(/btn-primary/g)).toHaveLength(1);
+    expect(html).toMatch(/data-verify-prominence="secondary"[^>]*>Review the closed PR/);
   });
 });

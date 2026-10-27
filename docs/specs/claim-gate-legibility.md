@@ -49,7 +49,7 @@ stalled a whole workspace.
   bypass key (see `apps/web/src/lib/bypass-flags.ts`) or declare
   `blockClass: 'capability'`, meaning force-start is refused on purpose. A
   bypass key that no gate reads, or a gate that ignores its own key, is a false
-  safety net — `bypassStartGate` and `capExempt` were both in that state.
+  safety net — `bypassStartGate` and the retired workspace-cap exemption were both in that state.
 - **CG-4 (one predicate)**: a gate's SQL prefilter and its in-loop guard MUST
   derive from one shared contract module, never two hand-synchronised copies.
   See `dep-gate-contract.ts`, `subject-gate-contract.ts`, `bypass-flags.ts`.
@@ -87,7 +87,6 @@ stalled a whole workspace.
 | `task_reserved` | the reserving session claims it, releases it, or the reservation lapses (`context.reservedBy`, 20 minutes, renewed by that session) | hold, never forced |
 | `mission_budget_exhausted` | raising the mission budget | policy, forceable |
 | `subject_dead` | never (terminal) | policy, forceable |¹
-| `workspace_cap_reached` | drain | policy, forceable |
 | `connector_routing_mismatch` | fixing the connector | capability |
 
 ¹ `subject_dead` has its own capability spec — see
@@ -103,12 +102,9 @@ only real check was "does this backend have a credential" was removed in PR
 therefore has no task-level `gateReason`, and must not be given one.
 
 That gap is now closed at configuration time instead, by
-`apps/web/src/lib/backend-strand.ts` — one module, three read-only surfaces, no
-gate:
-- **Settings → Models**, in each provider's row (`AgentBackendsSection.tsx`, fed by
-  `GET /api/teams/[id]/backend-readiness`): each backend card states how many
-  **pending** tasks are routed to it with no credential, and links to them. The
-  count is the consequence a bare "not configured" chip failed to convey.
+`apps/web/src/lib/backend-strand.ts` — one module, two read-only surfaces, no
+gate (Settings → Models had a third, the per-backend sign-in card; it went with
+the stored subscription logins, whose fix is a login on the runner):
 - **Health → Problems** (`HealthClient.tsx`): one row per backend that is
   stranding work, with the existing "Fix in Settings" affordance. Without it the
   page asserts "All systems healthy" while a queue can never drain.
@@ -126,7 +122,7 @@ strands the whole queue), and Claude is `implicitlyConfigured`, so the common
 case reports nothing.
 
 Soft deferrals are counted in `ClaimDiagnostics.deferrals` and MUST all
-self-clear: `path_overlap`, `mission_concurrent`, `mission_paced`,
+self-clear: `path_overlap`, `mission_concurrent`,
 `budget_paused`, `provider_unavailable`. (`advisory_manifest`, the old
 one-scope-undeclared-task-per-mission deferral, is retired: undeclared scope
 starts by default, `claim-overlap-scheduling` I-46. Its counter stays at 0.) They are not
@@ -153,9 +149,10 @@ here does not reintroduce the removed capability gate. It does not classify
 undeclared scope as a stall: the retired per-mission serialization no longer
 holds these tasks.
 
-Two entries appear in the hard-gate table above rather than here, because the
-claim loop counts them but `/start` also rejects on them: `subject_dead`
-(terminal) and `workspace_cap` / `workspace_cap_reached`.
+One entry appears in the hard-gate table above rather than here, because the
+claim loop counts it but `/start` also rejects on it: `subject_dead`
+(terminal). The workspace cap and mission pacing are gone (spec 0dc7c6de,
+Parallelism limits): runner slots and the mission cap are the only counts.
 
 **Local-executor missions** (`missions.executor = 'local'`, default
 `'runner'`). A person runs the mission's tasks from their own interactive
@@ -258,14 +255,14 @@ pause: it also blocks the interactive claim, so it was never a fit for that.
   become claimable.
 - AC-56: GIVEN a pending task whose effective backend has no credential THEN
   `/api/cron/queue-stall` reports `backend_credential_missing` (not
-  `no_gate_identified`) AND Settings → Models counts it against that
+  `no_gate_identified`) AND Health → Problems counts it against that
   backend AND `/start` still returns no `gateReason` for it.
 
 **Code surface**:
 - Per-gate modules: `apps/web/src/app/api/workers/claim/` —
   `connector-gate.ts`, `deferred-gate.ts`, `deps-gate.ts`, `held-gate.ts`,
-  `mission-budget-gate.ts`, `pacing-gate.ts`, `subject-gate.ts`,
-  `workspace-cap-gate.ts`. Each holds its SQL predicate and its per-task check
+  `mission-budget-gate.ts`, `concurrency-gate.ts`, `subject-gate.ts`.
+  Each holds its SQL predicate and its per-task check
   side by side, so the claim route and `/start` cannot drift (rule CG-4). There
   is deliberately no aggregate `lib/claim-gates.ts` — it was a hand-mirrored
   copy of these predicates and was deleted in PR #1868.
@@ -277,8 +274,7 @@ pause: it also blocks the interactive claim, so it was never a fit for that.
   `apps/web/src/components/StageChip.tsx` — `deriveStage()`
 - Watchdog: `apps/web/src/app/api/cron/queue-stall/route.ts`
 - Configuration-time surfacing (no gate): `apps/web/src/lib/backend-strand.ts`,
-  `packages/core/backend-policy.ts` — `resolveEffectiveBackend()`,
-  `apps/web/src/app/api/teams/[id]/backend-readiness/route.ts`
+  `packages/core/backend-policy.ts` — `resolveEffectiveBackend()`
 
 ---
 

@@ -5,6 +5,7 @@
  * notifications module; core code (the hold logic) receives it injected.
  */
 import { questionNotificationText, withSanitizedBrief, type BriefedQuestion } from '@buildd/core/question-brief';
+import { waitsNotificationLine } from '@buildd/core/question-waits';
 import { notifyTeamOf } from './notify';
 import { emit } from './core-emit';
 import type { ParkedQuestion } from './question-hold';
@@ -12,15 +13,21 @@ import type { ParkedQuestion } from './question-hold';
 /** Fire-and-forget: never throws, never awaits delivery. */
 export function notifyParkedQuestion(p: ParkedQuestion, opts: { recordLedger: boolean }): void {
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-  const note = questionNotificationText(withSanitizedBrief(p.waitingFor) as unknown as BriefedQuestion, { sensitive: p.sensitive });
   const prompt = typeof p.waitingFor.prompt === 'string' ? p.waitingFor.prompt : undefined;
-  void notifyTeamOf({ workspaceId: p.workspaceId }, 'needsAttention', {
-    title: note.title,
-    message: note.message,
-    url: `${appBaseUrl}/app/tasks/${p.taskId}?respond=1`,
-    urlTitle: 'Respond',
-    priority: 0,
-  });
+  // With what waits on the answer (spec 1b257609 R-1), as the park's own push carries it.
+  void (async () => {
+    const waits = !p.sensitive && p.taskId
+      ? await import('./question-waits').then(m => m.loadQuestionWaits({ taskId: p.taskId!, viewer: { kind: 'member' }, worker: null })).catch(() => null)
+      : null;
+    const note = questionNotificationText(withSanitizedBrief(p.waitingFor) as unknown as BriefedQuestion, { sensitive: p.sensitive, waitsLine: waits ? waitsNotificationLine(waits) : null });
+    await notifyTeamOf({ workspaceId: p.workspaceId }, 'needsAttention', {
+      title: note.title,
+      message: note.message,
+      url: `${appBaseUrl}/app/tasks/${p.taskId}?respond=1`,
+      urlTitle: 'Respond',
+      priority: 0,
+    });
+  })().catch(() => {});
   if (!p.taskId) return;
   const taskId = p.taskId;
   void import('./chat/mission-events')

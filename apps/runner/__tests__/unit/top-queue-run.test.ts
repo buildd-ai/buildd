@@ -119,7 +119,10 @@ describe('Queue view, live', () => {
     await until(() => firstRow(t.screen()).includes('feat(intake): one intake door'));
     expect(Date.now() - pushedAt).toBeLessThan(2_000);
 
-    // c claims the selected queue row through the socket's claim path.
+    // c claims the selected queue row through the socket's claim path; the two running agents sit above it.
+    t.type('j');
+    t.type('j');
+    await until(() => /^›\s+1 /m.test(t.screen()));
     t.type('c');
     await until(() => posts.length === 1);
     expect(posts[0]).toEqual({ path: '/api/claim', body: { taskId: 'q-intake' } });

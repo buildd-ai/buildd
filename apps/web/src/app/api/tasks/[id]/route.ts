@@ -36,13 +36,16 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyWaitExit, parseWaitOn } from '@/lib/task-wait-exit';
+import { saveStartAnywayAssessment } from '@/lib/start-anyway-assessment';
 import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated, endLiveWorkersForRequeue } from '@/lib/task-cancel';
 import { checkDependencyCycle, checkDependencyReach, dependencyViewerOf } from '@/lib/task-dependency-reach';
+import { loadQuestionWaits } from '@/lib/question-waits';
 import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
 import { TIERS } from '@buildd/core/model-tier-defaults';
+import { liveModelChangeNotice, pendingModelChangeRecord, PENDING_MODEL_CHANGE_KEY, type LiveModelChangeNotice } from '@/lib/live-model-change';
 import { appBaseUrl } from '@/lib/app-url';
 import { TASK_RESERVATION_KEY, buildReservation } from '../../workers/claim/held-gate';
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
@@ -212,6 +215,8 @@ export async function GET(
           outputTokens: true,
           costUsd: true,
           createdAt: true,
+          // The park clock: when a waiting question was asked (questionWaits below).
+          updatedAt: true,
           // A gate-rejected completion (outputRequirement 400) persists the
           // agent's summary here instead of discarding it — but until now
           // nothing read it back, so a rejected 60-turn run's only trace was
@@ -247,6 +252,17 @@ export async function GET(
       workspace: withoutDispatchToken(task.workspace),
     };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
+    // An open question: what waits on its answer, as data (spec 1b257609 R-8).
+    // get_task reads workers by default, so it carries this on every waiting task.
+    const asking = taskWorkers?.find(w => w.status === 'waiting_input' && w.waitingFor?.type !== 'pause');
+    if (asking) {
+      const questionWaits = await loadQuestionWaits({
+        taskId: id,
+        viewer: dependencyViewerOf(user, apiAccount),
+        worker: { runner: asking.runner, updatedAt: asking.updatedAt, waitingFor: asking.waitingFor },
+      }).catch(() => null);
+      if (questionWaits) response.questionWaits = questionWaits;
+    }
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
     if (include.has('dispatch')) response.dispatch = await dispatchHistoryForTask(id);
     // Task estimates experiment (packages/core/task-estimate-source.ts): the
@@ -287,7 +303,7 @@ export async function GET(
  * how it runs or ends. Status, mission, dependencies, role, model, hold and
  * result go through complete_task and the gates behind it, or through a person.
  */
-const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl', 'waitOn']);
+const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl', 'waitOn', 'assessment']);
 
 export async function PATCH(
   req: NextRequest,
@@ -402,11 +418,25 @@ export async function PATCH(
         blockerTaskId: parsed.blockerTaskId,
         reason: parsed.reason,
         workerId,
+        assessment: body.waitOn.assessment,
       });
       if (!out.ok) return NextResponse.json({ error: out.error, code: out.code }, { status: out.status });
       noteWorkChanged({ missionIds: [task.missionId] });
       await emitTaskUpdated({ id, workspaceId: task.workspaceId, missionId: task.missionId ?? null, status: 'pending' });
-      return NextResponse.json({ id, status: 'pending', waitingOn: out.blocker, dependsOn: out.dependsOn, workerId: out.workerId });
+      return NextResponse.json({ id, status: 'pending', waitingOn: out.blocker, dependsOn: out.dependsOn, workerId: out.workerId, ...(out.park ? { park: out.park } : {}) });
+    }
+
+    // assessment: a Start anyway task's agent records what it needs from its
+    // prerequisites before it edits (lib/start-anyway-assessment.ts, Living
+    // Spec 36df686b R-4). Its own request, like waitOn.
+    if (body?.assessment !== undefined) {
+      if (Object.keys(body).some(k => k !== 'assessment')) {
+        return NextResponse.json({ error: 'assessment is sent on its own, with no other fields' }, { status: 400 });
+      }
+      const workerId = typeof body.assessment?.workerId === 'string' ? body.assessment.workerId : null;
+      const out = await saveStartAnywayAssessment({ taskId: id, raw: body.assessment, workerId });
+      if (!out.ok) return NextResponse.json({ error: out.error, code: out.code }, { status: out.status });
+      return NextResponse.json({ id, assessment: out.assessment });
     }
 
     // removeDependency: a person drops one declared dependency, saying why
@@ -482,6 +512,7 @@ export async function PATCH(
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
     };
+    let modelChange: LiveModelChangeNotice | null = null;
 
     if (title !== undefined) updateData.title = title;
     if (description !== undefined) updateData.description = description;
@@ -545,12 +576,29 @@ export async function PATCH(
       if (ceilingRejection) return ceilingRejection;
       if (tier !== undefined) updateData.tier = tier;
 
+      // A live agent keeps the model it was claimed with. Say so in the reply,
+      // with the tier it is actually running at, so a re-tier mid-run is not
+      // read later as the tier the run used.
+      const liveWorker = await db.query.workers.findFirst({
+        where: sqlWhere(and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
+        columns: { id: true, status: true },
+      });
+      if (liveWorker) modelChange = liveModelChangeNotice(task, liveWorker);
+
       const baseCtx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
       if (model !== undefined && model !== null) {
         updateData.context = { ...baseCtx, model: (model as string).trim(), modelPinned: true };
       } else if (model === null || (tier && readModelPin(baseCtx) !== null)) {
         const { model: _dropped, ...rest } = baseCtx;
         updateData.context = { ...rest, modelPinned: false };
+      }
+      // Kept on the task until the next claim clears it, so the task page can
+      // say the live run is still on the old tier.
+      if (modelChange) {
+        updateData.context = {
+          ...((updateData.context ?? baseCtx) as Record<string, unknown>),
+          [PENDING_MODEL_CHANGE_KEY]: pendingModelChangeRecord(modelChange, { tier, model }),
+        };
       }
     }
     if (project !== undefined) updateData.project = project;
@@ -957,7 +1005,7 @@ export async function PATCH(
       });
     }
 
-    return NextResponse.json(updated);
+    return NextResponse.json(modelChange && updated ? { ...updated, modelChange } : updated);
   } catch (error) {
     console.error('Update task error:', error);
     return NextResponse.json({ error: 'Failed to update task' }, { status: 500 });

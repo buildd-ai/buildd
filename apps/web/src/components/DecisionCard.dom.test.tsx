@@ -25,10 +25,26 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: DecisionCard } = await import('./DecisionCard');
 const { approvalView, decisionFromQuestion } = await import('@/lib/needs-you-card');
+const { optionOutcomes } = await import('@buildd/core/question-waits');
+type QuestionWaits = import('@buildd/core/question-waits').QuestionWaits;
 
 // The card ticks from the real clock once mounted, so ages are measured from it.
 const T0 = Date.now();
 const task = { id: 't1', title: 'Mirror the runner image to Docker Hub', href: '/app/tasks/t1' };
+
+/** What the projection (lib/question-waits.ts) returns for the asking task: two tasks waiting, in a chain. */
+const projection = (): QuestionWaits => {
+  const base: QuestionWaits = {
+    taskId: 't1', mission: null, hiddenCount: 1, beyondCount: 0, lanes: [], criteria: null,
+    waiting: [
+      { id: 'd1', title: 'The release publishes an image digest', depth: 1, missionId: null, missionTitle: null, workspaceName: null, after: null, alsoWaitsOnOther: false },
+      { id: 'd2', title: 'A runner bundle on every release', depth: 2, missionId: null, missionTitle: null, workspaceName: null, after: { id: 'd1', title: 'The release publishes an image digest' }, alsoWaitsOnOther: false },
+    ],
+    askedAt: new Date(T0 - 4 * 60_000).toISOString(), expiresAt: new Date(T0 + 210 * 60_000 + 20_000).toISOString(),
+    onExpiry: { action: 'default', option: 'Provide a token' }, options: [],
+  };
+  return { ...base, options: optionOutcomes([{ label: 'Provide a token', outcome: 'finishes', recommended: true }, { label: "I'll set them myself", outcome: 'continues' }], base) };
+};
 
 const decision = () => decisionFromQuestion({
   key: 'q:t1',
@@ -41,7 +57,7 @@ const decision = () => decisionFromQuestion({
     ],
   },
   task, askedAt: T0 - 4 * 60_000,
-  dependents: ['The release publishes an image digest', 'A runner bundle on every release'],
+  waits: projection(),
   answer: { kind: 'worker', workerId: 'w1', taskId: 't1', noteId: null },
 });
 
@@ -78,10 +94,13 @@ describe('DecisionCard', () => {
     const subject = q('[data-testid="question-subject"]')!;
     expect(subject.textContent).toBe('●Mirror the runner image to Docker Hub· asked 4m ago');
     expect(subject.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/t1');
-    expect(q('[data-testid="decision-summary"]')!.textContent).toContain('The release publishes an image digest and A runner bundle on every release wait on this.');
+    expect(q('[data-testid="decision-summary"]')!.textContent).toContain("Blocks The release publishes an image digest, then A runner bundle on every release and 1 task you can't see.");
     expect(q('[data-testid="decision-question"]')!.textContent).toBe('How should Docker Hub credentials be set up?');
     const options = qa('[data-testid="decision-option"]');
-    expect(options.map(o => o.textContent)).toEqual(['Provide a tokenRecommended by the agent…', "I'll set them myselfResumes when CI sees them"]);
+    expect(options.map(o => o.textContent)).toEqual([
+      'Provide a tokenRecommended by the agent…' + "Finishes the task: The release publishes an image digest and 1 task you can't see start",
+      "I'll set them myselfResumes when CI sees them" + "Keeps working: The release publishes an image digest and 1 task you can't see keep waiting",
+    ]);
     expect(options[0].getAttribute('data-primary')).toBe('true');
     expect(options[0].getAttribute('aria-keyshortcuts')).toBe('Meta+Enter Control+Enter');
     // The order on screen: subject, summary, question, options, then Answer differently and Not now.
@@ -91,9 +110,28 @@ describe('DecisionCard', () => {
     expect(at('decision-summary')).toBeLessThan(at('decision-question'));
     expect(at('decision-question')).toBeLessThan(at('decision-option'));
     expect(at('decision-option')).toBeLessThan(at('decision-answer-differently'));
+    expect(at('decision-not-now')).toBeLessThan(at('decision-expiry'));
     expect(q('[data-testid="decision-not-now"]')!.textContent).toBe('Not now');
     // No option named Not now or skip.
     expect(options.some(o => /not now|skip/i.test(o.textContent ?? ''))).toBe(false);
+  });
+
+  // Living Spec 1b257609 r2 R-6 to R-9: the projection fills the existing lines, adds no block.
+  it('names the waiting work in the summary as links, each fact once, and the expiry in the footer', () => {
+    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    const links = [...q('[data-testid="decision-waits"]')!.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')]);
+    expect(links).toEqual([['The release publishes an image digest', '/app/tasks/d1'], ['A runner bundle on every release', '/app/tasks/d2']]);
+    expect(q('[data-testid="decision-expiry"]')!.textContent).toBe('Expires in 3h 30m. Goes with Provide a token.');
+    // No id in the text, and the chain named once in the summary.
+    expect(container.textContent).not.toMatch(/\bd[12]\b/);
+    expect(container.textContent!.split('A runner bundle on every release').length - 1).toBe(1);
+  });
+
+  it('with no projection the card shows only the agent\'s why and no footer', () => {
+    act(() => root.render(<DecisionCard view={{ ...decision(), waits: null, options: decision().options.map(o => ({ ...o, downstream: null })) }} now={T0} />));
+    expect(q('[data-testid="decision-waits"]')).toBeNull();
+    expect(q('[data-testid="decision-expiry"]')).toBeNull();
+    expect(q('[data-testid="decision-option-downstream"]')).toBeNull();
   });
 
   it('a long effect keeps its first clause on the button and the whole as a tip above it', () => {
@@ -173,7 +211,7 @@ describe('DecisionCard', () => {
   it('an approval is Approve and Request changes as links to the diff, with no keyboard shortcut', async () => {
     const view = approvalView({
       key: 'a:t2', task: { id: 't2', title: 'Requester trigger and backfill', href: '/app/tasks/t2' }, askedAt: T0 - 60_000,
-      reason: 'Workspace policy needs a person', dependents: ['Prove checks on integrated UI'],
+      reason: 'Workspace policy needs a person',
       diffHref: 'https://example.test/pull/5/files', approveHref: 'https://example.test/pull/5', changesHref: 'https://example.test/pull/5/files',
     });
     act(() => root.render(<DecisionCard view={view} now={T0} />));
@@ -203,5 +241,63 @@ describe('DecisionCard', () => {
     expect(calls[0].url).toBe('/api/missions/m1/notes/n1/reply');
     expect(calls[0].body).toEqual({ type: 'reply', title: 'Keep' });
     expect(q('[data-testid="decision-card"]')!.textContent).toContain('You chose Keep');
+  });
+
+  it('visual review: fixes merged, awaiting a person: the real options, no stale note, Mark all fixed is handed to the host', async () => {
+    const view: import('@/lib/needs-you-card').DecisionView = {
+      key: 'visual-review:m1:fix_check', kind: 'decision', task: null, mission: { id: 'm1', title: 'Spec page', href: '/app/missions/m1' }, label: 'Visual review',
+      askedAt: T0 - 60_000, summary: '24 fixes merged with no new screenshot.', question: 'Are the 24 fixed screens fixed?',
+      options: [
+        { label: 'Mark all fixed', effect: 'Clears the review for these screens', tip: null, recommended: true },
+        { label: 'Review screens', effect: 'Look at each before opening the merge', tip: null, recommended: false },
+      ],
+      dependents: [], diffHref: null, shortcut: false,
+      answer: { kind: 'visual', missionId: 'm1', reviewHref: '/app/missions/m1', markFixed: [{ artifactIds: ['a1', 'a2'], expected: { a1: 'issue', a2: 'issue' } }], startKey: null, skips: ['The review is wrong or stuck', 'Ship it anyway'] },
+    };
+    const acted: string[] = [];
+    act(() => root.render(<DecisionCard view={view} now={T0} pageMissionId="m1" visualAct={async l => { acted.push(l); }} />));
+    expect(q('[data-testid="question-subject"]')!.textContent).toBe('●Visual review· asked 1m ago');
+    expect(q('[data-testid="question-subject"] a')).toBeNull();
+    expect(qa('[data-testid="decision-option"]').map(o => o.textContent?.split('Clears')[0].split('Look')[0].split('Merge')[0])).toEqual(['Mark all fixed', 'Review screens']);
+    // The two Skip choices sit under Answer differently, never as a typed reason or a bare Skip.
+    expect(q('[data-testid="decision-skips"]')).toBeNull();
+    await act(async () => { q('[data-testid="decision-answer-differently"]')!.click(); });
+    expect(qa('[data-testid="decision-skip"]').map(b => b.textContent)).toEqual(['The review is wrong or stuck', 'Ship it anyway']);
+    expect(q('[data-testid="decision-answer-form"]')).toBeNull();
+    await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
+    await flush();
+    expect(acted).toEqual(['Mark all fixed']);
+    expect(q('[data-answered="true"]')!.textContent).toContain('You chose Mark all fixed');
+  });
+  it('criteria escalation: the asking task and its age, the requirements in words, a short question, Answer differently files the answer as mission work', async () => {
+    const { criteriaEscalationDecision } = await import('@/lib/mission-decisions');
+    const SPEC = 'Windows runner through WSL2: one guided setup';
+    const view = criteriaEscalationDecision({
+      missionId: 'm1', workspaceId: 'w1', fileWorkHref: '/app/tasks/new?missionId=m1',
+      mission: { id: 'm1', title: SPEC, href: '/app/missions/m1' },
+      asker: { id: 't9', title: 'Verify WSL2 guided setup', href: '/app/tasks/t9' },
+      askedAt: T0 - 2 * 60 * 60_000,
+      unmet: { count: 4, state: 'not checked', names: ['WSL2 install step', 'Runner starts on boot', 'Setup reports progress', 'Errors say what to change'] },
+    });
+    act(() => root.render(<DecisionCard view={view} now={T0} pageMissionId="m1" />));
+    expect(q('[data-testid="question-subject"]')!.textContent).toBe('●Verify WSL2 guided setup· asked 2h ago');
+    expect(q('[data-testid="decision-summary"]')!.textContent).toContain('4 requirements not checked: WSL2 install step, Runner starts on boot, Setup reports progress and 1 more.');
+    expect(q('[data-testid="decision-question"]')!.textContent).toBe('Ship without these 4 checks?');
+    // The spec title appears at most once on the card (here: not at all).
+    expect((container.textContent!.match(new RegExp(SPEC, 'g')) ?? []).length).toBeLessThanOrEqual(1);
+    expect(q('[data-testid="decision-not-now"]')).not.toBeNull();
+    await act(async () => { q('[data-testid="decision-answer-differently"]')!.click(); });
+    const input = q('[data-testid="decision-answer-form"] input') as HTMLInputElement;
+    await act(async () => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      set.call(input, 'Check the install step by hand on a clean machine');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { (q('[data-testid="decision-answer-form"] button[type="submit"]') as HTMLButtonElement).click(); });
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('/api/tasks');
+    expect(calls[0].body).toMatchObject({ workspaceId: 'w1', missionId: 'm1', title: 'Check the install step by hand on a clean machine' });
+    expect(q('[data-answered="true"]')!.textContent).toContain('You chose Check the install step by hand on a clean machine');
   });
 });

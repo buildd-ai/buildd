@@ -1,6 +1,6 @@
 {
   "name": "@buildd/shared",
-  "version": "0.378.0",
+  "version": "0.382.0",
   "private": true,
   "type": "module",
   "exports": {

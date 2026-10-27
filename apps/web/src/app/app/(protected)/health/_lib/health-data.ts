@@ -6,7 +6,7 @@ import { cookies } from 'next/headers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
-import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import { isRunnerOnline, isRunnerRecentlySeen } from '@/lib/runner-heartbeats-shared';
 import {
   isolationBlockedCounts,
   isolationStrandedCount,
@@ -35,7 +35,8 @@ import {
   type FailureWindow,
 } from '@/lib/failure-analytics';
 import { getGateAnalytics } from '@/lib/gate-analytics-query';
-import { getBackendStrandSummary } from '@/lib/backend-strand';
+import { getBackendStrandSummary, type SampleTaskRoute } from '@/lib/backend-strand';
+import { withoutRunnerServedStrands } from '@/lib/strand-headline';
 import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import { buildSubagentDelegationPanel, type SubagentMetrics } from '@/lib/subagent-time';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
@@ -176,7 +177,7 @@ export interface StrandedBackendRow {
   label: string;
   strandedPending: number;
   enabledForTeam: boolean;
-  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker; route?: { requested: string; effective: string } }>;
+  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker; route?: SampleTaskRoute }>;
 }
 
 export interface CredentialHealthItem {
@@ -329,7 +330,7 @@ export async function loadHealth({
   // health, budget forecast, consumption, aggregated failure analytics, and
   // backends stranding pending work
   const [
-    runners,
+    heartbeats,
     usageStats,
     scheduleRows,
     recentFailureRows,
@@ -667,11 +668,14 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   ]);
   // An unknown or stale probe refuses every task, so any waiting one makes it a Problem.
   const protectedWorkPending = pendingIsolation.length > 0;
+  // Only runners seen recently are listed and counted; a long-gone one is not part of the fleet.
+  const runners = heartbeats.filter(r => isRunnerRecentlySeen(r.lastHeartbeatAt, now));
   const onlineRunners = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
   const isolationStranded = isolationStrandedCount(onlineRunners.map(r => r.isolation), pendingIsolation);
   for (const r of runners) r.isolationBlocked = isolationBlockedCounts(r.isolation, pendingIsolation);
 
-  const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
+  // A runner's own Codex login serves Codex work with no stored credential.
+  const strandedBackends: StrandedBackendRow[] = withoutRunnerServedStrands(strandSummary?.backends ?? [], runners, now)
     .filter((b) => b.strandedPending > 0)
     .map((b) => ({
       backend: b.backend,

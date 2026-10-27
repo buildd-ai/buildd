@@ -172,7 +172,7 @@ describe('recordOrCoalesceDeferral', () => {
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'deferred',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       taskId: TASK,
     });
 
@@ -185,7 +185,7 @@ describe('recordOrCoalesceDeferral', () => {
   it('coalesces a repeat of the SAME (taskId, outcome, reason) into the latest row instead of inserting a new one', async () => {
     latestRow = {
       id: 'row-existing',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       outcome: 'deferred',
       detail: { consecutiveDeferrals: 3, firstDeferredAt: '2026-01-01T00:00:00.000Z' },
     };
@@ -194,7 +194,7 @@ describe('recordOrCoalesceDeferral', () => {
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'deferred',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       taskId: TASK,
     });
 
@@ -212,7 +212,7 @@ describe('recordOrCoalesceDeferral', () => {
   it('starts a fresh streak when the reason changes, even for the same task', async () => {
     latestRow = {
       id: 'row-existing',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       outcome: 'deferred',
       detail: { consecutiveDeferrals: 10, firstDeferredAt: '2026-01-01T00:00:00.000Z' },
     };
@@ -221,20 +221,20 @@ describe('recordOrCoalesceDeferral', () => {
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'deferred',
-      reason: 'mission_paced',
+      reason: 'mission_budget',
       taskId: TASK,
     });
 
     expect(updateCalls).toHaveLength(0);
     expect(inserted).toHaveLength(1);
-    expect(inserted[0].reason).toBe('mission_paced');
+    expect(inserted[0].reason).toBe('mission_budget');
     expect(inserted[0].detail?.consecutiveDeferrals).toBe(1);
   });
 
   it('starts a fresh streak when the outcome changes (deferred → stranded) even with the same reason', async () => {
     latestRow = {
       id: 'row-existing',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       outcome: 'deferred',
       detail: { consecutiveDeferrals: 50, firstDeferredAt: '2026-01-01T00:00:00.000Z' },
     };
@@ -243,7 +243,7 @@ describe('recordOrCoalesceDeferral', () => {
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'sweepStrandedTasks',
       outcome: 'stranded',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       taskId: TASK,
     });
 
@@ -329,7 +329,7 @@ describe('recordOrCoalesceDeferral', () => {
   it('a reason with no blocker fields coalesces as before', async () => {
     latestRow = {
       id: 'row-existing',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       outcome: 'deferred',
       detail: { consecutiveDeferrals: 2, firstDeferredAt: '2026-01-01T00:00:00.000Z' },
     };
@@ -337,7 +337,7 @@ describe('recordOrCoalesceDeferral', () => {
       gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
       surface: 'POST /api/workers/claim',
       outcome: 'deferred',
-      reason: 'workspace_cap',
+      reason: 'mission_concurrent',
       taskId: TASK,
       detail: { cap: 3 },
     });

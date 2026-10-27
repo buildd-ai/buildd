@@ -103,8 +103,16 @@ interface DefaultRole extends DefaultRoleDefinition {
 const ROLE_DEFINITIONS: DefaultRoleDefinition[] = [
   {
     slug: 'organizer',
-    version: 2,
-    supersededContentHashes: ['feaff128442aff056114b6401392527a5525886595cd6b2b5de97944f656b641'],
+    // v2: missing access is planned as a request_capability ask, never as a
+    // manual step for a person. v3: merged with the guidance branch's own v2
+    // (serial lanes and file locks instead of chaining on path overlap).
+    version: 3,
+    supersededContentHashes: [
+      'feaff128442aff056114b6401392527a5525886595cd6b2b5de97944f656b641',
+      '5933265ac362a46104864fa854d07d04450ef1564ca6d1dc3b9c5aef1e8accdc',
+      'c1bba1ab81a8892a2f65d595cdc41b3eddfed131d7204859d5e338049f773d07',
+      '0c35b1f8fe8aeb75e8c0449a5c8b9f60c771cce8f48a2e3575cd8559dba2e05d',
+    ],
     name: 'Organizer',
     description: 'Mission orchestration — evaluates state, routes work, manages task flow',
     content: `# Organizer
@@ -199,6 +207,7 @@ On a mission with an integration branch the plan looks the same; what changes is
 - **Same task failed 2+ times**: DO NOT retry. It's in the "Blocked Tasks" section. Move on.
 - **Environmental failure** (missing framework, wrong OS, platform not supported): NEVER retry. The environment won't change between attempts.
 - **If a blocked task is critical**: Propose an alternative (different tool, different approach, manual step) rather than retrying the same thing.
+- **Missing access** (a provider, another workspace, a model call): not a manual step. Plan the task to ask with \`request_capability\` and keep the work inside buildd. Never plan a step where a person runs something by hand because an agent lacked a grant.
 
 ## Pull Gates (REQUIRED — do these before building a plan)
 
@@ -247,10 +256,13 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // with a key they do not hold and to hand-edit the journal.
     // v3: the migration section no longer assumes a journal: drizzle v1 keeps one
     // folder per migration, and the check before pushing is generate-then-commute.
-    version: 3,
+    // v4: missing access goes through resolve/request_capability and
+    // invoke_model_inference, never a script holding its own key.
+    version: 4,
     supersededContentHashes: [
       'e81862de3a7a2f0914c9c472c864d45ab04bac39f69b9fdb140d5e82e3c57174',
       '485516f74b87e954cc15d2a4d4a08852d282079c28d107f11d478aa00a299053',
+      '88b42b4b5a1e8969a77d9547127c0fc4260360b03568f6d0458b2dd85738973a',
     ],
     // Builds UI from claude.ai Design canvases cited in context.designSource.
     claudeAiArtifacts: 'read',
@@ -297,6 +309,15 @@ Specific triggers to always check (in both memory and task corpora):
 - Use conventional commits (feat:, fix:, refactor:, etc.)
 - Use the buildd MCP to report progress. If you created a PR, the PR is your deliverable — only create artifacts for non-code deliverables (research reports, analysis, recommendations)
 
+## Missing Access — Ask, Never Build Around It
+
+If the work needs access you do not have (a provider such as Axiom or Vercel, another workspace, a model call):
+1. \`buildd action=resolve_capability\` says what serves the need (\`capability: "model.inference"\` for a model call).
+2. \`buildd action=request_capability\` asks. A person decides; keep working while it is pending.
+3. Spend a model grant with \`buildd action=invoke_model_inference\`.
+
+Never write a script that reads a database URL or a key of your own, and never end with "the sandbox has no X".
+
 ## Schema Migrations — Generate, Never Hand-Edit
 
 Migrations and snapshots are generated from the schema. Never rename or edit a migration, a snapshot or a \`meta/_journal.json\` by hand.
@@ -342,6 +363,10 @@ Do NOT save summaries of task outcomes — use \`learn type=gotcha|pattern|decis
   },
   {
     slug: 'researcher',
+    // v2: missing access goes through resolve/request_capability and
+    // invoke_model_inference, never a script holding its own key.
+    version: 2,
+    supersededContentHashes: ['662dc38aaf951541f8c62fc0528fbc8d4d0c86b770ecd5700a95bfd4fd90830f'],
     name: 'Researcher',
     description: 'Research, analysis, ecosystem monitoring, competitive intelligence',
     content: `# Researcher
@@ -375,6 +400,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
 - Structure output as actionable insights, not raw data dumps
 - Flag urgent findings (breaking changes, security issues) immediately
 - Use the buildd MCP to report progress and create artifacts
+
+## Missing Access — Ask, Never Build Around It
+
+If the research needs access you do not have (a provider such as Axiom, another workspace's data, a model call): \`buildd action=resolve_capability\` says what serves it (\`capability: "model.inference"\` for a model call), \`buildd action=request_capability\` asks, and a person decides; keep working while it is pending. Spend a model grant with \`buildd action=invoke_model_inference\`. Never use a script that reads a database URL or a key of your own, and never report "the sandbox has no X" as a finding without the request you made.
 `,
     // Orchid — off the accent orange and warning amber; see role-colours.test.ts.
     color: '#B24C9C',

@@ -97,8 +97,35 @@ afterEach(() => {
   container.remove();
 });
 
+describe('DesignPreview start screen', () => {
+  it('opens on the phone screen for the page stage on a phone, ignoring list order', async () => {
+    const { MissionStageProvider } = await import('./design-stage');
+    const withVerify = [
+      { id: 'coverage', name: 'Coverage', viewport: null },
+      { id: 'desktop-verify', name: 'Desktop verify', viewport: { width: 1440, height: 900 } },
+      { id: 'phone-verify', name: 'Phone verify', viewport: { width: 390, height: 844 } },
+    ];
+    act(() => {
+      root.render(
+        <MissionStageProvider value="verify">
+          <DesignPreview artifactId="a1" title="Nav" revision={1} frameUrl={signed} screens={withVerify} />
+        </MissionStageProvider>,
+      );
+    });
+    expect(frame().getAttribute('src')).toBe(`${signed}#phone-verify`);
+    expect(picker().textContent).toContain('Phone verify');
+    expect(picker().textContent).not.toContain('×');
+    expect(q('design-viewport')!.textContent).toBe('390×844');
+  });
+
+  it('falls back to the first screen when no stage screen exists', () => {
+    mount(null);
+    expect(frame().getAttribute('src')).toBe(`${signed}#phone-mission`);
+  });
+});
+
 describe('DesignPreview loading state', () => {
-  it('shows a themed loading cover until the frame loads, never a white block', () => {
+  it('shows a themed loading cover until the frame loads, never a white block', async () => {
     mount('desktop-mission');
     expect(q('design-frame-loading')?.textContent).toContain('Loading design');
     expect(frame().className).not.toContain('bg-white');
@@ -106,7 +133,24 @@ describe('DesignPreview loading state', () => {
     act(() => {
       frame().dispatchEvent(new Event('load'));
     });
+    // Still covered on the load frame itself: the scaled frame may not have painted yet.
+    expect(q('design-frame-loading')).not.toBeNull();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
     expect(q('design-frame-loading')).toBeNull();
+  });
+});
+
+describe('DesignPreview when storage cannot serve the file', () => {
+  it('centres the fallback across the whole column, not a viewport-sized box', () => {
+    act(() => {
+      root.render(
+        <DesignPreview artifactId="a1" title="Nav" revision={1} frameUrl={null} screens={screens} initialScreenId="desktop-mission" />,
+      );
+    });
+    expect(box().style.width).toBe('');
+    expect(q('design-frame-unavailable')!.className).toContain('w-full');
   });
 });
 

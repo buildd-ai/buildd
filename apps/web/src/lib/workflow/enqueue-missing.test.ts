@@ -56,6 +56,22 @@ describe('enqueueMissingEffects (§11 op 2)', () => {
     expect(enqueueMissingEffects(V(D({ state: 'AWAITING_REVIEW' }), [R({ status: 'reviewing' })]), none)).toEqual([]);
   });
 
+  test('Living Spec fa62b865 R-46: an evidence round owes the capture until it is recorded, then nothing more of its own', () => {
+    const open = R({ id: 'r2', round: 2, kind: 'delta', scope: { evidence: { findingIds: ['r1:0'] } } });
+    const finding = {
+      id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: null, line: null, title: 'compare s1', required: true,
+      status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+      remedyClass: 'evidence' as const, evidence: { criterionId: 'AC-1', screen: 's1', route: '/app/x' },
+    };
+    const view = { ...V(D({ state: 'AWAITING_REVIEW', stateReason: 'evidence', currentRound: 2 }), [rc, open]), findings: [finding] };
+    expect(enqueueMissingEffects(view, none)).toEqual([{
+      kind: 'dispatch_capture', dedupeKey: 'dispatch_capture:d1:2',
+      payload: { roundId: 'r2', round: 2, headSha: 'H1', findings: [{ id: 'r1:0', title: 'compare s1', criterionId: 'AC-1', screen: 's1', route: '/app/x' }] },
+    }]);
+    // Never a reviewer before the capture: with the capture held, nothing is owed here.
+    expect(enqueueMissingEffects(view, new Set(['dispatch_capture:d1:2']))).toEqual([]);
+  });
+
   test('a6cbd241: a queued round with no reviewer whose every dispatch finished (one skipped while the delivery was briefly REPAIRING) owes a fresh dispatch_review', () => {
     const open = R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta' });
     const v = V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, version: 9 }), [open]);
@@ -65,6 +81,13 @@ describe('enqueueMissingEffects (§11 op 2)', () => {
     ]);
     // The floor's own key, once held, is owed no more at this version.
     expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:2:floor:v9']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:2:floor:v9', 'pending']]))).toEqual([]);
+    // The floor's own dispatch finished without a reviewer too (same version, asked again): a new key, not a conflict.
+    const floorDone = new Set([...held, 'dispatch_review:d1:2:floor:v9']);
+    const allDone = new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:1', 'done'], ['dispatch_review:d1:2:floor:v9', 'done']]);
+    expect(enqueueMissingEffects(v, floorDone, allDone).map((e) => e.dedupeKey)).toEqual(['dispatch_review:d1:2:floor:v9:2']);
+    // Bounded: a round no dispatch can serve stops being re-armed.
+    const spent = new Set([...held, 'dispatch_review:d1:2:floor:v9', ...[2, 3, 4, 5].map((n) => `dispatch_review:d1:2:floor:v9:${n}`)]);
+    expect(enqueueMissingEffects(v, spent, new Map([...spent].map((k) => [k, 'done'] as [string, string])))).toEqual([]);
     // A live retry is the round's exit; a dead dispatch is EffectDead's; an unread status proves nothing.
     expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:2:retry1']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:2:retry1', 'delivering']]))).toEqual([]);
     expect(enqueueMissingEffects(v, held, new Map([['dispatch_review:d1:2', 'dead']]))).toEqual([]);

@@ -129,7 +129,6 @@ describe('classifyExplicitTaskExclusion', () => {
       ['runnerPreference', 'runner_preference'],
       ['role', 'role_mismatch'],
       ['runnerCooldown', 'runner_cooldown'],
-      ['workspaceCap', 'workspace_cap'],
       ['workspaceExecutor', 'workspace_executor'],
       ['workspacePaused', 'workspace_paused'],
     ];
@@ -200,7 +199,7 @@ describe('classifyExplicitTaskExclusion', () => {
   });
 
   it('the overridable gates point at force: true on claim_task', () => {
-    for (const gate of ['missionHeld', 'deps', 'subject', 'workspaceCap'] as const) {
+    for (const gate of ['missionHeld', 'deps', 'subject', 'workspacePaused'] as const) {
       expect(classifyExplicitTaskExclusion(probe({ gates: { [gate]: false } }), NOW).detail).toContain('force: true');
     }
     expect(classifyExplicitTaskExclusion(probe({ startAt: new Date(NOW.getTime() + 60_000) }), NOW).detail).toContain('force: true');
@@ -211,10 +210,10 @@ describe('evaluateForcedGates (force-claim audit)', () => {
   beforeEach(() => { selectCalls = []; selectQueue = []; selectResult = []; selectThrows = false; selectThrowOnCall = null; });
 
   it('returns the codes of the lifted gates that would have excluded the task', async () => {
-    selectResult = [{ g_deps: false, g_missionHeld: true, g_subject: null, g_workspaceCap: true, g_startAt: 'f' }];
+    selectResult = [{ g_deps: false, g_missionHeld: true, g_subject: null, g_workspacePaused: true, g_startAt: 'f' }];
     const codes = await evaluateForcedGates({
       taskId: 'task-1', workspaceIds: ['ws-a'],
-      gates: { deps: sql`a`, missionHeld: sql`b`, subject: sql`c`, workspaceCap: sql`d`, startAt: sql`e` },
+      gates: { deps: sql`a`, missionHeld: sql`b`, subject: sql`c`, workspacePaused: sql`d`, startAt: sql`e` },
     });
     expect(codes.sort()).toEqual(['deferred', 'deps_blocked', 'subject_dead']);
     expect(render(selectCalls[0].fields.g_deps as SQL).sql).toBe('COALESCE((a), false)');
@@ -223,7 +222,7 @@ describe('evaluateForcedGates (force-claim audit)', () => {
 
   it('never throws; an audit failure records nothing rather than blocking', async () => {
     selectThrows = true;
-    expect(await evaluateForcedGates({ taskId: 't', workspaceIds: ['w'], gates: { deps: sql`a`, missionHeld: sql`b`, subject: sql`c`, workspaceCap: sql`d`, startAt: sql`e` } })).toEqual([]);
+    expect(await evaluateForcedGates({ taskId: 't', workspaceIds: ['w'], gates: { deps: sql`a`, missionHeld: sql`b`, subject: sql`c`, workspacePaused: sql`d`, startAt: sql`e` } })).toEqual([]);
   });
 });
 
@@ -396,18 +395,18 @@ describe('stampLastClaimAttempt', () => {
   it('stamps the exact exclusion beside the coarse reason', async () => {
     await stampLastClaimAttempt({
       taskId: 'task-1', workspaceIds: ['ws-a'], reason: 'no_pending_tasks', now: NOW,
-      exclusion: { code: 'workspace_cap', detail: 'cap' },
+      exclusion: { code: 'deps_blocked', detail: 'deps' },
     });
     const q = render(updateCalls[0].set.context);
     const stamped = JSON.parse(q.params.find((p): p is string => typeof p === 'string' && p.includes('lastClaimAttempt'))!);
     expect(stamped).toMatchObject({
       lastClaimAttemptReason: 'no_pending_tasks',
-      lastClaimAttemptExclusion: { code: 'workspace_cap', detail: 'cap' },
+      lastClaimAttemptExclusion: { code: 'deps_blocked', detail: 'deps' },
     });
   });
 
   it('never throws, even when the write fails', async () => {
-    const failing = stampLastClaimAttempt({ taskId: 'task-1', workspaceIds: ['ws-a'], reason: 'x', now: NOW, deferrals: { mission_paced: 1 } });
+    const failing = stampLastClaimAttempt({ taskId: 'task-1', workspaceIds: ['ws-a'], reason: 'x', now: NOW, deferrals: { mission_concurrent: 1 } });
     await expect(failing).resolves.toBeUndefined();
   });
 });
@@ -416,21 +415,21 @@ describe('stampLastClaimAttempt', () => {
 // gets `no_pending_tasks` and — before this — nothing was written to the gate
 // ledger, so the task's gate history was empty and `explain` could only read
 // the pending reviewer as a self-resolving wait (PR #3678: refused by the
-// workspace cap on every wake for hours, with an idle runner).
+// same gate on every wake for hours, with an idle runner).
 describe('explicitExclusionGateEvent', () => {
   it('records a gate refusal as a claim_loop_deferral on the task, reason = the exclusion code', () => {
     const event = explicitExclusionGateEvent({
       taskId: 'task-1',
-      exclusion: { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' },
+      exclusion: { code: 'deps_blocked', detail: 'A dependency is not satisfied yet.' },
       workspaceId: 'ws-a',
     });
     expect(event).toMatchObject({
       gate: 'claim_loop_deferral',
       outcome: 'deferred',
-      reason: 'workspace_cap',
+      reason: 'deps_blocked',
       taskId: 'task-1',
       workspaceId: 'ws-a',
-      detail: { explicitClaim: true, detail: 'The workspace is at its concurrent-task cap.' },
+      detail: { explicitClaim: true, detail: 'A dependency is not satisfied yet.' },
     });
   });
 

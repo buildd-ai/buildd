@@ -1,8 +1,22 @@
 import { describe, expect, it } from 'bun:test';
-import { approvalView, askedAgo, decisionFromQuestion, decisionOptions, dependentsSentence, isGenericPrompt, splitEffect } from './needs-you-card';
+import { approvalView, askedAgo, decisionFromQuestion, decisionOptions, isGenericPrompt, splitEffect } from './needs-you-card';
+import { optionOutcomes, type QuestionWaits } from '@buildd/core/question-waits';
 
 const T0 = Date.UTC(2026, 9, 22, 12, 0, 0);
 const task = { id: 't1', title: 'Mirror the runner image to Docker Hub', href: '/app/tasks/t1' };
+
+/** What the projection (lib/question-waits.ts) returns for the asking task. */
+const waits = (over: Partial<QuestionWaits> = {}): QuestionWaits => {
+  const base: QuestionWaits = {
+    taskId: 't1', mission: null, hiddenCount: 0, beyondCount: 0, lanes: [], criteria: null,
+    waiting: [
+      { id: 'd1', title: 'The release publishes an image digest', depth: 1, missionId: null, missionTitle: null, workspaceName: null, after: null, alsoWaitsOnOther: false },
+      { id: 'd2', title: 'A runner bundle on every release', depth: 1, missionId: null, missionTitle: null, workspaceName: null, after: null, alsoWaitsOnOther: false },
+    ],
+    askedAt: null, expiresAt: null, onExpiry: { action: 'restart', option: null }, options: [], ...over,
+  };
+  return { ...base, options: over.options ?? optionOutcomes([{ label: 'Provide a token', outcome: 'continues' }, "I'll set them myself"], base) };
+};
 
 describe('decisionFromQuestion (Navigation R-16, AC-10)', () => {
   const q = {
@@ -18,15 +32,20 @@ describe('decisionFromQuestion (Navigation R-16, AC-10)', () => {
   };
   const view = decisionFromQuestion({
     key: 'q:t1', question: q, task, askedAt: T0 - 60_000,
-    dependents: ['The release publishes an image digest', 'A runner bundle on every release'],
+    waits: waits(),
     answer: { kind: 'worker', workerId: 'w1', taskId: 't1', noteId: null },
   });
 
-  it('names the task, the question, and what waits on it by name', () => {
+  it('names the task and the question; the summary is the agent\'s why, the waiting work the projection\'s', () => {
     expect(view.task).toEqual(task);
     expect(view.question).toBe('How should Docker Hub credentials be set up?');
-    expect(view.summary).toBe('CI has no Docker Hub secrets, so every release skips the image mirror. The release publishes an image digest and A runner bundle on every release wait on this.');
-    expect(view.dependents).toHaveLength(2);
+    expect(view.summary).toBe('CI has no Docker Hub secrets, so every release skips the image mirror.');
+    expect(view.waits?.waiting.map(t => t.title)).toEqual(['The release publishes an image digest', 'A runner bundle on every release']);
+  });
+
+  it('each option carries its outcome effect from the projection (spec 1b257609 R-8)', () => {
+    expect(view.options[0].downstream).toBe('Keeps working: The release publishes an image digest and A runner bundle on every release keep waiting');
+    expect(view.options[1].downstream).toBeNull();
   });
 
   it('puts the recommended option first, each with a one-line effect, and never offers a skip', () => {
@@ -80,26 +99,21 @@ describe('approvalView', () => {
   const v = approvalView({
     key: 'a:t1', task: { id: 't1', title: 'Requester trigger and backfill', href: '/app/tasks/t1' }, askedAt: T0,
     reason: 'The migration replaces one function, no tables, reversible. Workspace policy needs a person',
-    dependents: ['Prove checks on integrated UI'], diffHref: 'https://example.test/pull/5/files',
+    waits: waits({ waiting: [{ id: 'p', title: 'Prove checks on integrated UI', depth: 1, missionId: null, missionTitle: null, workspaceName: null, after: null, alsoWaitsOnOther: false }], options: [] }),
+    diffHref: 'https://example.test/pull/5/files',
     approveHref: 'https://example.test/pull/5', changesHref: 'https://example.test/pull/5/files',
   });
-  it('is Approve and Request changes with effects, the diff linked, the dependents named', () => {
+  it('is Approve and Request changes with effects, the diff linked, the waiting work from the projection', () => {
     expect(v.kind).toBe('approval');
     expect(v.question).toBe('Approve Requester trigger and backfill?');
     expect(v.options.map(o => `${o.label}: ${o.effect}`)).toEqual(['Approve: Merges when green', 'Request changes: Builder revises it']);
-    expect(v.summary).toBe('The migration replaces one function, no tables, reversible. Workspace policy needs a person. Prove checks on integrated UI waits on this.');
+    expect(v.summary).toBe('The migration replaces one function, no tables, reversible. Workspace policy needs a person.');
+    expect(v.waits?.waiting[0].title).toBe('Prove checks on integrated UI');
     expect(v.diffHref).toContain('/files');
   });
 });
 
 describe('words', () => {
-  it('dependentsSentence names one, two, or two and a count', () => {
-    expect(dependentsSentence([])).toBeNull();
-    expect(dependentsSentence(['A'])).toBe('A waits on this.');
-    expect(dependentsSentence(['A', 'B'])).toBe('A and B wait on this.');
-    expect(dependentsSentence(['A', 'B', 'C', 'D'])).toBe('A, B and 2 more wait on this.');
-  });
-
   it('askedAgo reads in minutes, hours and days', () => {
     expect(askedAgo(T0 - 10_000, T0)).toBe('asked just now');
     expect(askedAgo(T0 - 4 * 60_000, T0)).toBe('asked 4m ago');

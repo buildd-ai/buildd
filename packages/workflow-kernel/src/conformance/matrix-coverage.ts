@@ -33,7 +33,7 @@ export const MATRIX_COVERAGE: Record<string, MatrixRow> = {
   S12: { scenarios: ['S12:', 'handlers/supersession:'], hostSide: 'the caller-task authorisation and mission completion are the host\'s' },
   S13: { scenarios: ['S13:'] },
   S14: { exempt: 'a static write-site guard over source files, not a state-machine behaviour: packages/core/__tests__/workflow-write-sites.test.ts reads the tree and fails on a guarded write outside the allowlist' },
-  S15: { scenarios: ['S15:', 'lane: one holder per repo + base'], hostSide: 'the disjoint-delta rule\'s inputs and the landing-lane config are read by the host' },
+  S15: { scenarios: ['S15:', 'lane: one holder per repo + base', 'lane: a holder red at its head'], hostSide: 'the disjoint-delta rule\'s inputs and the landing-lane config are read by the host' },
   S16: { scenarios: ['S16:'], hostSide: 'canCompleteMission and the legacy inputs are the host\'s' },
   S17: { scenarios: ['S17:'], hostSide: 'each UI surface (home chip, task header, chat dock, PR pill) reading the one view is the host\'s' },
   S18: { scenarios: ['S18:'], hostSide: 'the branch deletion is detected and the re-opened PR found by the host\'s scan' },

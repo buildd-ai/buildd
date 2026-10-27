@@ -66,7 +66,7 @@ import {
   ContextBreaker,
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
-import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit } from './provider-limit';
+import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit, type LimitProvider } from './provider-limit';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
@@ -167,7 +167,7 @@ import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_R
 import { buildTerminalAttributionPayload, claudeLoginUsed } from './terminal-attribution';
 import { claudeCostBasis, cloudCostBasis, codexCostBasis } from './cost-basis';
 import { claudeRunRoute, clearRedoneLogins, cloudRunRoute, codexRunRoute, machineRoutes, nextLoginFailures, type LoginFailures, type RouteProblem, type RunRoute } from './run-route';
-import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { runMcpPreflight, settleOptionalConnectorFailures, type McpPreflightFailure } from './mcp-preflight';
 import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
 import { preflightHookEntries } from './preflight-guard';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
@@ -190,6 +190,7 @@ import {
   GENUINELY_BLOCKED_RETRY_OPTION,
   isBackgroundJobOutstanding,
   lastToolWasDeniedByRunner,
+  SESSION_END_LABEL_TEXT,
   SESSION_END_PUSH_TEXT,
   type SessionEndLabel,
 } from './session-end-classification.js';
@@ -624,6 +625,8 @@ export interface ResolvedMcpConnector {
   // with the agent's own buildd token (mcp-json.ts gatewayConnectorUrl).
   gateway?: true;
   gatewayPath?: string;
+  // Mounted for every role, not opted into: dropped (not fatal) when pre-flight fails.
+  optional?: true;
 }
 
 /**
@@ -860,6 +863,9 @@ export class WorkerManager {
   private contextBreaker = new ContextBreaker();
   /** Providers this runner's login is at its limit on (provider-limit.ts): new work waits, running work finishes. */
   private providerLimits = new ProviderLimitHolds();
+  private startableProviders(): LimitProvider[] {
+    return this.codexAuth === 'none' ? ['claude'] : ['claude', 'codex'];
+  }
   // Distinct role-env gaps this runner has started workers with — one warning
   // per gap, and listed in getInternalState (/api/debug/internals).
   private roleEnvGapLog = new RoleEnvGapLog();
@@ -2269,13 +2275,6 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
-    // Every provider this runner can start on is at its login limit: poll when the first lifts.
-    if (this.providerLimits.allHeld()) {
-      const lift = this.providerLimits.nextLift();
-      if (lift !== null) this.scheduleResumeAt(lift, 'provider limit reset');
-      return [];
-    }
-
     let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
     // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
@@ -2679,7 +2678,11 @@ export class WorkerManager {
     this.noteProviderLimitOutcome();
     this.scheduleResumeAt(untilMs, 'provider limit reset');
     // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
-    if (this.providerLimits.allHeld()) {
+    // A runner with no Codex login of its own cannot start Codex work, so a held Claude login holds every claim:
+    // pause the poll (running sessions are untouched) until the first hold lifts.
+    if (this.providerLimits.allHeld(Date.now(), this.startableProviders())) {
+      this.claimsPaused = true;
+      this.claimsPausedUntil = Math.max(this.claimsPausedUntil, this.providerLimits.nextLift() ?? untilMs);
       this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
     } else {
       this.emit({ type: 'provider_limit', provider: limit.provider, pausedUntil: untilMs, kind: limit.kind });
@@ -2842,7 +2845,7 @@ export class WorkerManager {
           claimError: 'server_rejected' as const,
           claimReason: reason,
           // The specific gate that excluded this explicit taskId claim (e.g.
-          // `workspace_cap`, `mission_paced`), when the server named one —
+          // `mission_concurrent`, `path_overlap`), when the server named one —
           // finer-grained than `reason` and what classifyClaimFailure
           // (run-once.ts) uses to tell a temporary capacity defer from a
           // permanent refusal.
@@ -3220,6 +3223,7 @@ export class WorkerManager {
         // so later steps (git stats, the prompt, parking) read the ref the
         // worktree really uses instead of re-deriving it.
         worker.worktreeBaseRef = setupResult.base;
+        worker.worktreeBaseSha = setupResult.baseSha;
         worker.resumedFrom = setupResult.resumed?.from;
         // The PR's base, which the path-claim sweep measures against. Read
         // after setup: a fallback to a fresh base has already cleared the
@@ -3847,7 +3851,7 @@ export class WorkerManager {
     // that ran — its work is not on GitHub, which is not the work failing.
     const handOff = isHandOffRefusal(refusal)
       ? handOffUnproven(
-        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha),
         worker.commits.length,
       )
       : null;
@@ -3951,7 +3955,7 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
     // No TASK_ERROR checkpoint: a parked question or a pause is not a failure,
     // and a "Task failed" milestone right after "Paused" read as one.
-    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
     // Mirrors the sibling non-abort branch's local 'waiting' state — the
     // session is gone here, but 'waiting' + no live session is already a
     // recognized local state elsewhere in this file.
@@ -4041,8 +4045,8 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${gateReply?.disposition ?? disposition}`, worker.taskId);
     const base: WaitingFor = {
       type: 'question',
-      prompt: 'This session ended without delivering anything, and nothing here decided it for you.',
-      context: `Classified as: ${label}. ${note}`.trim(),
+      prompt: 'Ended with nothing delivered',
+      context: `${SESSION_END_LABEL_TEXT[label]}. ${note}`.trim(),
     };
     // The gate's own disposition when it answered (so a recovered blocker is
     // not admitted to Needs You); with no reply the server re-checks the park.
@@ -4118,7 +4122,7 @@ export class WorkerManager {
       action: 'park',
       disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
       reply,
-      text: reply.reason || (reply.disposition === 'hold' ? 'Not sent yet: it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
+      text: reply.reason || (reply.disposition === 'hold' ? 'Held: not urgent enough to interrupt anyone.' : 'Needs a person.'),
     };
   }
 
@@ -5613,34 +5617,55 @@ export class WorkerManager {
       // incidents: Cue secret scavenged from disk, DISPATCH_API_KEY resolved from
       // headers and called directly). Hard-fail here so the failure surfaces in
       // Health and get_error_traces rather than propagating as a silent workaround.
-      const requiredConnectorNames = (claimConnectors ?? []).map(c => c.name);
-      if (requiredConnectorNames.length > 0) {
+      // Optional connectors (gateway ones the role never listed) are probed too,
+      // but a failed one is dropped from the session with a prompt note instead.
+      const probedConnectorNames = (claimConnectors ?? []).map(c => c.name);
+      if (probedConnectorNames.length > 0) {
+        const optionalConnectorNames = new Set((claimConnectors ?? []).filter(c => c.optional).map(c => c.name));
         const preflightResult = await runMcpPreflight({
           mcpServers: queryOptions.mcpServers as Record<string, { type: string; url?: string; headers?: Record<string, string>; command?: string }>,
-          requiredConnectorNames,
+          requiredConnectorNames: probedConnectorNames,
         });
-        if (!preflightResult.ok) {
-          for (const failure of preflightResult.failures) {
+        const settled = settleOptionalConnectorFailures(
+          queryOptions.mcpServers as Record<string, unknown>,
+          preflightResult.failures,
+          optionalConnectorNames,
+        );
+        worker.pendingErrorTraces ??= [];
+        for (const failure of settled.dropped) {
+          console.warn(`[Worker ${worker.id}] MCP pre-flight: optional connector ${failure.server} dropped — ${failure.reason}`);
+          worker.pendingErrorTraces.push({
+            pattern: 'mcp_preflight_optional_dropped',
+            excerpt: `MCP_PREFLIGHT_OPTIONAL_DROPPED: ${failure.server} — ${failure.reason}`,
+            source: 'preflight',
+          });
+        }
+        if (settled.promptNote) {
+          systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + settled.promptNote;
+          this.addMilestone(worker, { type: 'status', label: `Optional connector unavailable, started without it: ${settled.dropped.map(f => f.server).join(', ')}`, ts: Date.now() });
+        }
+        if (settled.required.length > 0) {
+          for (const failure of settled.required) {
             console.error(`[Worker ${worker.id}] MCP pre-flight FAILED: ${failure.server} — ${failure.reason}`);
           }
-          const firstFailure = preflightResult.failures[0];
+          const firstFailure = settled.required[0];
           const errorMsg = `MCP_PREFLIGHT_FAILED: ${firstFailure.server} unreachable — ${firstFailure.reason}. Check workspace resolution and connector credential injection.`;
           // Buffer error traces so they surface in get_error_traces
-          worker.pendingErrorTraces ??= [];
-          for (const failure of preflightResult.failures) {
+          for (const failure of settled.required) {
             worker.pendingErrorTraces.push({
               pattern: 'mcp_preflight_failed',
               excerpt: `MCP_PREFLIGHT_FAILED: ${failure.server} — ${failure.reason}`,
               source: 'preflight',
             });
           }
-          this.addMilestone(worker, { type: 'status', label: `MCP preflight failed: ${preflightResult.failures.map(f => f.server).join(', ')}`, ts: Date.now() });
+          this.addMilestone(worker, { type: 'status', label: `MCP preflight failed: ${settled.required.map(f => f.server).join(', ')}`, ts: Date.now() });
           const preflightErr = new Error(errorMsg) as Error & { mcpPreflightFailures?: McpPreflightFailure[] };
-          preflightErr.mcpPreflightFailures = preflightResult.failures;
+          preflightErr.mcpPreflightFailures = settled.required;
           throw preflightErr;
         }
-        console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${requiredConnectorNames.length} connector(s) verified`);
-        this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
+        const verified = probedConnectorNames.length - settled.dropped.length;
+        console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${verified} connector(s) verified`);
+        this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${verified} connector${verified !== 1 ? 's' : ''})`, ts: Date.now() });
       }
 
       // Tier-2 read-jail: Claude tasks only (Codex has no PreToolUse hooks).
@@ -6153,7 +6178,7 @@ export class WorkerManager {
         // backend and the claim breaker walls the seat for an hour.
         sessionLog(worker.id, 'error', 'session_budget_capped', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
         worker.status = 'error';
         worker.error = SESSION_BUDGET_CAP_ERROR;
         worker.currentAction = 'Session cost cap';
@@ -6228,7 +6253,7 @@ export class WorkerManager {
           const lastLabel: SessionEndLabel = worker.sessionEndPushes?.[worker.sessionEndPushes.length - 1]?.label ?? 'genuinely_blocked';
           await this.parkSessionEnd(
             worker, lastLabel, 'ask',
-            `This session used its ${SESSION_END_MAX_PUSHES} pushes (${(worker.sessionEndPushes ?? []).map(p => p.label).join(', ')}) and still has nothing delivered.`,
+            `Used all ${SESSION_END_MAX_PUSHES} pushes. Nothing delivered.`,
           );
           return;
         }
@@ -6256,7 +6281,7 @@ export class WorkerManager {
           error: errMsg,
           // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
           ...handOffUnproven(
-            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha),
             worker.commits.length,
           ),
           milestones: worker.milestones,
@@ -6338,7 +6363,7 @@ export class WorkerManager {
         // A clean completion proves the credential works — reset the auth-failure
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
 
         // B (write-back): After a successful OAuth Codex session, the CLI may have
         // silently refreshed the tokens. Read the auth.json we left in place

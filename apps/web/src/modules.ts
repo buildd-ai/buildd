@@ -41,7 +41,7 @@ import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
 import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
 import type { BuilddKernelHooks } from '@/lib/workflow/kernel-ports';
 import type { Escalate } from '@buildd/workflow-kernel/ports';
-import { fixWork, reviewEscalate, reviewsHost, reviewWork } from '@/lib/workflow/review-effects';
+import { fixWork, captureWork, reviewEscalate, reviewsHost, reviewWork } from '@/lib/workflow/review-effects';
 import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
 import { externalMergeFixWork, trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
@@ -208,7 +208,7 @@ export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost
       },
     },
     lifecycle: { ...supersessionLifecycle, ...landingLifecycle },
-    work: { review: reviewWork, fix: fixWork, ci_fix: ciFixWork, conflict_fix: conflictFixWork, trunk_fix: trunkFixWork, external_merge_fix: externalMergeFixWork },
+    work: { review: reviewWork, fix: fixWork, capture: captureWork, ci_fix: ciFixWork, conflict_fix: conflictFixWork, trunk_fix: trunkFixWork, external_merge_fix: externalMergeFixWork },
     escalate: {
       exhausted: (d, n) => {
         const e = ESCALATE_BY_FAMILY[n.family];
@@ -381,12 +381,37 @@ export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers,
 export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
 
 /**
+ * The visual-qa module's registered verification slot
+ * (lib/specs/registered-verification-store.ts): the store behind the core
+ * coordinator (lib/specs/registered-verification.ts). It admits only captures an
+ * independent [surface audit] uploaded, and resolves the head and who may ask.
+ * POST /api/specs/outcomes/[taskId]/verify runs the coordinator with it.
+ */
+const registeredStore = () => import('@/lib/specs/registered-verification-store');
+export const REGISTERED_VERIFICATION = {
+  deps: async () => (await registeredStore()).registeredVerificationDeps,
+  head: async (taskId: string) => (await registeredStore()).registeredVerificationHead(taskId),
+  requesterRefusal: async (requesterTaskId: string, subjectTaskId: string) =>
+    (await registeredStore()).verificationRequesterRefusal(requesterTaskId, subjectTaskId),
+};
+
+/**
  * The decisions module's spec duplicate slot (lib/spec-duplicate-decision.ts):
  * createSpecDraft compares a new spec with the approved ones, and records a
  * person's override of a refusal on the ledger rows that refused it.
  */
 export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
 export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
+
+/**
+ * The knowledge module's spec draft slot (lib/specs/knowledge.ts, R-106): after
+ * a revision is written, its draft head is indexed into the spec corpus once
+ * the response is out. Loaded on first use, like the similarity install below.
+ */
+export const SPEC_DRAFT_INDEX = async (specId: string): Promise<void> => {
+  const { scheduleSpecDraftIndex } = await import('@/lib/specs/knowledge');
+  scheduleSpecDraftIndex(specId);
+};
 
 /**
  * The decisions module's spec area slot (lib/spec-area-decision.ts): organize

@@ -35,12 +35,9 @@ export type WaitingKind =
   | 'ordered_behind'
   | 'serialized_surface'
   | 'mission_concurrent'
-  | 'mission_paced'
-  | 'workspace_cap'
   /** The workspace paused new starts until a set time. */
   | 'workspace_paused'
   | 'account_slots'
-  | 'oauth_parallelism'
   | 'codex_single_flight'
   | 'managed_entitlement'
   | 'mission_budget'
@@ -58,7 +55,7 @@ export type Rail = 'edit_time_leases' | 'declared_dependencies' | 'budgets_and_s
 
 export const RAIL_TEXT: Record<Rail, string> = {
   edit_time_leases: 'Files another agent is editing stay locked: this agent waits or is refused on them until they are released.',
-  declared_dependencies: 'Declared dependencies still apply.',
+  declared_dependencies: 'Dependency edges stay in place; the prerequisite is not marked done.',
   budgets_and_seats: 'Budgets, seats and plan limits still apply.',
   runner_capability: 'It still needs a runner that can run its role and backend.',
   task_hold: 'A hold a person put on the task still applies.',
@@ -69,7 +66,7 @@ export interface ForceSpec {
   /** Exactly the gate this lifts. */
   lifts: WaitingKind;
   railsRemaining: Rail[];
-  mechanism: 'start_context' | 'cap_exempt' | 'clear_start_at';
+  mechanism: 'start_context' | 'clear_start_at';
 }
 
 export type BlockerType = 'task' | 'pr' | 'lease' | 'mission' | 'runner' | 'budget' | 'provider' | 'surface' | 'config';
@@ -138,7 +135,7 @@ export interface WaitingReason {
  * The claim loop's deferral key a kind maps to. A force start can only lift a
  * kind that has one: that is the key the claim route checks it against.
  */
-export type ClaimLoopKey = 'path_overlap' | 'soft_overlap' | 'mission_concurrent' | 'mission_paced' | 'advisory_manifest' | 'ordered_behind';
+export type ClaimLoopKey = 'path_overlap' | 'soft_overlap' | 'mission_concurrent' | 'advisory_manifest' | 'ordered_behind';
 
 /**
  * A claim PREFILTER (SQL, before the loop) a force start lifts for this task:
@@ -146,7 +143,7 @@ export type ClaimLoopKey = 'path_overlap' | 'soft_overlap' | 'mission_concurrent
  * from the dependency gate (declared edges stay), `local_mission` hands a
  * local mission's task to a runner.
  */
-export type PrefilterLift = 'inferred_deps' | 'local_mission';
+export type PrefilterLift = 'inferred_deps' | 'local_mission' | 'declared_assess';
 
 interface KindSpec {
   class: WaitingClass;
@@ -163,15 +160,22 @@ interface KindSpec {
 
 const COORDINATION_RAILS: Rail[] = ['edit_time_leases', 'declared_dependencies', 'budgets_and_seats', 'runner_capability', 'task_hold'];
 const POLICY_RAILS: Rail[] = ['edit_time_leases', 'declared_dependencies', 'budgets_and_seats', 'runner_capability', 'task_hold'];
+/**
+ * Start anyway (spec 36df686b): a person may start a task past its declared
+ * dependency. The agent assesses first; the edge is kept, never satisfied.
+ */
+const assessForce = (): Omit<ForceSpec, 'lifts'> =>
+  ({ scope: 'member', railsRemaining: ['edit_time_leases', 'budgets_and_seats', 'runner_capability', 'task_hold'], mechanism: 'start_context' });
 const memberForce = (rails: Rail[] = COORDINATION_RAILS): Omit<ForceSpec, 'lifts'> =>
   ({ scope: 'member', railsRemaining: rails, mechanism: 'start_context' });
 
 /**
  * Classification table (artifact §1.3). `force` is the Stage-2 contract
  * (docs/specs/force-start.md), narrowed by spec "Health › Queue" R-10: Force
- * start is offered only for a limit (pacing, caps, a hold, a budget a person
- * raises). A lane and a declared dependency are never forced: the lane is the
- * first-come order, and a person wrote the dependency.
+ * start is offered only for a limit (caps, a hold, a budget a person
+ * raises). A lane is never forced: it is the first-come order. A declared
+ * dependency is startable by a person as Start anyway: the intent admits the
+ * task's agent for assessment (`assessDependsOn`); the edge is kept.
  */
 export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   start_deferred: { class: 'schedule', strength: 'hard', intent: 'intentional', gateName: 'Scheduled start', releasesWhen: { event: 'time', text: 'its start time passes' }, owner: 'system', force: { scope: 'member', railsRemaining: POLICY_RAILS, mechanism: 'clear_start_at' } },
@@ -179,18 +183,15 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   task_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Task paused', releasesWhen: { event: 'hold.released', text: 'someone resumes it' }, owner: 'human', force: null },
   mission_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Mission not running', releasesWhen: { event: 'mission.armed', text: 'someone starts or resumes the mission' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   mission_local: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Local-session mission', releasesWhen: { event: 'claimed', text: 'your session claims it' }, owner: 'human', force: memberForce(POLICY_RAILS), prefilterLift: 'local_mission' },
-  dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: null },
+  dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: assessForce(), prefilterLift: 'declared_assess' },
   subject_dead: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Closed subject PR', releasesWhen: { event: 'never', text: 'never: its subject PR is gone' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   lane: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serial lane', releasesWhen: { event: 'pr.closed', text: 'the task holding the lane merges or closes its PR, or ends, and the tasks ahead of it in line go first' }, owner: 'system', force: null },
   lease_stale: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'Stale file claim', releasesWhen: { event: 'sweep.hourly', text: 'the hourly sweep releases the stale claim' }, owner: 'system', force: null },
   ordered_behind: { class: 'coordination', strength: 'soft', intent: 'intentional', gateName: 'Planner order', releasesWhen: { event: 'task.claimed', text: 'the task ahead of it is claimed or finishes' }, owner: 'system', force: null },
   serialized_surface: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serialized surface', releasesWhen: { event: 'task.finished', text: 'the task holding that surface finishes' }, owner: 'agent', force: null },
   mission_concurrent: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission concurrency limit', releasesWhen: { event: 'slot.freed', text: 'another task in the mission finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_concurrent' },
-  mission_paced: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission pacing', releasesWhen: { event: 'time', text: 'the mission\'s pacing interval passes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_paced' },
-  workspace_cap: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Workspace concurrency limit', releasesWhen: { event: 'slot.freed', text: 'a workspace task finishes' }, owner: 'system', force: { scope: 'member', railsRemaining: COORDINATION_RAILS, mechanism: 'cap_exempt' } },
   workspace_paused: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Workspace paused', releasesWhen: { event: 'time', text: 'the workspace resumes new starts' }, owner: 'human', force: null },
   account_slots: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Account worker slots', releasesWhen: { event: 'slot.freed', text: 'a worker slot frees' }, owner: 'system', force: null },
-  oauth_parallelism: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Seat parallelism', releasesWhen: { event: 'slot.freed', text: 'seat pressure drops' }, owner: 'system', force: null },
   codex_single_flight: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'One Codex task per workspace', releasesWhen: { event: 'slot.freed', text: 'the running Codex task ends' }, owner: 'system', force: null },
   managed_entitlement: { class: 'budget', strength: 'hard', intent: 'incidental', gateName: 'Plan limit', releasesWhen: { event: 'slot.freed', text: 'a managed run ends or the allowance refills' }, owner: 'system', force: null },
   mission_budget: { class: 'budget', strength: 'hard', intent: 'intentional', gateName: 'Mission budget', releasesWhen: { event: 'budget.raised', text: 'the mission budget is raised' }, owner: 'human', force: memberForce(POLICY_RAILS) },
@@ -325,11 +326,8 @@ const QUEUE_SHAPE: Record<WaitingKind, { kind: QueueWait['kind']; limit?: QueueL
   ordered_behind: null,
   serialized_surface: { kind: 'lane' },
   mission_concurrent: { kind: 'limit', limit: 'mission_cap' },
-  mission_paced: { kind: 'limit', limit: 'mission_pacing' },
-  workspace_cap: { kind: 'limit', limit: 'workspace_cap' },
   workspace_paused: { kind: 'limit', limit: 'workspace_paused' },
   account_slots: { kind: 'limit', limit: 'seats' },
-  oauth_parallelism: { kind: 'limit', limit: 'seats' },
   codex_single_flight: { kind: 'limit', limit: 'seats' },
   managed_entitlement: { kind: 'limit', limit: 'plan' },
   mission_budget: { kind: 'limit', limit: 'mission_budget' },
@@ -353,8 +351,8 @@ const QUEUE_SHAPE: Record<WaitingKind, { kind: QueueWait['kind']; limit?: QueueL
 const QUEUE_PRECEDENCE: WaitingKind[] = [
   'start_deferred', 'task_held', 'mission_held', 'mission_local', 'subject_dead', 'dep_declared', 'workspace_paused',
   'lane', 'serialized_surface', 'lease_stale',
-  'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap',
-  'budget_paused', 'managed_entitlement', 'account_slots', 'oauth_parallelism', 'codex_single_flight',
+  'mission_budget', 'mission_concurrent',
+  'budget_paused', 'managed_entitlement', 'account_slots', 'codex_single_flight',
 ];
 
 /** The hard reason that decides the wait (`QUEUE_PRECEDENCE`), or null when only a free slot does. */
@@ -408,8 +406,8 @@ export function queueWaitOf(reasons: readonly WaitingReason[]): QueueWait {
 }
 
 const LIMIT_KIND: Record<QueueLimit, WaitingKind> = {
-  mission_pacing: 'mission_paced', mission_cap: 'mission_concurrent', workspace_cap: 'workspace_cap', workspace_paused: 'workspace_paused',
-  mission_budget: 'mission_budget', budget: 'budget_paused', plan: 'managed_entitlement', seats: 'oauth_parallelism',
+  mission_cap: 'mission_concurrent', workspace_paused: 'workspace_paused',
+  mission_budget: 'mission_budget', budget: 'budget_paused', plan: 'managed_entitlement', seats: 'account_slots',
   task_paused: 'task_held', mission_paused: 'mission_held', local_session: 'mission_local', pr_closed: 'subject_dead',
 };
 
@@ -419,7 +417,7 @@ export function waitingKindOfQueueWait(w: QueueWait): WaitingKind | null {
     case 'declared': return 'dep_declared';
     case 'lane': return 'lane';
     case 'start_time': return 'start_deferred';
-    case 'limit': return LIMIT_KIND[w.limit ?? 'workspace_cap'];
+    case 'limit': return LIMIT_KIND[w.limit ?? 'mission_cap'];
     case 'slot': return w.noRunnerReason ? 'capability_mismatch' : null;
   }
 }
@@ -475,7 +473,7 @@ export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
     kind: r.kind,
     gate: gateName(r.kind),
     // A mission blocker's label only restates the gate; the sentence says it.
-    sentence: `${r.blocker && r.blocker.type !== 'mission' ? `${r.blocker.label}: ` : ''}${r.because}`,
+    sentence: `${r.blocker && r.blocker.type !== 'mission' ? `${r.blocker.label}: ` : ''}${r.because}${r.kind === 'dep_declared' ? '; the agent assesses what can proceed first and parks if nothing can' : ''}`,
   }));
   const overlapped = forceable.filter(r => r.overlap && r.overlap.pathCount > 0);
   const fileCount = overlapped.reduce((n, r) => n + (r.overlap?.pathCount ?? 0), 0);
@@ -639,6 +637,11 @@ export interface ForceStartIntent {
    * also requires each id to be in `pathDeclaration.inferredDependsOn`.
    */
   liftDependsOn?: string[];
+  /**
+   * Start anyway: the declared dependsOn ids this intent admits for assessment
+   * (claim/deps-gate.ts). The edges are never edited or satisfied.
+   */
+  assessDependsOn?: string[];
   /** The blockers at confirmation: the overlap basis evidence for outcome labelling. */
   blockers: Array<{ kind: WaitingKind; type?: BlockerType; id?: string; label?: string; live?: boolean; pathCount?: number; areas?: AreaCount[]; basis?: OverlapBasis; overlapKind?: string; sharedPaths?: string[] }>;
   note?: string | null;

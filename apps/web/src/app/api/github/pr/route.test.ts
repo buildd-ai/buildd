@@ -553,6 +553,21 @@ describe('POST /api/github/pr', () => {
     expect(data.pr.number).toBe(42);
   });
 
+  // Friction 0e0a8c78: a refresh task finished "no PR needed", then a PR was
+  // opened from its branch under a minute later.
+  it('refuses to open a PR for a task that already completed without one; nothing reaches GitHub', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-1', accountId: 'account-1', taskId: 'task-1', name: 'test-worker', workspace: WORKSPACE_OK,
+      task: { id: 'task-1', status: 'completed', context: {}, result: { summary: 'No PR needed', refreshAlreadyLanded: { branch: 'mission/a' } } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', title: 'chore: refresh', head: 'feature-branch' } }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('task_completed_without_pr');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
   // S31 (workflow-state-kernel.md §6.10 tier 1): create_pr runs CI's prose scan
   // before the PR exists, on workspaces that opt in, and refuses with the reason.
   describe('preflight: the No Production Data prose scan (S31)', () => {
@@ -6329,6 +6344,80 @@ describe('GET /api/github/pr', () => {
     });
   });
 
+  // A worker session's get_pr sends its own workerId with another task's prNumber.
+  describe('workerId of a worker that does not own prNumber', () => {
+    const CALLER = {
+      id: 'w-caller', accountId: 'account-1', taskId: 'task-caller', workspaceId: 'workspace-1',
+      prNumber: null, prUrl: null, mergedAt: null, prLifecycleStatus: 'merged',
+      lastCommitSha: 'caller-sha', workspace: WORKSPACE_OK,
+    };
+    function githubPr() {
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 5658, title: 'their PR', body: null, state: 'open', mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/5658', head: { sha: 'sha5658' }, additions: 1, deletions: 1, changed_files: 1,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+    }
+    beforeEach(() => {
+      mockLoadInlineEvidence.mockClear();
+      mockGetDeliveryViewsForTasks.mockClear();
+      mockVerifyAccountWorkspaceAccess.mockReset();
+      mockVerifyAccountWorkspaceAccess.mockImplementation(async () => true);
+    });
+
+    it("reads the owning worker's delivery and evidence, not the caller's", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(CALLER);
+      mockWorkersFindMany.mockResolvedValue([{
+        id: 'w-owner', accountId: 'account-1', taskId: 'task-owner', workspaceId: 'workspace-1',
+        prNumber: 5658, prUrl: 'https://github.com/owner/repo/pull/5658', mergedAt: null,
+        prLifecycleStatus: null, lastCommitSha: null, status: 'completed', workspace: WORKSPACE_OK,
+      }]);
+      githubPr();
+
+      const res = await GET(createGetRequest('w-caller', 5658));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.pr.state).toBe('open');
+      expect(mockGetDeliveryViewsForTasks.mock.calls.at(-1)?.[0]).toEqual(['task-owner']);
+      expect(mockLoadInlineEvidence.mock.calls[0]?.[1]).toBe('task-owner');
+      // The owner is looked up only in the anchor worker's workspace.
+      expect(mockWorkersFindMany.mock.calls.at(-1)?.[0]).toBeDefined();
+    });
+
+    it("reads nothing of the caller's task when no worker owns the PR", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(CALLER);
+      mockWorkersFindMany.mockResolvedValue([]);
+      githubPr();
+
+      const res = await GET(createGetRequest('w-caller', 5658));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.pr.title).toBe('their PR');
+      // The caller's stale 'merged' lifecycle must not turn GitHub's open into merged.
+      expect(data.pr.state).toBe('open');
+      expect(data.evidenceObjects).toBeUndefined();
+      expect(data.delivery).toBeUndefined();
+      expect(mockLoadInlineEvidence).not.toHaveBeenCalled();
+      expect(mockGetDeliveryViewsForTasks).not.toHaveBeenCalled();
+    });
+
+    it('keeps the worker it was given when that worker owns prNumber', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ ...CALLER, prNumber: 5658, prLifecycleStatus: null });
+      mockWorkersFindMany.mockClear();
+      githubPr();
+
+      const res = await GET(createGetRequest('w-caller', 5658));
+      expect(res.status).toBe(200);
+      expect(mockWorkersFindMany).not.toHaveBeenCalled();
+      expect(mockLoadInlineEvidence.mock.calls[0]?.[1]).toBe('task-caller');
+    });
+  });
+
   it('returns 200 when worker row has error set to a string (error column non-null)', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);
@@ -7668,6 +7757,15 @@ describe('agent run on the runner key — close / merge', () => {
   it('closes a PR its task records link, with a reason and a merged successor', async () => {
     mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Close superseded PR #7', context: { prReach: { prNumbers: [7], grantedBy: 'task:task-organizer', grantedAt: 'x' } } }));
     expect((await closeFor(7)).status).toBe(200);
+  });
+
+  // Friction 0e0a8c78: a fix attempt closed the PR it was fixing once its fix was approved.
+  it('refuses a fix attempt closing the PR it was filed to repair, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ ciRetryPrNumber: 7 }, { prNumber: null }));
+    const res = await closeFor(7);
+    expect(res.status).toBe(409);
+    expect((await res.json()).reasonCode).toBe('retry_closes_subject');
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('refuses to close a PR its task only names in text, before calling GitHub', async () => {

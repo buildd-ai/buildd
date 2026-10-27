@@ -114,6 +114,192 @@ else
   echo -e "${GREEN}Installing buildd runner...${NC}"
 fi
 
+# --- wsl setup: begin ---
+# Inside WSL2 the installer is the Linux half of the guided Windows setup
+# (spec a0b82b5d, part 2): packages, a Linux project root, the three logins and
+# the WSL confinement check. Every install asks first and a no is honoured with
+# the command printed. Outside WSL none of this runs.
+# apps/runner/__tests__/unit/wsl-installer.test.ts runs these functions as-is.
+
+# The same evidence isolation-probe.ts's detectHostPlatform takes for linux-wsl.
+is_wsl() {
+  [ "$(uname -s)" = "Linux" ] || return 1
+  [ -n "${WSL_DISTRO_NAME:-}" ] && return 0
+  [ -e "${WSL_INTEROP_FILE:-/proc/sys/fs/binfmt_misc/WSLInterop}" ] && return 0
+  grep -qiE 'microsoft|wsl' "${WSL_PROC_VERSION:-/proc/version}" 2>/dev/null
+}
+
+# A yes/no question on the operator's terminal (BUILDD_TTY, default /dev/tty:
+# `curl | bash` makes stdin the script itself). No terminal, an empty answer or
+# anything but yes is a no.
+wsl_ask() {
+  local answer
+  [ -t 1 ] && [ -r /dev/tty ] || return 1
+  printf "%s [y/N] " "$1"
+  read -r answer < "${BUILDD_TTY:-/dev/tty}" || answer=""
+  case "$answer" in [yY]*) return 0 ;; esac
+  return 1
+}
+
+# The packages the WSL runner needs that are not installed, by package name.
+wsl_missing_packages() {
+  local pair missing=""
+  for pair in bubblewrap:bwrap socat:socat git:git curl:curl unzip:unzip; do
+    command -v "${pair#*:}" >/dev/null 2>&1 || missing="$missing ${pair%%:*}"
+  done
+  echo "${missing# }"
+}
+
+wsl_packages_offer() {
+  local missing elevate=""
+  missing="$(wsl_missing_packages)"
+  if [ -z "$missing" ]; then
+    echo "WSL packages: bubblewrap, socat, git, curl and unzip are installed."
+    return 0
+  fi
+  echo -e "${YELLOW}Missing for a confined runner in WSL: ${missing}${NC}"
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "Install them with your distribution's package manager, then run this installer again."
+    return 0
+  fi
+  if [ "$(id -u)" != "0" ]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      echo "As root, run: apt-get update && apt-get install -y ${missing}"
+      return 0
+    fi
+    elevate="sudo "  # used only after the operator's yes below
+  fi
+  local cmd="${elevate}apt-get install -y ${missing}"
+  if wsl_ask "Install them now with '${elevate}apt-get update && ${cmd}' (asks for your Linux password)?"; then
+    # shellcheck disable=SC2086 # fixed package names from wsl_missing_packages
+    if ${elevate}apt-get update && ${elevate}apt-get install -y $missing; then
+      echo -e "${GREEN}Installed: ${missing}${NC}"
+      return 0
+    fi
+    echo -e "${YELLOW}The package install failed. Run it yourself: ${elevate}apt-get update && ${cmd}${NC}"
+    return 1
+  fi
+  echo "Nothing installed. To install them yourself: ${elevate}apt-get update && ${cmd}"
+}
+
+# PROJECTS_ROOT entries on a Windows drive (/mnt/<drive>/...). The launcher's own
+# detection only looks under $HOME, so an explicit PROJECTS_ROOT is the one way
+# a root lands there.
+wsl_mnt_roots() {
+  local root out=""
+  local IFS=','
+  for root in ${PROJECTS_ROOT:-}; do
+    root="${root#"${root%%[![:space:]]*}"}"
+    case "$root" in /mnt/*) out="$out,$root" ;; esac
+  done
+  echo "${out#,}"
+}
+
+# Warns about a project root on a Windows drive and offers ~/code. It never moves
+# or copies a repository. $1 is the shell rc file the installer writes PATH to.
+wsl_projects_root_check() {
+  local rc="$1" mnt
+  mnt="$(wsl_mnt_roots)"
+  [ -n "$mnt" ] || return 0
+  echo -e "${YELLOW}PROJECTS_ROOT is on a Windows drive (${mnt}). Repositories under /mnt are slow from WSL and outside the confinement this runner verifies.${NC}"
+  if wsl_ask "Use ~/code (inside Linux) as the project root instead? Your repositories are not moved."; then
+    mkdir -p "$HOME/code"
+    export PROJECTS_ROOT="$HOME/code"
+    if [ -n "$rc" ]; then
+      printf '\n# buildd: project root inside Linux (WSL)\nexport PROJECTS_ROOT="$HOME/code"\n' >> "$rc"
+      echo -e "${GREEN}Project root is now ~/code (set in ${rc}). Clone your repositories there.${NC}"
+    else
+      echo -e "${GREEN}Created ~/code. Set PROJECTS_ROOT=\$HOME/code in your shell profile.${NC}"
+    fi
+  else
+    echo "Keeping PROJECTS_ROOT as it is. To change it later: export PROJECTS_ROOT=\$HOME/code"
+  fi
+}
+
+wsl_claude_logged_in() {
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" ]
+}
+
+wsl_codex_logged_in() {
+  [ -n "${OPENAI_API_KEY:-}" ] || [ -s "${CODEX_HOME:-$HOME/.codex}/auth.json" ]
+}
+
+# Claude, then Codex, then buildd: each skipped when already logged in, each
+# the operator's to skip. Nothing is read from or copied out of a Windows
+# profile. $1 is the buildd launcher.
+wsl_logins() {
+  local buildd="$1"
+  echo ""
+  echo -e "${GREEN}Logins (each stays on this Linux user; buildd stores none of them):${NC}"
+  if wsl_claude_logged_in; then
+    echo "  Claude: already logged in, skipped."
+  elif ! command -v claude >/dev/null 2>&1; then
+    echo "  Claude Code is not installed in WSL. Install it with: curl -fsSL https://claude.ai/install.sh | bash, then run: claude login"
+  elif wsl_ask "  Log in to Claude now (claude login)?"; then
+    claude login < "${BUILDD_TTY:-/dev/tty}" || echo -e "${YELLOW}  claude login did not finish. Run it again later.${NC}"
+  else
+    echo "  Skipped. Later: claude login"
+  fi
+  if wsl_codex_logged_in; then
+    echo "  Codex: already logged in, skipped."
+  elif wsl_ask "  Log in to Codex now (buildd codex login, optional: only Codex tasks need it)?"; then
+    "$buildd" codex login < "${BUILDD_TTY:-/dev/tty}" || echo -e "${YELLOW}  buildd codex login did not finish. Run it again later.${NC}"
+  else
+    echo "  Skipped. Later: buildd codex login"
+  fi
+  if [ -n "$(buildd_login_source)" ]; then
+    echo "  buildd: already logged in, skipped."
+  else
+    local device=""
+    [ -n "${BROWSER:-}" ] || command -v wslview >/dev/null 2>&1 || command -v xdg-open >/dev/null 2>&1 || device=" --device"
+    if wsl_ask "  Connect this runner to your buildd account now (buildd login${device})?"; then
+      # shellcheck disable=SC2086 # device is empty or the one fixed flag
+      "$buildd" login $device < "${BUILDD_TTY:-/dev/tty}" || echo -e "${YELLOW}  buildd login did not finish. Run it again later.${NC}"
+    else
+      echo "  Skipped. Later: buildd login${device}"
+    fi
+  fi
+  # R-23: the name this runner shows in the dashboard; empty keeps the default.
+  local default_name name=""
+  default_name="$(uname -n 2>/dev/null || echo wsl)-wsl"
+  if wsl_ask "  Give this runner a name (buildd name <name>; default ${default_name})?"; then
+    printf "  Name (empty keeps %s): " "$default_name"
+    read -r name < "${BUILDD_TTY:-/dev/tty}" || name=""
+    if [ -z "$name" ]; then
+      echo "  Kept ${default_name}."
+    else
+      "$buildd" name "$name" || echo -e "${YELLOW}  buildd name did not finish. Run: buildd name <name>${NC}"
+    fi
+  else
+    echo "  Skipped, name stays ${default_name}. Later: buildd name <name>"
+  fi
+}
+
+# The WSL confinement check with the installed runner, in words. Returns its
+# result: the installer installs no service and exits non-zero when it fails.
+wsl_verify() {
+  local install_dir="$1"
+  echo ""
+  echo -e "${GREEN}Checking Claude confinement in WSL (isolation-check --verify-wsl)...${NC}"
+  if bun --no-env-file run "$install_dir/apps/runner/src/isolation-check.ts" --verify-wsl >/dev/null 2>&1; then
+    echo -e "${GREEN}Verified: this runner is on linux-wsl and Claude runs confined by bwrap.${NC}"
+    return 0
+  fi
+  echo -e "${RED}Not verified: Claude would not run confined in this WSL distribution.${NC}"
+  bun --no-env-file run "$install_dir/apps/runner/src/isolation-check.ts" 2>/dev/null \
+    || echo "Run 'bun --no-env-file run $install_dir/apps/runner/src/isolation-check.ts --verify-wsl' to see the full result."
+  echo "Fix the above, then run this installer again. No background service was installed."
+  return 1
+}
+# --- wsl setup: end ---
+
+IN_WSL=0
+if [ "$CLIENT_MODE" != "1" ] && is_wsl; then
+  IN_WSL=1
+  echo -e "${GREEN}Inside WSL2: this installer sets up a runner with Claude confined by bubblewrap.${NC}"
+  wsl_packages_offer || true
+fi
+
 # Check for bun
 if ! command -v bun &> /dev/null; then
   echo -e "${YELLOW}Bun not found. Installing...${NC}"
@@ -545,6 +731,15 @@ CLIENTUSAGE
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/login.ts" "$@"
     ;;
 
+  codex)
+    # `buildd codex login`: Codex's own login through the native binary the
+    # runner's Codex SDK installed, so it needs no Node (codex-login.ts).
+    [ "$CLIENT_ONLY" = "1" ] && client_only_runner
+    ensure_packages
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/codex-login.ts" "$@"
+    ;;
+
   logout)
     # Revokes the session presence token (best effort), then drops both
     # credentials from ~/.buildd/config.json.
@@ -629,6 +824,8 @@ if [ -n "$SHELL_RC" ] && ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
   echo -e "${YELLOW}Added ~/.local/bin to PATH in $SHELL_RC${NC}"
 fi
+
+[ "$IN_WSL" = "1" ] && wsl_projects_root_check "$SHELL_RC"
 
 # --- next steps: begin ---
 # What to do after the installer. Kept in two functions between these markers so
@@ -813,10 +1010,19 @@ bwrap_offer() {
   fi
 }
 # --- bubblewrap offer: end ---
-bwrap_offer "$INSTALL_DIR" "$WANT_BWRAP"
+# Inside WSL the package step at the start already offered bubblewrap.
+[ "$IN_WSL" = "1" ] || bwrap_offer "$INSTALL_DIR" "$WANT_BWRAP"
 
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
+
+# Inside WSL: the three logins, then the confinement check. A failed check
+# installs no service and the installer exits non-zero.
+WSL_VERIFIED=1
+if [ "$IN_WSL" = "1" ]; then
+  wsl_logins "$BIN_DIR/buildd"
+  wsl_verify "$INSTALL_DIR" || WSL_VERIFIED=0
+fi
 
 LOGIN_SOURCE="$(buildd_login_source)"
 
@@ -829,7 +1035,13 @@ LOGIN_SOURCE="$(buildd_login_source)"
 # `curl | bash` makes fd 0 the script itself, so the prompt reads from
 # /dev/tty directly rather than stdin.
 INSTALL_SERVICE=0
-if [ "$WANT_SERVICE" = "1" ]; then
+if [ "$IN_WSL" = "1" ] && [ "$WSL_VERIFIED" = "1" ]; then
+  echo ""
+  echo "A Windows runner on this machine too? Run 'buildd wsl migrate' from PowerShell instead: it hands its work over and keeps this runner running across reboots."
+fi
+if [ "$WSL_VERIFIED" != "1" ]; then
+  INSTALL_SERVICE=0
+elif [ "$WANT_SERVICE" = "1" ]; then
   INSTALL_SERVICE=1
 elif [ -n "$LOGIN_SOURCE" ] && [ -t 1 ] && [ -r /dev/tty ]; then
   echo ""
@@ -850,4 +1062,5 @@ if [ "$INSTALL_SERVICE" = "1" ]; then
   fi
 fi
 
+[ "$WSL_VERIFIED" = "1" ] || exit 1
 print_next_steps "$LOGIN_SOURCE" "$SERVICE_INSTALLED"

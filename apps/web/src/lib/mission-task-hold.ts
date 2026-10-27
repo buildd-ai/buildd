@@ -146,14 +146,12 @@ const OVERLAP_REASONS = new Set(['path_overlap', 'soft_overlap', 'ordered_behind
 
 /** The claim-gate key each limit is held under, so a presentation sorts it as before. */
 const LIMIT_HOLD_KEY: Record<QueueLimit, string> = {
-  mission_pacing: 'mission_paced',
   mission_cap: 'mission_concurrent',
-  workspace_cap: 'workspace_cap',
   workspace_paused: 'workspace_paused',
   mission_budget: 'mission_budget',
   budget: 'budget_paused',
   plan: 'managed_runner_hours',
-  seats: 'oauth_parallelism',
+  seats: 'account_slots',
   task_paused: 'task_held',
   mission_paused: 'mission_held',
   local_session: 'mission_local',
@@ -290,7 +288,7 @@ function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHol
         h ? { id: h.id, title: h.title ?? null, note: after!.note } : null);
     }
     if (wait.kind === 'limit') {
-      const limit = wait.limit ?? 'workspace_cap';
+      const limit = wait.limit ?? 'mission_cap';
       const label = queueLimitLabel(limit);
       const lifts = wait.liftsAt ? `, lifts ${whenLabel(wait.liftsAt, now)}` : '';
       return queued(BUDGET_LIMITS.has(limit) ? 'budget' : 'hold', `${label.charAt(0).toLowerCase()}${label.slice(1)}${lifts}`, LIMIT_HOLD_KEY[limit]);
@@ -346,6 +344,8 @@ function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHol
   }
 
   // 3. No runner able to take it: the gate's reason, else no browser runner, else none online.
+  // A pin is not a missing capability: name the one runner it waits for.
+  if (reason === 'runner_capability' && str(detail.pinnedRunner)) return queued('no_runner', `waiting for runner ${detail.pinnedRunner}`, reason);
   if (reason && reasonKind === 'no_runner') return noRunner(noRunnerReason(reason, detail), reason);
   if (input.missingBrowser) return noRunner(BROWSER_RUNNER_MISSING, 'browser_runner');
   if (input.runnerOnline === false) return noRunner('none is online', 'runner_offline');

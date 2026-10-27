@@ -90,6 +90,14 @@ describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-
     expect(view.verificationTaskId).not.toBeNull();
   });
 
+  it('a mission whose test files are all missing says so, not "verifying"', () => {
+    const { row, view } = specOf('outcome-spec-files-missing');
+    expect(row).toMatchObject({ status: 'queued', state: 'not checked' });
+    expect(row.detail).toContain('Nothing checked: 6 test files not found.');
+    expect(row.criteria).toHaveLength(6);
+    expect(view.criteria.every(l => l.text && l.reason === 'test file not found')).toBe(true);
+  });
+
   it('each variant renders through the real criterion row', () => {
     for (const v of OUTCOME_SPEC_VARIANTS) {
       const { criterion, entry } = specOf(v);

@@ -82,6 +82,21 @@ describe('deriveTaskVerdict', () => {
     expect(v.headline).toBe('Ready to merge · PR #12');
   });
 
+  // Living Spec fa62b865 R-52 / AC-61 (#5714): green CI never says "Ready to merge" over a delivery that is not approved.
+  it('an escalated delivery with green CI states the delivery, never Ready to merge', () => {
+    const v = deriveTaskVerdict(input({
+      pr: { ...PR, lifecycle: 'ci_green' }, mismatch: [],
+      deliveryOwner: 'human', deliveryHeadline: 'Merge conflict', deliveryReady: false,
+    }))!;
+    expect(v.state).toBe('needs_you');
+    expect(v.headline).toBe('Merge conflict · PR #12');
+    expect(v.headline).not.toContain('Ready to merge');
+  });
+  it('an approved delivery with green CI still reads Ready to merge', () => {
+    const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'ci_green' }, mismatch: [], deliveryOwner: 'human', deliveryHeadline: 'Ready to merge', deliveryReady: true }))!;
+    expect(v.headline).toBe('Ready to merge · PR #12');
+  });
+
   it('red lifecycle without any named check still blocks', () => {
     const v = deriveTaskVerdict(input({ checks: null }))!;
     expect(v.state).toBe('blocked');
@@ -332,6 +347,20 @@ describe('completed task with an open PR: who is the next actor', () => {
     const v = deriveTaskVerdict({ ...base, pr: { ...pr, lifecycle: 'ci_green' }, deliveryOwner: owner })!;
     expect(v.headline).not.toMatch(/^Merging/);
     expect(v.cause ?? '').not.toContain('without you');
-    expect(v.state).toBe('needs_you');
+    expect(v.state).toBe(owner === 'trunk' || owner === 'worker' ? 'in_progress' : 'needs_you');
+  });
+
+  // e07ee9cf: an approved PR queued in the landing lane read "needs you · no checks reported yet · Review & merge".
+  it.each(['trunk', 'worker', 'platform'])('a platform-owned delivery (%s) never reads as needs you or "no checks reported"', (owner) => {
+    const v = deriveTaskVerdict({ ...base, deliveryOwner: owner, deliveryHeadline: 'Fixing CI' })!;
+    expect(v.state).toBe('in_progress');
+    expect(v.headline).toBe('Fixing CI · PR #9');
+    expect(v.headline).not.toContain('no checks reported');
+    expect(v.actions.some(a => a.label === 'Review & merge')).toBe(false);
+  });
+
+  it('a PR queued in the landing lane reads as the delivery says, not waiting on you', () => {
+    const v = deriveTaskVerdict({ ...base, deliveryOwner: 'landing', deliveryActivity: 'Approved · queued to land behind PR #5657' })!;
+    expect(v).toMatchObject({ state: 'in_progress', headline: 'Approved · queued to land behind PR #5657' });
   });
 });

@@ -216,7 +216,7 @@ export const GATE_SLUGS = {
    * sweep (`lib/ci-red-sweep.ts`). `detail.skipReason` is the stable code:
    * owner_stopped, pr_terminal, no_workspace, draft, pr_merged, pr_closed,
    * fix_in_flight, head_already_retried, retries_exhausted, retries_disabled,
-   * duplicate. `deferred` = someone still owes a push (a fix in flight);
+   * duplicate, infra_rerun, flake_rerun. `deferred` = someone still owes a push (a fix in flight);
    * `rejected` = nothing will act on this head; `stranded` = the sweep found a
    * head an attempt already ran on with nothing pushed, and escalated it.
    */

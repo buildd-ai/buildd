@@ -9,10 +9,13 @@
  *   &view=deck | deck-phone | compare         the review deck (dialog, inline sheet, compare open)
  *   &view=fix-check                           a merged fix with a new screenshot: Before / After, Fixed / Still broken
  *   &view=fix-merged                          a merged fix with no screenshot since: settled, no buttons
+ *   &view=fix-merged-tray                     the same working set, deck closed: the tray's "Fix merged" thumbnail awaiting recapture
  *   &view=recapture | recapture-queued | recapture-decide
  *                                             merged fixes an audit did not re-shoot (spec 072de598 I-15):
  *                                             a recapture owed, queued, or a person's Fixed / Still broken
  *   &view=reviewed                            the reviewed tray
+ *   &view=all-fine                            every screen fine: the deck opens on the first screen, arrows walk them all
+ *   &view=out-of-date                         shots from an earlier commit, no new check scheduled: the line and the check row agree
  *   &expired=1                                one image that fails to load
  *
  * Illustrative fixtures only: SVG sketches, never captures (the repo is
@@ -22,6 +25,7 @@ import { VISUAL_REVIEW_PHASES, type VisualReviewNeedsYouReason, type VisualRevie
 import type { VisualReviewFixtureOptions } from '@/lib/visual-review-model.fixtures';
 import { mockWorkers } from './fixtures-data';
 import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
+import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 
 export const VISUAL_REVIEW_FIXTURE_STATE = 'visual-review';
 /** The real mission Board, Lanes and Feed with a visual model (mission-board-visual-fixtures.ts). */
@@ -71,6 +75,8 @@ export const AGENT_ACCESS_FIXTURE_STATE = 'agent-access';
 export const ENTITLEMENT_BLOCKED_FIXTURE_STATE = 'entitlement-blocked';
 /** A queued task held by a coordination gate: waiting line, Force start confirmation (CoordinationHoldFixture.tsx). */
 export const COORDINATION_HOLD_FIXTURE_STATE = 'coordination-hold';
+/** A pending task held only by a declared prerequisite: Start anyway, requested, assessing, parked (StartAnywayFixture.tsx). */
+export const START_ANYWAY_FIXTURE_STATE = 'start-anyway';
 /** A worker failure beside a landed-work, failed-audit one (FailureKindsFixture.tsx). */
 export const FAILURE_KINDS_FIXTURE_STATE = 'failure-kinds';
 
@@ -132,6 +138,8 @@ export const SPEC_ATTACHMENTS_FIXTURE_STATE = 'spec-attachments';
 export const SPEC_DELIVERY_FIXTURE_STATE = 'spec-delivery';
 /** A spec page's decision: an unconfirmed import, a first revision, an amendment (SpecImportReviewFixture, `&v=`). */
 export const SPEC_IMPORT_REVIEW_FIXTURE_STATE = 'spec-import-review';
+/** A spec page with six sections and a long body, approved, waiting, retired or imported, and the /approve page with "Replaces <spec>. Retire it." (SpecPageFixture, `&v=`). */
+export const SPEC_PAGE_FIXTURE_STATE = 'spec-page';
 /** Settings → Connected apps → Runners: picks across two teams, removed and unreachable picks, other teams' runners (RunnerKeysFixture.tsx). */
 export const RUNNER_KEYS_FIXTURE_STATE = 'runner-keys';
 
@@ -140,14 +148,22 @@ export const MISSION_DELIVERIES_FIXTURE_STATE = 'mission-deliveries';
 
 /** The artifact page's sandboxed design preview around a sample design (DesignPreviewFixture.tsx). */
 export const DESIGN_PREVIEW_FIXTURE_STATE = 'design-preview';
+export const STAGE_METER_FIXTURE_STATE = 'stage-meter';
+/** DeliveryRow and DeliveryCard in every meter state (DeliveryRowFixture.tsx). */
+export const DELIVERY_ROW_FIXTURE_STATE = 'delivery-row';
+export const DELIVERY_BAR_FIXTURE_STATE = 'delivery-bar';
+/** Now's YouStrip and Pipeline over the rows they count (YouStripPipelineFixture.tsx). */
+export const YOU_STRIP_PIPELINE_FIXTURE_STATE = 'you-strip-pipeline';
+/** CheckRow in every status, and the mission page's Delivery beside Checks (CheckRowFixture.tsx). */
+export const CHECK_ROW_FIXTURE_STATE = 'check-row';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, MODEL_PROVIDERS_LONE_FIXTURE_STATE, MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE, OPERATOR_ACCESS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, TASK_PAGE_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, FAILURE_KINDS_FIXTURE_STATE, ENTITLEMENT_BLOCKED_FIXTURE_STATE, COORDINATION_HOLD_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, MISSION_PLAN_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE, RUNNER_SIZE_FIXTURE_STATE, RUNNER_ISOLATION_FIXTURE_STATE, INTERACTIVE_SESSIONS_FIXTURE_STATE, WORKSPACES_LIST_FIXTURE_STATE, HOSTED_RUNNER_FIXTURE_STATE, SERVICE_STATUS_FIXTURE_STATE, DELIVERY_STATES_FIXTURE_STATE, SURFACE_AUDIT_WAIVER_FIXTURE_STATE, SKIP_ROW_FIXTURE_STATE, DELIVERY_REVIEW_ACTIONS_FIXTURE_STATE, DELIVERY_DOCK_FIXTURE_STATE, DELIVERY_RUN_FIX_FIXTURE_STATE, ACTIVITY_DELIVERY_FIXTURE_STATE, TEAM_MEMBERS_FIXTURE_STATE, REFINED_COMPONENTS_FIXTURE_STATE, MISSION_FLOW_FIXTURE_STATE, MISSION_DETAIL_COMPACT_FIXTURE_STATE, RUN_ACTIVITY_FIXTURE_STATE, HOME_CARDS_FIXTURE_STATE, MCP_CONNECTIONS_FIXTURE_STATE, TASK_ERROR_EVIDENCE_FIXTURE_STATE, SPEC_SURFACE_FIXTURE_STATE, BRANCH_PANEL_FIXTURE_STATE, SPEC_INDEX_FIXTURE_STATE, SPEC_ATTACHMENTS_FIXTURE_STATE, SPEC_DELIVERY_FIXTURE_STATE, SPEC_IMPORT_REVIEW_FIXTURE_STATE, RUNNER_KEYS_FIXTURE_STATE, MISSION_DELIVERIES_FIXTURE_STATE, DESIGN_PREVIEW_FIXTURE_STATE];
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, MODEL_PROVIDERS_LONE_FIXTURE_STATE, MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE, OPERATOR_ACCESS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, TASK_PAGE_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, FAILURE_KINDS_FIXTURE_STATE, ENTITLEMENT_BLOCKED_FIXTURE_STATE, COORDINATION_HOLD_FIXTURE_STATE, START_ANYWAY_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, MISSION_PLAN_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE, RUNNER_SIZE_FIXTURE_STATE, RUNNER_ISOLATION_FIXTURE_STATE, INTERACTIVE_SESSIONS_FIXTURE_STATE, WORKSPACES_LIST_FIXTURE_STATE, HOSTED_RUNNER_FIXTURE_STATE, SERVICE_STATUS_FIXTURE_STATE, DELIVERY_STATES_FIXTURE_STATE, SURFACE_AUDIT_WAIVER_FIXTURE_STATE, SKIP_ROW_FIXTURE_STATE, DELIVERY_REVIEW_ACTIONS_FIXTURE_STATE, DELIVERY_DOCK_FIXTURE_STATE, DELIVERY_RUN_FIX_FIXTURE_STATE, ACTIVITY_DELIVERY_FIXTURE_STATE, TEAM_MEMBERS_FIXTURE_STATE, REFINED_COMPONENTS_FIXTURE_STATE, MISSION_FLOW_FIXTURE_STATE, MISSION_DETAIL_COMPACT_FIXTURE_STATE, RUN_ACTIVITY_FIXTURE_STATE, HOME_CARDS_FIXTURE_STATE, MCP_CONNECTIONS_FIXTURE_STATE, TASK_ERROR_EVIDENCE_FIXTURE_STATE, SPEC_SURFACE_FIXTURE_STATE, BRANCH_PANEL_FIXTURE_STATE, SPEC_INDEX_FIXTURE_STATE, SPEC_ATTACHMENTS_FIXTURE_STATE, SPEC_DELIVERY_FIXTURE_STATE, SPEC_IMPORT_REVIEW_FIXTURE_STATE, RUNNER_KEYS_FIXTURE_STATE, MISSION_DELIVERIES_FIXTURE_STATE, SPEC_PAGE_FIXTURE_STATE, CLOSED_PR_FIXTURE_STATE, DESIGN_PREVIEW_FIXTURE_STATE, STAGE_METER_FIXTURE_STATE, DELIVERY_ROW_FIXTURE_STATE, DELIVERY_BAR_FIXTURE_STATE, YOU_STRIP_PIPELINE_FIXTURE_STATE, CHECK_ROW_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);
 }
 
-export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'fix-check', 'fix-merged', 'reviewed', 'recapture', 'recapture-queued', 'recapture-decide'] as const;
+export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'fix-check', 'fix-merged', 'fix-merged-tray', 'reviewed', 'recapture', 'recapture-queued', 'recapture-decide', 'all-fine', 'out-of-date'] as const;
 /** The views that show a merged fix waiting for a screenshot, with the Verify row they produce. */
 export const RECAPTURE_FIXTURE_VIEWS = ['recapture', 'recapture-queued', 'recapture-decide'] as const;
 export type RecaptureFixtureView = (typeof RECAPTURE_FIXTURE_VIEWS)[number];
@@ -182,9 +198,9 @@ export function parseVisualReviewFixtureParams(q: URLSearchParams): VisualReview
   const reasonParam = q.get('reason');
   const reason = (REASONS as readonly string[]).includes(reasonParam ?? '') ? (reasonParam as VisualReviewNeedsYouReason) : undefined;
   const expired = q.get('expired') === '1';
-  const deckLike = view === 'deck' || view === 'deck-phone' || view === 'compare' || view === 'fix-check' || view === 'fix-merged';
+  const deckLike = view === 'deck' || view === 'deck-phone' || view === 'compare' || view === 'fix-check' || view === 'fix-merged' || view === 'fix-merged-tray';
 
-  if (view === 'reviewed') {
+  if (view === 'reviewed' || view === 'all-fine' || view === 'out-of-date') {
     return { view, phase: 'reviewed', options: { expired }, startKey: null, compare: false };
   }
   if (isRecaptureFixtureView(view)) {
@@ -223,7 +239,10 @@ export function visualReviewFixtureLinks(): { label: string; href: string }[] {
     { label: 'compare', href: `${base}&view=compare` },
     { label: 'fix merged, new screenshot', href: `${base}&view=fix-check` },
     { label: 'fix merged, no screenshot yet', href: `${base}&view=fix-merged` },
+    { label: 'fix merged, tray', href: `${base}&view=fix-merged-tray` },
     { label: 'reviewed', href: `${base}&view=reviewed` },
+    { label: 'all fine', href: `${base}&view=all-fine` },
+    { label: 'out of date, no check scheduled', href: `${base}&view=out-of-date` },
     { label: 'fix merged, recapture owed', href: `${base}&view=recapture` },
     { label: 'fix merged, recapture queued', href: `${base}&view=recapture-queued` },
     { label: 'fix merged, your call', href: `${base}&view=recapture-decide` },

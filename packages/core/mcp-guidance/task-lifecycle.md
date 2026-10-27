@@ -75,9 +75,15 @@ waiting. Each message comes back once.
 - **Every decision you ask for** (`post_note`, `ask_human`, `AskUserQuestion`):
   the question names the decision ("How should Docker Hub credentials be set
   up?"), never "How should I proceed?". Offer two options, the recommended
-  one and one alternative, as `[{ label, consequence, recommended }]`; each
-  consequence says what happens next and what stays blocked, in one to three
-  sentences. A third only for a genuinely different choice; more than three is
+  one and one alternative, as `[{ label, consequence, outcome, recommended }]`;
+  each consequence says what happens next and what stays blocked, in one to
+  three sentences. `outcome` is what the option does to your task: `continues`
+  (you keep working), `finishes` (you complete it), `stops` (it fails) or
+  `changes` (you deliver something different). buildd shows the person which
+  other tasks start, keep waiting or fail for each one. In `AskUserQuestion`,
+  which takes no extra fields, start the option's description with the kind in
+  square brackets, exactly `[finishes] Ships the fix as it is.`; any other form
+  has no kind. A third only for a genuinely different choice; more than three is
   refused. Never offer "Not now" or "Skip": the person always has those and a
   free-text answer. Asking about another task (an organizer about a build
   task)? Pass its id as `subjectTaskId` (same mission).

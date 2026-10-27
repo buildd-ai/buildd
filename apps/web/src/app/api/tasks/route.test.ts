@@ -5267,6 +5267,24 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       expect(data.error).toMatch(/coordinate-only/i);
     });
 
+    it('refuses a Living Spec revision task filed as builder, with the reason', async () => {
+      organizerCallSetup({ callingTask: null });
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Revise the spec',
+          description: 'Use manage_specs action=revise to add the criteria',
+          roleSlug: 'builder',
+        },
+      }));
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toMatch(/cannot change acceptance criteria/i);
+      expect(data.error).toMatch(/organizer/);
+    });
+
     it('allows a retry child even when sibling tasks exist, as long as parentTaskId is explicit', async () => {
       organizerCallSetup();
       mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);

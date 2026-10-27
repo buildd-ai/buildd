@@ -19,7 +19,9 @@ import type {
   PolicyEvidence,
   ConstituentEvidence,
   DeliveryState,
+  EvidenceTarget,
   FindingStatus,
+  RemedyClass,
   RoundKind,
   RoundStatus,
   Verdict,
@@ -57,6 +59,10 @@ export interface FindingInput {
   title: string;
   /** Default true: a request for changes blocks landing. */
   required?: boolean;
+  /** Who can fix it (§11.1 R-44). Absent: `code_fix`, or the class it already has when restated. */
+  remedyClass?: RemedyClass | null;
+  /** For an `evidence` finding: the screen and route buildd captures (R-46). */
+  evidence?: { criterionId?: string | null; screen: string; route?: string | null } | null;
 }
 
 /** What a verdict says about the delivery's findings, beside the verdict itself. */
@@ -209,6 +215,13 @@ export type Command =
        * not this fact.
        */
       baseOnly?: boolean;
+      /**
+       * A CI fixer's report that the failure is the base's, not this PR's. The host has opened or
+       * joined the trunk incident for the delivery's signature; the kernel takes T25 with it
+       * instead of burning another fix on the same head. Honoured only for a CI repair whose
+       * head is still where it was bound.
+       */
+      blockedOnBase?: { incidentId: string; signature: string } | null;
     })
   | (Base & {
       /**
@@ -616,6 +629,18 @@ export type Command =
     })
   | (Base & { type: 'TrunkRecovered'; incidentId: string; baseStillRed: boolean; headPredatesFix: boolean })
   | (Base & {
+      /**
+       * §11.1 R-46: buildd's capture for an evidence round came back. `captures` attaches each
+       * stored capture to its finding and the round goes to a reviewer; `failure` (no route, no
+       * Visual QA, a capture that failed) turns its findings into `capability_gap` and escalates.
+       * Neither spends a review round.
+       */
+      type: 'EvidenceRecorded';
+      roundId: string;
+      captures?: Array<{ findingId: string; artifactId: string }>;
+      failure?: string | null;
+    })
+  | (Base & {
       type: 'ReviewRoundFailed';
       roundId: string;
       /**
@@ -664,7 +689,7 @@ export const EFFECT_KINDS = [
   'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
   'escalate_exhaustion', 'gate_event', 'capture_ci_evidence', 'carry_findings',
-  'publish_landing_status', 'dispatch_external_merge_fix',
+  'publish_landing_status', 'dispatch_external_merge_fix', 'dispatch_capture',
 ] as const;
 
 export type EffectKind = (typeof EFFECT_KINDS)[number];
@@ -726,6 +751,8 @@ export type RoundOp =
         clearReviewer?: boolean;
         /** Why a round ended without its own verdict (a supersession), persisted with the round. */
         endReason?: string;
+        /** §11.1 R-45: the round spends no review round (its open findings held no code fix). */
+        budgetFree?: boolean;
       };
     };
 
@@ -766,6 +793,8 @@ export type FindingOp =
       line: number | null;
       title: string;
       required: boolean;
+      remedyClass?: RemedyClass;
+      evidence?: EvidenceTarget | null;
     }
   | {
       op: 'update';
@@ -776,6 +805,9 @@ export type FindingOp =
         lastRound?: number;
         title?: string;
         required?: boolean;
+        remedyClass?: RemedyClass;
+        restatedCount?: number;
+        evidence?: EvidenceTarget | null;
         addressedBySha?: string | null;
         closedByRoundId?: string | null;
         closedBy?: string | null;

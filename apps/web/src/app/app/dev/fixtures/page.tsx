@@ -22,6 +22,7 @@ import SpecIndexFixture from './SpecIndexFixture';
 import SpecAttachmentsFixture from './SpecAttachmentsFixture';
 import SpecImportReviewFixture from './SpecImportReviewFixture';
 import SpecDeliveryFixture from './SpecDeliveryFixture';
+import SpecPageFixture from './SpecPageFixture';
 import MissionDeliveriesFixture from './MissionDeliveriesFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
@@ -41,6 +42,7 @@ import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import CoordinationHoldFixture from './CoordinationHoldFixture';
+import StartAnywayFixture from './StartAnywayFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import RunnerIsolationFixture from './RunnerIsolationFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
@@ -51,6 +53,7 @@ import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
 import ActivityDeliveryFixture from './ActivityDeliveryFixture';
 import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import SkipRowFixture from './SkipRowFixture';
+import CheckRowFixture from './CheckRowFixture';
 import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
@@ -58,7 +61,13 @@ import MissionDetailCompactFixture from './MissionDetailCompactFixture';
 import BranchPanelFixture from './BranchPanelFixture';
 import HomeCardsFixture from './HomeCardsFixture';
 import ServiceStatusFixture from './ServiceStatusFixture';
+import ClosedPrFixture from './ClosedPrFixture';
+import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import DesignPreviewFixture from './DesignPreviewFixture';
+import StageMeterFixture from './StageMeterFixture';
+import DeliveryRowFixture from './DeliveryRowFixture';
+import YouStripPipelineFixture from './YouStripPipelineFixture';
+import DeliveryBarFixture from './DeliveryBarFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -89,9 +98,15 @@ import {
     SPEC_ATTACHMENTS_FIXTURE_STATE,
     SPEC_DELIVERY_FIXTURE_STATE,
     SPEC_IMPORT_REVIEW_FIXTURE_STATE,
+    SPEC_PAGE_FIXTURE_STATE,
     RUNNER_KEYS_FIXTURE_STATE,
     MISSION_DELIVERIES_FIXTURE_STATE,
     DESIGN_PREVIEW_FIXTURE_STATE,
+    STAGE_METER_FIXTURE_STATE,
+    DELIVERY_ROW_FIXTURE_STATE,
+    YOU_STRIP_PIPELINE_FIXTURE_STATE,
+    CHECK_ROW_FIXTURE_STATE,
+    DELIVERY_BAR_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -99,6 +114,7 @@ import {
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     COORDINATION_HOLD_FIXTURE_STATE,
+    START_ANYWAY_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
@@ -164,6 +180,10 @@ export default function DevFixturesPage() {
         return <SurfaceAuditWaiverFixture />;
     }
 
+    if (state === CHECK_ROW_FIXTURE_STATE) {
+        return <CheckRowFixture />;
+    }
+
     if (state === SKIP_ROW_FIXTURE_STATE) {
         return <SkipRowFixture />;
     }
@@ -194,6 +214,10 @@ export default function DevFixturesPage() {
 
     if (state === SPEC_IMPORT_REVIEW_FIXTURE_STATE) {
         return <SpecImportReviewFixture />;
+    }
+
+    if (state === SPEC_PAGE_FIXTURE_STATE) {
+        return <SpecPageFixture />;
     }
 
     if (state === SPEC_DELIVERY_FIXTURE_STATE) {
@@ -253,12 +277,27 @@ export default function DevFixturesPage() {
     if (state === COORDINATION_HOLD_FIXTURE_STATE) {
         return <CoordinationHoldFixture />;
     }
+    if (state === START_ANYWAY_FIXTURE_STATE) {
+        return <StartAnywayFixture />;
+    }
 
     if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {
         return <ToolBreakdownFixture />;
     }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+    if (state === STAGE_METER_FIXTURE_STATE) {
+        return <StageMeterFixture />;
+    }
+    if (state === DELIVERY_ROW_FIXTURE_STATE) {
+        return <DeliveryRowFixture />;
+    }
+    if (state === DELIVERY_BAR_FIXTURE_STATE) {
+        return <DeliveryBarFixture />;
+    }
+    if (state === YOU_STRIP_PIPELINE_FIXTURE_STATE) {
+        return <YouStripPipelineFixture />;
     }
     if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
         return <DesignPreviewFixture />;
@@ -328,6 +367,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_DETAIL_COMPACT_FIXTURE_STATE) {
         return <MissionDetailCompactFixture />;
+    }
+
+    if (state === CLOSED_PR_FIXTURE_STATE) {
+        return <ClosedPrFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {
@@ -419,8 +462,8 @@ function VisualReviewFixtureView({ params }: { params: VisualReviewFixtureParams
     );
     const [initial] = useState(() => transport.model());
     const review = useVisualReviewDecisions(initial, transport);
-    const model = review.model;
-    const opensDeck = params.view === 'deck' || params.view === 'compare' || params.view === 'fix-check' || params.view === 'fix-merged';
+    const model = params.view === 'out-of-date' ? { ...review.model, onEarlierCommit: true } : review.model;
+    const opensDeck = params.view === 'all-fine' || params.view === 'deck' || params.view === 'compare' || params.view === 'fix-check' || params.view === 'fix-merged';
     const [deck, setDeck] = useState<{ startKey: string | null; compare: boolean } | null>(
         opensDeck ? { startKey: params.startKey, compare: params.compare } : null,
     );

@@ -81,7 +81,9 @@ export const MISSION_PROMPT_DEFAULTS = {
     '**Prior-work gate**: Before creating any task, check "Related prior work" above. ' +
     'If a retrieved item scores ≥0.82 similarity AND its PR was merged within 14 days, ' +
     'do NOT create the task. Instead: `post_note type=decision` naming the PR and explaining ' +
-    'why decomposition was skipped for that item.',
+    'why decomposition was skipped for that item.\n' +
+    '**Spec revisions**: a task that revises a Living Spec (`manage_specs revise`) must be filed with `roleSlug` organizer or researcher — ' +
+    'the builder role cannot change acceptance criteria and the revise is refused. A Living Spec is not a repo file: give such a task no `docs/specs/*.md` pathManifest and no `pr_required`.',
   efficiencyMode:
     '**Efficiency mode**: This mission has an established pattern. Be fast:\n' +
     '- If the work is routine (same type as prior tasks), create the task with the proven role — don\'t over-analyze.\n' +

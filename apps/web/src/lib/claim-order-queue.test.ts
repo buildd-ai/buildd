@@ -93,7 +93,7 @@ const row = (over: Record<string, unknown> = {}) => ({
   startAt: null, dependsOn: [], workspacePausedUntil: null,
   g_claimFree: true, g_activeWorker: true, g_missionLocal: true, g_taskReserved: true, g_role: true, g_runnerPreference: true,
   g_workspaceExecutor: true, g_subject: true, g_startAt: true, g_taskHeld: true, g_missionHeld: true, g_deps: true,
-  g_workspacePaused: true, g_workspaceCap: true, g_runnerCooldown: true,
+  g_workspacePaused: true, g_runnerCooldown: true,
   ...over,
 }) as any;
 
@@ -389,7 +389,7 @@ describe('the claim route and the queue share one candidate WHERE', () => {
 
   it('an admin force claim lifts the gates the route lifts', () => {
     const { gates } = claimCandidateWhere({ ...input, forceClaim: true, taskId: 't-1' });
-    for (const lifted of ['startAt', 'missionHeld', 'missionLocal', 'subject', 'deps', 'workspaceCap', 'workspaceExecutor', 'workspacePaused'] as const) {
+    for (const lifted of ['startAt', 'missionHeld', 'missionLocal', 'subject', 'deps', 'workspaceExecutor', 'workspacePaused'] as const) {
       expect(gates[lifted]).toBeUndefined();
     }
     expect(gates.activeWorker).toBeDefined();

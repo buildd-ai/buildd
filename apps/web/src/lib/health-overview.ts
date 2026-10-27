@@ -2,7 +2,7 @@
 
 /**
  * Health → Overview, as plain data: the one status sentence at the top, and the
- * short status rows (runners, credentials, budget) that link to Runners &
+ * short status rows (runners, budget) that link to Runners &
  * capacity. Pure, so the wording is tested without a DOM.
  *
  * Written for a team using buildd, not for buildd's developers: counts a person
@@ -24,19 +24,19 @@ export interface OverviewAttention {
 }
 
 export interface OverviewState {
-  runners: { total: number; online: number; busySlots: number; slots: number };
-  credentials: { total: number; broken: number };
+  /** Runners seen recently (`isRunnerRecentlySeen`): a long-gone runner is not counted. */
+  runners: { total: number; online: number; busySlots: number };
   budget: {
     monthly: { spentUsd: number; budgetUsd: number; pctUsed: number } | null;
-    /** Providers currently refusing work until a limit resets. */
-    pausedProviders: number;
+    /** Providers currently refusing work until a limit resets; `resetsInMs` null when unknown. */
+    paused: Array<{ label: string; resetsInMs: number | null }>;
   };
 }
 
 export type OverviewTone = 'ok' | 'warning' | 'error' | 'muted';
 
 export interface OverviewStatusRow {
-  key: 'runners' | 'credentials' | 'budget';
+  key: 'runners' | 'budget';
   label: string;
   value: string;
   tone: OverviewTone;
@@ -65,6 +65,21 @@ export function overviewHeadline(a: OverviewAttention): { tone: 'ok' | 'attentio
   return { tone: 'attention', count, text: `${facts.join(' · ')}.` };
 }
 
+function resetsIn(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`;
+}
+
+/** "Codex paused · resets in 7h": which provider stopped, and when it starts again. */
+function pausedValue(paused: OverviewState['budget']['paused']): string {
+  const names = paused.map(p => p.label);
+  const who = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  const known = paused.map(p => p.resetsInMs).filter((ms): ms is number => ms !== null);
+  return known.length ? `${who} paused · resets in ${resetsIn(Math.min(...known))}` : `${who} paused`;
+}
+
 function usd(n: number): string {
   return `$${Math.round(n).toLocaleString('en-US')}`;
 }
@@ -73,7 +88,7 @@ export function overviewStatusRows(
   s: OverviewState,
   opts?: { hideOfflineRunners?: boolean },
 ): OverviewStatusRow[] {
-  const { runners, credentials, budget } = s;
+  const { runners, budget } = s;
 
   const runnerRow: OverviewStatusRow | null = runners.total === 0
     ? { key: 'runners', label: 'Runners', value: 'None connected', tone: 'error', href: RUNNERS_HREF }
@@ -84,35 +99,24 @@ export function overviewStatusRows(
         : {
             key: 'runners',
             label: 'Runners',
-            value: `${runners.online} of ${runners.total} online · ${runners.busySlots} of ${runners.slots} agents running`,
+            value: `${runners.online} online · ${runners.busySlots} running`,
             tone: runners.online === runners.total ? 'ok' : 'warning',
             href: RUNNERS_HREF,
           };
 
-  const credentialRow: OverviewStatusRow = credentials.total === 0
-    // No stored credential is normal when runners use their own sign-in: neutral, not a warning.
-    ? { key: 'credentials', label: 'Credentials', value: 'None stored', tone: 'muted', href: RUNNERS_HREF }
-    : credentials.broken > 0
-      ? {
-          key: 'credentials',
-          label: 'Credentials',
-          value: credentials.broken === 1 ? '1 needs attention' : `${credentials.broken} need attention`,
-          tone: 'error',
-          href: RUNNERS_HREF,
-        }
-      : { key: 'credentials', label: 'Credentials', value: `${credentials.total} working`, tone: 'ok', href: RUNNERS_HREF };
-
-  const budgetRow: OverviewStatusRow = budget.pausedProviders > 0
-    ? { key: 'budget', label: 'Budget', value: 'Paused until a usage limit resets', tone: 'warning', href: RUNNERS_HREF }
-    : budget.monthly
+  const budgetRow: OverviewStatusRow | null = budget.paused.length > 0
+    ? { key: 'budget', label: 'Budget', value: pausedValue(budget.paused), tone: 'warning', href: RUNNERS_HREF }
+    // Only real (per-token) spend can use up a dollar budget. With none this
+    // month there is nothing to show, so the row is absent.
+    : budget.monthly && budget.monthly.spentUsd > 0
       ? {
           key: 'budget',
           label: 'Budget',
-          value: `${usd(budget.monthly.spentUsd)} of ${usd(budget.monthly.budgetUsd)} this month`,
+          value: `${usd(budget.monthly.spentUsd)} of ${usd(budget.monthly.budgetUsd)} this month${budget.monthly.spentUsd > budget.monthly.budgetUsd ? ' · Over budget' : ''}`,
           tone: budget.monthly.pctUsed >= 90 ? 'error' : budget.monthly.pctUsed >= 70 ? 'warning' : 'ok',
           href: BUDGETS_HREF,
         }
-      : { key: 'budget', label: 'Budget', value: 'No monthly limit set', tone: 'muted', href: BUDGETS_HREF };
+      : null;
 
-  return [runnerRow, credentialRow, budgetRow].filter((row): row is OverviewStatusRow => row !== null);
+  return [runnerRow, budgetRow].filter((row): row is OverviewStatusRow => row !== null);
 }

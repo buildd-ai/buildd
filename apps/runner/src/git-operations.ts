@@ -531,6 +531,13 @@ export interface SetupWorktreeResult {
    */
   base: string;
   /**
+   * The commit `base` resolved to at setup, or undefined when it could not be
+   * read. `base` is a ref and can move after setup: on a fix or resume attempt
+   * it is the PR's own branch, and the attempt's push moves it to HEAD.
+   * collectGitStats measures from this commit in that case.
+   */
+  baseSha?: string;
+  /**
    * What the runner's own dependency install did. Previously `void`: install
    * failed silently at the wrong path and workers finished `done` with broken
    * workspace imports. The caller must inspect this — see the surfacing block
@@ -1407,6 +1414,14 @@ export async function setupWorktree(
       emitPhase('worktree_end');
     }
 
+    // Pin the commit the worktree started from (SetupWorktreeResult.baseSha).
+    let baseSha: string | undefined;
+    try {
+      baseSha = (await execAsync(`git rev-parse --verify "${base}^{commit}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] })).trim() || undefined;
+    } catch {
+      // Unreadable: stats fall back to measuring against the ref.
+    }
+
     // Register the repo's shared git hooks in this worktree. The package.json
     // `prepare` script also sets this during `bun install`, but that install is
     // best-effort (see installWorkspaceDeps) — doing it explicitly here guarantees
@@ -1455,6 +1470,7 @@ export async function setupWorktree(
       path: worktreePath,
       branch: actualBranch,
       base,
+      ...(baseSha ? { baseSha } : {}),
       install,
       ...(deferredInstall ? { deferredInstall } : {}),
       ...(fallback ? { fallback } : {}),
@@ -1690,12 +1706,17 @@ export function removeWorktreeIfUnownedSync(
  *   report its OWN diff, not the integration branch's whole diff vs
  *   dev/main/master. Falls back to that dev/main/master search when absent
  *   (older callers, or a worktree set up before this field existed).
+ * @param baseSha - The commit `baseRef` pointed at when the worktree was set
+ *   up (`SetupWorktreeResult.baseSha`). Used instead of `baseRef` when the
+ *   base is the branch this worktree has checked out — a fix or resume
+ *   attempt on the PR's own branch, whose push moves `baseRef` to HEAD.
  */
 export async function collectGitStats(
   cwd: string | undefined,
   workerId: string,
   fallbackCommitCount?: number,
   baseRef?: string,
+  baseSha?: string,
 ): Promise<GitStats> {
   if (!cwd) return {};
 
@@ -1734,7 +1755,23 @@ export async function collectGitStats(
   // a full clone: a no-op.
   const baseBranch = branchOfRemoteRef(baseRef);
   if (baseBranch) await ensureOriginBranch(cwd, baseBranch, workerId);
-  if (baseRef) {
+  // A base that is this worktree's own branch (a fix attempt on the PR's
+  // branch, a resumed checkpoint) moves when the attempt pushes: after the
+  // push origin/<branch> IS HEAD, the merge-base is HEAD and a fix that pushed
+  // real commits read as a 0-file diff (`pushed_without_diff`). Measure from
+  // the commit the base held at setup instead. A trunk or mission base keeps
+  // the moving ref: merging it in mid-task must not count its commits as ours.
+  let pinnedBase: string | undefined;
+  if (baseRef && baseSha) {
+    try {
+      const current = (await execAsync('git rev-parse --abbrev-ref HEAD', opts)).trim();
+      if (current && current !== 'HEAD' && current === (baseBranch ?? baseRef)) {
+        const result = (await execAsync(`git merge-base HEAD ${baseSha} 2>/dev/null`, opts)).trim();
+        if (result) { mergeBase = result; pinnedBase = baseSha; }
+      }
+    } catch {}
+  }
+  if (baseRef && !mergeBase) {
     try {
       const result = (await execAsync(`git merge-base HEAD ${baseRef} 2>/dev/null`, opts)).trim();
       if (result) mergeBase = result;
@@ -1768,7 +1805,7 @@ export async function collectGitStats(
     // trust check to a fixed candidate order): this resolves the base via
     // the worktree's own upstream when baseRef is absent, which for a plain
     // trunk-cut branch is the more precise comparison ref.
-    let compareRef = baseRef;
+    let compareRef = pinnedBase ?? baseRef;
     if (!compareRef) {
       const defaultBranch = (await execAsync('git rev-parse --abbrev-ref HEAD@{upstream}', opts)).trim().replace(/^origin\//, '') || 'main';
       compareRef = `origin/${defaultBranch}`;

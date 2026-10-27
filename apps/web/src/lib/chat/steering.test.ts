@@ -94,7 +94,7 @@ const HANDLERS: Record<string, Obj> = {
     },
     DELETE: async () => { writes.push('DELETE mission'); return json({ ok: true }); },
   },
-  '/api/missions/capabilities': { GET: async () => json({ capabilities: ['startMode', 'pacing'] }) },
+  '/api/missions/capabilities': { GET: async () => json({ capabilities: ['startMode'] }) },
   '/api/workers/:id/instruct': {
     POST: async (req: NextRequest, ctx: any) => {
       const body = await req.json();

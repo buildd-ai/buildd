@@ -138,7 +138,7 @@ describe('one editor per concern', () => {
   it('has one per-workspace settings page holding what config used to', () => {
     expect(exists('workspaces/[id]/config/page.tsx')).toBe(false);
     const page = readFileSync(resolve(PROTECTED, 'settings/workspace/[workspaceId]/page.tsx'), 'utf8');
-    for (const section of ['MergePolicyEditor', 'GitConfigForm', 'BranchStrategySection', 'CiRetrySection', 'ReleaseSection', 'ExecutorSection', 'ConcurrencySection', 'WorkTrackerSection']) {
+    for (const section of ['MergePolicyEditor', 'GitConfigForm', 'BranchStrategySection', 'CiRetrySection', 'ReleaseSection', 'ExecutorSection', 'WorkTrackerSection']) {
       expect(`${section}: ${page.includes(section)}`).toBe(`${section}: true`);
     }
   });
@@ -152,15 +152,15 @@ describe('one editor per concern', () => {
     expect(overview).not.toContain('ConnectRunnerSection');
   });
 
-  it('keeps model config on one page: Models holds keys, sign-ins and tiers', () => {
+  it('keeps model config on one page: Models holds keys, routing and tiers', () => {
     const models = readFileSync(resolve(PROTECTED, 'settings/models/page.tsx'), 'utf8');
-    // The sign-ins render inside the provider rows (ModelProvidersClient), not as their own section.
+    // Provider routing renders under Used for (ModelProvidersClient); there are no sign-ins.
     const providers = readFileSync(resolve(PROTECTED, 'settings/providers/ModelProvidersClient.tsx'), 'utf8');
-    expect(providers).toContain('AgentBackendsSection');
+    expect(providers).toContain('ProviderRoutingToggle');
     for (const part of ['ModelProvidersClient', 'ModelTiersClient']) {
       expect(`${part}: ${models.includes(part)}`).toBe(`${part}: true`);
     }
     const runners = readFileSync(resolve(PROTECTED, 'settings/runners/page.tsx'), 'utf8');
-    expect(runners).not.toContain('AgentBackendsSection');
+    expect(runners).not.toContain('ProviderRoutingToggle');
   });
 });

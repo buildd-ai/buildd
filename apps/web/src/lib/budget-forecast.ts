@@ -1,46 +1,31 @@
 import { db } from '@buildd/core/db';
-import { accounts, teams, missions, workers, tasks, tenantBudgets, backendPauses, oauthBudgetEpisodes } from '@buildd/core/db/schema';
+import { teams, missions, workers, workspaces, tasks, tenantBudgets, backendPauses } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, isNotNull, isNull, or, desc, sql } from 'drizzle-orm';
-import {
-  learnOauthCapacity,
-  oauthBudgetPressure,
-  windowEndsAt,
-  readPacingConfig,
-  type BudgetConfidence,
-} from '@buildd/core/oauth-budget';
-import { loadOauthEpisodes, measureOauthWindow } from '@/lib/oauth-budget-window';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { readRound } from '@/lib/read-round';
+
+/**
+ * The team's real (per-token API) spend this UTC month, summed from worker
+ * rows. The one figure the Health budget row and the budget line read; virtual
+ * (subscription-valued) cost never counts.
+ */
+export async function getRealMonthSpendUsd(teamId: string, now: Date = new Date()): Promise<number> {
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const [row] = await db
+    .select({ spend: sql<string>`COALESCE(SUM(${workers.costUsd}), '0')` })
+    .from(workers)
+    .innerJoin(workspaces, eq(workspaces.id, workers.workspaceId))
+    .where(and(
+      eq(workspaces.teamId, teamId),
+      eq(workers.costBasis, 'real'),
+      gte(sql`COALESCE(${workers.startedAt}, ${workers.createdAt})`, monthStart),
+    ));
+  return parseFloat(row?.spend ?? '0') || 0;
+}
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
 export type ConfidenceLevel = 'low' | 'medium' | 'high';
-
-export interface OauthSessionForecast {
-  kind: 'oauth';
-  source: 'learned_exhaustion_floor';
-  pressureLabel: 'forecast floor pressure';
-  /** No authoritative provider usage percentage is collected here. */
-  providerUsagePct: null;
-  sampleBasis: {
-    quantile: number;
-    metric: string | null;
-    units: 'sonnet_equivalents' | 'raw';
-    windowSource: 'inferred_worker_starts';
-  };
-  accountId: string;
-  accountName: string;
-  /** 0-100 against a learned conservative floor, never provider percent used. */
-  pressurePct: number;
-  windowEndsAt: string;
-  /** null = still learning (< 3 episodes) */
-  confidence: ConfidenceLevel | null;
-  limiter: string | null;
-  episodes: number;
-  state: 'learning' | 'active';
-  /** Age of the newest episode in milliseconds; null if no episodes (still learning) */
-  observationAgeMs: number | null;
-}
 
 export interface MonthlyBudgetForecast {
   kind: 'monthly';
@@ -92,7 +77,6 @@ export interface ClaudeTenantBudgetForecast {
 }
 
 export interface BudgetForecast {
-  oauthSessions: OauthSessionForecast[];
   monthly: MonthlyBudgetForecast | null;
   codex: CodexBudgetForecast | null;
   claudeTenant: ClaudeTenantBudgetForecast | null;
@@ -188,16 +172,6 @@ export function computeMissionBudgetForecast(missions: MissionBudgetInput[]): Mi
     .sort((a, b) => b.pctUsed - a.pctUsed);
 }
 
-/**
- * Map oauth-budget's BudgetConfidence → our ConfidenceLevel.
- * Returns null when there's not enough data yet (learning state).
- */
-export function oauthEpisodeConfidence(c: BudgetConfidence): ConfidenceLevel | null {
-  if (c === 'none') return null;
-  if (c === 'low') return 'low';
-  return 'high';
-}
-
 // ── Server-side data fetcher ──────────────────────────────────────────────────
 
 /** Statuses that can still accrue spend and are relevant to the forecast. */
@@ -205,9 +179,6 @@ export const ACTIVE_MISSION_STATUSES = ['active', 'paused', 'budget_exhausted'] 
 
 /** How far back we look for the burn rate trailing window (24 hours). */
 const BURN_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-/** Max seats to probe; never truncate registrations within a shared seat. */
-const MAX_OAUTH_ACCOUNTS = 8;
 
 type MissionQueryRow = {
   id: string;
@@ -218,27 +189,6 @@ type MissionQueryRow = {
   workspaceId: string | null;
 };
 
-type OauthAccountRow = { id: string; name: string; seatId: string | null; budgetResetsAt: Date | null };
-
-/**
- * Group OAuth account rows by seatId.
- * Null seatId → each account is its own group (keyed by account.id).
- * Non-null seatId → all accounts sharing the same seatId form one group.
- * Exported for unit testing.
- */
-export function groupOauthAccountsBySeatId(
-  accounts: OauthAccountRow[],
-): Map<string, OauthAccountRow[]> {
-  const groups = new Map<string, OauthAccountRow[]>();
-  for (const account of accounts) {
-    const key = account.seatId ?? account.id;
-    const existing = groups.get(key) ?? [];
-    existing.push(account);
-    groups.set(key, existing);
-  }
-  return groups;
-}
-
 /**
  * Compute a full budget forecast for a team.
  * Runs entirely server-side; never throws — returns partial data on errors.
@@ -248,9 +198,8 @@ export async function getBudgetForecast(
   scopedWsIds: string[],
   opts: {
     /**
-     * Only the month's spend and the provider walls (Health › Overview): the
-     * subscription-seat forecasts and mission budgets are neither read nor
-     * computed, and come back empty.
+     * Only the month's spend and the provider walls (Health › Overview):
+     * mission budgets are neither read nor computed, and come back empty.
      */
     summaryOnly?: boolean;
   } = {},
@@ -267,18 +216,8 @@ export async function getBudgetForecast(
       where: sqlWhere(eq(teams.id, teamId)),
       columns: {
         monthlyBudgetUsd: true,
-        monthlyCostUsd: true,
         monthlyCostMonth: true,
       },
-    }),
-
-    // OAuth accounts for this team (seat-based)
-    oauthAccounts: summaryOnly ? null : db.query.accounts.findMany({
-      where: sqlWhere(and(
-        eq(accounts.teamId, teamId),
-        eq(accounts.authType, 'oauth'),
-      )),
-      columns: { id: true, name: true, seatId: true, budgetResetsAt: true },
     }),
 
     // Active missions in scope with a cost budget. Includes:
@@ -343,14 +282,13 @@ export async function getBudgetForecast(
   };
   const round = await readRound(reads).catch(async () => {
     const one = async <T>(q: PromiseLike<T> | null): Promise<T | null> => (q ? await Promise.resolve(q).catch(() => null) : null);
-    const [teamRow, oauthAccounts, missionRows, tenantRow, recentWorkerRows, codexPauseRow] = await Promise.all([
-      one(reads.teamRow), one(reads.oauthAccounts), one(reads.missionRows),
+    const [teamRow, missionRows, tenantRow, recentWorkerRows, codexPauseRow] = await Promise.all([
+      one(reads.teamRow), one(reads.missionRows),
       one(reads.tenantRow), one(reads.recentWorkerRows), one(reads.codexPauseRow),
     ]);
-    return { teamRow, oauthAccounts, missionRows, tenantRow, recentWorkerRows, codexPauseRow };
+    return { teamRow, missionRows, tenantRow, recentWorkerRows, codexPauseRow };
   });
   const teamRow = round.teamRow ?? null;
-  const oauthAccounts = (round.oauthAccounts ?? []) as OauthAccountRow[];
   const missionRows = (round.missionRows ?? []) as MissionQueryRow[];
   const tenantRow = round.tenantRow ?? null;
   const recentWorkerRows = (round.recentWorkerRows ?? []) as { costUsd: string }[];
@@ -365,7 +303,7 @@ export async function getBudgetForecast(
   const budgetUsd = rawBudgetUsd ?? envBudgetUsd;
 
   if (budgetUsd && budgetUsd > 0) {
-    const spentUsd = teamRow?.monthlyCostUsd ? parseFloat(teamRow.monthlyCostUsd as string) : 0;
+    const spentUsd = await getRealMonthSpendUsd(teamId, now);
     const recentWorkerCosts = (recentWorkerRows as { costUsd: string }[])
       .map(r => parseFloat(r.costUsd))
       .filter(v => v > 0);
@@ -376,66 +314,6 @@ export async function getBudgetForecast(
     const resetsAt = new Date(Date.UTC(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1));
 
     monthly = computeMonthlyBudgetForecast({ budgetUsd, spentUsd, resetsAt, recentWorkerCosts, now });
-  }
-
-  // ── OAuth session forecasts ─────────────────────────────────────────────────
-  const pacingConfig = readPacingConfig(process.env);
-
-  const oauthSessions: OauthSessionForecast[] = [];
-  const config = pacingConfig;
-
-  // Group accounts by seatId so shared-subscription rows are measured together.
-  const accountGroups = groupOauthAccountsBySeatId(oauthAccounts as OauthAccountRow[]);
-
-  for (const group of [...accountGroups.values()].slice(0, MAX_OAUTH_ACCOUNTS)) {
-    try {
-      const accountIds = group.map(a => a.id);
-      // Label with most-recently-active account name; fall back to comma-list if all unnamed.
-      const label = group.find(a => a.name)?.name || group.map(a => a.id).join(', ');
-      // Representative account for UI key (first in group)
-      const representativeId = group[0].id;
-
-      const episodes = await loadOauthEpisodes(accountIds, undefined, now);
-      const capacity = learnOauthCapacity(episodes, { quantile: config.quantile });
-      const { windowStartedAt, usage } = await measureOauthWindow({
-        accountIds,
-        now,
-        lastResetsAt: episodes[0]?.resetsAt ?? null,
-      });
-      const pressure = oauthBudgetPressure({ usage, capacity, now, windowStartedAt, observedAt: episodes[0]?.exhaustedAt });
-      const windowEnd = windowEndsAt(windowStartedAt);
-      const confidence = oauthEpisodeConfidence(pressure.confidence);
-
-      // Calculate observation age: how old is the newest episode?
-      const observationAgeMs = episodes.length > 0
-        ? now.getTime() - episodes[0].exhaustedAt.getTime()
-        : null;
-
-      oauthSessions.push({
-        kind: 'oauth',
-        source: 'learned_exhaustion_floor',
-        pressureLabel: 'forecast floor pressure',
-        providerUsagePct: null,
-        sampleBasis: {
-          quantile: config.quantile,
-          metric: pressure.limiter,
-          units: (pressure.limiter === 'turns' && capacity.weightedTurns) ||
-            (pressure.limiter === 'tokens' && capacity.weightedTokens) ? 'sonnet_equivalents' : 'raw',
-          windowSource: 'inferred_worker_starts',
-        },
-        accountId: representativeId,
-        accountName: label,
-        pressurePct: Math.round(pressure.pct * 100),
-        windowEndsAt: windowEnd.toISOString(),
-        confidence,
-        limiter: pressure.limiter,
-        episodes: capacity.samples,
-        state: pressure.confidence === 'none' ? 'learning' : 'active',
-        observationAgeMs,
-      });
-    } catch {
-      // Skip groups that fail rather than crashing the whole forecast
-    }
   }
 
   // ── Mission budgets ─────────────────────────────────────────────────────────
@@ -497,7 +375,6 @@ export async function getBudgetForecast(
   }
 
   return {
-    oauthSessions,
     monthly,
     codex,
     claudeTenant,

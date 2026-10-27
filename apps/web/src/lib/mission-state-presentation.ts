@@ -83,14 +83,12 @@ const LABEL: Record<MissionPresentationState, string> = {
 
 const CAPACITY_KEYS = new Set([
   'mission_concurrent',
-  'mission_paced',
-  'workspace_cap',
   'codex_single_flight',
   'managed_concurrency',
   'ordered_behind',
 ]);
 const BUDGET_KEYS = new Set(['mission_budget', 'budget_paused', 'managed_runner_hours', 'hosted_runner_hours']);
-const POLICY_KEYS = new Set(['provider_not_allowed', 'tier_policy', 'routing_paused', 'no_personal_credential', 'oauth_parallelism']);
+const POLICY_KEYS = new Set(['provider_not_allowed', 'tier_policy', 'routing_paused', 'no_personal_credential']);
 /** Navigation R-14: held behind another task's files or migration. */
 const COORDINATION_KEYS = new Set(['path_overlap', 'soft_overlap', 'advisory_manifest', 'lane']);
 
@@ -175,13 +173,15 @@ export function presentMissionState(view: MissionStateView): MissionStatePresent
   const c = classify(view);
   const label = LABEL[c.state];
   const action = view.waitingOn ? view.nextAction : view.nextAction ?? null;
+  // A landing blocker names whose move it is: the platform's (a review queued, CI running) is nobody's to take.
+  const platformsMove = view.waitingOn?.kind === 'landing_blocked' && view.waitingOn.owner === 'platform';
   return {
     state: c.state,
     label,
     cause: c.cause,
     causeText: c.causeText,
     action,
-    needsYou: c.state === 'needs_you' || c.state === 'failing' || c.state === 'delivering',
+    needsYou: c.state === 'needs_you' || c.state === 'failing' || (c.state === 'delivering' && !platformsMove),
     sentence: c.causeText ? `${label}: ${c.causeText}` : label,
   };
 }
