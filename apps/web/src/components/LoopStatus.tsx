@@ -3,12 +3,12 @@ import { ZonedTime } from './DisplayTimezone';
 
 type ConditionType = LoopExitCondition['type'];
 
-/** The exit condition in words, for the history heading ("until CI passes"). */
+/** The exit condition in words, for the history heading. */
 const CONDITION_GOAL: Record<ConditionType, string> = {
-  command: 'until the check passes',
-  pr_checks_green: 'until CI passes',
-  pr_merged: 'until the PR merges',
-  structured_predicate: 'until the result matches',
+  command: 'stopped after check passed',
+  pr_checks_green: 'stopped after CI passed',
+  pr_merged: 'stopped after PR merged',
+  structured_predicate: 'stopped after result matched',
 };
 
 /** One evaluation's outcome in words: [met, unmet]. */
@@ -110,10 +110,10 @@ export function LoopStatusChip({
       : 'text-purple-400 border-purple-400 bg-purple-500/8';
 
   const fullLabel = loopState === 'exhausted'
-    ? `LOOP EXHAUSTED · ${attempt}/${maxLoops}`
+    ? `Looping failed · ${attempt}/${maxLoops}`
     : loopState === 'satisfied'
-      ? `LOOP SATISFIED · ${attempt}/${maxLoops}`
-      : `LOOPING · attempt ${attempt}/${maxLoops}`;
+      ? `Looping succeeded · ${attempt}/${maxLoops}`
+      : `Looping · attempt ${attempt}/${maxLoops}`;
 
   return (
     <span
@@ -159,7 +159,7 @@ export function LoopHistory({
   return (
     <section className="mb-6" data-testid="loop-history">
       <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-        Loop history
+        Loop cycles
         {goal && <span className="normal-case tracking-normal"> · {goal}</span>}
       </div>
       {loopState === 'exhausted' && (
