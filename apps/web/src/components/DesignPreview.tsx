@@ -92,7 +92,7 @@ export default function DesignPreview({
 
   const scale = zoom === 'full' || !viewport || !columnWidth ? 1 : fitScale(viewport.width, columnWidth);
   const label = `Design preview · ${title} · revision ${revision}`;
-  const shortLabel = `${title} · revision ${revision}`;
+  const shortLabel = `Revision ${revision}`; // the page H1 already carries the title
   const src = frameUrl ? frameSrc(frameUrl, screenId) : null;
 
   // `load` fires before a sandboxed, scaled frame has necessarily painted: hold the

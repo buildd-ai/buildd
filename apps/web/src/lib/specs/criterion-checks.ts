@@ -134,11 +134,13 @@ async function pinnedChecks(taskId: string): Promise<
     const spec = await db.query.specs.findFirst({ where: sqlWhere(eq(specs.id, pin.specId)), columns: { metadata: true } });
     const byCriterion = asRecord(asRecord(spec?.metadata)?.verified_by);
     const known = new Set(specCriteria(read.body).map((c) => c.id));
+    // A criterion's own `check:` line is what the approved words say grades it; verified_by only fills in the rest.
+    const ownCheck = new Set(registered.map((c) => c.criterionId));
     for (const [criterionId, paths] of Object.entries(byCriterion ?? {})) {
+      if (ownCheck.has(criterionId)) continue;
       if (!known.has(criterionId) || !Array.isArray(paths) || !paths.length || !paths.every((p) => typeof p === 'string' && isRepoPath(p))) continue;
       const quote = (v: string) => "'" + v.replace(/'/g, "'\"'\"'") + "'";
       const command = `bun run scripts/run-acceptance-tests.ts ${[criterionId, ...new Set(paths)].map(quote).join(' ')}`;
-      registered = registered.filter((c) => c.criterionId !== criterionId);
       registered.push({ criterionId, command });
     }
   }

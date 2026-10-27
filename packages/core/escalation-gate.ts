@@ -53,6 +53,13 @@ export interface EscalationSubject {
   title: string;
   why: EscalationWhy;
   ci: CiState;
+  /**
+   * The CI reading is older than `CI_READING_STALE_MS`: no fact has been recorded on the
+   * head since the delivery last moved. A `running`/`unknown` CI then stops being a reason to
+   * wait (checks finished on GitHub long ago and nothing re-read them), so the PR is not held
+   * off a person's page as `wait_ci`.
+   */
+  ciReadingStale?: boolean;
   /** The PR conflicts with its base. */
   conflict: boolean;
   /** A conflict repair, CI or review fix, running checks or a reviewer agent is live. */
@@ -153,6 +160,9 @@ const RAIL_WORDS: Record<EscalationRail, string> = {
   access_approval: 'An agent asked for access that team policy leaves to a person.',
 };
 
+/** How long a delivery may sit with no CI reading on its head before `wait_ci` stops holding its page. */
+export const CI_READING_STALE_MS = 60 * 60_000;
+
 /** Paths only a person merges, whatever else holds: CI/deploy config and auth/secrets. */
 const HARD_RISK_CLASSES: ReadonlySet<string> = new Set(['ci_deploy_config', 'auth_and_secrets']);
 /** Risk classes a policy-only escalation may carry and still land by rule (no reverts or prod failures in the backtest window). */
@@ -205,7 +215,7 @@ export function escalationRule(s: EscalationSubject): EscalationVerdict | null {
   if (s.missionPrRole === 'ship' && (s.why === 'reviewer_escalated' || s.why === 'review_exhausted')) return person('mission_ship_escalation');
 
   if (s.landingStranded || (s.handoffCause && STRANDED_CAUSES.has(s.handoffCause))) return buildd('retry_landing');
-  if (s.ci === 'running' || s.ci === 'unknown') return buildd('wait_ci');
+  if ((s.ci === 'running' || s.ci === 'unknown') && !s.ciReadingStale) return buildd('wait_ci');
   if (isPolicyMerge(s)) return buildd('policy_merge');
   return isReviewerConcern(s) ? null : person('no_next_step');
 }
