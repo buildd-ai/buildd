@@ -29,6 +29,13 @@ const lanes = [{ workspaceId: 'ws-1', lane: 'migration', members: [
 ] }];
 
 describe('QueueBoard', () => {
+  it('never shows running against zero or fewer slots as a fraction', () => {
+    const html = render({ running: 1, slots: 0 });
+    expect(html).not.toContain('1/0');
+    expect(html).toContain('slot total unknown');
+    expect(render({ running: 3, slots: 2 })).not.toContain('3/2');
+    expect(render({ running: 4, slots: 6 })).toContain('4/6');
+  });
   it('a truncated read says so as a label, and only then', () => {
     expect(render({ truncated: true })).toContain('Partial queue. Counts are minimums.');
     expect(render({})).not.toContain('data-testid="queue-truncated"');
@@ -45,12 +52,12 @@ describe('QueueBoard', () => {
     expect(html).toContain('id="queue-parked"');
   });
 
-  it('R-4: the alert when wrong; otherwise only the phone line', () => {
+  it('R-4: the alert when wrong; otherwise nothing, on any viewport', () => {
     expect(render({ slots: 2, tasks: [t({ kind: 'slot' })] })).toContain('2 idle slots, 1 task could start');
     const calm = render({ slots: 0, tasks: [] });
     expect(calm).not.toContain('queue-alert');
-    expect(calm).toContain('Nothing held that could run');
-    expect(calm).toMatch(/data-testid="queue-calm"[^>]*md:hidden|md:hidden[^"]*"[^>]*>Nothing held/);
+    expect(calm).not.toContain('queue-calm');
+    expect(calm).not.toContain('Nothing held that could run');
   });
 
   it('AC-5: no Lanes card when no lane is in use; one when a lane is', () => {

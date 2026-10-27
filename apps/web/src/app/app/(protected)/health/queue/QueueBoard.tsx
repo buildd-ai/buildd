@@ -45,8 +45,19 @@ export function QueueTiles({ view }: { view: HealthQueueResponse }) {
   return (
     <Card padding="sm" className="grid grid-cols-4 divide-x divide-[var(--line-soft)]" data-testid="queue-tiles">
       <Tile label="Running" href="/app/health/runners" testId="queue-tile-running">
-        <Count>{tiles.running}/{tiles.slots}</Count>
-        <div className="text-meta text-text-muted">slots</div>
+        {tiles.running > tiles.slots ? (
+          <>
+            <Count>{tiles.running}</Count>
+            <div className="text-meta text-text-muted">
+              {tiles.slots > 0 ? `running, over ${tiles.slots} slots` : 'running, slot total unknown'}
+            </div>
+          </>
+        ) : (
+          <>
+            <Count>{tiles.running}/{tiles.slots}</Count>
+            <div className="text-meta text-text-muted">slots</div>
+          </>
+        )}
       </Tile>
       <Tile label="Ready" href="#queue-ready" testId="queue-tile-ready">
         <Count>{tiles.ready}</Count>
@@ -72,8 +83,8 @@ export function QueueAlert({ view }: { view: HealthQueueResponse }) {
   if (view.alert) {
     return <p role="status" data-testid="queue-alert" className="mt-3 text-body font-semibold text-status-warning">{view.alert}</p>;
   }
-  // R-4: the phone says so; the desktop shows nothing.
-  return <p data-testid="queue-calm" className="mt-3 text-body text-text-muted md:hidden">Nothing held that could run</p>;
+  // R-4: phone and desktop match; no alert line unless something is wrong.
+  return null;
 }
 
 export function QueueLanes({ lanes, onOpenLane }: { lanes: HealthQueueLane[]; onOpenLane: (l: HealthQueueLane) => void }) {
