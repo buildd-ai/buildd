@@ -320,6 +320,7 @@ type LoadedTask = {
     startedAt: Date | null;
     /** When this row last changed — the closest proxy for "when did the PR close" on the legacy path. */
     updatedAt?: Date | null;
+    completedAt?: Date | null;
     waitingFor?: unknown;
     supersededByPrNumber: number | null;
     supersededByPrUrl: string | null;
@@ -1261,11 +1262,10 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
   // forever. History (buildHistory, explainPr) is unaffected — this only
   // trims what feeds the waiting/completion signal below. A task whose
   // mission is still open always counts, whatever its age.
-  // Use task.completedAt as the reference point: it's immutable after set
-  // (never bumped by rescans). lastTransition is the LAST delivery transition,
-  // not necessarily the close — a later transition (e.g., supersession record,
-  // rescan) would have a newer createdAt and make an old PR appear young.
-  const closedAtProxy = (task.completedAt ? iso(task.completedAt) : null) ?? prDelivery?.lastTransition?.createdAt;
+  // Use the latest worker's completedAt as the reference point where available
+  // (workers are ordered by startedAt descending, so workers[0] is latest).
+  // Fall back to PR delivery transition timestamp if no worker completion.
+  const closedAtProxy = (task.workers[0]?.completedAt ? iso(task.workers[0].completedAt) : null) ?? prDelivery?.lastTransition?.createdAt;
   const unmergedPrFiltered = unmergedPr.filter(p => !p.closedUnsuperseded || !closedPrAgedOutOfExplain({
     missionId: task.missionId ?? null,
     missionStatus: parentMission?.status ?? null,
