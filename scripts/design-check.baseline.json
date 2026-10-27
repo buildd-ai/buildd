@@ -1,9 +1,10 @@
 {
   "arbitraryFontSizes": {
+    "apps/web/src/app/app/(protected)/artifacts/[id]/page.tsx": 1,
     "apps/web/src/app/app/(protected)/chat/chat-shell.tsx": 1,
     "apps/web/src/app/app/(protected)/chat/page.tsx": 1,
     "apps/web/src/app/app/(protected)/health/ExperimentsSection.tsx": 3,
-    "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 52,
+    "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 43,
     "apps/web/src/app/app/(protected)/health/usage/UsageClient.tsx": 36,
     "apps/web/src/app/app/(protected)/home/AgentsPanel.tsx": 2,
     "apps/web/src/app/app/(protected)/home/HomeMissions.tsx": 4,
@@ -52,6 +53,7 @@
     "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/WorkspaceHealthCard.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx": 23,
     "apps/web/src/app/app/(protected)/tasks/[id]/AuditRoundTrays.tsx": 1,
+    "apps/web/src/app/app/(protected)/tasks/[id]/DeleteTaskButton.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/[id]/InstructWorkerForm.tsx": 2,
     "apps/web/src/app/app/(protected)/tasks/[id]/ModelUsagePanel.tsx": 5,
     "apps/web/src/app/app/(protected)/tasks/[id]/PlanReviewPanel.tsx": 12,
@@ -77,7 +79,7 @@
     "apps/web/src/app/app/dev/fixtures/TeamMembersFixture.tsx": 1,
     "apps/web/src/app/app/dev/fixtures/page.tsx": 9,
     "apps/web/src/app/app/dev/task-card/page.tsx": 2,
-    "apps/web/src/app/mobile-type-floor.test.ts": 30,
+    "apps/web/src/app/mobile-type-floor.test.ts": 28,
     "apps/web/src/components/ActionCardContextLine.tsx": 1,
     "apps/web/src/components/AgentHandledCard.tsx": 6,
     "apps/web/src/components/AgentRecommendation.tsx": 2,
@@ -87,6 +89,7 @@
     "apps/web/src/components/ArtifactList.tsx": 5,
     "apps/web/src/components/ArtifactViewer.tsx": 6,
     "apps/web/src/components/DependencyRail.tsx": 2,
+    "apps/web/src/components/ErrorState.tsx": 1,
     "apps/web/src/components/FixCiButton.tsx": 2,
     "apps/web/src/components/FlightDetailSheet.test.tsx": 4,
     "apps/web/src/components/FlightDetailSheet.tsx": 7,
@@ -165,9 +168,6 @@
     "apps/web/src/components/visual-review/VisualReviewAsk.tsx": 5,
     "apps/web/src/components/visual-review/VisualReviewLine.tsx": 3,
     "apps/web/src/components/visual-review/VisualReviewTray.tsx": 6,
-    "apps/web/src/app/app/(protected)/artifacts/[id]/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/tasks/[id]/DeleteTaskButton.tsx": 1,
-    "apps/web/src/components/ErrorState.tsx": 1,
     "apps/web/src/components/visual-review/review-ui.tsx": 2
   },
   "rawHexColors": {
@@ -253,7 +253,7 @@
   },
   "trackedLabels": {
     "apps/web/src/app/app/(protected)/artifacts/[id]/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 5,
+    "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 3,
     "apps/web/src/app/app/(protected)/health/usage/UsageClient.tsx": 2,
     "apps/web/src/app/app/(protected)/home/ActionQueueCard.tsx": 7,
     "apps/web/src/app/app/(protected)/home/HomeMissionsSummary.tsx": 3,
