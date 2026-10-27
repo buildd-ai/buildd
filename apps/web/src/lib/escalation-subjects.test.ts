@@ -89,48 +89,53 @@ describe('prSubjectFor', () => {
     expect(prSubjectFor(input({ lifecycle: 'conflict', conflictFixesSpent: true })).why).toBe('conflict_fixes_spent');
     expect(escalationRule(prSubjectFor(input({ lifecycle: 'conflict' })))).toMatchObject({ action: 'conflict_fix' });
   });
+});
 
-  it('ESCALATED + head moved + checks complete does not stay "wait_ci"', () => {
-    // Scenario: PR #5500 is ESCALATED with conflict_fixes_spent. A conflict-fix push
-    // happens on 2026-10-24. GitHub checks completed but haven't been re-read on the new
-    // head (>1h stale). ciStateOf returns 'unknown' because the kernel's prState is
-    // 'awaiting_ci' (mergeable not yet re-read on new head). The escalation rule should
-    // not page the owner as 'wait_ci' — conflicts can't be fixed again, so it goes to person.
-    const headSha = 'new-conflict-fix-push';
-
-    const s = prSubjectFor(input({
-      escalated: { reason: 'Automatic conflict fixes were used up' },
-      conflictFixesSpent: true,
-      headSha,
-      // Kernel says awaiting_ci because mergeable hasn't been re-read on new head
-      kernel: { stateReason: 'conflict_fixes_spent', prState: 'awaiting_ci', detail: null, headline: null },
-      // CI reads are stale (recorded on old head, not current head)
-      lifecycle: null, // Not set when kernel owns it
-    }));
-
-    const rule = escalationRule(s);
-    // The escalation should not be 'wait_ci' — conflict fixes are all spent, so it escalates to person.
-    // Before the fix, this incorrectly returned 'wait_ci' because s.ci === 'unknown'.
-    expect(rule.owner).toBe('person');
-    expect(rule.rail).toBe('no_next_step');
+describe('prSubjectFor: stale CI reading on a moved head', () => {
+  const NOW = Date.parse('2026-10-27T12:00:00Z');
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+  // The real inputs for a head that moved: the kernel reads awaiting_ci (no fact on the new head), no lifecycle.
+  const moved = (stateSince: string, over: Partial<PrSubjectInput> = {}) => input({
+    lifecycle: null, nowMs: NOW, escalated: { reason: 'The fix does not handle the empty list case' },
+    kernel: { stateReason: 'review_escalated', prState: 'awaiting_ci', detail: null, headline: null, stateSince },
+    ...over,
   });
 
-  it('ESCALATED PR dirty but not spent fixes should be conflict_fix', () => {
-    // Scenario: PR is ESCALATED (e.g., reviewer_escalated) and dirty with a live conflict.
-    // Head moved and mergeable hasn't been re-read yet (prState is 'awaiting_ci'), but
-    // lifecycle still shows 'conflict'. The rule should return conflict_fix, not wait_ci.
-    const s = prSubjectFor(input({
-      escalated: { reason: 'Some reviewer concern' },
-      conflictFixesSpent: false,
-      headSha: 'new-push',
-      kernel: { stateReason: null, prState: 'awaiting_ci', detail: null, headline: null },
-      lifecycle: 'conflict',
-    }));
-
-    const rule = escalationRule(s);
-    expect(rule.action).toBe('conflict_fix');
+  it('ESCALATED + head moved + no reading for over an hour is paged, not held as wait_ci', () => {
+    const s = prSubjectFor(moved(ago(2 * 60 * 60_000), { kernel: { stateReason: 'needs_you', prState: 'awaiting_ci', detail: null, headline: null, stateSince: ago(2 * 60 * 60_000) } }));
+    expect(s.ciReadingStale).toBe(true);
+    expect(escalationRule(s)).toMatchObject({ owner: 'person', rail: 'no_next_step' });
+    // A reviewer escalation is no longer held either: it goes to Jev (null verdict), not wait_ci.
+    expect(escalationRule(prSubjectFor(moved(ago(2 * 60 * 60_000))))).toBeNull();
   });
 
+  it('a fresh awaiting_ci still waits for the checks', () => {
+    const s = prSubjectFor(moved(ago(5 * 60_000)));
+    expect(s.ciReadingStale).toBe(false);
+    expect(escalationRule(s)).toMatchObject({ owner: 'buildd', action: 'wait_ci' });
+  });
+
+  it('a conflict fixes already spent, head moved, stale readings: paged', () => {
+    const s = prSubjectFor(moved(ago(3 * 60 * 60_000), { conflictFixesSpent: true }));
+    expect(s.why).toBe('conflict_fixes_spent');
+    expect(s.conflict).toBe(false);
+    expect(escalationRule(s)).toMatchObject({ owner: 'person' });
+  });
+
+  it('a conflict resolved on the new head is not reported as a conflict', () => {
+    const s = prSubjectFor(moved(ago(3 * 60 * 60_000), { conflictFixesSpent: true, kernel: { stateReason: null, prState: 'ci_passed', detail: null, headline: null, stateSince: ago(3 * 60 * 60_000) } }));
+    expect(s.conflict).toBe(false);
+  });
+
+  it('a dirty reading on the current head is still a conflict_fix', () => {
+    const s = prSubjectFor(moved(ago(3 * 60 * 60_000), { kernel: { stateReason: 'review_escalated', prState: 'conflict', detail: null, headline: null, stateSince: ago(3 * 60 * 60_000) } }));
+    expect(escalationRule(s)).toMatchObject({ action: 'conflict_fix' });
+  });
+
+  it('a red CI reading is never stale-skipped', () => {
+    const s = prSubjectFor(moved(ago(3 * 60 * 60_000), { kernel: { stateReason: null, prState: 'ci_failed', detail: null, headline: null, stateSince: ago(3 * 60 * 60_000) } }));
+    expect(escalationRule(s)).toMatchObject({ action: 'ci_fix' });
+  });
 });
 
 describe('prSubjectFor: data migrations', () => {

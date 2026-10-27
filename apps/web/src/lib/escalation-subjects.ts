@@ -6,7 +6,7 @@
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { gateEvents } from '@buildd/core/db/schema';
-import type { CiState, EscalationSubject, EscalationWhy } from '@buildd/core/escalation-gate';
+import { CI_READING_STALE_MS, type CiState, type EscalationSubject, type EscalationWhy } from '@buildd/core/escalation-gate';
 import { detectAllRiskClasses } from '@buildd/core/risk-class-detect';
 import type { GatedSubject } from '@/lib/escalation-gate-check';
 
@@ -77,7 +77,13 @@ export interface PrSubjectInput {
   lifecycle: string | null;
   headSha?: string | null;
   /** The kernel's view of the delivery, when the kernel owns it. */
-  kernel?: { stateReason: string | null; prState: string | null; detail: string | null; headline: string | null } | null;
+  kernel?: {
+    stateReason: string | null; prState: string | null; detail: string | null; headline: string | null;
+    /** When the delivery last changed state (its newest transition), ISO. */
+    stateSince?: string | null;
+  } | null;
+  /** The clock `kernel.stateSince` is aged against; tests pin it. */
+  nowMs?: number;
   escalated: { reason?: string | null } | null;
   approved: boolean;
   handoff: { cause: string; reason: string } | null;
@@ -120,11 +126,13 @@ export function prSubjectFor(i: PrSubjectInput): GatedSubject {
     : i.approved ? 'approved_needs_merge'
     : 'human_tier';
   const prState = i.kernel?.prState ?? null;
-  // Derive conflict from mergeable facts: kernel prState or lifecycle. When conflict_fixes_spent,
-  // the PR had a conflict; we still report it as conflicted unless lifecycle shows it resolved.
-  // If kernel prState is 'awaiting_ci' (mergeable stale after head move) and lifecycle is null
-  // (kernel owns the PR), conflict_fixes_spent is our signal that conflict was live (task c73af3d3).
-  const conflict = prState === 'conflict' || i.lifecycle === 'conflict' || (why === 'conflict_fixes_spent' && (i.lifecycle == null || i.lifecycle === 'conflict'));
+  const conflict = prState === 'conflict' || (!prState && i.lifecycle === 'conflict');
+  const ci = ciStateOf(i.lifecycle, prState);
+  // The kernel records no "CI running" fact: `awaiting_ci` means no reading on the current head.
+  // Once the delivery has sat that way for over an hour the checks are not still running.
+  const since = i.kernel?.stateSince ? Date.parse(i.kernel.stateSince) : NaN;
+  const ciReadingStale = (ci === 'running' || ci === 'unknown') && Number.isFinite(since)
+    && (i.nowMs ?? Date.now()) - since > CI_READING_STALE_MS;
   const subject: EscalationSubject = {
     key: i.prNumber != null ? `pr:${i.workspaceId}:${i.prNumber}` : `task:${i.taskId ?? 'none'}`,
     workspaceId: i.workspaceId,
@@ -133,7 +141,8 @@ export function prSubjectFor(i: PrSubjectInput): GatedSubject {
     missionId: i.task?.missionId ?? null,
     title: i.task?.title ?? '',
     why,
-    ci: ciStateOf(i.lifecycle, prState),
+    ci,
+    ciReadingStale,
     conflict,
     machineActing: i.machineActing,
     missionPrRole: i.missionPrRole,
