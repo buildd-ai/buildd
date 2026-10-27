@@ -68,33 +68,34 @@ async function verificationTask(missionId: string, specRevisionId: string) {
   return t.id;
 }
 
-const checksOf = (missionId: string) => q<{ criterion_id: string; head_sha: string }>(sql`
-  SELECT context->'specCriterionCheck'->>'criterionId' AS criterion_id, context->'specCriterionCheck'->>'headSha' AS head_sha
-  FROM tasks WHERE mission_id = ${missionId}::uuid AND context ? 'specCriterionCheck' ORDER BY 1, 2`);
+const checksOf = (missionId: string) => q<{ criteria: string; head_sha: string }>(sql`
+  SELECT (SELECT string_agg(c->>'criterionId', ',' ORDER BY c->>'criterionId') FROM jsonb_array_elements(context->'specCriterionBatch'->'checks') c) AS criteria,
+    context->'specCriterionBatch'->>'headSha' AS head_sha
+  FROM tasks WHERE mission_id = ${missionId}::uuid AND context ? 'specCriterionBatch' ORDER BY 2`);
 
 const noWake = { wake: async () => {} };
 
-describe('one criterion-check run per (mission, criterion, revision, head)', () => {
-  test('two final verifications of the same target produce one check task per criterion', async () => {
+describe('one criterion-check run per (mission, revision, head, command set)', () => {
+  test('two final verifications of the same target produce one check run covering every criterion', async () => {
     const { missionId, criterion } = await selectingMission();
     const first = await verificationTask(missionId, criterion.specRevisionId);
     const second = await verificationTask(missionId, criterion.specRevisionId);
-    expect((await dispatchCriterionChecks({ taskId: first, headSha: HEAD1, headBranch: 'mission/x' }, noWake)).dispatched).toBe(2);
+    expect((await dispatchCriterionChecks({ taskId: first, headSha: HEAD1, headBranch: 'mission/x' }, noWake)).dispatched).toBe(1);
     expect((await dispatchCriterionChecks({ taskId: second, headSha: HEAD1, headBranch: 'mission/x' }, noWake)).dispatched).toBe(0);
-    expect(await checksOf(missionId)).toEqual([{ criterion_id: 'AC-1', head_sha: HEAD1 }, { criterion_id: 'R-1', head_sha: HEAD1 }]);
+    expect(await checksOf(missionId)).toEqual([{ criteria: 'AC-1,R-1', head_sha: HEAD1 }]);
 
     // A new integrated head is a new target.
-    expect((await dispatchCriterionChecks({ taskId: second, headSha: HEAD2, headBranch: 'mission/x' }, noWake)).dispatched).toBe(2);
-    expect(await checksOf(missionId)).toHaveLength(4);
+    expect((await dispatchCriterionChecks({ taskId: second, headSha: HEAD2, headBranch: 'mission/x' }, noWake)).dispatched).toBe(1);
+    expect(await checksOf(missionId)).toHaveLength(2);
   });
 
-  test('verifications racing on one head still file each criterion once', async () => {
+  test('verifications racing on one head still file one run', async () => {
     const { missionId, criterion } = await selectingMission();
     const ids = await Promise.all(Array.from({ length: 4 }, () => verificationTask(missionId, criterion.specRevisionId)));
     const results = await Promise.all(ids.flatMap((taskId) => [1, 2].map(() =>
       dispatchCriterionChecks({ taskId, headSha: HEAD1, headBranch: 'mission/x' }, noWake))));
-    expect(results.reduce((n, r) => n + r.dispatched, 0)).toBe(2);
-    expect(await checksOf(missionId)).toHaveLength(2);
+    expect(results.reduce((n, r) => n + r.dispatched, 0)).toBe(1);
+    expect(await checksOf(missionId)).toHaveLength(1);
   });
 });
 
