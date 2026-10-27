@@ -77,6 +77,12 @@ describe('DesignPreview chrome', () => {
     expect(iframeTag(html)).toContain('title="Design preview · Navigation design · revision 2"');
   });
 
+  it('shows only the revision in the visible caption; the page heading carries the title', () => {
+    const html = render();
+    const caption = html.match(/data-testid="design-preview-label"[^>]*>([^<]*)</)?.[1];
+    expect(caption).toBe('Revision 2');
+  });
+
   it('lists each screen with its viewport and keeps the download', () => {
     const html = render();
     // The picker names the screen; the viewport is separate muted text.

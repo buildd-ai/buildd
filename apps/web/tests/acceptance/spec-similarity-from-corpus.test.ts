@@ -35,7 +35,7 @@ function fakeStore(answer: (text: string) => Array<{ specId: string; revision: n
     query: async (namespace: string, params: { text: string } & Record<string, unknown>) => {
       queries.push({ namespace, text: params.text, params });
       return answer(params.text).map((h) => ({
-        id: h.criterionId ? `${h.specId}@${h.revision}#${h.criterionId}` : `living-spec:${h.specId}#1`,
+        id: h.criterionId ? `living-spec:${h.specId}@${h.revision}#${h.criterionId}` : `living-spec:${h.specId}#1`,
         namespace, corpus: 'spec', sourceType: 'living_spec', sourcePath: null, sourceUrl: null,
         content: h.content ?? `${h.criterionId ?? 'text'}`,
         metadata: { specId: h.specId, revision: h.revision, ...(h.criterionId ? { criterionId: h.criterionId, criterion: h.criterionId } : {}), ...(h.draft ? { draft: true } : {}) },
@@ -56,6 +56,19 @@ afterAll(() => {
   knowledge.specKnowledgeDeps.store = realStore;
   globalThis.fetch = realFetch;
 });
+/**
+ * The duplicate check's shortlist seam: the real corpus match (through the fake
+ * store), joined to the given cards in place of the db read of each spec's body.
+ */
+const fromCorpus = (cards: Array<{ specId: string; title: string; card: ReturnType<typeof decision.specCard> }>) =>
+  async (input: { workspaceId: string; title: string; body: string; criteria?: readonly string[]; excludeSpecId?: string; drafts?: boolean }) => {
+    const matches = await knowledge.specCorpusShortlist({ ...input, drafts: input.drafts !== false });
+    const byId = new Map(cards.map((c) => [c.specId, c]));
+    return matches.flatMap((m) => {
+      const c = byId.get(m.specId);
+      return c ? [{ ...c, similarity: m.score, draft: m.draft, pairs: m.pairs.map((x) => ({ here: x.here, there: x.there })) }] : [];
+    });
+  };
 const corpusStore = (s: unknown) => { knowledge.specKnowledgeDeps.store = async () => s as never; };
 
 describe('R-101: similarity has one source, the spec corpus', () => {
@@ -87,14 +100,14 @@ describe('R-102: criteria are indexed one per chunk, and the reason names them',
     '## Empty state', '', '- AC-4: An empty basket shows a friendly message.', '',
   ].join('\n');
 
-  it('R-102: an approved revision is one chunk per criterion, keyed <specId>@<revision>#<id>, carrying its id and section', async () => {
+  it('R-102: an approved revision is one chunk per criterion, keyed living-spec:<specId>@<revision>#<id>, carrying its id and section', async () => {
     const chunks = await buildLivingSpecChunks({
       specId: ME, workspaceId: WS, title: 'Basket', body, revision: 2, contentHash: 'h', parentSpecId: null, scope: 'feature',
       approvedAt: new Date('2026-10-11T12:00:00Z'), sourceUrl: 'https://example.test/s',
     });
     const byId = new Map(chunks.map((c) => [c.id, c]));
-    for (const id of ['R-7', 'AC-3', 'AC-4']) expect(byId.has(`${ME}@2#${id}`)).toBe(true);
-    const ac4 = byId.get(`${ME}@2#AC-4`)!;
+    for (const id of ['R-7', 'AC-3', 'AC-4']) expect(byId.has(`living-spec:${ME}@2#${id}`)).toBe(true);
+    const ac4 = byId.get(`living-spec:${ME}@2#AC-4`)!;
     expect(ac4.content).toContain('friendly message');
     expect(JSON.stringify(ac4.metadata)).toContain('AC-4');
     expect(JSON.stringify(ac4.metadata)).toContain('Empty state');
@@ -136,7 +149,7 @@ describe('R-103: nothing the reader sees mentions embeddings, keys or providers'
     for (const cause of ['no_provider', 'disabled', 'error']) {
       const out = await decision.checkSpecDuplicates(
         { workspaceId: WS, title: 'Cart', body: '# Basket\n- AC-4: An empty basket shows a friendly message.' },
-        { teamOf: async () => 'team', approved: async () => pool, judge: async () => ({ response: { decision: 'distinct', confidence: null, source: 'fallback', fallbackCause: cause } as never, recordId: null }) },
+        { teamOf: async () => 'team', shortlist: fromCorpus(pool), judge: async () => ({ response: { decision: 'distinct', confidence: null, source: 'fallback', fallbackCause: cause } as never, recordId: null }) },
       );
       expect(out.ran).toBe(false);
       expect((out as { reason: string }).reason).not.toMatch(FORBIDDEN);
@@ -163,7 +176,7 @@ describe('R-104: the duplicate shortlist reads the corpus by criterion', () => {
     const out = await decision.checkSpecDuplicates(
       { workspaceId: WS, title: 'Cart', body: NEW },
       {
-        teamOf: async () => 'team', approved: async () => pool,
+        teamOf: async () => 'team', shortlist: fromCorpus(pool),
         judge: async (pair) => { seen.push(pair); return { response: { decision: 'duplicate', confidence: 0.97, source: 'model', fallbackCause: null } as never, recordId: null }; },
       },
     );
@@ -189,7 +202,7 @@ describe('R-104: the duplicate shortlist reads the corpus by criterion', () => {
     let judged = 0;
     await decision.checkSpecDuplicates(
       { workspaceId: WS, title: 'Cart', body: NEW },
-      { teamOf: async () => 'team', approved: async () => bigPool, judge: async () => { judged++; return { response: { decision: 'distinct', confidence: 0.9, source: 'model', fallbackCause: null } as never, recordId: null }; } },
+      { teamOf: async () => 'team', shortlist: fromCorpus(bigPool), judge: async () => { judged++; return { response: { decision: 'distinct', confidence: 0.9, source: 'model', fallbackCause: null } as never, recordId: null }; } },
     );
     expect(judged).toBe(5);
   });

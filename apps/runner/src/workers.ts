@@ -46,6 +46,8 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
+import { runCriterionBatch, summarizeCriterionBatch } from './criterion-batch';
+import { criterionBatchOf, type CriterionBatchMarker } from '@buildd/shared';
 import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, readMergirafLedgerAsync, reportAgentMerges, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
@@ -3450,6 +3452,14 @@ export class WorkerManager {
       }
       // After the branch is persisted: the completion's PR lookup reads it.
       if (derivedMerge && await this.finishDerivedMergeWithoutAgent(worker, fullTask, sessionCwd, derivedMerge.result, derivedMerge.baseRef)) {
+        return;
+      }
+      // A mission's criterion checks: the runner runs them all, no agent session.
+      const criterionBatch = criterionBatchOf(fullTask.context);
+      if (criterionBatch) {
+        if (deps) await deps.job.promise;
+        if (deps?.block) throw new Error(deps.block);
+        await this.finishCriterionBatchWithoutAgent(worker, sessionCwd, criterionBatch);
         return;
       }
       await this.startSession(worker, sessionCwd, fullTask);
@@ -7087,6 +7097,46 @@ export class WorkerManager {
     this.emit({ type: 'worker_update', worker });
     storeSaveWorker(worker);
     return true;
+  }
+
+  /**
+   * Run a mission's criterion checks (context.specCriterionBatch) and complete
+   * the worker with their evidence, on the runner's own key. No agent session
+   * is started: the exit codes are the result, and nothing needs judging.
+   * A refused completion is left for the server's late-evidence path; the
+   * worker still ends here.
+   */
+  private async finishCriterionBatchWithoutAgent(worker: LocalWorker, cwd: string, marker: CriterionBatchMarker): Promise<void> {
+    this.addMilestone(worker, { type: 'status', label: `Running ${marker.checks.length} criterion check(s) at ${marker.headSha.slice(0, 7)}; no agent needed`, ts: Date.now() });
+    const evidence = await runCriterionBatch({
+      workerId: worker.id, cwd, marker,
+      onCheck: (criterionId, i) => {
+        worker.currentAction = `Checking ${criterionId} (${i + 1} of ${marker.checks.length})`;
+        this.emit({ type: 'worker_update', worker });
+      },
+    });
+    // Aborted while running: the abort path already reported it.
+    if (worker.status === 'error' || worker.status === 'done') return;
+    const summary = summarizeCriterionBatch(evidence);
+    this.addMilestone(worker, { type: 'status', label: `Criterion checks finished: ${evidence.results.filter((r) => r.outcome === 'ok').length} of ${evidence.results.length} exit 0`, ts: Date.now() });
+    try {
+      await this.buildd.updateWorker(worker.id, {
+        status: 'completed',
+        summary,
+        // Runner-authored but deliberate and factual, not a captured aside.
+        summarySource: 'agent',
+        milestones: worker.milestones,
+        verificationEvidence: evidence as unknown as Record<string, unknown>,
+      });
+    } catch (err) {
+      console.warn(`[Worker ${worker.id}] Completion of the criterion checks was refused: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    worker.status = 'done';
+    worker.currentAction = 'Completed by the runner (no agent)';
+    worker.hasNewActivity = true;
+    worker.completedAt = Date.now();
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
   }
 
   /**

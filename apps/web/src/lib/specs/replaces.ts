@@ -30,6 +30,17 @@ export function parseReplaces(raw: unknown, supersedes?: string): string[] | nul
   return out.length ? out : null;
 }
 
+/** Why one replaced spec may not be replaced (null = it may). `target` is null when no such spec was read. Pure. */
+export function replacedSpecProblem(
+  self: { id: string; workspaceId: string },
+  target: { id: string; workspaceId: string; status: string } | null,
+  id: string | undefined = target?.id,
+): string | null {
+  if (!target || target.workspaceId !== self.workspaceId) return `replaces names no spec in this workspace (${id})`;
+  if ((RETIRED as string[]).includes(target.status)) return `replaces names a spec that is ${target.status} already (${id}): name a live spec`;
+  return null;
+}
+
 /**
  * Every replaced spec must be live, in this workspace, and not the spec
  * itself; else the reason, for a 400 (nothing written).
@@ -38,9 +49,8 @@ export async function replacesRefusal(workspaceId: string, ids: readonly string[
   if (selfId && ids.includes(selfId)) return 'replaces names this spec itself';
   const rows = await db.select({ id: specs.id, workspaceId: specs.workspaceId, status: specs.status }).from(specs).where(inArray(specs.id, [...ids]));
   for (const id of ids) {
-    const r = rows.find((x) => x.id === id);
-    if (!r || r.workspaceId !== workspaceId) return `replaces names no spec in this workspace (${id})`;
-    if ((RETIRED as string[]).includes(r.status)) return `replaces names a spec that is ${r.status} already (${id}): name a live spec`;
+    const problem = replacedSpecProblem({ id: selfId ?? '', workspaceId }, rows.find((x) => x.id === id) ?? null, id);
+    if (problem) return problem;
   }
   return null;
 }
@@ -98,4 +108,14 @@ export function parseRetireChoice(raw: unknown, replaces: readonly string[]): Re
     if (!out.some((x) => x.specId === id)) out.push({ specId: id, ...(v !== undefined ? { expectedVersion: v as number } : {}) });
   }
   return out;
+}
+
+/** The default retire choice: every live replaced spec, at the version read. Pure. */
+export function defaultRetireChoice(live: readonly ReplacedSpec[]): RetireChoice {
+  return live.map((r) => ({ specId: r.id, expectedVersion: r.version }));
+}
+
+/** The change row's reason for a spec an approval supersedes. Pure. */
+export function approvalRetireReason(replacement: { title: string; revision: number }): string {
+  return `Replaced by "${replacement.title}", approved at revision ${replacement.revision}.`.slice(0, 500);
 }

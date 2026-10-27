@@ -233,7 +233,7 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
     'render_activity', 'stamp_pr_rows', 'notify', 'mission_note', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
     'emit_pr_merged', 'verify_merge', 'cancel_open_attempts', 'scan_supersession', 'project_supersession', 'post_review',
     'escalate_exhaustion', 'gate_event', 'dispatch_review', 'dispatch_fix', 'merge_call', 'refresh_branch', 'renumber_migration', 'push_recovery',
-    'publish_landing_status', 'dispatch_external_merge_fix', 'carry_findings',
+    'publish_landing_status', 'dispatch_external_merge_fix', 'carry_findings', 'dispatch_capture',
   ];
   const out: EffectHandlers = {};
   for (const k of kinds) out[k] = async () => { ran.push(k); return { outcome: 'ok' }; };
@@ -2570,7 +2570,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.verdictWith('request_changes', { findings: [{ path: 'src/a.ts', line: 3, title: 'rename the flag' }] }), 'CHANGES_REQUESTED', 'a finding');
       await drainKernel(host, s, f.ports);
       const fix = f.work.requested.find((r) => r.role === 'fix')!;
-      eq(pick(fix.detail as Record<string, unknown>, ['round', 'findings']), { round: 1, findings: [{ id: await s.findingId('src/a.ts'), path: 'src/a.ts', line: 3, title: 'rename the flag', status: 'open' }] }, 'the findings and the round reach the builder');
+      eq(pick(fix.detail as Record<string, unknown>, ['round', 'findings']), { round: 1, findings: [{ id: await s.findingId('src/a.ts'), path: 'src/a.ts', line: 3, title: 'rename the flag', status: 'open', restatedCount: 0 }] }, 'the findings and the round reach the builder');
     },
   },
   {

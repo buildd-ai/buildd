@@ -375,6 +375,7 @@ export function planSurfaceFixFollowUp(
  */
 const SURFACE_AUDIT_CHECKLIST_ITEMS = [
   '390pt and 320pt viewport walk of every route/component in scope',
+  'Ask panel widths: for any route with the Ask panel, also capture it docked (400px column, from a 1440px window) and as the peek (min(600px, 100vw - 7rem), 768-1439px), scoped to a task, with an approval card open: label/value rows must stack in 400px and stay legible, never a few characters per line. /app/dev/chat?width=400|600 renders the workspace at those widths',
   'Both themes: capture every required route in light AND dark (capture.ts `QA_THEME=light|dark` emulates prefers-color-scheme, so any app\'s own theme switch follows) and record `qa.theme` on each shot. A route is covered only with a shot in both themes',
   'First screen at 390: what the page is for (its title and its main content or action) is visible without scrolling on the 390x844 viewport',
   'Exercise the CTA set derived from LIVE server state for every state this mission introduced — dead/no-op CTAs are the recurring defect this audit exists to catch',
