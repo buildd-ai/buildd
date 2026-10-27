@@ -17,7 +17,7 @@
 import { OPEN_TASK_STATUSES, isTerminalTaskStatus, type VisualReviewModel, type VisualReviewPhase } from '@buildd/shared';
 import { parseVisualReviewSkipNote, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
 import type { ResolvedVisualReviewPolicy } from './visual-review-policy';
-import type { ReviewCarry } from './visual-review-carry';
+import { uiDeltaLine, type ReviewCarry } from './visual-review-carry';
 
 export const MISSION_VISUAL_REVIEW_STATUSES = [
   'not_applicable', 'optional', 'needed', 'queued', 'running', 'findings', 'blocked', 'passed', 'waived',
@@ -152,6 +152,8 @@ export interface MissionVisualReviewState {
   carriedFrom?: string;
   /** The review was voided by these UI files changing since the reviewed commit. */
   uiDelta?: string[];
+  /** One line saying why: "New UI changes since your review: <files>". Set with `uiDelta`. */
+  uiDeltaLine?: string;
   nextActor: VisualReviewNextActor;
   policy: Pick<ResolvedVisualReviewPolicy, 'mode' | 'origin' | 'waiverAllowed' | 'locked'>;
   scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean; /** What the impact read said: `unknown` when the builders' files could not be read. */ impact?: 'yes' | 'no' | 'unknown' };
@@ -346,7 +348,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     passedOnEarlierCommit,
     evidenceSha: input.auditedSha ?? null,
     ...(carriedFrom ? { carriedFrom } : {}),
-    ...(uiDelta ? { uiDelta } : {}),
+    ...(uiDelta ? { uiDelta, uiDeltaLine: uiDeltaLine(uiDelta) } : {}),
     nextActor: required || status === 'waived' || status === 'passed' ? nextActor : 'none',
     policy: { mode: policy.mode, origin: policy.origin, waiverAllowed: policy.waiverAllowed, locked: policy.locked },
     scope: {
