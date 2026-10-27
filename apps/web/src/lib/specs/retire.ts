@@ -9,6 +9,7 @@ import { repoFileOf, restoredRepoNote, retiredRepoLine, retirementRow, type Reti
 import type { RepoCopyDeps } from './repo-copy';
 import { appBaseUrl } from '@/lib/app-url';
 import { signSpecStatusRequest, specStatusConfirmPath, verifySpecStatusRequest, type SpecStatusRequest } from './status-request';
+import { checkSpecPresence } from '@/lib/passkeys/guard';
 
 /**
  * Retiring a Living Spec (docs/specs/living-specs.md §22): a person takes a
@@ -31,6 +32,12 @@ import { signSpecStatusRequest, specStatusConfirmPath, verifySpecStatusRequest, 
  * writes one `spec_metadata_changes` row with field `status`, the previous and
  * new status, the replacement, who and why. Restore reads the newest such row
  * to put the previous status back.
+ *
+ * Presence (R-20): when the workspace's team requires a passkey, a retire or
+ * restore from a dashboard session (direct, or confirming a link) also needs a
+ * passkey assertion over the spec, its version, its status and the act, checked
+ * last before the write (lib/passkeys/guard.ts). Superseding on approval
+ * rides on the approval's own check.
  *
  * Repo file (R-78 to R-80, ./retire-repo-file.ts): after a retirement commits,
  * the one PR on the file that stands for the spec is opened and recorded on that
@@ -120,6 +127,15 @@ async function restoreTarget(spec: SpecRow): Promise<string | SpecError> {
   return typeof prev === 'string' && !isRetired(prev) ? prev : spec.approvedRevision != null ? 'approved' : 'draft';
 }
 
+/** R-20: the passkey check on a person's retire or restore, over exactly what the write is pinned to. */
+async function presenceFor(personId: string, spec: SpecRow, op: 'retire' | 'restore', supersededBy: string | null, proof: unknown): Promise<SpecError | null> {
+  const pin = op === 'retire'
+    ? { op, specId: spec.id, version: spec.version, status: spec.status, supersededBy }
+    : { op, specId: spec.id, version: spec.version, status: spec.status };
+  const refused = await checkSpecPresence(personId, spec.workspaceId, pin, proof);
+  return refused ? { ...refused, currentVersion: spec.version } : null;
+}
+
 /** From an OAuth session: a link pinned to what was read, and nothing changed. */
 function askToConfirm(spec: SpecRow, personId: string, op: 'retire' | 'restore', reason: string, supersededBy: string | null, to: string): StatusResult {
   const now = Date.now();
@@ -144,7 +160,7 @@ function openRepoPrAfter(spec: SpecRow): void {
  * import run's retirement, R-79), recorded as is and no PR opened; without it
  * the file that stands for the spec gets its one PR (R-78).
  */
-export async function retireSpec(caller: SpecCaller, specId: string, input: { reason: unknown; supersededBy?: unknown }, opts: { repoFile?: RetirementRepoFile } = {}): Promise<StatusResult> {
+export async function retireSpec(caller: SpecCaller, specId: string, input: { reason: unknown; supersededBy?: unknown; presence?: unknown }, opts: { repoFile?: RetirementRepoFile; presenceChecked?: boolean } = {}): Promise<StatusResult> {
   if (typeof input.reason !== 'string' || input.reason.trim().length < 10 || input.reason.length > 500) {
     return fail(400, 'reason (why this spec is retired, 10-500 characters) is required');
   }
@@ -157,6 +173,10 @@ export async function retireSpec(caller: SpecCaller, specId: string, input: { re
   const target = await retireTarget(spec, typeof by === 'string' ? by : null);
   if ('ok' in target) return target;
   if (caller.kind === 'account') return askToConfirm(spec, personId, 'retire', reason, typeof by === 'string' ? by : null, target.next);
+  if (!opts.presenceChecked) {
+    const refused = await presenceFor(personId, spec, 'retire', typeof by === 'string' ? by : null, input.presence);
+    if (refused) return refused;
+  }
   const r = await writeStatus(spec, personId, target.next, reason, { ...target.newValue, ...(opts.repoFile ? { repoFile: opts.repoFile } : {}) });
   if (r.ok && !opts.repoFile) openRepoPrAfter(spec);
   return r;
@@ -204,7 +224,7 @@ async function lastRetirement(spec: Pick<SpecRow, 'id' | 'status'>) {
 }
 
 /** Put a retired or superseded spec back to the status it had before. From an OAuth session, a confirm link instead. */
-export async function restoreSpec(caller: SpecCaller, specId: string, input: { reason?: unknown }): Promise<StatusResult> {
+export async function restoreSpec(caller: SpecCaller, specId: string, input: { reason?: unknown; presence?: unknown }): Promise<StatusResult> {
   const loaded = await loadForPerson(caller, specId);
   if ('ok' in loaded) return loaded;
   const { spec, personId } = loaded;
@@ -212,6 +232,8 @@ export async function restoreSpec(caller: SpecCaller, specId: string, input: { r
   if (typeof back !== 'string') return back;
   const reason = typeof input.reason === 'string' && input.reason.trim().length >= 3 ? input.reason.trim().slice(0, 500) : 'restored';
   if (caller.kind === 'account') return askToConfirm(spec, personId, 'restore', reason, null, back);
+  const refused = await presenceFor(personId, spec, 'restore', null, input.presence);
+  if (refused) return refused;
   return writeStatus(spec, personId, back, reason, { status: back });
 }
 
@@ -238,7 +260,7 @@ async function readStatusRequest(caller: SpecCaller, specId: string, token: unkn
  * status moved since the link was made is a 409 (`request_stale`) and nothing
  * changes (R-12). The change is recorded as the confirming person's.
  */
-export async function confirmSpecStatusChange(caller: SpecCaller, specId: string, token: unknown): Promise<{ ok: true; spec: SpecRow } | SpecError> {
+export async function confirmSpecStatusChange(caller: SpecCaller, specId: string, token: unknown, opts: { presence?: unknown } = {}): Promise<{ ok: true; spec: SpecRow } | SpecError> {
   if (caller.kind !== 'user') return fail(403, 'Confirm it on buildd.dev, signed in. A session token, API key or agent run cannot confirm it.');
   const read = await readStatusRequest(caller, specId, token);
   if ('ok' in read) return read;
@@ -246,13 +268,15 @@ export async function confirmSpecStatusChange(caller: SpecCaller, specId: string
   let r: { ok: true; spec: SpecRow } | SpecError;
   if (req.op === 'retire') {
     const target = await retireTarget(spec, req.supersededBy);
-    r = 'ok' in target ? target : await writeStatus(spec, personId, target.next, req.reason, target.newValue);
+    const refused = 'ok' in target ? null : await presenceFor(personId, spec, 'retire', req.supersededBy, opts.presence);
+    r = 'ok' in target ? target : refused ?? await writeStatus(spec, personId, target.next, req.reason, target.newValue);
     if (r.ok) openRepoPrAfter(spec);
   } else {
     const back = await restoreTarget(spec);
-    r = typeof back !== 'string' ? back : await writeStatus(spec, personId, back, req.reason, { status: back });
+    const refused = typeof back !== 'string' ? null : await presenceFor(personId, spec, 'restore', null, opts.presence);
+    r = typeof back !== 'string' ? back : refused ?? await writeStatus(spec, personId, back, req.reason, { status: back });
   }
-  return !r.ok && r.status === 409 ? { ...r, code: 'request_stale' } : r;
+  return !r.ok && r.status === 409 && !r.presence ? { ...r, code: 'request_stale' } : r;
 }
 
 /** What the confirm page (/app/specs/[specId]/retire) shows; it only reads. */

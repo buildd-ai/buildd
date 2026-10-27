@@ -60,6 +60,7 @@ mock.module('@/lib/specs/store', () => ({
 }));
 let holds = true;
 mock.module('@/lib/team-access', () => ({
+  getUserTeamRole: async () => null,
   holdsInWorkspace: async () => { events.push('holds:start'); return holds; },
 }));
 const emitted: unknown[] = [];
