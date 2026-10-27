@@ -78,7 +78,7 @@ export interface StateBecauseExtras {
      * the row text and the task it waits behind. The chain prints the same
      * words the list row shows, and refs the holder.
      */
-    pendingHold?: { row: string; kind: string; holder: { id: string; title: string | null; note: string | null; hidden?: true } | null } | null;
+    pendingHold?: { row: string; kind: string; holder: { id: string; title: string | null; note: string | null; hidden?: true } | null; fromClaimGates?: boolean } | null;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first it may name),
@@ -262,7 +262,9 @@ function openTaskLinks(
     // Navigation R-14: the row's own words, the holder named, never an id.
     if (t.status === 'pending' && t.pendingHold && orphaned(t)) {
       const h = t.pendingHold;
-      const derivedFrom = h.kind === 'dependency' ? 'tasks.dependsOn'
+      // Read live from the claim route's own query and gates, or from the loop's recorded refusal.
+      const derivedFrom = h.fromClaimGates ? 'queueWaitOf (claim WHERE + claim-loop gates)'
+        : h.kind === 'dependency' ? 'tasks.dependsOn'
         : h.kind === 'next_in_line' || h.kind === 'scheduled' ? 'tasks.status + workers.status'
         : 'gate_events.detail';
       return link(`${name(t)}: ${h.row}.`, derivedFrom, { ...base, taskId: h.holder && !h.holder.hidden ? h.holder.id : t.id });

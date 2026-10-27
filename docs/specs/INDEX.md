@@ -191,8 +191,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An authorised human answer MUST reach a live session or a new attempt of the same task, and MUST never be applied twice or silently dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-15
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
-- [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-15
-  Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a measured model's confident START to its three advisory gates; both fall back to the rule.
+- [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-23
+  Creation-manifest decisions MUST stay record-only without a committed promotion and fall back to the rule; the claim hold/start question is retired and its ledger stays readable.
 - [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-11
   Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-10-07
@@ -235,8 +235,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ## Superseded (8)
 
-- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-18
-  Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live. → replaced by Living Spec `Overlap scheduling: serial lanes and file locks`
+- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-22
+  Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract. → replaced by Living Spec `75217f55`
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-15
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped. → replaced by `agent-question-protocol`
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-10-09

@@ -14,11 +14,11 @@ const declared = (id: string) => makeWaitingReason('dep_declared', {
   blocker: { type: 'task', id, label: `task ${id}`, live: true },
   provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
 });
-const lease = makeWaitingReason('lease_overlap', {
-  because: 'a running task claimed the same files',
-  blocker: { type: 'lease', id: 'holder', label: 'a running task', live: true },
-  overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'lease', overlapKind: 'migration' },
-  provenance: { source: 'probe', derivedFrom: 'path_claims' },
+const lane = makeWaitingReason('lane', {
+  because: 'a running task holds the schema lane',
+  blocker: { type: 'task', id: 'holder', label: 'a running task', live: true },
+  lane: { lane: 'migration', holderTaskId: 'holder', position: 1 },
+  provenance: { source: 'probe', derivedFrom: 'serial_lane_entries' },
 });
 
 describe('Start anyway: waiting reasons', () => {
@@ -41,8 +41,9 @@ describe('Start anyway: waiting reasons', () => {
   });
 
   it('R-14: a lane wait admits assessment but the file-lock rails stay enforced', () => {
-    const dialog = forceDialog([declared('up-1'), lease]);
-    expect(dialog.checklist.map(c => c.kind)).toEqual(expect.arrayContaining(['dep_declared', 'lease_overlap']));
+    // A lane is never forced (spec: Overlap scheduling): only the declared edge is offered.
+    const dialog = forceDialog([declared('up-1'), lane]);
+    expect(dialog.checklist.map(c => c.kind)).toEqual(['dep_declared']);
     expect(dialog.stillEnforced.join(' ')).toContain('Files another agent is editing stay locked');
   });
 

@@ -262,7 +262,13 @@ describe('overviewWaitLine', () => {
 
   it('names the hold and what lifts it', () => {
     expect(overviewWaitLine(m, idOf('hold'))).toBe('Mission budget. Starts when the mission budget is raised.');
-    expect(overviewWaitLine(m, idOf('slot'))).toBe('Mission concurrency limit. Starts when another task in the mission finishes.');
+    // Nothing holds a slot wait: the strip's own reason says it.
+    expect(overviewWaitLine(m, idOf('slot'))).toBeNull();
+    // A cap is a limit that names itself, never "next in line" (spec: Overlap scheduling, AC-10).
+    const id = idOf('hold');
+    const capped = { ...m, tasks: { ...m.tasks, [id]: { ...m.tasks[id], waitingKind: 'mission_concurrent' as const } } };
+    expect(overviewWaitCause(capped, id)).toBe('hold');
+    expect(overviewWaitLine(capped, id)).toBe('Mission concurrency limit. Starts when another task in the mission finishes.');
   });
 
   it('leaves waiting on tasks to the strip reason, and says plainly when no reason is recorded', () => {

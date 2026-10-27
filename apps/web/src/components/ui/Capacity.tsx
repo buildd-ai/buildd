@@ -101,7 +101,7 @@ export default function Capacity({
             <span
               key={i}
               data-idle="true"
-              className="block h-1.5 rounded-t-[1px] border border-dashed border-[var(--border-strong)]"
+              className="block h-1.5 rounded-t-none border border-dashed border-[var(--border-strong)]"
               style={{
                 backgroundImage:
                   'repeating-linear-gradient(45deg, var(--border-strong) 0 1px, transparent 1px 3px)',
@@ -111,7 +111,7 @@ export default function Capacity({
             <span
               key={i}
               data-idle="false"
-              className="block rounded-t-[1px] bg-[var(--text-secondary)]"
+              className="block rounded-t-none bg-[var(--text-secondary)]"
               style={{ height: `${Math.max((value / scale) * 100, 8)}%` }}
             />
           );

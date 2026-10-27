@@ -5718,6 +5718,39 @@ export const pathClaimWaiters = pgTable('path_claim_waiters', {
 export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
 export type NewPathClaimWaiter = typeof pathClaimWaiters.$inferInsert;
 
+// Serial lanes (Living Spec "Overlap scheduling: serial lanes and file locks",
+// Rule 1). One lane per workspace and lane key: `migration` (schema and
+// migrations) or `surface:<label>` (a workspace hard surface). A row is one
+// task's place in one lane. The order is stored: `claimable_since` is stamped
+// once, when the task is first seen claimable apart from the lane, and never
+// moves while the task waits, is parked or is held (apps/web/src/lib/claim-order.ts
+// `laneOrderBy` reads it). `held_at` marks the one holder; the partial unique
+// index makes a second holder impossible. `left_at` ends the row: the holder's
+// PR merged or closed, the task ended, or a person released a stuck lane
+// (`released_by_user_id`). `activity_signature` / `activity_at` record the
+// holder PR's last observed change (head commit, CI state), for the stuck-lane report.
+export const serialLaneEntries = pgTable('serial_lane_entries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  lane: text('lane').notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  claimableSince: timestamp('claimable_since', { withTimezone: true }),
+  joinedVia: text('joined_via').$type<'manifest' | 'edit'>().default('manifest').notNull(),
+  heldAt: timestamp('held_at', { withTimezone: true }),
+  activitySignature: text('activity_signature'),
+  activityAt: timestamp('activity_at', { withTimezone: true }),
+  leftAt: timestamp('left_at', { withTimezone: true }),
+  leftReason: text('left_reason').$type<'merged' | 'closed' | 'ended' | 'released'>(),
+  releasedByUserId: uuid('released_by_user_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniqueEntry: uniqueIndex('serial_lane_entries_task_idx').on(t.workspaceId, t.lane, t.taskId),
+  oneHolder: uniqueIndex('serial_lane_entries_holder_idx').on(t.workspaceId, t.lane).where(sql`${t.heldAt} IS NOT NULL AND ${t.leftAt} IS NULL`),
+  openIdx: index('serial_lane_entries_open_idx').on(t.workspaceId, t.lane).where(sql`${t.leftAt} IS NULL`),
+}));
+
+export type SerialLaneEntry = typeof serialLaneEntries.$inferSelect;
+
 // Durable dispatch intent: "something changed that may make this task
 // runnable — re-evaluate it". Not a scheduler: the claim route stays the only
 // authority on whether the task runs, and the task row stays the truth. A row

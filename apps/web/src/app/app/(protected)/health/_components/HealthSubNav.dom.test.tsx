@@ -28,3 +28,23 @@ it('scrolls the active mobile tab into view, centred horizontally', async () => 
     act(() => root.unmount());
   }
 });
+
+it('R-1: Queue carries the waiting count its read published, beside the label', async () => {
+  const { default: HealthSubNav } = await import('./HealthSubNav');
+  const { publishQueueWaitingCount, resetQueueWaitingCount } = await import('@/lib/health-queue-count');
+  Element.prototype.scrollIntoView = (() => {}) as typeof Element.prototype.scrollIntoView;
+  publishQueueWaitingCount(9, null);
+  const el = document.createElement('div');
+  document.body.append(el);
+  const root = createRoot(el);
+  try {
+    act(() => root.render(<HealthSubNav viewer={{ operator: false, teamAdmin: false }} />));
+    const counts = [...el.querySelectorAll('[data-testid="health-queue-count"]')].map(n => n.textContent);
+    // Desktop list and phone strip both show it.
+    expect(counts).toEqual(['9', '9']);
+    expect(el.querySelector('[data-testid="health-queue-count"]')!.parentElement!.textContent).toBe('Queue 9');
+  } finally {
+    act(() => root.unmount());
+    resetQueueWaitingCount();
+  }
+});

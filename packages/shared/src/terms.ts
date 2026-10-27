@@ -91,6 +91,7 @@ export type TermKey =
   | 'wait.scheduled'
   | 'wait.usage_limit'
   | 'wait.budget'
+  | 'wait.lane'
   | 'wait.files'
   | 'wait.slot'
   | 'wait.runner'
@@ -161,7 +162,7 @@ const TERM_LIST: Term[] = [
     from: [ts('pending'), ws('idle'), sk('ready'), ...wk('eligible_no_runner')] },
   { key: 'work.blocked', word: 'Waiting on a task', short: 'waiting on a task', tone: 'q', glyph: '▦',
     means: 'It waits on another task and starts by itself when that one finishes.',
-    from: [sk('blocked'), sk('queued'), ...wk('dep_declared', 'dep_inferred', 'ordered_behind')] },
+    from: [sk('blocked'), sk('queued'), ...wk('dep_declared', 'ordered_behind')] },
   { key: 'work.working', word: 'Running', short: 'running', tone: 'act', glyph: '▶',
     means: 'An agent is working on it.',
     from: [k('WORKING'), ts('assigned'), ts('in_progress'), ws('starting'), ws('running'), sk('running')] },
@@ -227,16 +228,19 @@ const TERM_LIST: Term[] = [
 
   // ── Why it has not started ────────────────────────────────────────────────
   { key: 'wait.scheduled', word: 'Scheduled', short: 'scheduled', tone: 'q',
-    means: 'Starts by itself at its start time.', liftedBy: 'starts at its start time', from: wk('start_deferred') },
+    means: 'Starts by itself at its start time.', liftedBy: 'starts at its start time', from: wk('start_deferred', 'workspace_paused') },
   { key: 'wait.usage_limit', word: 'Usage limit', short: 'usage limit', tone: 'q',
     means: 'The provider’s usage limit is reached; it starts when the limit resets.', liftedBy: 'the limit resets',
     from: [...wk('budget_paused', 'managed_entitlement'), { kind: 'runner', value: 'budget_exhausted' }] },
   { key: 'wait.budget', word: 'Budget reached', short: 'budget reached', tone: 'q',
     means: 'The mission spent its budget; it starts when someone raises it.', liftedBy: 'Raise the mission budget',
     from: wk('mission_budget') },
+  { key: 'wait.lane', word: 'Waiting in line', short: 'in line', tone: 'q',
+    means: 'Schema, migration and other one-at-a-time work runs one task at a time, first come; it starts when the task holding the line lands and the tasks ahead of it have gone.',
+    from: wk('lane', 'lease_stale', 'serialized_surface') },
   { key: 'wait.files', word: 'Waiting for files', short: 'same files', tone: 'q',
     means: 'Another task is changing the same files; it starts when that task finishes.',
-    from: wk('pr_overlap_live', 'pr_overlap_ended', 'lease_overlap', 'lease_stale', 'soft_overlap', 'scope_undeclared_mutex', 'serialized_surface') },
+    from: [] },
   { key: 'wait.slot', word: 'Waiting for a free slot', short: 'no free slot', tone: 'q',
     means: 'Every slot it may use is in use; it starts when one frees.',
     from: wk('mission_concurrent', 'account_slots', 'codex_single_flight', 'dispatch_undelivered', 'runner_cooldown') },

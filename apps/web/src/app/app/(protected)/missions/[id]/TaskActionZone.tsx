@@ -672,7 +672,7 @@ function startsAnyway(refusal: GateRefusal | null | undefined): boolean {
 }
 
 /** The declared blockers the person saw: a prerequisite that clears meanwhile is not a reason to confirm again. */
-function seenDeclared(refusal: GateRefusal): { seenBlockers?: string[] } {
+export function seenDeclared(refusal: GateRefusal): { seenBlockers?: string[] } {
   const ids = (refusal.waitingReasons ?? []).filter(r => r.kind === 'dep_declared' && r.blocker).map(r => r.blocker!.id);
   return ids.length > 0 ? { seenBlockers: ids } : {};
 }

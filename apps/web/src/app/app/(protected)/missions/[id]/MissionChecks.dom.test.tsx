@@ -187,6 +187,48 @@ describe('the stage line (Navigation R-3, R-15)', () => {
   });
 });
 
+// Spec 072de598 I-20 to I-24, AC-28, AC-30 to AC-32.
+describe('Delivery and Checks (I-22 to I-24)', () => {
+  const { DeliveryChecks } = require('./MissionChecks') as typeof import('./MissionChecks');
+  const checks = [
+    { key: 'visual', name: 'Visual review', status: 'skipped', stateWord: 'Skipped', detail: '0 screens · 90df389', href: '/s', skippable: false, current: false, repairs: [] },
+    { key: 'merge', name: 'Merge into dev', status: 'running', stateWord: 'In review', detail: '#5701', href: '/p', skippable: false, current: true, repairs: [] },
+    { key: 'release', name: 'Release', status: 'queued', stateWord: 'Queued', detail: 'after #5701', href: '/r', skippable: false, current: false, repairs: [] },
+  ] as const;
+  const delivery = { line: '5 merged · 1 open · 7 no PR', prs: [{ key: 'a', title: 'A change', number: 5701, href: '/pr', status: 'queued', taskId: 'a' }] } as const;
+
+  it('reads three rows in order, the current one marked, with no sentence or Open button', () => {
+    act(() => root.render(<DeliveryChecks checks={[...checks]} delivery={{ ...delivery, prs: [...delivery.prs] }} timelineHref="/t" />));
+    const rows = Array.from(document.querySelectorAll('[data-testid="mission-check"]'));
+    expect(rows.map(r => r.textContent)).toEqual(['Visual review0 screens · 90df389Skipped', 'Merge into dev#5701In review', 'Releaseafter #5701Queued']);
+    expect(rows.map(r => r.getAttribute('data-current'))).toEqual([null, 'true', null]);
+    const all = document.body.textContent!;
+    expect(all).not.toMatch(/Open the PR|Open release|reviewer|view timeline|unmerged|completed|\(no PR\)/);
+    expect(q('[data-testid="mission-delivery-line"]')!.textContent).toBe('5 merged · 1 open · 7 no PR');
+    expect(q('[data-testid="mission-delivery-timeline"]')!.textContent).toBe('Timeline ›');
+  });
+
+  it('lets a check name wrap so a narrow desktop step never clips it', () => {
+    act(() => root.render(<DeliveryChecks checks={[...checks]} delivery={null} timelineHref="/t" />));
+    const names = Array.from(document.querySelectorAll('[data-testid="mission-check"] [data-testid="check-row"] a span.font-medium'));
+    expect(names.length).toBe(3);
+    for (const n of names) expect(n.className).not.toContain('truncate');
+  });
+
+  it('renders nothing with no checks and no delivery', () => {
+    act(() => root.render(<DeliveryChecks checks={[]} delivery={null} timelineHref="/t" />));
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('Skip is a control inside the visual review row', async () => {
+    const skippable = [{ ...checks[0], status: 'queued', stateWord: 'Queued', skippable: true }, checks[1], checks[2]] as never;
+    act(() => root.render(<MissionSurfaceAuditWaiverProvider missionId="m1" waiver={null} missionBranch={false} readonly={false}><DeliveryChecks checks={skippable} delivery={null} timelineHref="/t" /></MissionSurfaceAuditWaiverProvider>));
+    expect(document.querySelectorAll('[data-testid="mission-check-skip"]')).toHaveLength(1);
+    await act(async () => { q('[data-testid="mission-check-skip"]')!.click(); });
+    expect(q('[data-testid="mission-check-skip-wrong"]')).not.toBeNull();
+  });
+});
+
 describe('the spec row (items 6 to 8)', () => {
   const specRow = (over: Partial<CheckRow> = {}): CheckRow => row({
     key: 'criterion-0', kind: 'criterion', label: 'Spec revision 2', chip: 'goal', waivable: false, status: 'queued', state: 'not checked',
