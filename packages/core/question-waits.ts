@@ -321,6 +321,13 @@ export function optionOutcomes(
     const recommended = (typeof o !== 'string' && o.recommended === true) || (!!recommendedLabel && same(label, recommendedLabel));
     out.push({ label, outcome: outcome ?? null, effect: outcome ? outcomeEffect(outcome, w) : null, recommended });
   }
+  // The consequence is worth a line only where the options differ: when every
+  // option would say the same thing after its kind, only the kind is left.
+  const withEffect = out.filter(o => o.effect);
+  const consequence = (e: string) => e.slice(e.indexOf(': ') + 2);
+  if (withEffect.length > 1 && withEffect.every(o => consequence(o.effect!) === consequence(withEffect[0].effect!))) {
+    for (const o of withEffect) o.effect = o.effect!.slice(0, o.effect!.indexOf(': '));
+  }
   return [...out.filter(o => o.recommended), ...out.filter(o => !o.recommended)];
 }
 

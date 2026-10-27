@@ -138,7 +138,7 @@ export default function ConnectionsFixture() {
   const description = "Apps you connected to buildd, and the outside tools your team's agents can call.";
   return (
     <div className="min-h-screen bg-surface-1">
-      <SettingsPage title="Connected apps" description={description}>
+      <SettingsPage title="Apps signed in as you" description={description}>
         <ConnectionsSection
           api={localApi()}
           now={NOW}
@@ -147,18 +147,18 @@ export default function ConnectionsFixture() {
         />
         <TeamAppsSection workspaces={TEAM_WS} initial={ADMIN} initiallyOpen="axiom" />
       </SettingsPage>
-      <SettingsPage title="Connected apps: a member" description="Fixture: team apps read-only, with Request for an app not set up.">
+      <SettingsPage title="Apps signed in as you: a member" description="Fixture: team apps read-only, with Request for an app not set up.">
         <TeamAppsSection workspaces={TEAM_WS} initial={MEMBER} />
       </SettingsPage>
-      <SettingsPage title="Connected apps: an agent" description="Fixture: an agent connection open, one workspace out of reach.">
+      <SettingsPage title="Apps signed in as you: an agent" description="Fixture: an agent connection open, one workspace out of reach.">
         <ConnectionsSection api={localApi()} now={NOW} initiallyOpen={AGENT.id} initial={data({ connections: [AGENT] })} />
       </SettingsPage>
-      <SettingsPage title="Connected apps: switching to specific workspaces" description="Fixture: a team on all workspaces, its editor on Specific workspaces, prefilled with what it reaches now.">
+      <SettingsPage title="Apps signed in as you: switching to specific workspaces" description="Fixture: a team on all workspaces, its editor on Specific workspaces, prefilled with what it reaches now.">
         <div className="border-y border-border-default py-4" data-testid="fixture-team-editor">
           <TeamAccessEditor connection={PERSON} team={TEAMS[0]} initialChoice="specific" saving={false} error={null} onCancel={() => {}} onSave={() => {}} />
         </div>
       </SettingsPage>
-      <SettingsPage title="Connected apps: a newer change" description="Fixture: Save met a change made in another tab; the page shows the connection as it is now.">
+      <SettingsPage title="Apps signed in as you: a newer change" description="Fixture: Save met a change made in another tab; the page shows the connection as it is now.">
         <div className="border-y border-border-default py-4">
           <TeamAccessEditor
             connection={PERSON}
@@ -172,7 +172,7 @@ export default function ConnectionsFixture() {
         </div>
         <ConnectionsSection api={staleApi} now={NOW} initial={data({ connections: [PERSON] })} />
       </SettingsPage>
-      <SettingsPage title="Connected apps: none" description="Fixture: nothing connected.">
+      <SettingsPage title="Apps signed in as you: none" description="Fixture: nothing connected.">
         <ConnectionsSection api={localApi()} now={NOW} initial={data({ connections: [] })} />
       </SettingsPage>
     </div>

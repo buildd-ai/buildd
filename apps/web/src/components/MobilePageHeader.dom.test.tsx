@@ -121,6 +121,18 @@ describe('MobilePageHeader measured stack', () => {
     expect(headerVar()).toBe('53px');
   });
 
+  it('renders the shared header (title and team switcher) on every specs page, not a blank band', () => {
+    for (const path of ['/app/specs', '/app/specs/abc', '/app/specs/approvals', '/app/workspaces/ws-1/specs']) {
+      pathname = path;
+      act(() => root.render(<Header />));
+      expect(container.textContent).toContain('Specs');
+      expect(container.textContent).toContain('Example');
+    }
+    pathname = '/app/specs/abc/approve';
+    act(() => root.render(<Header />));
+    expect(container.textContent).not.toContain('Example');
+  });
+
   it('disconnects its ResizeObservers on unmount and on leaving a header page', () => {
     act(() => root.render(<Header />));
     expect(FakeResizeObserver.live.size).toBe(2); // header row + banners

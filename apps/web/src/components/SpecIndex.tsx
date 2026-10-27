@@ -346,7 +346,7 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
   }
 
   const proposes = view.areaCount === 0 && view.possible.length
-    ? ` buildd proposes ${view.possible.length === 1 ? 'an area' : `${view.possible.length} areas`} for them.` : '';
+    ? ` ${view.possible.length === 1 ? 'One group is suggested' : `${view.possible.length} groups are suggested`} below.` : '';
   const states = MIX_STATES.filter((st) => view.areas.some((a) => a.mix[st] > 0) || [...view.rowsById.values()].some((r) => r.state === st));
 
   return (

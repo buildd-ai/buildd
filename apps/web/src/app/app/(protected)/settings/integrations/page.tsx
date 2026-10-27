@@ -23,7 +23,7 @@ export default async function IntegrationsSettingsPage() {
     .filter((w) => w.teamId === currentTeamId)
     .map((w) => ({ id: w.id, name: w.name }));
   return (
-    <SettingsPage title="Integrations" readOnly={settingsReadOnly('integrations', permsInAnyTeam(permsByTeam))}>
+    <SettingsPage title="Repos and storage" readOnly={settingsReadOnly('integrations', permsInAnyTeam(permsByTeam))}>
       <GitHubSection disconnectableIds={disconnectable} />
       {/* A Vercel token is a team credential: manage_team_credentials in its team. */}
       <VercelSection

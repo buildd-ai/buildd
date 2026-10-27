@@ -179,7 +179,7 @@ describe('SpecIndex filings (§17)', () => {
     render(Array.from({ length: 12 }, (_, i) => draft(`u${i}`, null)), {
       proposals: [{ key: 'cooking', title: 'Cooking', specIds: ['u0', 'u1', 'u2'] }, { key: 'plans', title: 'Planning', specIds: ['u3', 'u4'] }],
     }, actions);
-    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs, none filed yet. buildd proposes 2 areas for them.');
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs, not grouped yet. 2 groups are suggested below.');
     const groups = qa('[data-testid="spec-index-possible"]');
     expect(groups.map((g) => g.querySelector('[data-testid="spec-index-possible-label"]')!.textContent)).toEqual(['Possible area: Cooking', 'Possible area: Planning']);
     expect(rowIds(groups[0])).toEqual(['u0', 'u1', 'u2']);
@@ -316,7 +316,7 @@ describe('SpecIndex cards', () => {
   it('AC-88: with no area, the line says none are filed and links the taxonomy proposal', () => {
     render(Array.from({ length: 12 }, (_, i) => draft(`u${i}`, null)), { taxonomyHref: '/app/specs/taxonomy' });
     const line = q('[data-testid="spec-index-line"]')!;
-    expect(line.textContent).toContain('12 specs, none filed yet');
+    expect(line.textContent).toContain('12 specs, not grouped yet');
     expect(line.querySelector('a')!.getAttribute('href')).toBe('/app/specs/taxonomy');
   });
 

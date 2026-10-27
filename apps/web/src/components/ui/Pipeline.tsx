@@ -31,7 +31,7 @@ export function groupByStage<T extends Pick<PipelineDelivery, 'state' | 'stage'>
   return groups;
 }
 
-const STAGE_LABEL: Record<PipelineStage, string> = { queued: 'queued', build: 'Build', verify: 'Verify', deliver: 'Deliver' };
+const STAGE_LABEL: Record<PipelineStage, string> = { queued: 'Queued', build: 'Build', verify: 'Verify', deliver: 'Deliver' };
 
 /** How a delivery's dot is drawn: the stage fill, or the state's shape where the meter has one. */
 export type PipelineDotPattern = 'build' | 'verify' | 'deliver' | 'fixing' | 'cant-run' | 'waiting';
@@ -109,7 +109,7 @@ export default function Pipeline({ deliveries, layout = 'stack', hrefFor, classN
             <span className="flex flex-col gap-1.5">
               <span
                 data-count={group.length}
-                className={`font-mono font-semibold leading-none ${queued ? 'text-[20px] text-text-muted' : row ? 'text-[32px]' : 'text-[28px]'}`}
+                className={`font-mono font-semibold leading-none ${row ? 'text-[32px]' : 'text-[28px]'}`}
               >
                 {group.length}
               </span>

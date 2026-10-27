@@ -139,6 +139,13 @@ describe('specContents (R-95)', () => {
 });
 
 describe('SpecPage', () => {
+  it('a body that did not load says so instead of an empty box', () => {
+    act(() => root.render(<SpecPage view={{ ...base, body: '' }} />));
+    expect(q('spec-page-body')!.querySelector('[data-testid="spec-page-body-empty"]')?.textContent).toContain('no text to show');
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-body-empty')).toBeNull();
+  });
+
   it('renders the approved revision, its history, parent and repo references', () => {
     act(() => root.render(<SpecPage view={base} />));
     expect(q('spec-page-reading')!.textContent).toBe('Approved at revision 1. Waits for your approval.');
