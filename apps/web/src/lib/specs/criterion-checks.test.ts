@@ -46,6 +46,14 @@ describe('runner checks on the merged mission result', () => {
     expect(woke).toHaveLength(1);
     expect(woke[0]).toMatchObject({ missionId: 'mission' });
   });
+  it('keeps a criterion\'s own check line when verified_by also maps it', async () => {
+    selected.criteria = ['AC-2'];
+    metadata = { verified_by: { 'AC-2': ['apps/web/src/lib/acceptance.test.ts'] } };
+    reads = [[subject()], []];
+    expect(await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} })).toEqual({ dispatched: 1 });
+    const ctx = JSON.parse((batches[0][1].queryChunks as unknown[]).find((c): c is string => typeof c === 'string' && c.includes('verificationCommand'))!);
+    expect(ctx.specCriterionCheck).toMatchObject({ criterionId: 'AC-2', command: 'bun run other' });
+  });
   it('keys a mission run by the mission, so a second final verification of the same target reuses the first one\'s run', async () => {
     selected.criteria = ['AC-1'];
     const OTHER = '00000000-0000-4000-8000-000000000003';
