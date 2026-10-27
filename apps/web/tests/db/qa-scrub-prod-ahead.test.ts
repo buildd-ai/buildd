@@ -135,3 +135,60 @@ describe('scrub-pii.sql under the artifact revision triggers', () => {
     expect(r.status).toBe(0);
   }, SCRUB_TIMEOUT_MS);
 });
+
+describe('scrub-pii.sql when trunk is ahead of prod', () => {
+  // The harness comes from trunk, the clone from prod. A trigger an unreleased
+  // trunk migration creates is absent from the clone, and $shim$ adds columns,
+  // not triggers. Naming that trigger in a bare ALTER TABLE failed the scrub
+  // ("trigger spec_revisions_explanation_immutable ... does not exist").
+  test('a column trunk added with its immutability trigger, neither in prod yet, still scrubs', () => {
+    const setup = `
+      DROP TRIGGER spec_revisions_explanation_immutable ON spec_revisions;
+      ALTER TABLE spec_revisions DROP COLUMN explanation;`;
+    const r = runScrub({
+      known: knownColumns(),
+      script: withChecks(SCRUB, `DO $t$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'spec_revisions_explanation_immutable') THEN
+          RAISE EXCEPTION 'check: the scrub created a trigger the clone did not have';
+        END IF;
+      END $t$;`, setup),
+    });
+    expect(r.stderr).not.toContain('ERROR');
+    expect(r.status).toBe(0);
+  }, SCRUB_TIMEOUT_MS);
+
+  test('a column prod has without the trigger trunk later put on it still scrubs', () => {
+    const r = runScrub({
+      known: knownColumns(),
+      script: withChecks(SCRUB, 'SELECT 1;', 'DROP TRIGGER spec_revisions_explanation_immutable ON spec_revisions;'),
+    });
+    expect(r.stderr).not.toContain('ERROR');
+    expect(r.status).toBe(0);
+  }, SCRUB_TIMEOUT_MS);
+
+  test('a named trigger prod keeps disabled stays disabled', () => {
+    const r = runScrub({
+      known: knownColumns(),
+      script: withChecks(SCRUB, `DO $t$ BEGIN
+        IF ${enabledTriggers('spec_revisions')} NOT LIKE '%spec_revisions_explanation_immutable:D%' THEN
+          RAISE EXCEPTION 'check: trigger states changed: %', ${enabledTriggers('spec_revisions')};
+        END IF;
+      END $t$;`, 'ALTER TABLE spec_revisions DISABLE TRIGGER spec_revisions_explanation_immutable;'),
+    });
+    expect(r.stderr).not.toContain('ERROR');
+    expect(r.status).toBe(0);
+  }, SCRUB_TIMEOUT_MS);
+
+  test('this checkout re-enables the named trigger after the overwrite', () => {
+    const r = runScrub({
+      known: knownColumns(),
+      script: withChecks(SCRUB, `DO $t$ BEGIN
+        IF ${enabledTriggers('spec_revisions')} NOT LIKE '%spec_revisions_explanation_immutable:O%' THEN
+          RAISE EXCEPTION 'check: trigger was not re-enabled: %', ${enabledTriggers('spec_revisions')};
+        END IF;
+      END $t$;`),
+    });
+    expect(r.stderr).not.toContain('ERROR');
+    expect(r.status).toBe(0);
+  }, SCRUB_TIMEOUT_MS);
+});
