@@ -139,12 +139,13 @@ function OverviewView({
   const openTask = useCallback((id: string) => router.push(hrefFor(id)), [router, hrefFor]);
   const vm = review?.model ?? null;
 
-  // Build tasks only (P-2): fixes, audits and refreshes sit in the checks group and never count.
-  const buildIds = useMemo(() => layout.groups.filter(g => g.key !== 'checks').flatMap(g => g.ids), [layout]);
+  // Build tasks only (P-2): fixes, audits and refreshes are no cells and never count.
+  const buildIds = useMemo(() => layout.order, [layout]);
   const doneCount = layout.groups.find(g => g.key === 'done')?.ids.length ?? 0;
-  const repairs = useMemo(() => order.filter(id => model.tasks[id].deliverableRole === 'repair').map(id => ({
+  // Repairs are no cells, but they stay Verify's evidence: read from the whole strip, not the build cells.
+  const repairs = useMemo(() => stripOrder(model).filter(id => model.tasks[id].deliverableRole === 'repair').map(id => ({
     id, title: displayTaskTitle(model.tasks[id].title), done: BOARD_LANDED.has(model.tasks[id].status) && !isClosedUnshipped(model, id),
-  })), [model, order]);
+  })), [model]);
   const build = { done: doneCount, total: buildIds.length };
   const handoff = useMemo(
     () => (checksSource ? missionChecks({ ...checksSource, build, repairs }) : null),

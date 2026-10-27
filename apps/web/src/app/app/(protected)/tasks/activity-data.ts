@@ -37,6 +37,7 @@ import {
 } from '@/lib/activity-delivery';
 import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { LINEAGE_MAX_DEPTH } from '@/lib/attempt-lineage';
+import { helperRunSql } from '@/lib/helper-run-sql';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { LocalHold } from '@/lib/local-session-display';
 import { attributionOf, whoFiltersReliable, DECIDED_REQUESTER_SOURCES, UNATTRIBUTED, type Attribution } from '@/lib/activity-attribution';
@@ -233,7 +234,7 @@ export function liveRootsWhere(scope: ActivityScope, recentIds: SQLWrapper, tab:
     .innerJoin(tasksTable, eq(workers.taskId, tasksTable.id))
     .where(and(inArray(workers.workspaceId, [...scope.workspaceIds]), where, inArray(workers.status, [...LIVE_WORKER_STATUSES])))
     .limit(ACTIVITY_LIVE_ROOT_LIMIT);
-  return and(where, or(inArray(tasksTable.id, open), inArray(tasksTable.id, held)), notInArray(tasksTable.id, recentIds),
+  return and(where, or(inArray(tasksTable.id, open), inArray(tasksTable.id, held)), notInArray(tasksTable.id, recentIds), sql`not ${helperRunSql()}`,
     tab === 'history' ? mayBeFinishedSql() : undefined);
 }
 
@@ -349,7 +350,7 @@ export async function loadActivityRows(scope: ActivityScope, tab: ActivityTab, n
   const where = activityScopeWhere(scope);
   const windowStart = new Date(nowMs - ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   // Now reads the recent roots that may still be in motion; History all of them.
-  const recentWhere = and(where, gte(tasksTable.updatedAt, windowStart), isNull(tasksTable.parentTaskId),
+  const recentWhere = and(where, gte(tasksTable.updatedAt, windowStart), isNull(tasksTable.parentTaskId), sql`not ${helperRunSql()}`,
     tab === 'now' ? or(notInArray(tasksTable.status, [...TERMINAL_TASK_STATUSES]), mayBeInMotionSql()) : undefined);
   const recentQuery = db.select(ACTIVITY_TASK_COLUMNS).from(tasksTable).where(recentWhere)
     .orderBy(desc(tasksTable.updatedAt), desc(tasksTable.id)).limit(ACTIVITY_ROOT_LIMIT);

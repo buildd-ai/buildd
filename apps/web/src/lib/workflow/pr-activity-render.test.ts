@@ -120,3 +120,18 @@ describe('WORKING with the owner parked in the queue (loop pass, requeue) is not
     expect(ownerParkedIn([T('DeliveryOpened', null, 'WORKING', {}, 0)])).toBe(false);
   });
 });
+
+describe('an attempt end that lands in ESCALATED names the real reason (#5714)', () => {
+  const ended = (reason: string, evidence: Record<string, unknown> = {}) => {
+    const ts = [...log, T('AttemptEnded', 'FIXING', 'ESCALATED', { outcome: 'success', live: live('H2'), ...evidence }, 4)];
+    return header(renderDeliveryActivity({ view: view({ state: 'ESCALATED', stateReason: reason }), transitions: ts, timezone: 'UTC' }));
+  };
+  test('a spent fix budget, spent CI budget or an unchanged head is never "never reached GitHub"', () => {
+    for (const reason of ['review_exhausted', 'ci_exhausted', 'ci_unfixed_head', 'conflict_exhausted']) {
+      expect(ended(reason, reason === 'ci_unfixed_head' ? { noChange: true } : {})).not.toContain('never reached GitHub');
+    }
+  });
+  test('only push_undeliverable says the fix never reached GitHub', () => {
+    expect(ended('push_undeliverable', { note: 'no_open_pr_head' })).toContain('never reached GitHub');
+  });
+});
