@@ -60,8 +60,8 @@ describe('one visual review entry', () => {
 });
 
 describe('footer and History', () => {
-  it('the footer is Shipped + Screens + Records: no Orchestrator or Notes rows', () => {
-    expect(FOOTER).toContain('<MissionScreensRow');
+  it('the footer is Shipped + Records: no Screens, Orchestrator or Notes rows', () => {
+    expect(FOOTER).not.toContain('<MissionScreensRow');
     expect(FOOTER).toContain('<MissionRecordsSheet');
     expect(FOOTER).not.toContain('<MissionNotesSheet');
     expect(PAGE).not.toContain('{orchestratorRow}');

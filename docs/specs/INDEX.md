@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (86)
+## Active (85)
 
 ### auth (9)
 
@@ -124,7 +124,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-17
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (21)
+### surfaces (20)
 
 - [Chat Stream Composition](./chat-stream-composition.md) · @max — verified 2026-10-10
   An assistant chat turn MUST render in fixed, keyed regions so streaming text, finished tools and loading cards never move, reparent or duplicate what is already on screen.
@@ -138,8 +138,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
 - [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-22
   Flow, a desktop view from the mission ⋯ menu, MUST draw one named row per task in dependency order on a clock-time axis, declared gates as lit edges, and, given estimates, who sets the finish.
-- [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-11
-  A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet.
 - [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-10-22
   A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Mission Progress Strip — Topological Order and Dependency-on-Selection](./mission-progress-strip-ordering.md) · @builder — verified 2026-10-22
@@ -233,12 +231,14 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workspace Routing and Reach](./workspace-routing-and-reach.md) · @max — verified 2026-10-19
   Every task MUST be filed into the workspace its subject lives in, with the reason recorded, and MUST reach any other workspace only through a named, person-granted delegation checked before it runs.
 
-## Superseded (8)
+## Superseded (9)
 
 - [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-18
   Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live. → replaced by Living Spec `Overlap scheduling: serial lanes and file locks`
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-15
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped. → replaced by `agent-question-protocol`
+- [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-27
+  A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet. → replaced by Living Spec `Navigation: one place per task`
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-10-09
   The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only. → replaced by `mission-flow-timeline`
 - [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-10-14

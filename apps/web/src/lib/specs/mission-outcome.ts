@@ -1,6 +1,6 @@
 import { acceptanceTestRecord, acceptanceTestVerdict, parseAcceptanceTestRun } from './acceptance-test-result';
 import { db } from '@buildd/core/db';
-import { artifactReads, githubRepos, missions, specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
+import { artifactReads, githubRepos, missions, specOutcomeVerdicts, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
@@ -74,7 +74,7 @@ export async function filterMissionRowsByAcceptanceEdit(
   return holdUnacceptedTestRows(rows, evidenceById, contexts);
 }
 
-async function loadMission(missionId: string): Promise<MissionRow | null> {
+export async function loadMission(missionId: string): Promise<MissionRow | null> {
   const m = await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, workspaceId: true, workingBranch: true, integrationBranchEnabled: true, goalCriteria: true },
@@ -150,7 +150,7 @@ function storedRegisteredRow(r: { id: string; criterionId: string; verdict: stri
   });
 }
 
-async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<MissionVerdictRow[]> {
+async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<{ rows: MissionVerdictRow[]; held: Map<string, { at: Date | string; prNumber: number | null }> }> {
   const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash, evidence: specOutcomeVerdicts.evidence })
     .from(specOutcomeVerdicts)
     .where(and(eq(specOutcomeVerdicts.missionId, missionId), eq(specOutcomeVerdicts.specRevisionId, specRevisionId)))
@@ -162,7 +162,27 @@ async function missionRows(missionId: string, specRevisionId: string, hashes: Re
     const registered = storedRegisteredRow(r, evidence);
     return { ...r, source: verdictSourceOfEvidence(evidence), bindingFingerprint, evidence, ...(registered ? { source: registered.source, method: registered.method } : {}) };
   }) as MissionVerdictRow[];
-  return filterMissionRowsByAcceptanceEdit(mapped, filtered);
+  const kept = await filterMissionRowsByAcceptanceEdit(mapped, filtered);
+  return { rows: kept, held: await heldTestResults(mapped, kept, filtered) };
+}
+
+/** The newest test result R-80 dropped for each criterion, with the PR whose edit holds it. */
+async function heldTestResults(all: readonly MissionVerdictRow[], kept: readonly MissionVerdictRow[], original: ReadonlyArray<{ id: string; evidence: unknown }>) {
+  const keptIds = new Set(kept.map((r) => r.id));
+  const evidenceById = new Map(original.map((r) => [r.id, r.evidence]));
+  const dropped = all.filter((r) => !keptIds.has(r.id));
+  const held = new Map<string, { at: Date | string; taskId: string | null }>();
+  for (const r of dropped) {
+    const prev = held.get(r.criterionId);
+    if (!prev || new Date(r.at).getTime() >= new Date(prev.at).getTime()) held.set(r.criterionId, { at: r.at, taskId: checkTaskIdOf(evidenceById.get(r.id)) });
+  }
+  const taskIds = [...new Set([...held.values()].map((h) => h.taskId).filter((t): t is string => !!t))];
+  const prs = new Map<string, number>();
+  if (taskIds.length) {
+    const ws = await db.select({ taskId: workers.taskId, prNumber: workers.prNumber }).from(workers).where(inArray(workers.taskId, taskIds));
+    for (const w of ws) if (w.taskId && w.prNumber != null) prs.set(w.taskId, w.prNumber);
+  }
+  return new Map([...held].map(([id, h]) => [id, { at: h.at, prNumber: h.taskId ? prs.get(h.taskId) ?? null : null }]));
 }
 
 /** Registrations answer to the selected immutable body, never mutable metadata. */
@@ -194,11 +214,11 @@ export async function readMissionSpecStanding(mission: MissionRow, c: LivingSpec
   for (const { criterionId, binding, fingerprint } of registrations.bindings) {
     if (binding.mode === 'required') requiredBindings.set(criterionId, [...(requiredBindings.get(criterionId) ?? []), fingerprint]);
   }
-  const rows = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
+  const { rows, held } = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
   const target = await resolveMissionTarget(mission, rows.map((r) => r.headSha).filter((h): h is string => !!h), api);
   const unaccepted = await unacceptedAcceptanceTestPaths(mission.id);
   const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target, requiredBindings, unacceptedTestPaths: unaccepted });
-  return { ...folded, standings: describeStandings(folded.standings, scope.criteria, rows), target, scope: scope.criteria, title: scope.title };
+  return { ...folded, standings: describeStandings(folded.standings, scope.criteria, rows, held), target, scope: scope.criteria, title: scope.title };
 }
 
 /**
@@ -248,6 +268,15 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
   /** An acceptance test's run on the merged result: its exit code, not `verdict`, decides the verdict. */
   acceptanceTest?: unknown;
 }, api: Api = githubApi): Promise<{ ok: true; verdictId: string; standing: MissionSpecStanding } | SpecError> {
+  const r = await recordMissionSpecVerdictRow(caller, missionId, input, api);
+  if (!r.ok) return r;
+  return { ok: true, verdictId: r.verdictId, standing: await readMissionSpecStanding(r.mission, r.criterion, api) };
+}
+
+type RecordInput = Parameters<typeof recordMissionSpecVerdict>[2];
+
+/** Authorise and write one verdict row; reading the standing back is the caller's choice (a batch reads it once). */
+async function recordMissionSpecVerdictRow(caller: SpecCaller, missionId: unknown, input: RecordInput, api: Api): Promise<{ ok: true; verdictId: string; verdict: string; mission: MissionRow; criterion: LivingSpecGoalCriterion } | SpecError> {
   if (typeof missionId !== 'string' || !isUuid(missionId)) return fail(404, 'Mission not found');
   const mission = await loadMission(missionId);
   if (!mission?.workspaceId || !(await reach(caller, mission.workspaceId, false))) return fail(404, 'Mission not found');
@@ -319,7 +348,74 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
     evidence: { ...(accepted?.evidence ?? {}), refs, readIds, ...(observed ? { observed } : {}), ...(reaffirms ? { reaffirms } : {}), recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
   await settleVerdictSource(row.id);
-  return { ok: true, verdictId: row.id, standing: await readMissionSpecStanding(mission, c, api) };
+  return { ok: true, verdictId: row.id, verdict, mission, criterion: c };
+}
+
+export interface BatchVerdictItem { criterionId: unknown; verdict?: unknown; acceptanceTest?: unknown }
+export interface BatchVerdictSummary {
+  ok: true;
+  recorded: number;
+  /** Verdict counts as the batch recorded them (a test's is its exit code's). */
+  counts: Record<string, number>;
+  /** Items that were not written, each with why. */
+  refused: Array<{ criterionId: unknown; status: number; error: string }>;
+  /** Criteria still not passing on the target after the batch, with their standing. */
+  unsettled: Array<{ criterionId: string; standing: string }>;
+  /** The mission-level fold: how many criteria are in scope and how many pass. */
+  scope: number;
+  passing: number;
+  verdict: string;
+  evidence: string;
+}
+
+const MAX_BATCH = 100;
+
+/**
+ * Record many mission-level verdicts in one request: one shared spec and
+ * commit, each item its own criterion and verdict or acceptance test run. The
+ * reply is a short summary (counts, what was refused, what did not settle), not
+ * the whole standing per row; the standing is read once at the end.
+ */
+export async function recordMissionSpecVerdicts(caller: SpecCaller, missionId: unknown, shared: { specId?: unknown; headSha: unknown }, items: unknown, api: Api = githubApi): Promise<BatchVerdictSummary | SpecError> {
+  if (!Array.isArray(items) || items.length === 0) return fail(400, 'verdicts must be a non-empty array of { criterionId, verdict | acceptanceTest }');
+  if (items.length > MAX_BATCH) return fail(400, `verdicts takes at most ${MAX_BATCH} per request`);
+  if (!items.every((i) => i && typeof i === 'object')) return fail(400, 'each verdict must be { criterionId, verdict | acceptanceTest }');
+  // One GitHub read per path for the whole batch: the target is the same for every item.
+  const seen = new Map<string, Promise<unknown>>();
+  const memo: Api = (installationId, path, options) => {
+    if (options?.method && options.method !== 'GET') return api(installationId, path, options);
+    const key = `${installationId}:${path}`;
+    if (!seen.has(key)) seen.set(key, api(installationId, path, options).catch((e) => { seen.delete(key); throw e; }));
+    return seen.get(key) as Promise<any>;
+  };
+  const counts: Record<string, number> = {};
+  const refused: BatchVerdictSummary['refused'] = [];
+  let last: { mission: MissionRow; criterion: LivingSpecGoalCriterion } | null = null;
+  let recorded = 0;
+  for (const raw of items as BatchVerdictItem[]) {
+    const r = await recordMissionSpecVerdictRow(caller, missionId, {
+      specId: shared.specId, headSha: shared.headSha, criterionId: raw.criterionId, verdict: raw.verdict,
+      ...(raw.acceptanceTest !== undefined ? { acceptanceTest: raw.acceptanceTest } : {}),
+    }, memo);
+    if (!r.ok) {
+      // The first refusal that is about the request as a whole (authority, target) would repeat for every item.
+      if (recorded === 0 && refused.length === 0 && [403, 404].includes(r.status)) return r;
+      refused.push({ criterionId: raw.criterionId, status: r.status, error: r.error });
+      continue;
+    }
+    recorded++;
+    last = r;
+    counts[r.verdict] = (counts[r.verdict] ?? 0) + 1;
+  }
+  if (!last) return refused.length ? { ...fail(refused[0].status as 400, refused[0].error) } : fail(400, 'nothing to record');
+  const standing = await readMissionSpecStanding(last.mission, last.criterion, memo);
+  const unsettled = standing.standings.filter((s) => s.standing !== 'pass' && s.standing !== 'waived').map((s) => ({ criterionId: s.criterionId, standing: s.standing }));
+  const active = standing.standings.filter((s) => s.standing !== 'waived');
+  return {
+    ok: true, recorded, counts, refused, unsettled,
+    scope: active.length, passing: active.filter((s) => s.standing === 'pass').length,
+    verdict: standing.verdict, evidence: standing.evidence,
+  };
 }
 
 /**

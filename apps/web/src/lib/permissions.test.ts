@@ -38,6 +38,7 @@ const EXPECTED: Record<Permission, Row> = {
   manage_team_settings: { roles: OA, keys: NONE },
   delete_team: { roles: O, keys: NONE },
   seed_team_timezone: { roles: O, keys: NONE },
+  require_spec_passkey: { roles: O, keys: NONE },
   view_team_usage: { roles: OA, keys: NONE },
   manage_billing: { roles: OA, keys: NONE },
   manage_team_keys: { roles: OA, keys: NONE },

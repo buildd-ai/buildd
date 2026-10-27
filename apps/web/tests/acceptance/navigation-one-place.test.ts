@@ -323,6 +323,37 @@ describe('the mission page, r5: the header, the bar, the Build stage, the stages
     matches(page(), /<MissionOverview [^>]*expectedMinutes=\{flowExpectedMinutes\}/);
   });
 
+  it('AC-11: two selected specs read 18 of 21 met, From <spec> for each, the 3 unmet with evidence and action, the all-met group one line, Standards one line, and no Run verification, Goal criteria panel or Screens row', async () => {
+    const { missionDetailCompactFixture } = await import('../../src/app/app/dev/fixtures/mission-detail-compact-fixtures');
+    const { missionStandardsLine } = await import('../../src/lib/mission-checks');
+    const f = missionDetailCompactFixture('verify', null, Date.UTC(2026, 9, 22, 12));
+    const v = f.verify!;
+    expect(v.summary).toBe('18 of 21 met');
+    expect(v.groups.map(g => [g.title, g.count])).toEqual([['Cloud runner: deploy from Settings', '15 of 18'], ['Settings: Runners', '3 of 3']]);
+    const [big, small] = v.groups;
+    expect(big.unmet.map(u => u.result)).toEqual(['Not met', "Couldn't tell", "Couldn't tell"]);
+    expect(big.unmet[0].evidence.map(e => e.label)).toEqual(['Test output']);
+    expect(big.unmet[0].action?.text).toMatch(/^Fixing: .+, running \d+m$/);
+    expect(big.unmet[1].action?.text).toMatch(/^rechecks after .+ merges$/);
+    expect(small.allMet).toBe(true);
+    const standards = missionStandardsLine({ ...f.checks!, build: { done: 10, total: 10 } }, f.specTitles);
+    expect(standards?.items.map(i => i.label)).toEqual(expect.arrayContaining(['CI']));
+    // The page draws Verify from the view, and none of the retired controls.
+    matches(page(), /<MissionOverview [^>]*verify=\{verifyView\}/);
+    for (const retired of ['MissionVerifiedPill', 'MissionGoalCriteria', 'MissionScreensRow', 'CriteriaCheckNow']) expect(page()).not.toContain(retired);
+    matches(overview(), /<RequirementsView\b/);
+    matches(overview(), /<StandardsLineView\b/);
+  });
+
+  it('R-19: verification runs by itself on a build-completing, repair or mission PR merge; Re-check posts the evaluate route', async () => {
+    const { recheckReason } = await import('../../src/lib/mission-verify-recheck');
+    const build = (id: string, status: string) => ({ id, status, title: id, taskClass: 'work', context: null });
+    expect(recheckReason('b', [build('a', 'completed'), build('b', 'in_progress')])).toBe('build_complete');
+    expect(recheckReason('r', [build('a', 'in_progress'), { ...build('r', 'completed'), context: { specRepair: { criterionId: 'AC-1' } } }])).toBe('repair_merged');
+    matches(code(read(join(SRC, 'lib/mission-subscribers.ts'))), /'recheck-criteria-on-merge'/);
+    matches(menu(), /\/evaluate`/);
+  });
+
   it('R-21: the mission column keeps the reading width through the design token', () => {
     matches(code(read(join(MISSION_DIR, 'MissionLayoutShell.tsx'))), /max-w-\[var\(--content-measure\)\]/);
   });

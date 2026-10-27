@@ -10,7 +10,13 @@ import PrimaryAction from '@/components/ui/PrimaryAction';
 import SpecReviewChanges from '@/components/SpecReviewChanges';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import SpecRepoChecksFetch from '@/components/SpecRepoChecksFetch';
+import SpecExplanationCheck from '@/components/SpecExplanationCheck';
 import type { ApprovalRequestView } from '@/lib/specs/approval-view';
+import { needsPasskey, withPasskey } from '@/lib/passkeys/client';
+import { PASSKEY_SETTINGS_PATH } from '@/lib/passkeys/paths';
+
+/** What shows while a team's passkey prompt is open (R-20). */
+const ASKING = { tone: 'info' as const, text: 'Confirm with your passkey.' };
 
 /** The shortest reason that overrides a gate refusal (lib/specs/approval.ts MIN_OVERRIDE_REASON). */
 const MIN_REASON = 10;
@@ -39,6 +45,13 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
  * revision, version and content hash it was rendered with, sent to
  * POST /api/specs/[specId]/approve/inbox. When the spec moved since, the page
  * reloads so the row shows the new head.
+ *
+ * One decision on one screen (b7fc9316 R-14 to R-19): the author's
+ * explanation and its coverage check lead, each change opening in place to its
+ * exact words; the change list, gate and full text follow; one Approve sits in
+ * a bar that stays in view (above the phone tab bar) while the person reads.
+ * Approve waits until the explanation covers every change, or the person has
+ * opened each change it does not cover.
  */
 export default function SpecApprovalRequest({ specId, token, view, showTitle = true }: { specId: string; token?: string; view: ApprovalRequestView; showTitle?: boolean }) {
   const revision = view.state === 'ready' ? view.revision : 0;
@@ -50,26 +63,34 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
   const approvedText = `Approved revision ${view.state === 'ready' ? view.revision : ''}.`;
   const [reason, setReason] = useState('');
   const refused = view.state === 'ready' && !view.gate.passed;
-  const { shown: result, retry, approve } = useOptimisticApprove(async () => {
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
+  const toggleOpen = (key: string) => setOpened((o) => { const n = new Set(o); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  // R-18: what still has to be opened before Approve; none when the explanation covers everything.
+  const coverage = view.state === 'ready' ? view.coverage : null;
+  const unopened = coverage && !coverage.passed ? coverage.notExplained.filter((i) => !opened.has(i.key)).length : 0;
+  const passkey = view.state === 'ready' && view.passkey;
+  const { shown: result, retry, approve } = useOptimisticApprove(async (update) => {
     const override = refused ? { overrideReason: reason.trim() } : {};
     const retire = retireChoice(replacing, checked);
-    const res = inbox && view.state === 'ready'
-      ? await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/inbox`, {
+    // R-20: a team that requires a passkey answers the first press with
+    // presence_required; withPasskey runs the prompt and sends again.
+    const { res, body } = await withPasskey((presence) => (inbox && view.state === 'ready'
+      ? fetch(`/api/specs/${encodeURIComponent(specId)}/approve/inbox`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...view.pin, ...(replacing.length ? { retire } : {}), ...override }),
+        body: JSON.stringify({ ...view.pin, ...(replacing.length ? { retire } : {}), ...override, ...(presence ? { presence } : {}) }),
       })
-      : await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
+      : fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ request: token, retire, ...override }),
-      });
-    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string; retirements?: ApprovalRetirementReply[] };
-    if (res.ok) return approvalResultText(revision, body.retirements);
+        body: JSON.stringify({ request: token, retire, ...override, ...(presence ? { presence } : {}) }),
+      })), { onAsk: () => update(ASKING) });
+    if (res?.ok) return approvalResultText(revision, body.retirements as ApprovalRetirementReply[] | undefined);
+    if (needsPasskey(body)) return { tone: 'warn', text: body.error ?? 'Add a passkey to approve.', action: { label: 'Add a passkey', href: PASSKEY_SETTINGS_PATH } };
     // An inbox row that moved under the person: show the new head.
     if (inbox && body.code === 'stale') router.refresh();
     return { tone: body.code === 'request_stale' || body.code === 'request_expired' || body.code === 'stale' ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
-  }, approvedText, inbox ? () => router.refresh() : undefined);
+  }, approvedText, inbox ? () => router.refresh() : undefined, passkey ? ASKING : undefined);
 
   const heading = showTitle && 'title' in view ? (
     <h1 className="font-voice text-2xl text-text-primary" data-testid="spec-approval-title">{view.title}</h1>
@@ -87,13 +108,22 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
     );
   }
 
+  const needsReason = refused && reason.trim().length < MIN_REASON;
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4" data-testid="spec-approval-decision">
       {heading}
       <Lede>
         {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : 'Nothing is approved yet.'}
       </Lede>
-      {view.changes ? <SpecReviewChanges {...view.changes} /> : null}
+      {coverage ? (
+        <SpecExplanationCheck explanation={view.explanation} coverage={coverage} sectionWords={view.sectionWords} opened={opened} onToggle={toggleOpen} />
+      ) : null}
+      {view.changes ? (
+        <section aria-label="Every change" className="flex flex-col gap-2 border-t border-border-default pt-4">
+          <h2 className="text-title font-semibold text-text-primary">Every change</h2>
+          <SpecReviewChanges {...view.changes} />
+        </section>
+      ) : null}
       <section className="flex flex-col gap-2" aria-label="Quality gate" data-testid="spec-approval-gate">
         {view.gate.passed && !view.gate.warnings.length ? <Notice tone="ok">Quality gate passed.</Notice> : null}
         {view.gate.refusals.length ? (
@@ -124,17 +154,7 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
           </label>
         ) : null}
       </section>
-      {result ? <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice> : null}
-      {!result || retry ? (
-        <div className="flex flex-col gap-2">
-          <SpecReplacedChoice options={replacing} checked={checked} onToggle={toggle} />
-          <div>
-            <PrimaryAction onClick={approve} disabled={refused && reason.trim().length < MIN_REASON} fullWidthOnMobile data-testid="spec-approval-approve">
-              {refused ? `Override and approve revision ${view.revision}` : replacing.some((r) => checked.has(r.id)) ? 'Approve and retire' : `Approve revision ${view.revision}`}
-            </PrimaryAction>
-          </div>
-        </div>
-      ) : null}
+      {(!result || retry) ? <SpecReplacedChoice options={replacing} checked={checked} onToggle={toggle} /> : null}
       {view.repoChecks ? <SpecRepoChecksFetch specId={specId} /> : null}
       <SpecRevisionPanes
         body={view.body}
@@ -146,6 +166,30 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
         initial={view.replaces ? 'changes' : 'spec'}
         attachments={view.attachments}
       />
+      {/* R-14: the one Approve, in a bar that sticks to the bottom of the view
+          (above the phone tab bar) for as long as this revision is on screen. */}
+      <div
+        className="sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 -mx-4 flex flex-col gap-2 border-t border-border-default bg-surface-1 px-4 py-3 md:bottom-0 md:mx-0 md:flex-row md:items-center md:justify-between md:gap-4 md:px-0"
+        data-testid="spec-approval-bar"
+      >
+        {result ? <Notice tone={result.tone} action={result.action} data-testid="spec-approval-result">{result.text}</Notice> : null}
+        {!result || retry ? (
+          <>
+            <p className="text-meta text-text-secondary [overflow-wrap:anywhere]" data-testid="spec-approval-bar-status">
+              {unopened > 0
+                ? `Open the ${unopened === 1 ? 'change' : `${unopened} changes`} marked Not explained to approve.`
+                : needsReason
+                  ? 'Give an override reason of at least 10 characters to approve.'
+                  : coverage ? coverage.line : `Revision ${view.revision}`}
+            </p>
+            <div className="shrink-0">
+              <PrimaryAction onClick={approve} disabled={needsReason || unopened > 0} fullWidthOnMobile data-testid="spec-approval-approve">
+                {refused ? `Override and approve revision ${view.revision}` : replacing.some((r) => checked.has(r.id)) ? 'Approve and retire' : `Approve revision ${view.revision}`}
+              </PrimaryAction>
+            </div>
+          </>
+        ) : null}
+      </div>
     </div>
   );
 }

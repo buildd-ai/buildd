@@ -102,10 +102,17 @@ export function foldMissionSpec(input: {
   for (const r of filtered) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
   const newest = new Map<string, MissionVerdictRow>();
   const outranked = new Map<string, number>();
+  /** Criteria that have a test result at some commit: a review alone never settles them. */
+  const hadTest = new Set<string>();
   for (const [id, rows] of grouped) {
     // A review cannot turn a test that could not settle the check into an
     // achieved result. Keep those test results open as well as test failures.
-    const legacy = rows.filter((r) => !r.bindingFingerprint);
+    const everLegacy = rows.filter((r) => !r.bindingFingerprint);
+    if (everLegacy.some((r) => r.source === 'test')) hadTest.add(id);
+    // A row on the current target speaks for it; an older row (a test included)
+    // decides only when nothing current exists, so it can never outrank one.
+    const currentRows = everLegacy.filter((r) => verdictIsCurrent(input.target, r.headSha));
+    const legacy = currentRows.length ? currentRows : everLegacy;
     const tests = legacy.filter((r) => r.source === 'test');
     const d = determiningVerdict(tests.length ? tests : legacy);
     if (!d) continue;
@@ -114,6 +121,7 @@ export function foldMissionSpec(input: {
   }
   const targetSha = input.target.kind === 'integration' ? input.target.headSha : null;
   const staleFails = new Set<string>();
+  const reviewOnlyIds = new Set<string>();
 
   const standingOf = (criterionId: string, row?: MissionVerdictRow | null, requireCurrent = false): LivingSpecCriterionStanding => {
     if (!row) return { criterionId, standing: 'missing', headSha: null };
@@ -162,14 +170,16 @@ export function foldMissionSpec(input: {
   const active = standings.filter((s) => s.standing !== 'waived');
   // Missing results remain open rather than silently shrinking the scope.
   const registered = active.some((s) => isRequired(s.criterionId));
-  const tested = active.filter((s) => s.source === 'test' || s.standing === 'missing' || isRequired(s.criterionId));
+  const tested = active.filter((s) => s.source === 'test' || s.standing === 'missing' || isRequired(s.criterionId) || hadTest.has(s.criterionId));
   const failed = tested.filter((s) => s.standing === 'fail');
-  const passing = tested.filter((s) => s.standing === 'pass');
-  const open = tested.filter((s) => s.standing !== 'pass');
+  const reviewOnly = (s: LivingSpecCriterionStanding) => s.standing === 'pass' && s.source !== 'test' && hadTest.has(s.criterionId) && !isRequired(s.criterionId);
+  const passing = tested.filter((s) => s.standing === 'pass' && !reviewOnly(s));
+  const open = tested.filter((s) => s.standing !== 'pass' || reviewOnly(s));
+  for (const s of open) if (reviewOnly(s)) reviewOnlyIds.add(s.criterionId);
   const waivedNote = waived.size > 0 ? ` ${count(standings.length - active.length)} waived by a person.` : '';
 
   if (failed.length > 0) {
-    return { verdict: 'fail', targetSha, standings, evidence: `${failed.map((s) => s.criterionId).join(', ')} failed. ${describeOpen(open.filter((s) => s.standing !== 'fail'), staleFails)}${waivedNote}`.trim() };
+    return { verdict: 'fail', targetSha, standings, evidence: `${failed.map((s) => s.criterionId).join(', ')} failed. ${describeOpen(open.filter((s) => s.standing !== 'fail'), staleFails, reviewOnlyIds)}${waivedNote}`.trim() };
   }
   if (input.target.kind === 'unknown') {
     return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `No integrated target to verify against: ${input.target.reason}.${waivedNote}` };
@@ -177,9 +187,12 @@ export function foldMissionSpec(input: {
   if (active.length === 0) {
     return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `Nothing left to verify: every criterion is waived. Remove the outcome spec if the mission no longer answers to it.` };
   }
-  if (!registered && !tested.some((s) => s.source === 'test')) {
+  if (!registered && !tested.some((s) => s.source === 'test' || hadTest.has(s.criterionId))) {
     return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `No tested checks on the integrated result. Judged results do not count toward achievement.${waivedNote}` };
   }
+  // The count above is of tested checks; say how many listed criteria it leaves out so it never reads as the whole scope.
+  const untested = active.length - tested.length;
+  const untestedNote = untested > 0 ? ` ${capital(count(untested))} of ${count(active.length)} in scope ${untested === 1 ? 'is' : 'are'} judged by review only and not counted.` : '';
   const where = input.target.kind === 'integration' ? `on ${short(input.target.headSha)}` : 'on a commit holding every merged mission PR';
   if (open.length === 0) {
     const label = registered ? 'required' : 'tested';
@@ -189,13 +202,13 @@ export function foldMissionSpec(input: {
     verdict: 'UNVERIFIED',
     targetSha,
     standings,
-    evidence: `${capital(count(passing.length))} of ${count(tested.length)} pass ${where}. ${describeOpen(open, staleFails)}${waivedNote}`.trim(),
+    evidence: `${capital(count(passing.length))} of ${count(tested.length)} pass ${where}. ${describeOpen(open, staleFails, reviewOnlyIds)}${untestedNote}${waivedNote}`.trim(),
   };
 }
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-function describeOpen(open: LivingSpecCriterionStanding[], staleFails: ReadonlySet<string> = new Set()): string {
+function describeOpen(open: LivingSpecCriterionStanding[], staleFails: ReadonlySet<string> = new Set(), reviewOnly: ReadonlySet<string> = new Set()): string {
   if (open.length === 0) return '';
   const by = (k: LivingSpecCriterionStanding['standing']) => open.filter((s) => s.standing === k).map((s) => s.criterionId);
   const parts: string[] = [];
@@ -205,6 +218,8 @@ function describeOpen(open: LivingSpecCriterionStanding[], staleFails: ReadonlyS
   if (missing.length) parts.push(`${list(missing)} ${missing.length === 1 ? 'has' : 'have'} no verdict`);
   if (staleFailed.length) parts.push(`${list(staleFailed)} failed on an older commit`);
   if (stale.length) parts.push(`${list(stale)} passed on an older commit`);
+  const judged = open.filter((s) => reviewOnly.has(s.criterionId)).map((s) => s.criterionId);
+  if (judged.length) parts.push(`${list(judged)} ${judged.length === 1 ? 'has' : 'have'} a current review but no current test result`);
   if (inconclusive.length) parts.push(`${list(inconclusive)} ${inconclusive.length === 1 ? 'is' : 'are'} inconclusive`);
   if (unsupported.length) parts.push(`${list(unsupported)} could not be checked here`);
   return parts.length ? `${capital(parts.join('; '))}.` : '';
@@ -231,13 +246,20 @@ export function describeStandings(
   standings: readonly LivingSpecCriterionStanding[],
   scope: readonly { id: string; text: string }[],
   rows: readonly MissionVerdictRow[],
+  /** Test results the R-80 hold dropped from `rows`, by criterion: the newest of each. */
+  held: ReadonlyMap<string, { at: Date | string; prNumber: number | null }> = new Map(),
 ): LivingSpecCriterionStanding[] {
   const text = new Map(scope.map((c) => [c.id, c.text]));
   const byId = new Map(rows.map((r) => [r.id, r]));
   return standings.map((s) => {
     const row = s.verdictId ? byId.get(s.verdictId) : undefined;
-    const reason = s.standing === 'pass' || s.standing === 'waived' || s.standing === 'missing' || !row ? undefined : verdictReason(row.verdict, row.evidence);
+    const open = s.standing !== 'pass' && s.standing !== 'waived';
+    // A held test result newer than the one the fold used is why the criterion is open: the older run's reason is not.
+    const hold = open ? held.get(s.criterionId) : undefined;
+    const holds = !!hold && (!row || new Date(hold.at).getTime() >= new Date(row.at).getTime());
+    const reason = holds ? 'test held' as const
+      : s.standing === 'pass' || s.standing === 'waived' || s.standing === 'missing' || !row ? undefined : verdictReason(row.verdict, row.evidence);
     const words = text.get(s.criterionId);
-    return { ...s, ...(words ? { text: words } : {}), ...(reason ? { reason } : {}) };
+    return { ...s, ...(words ? { text: words } : {}), ...(reason ? { reason } : {}), ...(holds && hold!.prNumber != null ? { heldByPr: hold!.prNumber } : {}) };
   });
 }

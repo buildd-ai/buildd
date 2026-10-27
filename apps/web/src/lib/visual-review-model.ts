@@ -565,7 +565,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   const roundOf = (c: VisualReviewCell) => c.history[c.history.length - 1].round;
   for (const c of cells) {
     const k = screenOf(c);
-    if (!k || resolvedKeys.has(c.key) || c.standing === 'fine' || replaced.has(c.key)) continue;
+    if (!k || resolvedKeys.has(c.key) || replaced.has(c.key)) continue;
     const later = (byScreen.get(k) ?? [])
       .map(s => replaced.get(s.key) ?? s)
       .filter(s => s.key !== c.key && !foldedInto.has(s.key) && !resolvedKeys.has(s.key) && roundOf(s) > roundOf(c))
@@ -576,6 +576,18 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     }
   }
   let liveCells = resolvedKeys.size > 0 ? cells.filter(c => !resolvedKeys.has(c.key)) : cells;
+  // What stepped back stays viewable on the screen that replaced it.
+  const earlierOf = new Map<string, VisualReviewCellEntry[]>();
+  for (const r of resolvedElsewhere) {
+    const hidden = cells.find(c => c.key === r.key);
+    if (!hidden) continue;
+    earlierOf.set(r.resolvedBy, [...(earlierOf.get(r.resolvedBy) ?? []), hidden.current]);
+  }
+  const withEarlier = (c: VisualReviewCell): VisualReviewCell => {
+    const e = earlierOf.get(c.key);
+    return e ? { ...c, earlier: e } : c;
+  };
+  if (earlierOf.size > 0) liveCells = liveCells.map(withEarlier);
 
   // 3c. A merged fix waiting for a screenshot (spec 072de598 I-15) never
   // waits on nobody: an audit that has not finished takes it (queued), else
@@ -606,7 +618,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     };
     if (next === 'decide') {
       const keys = new Set(waiting.map(c => c.key));
-      liveCells = liveCells.map(c => (keys.has(c.key) ? cellOf(c.key, c.history, true) : c));
+      liveCells = liveCells.map(c => (keys.has(c.key) ? withEarlier(cellOf(c.key, c.history, true)) : c));
     }
   }
 
@@ -639,7 +651,10 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   // The cap note is a one-time record that the automatic rounds ran out. It
   // stays a question only while a current screen is still not fine: once a
   // later round re-shot everything ok, nothing is left to decide.
-  const capNoteOpen = input.roundCapOpen === true && liveCells.some(c => c.standing !== 'fine');
+  // A screen whose recapture is already queued or running is waiting on that
+  // screenshot, not on a person: the note does not ask while one is coming.
+  const stillOpen = liveCells.some(c => c.standing !== 'fine' && !(recapture?.next === 'queued' && awaitingCapture(c)));
+  const capNoteOpen = input.roundCapOpen === true && stillOpen;
   const replacedAudits = replacedFailedAudits(auditTasks, liveCells, requiredRoutesOf, openFixes, capNoteOpen);
   const replacedIds = new Set(replacedAudits.map(r => r.auditTaskId));
   const unreplaced = replacedIds.size > 0 ? tasks.filter(t => !replacedIds.has(t.id)) : tasks;
