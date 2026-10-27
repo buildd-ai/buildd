@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "e54c5ec8-0aca-4a52-9b1f-206b66dbce33",
+  "id": "b58621bd-159a-49bb-a79a-8c66127de507",
   "prevIds": [
-    "98b094a9-b202-4d1e-a230-a309ea63dccc"
+    "adb95eee-6bdb-4b9b-b80c-a0f21e1e7d6f"
   ],
   "ddl": [
     {
@@ -21992,6 +21992,19 @@
       "generated": null,
       "identity": null,
       "name": "replaces",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_revisions"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "explanation",
       "entityType": "columns",
       "schema": "public",
       "table": "spec_revisions"
