@@ -19,7 +19,6 @@ import type { MissionReleaseStatus } from './mission-delivery';
 import { planMissions, type PlanTask } from './mission-plan';
 import { countWord, outcomeSpecView, type CriterionLine } from './mission-outcome-spec-view';
 import { standardsGateEnforced, standardsLine, type StandardItemStatus, type StandardsLine } from './specs/mission-standards-gate';
-import { specGroup } from './mission-verify-view';
 
 /** R-17's statuses. Only `passed` reads as passed; waived and not applicable never do. */
 export type CheckStatus = 'queued' | 'running' | 'passed' | 'finding' | 'unable' | 'owner' | 'stale' | 'waived' | 'not_applicable';
@@ -233,13 +232,10 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
 
     if (c.type === 'metric') return row('unable', 'no checker', 'Nothing runs this kind of criterion.', { actor: 'owner' });
     if (c.type === 'living_spec') {
-      // The outcome spec is one Verify row (R-29), counted as Verify's
-      // Requirements group counts it (Navigation R-17: `15 of 18 met`, only the
-      // criteria in scope). Only every in-scope requirement passing on the
-      // integrated result passes it; waived and stale never count.
+      // The outcome spec is one Verify row (R-29), read from the same evaluated
+      // state as the goal criteria panel. Only every in-scope requirement passing
+      // on the integrated result passes it; waived and stale never count.
       const v = outcomeSpecView(c, e, { buildDone: ctx.buildComplete });
-      const g = specGroup(c, e, { missionId: '', titles: {}, evidence: null, now: 0 });
-      const metText = g.count ? `${g.count} met` : 'not checked';
       const open = v.open.map(o => `${o.label}: ${countWord(o.criterionIds.length)}`);
       const detail = sentence(v.coverage, v.unchecked ?? (v.open.length ? open.join('. ') : null), v.waived.length ? `Waived: ${countWord(v.waived.length)}` : null, v.unchecked ? null : v.next);
       const spec = { commit: e?.spec?.targetSha ? e.spec.targetSha.slice(0, 7) : null, href: `/app/specs/${c.specId}?revision=${c.revision}`, ...(v.criteria.length ? { criteria: v.criteria } : {}) };
@@ -248,16 +244,16 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
       if (e.verdict === 'pass') return row('passed', 'passed', detail, { ...spec, actor: 'none' });
       // Waived by a person: nothing is open, and it never reads as passed.
       if (v.waived.length > 0 && v.open.length === 0) return row('waived', 'waived', detail, { ...spec, actor: 'none' });
-      if (e.verdict === 'fail') return row('finding', metText, detail, { ...spec, problem: 'product' });
+      if (e.verdict === 'fail') return row('finding', v.short, detail, { ...spec, problem: 'product' });
       // Every open check already ended without a result: nothing is verifying it, so it says what is true.
       if (v.unchecked) return row('queued', 'not checked', detail, spec);
       if (e.verdict === 'PENDING') return row('running', 'verifying', detail, spec);
       // Judged on the integration branch before the mission PR merges, so never "after merge".
       if (e.verdict === 'NOT_EVALUATED' || e.verdict === 'UNVERIFIED') {
         const onlyStale = v.open.length > 0 && v.open.every(o => o.standing === 'stale');
-        return row(onlyStale ? 'stale' : 'queued', metText, detail, spec);
+        return row(onlyStale ? 'stale' : 'queued', v.short, detail, spec);
       }
-      return row('queued', metText, detail, spec);
+      return row('queued', v.short, detail, spec);
     }
     if (!e) return unjudged();
     if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) {

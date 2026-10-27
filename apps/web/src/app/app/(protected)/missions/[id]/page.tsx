@@ -1264,9 +1264,19 @@ async function MissionDetailBody({
   const decisionTaskIds = layout === 'board'
     ? [...boardModel.needsYou, ...openQuestionNotes.map(n => n.subjectTaskId).filter((t): t is string => !!t)]
     : [];
-  const waitsByTask = decisionTaskIds.length > 0
-    ? await loadQuestionWaitsFor(decisionTaskIds, { kind: 'person', userId: user.id }).catch(() => new Map())
-    : new Map();
+  // Verify's evidence (R-17) loads in the same wait: a failed read costs the links, never the counts.
+  const specEntries = (goalCriteriaStateFull?.criteria ?? []).flatMap(e => (e.spec ? [{ standings: e.spec.standings }] : []));
+  const [waitsByTask, verifyEvidence] = await Promise.all([
+    decisionTaskIds.length > 0
+      ? loadQuestionWaitsFor(decisionTaskIds, { kind: 'person', userId: user.id }).catch(() => new Map())
+      : Promise.resolve(new Map()),
+    layout === 'board' && goalCriteria.some(c => c.type === 'living_spec')
+      ? loadMissionEvidence(id, specEntries as never).catch((err) => {
+          console.error('[mission-page] evidence load failed', err);
+          return null;
+        })
+      : Promise.resolve(null),
+  ]);
   const criteriaFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
   const criteriaFailingCriterion = criteriaFailingState ? goalCriteria[criteriaFailingState.index] ?? null : null;
   const criteriaUnmet = goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass';
@@ -1301,15 +1311,7 @@ async function MissionDetailBody({
   const history = layout === 'board' ? historyRaised(boardModel, withoutStaleRoundCap(openQuestionNotes, boardVisual)) : null;
   // Verify's Requirements (Navigation R-17, AC-11): one group per selected spec, the
   // evidence under each unmet requirement and the repair working on it. There is no
-  // Goal criteria panel: `?criteria=open` and `#mission-criteria` open Verify. A
-  // failed evidence read costs the links, never the counts.
-  const specEntries = (goalCriteriaStateFull?.criteria ?? []).flatMap(e => (e.spec ? [{ standings: e.spec.standings }] : []));
-  const verifyEvidence = layout === 'board' && goalCriteria.some(c => c.type === 'living_spec')
-    ? await loadMissionEvidence(id, specEntries as never).catch((err) => {
-        console.error('[mission-page] evidence load failed', err);
-        return null;
-      })
-    : null;
+  // Goal criteria panel: `?criteria=open` and `#mission-criteria` open Verify.
   const verifyView = layout === 'board'
     ? missionVerifyView({ missionId: id, criteria: goalCriteria, state: goalCriteriaStateFull, titles: outcomeSpecTitles, evidence: verifyEvidence, now: renderedAt })
     : null;
