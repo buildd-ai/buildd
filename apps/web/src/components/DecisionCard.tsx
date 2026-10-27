@@ -271,9 +271,9 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     answeredRef.current = true;
     const el = cardRef.current;
     if (!el) return;
-    const next = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="decision-card"]:not([data-answered]):not([data-later])')).find(
-      c => !!(el.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) || c !== el,
-    );
+    // Any decision card, whatever its testId (the home feed uses its own), still open: the next after this one, else the first.
+    const open = Array.from(document.querySelectorAll<HTMLElement>('article[data-kind]:not([data-answered]):not([data-later])'));
+    const next = open.find(c => !!(el.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING)) ?? open[0];
     next?.querySelector<HTMLElement>('button, a[href]')?.focus();
   }, [isAnswered]);
   if (chosen != null) {
