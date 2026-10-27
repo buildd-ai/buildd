@@ -76,7 +76,6 @@ function endpoints() {
 
 const ROWS: FixtureRow[] = [
   { provider: 'anthropic', scope: 'team', last4: 'a1b2', lastVerifiedAt: ago(2 * 3600 * 1000) },
-  { provider: 'claude-subscription', scope: 'team', shape: 'oauth_managed', lastVerifiedAt: ago(DAY) },
   { provider: 'openai', scope: 'team', last4: 'k9q4', health: 'revoked', lastVerificationError: 'OpenAI rejected the key (401).', lastVerifiedAt: ago(3 * DAY) },
   { provider: 'litellm', scope: 'team', last4: 'abcd', lastVerifiedAt: ago(3 * DAY) },
   { provider: 'custom-endpoint', scope: 'team', last4: 'abcd' },

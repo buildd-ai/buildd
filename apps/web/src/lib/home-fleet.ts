@@ -17,6 +17,7 @@ import { and, desc, eq, gt, gte, inArray, isNotNull, or, sql } from 'drizzle-orm
 import { RUNNER_STALE_CUTOFF_MS, questionSessionEnded, type FleetSnapshot } from '@buildd/shared';
 import { fleetHeartbeatScope } from './fleet-heartbeat-scope';
 import { withLiveRunnerBeats } from './runner-beats';
+import { isRunnerRecentlySeen } from './runner-heartbeats-shared';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
 import { taskShortLabel } from './segment-label';
@@ -337,13 +338,15 @@ export async function loadQueueHistory(input: { wsIds: string[]; from: number; n
  * Health › Runners' lanes: the fleet with its recent runs (not just the live
  * ones) and the stretches every slot sat idle while work waited. Lean on
  * purpose: no ticker, counts or questions, and only the runners page calls it.
+ * Only runners seen recently (`isRunnerRecentlySeen`) are in it, the same set
+ * the page's runner list and totals use.
  */
 export async function loadRunnersFleet(input: { teamId: string | null; wsIds: string[]; now: number; viewerId?: string | null }): Promise<{ fleet: FleetSnapshot; idle: IdleStretch[] }> {
   const { teamId, wsIds, now, viewerId } = input;
   if (wsIds.length === 0) return { fleet: EMPTY.fleet, idle: [] };
   const windowStart = now - FLEET_WINDOW_MS;
   const [heartbeatRows, workerRows, history] = await Promise.all([
-    loadFleetHeartbeats({ teamId, wsIds, now }),
+    loadFleetHeartbeats({ teamId, wsIds, now }).then(rows => rows.filter(r => r.lastHeartbeatAt != null && isRunnerRecentlySeen(r.lastHeartbeatAt, now))),
     db
       .select({
         id: workers.id, accountId: workers.accountId, ownerId: workers.claimedByUserId, taskOwnerId: tasks.createdByUserId, runner: workers.runner, localUiUrl: workers.localUiUrl,

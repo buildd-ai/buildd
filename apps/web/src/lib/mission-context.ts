@@ -430,6 +430,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       integrationBranchEnabled: true,
       workingBranch: true,
       createdByUserId: true,
+      // Persisted coordinate-only flag (decomposition "none" at create, or
+      // pre-filed tasks detected). Every caller that builds an organizer prompt
+      // (runMission, the schedule cron) must see it, not just the one that
+      // happens to pass it in the template context.
+      decompositionSkipped: true,
     },
   });
   if (!mission) return null;
@@ -687,7 +692,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // The organizer runs the coordination checklist but must NOT create new build tasks on its
   // own initiative. Retries and PR conflicts are not on it: task auto-retry, CI retry, the
   // conflict sweep and pr-reconcile already handle those.
-  const decompositionSkippedCtx = templateContext?.decompositionSkipped as boolean | undefined;
+  const decompositionSkippedCtx = ((templateContext?.decompositionSkipped as boolean | undefined) ?? false) || mission.decompositionSkipped === true;
   if (decompositionSkippedCtx) {
     descParts.push(resolvePrompt(MISSION_PROMPT_IDS.coordinateOnly, MISSION_PROMPT_DEFAULTS.coordinateOnly));
 

@@ -121,11 +121,11 @@ describe('the frame while held', () => {
 });
 
 describe('Queue view while held', () => {
-  test('the order stays, with "paused" in place of start times', () => {
+  test('the order stays, and every waiting row is Blocked · paused', () => {
     const s = held(queueState());
     const before = queueSections(queueState(), NOW);
     const after = queueSections(s, NOW);
     expect(after.map(x => x.rows.map(r => r.taskId))).toEqual(before.map(x => x.rows.map(r => r.taskId)));
-    for (const sec of after) for (const r of sec.rows) expect(r.starts).toBe('paused');
+    for (const sec of after) for (const r of sec.rows.filter(x => x.status !== 'running')) expect(r.starts).toBe('Blocked · paused');
   });
 });

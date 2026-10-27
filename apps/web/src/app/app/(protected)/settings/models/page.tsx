@@ -1,7 +1,6 @@
 import Section from '@/components/ui/Section';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
-import { teamIdsHolding } from '../_lib/settings-permissions';
 import { settingsReadOnly } from '@/lib/settings-nav';
 import { isPlatformOperatorCaller } from '@/lib/admin/platform-operator-caller';
 import ModelProvidersClient from '../providers/ModelProvidersClient';
@@ -16,10 +15,9 @@ export const dynamic = 'force-dynamic';
 
 /**
  * Settings › Team › Models: every team model concern on one page, in the order
- * you set it up. Keys (the team's, then one workspace's at a time; every way a
- * provider is connected: key, subscription and runner sign-in, in one row per
- * provider), Routing (gateway, decision model,
- * agent endpoint) and Tiers (which model each tier runs, limits, upgrades).
+ * you set it up. Keys (the team's API keys, gateway and agent endpoint, one row
+ * per provider), Used for (which provider serves each surface, the decision
+ * model, provider routing) and Tiers (which model each tier runs, limits, upgrades).
  * Goal grading has no control: Auto is the behaviour. Was /app/settings/providers and
  * /app/settings/ai; next.config redirects both here. Your own keys are
  * You › Keys (the old `?scope=mine` redirects there).
@@ -40,7 +38,7 @@ export default async function ModelsSettingsPage({
   searchParams: Promise<{ state?: string | string[] }>;
 }) {
   const qaDecisions = resolveModelsQaDecisions((await searchParams).state);
-  const { user, currentTeam, currentTeamId, perms, permsByTeam, workspaces } = await loadSettingsContext();
+  const { user, currentTeam, perms, workspaces } = await loadSettingsContext();
   const operator = await isPlatformOperatorCaller({ user });
 
   if (!currentTeam) {
@@ -65,13 +63,6 @@ export default async function ModelsSettingsPage({
         operator={operator}
         qaDecisions={qaDecisions}
         workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
-        signIns={{
-          workspaces,
-          currentTeamId,
-          manageableTeamIds: teamIdsHolding(permsByTeam, 'manage_team_credentials'),
-          canManage: perms.manage_team_credentials,
-          canManageRouting: perms.manage_team_settings,
-        }}
       />
 
       <Section title="Tiers" id="tiers" className="scroll-mt-20">

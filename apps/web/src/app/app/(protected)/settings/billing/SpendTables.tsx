@@ -4,6 +4,9 @@ export const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /** Your own spend: Interactive vs Agent runs, today and this month. */
 export function MySpend({ me }: { me: SpendSummary['me'] }) {
+  // Agent runs on a subscription login have no dollar cost; the row appears
+  // only when there is real API spend to show.
+  const hasAgentSpend = me.agent.month > 0;
   const row = (label: string, s: Split, id: string) => (
     <tr key={id} className="border-t border-border-default" data-testid={`my-spend-${id}`}>
       <th scope="row" className="px-4 py-2.5 text-left font-normal text-text-primary">{label}</th>
@@ -22,7 +25,7 @@ export function MySpend({ me }: { me: SpendSummary['me'] }) {
       </thead>
       <tbody>
         {row('Interactive', me.interactive, 'interactive')}
-        {row('Agents', me.agent, 'agent')}
+        {hasAgentSpend && row('Agents', me.agent, 'agent')}
       </tbody>
     </table></div>
   );

@@ -107,12 +107,13 @@ describe('o with no task picked opens the mission', () => {
 });
 
 describe('queued work the task list left out', () => {
-  const q = (over: Partial<QueueRow>): QueueRow => ({ taskId: 'q', position: 3, title: 'T', missionId: 'm', workspace: 'w', mission: 'M', est: null, starts: 'now', ...over });
+  const q = (over: Partial<QueueRow>): QueueRow => ({ taskId: 'q', position: 3, title: 'T', missionId: 'm', workspace: 'w', mission: 'M', est: null, status: 'queued', starts: 'Queued', ...over });
 
   test('its wait says where it is in the Queue view', () => {
     expect(queueRowReason(q({}))).toBe('#3 in queue · starts on the next claim');
-    expect(queueRowReason(q({ starts: 'after its dependency' }))).toBe('#3 in queue · after its dependency');
-    expect(queueRowReason(q({ position: null, held: true, reason: 'retries after failures, 18:26', starts: '18:26 · retries after failures' }))).toBe('retries after failures, 18:26');
+    expect(queueRowReason(q({ status: 'blocked', starts: 'Blocked · after its dependency', why: 'after its dependency' }))).toBe('#3 in queue · after its dependency');
+    expect(queueRowReason(q({ status: 'taken', starts: 'Taken by orion' }))).toBe('#3 in queue · taken by orion');
+    expect(queueRowReason(q({ position: null, held: true, reason: 'retries after failures, 18:26', status: 'blocked', starts: 'Blocked · until 18:26 · retries after failures' }))).toBe('retries after failures, 18:26');
   });
 
   test('the Missions view lists a mission\'s queued tasks the task list did not send', () => {
@@ -123,7 +124,7 @@ describe('queued work the task list left out', () => {
     const s = reduce(s0, { type: 'missions', missions: [{ id: missionId, title: qt.missionTitle ?? 'M', workspaceId: qt.workspaceId, status: 'active', isHeld: false, executor: 'runner', completedAt: null, stage: null }] });
     const listed = new Set(s.tasks.map(t => t.id));
     // What the Queue view draws (the organizer's planning run is not work there either).
-    const queued = queueRowList(s, NOW).filter(t => t.missionId === missionId && !listed.has(t.taskId)).map(t => ({ id: t.taskId }));
+    const queued = queueRowList(s, NOW).filter(t => t.status !== 'running' && t.missionId === missionId && !listed.has(t.taskId)).map(t => ({ id: t.taskId }));
     expect(queued.length).toBeGreaterThan(0);
     const rows = taskRows({ ...s, view: 'missions', selectedMission: missionId }, NOW);
     for (const t of queued) expect(rows.map(r => r.taskId)).toContain(t.id);

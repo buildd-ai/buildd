@@ -41,8 +41,8 @@ describe('parseDesignPlan', () => {
 describe('designScreensFromHtml', () => {
   test('reads each section\'s viewport and theme as text, falling back to the id prefix for the size', () => {
     const s = designScreensFromHtml(HTML);
-    expect(s.get('phone-mission')).toEqual({ id: 'phone-mission', viewport: { width: 390, height: 844 }, theme: 'light' });
-    expect(s.get('desktop-mission')).toEqual({ id: 'desktop-mission', viewport: { width: 1440, height: 900 }, theme: null });
+    expect(s.get('phone-mission')).toEqual({ id: 'phone-mission', viewport: { width: 390, height: 844 }, theme: 'light', kind: 'page' });
+    expect(s.get('desktop-mission')).toEqual({ id: 'desktop-mission', viewport: { width: 1440, height: 900 }, theme: null, kind: 'page' });
     expect(s.get('phone-task-running')?.viewport).toEqual({ width: 390, height: 844 });
     expect(s.get('coverage')?.viewport).toEqual({ width: 1200, height: 700 });
   });
@@ -127,6 +127,75 @@ describe('screensToCapture', () => {
 
   test('a named screen the file lacks is still listed, so the capture records it missing', () => {
     const s = screensToCapture(plan({ criteria: [{ id: 'AC-9', screens: ['phone-verify'] }] }), designScreensFromHtml(HTML));
-    expect(s).toEqual([{ id: 'phone-verify', viewport: { width: 390, height: 844 }, theme: 'light', inFile: false }]);
+    expect(s).toEqual([{ id: 'phone-verify', viewport: { width: 390, height: 844 }, theme: 'light', inFile: false, kind: 'page' }]);
+  });
+});
+
+describe('component screens (R-17)', () => {
+  const COMP_HTML = `<section data-screen="c-stage-meter" data-viewport="480x160" data-kind="component" data-code="apps/web/src/components/UiStageMeter.tsx">m</section>
+<section data-screen="phone-activity" data-viewport="390x844">a</section>`;
+  const inFile = designScreensFromHtml(COMP_HTML);
+  const cplan = (o: Record<string, unknown> = {}) => parseDesignPlan(JSON.stringify({
+    design: { file: '/tmp/d.html' },
+    criteria: [{ id: 'AC-14', text: 'The stage meter shows each stage.', screens: ['c-stage-meter'] }, { id: 'AC-2', screens: ['phone-activity'] }],
+    ...o,
+  }));
+  const fx = (state: string, width: number, id = state) => ({ id, path: `/app/dev/fixtures?state=${state}`, screenshotFile: `${id}.png`, viewport: { width, height: 900 } });
+
+  test('the file and the plan say what a screen is; the plan wins, and a screen is a page unless it says otherwise', () => {
+    expect(inFile.get('c-stage-meter')).toMatchObject({ kind: 'component', code: 'apps/web/src/components/UiStageMeter.tsx' });
+    expect(inFile.get('phone-activity')).toMatchObject({ kind: 'page' });
+    const s = screensToCapture(cplan({ screens: { 'phone-activity': { kind: 'component', code: 'apps/web/src/components/Feed.tsx' } } }), inFile);
+    expect(s.map((x) => [x.id, x.kind, x.code ?? null])).toEqual([
+      ['c-stage-meter', 'component', 'apps/web/src/components/UiStageMeter.tsx'],
+      ['phone-activity', 'component', 'apps/web/src/components/Feed.tsx'],
+    ]);
+  });
+
+  test('refuses a plan screen with an unknown kind or a code that is not a repo path', () => {
+    expect(() => cplan({ screens: { 'c-stage-meter': { kind: 'widget' } } })).toThrow('screens.c-stage-meter.kind');
+    expect(() => cplan({ screens: { 'c-stage-meter': { code: '../etc/passwd' } } })).toThrow('screens.c-stage-meter.code');
+  });
+
+  test('a component screen is compared with its dev fixture at the screen\'s width, never with a real route', () => {
+    const { pairs, unmatchedScreens } = mapRoutesToScreens(cplan({ routes: { 'c-stage-meter': '/app/dev/fixtures?state=stage-meter' } }), inFile, [
+      { id: 'activity', path: '/app/activity', screenshotFile: 'activity.png', viewport: { width: 480, height: 900 } },
+      fx('stage-meter', 1440, 'wide'),
+      fx('stage-meter', 480),
+      cap('act-phone', '/app/activity', 390),
+    ]);
+    expect(pairs.map((p) => [p.captureId, p.screen, p.kind, p.fixture ?? null])).toEqual([
+      ['activity', 'phone-activity', 'page', null],
+      ['stage-meter', 'c-stage-meter', 'component', '/app/dev/fixtures?state=stage-meter'],
+      ['act-phone', 'phone-activity', 'page', null],
+    ]);
+    expect(unmatchedScreens).toEqual([]);
+  });
+
+  test('a fixture per component state: every route listed for the screen is compared', () => {
+    const { pairs } = mapRoutesToScreens(cplan({ routes: { 'c-stage-meter': ['/app/dev/fixtures?state=stage-meter&variant=idle', '/app/dev/fixtures?state=stage-meter&variant=failed'] } }), inFile, [
+      fx('stage-meter&variant=idle', 480, 'idle'),
+      fx('stage-meter&variant=failed', 480, 'failed'),
+      fx('stage-meter&variant=running', 480, 'running'),
+    ]);
+    expect(pairs.map((p) => [p.captureId, p.fixture])).toEqual([
+      ['idle', '/app/dev/fixtures?state=stage-meter&variant=idle'],
+      ['failed', '/app/dev/fixtures?state=stage-meter&variant=failed'],
+    ]);
+  });
+
+  test('with no route given, the fixture is found by the screen id or the code component\'s name', () => {
+    const byName = mapRoutesToScreens(cplan(), inFile, [fx('stage-meter', 480), fx('home-cards', 480)]);
+    expect(byName.pairs.map((p) => p.captureId)).toEqual(['stage-meter']);
+    const byCode = mapRoutesToScreens(cplan(), inFile, [fx('ui-stage-meter', 480)]);
+    expect(byCode.pairs.map((p) => p.captureId)).toEqual(['ui-stage-meter']);
+  });
+
+  test('a component screen mapped to a real route is not compared there: it stays unmatched', () => {
+    const { pairs, unmatchedScreens } = mapRoutesToScreens(cplan({ routes: { 'c-stage-meter': '/app/activity' } }), inFile, [
+      { id: 'activity', path: '/app/activity', screenshotFile: 'activity.png', viewport: { width: 480, height: 900 } },
+    ]);
+    expect(pairs.map((p) => p.screen)).toEqual(['phone-activity']);
+    expect(unmatchedScreens).toEqual(['c-stage-meter']);
   });
 });

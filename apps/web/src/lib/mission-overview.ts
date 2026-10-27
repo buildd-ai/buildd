@@ -342,7 +342,8 @@ export function overviewStatus(model: Model, id: string): OverviewStatus {
     case 'ci_failed':
       return out(FAILED, 'bad', prCause(t.pr?.state) ?? termWord('pr.ci_failed'), { retryAt: t.startAt ?? null });
     case 'failed':
-      return out(FAILED, 'bad', null, { retryAt: t.startAt ?? null });
+      // What to change, from the task's error evidence (R-20); a dependency failure names its task in the row.
+      return out(FAILED, 'bad', t.failureCause ?? null, { retryAt: t.startAt ?? null });
     case 'ready': case 'blocked': case 'queued': {
       const wait = overviewWaitCause(model, id);
       return out(STATES[state].word, 'q', wait ? waitWord(model, id, wait) : null);

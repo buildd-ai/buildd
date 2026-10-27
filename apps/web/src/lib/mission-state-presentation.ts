@@ -173,13 +173,15 @@ export function presentMissionState(view: MissionStateView): MissionStatePresent
   const c = classify(view);
   const label = LABEL[c.state];
   const action = view.waitingOn ? view.nextAction : view.nextAction ?? null;
+  // A landing blocker names whose move it is: the platform's (a review queued, CI running) is nobody's to take.
+  const platformsMove = view.waitingOn?.kind === 'landing_blocked' && view.waitingOn.owner === 'platform';
   return {
     state: c.state,
     label,
     cause: c.cause,
     causeText: c.causeText,
     action,
-    needsYou: c.state === 'needs_you' || c.state === 'failing' || c.state === 'delivering',
+    needsYou: c.state === 'needs_you' || c.state === 'failing' || (c.state === 'delivering' && !platformsMove),
     sentence: c.causeText ? `${label}: ${c.causeText}` : label,
   };
 }

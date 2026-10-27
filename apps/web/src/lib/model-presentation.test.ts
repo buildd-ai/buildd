@@ -334,3 +334,25 @@ describe('routingReason', () => {
     expect(s.reasonLabel).toBe('pinned');
   });
 });
+
+// Task 33f9c9a4 was re-tiered to premium while a standard run was live; the page
+// then read "premium" as if the run had used it.
+describe('a tier changed mid-run', () => {
+  const context = {
+    model: 'claude-sonnet-5-5',
+    routingReason: 'baseline',
+    resolvedTier: { tier: 'standard', provider: 'anthropic', source: 'default' },
+    pendingModelChange: { tier: 'premium', runningTier: 'standard', runningModel: 'claude-sonnet-5-5', workerId: 'w-1', at: '2026-10-24T15:09:00Z' },
+  };
+
+  test('labels the tier the run is on, and says the new one is for the next attempt', () => {
+    const s = deriveTaskModel({ tier: 'premium', predictedModel: 'claude-sonnet-5-5', context });
+    expect(s.tierLabel).toBe('Standard');
+    expect(s.nextAttemptLabel).toBe('Premium applies to the next attempt; the current run is on Standard');
+  });
+
+  test('no pending change, no label', () => {
+    const { pendingModelChange: _p, ...rest } = context;
+    expect(deriveTaskModel({ tier: 'premium', predictedModel: 'claude-sonnet-5-5', context: rest }).nextAttemptLabel).toBeNull();
+  });
+});

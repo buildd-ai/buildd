@@ -22,12 +22,21 @@ in the address.
 1. Add the address to your app (Claude Code, Claude, ChatGPT, or any MCP client
    that supports OAuth sign-in).
 2. The app opens buildd in your browser. Sign in if you are not signed in.
-3. The page reads **Authorize <app>** and lists your teams with their
-   workspaces. Each workspace shows its repository under its name. Choose:
-   - **Workspaces.** One is ticked to start. Search by workspace, team or
-     repository, select all, or pick by team. You can only choose workspaces in
+3. The page reads **Authorize <app>** and lists your teams. Choose:
+   - **Teams.** For each team, choose one of:
+     - **No access.** The app reaches nothing in that team.
+     - **All current and future workspaces.** Every workspace in the team now,
+       and every one created in or moved into it later. This is what a team
+       starts on when you choose it.
+     - **Specific workspaces.** Only the workspaces you tick. Search by
+       workspace, team or repository; long teams are paged, and your ticks are
+       kept across pages and searches.
+
+     No team is chosen for you when you have several, unless the app named a
+     workspace, in which case its team starts on all current and future
+     workspaces. With one team, that team starts chosen. You can only choose
      teams you belong to. Internal workspaces (each team's organizer workspace)
-     are not listed.
+     are never part of "all" and are not listed.
    - **Write.** Read access is always included. Write is ticked when the app asks
      for it, and you can untick it to make the connection read only.
    - **Acts.** Shown only when the app asks to act as you. See the next section.
@@ -36,9 +45,15 @@ in the address.
 
 **Cancel** sends the app an `access_denied` answer and creates nothing.
 
-The connection reaches the workspaces you ticked, and only those. **Select all**
-ticks the workspaces that exist now; a workspace created later is not added. Add
-it in Settings when you want it.
+The summary above **Allow access** lists each chosen team with how the app
+reaches it: "all current and future workspaces, 12 workspaces now" grows as the
+team does; "3 ticked, none added later" stays as ticked. **Tick all listed**
+ticks the workspaces listed now; it never includes later ones. Choose **All
+current and future workspaces** for that.
+
+Workspaces added to a team later get the same permissions you chose here (read,
+or read and write) and the same kind (as you, or as your agent). Within each
+workspace the app is also limited to your role in the team.
 
 Apps buildd recognises (ChatGPT and Claude, returning to their own sites) are
 shown as verified. For any other app the page shows the name the app gave and
@@ -124,12 +139,24 @@ you are working in.
 
 Open **Settings › You › Connected apps** to see every app
 you connected. Each row shows the app name, whether it acts as you or as your
-agent, its workspaces, read or read-and-write, and when it was last active.
+agent, how much it reaches ("4 workspaces now, plus new ones in 1 team" when a
+team is on all workspaces), read or read-and-write, and when it was last active.
 
-From an open row you can:
+An open row lists each team with its mode: **All current and future
+workspaces** with how many it reaches now, or **Specific workspaces** with the
+list. From there you can:
 
-- **Add or remove workspaces.** You can only add workspaces in teams you belong
-  to. You cannot remove the last one; revoke instead.
+- **Edit access** for a team: switch between No access, All current and future
+  workspaces and Specific workspaces. Choosing Specific workspaces for a team
+  that was on all starts from the workspaces the app reaches there now; review
+  the ticks, and saving keeps exactly those. Before you save, the page says what
+  changes and, when the app would reach more, that it gets the same permission.
+- **Add a team** you belong to. It starts on all current and future
+  workspaces; switch it to specific workspaces before saving if you prefer.
+- **Remove** a single workspace, on a team that is on specific workspaces. A
+  team on all workspaces has no Remove: the workspace would still be included,
+  so switch the team to specific workspaces first. You cannot remove the last
+  workspace; revoke instead.
 - **Switch between read and read-and-write.**
 - **Make it an agent.** Turns an "acts as you" connection into an agent
   connection. Going the other way needs a fresh sign-in from the app, with the
@@ -137,7 +164,14 @@ From an open row you can:
 - **Revoke.** Ends the connection and all its refresh tokens.
 
 Every change applies on the app's next request, including on an access token the
-app already holds. The app does not need to reconnect.
+app already holds. The app does not need to reconnect. If the connection changed
+in another tab or on another device since you opened the page, saving is refused
+with what it has now, so you can look again; nothing is overwritten. Each change
+is kept in the connection's history with who made it.
+
+Connections made before team access existed keep exactly the workspaces they
+had, each team on specific workspaces. Turn on **All current and future
+workspaces** for a team here when you want it; there is no need to reconnect.
 
 Older per-workspace connections are listed separately, with a hint to switch.
 
@@ -149,8 +183,10 @@ Older per-workspace connections are listed separately, with a hint to switch.
 - **You lose every team the connection reaches.** The connection stops working
   and its refresh fails. The app has to sign in again.
 - **A workspace is deleted or moved to another team.** It drops out the same way.
-- **New workspaces** are never added on their own. Add them in Settings, or
-  reconnect.
+- **A workspace is created in a team, or moved into it.** A team on all current
+  and future workspaces includes it on the app's next request. A team on
+  specific workspaces does not; add it in Settings. A team the connection does
+  not cover is never added on its own.
 
 ## Older per-workspace addresses (deprecated)
 

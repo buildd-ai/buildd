@@ -19,6 +19,7 @@ const { PATCH, DELETE } = await import('./route');
 
 const GRANT = '11111111-2222-4333-8444-555555555555';
 const WS = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const TEAM = 'cccccccc-dddd-4eee-8fff-000000000000';
 const ctx = (id = GRANT) => ({ params: Promise.resolve({ id }) });
 const patchReq = (body: unknown) => new NextRequest(`http://localhost/api/mcp-grants/${GRANT}`, {
   method: 'PATCH',
@@ -46,7 +47,22 @@ describe('PATCH /api/mcp-grants/[id]', () => {
   it('passes the session user, never an id from the body', async () => {
     const res = await PATCH(patchReq({ addWorkspaceIds: [WS], access: 'read' }), ctx());
     expect(res.status).toBe(200);
-    expect(mockUpdate).toHaveBeenCalledWith('user-1', GRANT, { addWorkspaceIds: [WS], removeWorkspaceIds: [], access: 'read', actsAs: undefined });
+    expect(mockUpdate).toHaveBeenCalledWith('user-1', GRANT, { addWorkspaceIds: [WS], removeWorkspaceIds: [], teams: [], access: 'read', actsAs: undefined });
+  });
+
+  it('passes team mode changes and the revision through to the library', async () => {
+    const res = await PATCH(patchReq({ teams: [{ teamId: TEAM, mode: 'specific', workspaceIds: [WS] }], ifRevision: 4 }), ctx());
+    expect(res.status).toBe(200);
+    expect(mockUpdate.mock.calls[0][2]).toMatchObject({ teams: [{ teamId: TEAM, mode: 'specific', workspaceIds: [WS] }], ifRevision: 4 });
+  });
+
+  it('a stale edit is 409 with the connection as it is now', async () => {
+    mockUpdate.mockResolvedValue({ ok: false, status: 409, code: 'stale_connection', error: 'changed', connection: { id: GRANT, revision: 5 } });
+    const res = await PATCH(patchReq({ teams: [{ teamId: TEAM, mode: 'all' }], ifRevision: 4 }), ctx());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('stale_connection');
+    expect(body.connection.revision).toBe(5);
   });
 
   it('refuses agent to person with 403 before touching the grant', async () => {
@@ -69,6 +85,15 @@ describe('PATCH /api/mcp-grants/[id]', () => {
     ['ids that are not a list', { addWorkspaceIds: WS }],
     ['the same id added and removed', { addWorkspaceIds: [WS], removeWorkspaceIds: [WS] }],
     ['nothing to change', {}],
+    ['teams that are not a list', { teams: { teamId: TEAM, mode: 'all' } }],
+    ['a team change with an unknown mode', { teams: [{ teamId: TEAM, mode: 'everything' }] }],
+    ['a team change that is not a uuid', { teams: [{ teamId: 'someone-else', mode: 'all' }] }],
+    ['a team change with an unknown field', { teams: [{ teamId: TEAM, mode: 'all', userId: 'someone-else' }] }],
+    ['all workspaces with a workspace list', { teams: [{ teamId: TEAM, mode: 'all', workspaceIds: [WS] }] }],
+    ['specific workspaces with none', { teams: [{ teamId: TEAM, mode: 'specific', workspaceIds: [] }] }],
+    ['the same team twice', { teams: [{ teamId: TEAM, mode: 'all' }, { teamId: TEAM, mode: 'none' }] }],
+    ['a workspace both removed and chosen', { removeWorkspaceIds: [WS], teams: [{ teamId: TEAM, mode: 'specific', workspaceIds: [WS] }] }],
+    ['a revision that is not a whole number', { access: 'read', ifRevision: '3' }],
   ])('400 on %s, without echoing the body', async (_label, body) => {
     const res = await PATCH(patchReq(body), ctx());
     expect(res.status).toBe(400);

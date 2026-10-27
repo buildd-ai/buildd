@@ -53,6 +53,7 @@ import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
 import ActivityDeliveryFixture from './ActivityDeliveryFixture';
 import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import SkipRowFixture from './SkipRowFixture';
+import CheckRowFixture from './CheckRowFixture';
 import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
@@ -63,6 +64,10 @@ import ServiceStatusFixture from './ServiceStatusFixture';
 import ClosedPrFixture from './ClosedPrFixture';
 import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import DesignPreviewFixture from './DesignPreviewFixture';
+import StageMeterFixture from './StageMeterFixture';
+import DeliveryRowFixture from './DeliveryRowFixture';
+import YouStripPipelineFixture from './YouStripPipelineFixture';
+import DeliveryBarFixture from './DeliveryBarFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -97,6 +102,11 @@ import {
     RUNNER_KEYS_FIXTURE_STATE,
     MISSION_DELIVERIES_FIXTURE_STATE,
     DESIGN_PREVIEW_FIXTURE_STATE,
+    STAGE_METER_FIXTURE_STATE,
+    DELIVERY_ROW_FIXTURE_STATE,
+    YOU_STRIP_PIPELINE_FIXTURE_STATE,
+    CHECK_ROW_FIXTURE_STATE,
+    DELIVERY_BAR_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -168,6 +178,10 @@ export default function DevFixturesPage() {
 
     if (state === SURFACE_AUDIT_WAIVER_FIXTURE_STATE) {
         return <SurfaceAuditWaiverFixture />;
+    }
+
+    if (state === CHECK_ROW_FIXTURE_STATE) {
+        return <CheckRowFixture />;
     }
 
     if (state === SKIP_ROW_FIXTURE_STATE) {
@@ -272,6 +286,18 @@ export default function DevFixturesPage() {
     }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+    if (state === STAGE_METER_FIXTURE_STATE) {
+        return <StageMeterFixture />;
+    }
+    if (state === DELIVERY_ROW_FIXTURE_STATE) {
+        return <DeliveryRowFixture />;
+    }
+    if (state === DELIVERY_BAR_FIXTURE_STATE) {
+        return <DeliveryBarFixture />;
+    }
+    if (state === YOU_STRIP_PIPELINE_FIXTURE_STATE) {
+        return <YouStripPipelineFixture />;
     }
     if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
         return <DesignPreviewFixture />;
@@ -436,8 +462,8 @@ function VisualReviewFixtureView({ params }: { params: VisualReviewFixtureParams
     );
     const [initial] = useState(() => transport.model());
     const review = useVisualReviewDecisions(initial, transport);
-    const model = review.model;
-    const opensDeck = params.view === 'deck' || params.view === 'compare' || params.view === 'fix-check' || params.view === 'fix-merged';
+    const model = params.view === 'out-of-date' ? { ...review.model, onEarlierCommit: true } : review.model;
+    const opensDeck = params.view === 'all-fine' || params.view === 'deck' || params.view === 'compare' || params.view === 'fix-check' || params.view === 'fix-merged';
     const [deck, setDeck] = useState<{ startKey: string | null; compare: boolean } | null>(
         opensDeck ? { startKey: params.startKey, compare: params.compare } : null,
     );

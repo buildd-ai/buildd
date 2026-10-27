@@ -1676,7 +1676,7 @@ export const tasks = pgTable('tasks', {
   // kernel delivery's attempt (legacy, or not PR work). No FK: the delivery row
   // references tasks (owner_task_id), and a delivery is never deleted on its own.
   deliveryId: uuid('delivery_id'),
-  deliveryRole: text('delivery_role').$type<'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review'>(),
+  deliveryRole: text('delivery_role').$type<'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review' | 'capture'>(),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
   // How `category` was decided, once the decision model has looked at the task
@@ -5139,10 +5139,11 @@ export type McpGrantScope = 'read' | 'write';
 
 /**
  * An account-level MCP OAuth grant: one user's consent for one client to reach
- * a chosen set of workspaces. Tokens carry only the grant id; the workspaces
- * are the child rows, intersected with the user's current team memberships on
- * every request (apps/web/src/lib/mcp-grants.ts). New workspaces are never
- * added implicitly.
+ * a chosen set of workspaces. Tokens carry only the grant id; what it reaches
+ * is the child rows (specific workspaces, and whole teams in
+ * mcp_oauth_grant_teams), intersected with the user's current team
+ * memberships on every request (apps/web/src/lib/mcp-grants.ts). A workspace
+ * is never added to a team the grant does not already cover as a whole.
  */
 export const mcpOauthGrants = pgTable('mcp_oauth_grants', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -5154,6 +5155,9 @@ export const mcpOauthGrants = pgTable('mcp_oauth_grants', {
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  // Bumped by every edit in Settings. An edit names the revision it was made
+  // against and is refused when the grant has moved on (no silent overwrite).
+  revision: integer('revision').default(0).notNull(),
 }, (t) => ({
   userIdx: index('mcp_oauth_grants_user_idx').on(t.userId),
   actsAsValid: check('mcp_oauth_grants_acts_as_valid', sql`${t.actsAs} in ('person', 'agent')`),
@@ -5167,6 +5171,43 @@ export const mcpOauthGrantWorkspaces = pgTable('mcp_oauth_grant_workspaces', {
 }, (t) => ({
   pk: primaryKey({ columns: [t.grantId, t.workspaceId] }),
   workspaceIdx: index('mcp_oauth_grant_workspaces_workspace_idx').on(t.workspaceId),
+}));
+
+/**
+ * A team whose workspaces a grant reaches as a whole: every workspace of the
+ * team now and every one created in or moved into it later, while the user is
+ * a member (internal `__` workspaces excepted). No row for a team = only the
+ * team's workspaces listed in mcp_oauth_grant_workspaces ("specific
+ * workspaces"). New consents write a row per chosen team by default; grants
+ * made before this table existed have none, so what they reach is unchanged.
+ */
+export const mcpOauthGrantTeams = pgTable('mcp_oauth_grant_teams', {
+  grantId: uuid('grant_id').references(() => mcpOauthGrants.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.grantId, t.teamId] }),
+  teamIdx: index('mcp_oauth_grant_teams_team_idx').on(t.teamId),
+}));
+
+/**
+ * Append-only history of changes a person made to their own MCP connection in
+ * Settings (apps/web/src/lib/mcp-grant-admin.ts): who changed it, what, and
+ * the reach before and after. Ids and modes only, never a token. Rows go with
+ * the grant.
+ */
+export const mcpOauthGrantEvents = pgTable('mcp_oauth_grant_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  grantId: uuid('grant_id').references(() => mcpOauthGrants.id, { onDelete: 'cascade' }).notNull(),
+  // The signed-in person who made the change (today always the grant's owner).
+  actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // e.g. 'connection.created', 'connection.updated'
+  action: text('action').notNull(),
+  before: jsonb('before').$type<Record<string, unknown>>(),
+  after: jsonb('after').$type<Record<string, unknown>>(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  grantOccurredIdx: index('mcp_oauth_grant_events_grant_occurred_idx').on(t.grantId, t.occurredAt),
 }));
 
 // ── MCP Connectors ────────────────────────────────────────────────────────────
@@ -5892,6 +5933,12 @@ export const workflowFindings = pgTable('workflow_findings', {
   closedBy: text('closed_by'),
   closedReason: text('closed_reason'),
   deferredToTaskId: uuid('deferred_to_task_id'),
+  // Living Spec fa62b865 §11.1: who can fix it. Only `code_fix` is fix work and spends a review round.
+  remedyClass: text('remedy_class').default('code_fix').notNull().$type<'code_fix' | 'evidence' | 'person_decision' | 'capability_gap' | 'operational_run'>(),
+  // §11.2 R-48: how many later rounds restated it; surfaces say "restated n times" instead of repeating it.
+  restatedCount: integer('restated_count').default(0).notNull(),
+  // §11.1 R-46: an evidence finding's capture target (criterion, screen, route) and, once taken, the capture.
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

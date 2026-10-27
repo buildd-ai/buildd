@@ -391,7 +391,7 @@ export const MATRIX_SCENARIOS: ConformanceScenario[] = [
         const row = (await c.view()).attempts.filter((x) => x.family === 'ci' && (x.status === 'queued' || x.status === 'running')).at(-1)!;
         ok(row, 'a repair is open while repairing');
         if (row.status === 'queued') await c.submit({ type: 'FixClaimed', actor: 'runner', attemptId: row.id, revalidation: { live: c.live('H1'), approved: false } });
-        await c.submit({ type: 'AttemptEnded', actor: 'runner', workerId: `cw${i}`, attemptId: row.id, taskId: row.taskId ?? host.newId(), outcome: 'failed', localHeadSha: null, commitCount: 0, live: c.live('H1') });
+        await c.submit({ type: 'AttemptEnded', actor: 'runner', workerId: `cw${i}`, attemptId: row.id, taskId: row.taskId ?? host.newId(), outcome: 'failed', localHeadSha: null, commitCount: 0, live: c.live('H9') });
         if ((await c.d()).state !== 'REPAIRING') await c.ciRed('H1');
       }
       eq(pick(await c.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'ci_exhausted' }, 'the budget is spent and a person has it');

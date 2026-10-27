@@ -251,9 +251,12 @@ export class RecordingReviews implements Reviews {
   readonly calls: Array<{ op: string; deliveryId: string; arg?: string }> = [];
   /** `attestComposition`'s answer per round id (absent = review in full). */
   readonly attested = new Map<string, string>();
+  /** What the host's attestation does to the delivery before it answers, per round id (the real one ingests a fact). */
+  readonly onAttest = new Map<string, () => Promise<void>>();
   async output(round: RoundSnapshot): Promise<ReviewOutput> { return structuredClone(this.outputs.get(round.id) ?? {}); }
   async attestComposition(d: DeliverySnapshot, round: RoundSnapshot): Promise<string | null> {
     this.calls.push({ op: 'attestComposition', deliveryId: d.id, arg: round.id });
+    await this.onAttest.get(round.id)?.();
     return this.attested.get(round.id) ?? null;
   }
   async postFailed(d: DeliverySnapshot, p: { event: 'APPROVE' | 'REQUEST_CHANGES'; reason: string }): Promise<void> {

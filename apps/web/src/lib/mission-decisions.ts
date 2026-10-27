@@ -15,6 +15,7 @@ import { BOARD_LANDED, type BoardTask, type MissionBoardModel } from './mission-
 import { approvalView, decisionFromQuestion, type DecisionView } from './needs-you-card';
 import { stripOrder } from './mission-task-strip';
 import { visualReviewDecision, withoutStaleRoundCap } from './visual-review-decision';
+import { unmetSummary, type UnmetRequirements } from './spec-criterion-words';
 import type { VisualReviewModel } from '@buildd/shared';
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks' | 'needsYou'>;
@@ -102,6 +103,8 @@ export interface HistoryRaised {
   /** `Decision open: <title>`, `Failed: <task>`, `Reopened: <task>` */
   text: string;
   taskId: string | null;
+  /** The open question note a `decision` names; null for the others. */
+  noteId: string | null;
 }
 
 /**
@@ -109,59 +112,67 @@ export interface HistoryRaised {
  * a person must fix, or a reopened task; the first found, in that order.
  * Bounded: one pass over the notes and the build tasks.
  */
-export function historyRaised(model: Pick<MissionBoardModel, 'phases' | 'tasks'>, notes: readonly Pick<OpenQuestionNote, 'type' | 'status' | 'title' | 'subjectTaskId' | 'taskId'>[]): HistoryRaised | null {
+export function historyRaised(model: Pick<MissionBoardModel, 'phases' | 'tasks'>, notes: readonly Pick<OpenQuestionNote, 'id' | 'type' | 'status' | 'title' | 'subjectTaskId' | 'taskId'>[]): HistoryRaised | null {
   const decision = notes.find(n => n.type === 'question' && n.status === 'open' && n.title !== CRITERIA_ESCALATION_NOTE_TITLE);
-  if (decision) return { kind: 'decision', text: `Decision open: ${decision.title}`, taskId: decision.subjectTaskId ?? null };
+  if (decision) return { kind: 'decision', text: `Decision open: ${decision.title}`, taskId: decision.subjectTaskId ?? null, noteId: decision.id ?? null };
   const ids = stripOrder(model).filter(id => model.tasks[id].deliverableRole === 'build');
   const failed = ids.find(id => (model.tasks[id].status === 'failed' || model.tasks[id].status === 'ci_failed') && model.tasks[id].failureKind !== 'dependency');
-  if (failed) return { kind: 'failed', text: `Failed: ${model.tasks[failed].title}`, taskId: failed };
+  if (failed) return { kind: 'failed', text: `Failed: ${model.tasks[failed].title}`, taskId: failed, noteId: null };
   const reopened = ids.find(id => model.tasks[id].reopened && !BOARD_LANDED.has(model.tasks[id].status));
-  if (reopened) return { kind: 'reopened', text: `Reopened: ${model.tasks[reopened].title}`, taskId: reopened };
+  if (reopened) return { kind: 'reopened', text: `Reopened: ${model.tasks[reopened].title}`, taskId: reopened, noteId: null };
   return null;
 }
 
-/** The check a criterion names: `Spec "X" revision 1` reads as `X`; anything else is used whole, clipped. */
-function checkName(criterion: string | null): string | null {
-  const c = criterion?.replace(/\s+/g, ' ').trim();
-  if (!c) return null;
-  const spec = /^Spec\s+"([^"]+)"/.exec(c);
-  const name = spec ? spec[1] : c;
-  return name.length > 80 ? `${name.slice(0, 79)}…` : name;
+/**
+ * The History line, or null when the page already shows its event (f7f67f1a
+ * R-37, each fact once): a failed or reopened build task while the build rows
+ * are on screen (every unfinished build task is one), an open decision while
+ * its card is.
+ */
+export function historyOnScreen(history: HistoryRaised | null, onScreen: { buildRowsShown: boolean; decisions: readonly Pick<DecisionView, 'key' | 'answer'>[] }): HistoryRaised | null {
+  if (!history) return null;
+  if (history.kind !== 'decision') return onScreen.buildRowsShown ? null : history;
+  const noteId = history.noteId;
+  const carded = noteId != null && onScreen.decisions.some(d => d.key === `note:${noteId}` || (d.answer.kind === 'worker' && d.answer.noteId === noteId));
+  return carded ? null : history;
 }
 
 /**
- * The goal-criteria escalation as a decision card (R-16): a real question, a
- * primary option that files the missing work and one alternative that waives
- * the check and completes, each with its one-line effect. The reading is the
- * why; the mission is the subject because no single task is.
+ * The goal-criteria escalation as a decision card (R-16): the task that asked
+ * and when, the requirements not met named in words with what waits on them,
+ * a short question, a primary option that files the missing work and one
+ * alternative that waives the checks and completes, each with its one-line
+ * effect. No spec title and no revision: the page already names the spec.
  */
 export function criteriaEscalationDecision(input: {
   missionId: string;
-  /** Why the gate holds, in the gate's words. */
-  reading: string | null;
-  /** The first criterion not passing. */
-  criterion: string | null;
+  /** The mission's workspace: `Answer differently` files the answer as a task there. Null hides it. */
+  workspaceId: string | null;
+  /** The requirements not passing, in words (`unmetRequirements`). Null when none could be read. */
+  unmet: UnmetRequirements | null;
   fileWorkHref: string;
   mission: { id: string; title: string; href: string };
+  /** The task that asked (the final verification); null names the check itself. */
+  asker: { id: string; title: string; href: string } | null;
   askedAt: number | null;
 }): DecisionView {
-  const name = checkName(input.criterion);
-  const why = input.reading?.replace(/\s+/g, ' ').trim();
+  const n = input.unmet?.count ?? 0;
   return {
     key: `criteria:${input.missionId}`,
     kind: 'decision',
-    task: null,
+    task: input.asker,
     mission: input.mission,
+    label: input.asker ? null : 'Requirements check',
     askedAt: input.askedAt,
-    summary: why ? (/[.!?]$/.test(why) ? why : `${why}.`) : null,
+    summary: input.unmet && n > 0 ? unmetSummary(input.unmet) : 'The mission finishes once the open checks pass or are waived.',
     waits: null,
-    question: name ? `Ship without the "${name}" check?` : 'Ship without the unmet check?',
+    question: n === 1 ? 'Ship without this check?' : n > 1 ? `Ship without these ${n} checks?` : 'Ship without the open checks?',
     options: [
       { label: 'File the work', effect: 'Adds a task for what is missing, then asks again', tip: null, recommended: true, downstream: null },
       { label: 'Waive and complete', effect: 'Completes the mission; the record notes the override', tip: null, recommended: false, downstream: null },
     ],
     diffHref: null,
-    answer: { kind: 'criteria', missionId: input.missionId, fileWorkHref: input.fileWorkHref },
+    answer: { kind: 'criteria', missionId: input.missionId, workspaceId: input.workspaceId, fileWorkHref: input.fileWorkHref },
     shortcut: false,
   };
 }

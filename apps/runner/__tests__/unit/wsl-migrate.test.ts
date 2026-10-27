@@ -10,6 +10,7 @@ import {
   WSL_SERVICE_INSTALL,
   generateLogonTaskXml,
   parseMigrateArgs,
+  listPendingPinned,
   runWslMigrate,
   type MigrateDeps,
 } from '../../src/wsl-migrate';
@@ -40,6 +41,8 @@ interface Machine {
   /** A Windows runner started in a terminal, not by the task: survives /End until `closeForegroundAfter` probes. */
   windowsForeground: boolean;
   closeForegroundAfter: number;
+  /** Stopping the foreground runner fails: it must be named and waited for. */
+  stopFails: boolean;
   held: boolean;
   /** What each activeWork() call answers, in order; the last one repeats. */
   active: Agent[][];
@@ -55,7 +58,7 @@ function machine(over: Partial<Machine> = {}) {
     distros: '  NAME STATE VERSION\n* Ubuntu Running 2\n',
     runner: true, login: true, systemd: 'yes', service: 'no', linger: 'no', wslForeground: false, verify: 'pass',
     serviceInstallFails: false, logonCreateFails: false,
-    winTask: true, windowsLive: true, windowsForeground: false, closeForegroundAfter: 0, held: false,
+    winTask: true, windowsLive: true, windowsForeground: false, closeForegroundAfter: 0, stopFails: false, held: false,
     active: [[]], logonTask: 'absent', lingerAnswer: 0,
     ...over,
   };
@@ -136,6 +139,13 @@ function machine(over: Partial<Machine> = {}) {
         const now = m.active.length > 1 ? m.active.shift()! : m.active[0];
         events.push(`active:${now.length}`);
         return now;
+      },
+      pendingPinned: async () => [],
+      stop: async () => {
+        events.push('stop');
+        if (m.stopFails) return { ok: false, name: 'pid 4242' };
+        m.windowsLive = false;
+        return { ok: true, name: 'pid 4242' };
       },
     },
   });
@@ -259,10 +269,27 @@ describe('buildd wsl migrate', () => {
     }
   });
 
-  test('a Windows runner started in a terminal is named and waited for after the task is removed (R-16)', async () => {
-    const t = machine({ windowsForeground: true, closeForegroundAfter: 2 });
+  test('a foreground Windows runner is stopped after the drain shows no work (R-16)', async () => {
+    const t = machine({ windowsForeground: true, closeForegroundAfter: 99 });
     expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
-    expect(t.out()).toMatch(/still running in a terminal/i);
+    expect(t.events).toContain('stop');
+    expect(t.events.indexOf('stop')).toBeGreaterThan(t.events.lastIndexOf('active:0') - 1);
+    expect(t.out()).toContain('Stopped the Windows runner');
+    expect(t.m.windowsLive).toBe(false);
+  });
+
+  test('a foreground Windows runner with active work is never stopped (R-16)', async () => {
+    const t = machine({ windowsForeground: true, closeForegroundAfter: 99, active: [[], [], [{ title: 'Busy', status: 'working' }], [{ title: 'Busy', status: 'working' }], []] });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
+    const busy = t.events.lastIndexOf('active:1');
+    expect(busy).toBeGreaterThan(-1);
+    expect(t.events.indexOf('stop')).toBeGreaterThan(busy);
+  });
+
+  test('a foreground Windows runner that cannot be stopped is named and waited for (R-16)', async () => {
+    const t = machine({ windowsForeground: true, closeForegroundAfter: 2, stopFails: true });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
+    expect(t.out()).toMatch(/still running in a terminal and could not be stopped \(pid 4242\)/i);
     expect(t.m.windowsLive).toBe(false);
   });
 
@@ -331,12 +358,7 @@ describe('the Windows launcher', () => {
 
 // Acceptance criteria (Living Spec a0b82b5d, part 3): one test per check id.
 //
-// The AC-16 test below describes behaviour nobody has
-// built yet, so they are red by design. They are skipped in the gating run and only execute with
-// BUILDD_RUN_PENDING_ACCEPTANCE=1 (that is how the starting-commit failure is
-// shown). The build that makes them pass MUST swap `pendingTest` back to `test`.
 // AC-18 (docs repo) and AC-20 (real machine) have no unit test by design.
-const pendingTest = process.env.BUILDD_RUN_PENDING_ACCEPTANCE ? test : test.skip;
 describe('acceptance criteria', () => {
   test('AC-10: an active task blocks the handover; the Scheduled Task is removed only once it finishes, never stopped', async () => {
     const t = machine({ active: [[{ title: 'Ship the thing', status: 'working' }], []] });
@@ -427,7 +449,7 @@ describe('acceptance criteria', () => {
       confirm: null,
       sleep: async () => {},
       pollMs: 1,
-      windows: { live: async () => false, hold: async () => ({ ok: true, message: '' }), activeWork: async () => [] },
+      windows: { live: async () => false, hold: async () => ({ ok: true, message: '' }), activeWork: async () => [], pendingPinned: async () => [], stop: async () => ({ ok: true, name: '' }) },
     });
     expect(await runWslMigrate({ undo: false, distro: 'Ubuntu' }, deps())).toBe(0);
     expect(await runWslMigrate({ undo: false, distro: 'Debian' }, deps())).toBe(0);
@@ -445,17 +467,91 @@ describe('acceptance criteria', () => {
     expect(mutating(t.calls)).toEqual([]);
   });
 
-  // Not yet built: nothing in runWslMigrate looks up tasks pinned to the
-  // Windows runner before removing it (R-25, R-16) — there is no dependency
-  // for it to read that from. This names the shape such a check would need;
-  // it fails now because migrate never calls it or mentions a pinned task.
-  pendingTest('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
+  // Looks up tasks pinned to the Windows runner before removing it (R-25, R-16).
+  test('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
     const t = machine();
     const deps = t.deps();
-    (deps.windows as typeof deps.windows & { pendingPinned?: () => Promise<{ title: string }[]> }).pendingPinned =
-      async () => [{ title: 'Ship the invoice fix' }];
+    deps.windows.pendingPinned = async () => [{ title: 'Ship the invoice fix' }];
     expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
     expect(t.out()).toContain('Ship the invoice fix');
     expect(t.out()).toMatch(/wait(s|ing)? for (the )?(windows )?runner/i);
+  });
+
+  test('AC-16: no pending tasks pinned to the Windows runner means the list is empty', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => [];
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.out()).not.toMatch(/wait(s|ing)? for/i);
+  });
+
+  test('AC-16: a failed pending task lookup does not crash the migration', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => { throw new Error('API unreachable'); };
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.m.winTask).toBe(false);
+  });
+
+  describe('AC-16: listPendingPinned (the lookup main() wires in)', () => {
+    const PIN = 'runner:headless://WIN-BOX';
+    const task = (title: string, status: string, caps: string[]) => ({ title, status, requiredCapabilities: caps });
+    const run = async (respond: (url: string) => Response | Promise<Response>) => {
+      const urls: string[] = [];
+      const lines: string[] = [];
+      const result = await listPendingPinned({
+        configFile: '/nonexistent/config.json',
+        log: (l) => lines.push(l),
+        apiKey: 'bld_test',
+        baseUrl: 'https://example.test/',
+        runnerKey: 'headless://WIN-BOX',
+        fetchFn: (async (u: string) => { urls.push(u); return respond(u); }) as unknown as typeof fetch,
+      });
+      return { result, urls, lines };
+    };
+
+    test('asks for an accepted status and keeps only pending tasks pinned to this runner', async () => {
+      const { result, urls, lines } = await run(() => Response.json({ tasks: [
+        task('pinned pending', 'pending', [PIN]),
+        task('pinned running', 'in_progress', [PIN]),
+        task('other host', 'pending', ['runner:headless://OTHER']),
+        task('unpinned', 'pending', []),
+      ], hasMore: false, nextCursor: null }));
+      expect(urls).toEqual(['https://example.test/api/tasks?status=active']);
+      expect(result).toEqual([{ title: 'pinned pending' }]);
+      expect(lines).toEqual([]);
+    });
+
+    test('follows nextCursor so a later page is not hidden', async () => {
+      const { result, urls } = await run((u) => u.includes('cursor=c1')
+        ? Response.json({ tasks: [task('second page', 'pending', [PIN])], hasMore: false, nextCursor: null })
+        : Response.json({ tasks: [task('first page', 'pending', [PIN])], hasMore: true, nextCursor: 'c1' }));
+      expect(urls[1]).toBe('https://example.test/api/tasks?status=active&cursor=c1');
+      expect(result.map(r => r.title)).toEqual(['first page', 'second page']);
+    });
+
+    test('a non-ok response is reported in one line, not swallowed', async () => {
+      const { result, lines } = await run(() => new Response('nope', { status: 400 }));
+      expect(result).toEqual([]);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/could not check/i);
+    });
+
+    test('a thrown fetch is reported in one line', async () => {
+      const { result, lines } = await run(() => { throw new Error('offline'); });
+      expect(result).toEqual([]);
+      expect(lines).toHaveLength(1);
+    });
+
+    // R-25: a task pinned by hostname (not headless key) is also listed
+    test('R-25: tasks pinned to the Windows runner by hostname are also listed', async () => {
+      const HOSTNAME_PIN = 'runner:WIN-BOX';
+      const { result } = await run(() => Response.json({ tasks: [
+        task('pinned by hostname', 'pending', [HOSTNAME_PIN]),
+        task('pinned by headless key', 'pending', [PIN]),
+        task('pinned by other hostname', 'pending', ['runner:OTHER-BOX']),
+      ], hasMore: false, nextCursor: null }));
+      expect(result.map(r => r.title)).toEqual(['pinned by hostname', 'pinned by headless key']);
+    });
   });
 });

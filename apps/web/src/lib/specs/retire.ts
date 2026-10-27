@@ -3,6 +3,7 @@ import { specMetadataChanges, specs } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { fail, reach, type SpecCaller, type SpecError, type SpecRow } from './store';
+import { approvalRetireReason } from './replaces';
 import { specApprovalDeps, specApprover } from './approval';
 import { repoFileOf, restoredRepoNote, retiredRepoLine, retirementRow, type RetirementRepoFile } from './retire-repo-file';
 import type { RepoCopyDeps } from './repo-copy';
@@ -182,7 +183,7 @@ export async function supersedeOnApproval(personId: string, replacement: { id: s
     const stale = (reason: string) => out.push({ specId: spec.id, title: spec.title, state: 'stale', reason });
     if (isRetired(spec.status)) { stale(`already ${spec.status}`); continue; }
     if (c.expectedVersion !== undefined && spec.version !== c.expectedVersion) { stale(`it changed since the approval was read (version ${spec.version}, not ${c.expectedVersion})`); continue; }
-    const reason = `Replaced by "${replacement.title}", approved at revision ${replacement.revision}.`.slice(0, 500);
+    const reason = approvalRetireReason(replacement);
     const r = await writeStatus(spec, personId, 'superseded', reason, {
       status: 'superseded', supersededBy: replacement.id, approval: { specId: replacement.id, revision: replacement.revision },
     });

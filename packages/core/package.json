@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.380.0",
+  "version": "0.382.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -274,6 +274,7 @@
     "./unmergeable-surfaces": "./unmergeable-surfaces.ts",
     "./start-anyway": "./start-anyway.ts",
     "./waiting-reason": "./waiting-reason.ts",
+    "./runner-pin": "./runner-pin.ts",
     "./claim-planner": "./claim-planner.ts",
     "./github-installation-auth": "./github-installation-auth.ts",
     "./pr-scope-read": "./pr-scope-read.ts",

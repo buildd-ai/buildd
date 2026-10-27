@@ -18,7 +18,7 @@ import { countWord } from '@buildd/shared';
 export { DECISION_LABELS } from '@buildd/shared';
 
 /** The actions this page can carry out (EscalationDecision's handlers). */
-export const HANDLED_ACTIONS: ReadonlySet<EscalationActionId> = new Set(['review_findings', 'request_fix', 'force_re_review', 'approve_override']);
+export const HANDLED_ACTIONS: ReadonlySet<EscalationActionId> = new Set(['review_findings', 'request_fix', 'force_re_review', 'land_pr', 'approve_override']);
 
 export interface DecisionCopy {
   /** The heading: what the person is asked to decide. */

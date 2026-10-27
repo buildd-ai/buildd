@@ -5,10 +5,8 @@
  * charge newly crosses, so callers can fire a notification once per threshold
  * per month. Pure logic — no DB or I/O — so it is unit-testable in isolation.
  *
- * Context: as of 2026-06-15 the Claude Agent SDK draws from a fixed monthly
- * credit pool (e.g. $100), billed at list rates with no rollover. This tracks
- * consumption against that pool; `countsTowardAgentSdkCreditPool` decides
- * which sessions draw on it.
+ * Only real (per-token API) spend is counted; `countsTowardAgentSdkCreditPool`
+ * decides which sessions draw on the team's dollar budget.
  */
 
 /** Percent-of-budget thresholds that trigger an alert. */
@@ -76,20 +74,14 @@ export function applyBudgetUsage(
 }
 
 /**
- * Does this session's spend draw on the monthly Agent SDK credit pool?
+ * Does this session's spend count toward the team's monthly dollar budget?
  *
- * The pool is Claude usage on a seat subscription. Codex has its own pool and
- * a tenant runs on its own credential, so neither belongs in the pool total or
- * its threshold alerts. The worker row's cost is still written for every
- * session; this only decides whether the TEAM's pool counter moves.
- *
- * `authType` is accepted but deliberately NOT used yet. The account's
- * `authType` is not a reliable seat signal: an account created by a CLI login
- * is recorded as `api` even when the runner behind it is on a seat, so gating
- * on it would silently stop the pool counter (and its alerts) for those
- * runners. The worker's own `costBasis` is the signal instead: `real` usage
- * was charged per token, not drawn from the plan, so it never counts. Any
- * other basis (including unknown and absent) counts as before.
+ * Only real, per-token API spend does (`costBasis` 'real'). Work on a runner's
+ * own subscription login carries a virtual figure that is not a bill, so it
+ * never counts, and neither does an unknown basis. Codex has its own pool and
+ * a tenant runs on its own credential, so neither belongs in the total. The
+ * worker row's cost is still written for every session; this only decides
+ * whether the TEAM's counter moves.
  */
 export function countsTowardAgentSdkCreditPool(input: {
   backend: string | null | undefined;
@@ -99,6 +91,7 @@ export function countsTowardAgentSdkCreditPool(input: {
 }): boolean {
   if (input.backend === 'codex') return false;
   if (input.tenantId) return false;
-  if (input.costBasis === 'real') return false;
-  return true;
+  // Only per-token API spend is dollars a team can run out of. Virtual
+  // (subscription-valued), unknown and absent bases never move the counter.
+  return input.costBasis === 'real';
 }

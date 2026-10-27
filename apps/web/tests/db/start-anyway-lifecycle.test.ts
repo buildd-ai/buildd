@@ -186,7 +186,8 @@ describe('Start anyway, one task through the whole lifecycle', () => {
       blockerTaskId: up, reason: 'r', workerId: cw.id, assessment: ASSESSMENT,
     });
     expect(out.ok && out.park?.resumedOnRecheck).toBe(true);
-    expect((await outboxFor(dependent)).some(o => o.status === 'pending' && o.causes.includes('dependency.satisfied'))).toBe(true);
+    // The wake's own kick may already have drained the row, so any status counts.
+    expect((await outboxFor(dependent)).some(o => o.causes.includes('dependency.satisfied'))).toBe(true);
   });
 
   test('R-9: a prerequisite that already landed refuses the park, so the agent carries on', async () => {

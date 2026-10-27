@@ -26,6 +26,13 @@ describe('derivePendingTaskHold', () => {
     expect(h.holder).toBeNull();
   });
 
+  it('a runner pin names the runner it waits for, not a missing capability', () => {
+    const h = derivePendingTaskHold({ now: NOW, deferral: { reason: 'runner_capability', detail: { pinnedRunner: 'build-host' } } });
+    expect(h.kind).toBe('no_runner');
+    expect(h.cause).toBe('waiting for runner build-host');
+    expect(h.cause).not.toContain('no online runner has what it needs');
+  });
+
   it('regression 14f6a2b1: path_overlap deferrals behind a task read held, never next in line', () => {
     const h = derivePendingTaskHold({
       now: NOW,

@@ -11,7 +11,9 @@
  * "Ask about this mission": the mission pinned in the canvas), `&focus=question` (the
  * question's sheet or pane, e.g. with `answered`), `&feedback=1` (the thumbs,
  * one turn already voted down), `?steer=1` (steering a running agent),
- * `&settled=1` (a streaming state's turn as it lands: folded, ready).
+ * `&settled=1` (a streaming state's turn as it lands: folded, ready),
+ * `&width=400|600` (the workspace in a column of that width, as the docked Ask and the
+ * peek give it, whatever the window).
  * `?state=composed` plays a turn that files something: interim prose, a read
  * and a write under the live line, the final answer in the same slot, then
  * its Created and Referenced groups, with cards loading late (`&frame=0..5`).
@@ -254,9 +256,11 @@ export default function DevChatPage() {
     />
   ) : undefined;
 
+  const panelWidth = ['400', '600'].includes(params.get('width') ?? '') ? Number(params.get('width')) : null;
+
   return (
     <KeyHintsProvider value={keyHintsFromQuery(params)}>
-    <div className="h-screen bg-surface-1" data-fixture-state={state}>
+    <div className="h-screen bg-surface-1" data-fixture-state={state} style={panelWidth ? { width: panelWidth, borderRight: '1px solid var(--border-default)' } : undefined}>
       <nav aria-label="Fixture states" className="sr-only">
         {CHAT_FIXTURE_STATES.map(s => <a key={s} href={`?state=${s}`}>{s}</a>)}
       </nav>

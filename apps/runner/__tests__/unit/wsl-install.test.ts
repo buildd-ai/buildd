@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { join } from 'path';
 import { installWsl, inspectWsl, parseWindowsBuild, LINUX_INSTALLER, type WslInstallDeps, type CommandResult } from '../../src/wsl-setup';
 import { classifyCliArgs, RUNNER_USAGE } from '../../src/cli-args';
 
@@ -249,6 +250,31 @@ describe('buildd wsl install: command line', () => {
   });
   test('usage lists buildd wsl install', () => {
     expect(RUNNER_USAGE).toContain('buildd wsl install');
+  });
+});
+
+describe('buildd wsl install: launcher entry (wsl.ts)', () => {
+  const launcher = (...args: string[]) =>
+    Bun.spawnSync(['bun', 'run', 'src/wsl.ts', ...args], { cwd: join(import.meta.dir, '..', '..'), stdout: 'pipe', stderr: 'pipe' });
+
+  test('`wsl.ts install` reaches installWsl: off Windows it refuses with the PowerShell message, not usage', () => {
+    const r = launcher('install');
+    const out = r.stdout.toString() + r.stderr.toString();
+    expect(r.exitCode).toBe(1);
+    expect(out).toContain('PowerShell');
+    expect(out).not.toContain('Usage: buildd wsl <');
+  });
+
+  test('`wsl.ts install --bogus` is a usage error from the install command, not an unknown subcommand', () => {
+    const r = launcher('install', '--bogus');
+    expect(r.exitCode).toBe(64);
+    expect(r.stderr.toString()).toContain('Unknown argument: --bogus');
+  });
+
+  test('an unknown subcommand still prints usage listing install', () => {
+    const r = launcher('nope');
+    expect(r.exitCode).toBe(64);
+    expect(r.stderr.toString()).toContain('install');
   });
 });
 

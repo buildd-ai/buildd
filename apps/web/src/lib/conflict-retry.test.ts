@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 // ── DB mock setup (hoisted before imports) ────────────────────────────────────
 
@@ -1326,6 +1326,74 @@ describe('dispatchConflictRetry', () => {
 
 
 // ── The kernel owns the conflict family for its PRs (Slice B part 2, §6.7) ────
+
+// A frozen release candidate (release/vX.Y.Z → prodBranch) is never pushed to:
+// a merge of the base into it un-candidates it exactly as a CI fix push would.
+// A real candidate conflict goes to the release amend flow, not a builder.
+describe('dispatchConflictRetry refuses a frozen release candidate', () => {
+  const RELEASE_CONFIG = {
+    enabled: true, strategy: 'workflow_dispatch', prodBranch: 'main',
+    candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+  };
+  const CANDIDATE_WS = { id: 'ws-1', gitConfig: null, releaseConfig: RELEASE_CONFIG, githubInstallation: { installationId: 5 } };
+  const prRead = (headRef: string, baseRef: string) => async (_inst: unknown, path: unknown) => {
+    if (String(path).endsWith('/pulls/99')) return { head: { ref: headRef, sha: 'sha-abc123', repo: { full_name: 'acme/app' } }, base: { ref: baseRef } };
+    throw new Error('unexpected github call');
+  };
+  beforeEach(() => {
+    mockWorkspaceFindFirst.mockReset();
+    mockWorkspaceFindFirst.mockResolvedValue(CANDIDATE_WS);
+    mockTaskFindFirst.mockReset();
+    mockTaskFindFirst.mockResolvedValue(MOCK_TASK);
+    mockLiveConflictRetryProbe.mockReset();
+    mockLiveConflictRetryProbe.mockResolvedValue(null);
+    mockInsert.mockClear();
+    mockWakeTask.mockClear();
+    mockUpdateBehindPrBranch.mockClear();
+    mockObserveConflict.mockReset();
+    mockKernelDeliveryForPr.mockReset();
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+  });
+  afterEach(() => {
+    mockGithubApi.mockImplementation(async () => { throw new Error('no github in tests'); });
+    mockKernelDeliveryForPr.mockResolvedValue(null);
+  });
+
+  it.each([[true], [false]])('files nothing and refreshes nothing (behindOnly=%s)', async (behindOnly) => {
+    mockGithubApi.mockImplementation(prRead('release/v0.381.0', 'main'));
+    const result = await dispatchConflictRetry({ ...BASE_PARAMS, behindOnly });
+    expect(result.dispatched).toBe(false);
+    expect(result.releaseCandidate).toContain('frozen release candidate');
+    expect(result.releaseCandidate).toContain('`dev`');
+    expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('is refused ahead of the kernel door, for a kernel-owned candidate too', async () => {
+    mockGithubApi.mockImplementation(prRead('release/v0.381.0', 'main'));
+    mockKernelDeliveryForPr.mockResolvedValue('d1');
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+    expect(result).toMatchObject({ dispatched: false });
+    expect(result.releaseCandidate).toBeDefined();
+    expect(mockObserveConflict).not.toHaveBeenCalled();
+  });
+
+  it('a person tapping the conflict action is refused as well', async () => {
+    mockGithubApi.mockImplementation(prRead('release/v0.381.0', 'main'));
+    const result = await dispatchConflictRetry({ ...BASE_PARAMS, humanInitiated: true });
+    expect(result.releaseCandidate).toBeDefined();
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('an ordinary PR in the same workspace is not refused', async () => {
+    mockGithubApi.mockImplementation(prRead('buildd/task-id-some-feature', 'dev'));
+    mockUpdateBehindPrBranch.mockResolvedValueOnce({ kind: 'updated' });
+    const result = await dispatchConflictRetry({ ...BASE_PARAMS, behindOnly: true });
+    expect(result.releaseCandidate).toBeUndefined();
+    expect(mockUpdateBehindPrBranch).toHaveBeenCalled();
+  });
+});
 
 describe('dispatchConflictRetry for a kernel-owned PR', () => {
   const KERNEL_WS = { id: 'ws-k', repo: 'acme/widgets', gitConfig: {}, githubInstallation: { installationId: 42 } };

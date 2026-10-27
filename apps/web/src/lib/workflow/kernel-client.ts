@@ -742,6 +742,7 @@ async function submitDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'
 
 export const landThroughKernel = (p: KernelOps['land']['input'], c: DoorCall) => door('land', p, c);
 export const applyRecommendationThroughKernel = (p: KernelOps['apply_recommendation']['input'], c: DoorCall) => door('apply_recommendation', p, c);
+export const landEscalatedThroughKernel = (p: KernelOps['land_escalated']['input'], c: DoorCall) => door('land_escalated', p, c);
 export const policyMergeThroughKernel = (p: KernelOps['policy_merge']['input'], c: DoorCall) => door('policy_merge', p, c);
 export const requestReview = (p: KernelOps['request_review']['input'], c: DoorCall) => door('request_review', p, c);
 export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: DoorCall) => door('request_ci_retry', p, c);
@@ -939,6 +940,11 @@ export async function observeConflict(p: KernelOps['observe_conflict']['input'],
  * T6 from the worker PATCH: a kernel review round's verdict, applied where the kernel is hosted (AC-9).
  * The runner reports a verdict once, so during release skew it is applied here (`doorOrHereOnSkew`).
  */
+/** Living Spec fa62b865 R-46: a capture task's end, applied where the kernel is hosted (no other backstop). */
+export async function recordCaptureEvidence(p: KernelOps['record_capture_evidence']['input'], c: DoorCall): Promise<KernelOps['record_capture_evidence']['result']> {
+  return doorOrHereOnSkew('record_capture_evidence', p, c, `capture ${p.task.id}'s evidence`);
+}
+
 export async function recordReviewVerdict(p: KernelOps['record_review_verdict']['input'], c: DoorCall): Promise<KernelOps['record_review_verdict']['result']> {
   return doorOrHereOnSkew('record_review_verdict', p, c, `reviewer ${p.reviewerTask.id}'s verdict`);
 }

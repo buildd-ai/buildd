@@ -168,13 +168,28 @@ describe.skipIf(process.platform === 'win32')('install.sh inside WSL', () => {
       expect(r.out).toContain('Claude: already logged in');
       expect(r.out).toContain('Codex: already logged in');
       expect(r.out).toContain('buildd: already logged in');
-      expect(r.out).not.toContain('Q:');
+      expect(r.out).not.toMatch(/Q: .*(Log in|Connect)/);
     });
 
     test('no browser: buildd login --device is offered', () => {
       const r = run('buildd_login_source() { :; }\nwsl_logins /nonexistent', { answer: 'n' });
       expect(r.out).toContain('buildd login --device');
       expect(r.out).toContain('Later: buildd codex login');
+    });
+
+    test('runner name (R-23): offered, typed name runs buildd name, empty or declined keeps the default', () => {
+      const tty = join(temp('buildd-wsl-tty-'), 'tty');
+      writeFileSync(tty, 'my-box\n');
+      const pre = 'buildd_login_source() { echo config; }\nclaude() { :; }\nb() { echo "buildd $*"; }\nmkdir -p "$HOME/.claude" "$HOME/.codex"; echo x > "$HOME/.claude/.credentials.json"; echo x > "$HOME/.codex/auth.json"\nwsl_logins b';
+      const typed = run(pre, { answer: 'y', present: ['claude'], env: { BUILDD_TTY: tty } });
+      expect(typed.out).toMatch(/Q: .*runner a name.*-wsl/);
+      expect(typed.out).toMatch(/buildd name my-box$/m);
+      const empty = run(pre, { answer: 'y', present: ['claude'] });
+      expect(empty.out).not.toMatch(/^buildd name /m);
+      expect(empty.out).toMatch(/Kept .*-wsl/);
+      const declined = run(pre, { answer: 'n', present: ['claude'] });
+      expect(declined.out).not.toMatch(/^buildd name /m);
+      expect(declined.out).toContain('Later: buildd name <name>');
     });
 
     test('never reads a Windows profile', () => {

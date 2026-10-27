@@ -53,9 +53,10 @@ type CachedAccount = NonNullable<Awaited<ReturnType<typeof dbLookupAccount>>>;
 
 /**
  * What a verified OAuth access token grants, cached (lib/caller-cache.ts) for
- * at most 60 s, or until the grant, the user's memberships or a granted
- * workspace changes (each has a clear hook), or the grant expires, whichever
- * comes first. A grant reaching no workspace is a refusal and never cached.
+ * at most 60 s, or until the grant, the user's memberships, a granted
+ * workspace, or the set of workspaces in a team the grant covers as a whole
+ * changes (each has a clear hook), or the grant expires, whichever comes
+ * first. A grant reaching no workspace is a refusal and never cached.
  */
 export async function resolveCallerGrant(claims: AnyAccessTokenClaims): Promise<ResolvedGrant | null> {
   const key = isGrantClaims(claims)
@@ -69,7 +70,11 @@ export async function resolveCallerGrant(claims: AnyAccessTokenClaims): Promise<
     return grant && grant.workspaces.length > 0 ? grant : null;
   }, {
     known,
-    depsOf: (g) => g.workspaces.map((w) => callerDep.workspace(w.workspaceId)),
+    depsOf: (g) => [
+      ...g.workspaces.map((w) => callerDep.workspace(w.workspaceId)),
+      // A workspace created in or moved into a whole-team grant is reached on the next call.
+      ...(g.teamIds ?? []).map((t) => callerDep.teamWorkspaces(t)),
+    ],
     ttlSec: (g) => (g.expiresAt ? (new Date(g.expiresAt).getTime() - Date.now()) / 1000 : CALLER_CACHE_MAX_TTL_SEC),
   });
 }
