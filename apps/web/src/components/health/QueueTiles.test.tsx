@@ -23,6 +23,12 @@ describe('QueueTiles', () => {
     expect(html).toContain('/9 slots in use');
   });
 
+  it('reads sensibly with no slots online: no dangling /0', () => {
+    const html = render({ running: { used: 0, total: 0 } });
+    expect(html).not.toContain('/0');
+    expect(html).toContain('no slots online');
+  });
+
   it('Blocked carries a stacked bar by reason and the split in words', () => {
     const html = render();
     expect(html).toContain('3 lane · 2 limit · 4 dependency');

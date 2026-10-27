@@ -42,6 +42,8 @@ export interface HealthQueueDeps {
   live?: (workspaceIds: string[], missionId: string | null) => Promise<number>;
   /** Schedulable runner slots for the team. */
   slots?: (teamId: string, teamWorkspaceIds: string[], now: Date) => Promise<number>;
+  /** The Capacity numbers Runners shows: slots busy on online runners, slots online. */
+  capacity?: (teamId: string, teamWorkspaceIds: string[], now: Date) => Promise<{ used: number; total: number }>;
   /** For declared waits: who set each edge (the wait exit, inferred from files). */
   edges?: (taskIds: string[]) => Promise<Map<string, DeclaredEdges>>;
 }
@@ -124,6 +126,16 @@ async function readSlots(teamId: string, teamWorkspaceIds: string[], now: Date):
   return fleetSlotCounts(beats, { now: now.getTime(), onlineThresholdMs: FLEET_ONLINE_WINDOW_MS }).schedulable;
 }
 
+/** Same derivation as Runners' Capacity block: busy slots on online runners over online slots; sessions stay out. */
+async function readCapacity(teamId: string, teamWorkspaceIds: string[], now: Date): Promise<{ used: number; total: number }> {
+  const { loadFleetSnapshot } = await import('@/lib/home-fleet');
+  const fleet = await loadFleetSnapshot({ teamId, wsIds: teamWorkspaceIds, now: now.getTime() });
+  return {
+    used: fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0),
+    total: fleet.capacity,
+  };
+}
+
 const isoOf = (v: Date | string | null | undefined): string | null => {
   if (v == null) return null;
   const d = v instanceof Date ? v : new Date(v);
@@ -133,12 +145,13 @@ const isoOf = (v: Date | string | null | undefined): string | null => {
 export async function loadHealthQueue(input: HealthQueueInput, deps: HealthQueueDeps = {}): Promise<HealthQueueResponse> {
   const now = input.now ?? new Date();
   const missionId = input.missionId ?? null;
-  const [rowsRead, lanes, live, teamBusy, slots] = await Promise.all([
+  const [rowsRead, lanes, live, teamBusy, slots, capacity] = await Promise.all([
     (deps.rows ?? readRows)({ workspaceIds: input.workspaceIds, limit: HEALTH_QUEUE_LIMIT }),
     (deps.lanes ?? readLanes)(input.workspaceIds, now).catch(() => null),
     (deps.live ?? readLive)(input.workspaceIds, missionId).catch(() => 0),
     (deps.live ?? readLive)(input.teamWorkspaceIds, null).catch(() => 0),
     (deps.slots ?? readSlots)(input.teamId, input.teamWorkspaceIds, now).catch(() => 0),
+    (deps.capacity ?? readCapacity)(input.teamId, input.teamWorkspaceIds, now).catch(() => null),
   ]);
   const truncated = rowsRead.length > HEALTH_QUEUE_LIMIT;
   const scoped = rowsRead.slice(0, HEALTH_QUEUE_LIMIT);
@@ -197,6 +210,7 @@ export async function loadHealthQueue(input: HealthQueueInput, deps: HealthQueue
     now: now.getTime(),
     running: live,
     slots,
+    capacity: capacity ?? undefined,
     teamBusy,
     tasks: taskRows,
     lanes: laneList,
