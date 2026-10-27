@@ -326,7 +326,8 @@ export function buildFleetSnapshot(
     // advertises. Mixing the two read "6 of 7 busy" on one page and "6/6" on
     // another for the same 5-slot runner.
     const cap = Math.max(g.hb?.maxConcurrentWorkers ?? 0, assigned.slots, 1);
-    const advertised = g.hb ? Math.max(g.hb.maxConcurrentWorkers ?? 0, 1) : Math.max(liveHere.length, 1);
+    // A runner set to 0 advertises 0 (spec 97b1bd0b R-18): "0/0", never a slot it does not have.
+    const advertised = g.hb ? Math.max(g.hb.maxConcurrentWorkers ?? 0, 0) : Math.max(liveHere.length, 1);
     const laneOf = assigned.slotOf;
     const slots: FleetSlot[] = Array.from({ length: cap }, (_, index) => ({
       index, worker: null, last: null, lane: { id: `${gid}:${index}`, bars: [] },

@@ -4,6 +4,7 @@ import type { FleetSnapshot } from '@buildd/shared';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { observedAgo } from '@/lib/health-metric-grammar';
 import RunnerSlotsControl from '@/components/RunnerSlotsControl';
+import RunnerPauseControl from '@/components/RunnerPauseControl';
 
 interface RunnerSlotDetailProps {
   fleetRow: FleetSnapshot['runners'][number] | null;
@@ -58,6 +59,14 @@ export default function RunnerSlotDetail({
         reported={fleetRow?.maxSlots ?? runner.maxConcurrentWorkers}
         online={online}
         info={runner.slots ? { desired: runner.slots.desired, origin: runner.slots.origin, setBy: runner.slots.setBy, setAt: runner.slots.setAt } : null}
+        canEdit={runner.slots?.canEdit ?? false}
+      />
+      {/* Pause: nothing new starts, running work finishes; a state of its own, not 0 slots (spec 97b1bd0b R-18). */}
+      <RunnerPauseControl
+        runnerId={runner.id}
+        active={fleetRow ? fleetRow.slots.filter(s => s.worker).length : runner.activeWorkerCount}
+        online={online}
+        info={runner.pause ?? null}
         canEdit={runner.slots?.canEdit ?? false}
       />
       {slots.length === 0 ? (

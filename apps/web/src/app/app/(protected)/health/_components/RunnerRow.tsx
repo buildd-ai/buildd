@@ -10,6 +10,7 @@ import RunnerSlotDetail from './RunnerSlotDetail';
 import { RunnerIsolation } from './RunnerIsolation';
 import { RunnerRoute } from './RunnerRoute';
 import { countOf } from '@/lib/plural';
+import { pauseView } from '@/components/RunnerPauseControl';
 
 interface RunnerHealthState {
   loading: boolean;
@@ -87,11 +88,14 @@ export function RunnerRow({
     return [w.name ?? w.title ?? w.label];
   });
   const savedChange = runner.slots?.desired != null && runner.slots.origin === 'dashboard' && runner.slots.desired !== runner.maxConcurrentWorkers;
-  // One extra line for the two states the dot cannot say: idle with work that could start here, and offline with a saved slot change.
+  const pause = pauseView({ active: activeCount, online, info: runner.pause ?? null, now });
+  // One extra line for the states the dot cannot say: paused, idle with work that could start here, and offline with a saved change.
   const stateLine = !online
-    ? savedChange
-      ? <p data-testid="health-runner-state-line" className="text-meta text-text-muted">A slot change is saved and applies when it checks in.</p>
+    ? savedChange || pause.chip
+      ? <p data-testid="health-runner-state-line" className="text-meta text-text-muted">{savedChange ? 'A slot change is saved and applies when it checks in.' : pause.chip}</p>
       : null
+    : pause.state
+      ? <p data-testid="health-runner-state-line" data-paused="true" className="text-meta text-text-secondary">{pause.state}</p>
     : !working && freeSlot && workQueuedHere > 0
       ? (
         <p data-testid="health-runner-state-line" className="text-meta text-status-warning">

@@ -601,6 +601,11 @@ describe('one runner, one count (Settings, Health and list_runners agree)', () =
     expect(runnerBusyLine(r)).toBe('1 of 3 busy');
   });
 
+  it('a runner set to 0 advertises 0 slots, not 1 (spec 97b1bd0b R-18)', () => {
+    const s = buildFleetSnapshot([hb('h1', 0)], [], { now: NOW });
+    expect(s.runners[0].maxSlots).toBe(0);
+  });
+
   it('more running than slots is said in words, never "6 of 5 busy"', () => {
     const s = buildFleetSnapshot([hb('h1', 5)], Array.from({ length: 6 }, (_, i) => live(`w${i}`, 10 + i)), { now: NOW });
     expect(runnerBusyLine(s.runners[0])).toBe('6 running, over its 5 slots');

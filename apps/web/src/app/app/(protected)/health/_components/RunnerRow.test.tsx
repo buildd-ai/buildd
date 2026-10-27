@@ -55,6 +55,26 @@ describe('RunnerRow (R-14, R-15, AC-10)', () => {
     expect(html({ runner: runner({ activeWorkerCount: 4 }), workQueuedHere: 3 })).not.toContain('could start here');
   });
 
+  it('paused with 2 running reads Paused · 2 finishing (spec 97b1bd0b AC-12)', () => {
+    const r = runner({ activeWorkerCount: 2, pause: { held: true, desired: true, origin: 'dashboard', setBy: 'Max', setAt: new Date(NOW).toISOString() } });
+    const h = html({ runner: r });
+    expect(h).toContain('Paused · 2 finishing');
+    expect(h).toContain('data-paused="true"');
+    expect(h).not.toContain('Working on');
+  });
+
+  it('offline with a saved Pause says it applies on reconnect', () => {
+    const r = runner({ pause: { held: false, desired: true, origin: 'dashboard', setBy: 'Max', setAt: new Date(NOW).toISOString() } });
+    expect(html({ runner: r, online: false })).toContain('→ Paused on reconnect');
+  });
+
+  it('expanded: an owner gets Pause next to the stepper', () => {
+    const r = runner({ slots: { desired: 4, origin: 'machine', setBy: null, setAt: null, canEdit: true }, pause: { held: false, desired: false, origin: 'machine', setBy: null, setAt: null } });
+    const h = html({ runner: r, health: { loading: false, expanded: true } });
+    expect(h).toContain('data-testid="runner-pause-toggle"');
+    expect(h).toContain('>Pause<');
+  });
+
   it('offline with a saved slot change says it applies when it checks in', () => {
     const r = runner({ slots: { desired: 6, origin: 'dashboard', setBy: 'Max', setAt: new Date(NOW).toISOString(), canEdit: true } as never });
     const h = html({ runner: r, online: false });

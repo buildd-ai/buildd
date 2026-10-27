@@ -3,7 +3,8 @@
 /**
  * `?state=runner-row`: the shared RunnerRow in every state of spec 97b1bd0b
  * R-14 / R-15: working, idle, idle while work could start here, offline with a
- * saved slot change, and expanded (with and without the owner/admin stepper).
+ * saved slot change, and expanded (with and without the owner/admin stepper);
+ * R-18: paused with work finishing, an offline runner's saved Pause, and 0 slots.
  */
 import type { FleetSnapshot } from '@buildd/shared';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
@@ -23,14 +24,16 @@ const hb = (id: string, over: Partial<RunnerHeartbeat> = {}): RunnerHeartbeat =>
   ...over,
 } as RunnerHeartbeat);
 
-const fleet = (id: string, online: boolean, busy: number): Fleet => ({
-  id, name: id, machine: null, maxSlots: 4, online,
-  slots: [0, 1, 2, 3].map(i => i < busy
+const fleet = (id: string, online: boolean, busy: number, maxSlots = 4): Fleet => ({
+  id, name: id, machine: null, maxSlots, online,
+  slots: Array.from({ length: Math.max(maxSlots, busy) }, (_, i) => i).map(i => i < busy
     ? { index: i, worker: { label: 'task', name: 'Wire the Health page', mine: true }, last: null }
     : { index: i, worker: null, last: i === 3 ? { label: 'Earlier run', failed: true, at: NOW - 7_200_000, mine: true } : null }),
 } as unknown as Fleet);
 
 const canEdit = { desired: null, origin: null, setBy: null, setAt: null, canEdit: true } as never;
+const paused = { held: true, desired: true, origin: 'dashboard', setBy: 'Max', setAt: new Date(NOW - 120_000).toISOString() } as const;
+const pauseSaved = { held: false, desired: true, origin: 'dashboard', setBy: 'Max', setAt: new Date(NOW - 60_000).toISOString() } as const;
 const saved = { desired: 6, origin: 'dashboard', setBy: 'Max', setAt: new Date(NOW - 60_000).toISOString(), canEdit: true } as never;
 
 const CASES: { label: string; props: Partial<Parameters<typeof RunnerRow>[0]> & { runner: RunnerHeartbeat } }[] = [
@@ -39,6 +42,10 @@ const CASES: { label: string; props: Partial<Parameters<typeof RunnerRow>[0]> & 
   { label: 'Idle while work could start here', props: { runner: hb('studio-idle-queue'), workQueuedHere: 3 } },
   { label: 'Offline, slot change saved', props: { runner: hb('studio-offline', { lastHeartbeatAt: new Date(NOW - 3_600_000).toISOString(), slots: saved }), online: false } },
   { label: 'Expanded, owner or admin', props: { runner: hb('studio-expanded', { activeWorkerCount: 2, slots: canEdit }), health: { loading: false, expanded: true } } },
+  { label: 'Paused, 2 finishing', props: { runner: hb('studio-paused', { activeWorkerCount: 2, slots: canEdit, pause: paused }) } },
+  { label: 'Expanded, paused, owner or admin', props: { runner: hb('studio-paused-expanded', { activeWorkerCount: 2, slots: canEdit, pause: paused }), health: { loading: false, expanded: true } } },
+  { label: 'Offline, Pause saved', props: { runner: hb('studio-offline-paused', { lastHeartbeatAt: new Date(NOW - 3_600_000).toISOString(), pause: pauseSaved }), online: false } },
+  { label: 'Expanded, 0 slots', props: { runner: hb('studio-zero', { maxConcurrentWorkers: 0, slots: canEdit }), health: { loading: false, expanded: true } } },
   { label: 'Expanded, read only', props: { runner: hb('studio-readonly', { activeWorkerCount: 1 }), health: { loading: false, expanded: true } } },
 ];
 
@@ -52,7 +59,7 @@ export default function RunnerRowFixture() {
           <section key={c.label} data-testid="fixture-runner-row">
             <p className="text-meta text-text-muted mb-1">{c.label}</p>
             <div className="border-y border-border-default">
-              <RunnerRow fleetRow={fleet(id, online, c.props.runner.activeWorkerCount)} online={online} now={NOW} seesTeamWork {...c.props} />
+              <RunnerRow fleetRow={fleet(id, online, c.props.runner.activeWorkerCount, c.props.runner.maxConcurrentWorkers)} online={online} now={NOW} seesTeamWork {...c.props} />
             </div>
           </section>
         );
