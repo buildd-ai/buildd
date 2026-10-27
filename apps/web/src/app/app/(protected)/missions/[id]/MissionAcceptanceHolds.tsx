@@ -15,7 +15,6 @@ import { diffAnchor } from '@/lib/diff-anchor';
 export default function MissionAcceptanceHolds({ holds, readonly }: { holds: readonly AcceptanceHold[]; readonly?: boolean }) {
   const [anchors, setAnchors] = useState<Map<string, string>>(new Map());
   const [accepted, setAccepted] = useState<ReadonlySet<string>>(new Set());
-  const [globalError, setGlobalError] = useState<string | null>(null);
 
   useEffect(() => {
     const loadAnchors = async () => {
@@ -31,13 +30,11 @@ export default function MissionAcceptanceHolds({ holds, readonly }: { holds: rea
     loadAnchors();
   }, [holds]);
 
-  function buildDiffUrl(baseUrl: string | null, path: string): string {
-    if (!baseUrl) return '';
+  function buildDiffUrl(baseUrl: string, path: string): string {
     const anchor = anchors.get(path) || '';
     return `${baseUrl}${anchor}`;
   }
 
-  const nonAccepted = holds.filter((h) => !accepted.has(h.taskId));
   if (holds.length === 0) return null;
 
   return (
@@ -52,12 +49,10 @@ export default function MissionAcceptanceHolds({ holds, readonly }: { holds: rea
             readonly={readonly}
             isAccepted={accepted.has(h.taskId)}
             onAccepted={() => setAccepted((s) => new Set([...s, h.taskId]))}
-            onError={setGlobalError}
             buildDiffUrl={buildDiffUrl}
           />
         ))}
       </ul>
-      {globalError && <p role="alert" className="mt-1 text-meta text-status-error">{globalError}</p>}
     </section>
   );
 }
@@ -67,31 +62,32 @@ function AcceptanceHoldRow({
   readonly,
   isAccepted,
   onAccepted,
-  onError,
   buildDiffUrl,
 }: {
   hold: AcceptanceHold;
   readonly?: boolean;
   isAccepted: boolean;
   onAccepted: () => void;
-  onError: (error: string | null) => void;
-  buildDiffUrl: (baseUrl: string | null, path: string) => string;
+  buildDiffUrl: (baseUrl: string, path: string) => string;
 }) {
+  const [error, setError] = useState<string | null>(null);
   const { shown: result, retry, approve } = useOptimisticApprove(
     async () => {
       const res = await fetch(`/api/tasks/${hold.taskId}/accept-acceptance-edit`, { method: 'POST' });
       if (!res.ok && res.status !== 409) {
         const body = await res.json().catch(() => ({}));
         const error = typeof body.error === 'string' ? body.error : 'Could not accept. Try again.';
-        onError(error);
+        setError(error);
         return { tone: 'err' as const, text: error };
       }
-      onError(null);
+      setError(null);
       onAccepted();
       return { tone: 'ok' as const, text: 'Accepted.' };
     },
     'Accepted.',
   );
+
+  const getFileName = (path: string) => path.split('/').pop() || path;
 
   return (
     <li data-testid="acceptance-hold" className="flex min-w-0 flex-col gap-1.5 md:flex-row md:items-start md:justify-between md:gap-4">
@@ -104,6 +100,7 @@ function AcceptanceHoldRow({
           <div className="mt-1 flex flex-col gap-1">
             {hold.paths.map((path) => {
               const url = buildDiffUrl(hold.diffUrl, path);
+              const fileName = getFileName(path);
               return (
                 <a
                   key={path}
@@ -113,19 +110,20 @@ function AcceptanceHoldRow({
                   data-testid="acceptance-hold-diff"
                   className="inline-flex min-h-11 md:min-h-0 items-center text-meta underline underline-offset-2 w-fit"
                 >
-                  See the changes
+                  See changes in {fileName}
                 </a>
               );
             })}
           </div>
         )}
+        {error && <p role="alert" className="mt-1 text-meta text-status-error">{error}</p>}
       </div>
       {!readonly && (
         <div className="flex flex-col items-start md:items-end gap-2">
           {!result || retry ? (
             <PrimaryAction
               onClick={approve}
-              disabled={result?.tone === 'err' ? false : false}
+              disabled={result?.tone === 'err'}
               data-testid="acceptance-hold-accept"
               className="min-h-11 md:min-h-0"
             >

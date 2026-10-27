@@ -10,12 +10,3 @@ export async function diffAnchor(filePath: string): Promise<string> {
     .join('');
   return `#diff-${hash}`;
 }
-
-export function diffAnchorSync(filePath: string): string | null {
-  if (typeof globalThis !== 'undefined' && globalThis.crypto?.subtle) {
-    return null;
-  }
-  const { createHash } = require('crypto');
-  const hash = createHash('sha256').update(filePath).digest('hex');
-  return `#diff-${hash}`;
-}

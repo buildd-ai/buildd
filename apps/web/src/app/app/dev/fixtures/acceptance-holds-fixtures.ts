@@ -1,10 +1,4 @@
-import { createHash } from 'crypto';
 import type { AcceptanceHold } from '@/lib/acceptance-edit-holds';
-
-function fileHashAnchor(path: string): string {
-  const hash = createHash('sha256').update(path).digest('hex');
-  return `#diff-${hash}`;
-}
 
 /** A mission with two builder PRs that each edited acceptance tests nobody has accepted yet. */
 export const twoFlaggedEdits: AcceptanceHold[] = [
@@ -21,7 +15,3 @@ export const twoFlaggedEdits: AcceptanceHold[] = [
     paths: ['tests/acceptance/slots.test.ts', 'tests/acceptance/limits.test.ts'],
   },
 ];
-
-export const expectedAnchorForQueue = fileHashAnchor('tests/acceptance/queue.test.ts');
-export const expectedAnchorForSlots = fileHashAnchor('tests/acceptance/slots.test.ts');
-export const expectedAnchorForLimits = fileHashAnchor('tests/acceptance/limits.test.ts');

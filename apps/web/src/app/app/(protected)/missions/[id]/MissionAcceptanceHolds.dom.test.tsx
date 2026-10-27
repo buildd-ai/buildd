@@ -13,17 +13,6 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 let refreshed = 0;
 mock.module('next/navigation', () => ({ useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => { refreshed++; } }) }));
 
-const { createHash } = await import('crypto');
-
-function fileHashAnchor(path: string): string {
-  const hash = createHash('sha256').update(path).digest('hex');
-  return `#diff-${hash}`;
-}
-
-mock.module('@/lib/diff-anchor', () => ({
-  diffAnchor: async (path: string) => fileHashAnchor(path),
-}));
-
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: MissionAcceptanceHolds } = await import('./MissionAcceptanceHolds');
