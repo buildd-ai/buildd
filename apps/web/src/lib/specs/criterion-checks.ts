@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { missions, specs, specOutcomeVerdicts, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { criterionBatchOf, CRITERION_BATCH_MAX_TIMEOUT_MS, type CriterionBatchCheck, type CriterionBatchMarker } from '@buildd/shared';
+import { criterionBatchOf, CRITERION_BATCH_MAX_TIMEOUT_MS, TERMINAL_TASK_STATUSES, type CriterionBatchCheck, type CriterionBatchMarker } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from '@buildd/spec-contract/check-lines';
 import { isRunnerReported } from '@/lib/verification-provenance';
@@ -214,7 +214,7 @@ const sameRun = (key: Record<string, unknown>) =>
 export async function dispatchCriterionChecks(
   opts: { taskId: string; headSha: string; headBranch: string | null; /** An explicit request to check again despite an earlier inconclusive run. */ rerun?: boolean },
   deps: CheckDeps = {},
-): Promise<{ dispatched: number; reason?: string }> {
+): Promise<{ dispatched: number; reason?: string; /** A mission re-run: the batch filed now, or the one already queued or running. */ taskId?: string; inFlight?: boolean }> {
   const headSha = opts.headSha.toLowerCase();
   if (!SHA40.test(headSha)) return { dispatched: 0, reason: 'headSha must be a full commit SHA' };
   const p = await pinnedChecks(opts.taskId);
@@ -229,10 +229,17 @@ export async function dispatchCriterionChecks(
       ...p.registered.map((planned) => registeredRun(opts, headSha, planned)),
     ];
   let dispatched = 0;
+  let taskId: string | undefined;
+  let inFlight = false;
+  const terminal = sql.join(TERMINAL_TASK_STATUSES.map((st) => sql`${st}`), sql`, `);
   for (const run of runs) {
     if (run.mission && !opts.rerun && !shouldFileMissionRun(await priorMissionRuns(p.workspaceId, run.mission), headSha, p.targetKey ?? null)) continue;
-    const [existing] = await db.select({ id: tasks.id }).from(tasks).where(and(eq(tasks.workspaceId, p.workspaceId), sameRun(run.key))).limit(1);
-    if (existing) continue;
+    // An explicit re-run of a mission's batch files a fresh run at the same head
+    // when the earlier one has finished; only a queued or running one blocks it.
+    const live = !!(opts.rerun && run.mission);
+    const [existing] = await db.select({ id: tasks.id }).from(tasks)
+      .where(and(eq(tasks.workspaceId, p.workspaceId), sameRun(run.key), ...(live ? [sql`${tasks.status} NOT IN (${terminal})`] : []))).limit(1);
+    if (existing) { if (live) { taskId = existing.id; inFlight = true; } continue; }
 
     // One statement under a per-key lock, in one transaction: a racing delivery
     // waits for the first to commit, then finds its run and inserts nothing.
@@ -249,16 +256,18 @@ export async function dispatchCriterionChecks(
           SELECT 1 FROM ${tasks} t_run
           WHERE t_run.workspace_id = ${p.workspaceId}::uuid
           AND t_run.context @> ${JSON.stringify(run.key)}::jsonb
+          ${live ? sql`AND t_run.status NOT IN (${terminal})` : sql``}
         )
         RETURNING id
       `),
     ]);
     const row = (inserted as { rows?: Array<Record<string, unknown>> })?.rows?.[0] as { id: string } | undefined;
     if (!row) continue;
+    if (live) taskId = row.id;
     await wake({ id: row.id, title: run.title, workspaceId: p.workspaceId, ...(p.missionId ? { missionId: p.missionId } : {}) });
     dispatched++;
   }
-  return { dispatched };
+  return { dispatched, ...(taskId ? { taskId } : {}), ...(inFlight ? { inFlight } : {}) };
 }
 
 interface FiledRun {
