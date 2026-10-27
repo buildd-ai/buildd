@@ -36,6 +36,7 @@ import type { CredentialBlock } from '@/lib/credential-block-copy';
 import { parseEntitlementBlock, type EntitlementBlock } from '@buildd/shared';
 import { useTaskStart } from '@/components/tasks/useTaskStart';
 import WaitingLine from '@/components/tasks/WaitingLine';
+import TaskQueueActions from './TaskQueueActions';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
 import type { TaskPhase } from '@/lib/task-presentation';
@@ -494,6 +495,11 @@ export default function TaskActionZone({
 
       {/* Queued on a plan limit → the entitlement state; it starts by itself */}
       {waitingOnPlan && entitlementBlock && <EntitlementBlockedNotice block={entitlementBlock} />}
+
+      {/* Health › Queue's Remove dependency and Release lane, on the task itself (R-12) */}
+      {phase === 'pending' && start.status === 'idle' && held?.waitingReasons && workspaceId && (
+        <TaskQueueActions taskId={taskId} workspaceId={workspaceId} reasons={held.waitingReasons} onChanged={() => { void onChanged?.(); }} />
+      )}
 
       {/* Queued with no key for its backend → say so, with the way to add one */}
       {has('run_now') && phase === 'pending' && !waitingOnPlan && credentialBlock && <CredentialBlockedNotice block={credentialBlock} />}
