@@ -109,10 +109,11 @@ export function LoopStatusChip({
       ? 'text-status-success border-status-success bg-status-success/8'
       : 'text-purple-400 border-purple-400 bg-purple-500/8';
 
+  const outcome = exitConditionType ? outcomeLabel(exitConditionType, loopState === 'satisfied') : null;
   const fullLabel = loopState === 'exhausted'
-    ? `Waited · failed · ${attempt}/${maxLoops}`
+    ? `${outcome || 'Condition unmet'} · ${attempt}/${maxLoops}`
     : loopState === 'satisfied'
-      ? `Waited · passed · ${attempt}/${maxLoops}`
+      ? `${outcome || 'Condition met'} · ${attempt}/${maxLoops}`
       : `Waiting · attempt ${attempt}/${maxLoops}`;
 
   return (
@@ -179,7 +180,7 @@ export function LoopHistory({
               <div key={`${entry.iteration}-${entry.workerId}-${entry.evaluatedAt}`} className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="font-medium text-sm text-text-primary">Iteration {entry.iteration + 1}</div>
+                    <div className="font-medium text-sm text-text-primary">Attempt {entry.iteration + 1}</div>
                     <p className="mt-1 text-sm text-text-secondary">{entry.summary}</p>
                   </div>
                   <div className="text-right text-[11px] text-text-muted shrink-0">

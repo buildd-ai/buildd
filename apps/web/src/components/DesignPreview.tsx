@@ -99,6 +99,7 @@ export default function DesignPreview({
   // status overlay two more frames so a not-yet-painted frame reads as loading, never blank.
   const [painted, setPainted] = useState<string | null>(null);
   const [frameError, setFrameError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   useEffect(() => {
     if (loadedSrc !== artifactId) return;
     const id = requestAnimationFrame(() => requestAnimationFrame(() => setPainted(artifactId)));
@@ -118,13 +119,14 @@ export default function DesignPreview({
       clearTimeout(t);
       clearTimeout(et);
     };
-  }, [src, loaded, loadedSrc, artifactId]);
+  }, [src, loaded, loadedSrc, artifactId, retryCount]);
 
   const handleRetry = useCallback(() => {
     setLoadedSrc(null);
     setFrameError(false);
     setSlow(false);
     setPainted(null);
+    setRetryCount((c) => c + 1);
   }, []);
 
   const pick = useCallback((id: string) => {
@@ -211,7 +213,7 @@ export default function DesignPreview({
         >
           {src ? (
             <iframe
-              key={artifactId}
+              key={`${artifactId}-${retryCount}`}
               src={src}
               title={label}
               aria-label={label}
