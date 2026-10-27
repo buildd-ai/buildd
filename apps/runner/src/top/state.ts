@@ -92,6 +92,8 @@ export interface TopTask {
   backend?: string | null;
   mode?: string | null;
   kind?: string | null;
+  /** `bookkeeping` marks a criterion check or final verification: a helper run, not a task row. Absent from older servers. */
+  taskClass?: string | null;
   workspace?: { id: string; name: string } | null;
   updatedAt?: string | null;
   /** Set by the server on a finished task whose PR has merged. */
@@ -525,7 +527,7 @@ function relevantTasks(state: TopState, workers: Map<string, TopWorker>): TopTas
   for (const t of state.tasks) {
     if (seen.has(t.id)) continue;
     seen.add(t.id);
-    if (isOrganizerTask(t)) continue;
+    if (isOrganizerTask(t) || isHelperTask(t)) continue;
     if (!inWorkspace(taskWorkspaceId(t))) continue;
     // Copied when it may take its parent's mission: the store's task stays as the server sent it.
     out.push(!t.missionId && t.parentTaskId ? { ...t } : t);
@@ -537,7 +539,7 @@ function relevantTasks(state: TopState, workers: Map<string, TopWorker>): TopTas
     if (seen.has(w.taskId)) continue;
     seen.add(w.taskId);
     const t: TopTask = { id: w.taskId, title: w.taskTitle, status: workerTaskStatus(w), workspaceId: w.workspaceId, missionId: null };
-    if (isOrganizerTask(t) || !inWorkspace(w.workspaceId)) continue;
+    if (isOrganizerTask(t) || isHelperTask(t) || !inWorkspace(w.workspaceId)) continue;
     out.push(t);
   }
   return out;
@@ -579,6 +581,15 @@ export function isOrganizerTask(t: Pick<TopTask, 'title' | 'roleSlug'>): boolean
   if (t.roleSlug === 'organizer') return true;
   const title = t.title ?? '';
   return ORGANIZER_TITLE_PREFIXES.some(p => title.startsWith(p));
+}
+
+/**
+ * A helper run (spec d25d923d R-12): a criterion check or final verification
+ * (`bookkeeping`) or the surface audit. It feeds its mission's Verify, never
+ * a row here.
+ */
+export function isHelperTask(t: Pick<TopTask, 'title' | 'roleSlug' | 'taskClass'>): boolean {
+  return t.taskClass === 'bookkeeping' || t.roleSlug === 'visual-auditor' || (t.title ?? '').startsWith('[surface audit]');
 }
 
 function taskWorkspaceId(t: TopTask): string | undefined {

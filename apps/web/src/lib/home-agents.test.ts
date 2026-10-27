@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { FleetSnapshot } from '@buildd/shared';
-import { agentsSummary, buildAgentsModel, elapsedLabel, homeHeadlineSentence, homeSubline } from './home-agents';
+import { agentsSummary, buildAgentsModel, checksRunningLabel, elapsedLabel, homeHeadlineSentence, homeSubline } from './home-agents';
 
 const slot = (index: number, worker: Record<string, unknown> | null) => ({ index, worker, last: null, lane: { id: String(index), bars: [] } });
 const worker = (id: string, over: Record<string, unknown> = {}) => ({
@@ -36,6 +36,26 @@ describe('buildAgentsModel', () => {
     const f = fleet([slot(0, worker('a'))], 0);
     f.runners[0].online = false;
     expect(buildAgentsModel(f, 0).squares).toEqual([]);
+  });
+});
+
+describe('helper runs (spec d25d923d R-13)', () => {
+  test('checks of a task and the audit of a mission count under their work, not as lines', () => {
+    const m = buildAgentsModel(fleet([
+      slot(0, worker('a')),
+      slot(1, worker('c1', { taskId: 'chk1', helper: true, hostTaskId: 't-a' })),
+      slot(2, worker('c2', { taskId: 'audit', helper: true, hostTaskId: null })),
+    ], 3), 0, new Map([['m1', 'Live mission card']]));
+    expect(m.squares).toEqual(['busy', 'busy', 'busy']);
+    expect(m.lines).toHaveLength(1);
+    expect(m.lines[0]).toMatchObject({ taskId: 't-a', checks: 2 });
+    expect(checksRunningLabel(2)).toBe('2 checks running');
+    expect(checksRunningLabel(1)).toBe('1 check running');
+  });
+
+  test('a helper with nothing to count under stays listed', () => {
+    const m = buildAgentsModel(fleet([slot(0, worker('c', { helper: true, hostTaskId: 'gone', missionId: null }))], 1), 0);
+    expect(m.lines).toHaveLength(1);
   });
 });
 

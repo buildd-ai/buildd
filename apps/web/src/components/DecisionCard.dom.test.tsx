@@ -156,6 +156,41 @@ describe('DecisionCard', () => {
     expect(refreshed).toBe(1);
   });
 
+  it('after an answer, focus moves into the next open card, whatever its testId', async () => {
+    act(() => root.render(
+      <>
+        <DecisionCard view={decision()} now={T0} testId="needs-you-card" />
+        <DecisionCard view={{ ...decision(), key: 'q:t2' }} now={T0} testId="needs-you-card" />
+      </>,
+    ));
+    const cards = qa('[data-testid="needs-you-card"]');
+    await act(async () => { cards[0].querySelectorAll<HTMLElement>('[data-testid="decision-option"]')[1].click(); });
+    await flush();
+    expect(cards[0].getAttribute('data-answered')).toBe('true');
+    expect(cards[1].contains(document.activeElement)).toBe(true);
+  });
+
+  it('focus goes to the next card after this one, not the first open card on the page', async () => {
+    act(() => root.render(
+      <>
+        <DecisionCard view={{ ...decision(), key: 'q:a' }} now={T0} />
+        <DecisionCard view={{ ...decision(), key: 'q:b' }} now={T0} />
+        <DecisionCard view={{ ...decision(), key: 'q:c' }} now={T0} />
+      </>,
+    ));
+    const cards = qa('[data-testid="decision-card"]');
+    await act(async () => { cards[1].querySelectorAll<HTMLElement>('[data-testid="decision-option"]')[1].click(); });
+    await flush();
+    expect(cards[2].contains(document.activeElement)).toBe(true);
+  });
+
+  it('answering the only card does not throw and moves focus nowhere', async () => {
+    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
+    await flush();
+    expect(q('[data-testid="decision-card"]')!.getAttribute('data-answered')).toBe('true');
+  });
+
   it('⌘⏎ picks the primary of the focused card only', async () => {
     act(() => root.render(<DecisionCard view={decision()} now={T0} />));
     const second = qa('[data-testid="decision-option"]')[1] as HTMLButtonElement;
