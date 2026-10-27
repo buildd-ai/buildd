@@ -319,7 +319,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
             workspaceId: w.workspaceId, prNumber: w.prNumber, taskId: w.taskId,
             task: (w.task as any) ?? null, missionPrRole: w.task ? missionPrRoleOf(w.task as any) : null,
             lifecycle: w.prLifecycleStatus ?? null, headSha: w.lastCommitSha ?? null,
-            kernel: view ? { stateReason: view.stateReason, prState: view.prState, detail: view.detail, headline: view.headline } : null,
+            kernel: view ? { stateReason: view.stateReason, prState: view.prState, detail: view.detail, headline: view.headline, stateSince: view.lastTransition?.createdAt ?? null } : null,
             escalated: w.taskId ? escalationMap.get(w.taskId) ?? null : null,
             approved: !!w.taskId && approvalMap.has(w.taskId),
             handoff: w.taskId ? landingHandoffMap.get(w.taskId) ?? null : null,
