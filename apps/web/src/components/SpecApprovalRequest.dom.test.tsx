@@ -18,6 +18,19 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+// The browser's passkey prompt (Living Spec b7fc9316 R-20): answered, or dismissed.
+let passkeyAnswer: 'complete' | 'dismiss' = 'complete';
+const prompts: unknown[] = [];
+mock.module('@simplewebauthn/browser', () => ({
+  startAuthentication: async (o: { optionsJSON: unknown }) => {
+    prompts.push(o.optionsJSON);
+    if (passkeyAnswer === 'dismiss') throw new Error('NotAllowedError');
+    return { id: 'cred', type: 'public-key', response: { clientDataJSON: 'x' } };
+  },
+  startRegistration: async () => ({}),
+  browserSupportsWebAuthn: () => true,
+}));
+
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: SpecApprovalRequest } = await import('./SpecApprovalRequest');
@@ -44,6 +57,7 @@ const LONG = `R-1: ${'a very long requirement line that has to wrap rather than 
 const ready = {
   state: 'ready' as const, title: 'Checkout', revision: 3, replaces: 2 as number | null,
   pin: { revision: 3, expectedVersion: 7, contentHash: 'c'.repeat(64) },
+  passkey: false,
   sections: [{ kind: 'changed' as const, path: 'Checkout > Totals', level: 2, linesAdded: 1, linesRemoved: 1 }],
   hunks: [{
     kind: 'changed' as const, path: 'Checkout > Totals', linesAdded: 1, linesRemoved: 1,
@@ -390,5 +404,52 @@ describe('SpecApprovalRequest: the explanation and its check', () => {
   it('R-18: the page says what the check proves, and that the explanation is the agent\'s', () => {
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith(all)} />));
     expect(q('spec-explain-honesty')!.textContent).toBe('The agent wrote this explanation. The check confirms it mentions every change; whether it is right is yours to judge.');
+  });
+
+  describe('a team that requires a passkey (R-20, AC-19)', () => {
+    const PIN = { op: 'approve', specId: SPEC, revision: 3, version: 7, contentHash: 'c'.repeat(64) };
+    const asked = () => new Response(JSON.stringify({ error: 'This team requires a passkey to approve a spec.', code: 'presence_required', presence: { pin: PIN, addUrl: 'x' } }), { status: 403 });
+    function serve(final: () => Response) {
+      const calls: Array<[string, Record<string, unknown>]> = [];
+      globalThis.fetch = mock(async (url: string, init: RequestInit) => {
+        const body = JSON.parse((init.body as string) ?? '{}');
+        calls.push([url, body]);
+        if (url === '/api/passkeys/presence') return new Response(JSON.stringify({ options: { challenge: 'chal' } }), { status: 200 });
+        return body.presence ? final() : asked();
+      }) as unknown as typeof fetch;
+      return calls;
+    }
+
+    it('completing the passkey sends the assertion over the pin the server named, and the revision is approved', async () => {
+      passkeyAnswer = 'complete';
+      const calls = serve(() => new Response(JSON.stringify({ already: false }), { status: 200 }));
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={{ ...ready, passkey: true }} />));
+      await act(async () => { approveButton()!.click(); });
+      expect(calls.map((c) => c[0])).toEqual([`/api/specs/${SPEC}/approve/inbox`, '/api/passkeys/presence', `/api/specs/${SPEC}/approve/inbox`]);
+      expect(calls[1][1]).toEqual({ pin: PIN });
+      expect(calls[2][1].presence).toMatchObject({ id: 'cred', type: 'public-key' });
+      expect(q('spec-approval-result')!.textContent).toContain('Approved revision 3.');
+    });
+
+    it('dismissing the prompt sends nothing more, says nothing changed, and offers Approve again', async () => {
+      passkeyAnswer = 'dismiss';
+      const calls = serve(() => new Response('{}', { status: 200 }));
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={{ ...ready, passkey: true }} />));
+      await act(async () => { approveButton()!.click(); });
+      expect(calls.filter((c) => c[1].presence).length).toBe(0);
+      expect(q('spec-approval-result')!.textContent).toContain('Nothing changed.');
+      expect(approveButton()).not.toBeNull();
+      passkeyAnswer = 'complete';
+    });
+
+    it('a person with no passkey is told how to add one, with a link to add it', async () => {
+      globalThis.fetch = mock(async () => new Response(JSON.stringify({ error: 'This team requires a passkey to approve a spec, and you have no passkey. Add one in Settings › Profile › Passkeys, then try again. Nothing changed.', code: 'passkey_missing', presence: { pin: PIN, addUrl: 'x' } }), { status: 403 })) as unknown as typeof fetch;
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={{ ...ready, passkey: true }} />));
+      await act(async () => { approveButton()!.click(); });
+      const result = q('spec-approval-result')!;
+      expect(result.textContent).toContain('Settings › Profile › Passkeys');
+      const link = [...result.querySelectorAll('a')].find((a) => a.textContent === 'Add a passkey') as HTMLAnchorElement;
+      expect(link.getAttribute('href')).toBe('/app/settings/account#passkeys');
+    });
   });
 });
