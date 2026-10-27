@@ -16,7 +16,7 @@ function quietFor(since: string, now = Date.now()): string {
   return hours >= 48 ? `${Math.floor(hours / 24)}d` : `${hours}h`;
 }
 
-function RemoveDependency({ taskId, blockerId, blockerLabel, onChanged }: { taskId: string; blockerId: string; blockerLabel: string; onChanged: () => void }) {
+function RemoveDependency({ taskId, blockerId, blockerLabel, onChanged }: { taskId: string; blockerId: string; blockerLabel: string | null; onChanged: () => void }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
@@ -38,7 +38,7 @@ function RemoveDependency({ taskId, blockerId, blockerLabel, onChanged }: { task
         <RemoveDependencyForm reason={reason} onReason={setReason} busy={busy} error={error} onRemove={remove} />
       ) : (
         <button type="button" className="btn h-11 md:h-8" onClick={() => setOpen(true)} data-testid="task-remove-dependency-open">
-          Remove dependency on {blockerLabel}…
+          Remove dependency{blockerLabel ? ` on ${blockerLabel}` : ''}…
         </button>
       )}
     </div>
@@ -78,7 +78,7 @@ export default function TaskQueueActions({ taskId, workspaceId, reasons, onChang
   return (
     <div data-testid="task-queue-actions" className="space-y-3">
       {deps.map(r => (
-        <RemoveDependency key={r.blocker!.id} taskId={taskId} blockerId={r.blocker!.id} blockerLabel={r.blocker!.label} onChanged={onChanged} />
+        <RemoveDependency key={r.blocker!.id} taskId={taskId} blockerId={r.blocker!.id} blockerLabel={deps.length > 1 ? r.blocker!.label : null} onChanged={onChanged} />
       ))}
       {stuck?.lane && (
         <ReleaseLane workspaceId={workspaceId} lane={stuck.lane.lane} holderTaskId={stuck.lane.holderTaskId!} stuckSince={stuck.lane.stuckSince!} onChanged={onChanged} />
