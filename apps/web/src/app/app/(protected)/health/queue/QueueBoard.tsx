@@ -72,8 +72,8 @@ export function QueueAlert({ view }: { view: HealthQueueResponse }) {
   if (view.alert) {
     return <p role="status" data-testid="queue-alert" className="mt-3 text-body font-semibold text-status-warning">{view.alert}</p>;
   }
-  // R-4: the phone says so; the desktop shows nothing.
-  return <p data-testid="queue-calm" className="mt-3 text-body text-text-muted md:hidden">Nothing held that could run</p>;
+  // R-4: phone and desktop match; no alert line unless something is wrong.
+  return null;
 }
 
 export function QueueLanes({ lanes, onOpenLane }: { lanes: HealthQueueLane[]; onOpenLane: (l: HealthQueueLane) => void }) {

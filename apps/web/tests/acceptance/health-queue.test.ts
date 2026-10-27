@@ -71,10 +71,10 @@ describe('R-3: four tiles', () => {
 });
 
 describe('R-4: one alert line, only when something is wrong, worst first', () => {
-  it('is null on desktop and reads "Nothing held that could run" on phone when healthy', () => {
+  it('is null on every viewport when healthy', () => {
     const v = view();
     expect(v.alert).toBeNull();
-    expect(v.phoneAlertFallback).toBe('Nothing held that could run');
+    expect((v as any).phoneAlertFallback).toBeUndefined();
   });
   it('lists idle slots before stuck lanes', () => {
     const v = view({
