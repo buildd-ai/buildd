@@ -20,6 +20,7 @@
  *    supersession of the open fix, the escalation notice.
  *  - `reviewEscalate` (`Escalate`, family `review_fix`).
  */
+import { VERIFY_BEFORE_PUSH } from '@/lib/verify-before-push';
 import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
@@ -194,6 +195,10 @@ export function pinnedFixDescription(p: {
     '## Where to push',
     '',
     `Push to the PR's own head branch${p.headRef ? ` \`${p.headRef}\`` : ''}${p.headSha ? `, currently at \`${p.headSha.slice(0, 12)}\`` : ''}${p.baseRef ? ` (base \`${p.baseRef}\`)` : ''}. Never to another worker's branch or to the base branch.`,
+    '',
+    '## Before you push',
+    '',
+    VERIFY_BEFORE_PUSH,
     '',
     '## When it is done',
     '',

@@ -32,9 +32,9 @@ const NOW = Date.UTC(2026, 9, 9, 15, 0);
 const AGENTS: AgentsModel = {
   busy: 3, total: 4, squares: ['busy', 'waiting', 'busy', 'free'],
   lines: [
-    { key: 'a', taskId: 'a', name: 'fix(billing): prorate seat changes mid-cycle', rest: '', missionId: 'm1', mission: 'Subscription seats: per-member billing with prorated changes', href: '#', waiting: false, elapsedMs: 74 * 60_000 },
-    { key: 'b', taskId: 'b', name: 'feat(search)', rest: 'trigram index on titles', missionId: 'm2', mission: 'Typo-tolerant search', href: '#', waiting: true, elapsedMs: 22 * 60_000 },
-    { key: 'c', taskId: 'c', name: 'chore(ci): split the unit job', rest: '', missionId: null, mission: null, href: '#', waiting: false, elapsedMs: 9 * 60_000 },
+    { key: 'a', taskId: 'a', name: 'fix(billing): prorate seat changes mid-cycle', rest: '', missionId: 'm1', mission: 'Subscription seats: per-member billing with prorated changes', href: '#', waiting: false, elapsedMs: 74 * 60_000, checks: 0 },
+    { key: 'b', taskId: 'b', name: 'feat(search)', rest: 'trigram index on titles', missionId: 'm2', mission: 'Typo-tolerant search', href: '#', waiting: true, elapsedMs: 22 * 60_000, checks: 0 },
+    { key: 'c', taskId: 'c', name: 'chore(ci): split the unit job', rest: '', missionId: null, mission: null, href: '#', waiting: false, elapsedMs: 9 * 60_000, checks: 0 },
   ],
 };
 const AGENTS_IDLE: AgentsModel = { busy: 0, total: 4, squares: ['free', 'free', 'free', 'free'], lines: [] };

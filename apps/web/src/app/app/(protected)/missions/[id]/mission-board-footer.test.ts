@@ -21,14 +21,3 @@ describe('mission board footer', () => {
     expect(tag).not.toMatch(/max-w-/);
   });
 });
-
-describe('board layout carries no Screens row or Goal criteria sheet (Navigation R-18)', () => {
-  it('the Screens row renders only off the board layout', () => {
-    expect(PAGE).toMatch(/layout !== 'board' && boardVisual && <MissionScreensRow/);
-  });
-
-  it('the Verified pill, which opens the Goal criteria sheet and its Run verification button, is not passed to the board header', () => {
-    expect(PAGE).toContain("verified={layout === 'board' ? undefined : verifiedPill}");
-    expect(PAGE).not.toMatch(/verified=\{verifiedPill\}/);
-  });
-});

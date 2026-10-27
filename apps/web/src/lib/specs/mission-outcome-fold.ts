@@ -231,13 +231,20 @@ export function describeStandings(
   standings: readonly LivingSpecCriterionStanding[],
   scope: readonly { id: string; text: string }[],
   rows: readonly MissionVerdictRow[],
+  /** Test results the R-80 hold dropped from `rows`, by criterion: the newest of each. */
+  held: ReadonlyMap<string, { at: Date | string; prNumber: number | null }> = new Map(),
 ): LivingSpecCriterionStanding[] {
   const text = new Map(scope.map((c) => [c.id, c.text]));
   const byId = new Map(rows.map((r) => [r.id, r]));
   return standings.map((s) => {
     const row = s.verdictId ? byId.get(s.verdictId) : undefined;
-    const reason = s.standing === 'pass' || s.standing === 'waived' || s.standing === 'missing' || !row ? undefined : verdictReason(row.verdict, row.evidence);
+    const open = s.standing !== 'pass' && s.standing !== 'waived';
+    // A held test result newer than the one the fold used is why the criterion is open: the older run's reason is not.
+    const hold = open ? held.get(s.criterionId) : undefined;
+    const holds = !!hold && (!row || new Date(hold.at).getTime() >= new Date(row.at).getTime());
+    const reason = holds ? 'test held' as const
+      : s.standing === 'pass' || s.standing === 'waived' || s.standing === 'missing' || !row ? undefined : verdictReason(row.verdict, row.evidence);
     const words = text.get(s.criterionId);
-    return { ...s, ...(words ? { text: words } : {}), ...(reason ? { reason } : {}) };
+    return { ...s, ...(words ? { text: words } : {}), ...(reason ? { reason } : {}), ...(holds && hold!.prNumber != null ? { heldByPr: hold!.prNumber } : {}) };
   });
 }

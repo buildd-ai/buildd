@@ -892,7 +892,7 @@ export type DeliverableRole = 'build' | 'verification' | 'repair' | 'maintenance
  * __tests__/deliverable-role.test.ts fails otherwise.
  */
 export const DELIVERABLE_ROLE_CONTEXT_KEYS = {
-  objectMarkers: ['finalVerification', 'acceptanceTests', 'surfaceFix', 'specRepair'],
+  objectMarkers: ['finalVerification', 'specCriterionCheck', 'acceptanceTests', 'surfaceFix', 'specRepair'],
   values: ['requireMergeCommit', 'refreshTrunk'],
 } as const;
 
@@ -904,12 +904,63 @@ export function deliverableRole(task: { title?: string | null; roleSlug?: string
   // A mission's final requirement verification (Living Specs Slice 12) checks
   // the integrated result; a spec repair fixes a criterion it found failing.
   if (ctx?.finalVerification != null && typeof ctx.finalVerification === 'object') return 'verification';
+  // A per-criterion check observes one criterion at one head (spec criterion checks).
+  if (ctx?.specCriterionCheck != null && typeof ctx.specCriterionCheck === 'object') return 'verification';
   // The acceptance-tests task writes the checks before any building (R-76).
   if (ctx?.acceptanceTests != null && typeof ctx.acceptanceTests === 'object') return 'verification';
   if (isSurfaceFixTask(title) || (ctx?.surfaceFix != null && typeof ctx.surfaceFix === 'object')) return 'repair';
   if (ctx?.specRepair != null && typeof ctx.specRepair === 'object') return 'repair';
   if (isTrunkRefreshTask({ title, context: task.context })) return 'maintenance';
   return 'build';
+}
+
+/** Where a helper run belongs: a task it checks, or the mission it verifies. */
+export type VerifyHost = { kind: 'task'; taskId: string } | { kind: 'mission'; missionId: string | null };
+
+type HelperInput = { title?: string | null; roleSlug?: string | null; context?: unknown; taskClass?: string | null; parentTaskId?: string | null };
+
+const strOf = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+const ctxOf = (task: HelperInput): Record<string, unknown> | null =>
+  task.context && typeof task.context === 'object' && !Array.isArray(task.context) ? task.context as Record<string, unknown> : null;
+const objOf = (v: unknown): Record<string, unknown> | null =>
+  v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+
+/**
+ * Where a helper run sits (spec d25d923d R-11, R-12), from markers the creating
+ * code already writes: a criterion check hosts under its subject task, a spec
+ * repair under the verification that filed it, an attempt under its parent, and
+ * the surface audit and final verification under their mission. Null for a
+ * task that is not a helper. A reduced marker (`{}`, as lists project it)
+ * still resolves to a host, just without the id it dropped.
+ */
+export function verifyHostOf(task: HelperInput): VerifyHost | null {
+  const ctx = ctxOf(task);
+  const check = objOf(ctx?.specCriterionCheck);
+  if (check) {
+    const subject = strOf(check.subjectTaskId);
+    return subject ? { kind: 'task', taskId: subject } : { kind: 'mission', missionId: strOf(check.missionId) };
+  }
+  const fv = objOf(ctx?.finalVerification);
+  if (fv) return { kind: 'mission', missionId: strOf(fv.missionId) };
+  if (isMissionAuditTask({ title: task.title, roleSlug: task.roleSlug })) return { kind: 'mission', missionId: null };
+  const repair = objOf(ctx?.specRepair);
+  const filedBy = strOf(repair?.filedBy);
+  if (filedBy) return { kind: 'task', taskId: filedBy };
+  if (task.taskClass === 'attempt' && task.parentTaskId) return { kind: 'task', taskId: task.parentTaskId };
+  return null;
+}
+
+/**
+ * A helper run: it checks or repairs other work and is never a row, bar cell
+ * or Activity root of its own (R-11, R-12). Reviewers and fix attempts
+ * (`taskClass: 'attempt'`), criterion checks, final verification and the
+ * surface audit. The surface audit stays `work`; only its markers say so.
+ */
+export function isHelperRun(task: HelperInput): boolean {
+  if (task.taskClass === 'attempt') return true;
+  const ctx = ctxOf(task);
+  if (objOf(ctx?.specCriterionCheck) || objOf(ctx?.finalVerification)) return true;
+  return isMissionAuditTask({ title: task.title, roleSlug: task.roleSlug });
 }
 
 /** A deliverable (`isDeliverableTask`) that counts toward the build: the one predicate every build count uses. */
