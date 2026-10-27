@@ -67,7 +67,7 @@ interface Props {
   onSaved?: (info: RunnerPauseInfo) => void;
 }
 
-const SAVE_FAILED = 'Could not save the change.';
+const SAVE_FAILED = 'Change not saved. Retry.';
 
 /**
  * Pause / Resume for one runner. Saved on buildd.dev and taken by the runner

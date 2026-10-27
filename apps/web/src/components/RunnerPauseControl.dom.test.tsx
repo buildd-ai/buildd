@@ -80,4 +80,12 @@ describe('RunnerPauseControl (spec 97b1bd0b R-18, AC-12)', () => {
     expect(q('runner-pause-error')!.textContent).toContain('Only a team owner or admin');
     expect(q('runner-pause-toggle')!.textContent).toBe('Pause');
   });
+
+  it('a failure with no reason says what happened, then what to do', async () => {
+    status = 500;
+    reply = {};
+    await mount({});
+    await click('runner-pause-toggle');
+    expect(q('runner-pause-error')!.textContent).toContain('Change not saved. Retry.');
+  });
 });
