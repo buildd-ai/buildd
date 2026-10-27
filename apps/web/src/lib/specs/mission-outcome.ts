@@ -1,6 +1,6 @@
 import { acceptanceTestRecord, acceptanceTestVerdict, parseAcceptanceTestRun } from './acceptance-test-result';
 import { db } from '@buildd/core/db';
-import { artifactReads, githubRepos, missions, specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
+import { artifactReads, githubRepos, missions, specOutcomeVerdicts, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
@@ -150,7 +150,7 @@ function storedRegisteredRow(r: { id: string; criterionId: string; verdict: stri
   });
 }
 
-async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<MissionVerdictRow[]> {
+async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<{ rows: MissionVerdictRow[]; held: Map<string, { at: Date | string; prNumber: number | null }> }> {
   const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash, evidence: specOutcomeVerdicts.evidence })
     .from(specOutcomeVerdicts)
     .where(and(eq(specOutcomeVerdicts.missionId, missionId), eq(specOutcomeVerdicts.specRevisionId, specRevisionId)))
@@ -162,7 +162,27 @@ async function missionRows(missionId: string, specRevisionId: string, hashes: Re
     const registered = storedRegisteredRow(r, evidence);
     return { ...r, source: verdictSourceOfEvidence(evidence), bindingFingerprint, evidence, ...(registered ? { source: registered.source, method: registered.method } : {}) };
   }) as MissionVerdictRow[];
-  return filterMissionRowsByAcceptanceEdit(mapped, filtered);
+  const kept = await filterMissionRowsByAcceptanceEdit(mapped, filtered);
+  return { rows: kept, held: await heldTestResults(mapped, kept, filtered) };
+}
+
+/** The newest test result R-80 dropped for each criterion, with the PR whose edit holds it. */
+async function heldTestResults(all: readonly MissionVerdictRow[], kept: readonly MissionVerdictRow[], original: ReadonlyArray<{ id: string; evidence: unknown }>) {
+  const keptIds = new Set(kept.map((r) => r.id));
+  const evidenceById = new Map(original.map((r) => [r.id, r.evidence]));
+  const dropped = all.filter((r) => !keptIds.has(r.id));
+  const held = new Map<string, { at: Date | string; taskId: string | null }>();
+  for (const r of dropped) {
+    const prev = held.get(r.criterionId);
+    if (!prev || new Date(r.at).getTime() >= new Date(prev.at).getTime()) held.set(r.criterionId, { at: r.at, taskId: checkTaskIdOf(evidenceById.get(r.id)) });
+  }
+  const taskIds = [...new Set([...held.values()].map((h) => h.taskId).filter((t): t is string => !!t))];
+  const prs = new Map<string, number>();
+  if (taskIds.length) {
+    const ws = await db.select({ taskId: workers.taskId, prNumber: workers.prNumber }).from(workers).where(inArray(workers.taskId, taskIds));
+    for (const w of ws) if (w.taskId && w.prNumber != null) prs.set(w.taskId, w.prNumber);
+  }
+  return new Map([...held].map(([id, h]) => [id, { at: h.at, prNumber: h.taskId ? prs.get(h.taskId) ?? null : null }]));
 }
 
 /** Registrations answer to the selected immutable body, never mutable metadata. */
@@ -194,11 +214,11 @@ export async function readMissionSpecStanding(mission: MissionRow, c: LivingSpec
   for (const { criterionId, binding, fingerprint } of registrations.bindings) {
     if (binding.mode === 'required') requiredBindings.set(criterionId, [...(requiredBindings.get(criterionId) ?? []), fingerprint]);
   }
-  const rows = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
+  const { rows, held } = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
   const target = await resolveMissionTarget(mission, rows.map((r) => r.headSha).filter((h): h is string => !!h), api);
   const unaccepted = await unacceptedAcceptanceTestPaths(mission.id);
   const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target, requiredBindings, unacceptedTestPaths: unaccepted });
-  return { ...folded, standings: describeStandings(folded.standings, scope.criteria, rows), target, scope: scope.criteria, title: scope.title };
+  return { ...folded, standings: describeStandings(folded.standings, scope.criteria, rows, held), target, scope: scope.criteria, title: scope.title };
 }
 
 /**

@@ -62,7 +62,7 @@ describe('SpecPageFixture', () => {
     expect(parseSpecPageVariant('retired')).toBe('retired');
   });
 
-  for (const v of SPEC_PAGE_VARIANTS.filter((x) => x !== 'approve-replaces')) {
+  for (const v of SPEC_PAGE_VARIANTS.filter((x) => x !== 'approve-replaces' && x !== 'approve-explained')) {
     it(`${v}: renders the body text, Contents, and no empty Comments or Files tab`, async () => {
       const m = await render(v);
       mounted.push(m);
@@ -100,5 +100,16 @@ describe('SpecPageFixture', () => {
     ]);
     expect(m.container.querySelector('[data-testid="spec-approval-approve"]')!.textContent).toBe('Approve and retire');
     expect(m.container.textContent).not.toContain('This approval link is not valid.');
+  });
+
+  it('approve-explained: the explanation leads, one change is not explained, and Approve waits in its bar', async () => {
+    const m = await render('approve-explained');
+    mounted.push(m);
+    const c = m.container;
+    expect(c.querySelector('[data-testid="spec-explain-coverage"]')!.textContent).toBe('Covers 4 of 5: 1 not explained');
+    expect([...c.querySelectorAll('[data-testid="spec-explain-missing"] [data-testid="spec-explain-item"]')].map((e) => e.getAttribute('data-key'))).toEqual(['AC-4']);
+    expect([...c.querySelectorAll('[data-testid="spec-explain-extra-item"]')].map((e) => e.getAttribute('data-key'))).toEqual(['R-2']);
+    expect(c.querySelectorAll('[data-testid="spec-approval-approve"]').length).toBe(1);
+    expect((c.querySelector('[data-testid="spec-approval-approve"]') as HTMLButtonElement).disabled).toBe(true);
   });
 });

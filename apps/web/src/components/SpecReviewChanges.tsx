@@ -12,7 +12,7 @@ const OTHER: Record<SectionTextChange['kind'], string> = { added: 'Added', remov
 const PREAMBLE = 'Before the first heading';
 
 /** A heading path as the reader knows it: its last heading, the parents muted before it. */
-function Heading({ path }: { path: string }) {
+export function Heading({ path }: { path: string }) {
   if (!path) return <span>{PREAMBLE}</span>;
   const parts = path.split(' > ');
   const last = parts.pop()!;
@@ -121,33 +121,34 @@ function Row({ kind, label, children }: { kind: string; label: string; children?
   );
 }
 
-function ChangeRow({ c }: { c: CriterionChange }) {
+/** A criterion change's words as Review shows them: added, changed (words marked), moved, removed or replacing. */
+export function CriterionChangeWords({ c }: { c: CriterionChange }) {
   switch (c.kind) {
     case 'added':
-      return <Row kind="added" label={c.id}><Words text={c.text} /></Row>;
+      return <Words text={c.text} />;
     case 'changed':
       return (
-        <Row kind="changed" label={c.id}>
+        <>
           <ChangedText words={c.words} />
           {c.movedFrom !== undefined ? <p className="text-meta text-text-muted">Moved here from <Heading path={c.movedFrom} />.</p> : null}
-        </Row>
+        </>
       );
     case 'moved':
-      return (
-        <Row kind="moved" label={c.id}>
-          <p className="text-meta text-text-secondary">From <Heading path={c.movedFrom} /> to <Heading path={c.section} />. Same words.</p>
-        </Row>
-      );
+      return <p className="text-meta text-text-secondary">From <Heading path={c.movedFrom} /> to <Heading path={c.section} />. Same words.</p>;
     case 'removed':
-      return <Row kind="removed" label={c.id}><del className="whitespace-pre-line text-text-secondary"><Inline text={c.oldText} state={freshInline()} /></del></Row>;
+      return <del className="whitespace-pre-line text-text-secondary"><Inline text={c.oldText} state={freshInline()} /></del>;
     case 'replacing':
       return (
-        <Row kind="replacing" label={c.id}>
+        <>
           <p className="text-meta text-text-secondary">Replaces {c.replaces.map((r) => r.id).join(', ')}.</p>
           <Words text={c.text} />
-        </Row>
+        </>
       );
   }
+}
+
+function ChangeRow({ c }: { c: CriterionChange }) {
+  return <Row kind={c.kind} label={c.id}><CriterionChangeWords c={c} /></Row>;
 }
 
 function AddedRange({ line }: { line: Extract<ChangeLine, { kind: 'added-range' }> }) {

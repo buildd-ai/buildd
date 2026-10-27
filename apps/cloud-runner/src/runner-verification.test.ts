@@ -181,3 +181,45 @@ describe('runRunnerVerification', () => {
     expect(await runRunnerVerification(t.deps, CFG, TASK, WORKER)).toBe('error');
   });
 });
+
+describe('a mission criterion batch (one run per target, R-81)', () => {
+  const SHA = 'a'.repeat(40);
+  const BATCH_PLAN = {
+    taskId: TASK, workerId: WORKER, workspaceId: 'ws-1', run: true, iteration: 0, kind: 'criterion_batch', headSha: SHA,
+    checks: [{ criterionId: 'AC-1', command: 'bun run a', timeoutMs: 180_000 }, { criterionId: 'AC-2', command: 'bun run b', timeoutMs: 600_000 }],
+  };
+
+  test('the plan carries every criterion and its own timeout', () => {
+    expect(parseVerificationRunResponse(BATCH_PLAN, TASK, WORKER)).toMatchObject({ workspaceId: 'ws-1', batch: { headSha: SHA, checks: BATCH_PLAN.checks } });
+    expect(parseVerificationRunResponse({ ...BATCH_PLAN, headSha: 'abc' }, TASK, WORKER)).toBeNull();
+    expect(parseVerificationRunResponse({ ...BATCH_PLAN, checks: [] }, TASK, WORKER)).toBeNull();
+  });
+
+  test('checks out once, runs each criterion under its own limit, and reports one result per criterion on the runner key', async () => {
+    const timeouts: number[] = [];
+    // probe, checkout, probe, AC-1, probe, AC-2
+    const h = harness({ plan: BATCH_PLAN, exits: [0, 0, 0, 0, 0, 1], stdout: ' 3 pass\n' });
+    const inner = h.deps.timeout!;
+    h.deps.timeout = (ms) => { timeouts.push(ms); return inner(ms); };
+    expect(await runRunnerVerification(h.deps, CFG, TASK, WORKER)).toBe('reported');
+    const commands = h.execs.filter((e) => e.cmd[0] === 'sh').map((e) => e.cmd[5]);
+    expect(commands[0]).toContain(`git checkout -q --detach ${SHA}`);
+    expect(commands.slice(1)).toEqual(['bun run a', 'bun run b']);
+    expect(timeouts.slice(1)).toEqual([180_000, 600_000]);
+    const ev = h.reported().verificationEvidence;
+    expect(ev).toMatchObject({ conditionType: 'criterion_batch', workerId: WORKER, headSha: SHA, checkout: 'ok' });
+    expect(ev.results).toEqual([
+      expect.objectContaining({ criterionId: 'AC-1', command: 'bun run a', outcome: 'ok', exitCode: 0, timeoutMs: 180_000, stdout: ' 3 pass\n' }),
+      expect.objectContaining({ criterionId: 'AC-2', command: 'bun run b', outcome: 'failed', exitCode: 1, timeoutMs: 600_000 }),
+    ]);
+  });
+
+  test('a head that cannot be checked out runs no criterion and reports each as a failed checkout', async () => {
+    const h = harness({ plan: BATCH_PLAN, exits: [0, 128] });
+    expect(await runRunnerVerification(h.deps, CFG, TASK, WORKER)).toBe('reported');
+    expect(h.execs.filter((e) => e.cmd[0] === 'sh')).toHaveLength(1);
+    const ev = h.reported().verificationEvidence;
+    expect(ev.checkout).toBe('failed');
+    expect(ev.results.map((r: any) => [r.criterionId, r.exitCode])).toEqual([['AC-1', 125], ['AC-2', 125]]);
+  });
+});

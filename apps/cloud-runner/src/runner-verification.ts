@@ -46,6 +46,36 @@ export interface VerificationPlan {
   command: string;
   iteration: number;
   workspaceId: string;
+  /** A mission's criterion batch: every criterion of one target, each under its own limit. */
+  batch?: BatchPlan;
+}
+
+/** Mirrors @buildd/shared criterion-batch (this Worker takes no workspace deps). */
+export interface BatchPlan {
+  headSha: string;
+  checks: Array<{ criterionId: string; command: string; timeoutMs: number }>;
+}
+export const BATCH_CHECKOUT_FAILED_EXIT = 125;
+export const BATCH_CHECKOUT_TIMEOUT_MS = 120_000;
+const BATCH_MIN_TIMEOUT_MS = 30_000;
+const BATCH_MAX_TIMEOUT_MS = 20 * 60_000;
+const SHA40 = /^[0-9a-f]{40}$/;
+
+function parseBatch(b: Record<string, unknown>): BatchPlan | null {
+  if (b.kind !== 'criterion_batch' || typeof b.headSha !== 'string' || !SHA40.test(b.headSha) || !Array.isArray(b.checks) || !b.checks.length) return null;
+  const checks: BatchPlan['checks'] = [];
+  for (const c of b.checks as unknown[]) {
+    const r = (c ?? {}) as Record<string, unknown>;
+    if (typeof r.criterionId !== 'string' || typeof r.command !== 'string' || !r.command.trim()) return null;
+    const t = typeof r.timeoutMs === 'number' && Number.isFinite(r.timeoutMs) ? r.timeoutMs : BATCH_MIN_TIMEOUT_MS;
+    checks.push({ criterionId: r.criterionId, command: r.command, timeoutMs: Math.min(BATCH_MAX_TIMEOUT_MS, Math.max(BATCH_MIN_TIMEOUT_MS, Math.round(t))) });
+  }
+  return { headSha: b.headSha, checks };
+}
+
+/** Same checkout the host runner does for a batch (@buildd/shared batchCheckoutCommand). */
+export function batchCheckoutCommand(headSha: string): string {
+  return `git fetch -q origin ${headSha} >/dev/null 2>&1; git checkout -q --detach ${headSha}`;
 }
 
 export type RunnerVerificationResult =
@@ -77,9 +107,13 @@ export function verificationRunRequest(cfg: VerificationConfig, taskId: string, 
 export function parseVerificationRunResponse(body: unknown, taskId: string, workerId: string): VerificationPlan | null {
   const b = (body ?? {}) as Record<string, unknown>;
   if (b.taskId !== taskId || b.workerId !== workerId || b.run !== true) return null;
-  if (typeof b.command !== 'string' || !b.command.trim()) return null;
   if (typeof b.workspaceId !== 'string' || !ID_RE.test(b.workspaceId)) return null;
   const iteration = typeof b.iteration === 'number' && Number.isInteger(b.iteration) && b.iteration >= 0 ? b.iteration : 0;
+  if (b.kind !== undefined) {
+    const batch = parseBatch(b);
+    return batch ? { command: batchCheckoutCommand(batch.headSha), iteration, workspaceId: b.workspaceId, batch } : null;
+  }
+  if (typeof b.command !== 'string' || !b.command.trim()) return null;
   return { command: b.command, iteration, workspaceId: b.workspaceId };
 }
 
@@ -124,6 +158,27 @@ async function readHead(stream: ReadableStream<Uint8Array> | null, limit = VERIF
   return new TextDecoder().decode(all).replace(/�+$/, '');
 }
 
+/** The tail of a stream, capped at `limit` UTF-8 bytes: a test run prints its verdict last. */
+async function readTail(stream: ReadableStream<Uint8Array> | null, limit = VERIFICATION_EXCERPT_BYTES): Promise<string> {
+  if (!stream) return '';
+  const reader = stream.getReader();
+  let kept = new Uint8Array(0);
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const joined = new Uint8Array(kept.length + value.length);
+      joined.set(kept); joined.set(value, kept.length);
+      kept = joined.length > limit ? joined.subarray(joined.length - limit) : joined;
+    }
+  } catch {
+    // The stream ended with the process; what was read stands.
+  }
+  // A cut through a multi-byte character decodes to U+FFFD; drop it.
+  return new TextDecoder().decode(kept).replace(/^\uFFFD+/, '');
+}
+
 export interface VerificationDeps {
   fetch: typeof fetch;
   container: Pick<ContainerPort, 'exec'>;
@@ -145,6 +200,7 @@ export async function runCheckCommand(
   deps: VerificationDeps,
   plan: VerificationPlan,
   workerId: string,
+  opts: { tail?: boolean } = {},
 ): Promise<Record<string, unknown> | 'no_checkout'> {
   const cwd = checkoutPath(plan.workspaceId);
   const base = { workerId, iteration: plan.iteration, conditionType: 'command', command: plan.command };
@@ -159,7 +215,8 @@ export async function runCheckCommand(
   } catch (err) {
     return { ...base, durationMs: deps.now() - start, stderr: String(err instanceof Error ? err.message : err).slice(0, VERIFICATION_EXCERPT_BYTES), outcome: 'exec_error' };
   }
-  const out = Promise.all([readHead(proc.stdout), readHead(proc.stderr)]);
+  const read = opts.tail ? readTail : readHead;
+  const out = Promise.all([read(proc.stdout), read(proc.stderr)]);
   const timer = (deps.timeout ?? realTimeout)(deps.timeoutMs ?? VERIFICATION_TIMEOUT_MS);
   const settled = await Promise.race([
     proc.exitCode.then((code): { code: number } | { error: unknown } => ({ code }), (error: unknown) => ({ error })),
@@ -173,6 +230,35 @@ export async function runCheckCommand(
   }
   const [stdout, stderr] = await out;
   return { ...base, exitCode: settled.code, durationMs, stdout, stderr, outcome: settled.code === 0 ? 'ok' : 'failed' };
+}
+
+/**
+ * A mission's criterion batch: one checkout, then each criterion's command
+ * under its own limit, as the host runner does (apps/runner/src/criterion-batch.ts).
+ */
+export async function runCheckBatch(
+  deps: VerificationDeps,
+  plan: VerificationPlan & { batch: BatchPlan },
+  workerId: string,
+): Promise<Record<string, unknown> | 'no_checkout'> {
+  const { batch } = plan;
+  const checkout = await runCheckCommand({ ...deps, timeoutMs: BATCH_CHECKOUT_TIMEOUT_MS }, { ...plan, command: batchCheckoutCommand(batch.headSha) }, workerId, { tail: true });
+  if (checkout === 'no_checkout') return 'no_checkout';
+  const base = { conditionType: 'criterion_batch', workerId, headSha: batch.headSha };
+  if (checkout.outcome !== 'ok') {
+    return {
+      ...base, checkout: 'failed',
+      results: batch.checks.map((c) => ({ criterionId: c.criterionId, command: c.command, outcome: 'failed', exitCode: BATCH_CHECKOUT_FAILED_EXIT, durationMs: 0 })),
+    };
+  }
+  const results: Array<Record<string, unknown>> = [];
+  for (const c of batch.checks) {
+    const r = await runCheckCommand({ ...deps, timeoutMs: c.timeoutMs }, { ...plan, command: c.command }, workerId, { tail: true });
+    if (r === 'no_checkout') return 'no_checkout';
+    const { workerId: _w, iteration: _i, conditionType: _c, command: _cmd, ...rest } = r;
+    results.push({ criterionId: c.criterionId, command: c.command, timeoutMs: c.timeoutMs, ...rest });
+  }
+  return { ...base, checkout: 'ok', results };
 }
 
 /** Steps 1 to 3 above. Never throws. */
@@ -195,7 +281,7 @@ export async function runRunnerVerification(
     const plan = parseVerificationRunResponse(await res.json(), taskId, workerId);
     if (!plan) return 'not_needed';
 
-    const evidence = await runCheckCommand(deps, plan, workerId);
+    const evidence = plan.batch ? await runCheckBatch(deps, { ...plan, batch: plan.batch }, workerId) : await runCheckCommand(deps, plan, workerId);
     if (evidence === 'no_checkout') {
       deps.log(`${tag}: no checkout for workspace ${plan.workspaceId}; nothing reported`);
       return 'no_checkout';

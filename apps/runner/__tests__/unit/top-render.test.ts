@@ -299,11 +299,11 @@ describe('a provider limit, said once in the header (R-25, AC-11)', () => {
 });
 
 describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => {
-  const cell = (state: string, group: 'done' | 'active' | 'waiting' | 'checks') => ({ state, group });
-  const fill = (n: number, state: string, group: 'done' | 'active' | 'waiting' | 'checks') => Array.from({ length: n }, () => cell(state, group));
-  // AC-14's mission: 8 done, 2 running, 3 waiting, plus 2 checks. Includes tasks this runner never ran.
-  const AC14 = [...fill(8, 'landed', 'done'), ...fill(2, 'running', 'active'), ...fill(3, 'ready', 'waiting'), ...fill(2, 'review', 'checks')];
-  const withProgress = (progress: Array<{ state: string; group: 'done' | 'active' | 'waiting' | 'checks' }>) => {
+  const cell = (state: string, group: 'done' | 'active' | 'waiting') => ({ state, group });
+  const fill = (n: number, state: string, group: 'done' | 'active' | 'waiting') => Array.from({ length: n }, () => cell(state, group));
+  // AC-14's mission: 8 done, 2 running, 3 waiting,  Includes tasks this runner never ran.
+  const AC14 = [...fill(8, 'landed', 'done'), ...fill(2, 'running', 'active'), ...fill(3, 'ready', 'waiting')];
+  const withProgress = (progress: Array<{ state: string; group: 'done' | 'active' | 'waiting' }>) => {
     const mission = { ...TASKS[0].mission!, stage: { step: 'building' as const, waitingOn: '8 of 13 landed', progress } };
     return reduce(fixtureState(), { type: 'tasks', tasks: TASKS.map(t => (t.missionId === mission.id ? { ...t, mission } : t)) });
   };
@@ -322,15 +322,15 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
 
   test('AC-14: under the status line, 8 done squares before 2 in progress and 3 waiting, with the same counts', () => {
     const row = text(frame(withProgress(AC14), 120, 40)).split('\n')[5];
-    expect(row).toContain('│ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks');
+    expect(row).toContain('│ ■■■■■■■■ ▶▶ ▢▢▢   8 done · 2 in progress · 3 ready');
   });
 
   test('AC-15: at 80 columns a 30-task mission keeps its row on one line, the counts whole', () => {
-    const thirty = [...fill(20, 'landed', 'done'), ...fill(3, 'running', 'active'), ...fill(5, 'blocked', 'waiting'), ...fill(2, 'review', 'checks')];
+    const thirty = [...fill(20, 'landed', 'done'), ...fill(3, 'running', 'active'), ...fill(5, 'blocked', 'waiting')];
     const lines = frame(withProgress(thirty), 80, 24);
     expectExactSize(lines, 80, 24);
     const t = text(lines).split('\n');
-    expect(t[5]).toContain('20 done · ▶ 3 in progress · ▢ 5 blocked · ◐ 2 checks');
+    expect(t[5]).toContain('■×20 ▶▶▶ ▢×5   20 done · 3 in progress · 5 blocked');
     expect(t[5].split('│')[1]).not.toContain('…');
     expect(t[6]).toMatch(/│─+$/);
   });
@@ -356,7 +356,7 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
       // The title is what gives way, never the counts.
       expect(sel).toMatch(cols === 80 ? /▸ Runn… building 2\/8/ : /▸ Runner TUI +building 2\/8/);
       expect(left.find(l => l.includes('Specs import'))).toMatch(/1\/2 $/);
-      expect(left.filter(l => /[■▶▢◐]/.test(l))).toEqual([]);
+      expect(left.filter(l => /[■▶▢]/.test(l))).toEqual([]);
     }
   });
 

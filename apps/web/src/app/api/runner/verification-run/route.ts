@@ -22,7 +22,10 @@
  * account from a cloud container.
  *
  * Response: { taskId, workerId, workspaceId, run: true, command, iteration }
- * for a spec criterion check or a mission `command` criterion, else
+ * for a spec criterion check or a mission `command` criterion;
+ * { taskId, workerId, workspaceId, run: true, kind: 'criterion_batch', headSha,
+ * checks: [{ criterionId, command, timeoutMs }], iteration } for a mission's
+ * criterion batch (one checkout, each command under its own limit); else
  * { taskId, workerId, run: false, reason }.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -88,9 +91,11 @@ export async function POST(req: NextRequest) {
 
   const plan = verificationRunPlan(task);
   return NextResponse.json(
-    plan.run
-      ? { taskId, workerId, workspaceId: resolved.workspace.id, run: true, command: plan.command, iteration: plan.iteration }
-      : { taskId, workerId, run: false, reason: plan.reason },
+    !plan.run
+      ? { taskId, workerId, run: false, reason: plan.reason }
+      : 'batch' in plan
+        ? { taskId, workerId, workspaceId: resolved.workspace.id, run: true, kind: 'criterion_batch', headSha: plan.batch.headSha, checks: plan.batch.checks, iteration: plan.iteration }
+        : { taskId, workerId, workspaceId: resolved.workspace.id, run: true, command: plan.command, iteration: plan.iteration },
     { headers: NO_STORE },
   );
 }
