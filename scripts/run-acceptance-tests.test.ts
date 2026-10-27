@@ -60,5 +60,7 @@ test('R-2: also here', () => expect(true).toBe(true));`);
     expect(acceptanceRunExit(0, ' 0 pass\n 0 fail\n')).toBe(125);
     expect(acceptanceRunExit(1, 'Failed to launch Bun for missing')).toBe(125);
     expect(acceptanceRunExit(1, 'Killed test after 1000ms wall-clock')).toBe(125);
+    // A DB-backed acceptance test on a host with no database never ran: inconclusive, not a fail.
+    expect(acceptanceRunExit(1, 'error: DB tests need DATABASE_URL and NEON_LOCAL_FETCH_ENDPOINT (loopback). Run via `bun run test:db`.')).toBe(125);
   });
 });

@@ -51,12 +51,24 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    `R-n` or `AC-n`. A criterion may carry a line `check: <command>` (buildd
    runs it at each PR head and records the exit code) or
    `screen: <id>, <id>` (screens of the design it covers).
-3. **Revise:** `buildd action=manage_specs params={ action: "revise", specId, expectedVersion, body, changeSummary }`.
+3. **Revise:** `buildd action=manage_specs params={ action: "revise", specId, expectedVersion, body, changeSummary, explanation }`.
    `expectedVersion` is the version `get` showed. To replace one section,
    add `section` (an outline id) or `heading` (a heading used once) and send
    only that section's text, heading line included. To change one phrase,
    send `find` (exact text, once in the body) and `replace` instead of `body`. Omitted `repoRefs` or
    `design` carry forward; `[]` or `null` clears.
+   **Write an explanation with every revise** (and with `create_draft`):
+   `explanation: { summary, lines }`, `summary` one line on what the
+   revision does, `lines` one plain line per criterion you added, changed or
+   removed, keyed by its id (`"R-3"`), and one per section whose other text
+   changed, keyed by its heading (`"Out of scope"`). Run `diff` first and
+   cover every change it lists. The approval page checks the keys against the
+   real change, with no model: a change you leave out is listed "Not
+   explained" and the person must open it before Approve works; a line for
+   something that did not change is listed apart. The explanation is fixed
+   with its revision: a revise that only sends a new one is refused (a 409
+   with code explanation_immutable). Say what changed and why, plainly; the check
+   only proves you mentioned it.
 4. **Submit and approve: a person's act.** `buildd action=manage_specs params={ action: "submit", specId, expectedVersion }`
    and `buildd action=manage_specs params={ action: "approve", specId, revision, expectedVersion }`
    return 403 to an agent run or API key. From a person's own OAuth session,

@@ -5,6 +5,8 @@ import SpecPage from '@/components/SpecPage';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
 import type { SpecPageView } from '@/lib/specs/page-view';
 import type { ApprovalRequestView } from '@/lib/specs/approval-view';
+import { explanationCoverage, type SpecExplanation } from '@buildd/spec-contract/explanation';
+import { wordDiff, type ChangeLine, type SectionTextChange } from '@buildd/spec-contract/criterion-review';
 
 /**
  * The spec page as a reader opens it, for Visual QA at 390 and 1440 wide
@@ -19,8 +21,11 @@ import type { ApprovalRequestView } from '@/lib/specs/approval-view';
  * - `imported`: an import waiting for a person to confirm it.
  * - `approve-replaces`: the /approve page for a revision that replaces another
  *   spec, "Replaces <spec>. Retire it." above Approve.
+ * - `approve-explained`: the /approve page for a long revision whose
+ *   explanation leaves one change out and names one that did not change
+ *   (Living Spec b7fc9316 R-14 to R-19): Approve waits in its bar.
  */
-export const SPEC_PAGE_VARIANTS = ['approved', 'waiting', 'retired', 'imported', 'approve-replaces'] as const;
+export const SPEC_PAGE_VARIANTS = ['approved', 'waiting', 'retired', 'imported', 'approve-replaces', 'approve-explained'] as const;
 export type SpecPageVariant = (typeof SPEC_PAGE_VARIANTS)[number];
 
 const SECTIONS: Array<[string, string[]]> = [
@@ -117,9 +122,53 @@ export const SPEC_PAGE_APPROVAL_VIEW: Extract<ApprovalRequestView, { state: 'rea
     summary: 'Cancelling works from the email too; folds in the two older cancellation specs.', mismatch: null, otherText: [],
     lines: [{ kind: 'added', id: 'R-13', text: 'An order can be cancelled from the confirmation email until it is packed.', section: '6. Cancelling' }],
   },
+  explanation: { summary: 'Shoppers can cancel from the confirmation email, and the two older cancellation specs retire.', lines: { 'R-13': 'New: the email carries a cancel link that works until the order is packed.' } },
+  coverage: null,
+  sectionWords: {},
+};
+SPEC_PAGE_APPROVAL_VIEW.coverage = explanationCoverage(SPEC_PAGE_APPROVAL_VIEW.explanation, SPEC_PAGE_APPROVAL_VIEW.changes!.lines, []);
+
+const changed = (id: string, section: string, was: string, now: string): ChangeLine => ({ kind: 'changed', id, text: now, oldText: was, words: wordDiff(was, now), section });
+const EXPLAINED_LINES: ChangeLine[] = [
+  changed('R-3', 'Checkout > 2. Paying', 'Placing an order is one step for the shopper: they press Pay once.', 'Placing an order is one step for the shopper: they press Pay once, and a second press while it pays does nothing.'),
+  changed('R-7', 'Checkout > 4. Receipts', 'A receipt is emailed when the order is paid.', 'A receipt is emailed when the order is paid, and shown on the order page at the same time.'),
+  { kind: 'added', id: 'R-13', text: 'An order can be cancelled from the confirmation email until it is packed.', section: 'Checkout > 6. Cancelling' },
+  changed('AC-4', 'Checkout > 4. Receipts', 'GIVEN a paid order THEN a receipt arrives.', 'GIVEN a paid order WHEN the payment settles THEN a receipt arrives within one minute and the order page shows it.'),
+];
+const EXPLAINED_OTHER: SectionTextChange[] = [{ kind: 'changed', section: 'Checkout > Out of scope' }];
+const EXPLAINED: SpecExplanation = {
+  summary: 'Double presses on Pay are ignored, receipts show on the order page, and cancelling works from the email.',
+  lines: {
+    'R-3': 'A second press on Pay while the payment runs is ignored, so nobody pays twice.',
+    'R-7': 'The receipt also shows on the order page, at the moment the email goes out.',
+    'R-13': 'New: the confirmation email carries a cancel link that works until the order is packed.',
+    'Out of scope': 'Phone orders move out of scope; they get their own spec.',
+    'R-2': 'Clarifies the wording of the pay screen.',
+  },
 };
 
-export function specPageFixtureView(v: Exclude<SpecPageVariant, 'approve-replaces'>): Extract<SpecPageView, { state: 'ok' }> {
+/** The /approve page for a long revision with an explanation that misses AC-4 and names R-2, which did not change. */
+export const SPEC_PAGE_EXPLAINED_VIEW: Extract<ApprovalRequestView, { state: 'ready' }> = {
+  ...SPEC_PAGE_APPROVAL_VIEW,
+  replacing: [],
+  sections: [
+    { kind: 'changed', path: 'Checkout > 2. Paying', level: 2, linesAdded: 1, linesRemoved: 1 },
+    { kind: 'changed', path: 'Checkout > 4. Receipts', level: 2, linesAdded: 2, linesRemoved: 2 },
+    { kind: 'changed', path: 'Checkout > 6. Cancelling', level: 2, linesAdded: 1, linesRemoved: 0 },
+    { kind: 'changed', path: 'Checkout > Out of scope', level: 2, linesAdded: 1, linesRemoved: 1 },
+  ],
+  changes: { summary: EXPLAINED.summary, mismatch: null, otherText: EXPLAINED_OTHER, lines: EXPLAINED_LINES },
+  explanation: EXPLAINED,
+  coverage: explanationCoverage(EXPLAINED, EXPLAINED_LINES, EXPLAINED_OTHER),
+  sectionWords: {
+    'Checkout > Out of scope': wordDiff(
+      'Gift cards, split payments and orders placed by phone. Each has its own spec.',
+      'Gift cards and split payments. Each has its own spec, and orders placed by phone now have theirs.',
+    ),
+  },
+};
+
+export function specPageFixtureView(v: Exclude<SpecPageVariant, 'approve-replaces' | 'approve-explained'>): Extract<SpecPageView, { state: 'ok' }> {
   if (v === 'waiting') {
     return {
       ...APPROVED, spec: { ...APPROVED.spec, headRevision: 3, version: 4 }, waiting: 3,
@@ -156,11 +205,11 @@ export default function SpecPageFixture() {
   useEffect(() => {
     setVariant(parseSpecPageVariant(new URLSearchParams(window.location.search).get('v')));
   }, []);
-  if (variant === 'approve-replaces') {
+  if (variant === 'approve-replaces' || variant === 'approve-explained') {
     // The /approve page's own wrapper (specs/[specId]/approve/page.tsx).
     return (
       <main className="mx-auto w-full max-w-3xl px-4 py-6 md:py-10" data-testid="spec-page-fixture" data-variant={variant}>
-        <SpecApprovalRequest specId="fixture-spec" token="fixture-token" view={SPEC_PAGE_APPROVAL_VIEW} />
+        <SpecApprovalRequest key={variant} specId="fixture-spec" token="fixture-token" view={variant === 'approve-explained' ? SPEC_PAGE_EXPLAINED_VIEW : SPEC_PAGE_APPROVAL_VIEW} />
       </main>
     );
   }
