@@ -1384,8 +1384,10 @@ async function MissionDetailBody({
         </div>
       )}
       {/* The visual review, live: opens the review deck (or, before any
-          screen, the phase and its actions). Any audit phase shows it. */}
-      {boardVisual && <MissionScreensRow missionId={id} step={visualStep} />}
+          screen, the phase and its actions). Any audit phase shows it. Not on the
+          board: its evidence is in Verify, a person's review is a decision card
+          (Navigation R-18). */}
+      {layout !== 'board' && boardVisual && <MissionScreensRow missionId={id} step={visualStep} />}
       {/* Only when it carries a person's action or the report: its state line
           alone repeats the Screens row and the checks (spec f7f67f1a R-37). */}
       {visualPresentation && branchPanelHasAction(visualPresentation, isTerminal) && (
@@ -1410,7 +1412,7 @@ async function MissionDetailBody({
     <MissionBoardHeader
       back={back}
       title={mission.title}
-      verified={verifiedPill}
+      verified={layout === 'board' ? undefined : verifiedPill}
       actions={overflowMenu}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
