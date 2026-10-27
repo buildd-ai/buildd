@@ -50,12 +50,31 @@ deciding whether to step in, so every rule below comes down to two things:
 | base branch fails the same checks (kernel trunk breaker) | `blocked_on_trunk` | ○ Blocked on a red base branch · CI retries paused until the base is green | none |
 | base branch green again (kernel trunk breaker) | `trunk_recovered` | ✓ Base branch green again · resuming | none |
 
-For a kernel-owned PR the header is not the newest row: it is the delivery's
-canonical state (`DeliveryView.headline`, docs/specs/workflow-state-kernel.md
-§12.1 rule 4), and the whole body is regenerated from the transition log.
-"Repairing" is never the header of a base refresh (that reads "Updating
-branch"), and an approved PR reads "Approved · awaiting merge" until it merges
-(docs/specs/task-page.md, State mapping).
+## A kernel-owned PR: one state line
+
+Living Spec fa62b865 R-51 (one review loop). For a PR the kernel owns, the
+comment is the delivery's review reading and nothing else:
+
+```
+**buildd** · <glyph> **<state line>** · [Open in Buildd](…)
+
+<sub>Started Sep 23, 07:31 EDT · edited in place by buildd</sub>
+```
+
+- The state line is `DeliveryView.review.stateLine`, the same words the task
+  page, get_pr and explain show, regenerated at every delivery version and
+  edited in place (`renderDeliveryActivity`). One comment per PR.
+- No timeline, no findings, no rounds line, no reviewer feedback and no
+  escalation prose. The decision, the findings and the history live in Buildd;
+  GitHub gets a review only for new or changed code findings (R-49), and the
+  `Buildd / Review approval` status is the merge gate.
+- "Repairing" is never the state of a base refresh (that reads "Updating
+  branch"), and an approved PR reads "Approved · awaiting merge" until it merges
+  (docs/specs/task-page.md, State mapping). While buildd captures design
+  evidence it reads "Collecting evidence".
+
+The timeline rules below are for a PR the kernel does not own (a legacy
+delivery), which still appends rows.
 
 Rules:
 

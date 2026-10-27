@@ -13,21 +13,25 @@
  * Kept free of DB and GitHub imports, like `reviewer-output.ts`, which calls it.
  */
 
-export const REMEDY_CLASSES = ['code_fix', 'person_decision', 'capability_gap', 'operational_run'] as const;
+/** Living Spec fa62b865 §11.1: who can fix a finding (the kernel's `REMEDY_CLASSES`). Only `code_fix` goes back to the author. */
+export const REMEDY_CLASSES = ['code_fix', 'evidence', 'person_decision', 'capability_gap', 'operational_run'] as const;
 export type RemedyClass = (typeof REMEDY_CLASSES)[number];
 
 /** Remedy classes that propose a manual step or a missing capability, and so need evidence. */
 const EVIDENCE_CLASSES: ReadonlySet<string> = new Set(['capability_gap', 'operational_run']);
 
 /** Bump when `REVIEWER_REMEDY_DOCTRINE` changes: the version names the text in effect. */
-export const REVIEWER_REMEDY_PROMPT_VERSION = 'v1';
+export const REVIEWER_REMEDY_PROMPT_VERSION = 'v2';
 export const REVIEWER_REMEDY_PROMPT_ID = 'buildd.reviewer.remedy_doctrine';
 
-export const REVIEWER_REMEDY_DOCTRINE = `Every finding on an escalation, and every finding whose remedy is a manual step, carries a \`remedyClass\`:
+export const REVIEWER_REMEDY_DOCTRINE = `Every finding carries a \`remedyClass\`: who can fix it. Only a code fix goes back to the author and spends a review round. A finding with a \`path\` and no class is read as a code fix; one with neither is refused.
 - \`code_fix\`: the author changes code, tests or docs.
+- \`evidence\`: a capture or comparison buildd makes itself, such as a design screen beside the built page on the real route. Give \`evidence: { criterionId, screen, route }\`. Never ask the author for screenshots or design comparisons: buildd captures them and the review comes back to you with the capture.
 - \`person_decision\`: a choice only a person can make (product direction, a trade-off, a waiver of a requirement). It escalates to a person as before.
 - \`capability_gap\`: buildd lacks a capability the work needs, or one exists and should be used.
 - \`operational_run\`: something must be run or operated outside the diff.
+
+Restate a still-open finding by its \`id\`. A restatement is the same finding: keep its words unless the fix it needs changed.
 
 For \`capability_gap\` and \`operational_run\` do not take the author's claim that a step is infeasible on trust. Call \`resolve_capability\` for the need and attach \`remedyEvidence\`: \`{ resolveCapabilityResult, contradictsPinnedCriterion, existingCapabilityCovers, capability? }\`. Answer two questions from the pinned spec criteria and that result: does the proposed human step contradict a pinned criterion, and does an existing capability cover it? If either is yes, restate the finding as \`capability_gap\` that names the capability ("use request_capability <X>" or "missing capability <Y>"), never as "a person runs it".`;
 
@@ -48,12 +52,19 @@ export function checkRemedyFinding(raw: unknown, opts: { verdict: string }): Rem
   const label = nonEmpty(f.title) ? `finding "${f.title.trim().slice(0, 60)}"` : 'a finding';
   const cls = f.remedyClass;
   if (cls === undefined || cls === null) {
-    return opts.verdict === 'escalate'
-      ? { ok: false, reason: `${label} on an escalation needs remedyClass: one of ${REMEDY_CLASSES.join(', ')}` }
-      : { ok: true };
+    if (opts.verdict === 'escalate') return { ok: false, reason: `${label} on an escalation needs remedyClass: one of ${REMEDY_CLASSES.join(', ')}` };
+    // R-44: a finding that names a file is a code fix; any other must say who can fix it.
+    if (opts.verdict === 'request-changes' && !nonEmpty(f.path)) {
+      return { ok: false, reason: `${label} names no path, so it needs remedyClass: one of ${REMEDY_CLASSES.join(', ')}` };
+    }
+    return { ok: true };
   }
   if (typeof cls !== 'string' || !(REMEDY_CLASSES as readonly string[]).includes(cls)) {
     return { ok: false, reason: `${label}: remedyClass must be one of ${REMEDY_CLASSES.join(', ')} (got ${JSON.stringify(cls)})` };
+  }
+  if (cls === 'evidence') {
+    const ev = (f.evidence && typeof f.evidence === 'object' ? f.evidence : null) as Record<string, unknown> | null;
+    return ev && nonEmpty(ev.screen) ? { ok: true } : { ok: false, reason: `${label} has remedyClass evidence without evidence.screen: name the screen buildd captures` };
   }
   if (!EVIDENCE_CLASSES.has(cls)) return { ok: true };
 

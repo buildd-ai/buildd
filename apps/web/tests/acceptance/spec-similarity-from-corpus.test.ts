@@ -56,6 +56,19 @@ afterAll(() => {
   knowledge.specKnowledgeDeps.store = realStore;
   globalThis.fetch = realFetch;
 });
+/**
+ * The duplicate check's shortlist seam: the real corpus match (through the fake
+ * store), joined to the given cards in place of the db read of each spec's body.
+ */
+const fromCorpus = (cards: Array<{ specId: string; title: string; card: ReturnType<typeof decision.specCard> }>) =>
+  async (input: { workspaceId: string; title: string; body: string; criteria?: readonly string[]; excludeSpecId?: string; drafts?: boolean }) => {
+    const matches = await knowledge.specCorpusShortlist({ ...input, drafts: input.drafts !== false });
+    const byId = new Map(cards.map((c) => [c.specId, c]));
+    return matches.flatMap((m) => {
+      const c = byId.get(m.specId);
+      return c ? [{ ...c, similarity: m.score, draft: m.draft, pairs: m.pairs.map((x) => ({ here: x.here, there: x.there })) }] : [];
+    });
+  };
 const corpusStore = (s: unknown) => { knowledge.specKnowledgeDeps.store = async () => s as never; };
 
 describe('R-101: similarity has one source, the spec corpus', () => {
@@ -136,7 +149,7 @@ describe('R-103: nothing the reader sees mentions embeddings, keys or providers'
     for (const cause of ['no_provider', 'disabled', 'error']) {
       const out = await decision.checkSpecDuplicates(
         { workspaceId: WS, title: 'Cart', body: '# Basket\n- AC-4: An empty basket shows a friendly message.' },
-        { teamOf: async () => 'team', approved: async () => pool, judge: async () => ({ response: { decision: 'distinct', confidence: null, source: 'fallback', fallbackCause: cause } as never, recordId: null }) },
+        { teamOf: async () => 'team', shortlist: fromCorpus(pool), judge: async () => ({ response: { decision: 'distinct', confidence: null, source: 'fallback', fallbackCause: cause } as never, recordId: null }) },
       );
       expect(out.ran).toBe(false);
       expect((out as { reason: string }).reason).not.toMatch(FORBIDDEN);
@@ -163,7 +176,7 @@ describe('R-104: the duplicate shortlist reads the corpus by criterion', () => {
     const out = await decision.checkSpecDuplicates(
       { workspaceId: WS, title: 'Cart', body: NEW },
       {
-        teamOf: async () => 'team', approved: async () => pool,
+        teamOf: async () => 'team', shortlist: fromCorpus(pool),
         judge: async (pair) => { seen.push(pair); return { response: { decision: 'duplicate', confidence: 0.97, source: 'model', fallbackCause: null } as never, recordId: null }; },
       },
     );
@@ -189,7 +202,7 @@ describe('R-104: the duplicate shortlist reads the corpus by criterion', () => {
     let judged = 0;
     await decision.checkSpecDuplicates(
       { workspaceId: WS, title: 'Cart', body: NEW },
-      { teamOf: async () => 'team', approved: async () => bigPool, judge: async () => { judged++; return { response: { decision: 'distinct', confidence: 0.9, source: 'model', fallbackCause: null } as never, recordId: null }; } },
+      { teamOf: async () => 'team', shortlist: fromCorpus(bigPool), judge: async () => { judged++; return { response: { decision: 'distinct', confidence: 0.9, source: 'model', fallbackCause: null } as never, recordId: null }; } },
     );
     expect(judged).toBe(5);
   });

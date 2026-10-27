@@ -25,7 +25,10 @@ import type {
   RoundOp,
 } from './commands';
 import { deltaApprovalEligibility, emptyDeltaCarry, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
-import { addressFindings, applyVerdictToFindings, describeFinding, isTaskId, openRequiredFindings } from './findings';
+import {
+  addressFindings, applyVerdictToFindings, byRemedyRoute, describeFinding, evidenceRoundFindingIds, isEvidenceRound, isOpenFinding, isTaskId,
+  openRequiredFindings, remedyOf, remedyRoute, isRoundFinding,
+} from './findings';
 import {
   isHumanActor,
   isTerminal,
@@ -36,6 +39,7 @@ import {
   type ConstituentEvidence,
   type DeliverySnapshot,
   type DeliveryState,
+  type FindingSnapshot,
   type KernelView,
   type PolicyEvidence,
   type RoundKind,
@@ -165,6 +169,9 @@ export function isRecheckAfterApproval(r: Pick<RoundSnapshot, 'scope'> | null | 
  */
 function spendsReviewBudget(r: RoundSnapshot, judging: string | undefined): boolean {
   if (isRecheckAfterApproval(r)) return false;
+  // Living Spec fa62b865 §11.1 R-45: only a code fix spends a round. A round whose open findings held
+  // none (buildd's evidence, a person's decision) and the round that judges buildd's capture are free.
+  if (r.budgetFree === true || isEvidenceRound(r)) return false;
   if (r.status === 'superseded' && (r.verdict == null || r.endReason != null)) return false;
   if (r.trigger === 'base_refresh' && r.id !== judging && r.effectiveVerdict !== 'request_changes') return false;
   return true;
@@ -1751,6 +1758,49 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       return roundFailed(c, round, cmd);
     }
 
+    // §11.1 R-46: buildd's capture for an evidence round came back (or could not be made).
+    case 'EvidenceRecorded': {
+      const dd = d!;
+      if (isTerminal(dd.state)) return c.stale('terminal');
+      const round = c.roundById(cmd.roundId);
+      if (!round || !isEvidenceRound(round)) return c.rejected('not_an_evidence_round');
+      if (dd.state !== 'AWAITING_REVIEW' || round.status !== 'queued' || round.round !== dd.currentRound) return c.stale('round_not_current');
+      const ids = evidenceRoundFindingIds(round);
+      const targets = (c.view.findings ?? []).filter((x) => ids.includes(x.id) && isOpenFinding(x));
+      const got = new Map((cmd.captures ?? []).filter((x) => x?.findingId && x?.artifactId).map((x) => [x.findingId, x.artifactId]));
+      const key = `evidence:${round.id}`;
+      const why = (cmd.failure ?? '').trim().slice(0, 300) || 'the capture came back without a stored screenshot';
+      // A finding buildd could not capture is a missing capability, a person's to settle (R-46): never a builder's.
+      const gap = (x: FindingSnapshot): FindingOp => ({
+        op: 'update', findingId: x.id, whenStatus: ['open', 'addressed'],
+        set: { remedyClass: 'capability_gap', evidence: { criterionId: x.evidence?.criterionId ?? null, screen: x.evidence?.screen ?? '', route: x.evidence?.route ?? null, failure: why } },
+      });
+      if (cmd.failure || got.size === 0) {
+        return c.apply(key, 'ESCALATED', {
+          guardRound: true,
+          patch: { stateReason: 'review_escalated' },
+          rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued'], set: { status: 'superseded', endReason: 'capture_failed', budgetFree: true } }],
+          findings: targets.map(gap),
+          evidence: { roundId: round.id, captureFailure: why, findings: ids },
+          effects: [{ kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
+        });
+      }
+      const attach: FindingOp[] = targets.map((x) => got.has(x.id)
+        ? { op: 'update', findingId: x.id, whenStatus: ['open', 'addressed'], set: { evidence: { criterionId: x.evidence?.criterionId ?? null, screen: x.evidence?.screen ?? '', route: x.evidence?.route ?? null, artifactId: got.get(x.id)!, capturedAt: round.headSha, failure: null } } }
+        : gap(x));
+      const prior = c.view.rounds.filter((r) => r.status === 'decided' && r.round < round.round).sort((a, b) => b.round - a.round)[0]?.round ?? null;
+      return c.apply(key, 'AWAITING_REVIEW', {
+        guardRound: true,
+        patch: { stateReason: null },
+        findings: attach,
+        evidence: { roundId: round.id, captures: [...got].map(([findingId, artifactId]) => ({ findingId, artifactId })) },
+        effects: [{
+          kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}`,
+          payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, priorRound: prior, scope: round.scope ?? null, trigger: round.trigger ?? 'verify_findings' },
+        }],
+      });
+    }
+
     // T28: a preflight finding for one head, imported as policy evidence.
     case 'PolicyEvidenceRecorded': {
       const dd = d!;
@@ -1841,6 +1891,7 @@ function verdictDecided(
     op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'],
     set: { status: 'decided', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, decided: true },
   };
+  const decideFree: RoundOp = { ...decide, set: { ...decide.set, budgetFree: true } };
   const key = `verdict:${round.id}`;
   const f = applyVerdictToFindings(c.view, round, cmd.effectiveVerdict, cmd, cmd.actor);
   const findingsEvidence = (f.raised.length || f.resolved.length || f.restated.length || f.deferred.length || f.unresolvedDeferrals.length)
@@ -1854,8 +1905,17 @@ function verdictDecided(
     guardHead: true, guardRound: true, findings: f.ops,
     evidence: { roundId: round.id, headSha: round.headSha, verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, ...findingsEvidence },
   };
+  // R-49: a GitHub review names the code findings this round raised or changed, once each. A round
+  // that only restates what is already posted names none, and its handler posts nothing. The round
+  // finding (a request for changes with no structured findings) stands for this round's own text, so a
+  // round that asks for changes in prose again is news every time.
+  const news = new Set([...f.raised, ...f.changed]);
+  const prose = cmd.effectiveVerdict === 'request_changes' && !(cmd.findings?.length);
+  const reviewFindingIds = f.stillOpen
+    .filter((x) => (news.has(x.id) || (prose && isRoundFinding(x))) && remedyRoute(remedyOf(x)) === 'fix').map((x) => x.id);
   const postReview = (event: 'APPROVE' | 'REQUEST_CHANGES'): EffectSpec => ({
-    kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`, payload: { commitId: round.headSha, event, roundId: round.id },
+    kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`,
+    payload: { commitId: round.headSha, event, roundId: round.id, ...(event === 'REQUEST_CHANGES' ? { findingIds: reviewFindingIds } : {}) },
   });
   const unverified = cmd.effectiveVerdict === 'approve' && f.stillOpen.length > 0;
   // A verdict that blocks contradicts a reviewer's approval standing at the same commit (a forced
@@ -1874,6 +1934,13 @@ function verdictDecided(
       rounds: [decide],
       effects: ev && round.scope?.composition !== true ? [postReview(ev)] : [],
     });
+  }
+  if (cmd.effectiveVerdict === 'request_changes' || unverified) {
+    // §11.1: with no code finding open, the fix loop has nothing to do: buildd captures, or a person decides.
+    const routed = routeByRemedy(c, key, round, f.stillOpen, {
+      ...common, evidence: { ...common.evidence, ...withdrawal.evidence }, patch: { ...withdrawal.patch }, rounds: [decideFree],
+    });
+    if (routed) return routed;
   }
   if (unverified) return verificationRound(c, key, round, f.stillOpen, { ...common, rounds: [decide] });
   if (cmd.effectiveVerdict === 'approve' && round.scope?.composition === true) {
@@ -1992,6 +2059,58 @@ function roundFailed(
  * round budget lasts; past it the delivery is a person's (review_exhausted),
  * with the findings attached. Nothing approves the head meanwhile.
  */
+type RouteOpts = { rounds?: RoundOp[]; findings?: FindingOp[]; evidence?: Record<string, unknown>; patch?: DeliveryPatch; effects?: EffectSpec[]; guardHead?: boolean; guardRound?: boolean; head?: string };
+
+/**
+ * Living Spec fa62b865 §11.1: where a round's open required findings go when none is a code fix.
+ * `null` when a code finding is open (or nothing is): the fix loop's business, as before.
+ *  - evidence buildd can still capture at this head: an evidence round (R-46), no budget spent;
+ *  - otherwise (a person's finding, or evidence already captured here and still not enough): the
+ *    person decides, `ESCALATED(review_escalated)`, no budget spent.
+ * The caller's `rounds` carry the decided round marked budget-free.
+ */
+function routeByRemedy(c: Ctx, key: string, round: RoundSnapshot, open: FindingSnapshot[], o: RouteOpts): Decision | null {
+  const dd = c.d!;
+  const head = o.head ?? round.headSha;
+  const g = byRemedyRoute(open);
+  if (g.fix.length > 0 || open.length === 0) return null;
+  const capturable = g.evidence.filter((x) => x.evidence?.capturedAt !== head);
+  if (capturable.length > 0) return evidenceRound(c, key, round, capturable, { ...o, head });
+  const person = [...g.person, ...g.evidence];
+  return c.apply(key, 'ESCALATED', {
+    ...o,
+    patch: { ...(o.patch ?? {}), stateReason: 'review_escalated' },
+    evidence: { ...(o.evidence ?? {}), personFindings: person.map((x) => x.id) },
+    effects: [...(o.effects ?? []), { kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
+  });
+}
+
+/**
+ * R-46: an evidence round. It is queued at the head for these findings, and its first move is
+ * buildd's capture (`dispatch_capture`), not a reviewer: `EvidenceRecorded` attaches the captures
+ * and only then dispatches the reviewer. The round spends no budget (`spendsReviewBudget`).
+ */
+function evidenceRound(c: Ctx, key: string, decided: Pick<RoundSnapshot, 'id' | 'headSha' | 'kind'>, findings: FindingSnapshot[], o: RouteOpts): Decision {
+  const dd = c.d!;
+  const head = o.head ?? decided.headSha;
+  const ids = findings.map((x) => x.id);
+  const r = c.startRound(head, { kind: decided.kind === 'full' ? 'delta' : 'full', scope: { evidence: { findingIds: ids } }, trigger: 'verify_findings' });
+  const written = new Set((o.rounds ?? []).filter((x) => x.op === 'update').map((x) => (x as { roundId: string }).roundId));
+  const fresh = r.rounds.filter((x) => x.op !== 'update' || !written.has(x.roundId));
+  const { head: _head, ...rest } = o;
+  return c.apply(key, 'AWAITING_REVIEW', {
+    ...rest,
+    evidence: { ...(o.evidence ?? {}), evidenceFindings: ids },
+    patch: { ...(o.patch ?? {}), ...r.patch, ...(head !== decided.headSha ? { currentHeadSha: head } : {}), stateReason: 'evidence' },
+    rounds: [...(o.rounds ?? []), ...fresh],
+    // r.effects is the reviewer's dispatch: it waits for the capture.
+    effects: [...(o.effects ?? []), {
+      kind: 'dispatch_capture', dedupeKey: `dispatch_capture:${dd.id}:${r.roundNo}`,
+      payload: { roundId: r.roundId, round: r.roundNo, headSha: head, findings: findings.map((x) => ({ id: x.id, title: x.title, ...(x.evidence ?? {}) })) },
+    }],
+  });
+}
+
 function verificationRound(
   c: Ctx, key: string, decided: Pick<RoundSnapshot, 'id' | 'headSha' | 'kind'>, open: Array<{ id: string }>,
   o: { rounds?: RoundOp[]; findings?: FindingOp[]; evidence?: Record<string, unknown>; patch?: DeliveryPatch; attempts?: AttemptOp[]; effects?: EffectSpec[]; guardHead?: boolean; guardRound?: boolean },
@@ -2743,6 +2862,13 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
   // §5: an approval never stands over a required finding it did not verify (one raised or restated
   // since, or one it left open). The head is owed the verification round instead.
   const open = openRequiredFindings(c.view);
+  if (round.effectiveVerdict !== 'escalate') {
+    const routed = routeByRemedy(c, key, round, open, {
+      patch: base, evidence: ev, head: h,
+      rounds: [{ op: 'update', roundId: round.id, whenStatus: ['decided'], set: { budgetFree: true } }],
+    });
+    if (routed) return routed;
+  }
   if (round.effectiveVerdict === 'approve' && open.length > 0) {
     return verificationRound(c, key, round, open, { patch: { currentHeadSha: h }, evidence: ev });
   }

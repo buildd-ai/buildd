@@ -88,7 +88,7 @@ import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyR
 import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, blockedOnBaseOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, submitReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordCaptureEvidence, recordReviewVerdict, submitReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -4904,8 +4904,21 @@ async function patchWorker(
         await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
       });
 
+      // Living Spec fa62b865 R-46: buildd's capture for an evidence round is no attempt: its end is the evidence.
+      if (terminalRow?.deliveryRole === 'capture') {
+        await runStep('workflow-capture-evidence', async () => {
+          const row = terminalTaskRow[0];
+          if (!row?.deliveryId || shouldAutoRetry) return;
+          await recordCaptureEvidence({
+            workspaceId: worker.workspaceId,
+            task: { id: completedTaskId!, deliveryId: row.deliveryId, context: row.context },
+            status: status === 'completed' && !contractViolation ? 'completed' : 'failed',
+            output: body.structuredOutput,
+            error: typeof body.error === 'string' ? body.error : null,
+          }, { principal: kernelPrincipalOf({ account }) });
+        });
       // T4 for a repair or a reviewer (an owner's end went to the kernel above).
-      if (terminalRow?.deliveryRole !== 'owner') await runStep('workflow-attempt-ended', workflowAttemptEnd);
+      } else if (terminalRow?.deliveryRole !== 'owner') await runStep('workflow-attempt-ended', workflowAttemptEnd);
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
       // The auto-retry wake is delivery, not a notification: it stays inline.
@@ -6023,9 +6036,10 @@ async function handleReviewerOutcomeIfNeeded(
 
   // Design screens (lib/reviewer-design.ts): a task whose criteria name screens
   // is approved only on a comparison with each screen made on the real route.
-  // The builder's own "matches the design" is never that evidence. Applied
-  // after the gates above, so an escalation to a person is kept; before the
-  // evidence gate, which still wins.
+  // The builder's own "matches the design" is never that evidence. A missing
+  // comparison is an evidence finding buildd captures (Living Spec fa62b865
+  // R-47), never a request to the builder. Applied after the gates above, so an
+  // escalation to a person is kept; before the evidence gate, which still wins.
   if (effectiveVerdict === 'approve') {
     const { loadDesignRequirement, applyDesignGate, componentScreens, parseDesignChecks } = await import('@/lib/reviewer');
     const requirement = await loadDesignRequirement(originalTaskId);
@@ -6037,13 +6051,16 @@ async function handleReviewerOutcomeIfNeeded(
       components: componentScreens(requirement.design),
     });
     if (designGate.reason) {
-      console.log(`[reviewer] PR #${prNumber}: design gate turned approve into request-changes`);
+      console.log(`[reviewer] PR #${prNumber}: design gate held the approval: ${designGate.findings.map((f) => f.remedyClass).join(', ')}`);
       effectiveVerdict = designGate.verdict;
       output.feedback = designGate.feedback ?? undefined;
+      // The kernel reads the findings off the reviewer's structured output (seam verdictFindingsOf).
+      const findings = [...(Array.isArray((output as { findings?: unknown }).findings) ? (output as { findings: unknown[] }).findings : []), ...designGate.findings];
+      (output as { findings?: unknown[] }).findings = findings;
       await db
         .update(tasks)
         .set({
-          result: sql`jsonb_set(COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${designGate.reason}::text), '{structuredOutput,feedback}', to_jsonb(${designGate.feedback ?? ''}::text), true)`,
+          result: sql`jsonb_set(jsonb_set(COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${designGate.reason}::text), '{structuredOutput,feedback}', to_jsonb(${designGate.feedback ?? ''}::text), true), '{structuredOutput,findings}', ${JSON.stringify(findings)}::jsonb, true)`,
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, reviewerTaskId))

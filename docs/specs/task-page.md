@@ -2,7 +2,7 @@
 title: Task Page
 status: active
 owner: max
-last_verified: 2026-10-23
+last_verified: 2026-10-26
 summary: The task page leads with the live run and steering while running, then one Build/Verify/Deliver timeline when stopped; Run holds execution material and Details holds spec, dependencies, attempts and time.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-timeline.ts, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
@@ -389,6 +389,10 @@ branch update" for a carried approval), binding what follows to that round.
 - AC-19: GIVEN the long-title pending reviewer fixture (`review-pending`) at 390×844 with the title collapsed WHEN it renders THEN the Checks heading and the Code review and Tests rows are above the bottom nav without scrolling; at 320 and 360 wide there is no sideways scroll and no tap target under 44px (Visual QA `assertLayout`).
 - AC-20: GIVEN an older worker parked on a question and a newer worker that failed, on a task still in progress, WHEN the task page loads THEN it shows the parked worker and linked question note; GIVEN the task completed THEN it offers no question.
 - AC-21: GIVEN a mission task with a live worker whose PR is in review WHEN its task link opens THEN the task page shows the delivery's header pill, Checks and live run view, with a waiting worker's question once; GIVEN the board lists that task, whatever its workers' read order, THEN it selects the same worker as the page.
+- AC-28: GIVEN a delivery whose current review blocks (changes requested, `ESCALATED` for a review reason, review budget spent, or the round failed) WHEN the task page renders THEN the Code review row is open without a tap and shows the verdict, the round and rounds spent, and each open finding once (short id, `path:line`, title, "restated n times" when restated).
+- AC-29: GIVEN a delivery whose current review approved, or a merged delivery, WHEN the task page renders THEN Code review is a closed disclosure that opens on tap or at `#review-findings`.
+- AC-30: GIVEN a delivery `ESCALATED` for a review reason WHEN the task page renders THEN the escalation decision card (`#task-decision`) leads under the header with the verdict row, then the open checks, above the timeline; its primary button is the brief's action ("Get this PR landable" when the brief offers it) and it names no finding the Code review row lists.
+- AC-31: GIVEN the escalated fixture (`review-stuck`) at 390×844 WHEN it renders THEN the decision's question and primary button are above the bottom nav without scrolling, no tap target is under 44px, and at 320 wide there is no sideways scroll.
 
 ## Code surface
 
@@ -459,9 +463,10 @@ A delivery parked in `ESCALATED` for a review-family reason (`review_escalated`,
   findings) and links `#task-decision-<action>`; the PR on GitHub is the second
   link (AC-48). The wording is `decisionCopy` (lib/workflow/escalation-copy.ts),
   shared by the verdict row, the card and get_pr.
-- The card, `#task-decision`, right under the verdict row, names each unresolved
-  finding (still open, or fixed and waiting for a review) and lists only the actions
-  this person may take now: Review findings (opens every finding
+- The card, `#task-decision`, right under the verdict row, lists only the actions
+  this person may take now; the open Code review row right below it names each
+  unresolved finding once (AC-28, AC-30; Living Spec fa62b865 R-48). On the mission
+  page, which has no Code review row, the card names them itself. The actions: Review findings (opens every finding
   with its path, resolved ones too), then each available action. Choosing an action
   opens a sheet that says what it does and who may do it; only its confirm calls the
   route. Approve and override is not offered here: no route on the page records it.
@@ -479,14 +484,25 @@ Under the review summary line the checks list prints each round as buildd judged
 ("Round 1 at abc1234: changes requested · Round 2 at def5678: changes requested")
 and, once buildd has posted a verdict, that on a PR buildd opened GitHub lists those
 reviews as Commented (`reviewRoundsOf`, lib/workflow/delivery-rounds.ts). get_pr
-(`Review rounds:`) and the PR activity comment (`Rounds:`) print the same line and
-note (spec r7 §7, AC-24). Where GitHub's reviews were read (get_pr, the PR card) the
+(`Review rounds:`) prints the same line and note (spec r7 §7, AC-24); the PR
+activity comment prints only the state line (Living Spec fa62b865 R-51). Where GitHub's reviews were read (get_pr, the PR card) the
 line also gives GitHub's own states in words ("On GitHub: two reviews Commented"),
 beside buildd's verdicts and never in their place (`githubReviewStatesLine`).
 
-The PR activity comment and get_pr carry the escalation decision in the same words
-as the task page: the question, why automation stopped, each unresolved finding and
-the actions open on the task page (AC-43, AC-48).
+get_pr carries the escalation decision in the same words as the task page: the
+question, why automation stopped and the actions open on the task page (AC-43,
+AC-48), with each open finding once on its own line. The PR activity comment carries
+none of it: it is one state line and "Open in Buildd" (Living Spec fa62b865 R-51).
+
+## Blocking review is open
+
+The rule mobile-decision-flow §3.7 states for the mission timeline, applied here
+(Living Spec b84aa682 r4): a verdict that needs action is never collapsed or buried
+under history. When the delivery's review reading (`DeliveryView.review.blocks`)
+says the review blocks, Code review is open without a tap and lists the kernel's
+open findings, each once (`task-checks.ts` `reviewOpen`, `openFindings`), and the
+checks move above the timeline. An approved or merged review stays a closed
+disclosure.
 
 ## Out of scope
 

@@ -41,7 +41,7 @@ import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
 import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
 import type { BuilddKernelHooks } from '@/lib/workflow/kernel-ports';
 import type { Escalate } from '@buildd/workflow-kernel/ports';
-import { fixWork, reviewEscalate, reviewsHost, reviewWork } from '@/lib/workflow/review-effects';
+import { fixWork, captureWork, reviewEscalate, reviewsHost, reviewWork } from '@/lib/workflow/review-effects';
 import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
 import { externalMergeFixWork, trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
@@ -208,7 +208,7 @@ export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost
       },
     },
     lifecycle: { ...supersessionLifecycle, ...landingLifecycle },
-    work: { review: reviewWork, fix: fixWork, ci_fix: ciFixWork, conflict_fix: conflictFixWork, trunk_fix: trunkFixWork, external_merge_fix: externalMergeFixWork },
+    work: { review: reviewWork, fix: fixWork, capture: captureWork, ci_fix: ciFixWork, conflict_fix: conflictFixWork, trunk_fix: trunkFixWork, external_merge_fix: externalMergeFixWork },
     escalate: {
       exhausted: (d, n) => {
         const e = ESCALATE_BY_FAMILY[n.family];
