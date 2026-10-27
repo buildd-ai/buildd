@@ -27,6 +27,9 @@ import { criteriaEscalationDecision, historyRaised, missionDecisions, type Histo
 import type { DecisionView } from '@/lib/needs-you-card';
 import { dagTasks, handoffFixture, stripFixtureId, type DagSpec } from './mission-task-strip-fixtures';
 import { MISSION_DETAIL_COMPACT_FIXTURE_STATE } from './visual-review-fixtures';
+import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import type { GoalCriteriaState, LivingSpecCriterionStanding, LivingSpecGoalCriterion } from '@buildd/shared';
+import { missionVerifyView, type MissionVerifyView } from '@/lib/mission-verify-view';
 
 export const MISSION_DETAIL_COMPACT_STATE = MISSION_DETAIL_COMPACT_FIXTURE_STATE;
 export const MISSION_DETAIL_COMPACT_VARIANTS = ['building', 'eleven', 'long-title', 'no-tasks', 'all-landed', 'verify', 'delivered', 'criteria'] as const;
@@ -104,6 +107,44 @@ export interface MissionDetailCompactFixture {
   history: HistoryRaised | null;
   /** Task id → expected minutes, for the summary's `finish depends on` (Navigation R-22). */
   expectedMinutes: Record<string, number> | null;
+  /** Verify's Requirements (Navigation R-17), on the verify and delivered variants. */
+  verify?: MissionVerifyView | null;
+}
+
+const RUNNERS_SPEC_ID = stripFixtureId(962);
+const FIX_TASK_ID = stripFixtureId(963);
+const VERIFY_TASK_ID = stripFixtureId(964);
+
+/**
+ * AC-11's two selected specs (design 6356e80d #desktop-verify): 18 in scope with
+ * 15 met, and the 3 this mission adds to Settings: Runners, all met. Delivered:
+ * every requirement met.
+ */
+function verifyFixture(delivered: boolean, now: number) {
+  const big: LivingSpecGoalCriterion = { type: 'living_spec', specId: BUILDING_SPEC_ID, specRevisionId: stripFixtureId(961), revision: 5, contentHash: 'fixture' };
+  const small: LivingSpecGoalCriterion = { type: 'living_spec', specId: RUNNERS_SPEC_ID, specRevisionId: stripFixtureId(965), revision: 3, contentHash: 'fixture', criteria: ['R-40', 'R-41', 'R-42'], narrowedReason: 'the three this mission adds' };
+  const st = (criterionId: string, standing: LivingSpecCriterionStanding['standing'], text: string, verdictId?: string): LivingSpecCriterionStanding => ({ criterionId, standing, headSha: 'f1x7ure', text, ...(verdictId ? { verdictId } : {}) });
+  const met = Array.from({ length: 15 }, (_, i) => st(`R-${i + 1}`, 'pass', `Requirement ${i + 1} of the deploy flow`));
+  const open = delivered
+    ? [st('AC-1', 'pass', 'A cloud runner bundle on every release'), st('AC-8', 'pass', 'The serving release publishes an image digest'), st('AC-9', 'pass', 'Settings shows each deploy step as it runs')]
+    : [st('AC-1', 'fail', 'A cloud runner bundle on every release', 'v-ac1'), st('AC-8', 'inconclusive', 'The serving release publishes an image digest'), st('AC-9', 'inconclusive', 'Settings shows each deploy step as it runs', 'v-ac9')];
+  const entry = (index: number, c: LivingSpecGoalCriterion, standings: LivingSpecCriterionStanding[]) => ({
+    index, type: 'living_spec' as const, verdict: standings.every(x => x.standing === 'pass') ? 'pass' as const : 'fail' as const,
+    fingerprint: criterionFingerprint(c), spec: { specId: c.specId, revision: c.revision, targetSha: 'f1x7ure', standings },
+  });
+  const state: GoalCriteriaState = {
+    evaluatedAt: new Date(now - 10 * 60_000).toISOString(), evaluatedBy: 'auto', overall: delivered ? 'pass' : 'fail',
+    criteria: [entry(0, big, [...met, ...open]), entry(1, small, [st('R-40', 'pass', 'Runners lists the cloud runner'), st('R-41', 'pass', 'Runners shows its region'), st('R-42', 'pass', 'Runners links to its logs')])],
+  };
+  const titles = { [BUILDING_SPEC_ID]: BUILDING_SPEC_TITLE, [RUNNERS_SPEC_ID]: 'Settings: Runners' };
+  const evidence = delivered ? null : {
+    verdicts: new Map([
+      ['v-ac1', { verdictId: 'v-ac1', result: 'fail' as const, observed: null, refs: [], readIds: [], stdoutExcerpt: 'expected a bundle, found none', recordedBy: `final-verification:${VERIFY_TASK_ID}`, at: state.evaluatedAt }],
+      ['v-ac9', { verdictId: 'v-ac9', result: 'inconclusive' as const, observed: null, refs: [{ kind: 'screenshot', ref: 's1' }, { kind: 'screenshot', ref: 's2' }], readIds: [], stdoutExcerpt: null, recordedBy: null, at: state.evaluatedAt }],
+    ]),
+    repairs: [{ taskId: FIX_TASK_ID, title: 'Publish the bundle on release', status: 'in_progress', specId: BUILDING_SPEC_ID, criterionId: 'AC-1', workerStartedAt: new Date(now - 8 * 60_000).toISOString(), pr: null }],
+  };
+  return { criteria: [big, small], state, titles, verify: missionVerifyView({ missionId: MISSION_ID, criteria: [big, small], state, titles, evidence, now }) };
 }
 
 export function parseMissionDetailCompact(q: URLSearchParams): { variant: MissionDetailCompactVariant; select: string | null } {
@@ -308,7 +349,9 @@ export function missionDetailCompactFixture(variant: MissionDetailCompactVariant
   }
   if (variant === 'verify' || variant === 'delivered') {
     const f = handoffFixture(variant === 'verify' ? 'handoff-verifying' : 'handoff-delivered', { ...base, missionStatus: 'active' });
-    return { ...empty, variant, title: BUILDING_TITLE, goal: BUILDING_GOAL, model: f.model, checks: f.checks ?? null, planTasks: f.planTasks ?? null };
+    const v = verifyFixture(variant === 'delivered', now);
+    const checks = f.checks ? { ...f.checks, criteria: v.criteria, criteriaState: v.state } : null;
+    return { ...empty, variant, title: BUILDING_TITLE, goal: BUILDING_GOAL, model: f.model, checks, planTasks: f.planTasks ?? null, specTitles: v.titles, verify: v.verify };
   }
 
   const title = variant === 'long-title' ? COMPACT_LONG_TITLE : COMPACT_TITLE;

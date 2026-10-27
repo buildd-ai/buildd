@@ -354,9 +354,13 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   const passedCount = verifyRows.filter(r => r.status === 'passed').length;
   const counted = verifyRows.filter(r => r.status !== 'not_applicable').length;
   const firstOpen = verifyOpen.find(r => r.kind === 'visual') ?? verifyOpen[0];
+  // A selected spec's requirements read as Verify counts them (Navigation R-17): `18 of 21 met`.
+  const specRows = criteria.filter(r => r.criteria?.length);
   const verifyText = verifyDone
     ? (counted === 0 ? 'nothing to check' : `${passedCount} of ${counted} passed`)
-    : onlyAfterMerge ? `${plural(verifyOpen.length, 'check')} after merge` : `${firstOpen.label.toLowerCase() === 'visual review' ? '' : `${firstOpen.label}: `}${firstOpen.state}`;
+    : onlyAfterMerge ? `${plural(verifyOpen.length, 'check')} after merge`
+      : firstOpen.kind !== 'visual' && specRows.length > 0 && specRows.some(r => verifyOpen.includes(r)) ? requirementsCount(specRows)
+        : `${firstOpen.label.toLowerCase() === 'visual review' ? '' : `${firstOpen.label}: `}${firstOpen.state}`;
   // Checks can start before the build ends (R-13): a visual review already at work shows here.
   const startedEarly = !!visual && EARLY.has(visual.status);
   const verifyStep: RailStep = !buildComplete && !startedEarly
@@ -465,14 +469,15 @@ export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: reado
 
 /**
  * Verify's Standards line: CI and code review as the merge policy applies
- * them, beside the mission's spec standards. On a mission branch both are
+ * them, beside the mission's spec standards (product voice, the design
+ * system; none until the workspace has them). On a mission branch both are
  * read from the mission PR; a direct mission's task PRs each merged past CI,
  * so CI is met once the build has landed. Code review is left out under the
- * auto-threshold tier, which has none. Null when the mission carries no
- * standards: the line is not shown.
+ * auto-threshold tier, which has none. Null for a mission that selects no
+ * spec: a legacy mission's Verify is its hand-written criteria alone.
  */
 export function missionStandardsLine(input: MissionChecksInput, titles: Readonly<Record<string, string>>): StandardsLine | null {
-  if (!input.criteria.some(c => c.type === 'living_spec' && isStandardCriterion(c))) return null;
+  if (!input.criteria.some(c => c.type === 'living_spec')) return null;
   const buildComplete = isBuildComplete(input.build);
   const pr = input.branch === 'mission-branch' ? input.integrationPr : null;
   const merged: StandardItemStatus = input.branch === 'mission-branch'

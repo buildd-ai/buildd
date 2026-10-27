@@ -12,13 +12,11 @@
  */
 import { selectStripCell } from './strip-select';
 import { useEffect, useState } from 'react';
-import type { GoalCriterion } from '@buildd/shared';
 import DesignsSection from '@/components/DesignsSection';
 import { DESIGN_PREVIEW_FIXTURE_SCREENS } from './DesignPreviewFixture';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionLayoutShell, { MissionBoardHeader } from '@/app/app/(protected)/missions/[id]/MissionLayoutShell';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
-import MissionVerifiedPill from '@/app/app/(protected)/missions/[id]/MissionVerifiedPill';
 import MissionOverflowMenu from '@/app/app/(protected)/missions/[id]/MissionOverflowMenu';
 import { stripFixtureId } from './mission-task-strip-fixtures';
 import {
@@ -30,11 +28,6 @@ import {
 
 const MISSION_ID = stripFixtureId(950);
 const WORKSPACE_ID = stripFixtureId(951);
-const CRITERIA: GoalCriterion[] = [
-  { type: 'all_prs_merged', label: 'All PRs merged' },
-  { type: 'no_open_tasks', label: 'No open tasks' },
-  { type: 'command', command: 'bun run test', label: 'Unit tests pass' },
-];
 
 export default function MissionDetailCompactFixture() {
   // Built after mount: the clocks read the real now, so server and client render alike.
@@ -60,17 +53,6 @@ export default function MissionDetailCompactFixture() {
     <MissionBoardHeader
       back={{ label: 'Missions', href: '/app/missions' }}
       title={title}
-      verified={
-        <MissionVerifiedPill
-          sheetOnly
-          missionId={MISSION_ID}
-          criteria={CRITERIA}
-          criteriaState={null}
-          autoVerify
-          readonly={complete}
-          overall={complete ? 'pass' : null}
-        />
-      }
       actions={
         <MissionOverflowMenu
           missionId={MISSION_ID}
@@ -114,6 +96,7 @@ export default function MissionDetailCompactFixture() {
               decisions={fixture.decisions}
               history={fixture.history}
               expectedMinutes={fixture.expectedMinutes ?? undefined}
+              verify={fixture.verify ?? null}
               {...link}
             />,
           )}
