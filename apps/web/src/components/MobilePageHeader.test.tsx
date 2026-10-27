@@ -34,7 +34,7 @@ describe('MobilePageHeader', () => {
   it('places the team switcher in the title cluster, left of the account avatar', () => {
     const html = render({ teams: TEAMS, currentTeamId: 't1', userInitial: 'M' });
     expect(html.indexOf('Cue')).toBeLessThan(html.lastIndexOf('M'));
-    expect(html).toContain('Connected apps');
+    expect(html).toContain('Apps signed in as you');
   });
 
   it('keeps the title truncatable so the row cannot overflow at 320pt', () => {
@@ -62,7 +62,7 @@ describe('MobilePageHeader', () => {
 
   it('renders the title alone when the user has no teams', () => {
     const html = render({ userInitial: 'M' });
-    expect(html).toContain('Connected apps');
+    expect(html).toContain('Apps signed in as you');
     expect(html).not.toContain('·');
   });
 });

@@ -1,35 +1,40 @@
 {
   "version": "1",
   "description": "Per-page QA route manifest. Derived from docs/SPEC.md. Each route's expectations are the acceptance criteria the visual-QA agent verifies against the rendered preview.",
-  "specSource": "docs/SPEC.md",
-  "updatedAt": "2026-06-26",
+  "specSource": "docs/SPEC.md and docs/specs/*.md (each route names its spec in specRef)",
+  "updatedAt": "2026-10-27",
   "routes": [
     {
       "id": "home",
       "path": "/app/home",
-      "title": "Home / Dashboard",
-      "specRef": "§2 domain model — Workspace, Worker, Task; §8 live subsystems",
+      "title": "Home",
+      "specRef": "surface-ia-home-missions-initiatives \u00a71-2; agent-question-protocol",
       "category": "core",
       "expectations": [
         {
-          "id": "home-active-workers",
-          "desc": "Active workers panel or count is visible",
-          "specClaim": "Workers table tracks agent execution sessions; dashboard surfaces active runners"
+          "id": "home-needs-you",
+          "desc": "What needs the person is the lead: a headline and cards, or a clear \"nothing needs you\" state",
+          "specClaim": "Home answers one question: what needs me"
         },
         {
-          "id": "home-task-counts",
-          "desc": "Pending or completed task counts are surfaced",
-          "specClaim": "task.status lifecycle: pending → completed, visible in coordination layer"
+          "id": "home-question-options",
+          "desc": "A waiting question shows its answer options on the card, with the question text and no context-free card",
+          "specClaim": "One normalized question, never context-free"
         },
         {
-          "id": "home-feed-or-empty-state",
-          "desc": "Recent activity feed is present, OR a recognisable empty-state hero is shown when no activity",
-          "specClaim": "Dashboard reflects task/worker lifecycle for new and active workspaces alike"
+          "id": "home-no-duplicates",
+          "desc": "A waiting item appears once; Home does not restate it in a second list",
+          "specClaim": "Home MUST NOT restate an item the waiting queue already lists"
+        },
+        {
+          "id": "home-one-merged-count",
+          "desc": "Merged work is counted once, with one number, not two competing totals",
+          "specClaim": "Progress headline is the one count of delivery"
         },
         {
           "id": "home-no-errors",
-          "desc": "Page renders without visible JS/render errors or broken layout",
-          "specClaim": "Shipped, live UI (§8)"
+          "desc": "Renders with no error text or broken layout at the viewport width",
+          "specClaim": "Shipped, live UI"
         }
       ]
     },
@@ -37,27 +42,32 @@
       "id": "missions",
       "path": "/app/missions",
       "title": "Missions list",
-      "specRef": "§2 Mission — first-class goal, status, scheduleId, maxConcurrentTasks",
+      "specRef": "surface-ia-home-missions-initiatives \u00a73",
       "category": "core",
       "expectations": [
         {
-          "id": "missions-list",
-          "desc": "Mission cards or list rows are rendered (or an empty-state if none exist)",
-          "specClaim": "Mission is a first-class entity with status: active | paused | completed | archived"
+          "id": "missions-state-groups",
+          "desc": "Missions are grouped by state (active, waiting, done) with a heading per group",
+          "specClaim": "Missions portfolio sections"
         },
         {
-          "id": "missions-status",
-          "desc": "Mission status badge is visible on each row",
-          "specClaim": "Mission status stored, health derived; both must surface in UI"
+          "id": "missions-row-facts",
+          "desc": "Each mission row shows its title, state and progress in words",
+          "specClaim": "Each mission answers what state it is in"
         },
         {
-          "id": "missions-create-cta",
-          "desc": "Create / New Mission button or link is present and navigable",
+          "id": "missions-create",
+          "desc": "A way to start a new mission is present",
           "specClaim": "Missions API: POST /api/missions"
         },
         {
+          "id": "missions-no-release-trigger",
+          "desc": "No Release now button on the list",
+          "specClaim": "Release trigger action MUST NOT appear on the portfolio (\u00a710.2)"
+        },
+        {
           "id": "missions-no-errors",
-          "desc": "Page renders without visible errors or broken layout",
+          "desc": "Renders with no error text or broken layout, or shows a plain empty state",
           "specClaim": "Shipped, live UI"
         }
       ]
@@ -65,87 +75,63 @@
     {
       "id": "mission-detail",
       "path": "/app/missions/:id",
-      "title": "Mission detail",
-      "specRef": "§2 Mission — workingBranch, primaryPrUrl, requiresReview, maxConcurrentTasks, dependsOnMission",
+      "title": "Mission page",
+      "specRef": "mission-legibility; mission-flow-timeline; surface-ia-home-missions-initiatives \u00a78.5",
       "category": "core",
-      "paramHint": "Use any existing mission ID. Skip if no missions exist.",
       "expectations": [
         {
-          "id": "mission-detail-tasks",
-          "desc": "Task list for the mission is visible",
-          "specClaim": "tasks.missionId FK — mission aggregates tasks"
+          "id": "mission-detail-goal-and-state",
+          "desc": "The mission goal and its current state are at the top in plain words",
+          "specClaim": "Mission page answers what state the mission is in"
         },
         {
-          "id": "mission-detail-pr-link",
-          "desc": "Primary PR link is shown if a working branch / PR exists",
-          "specClaim": "Mission.workingBranch + primaryPrNumber/primaryPrUrl"
+          "id": "mission-detail-stages",
+          "desc": "Work is laid out by stage (Build, Verify, Deliver) with named task rows that open the task page",
+          "specClaim": "Build stage lists named rows that open the task page"
         },
         {
-          "id": "mission-detail-notes",
-          "desc": "Notes / mission feed section is present",
-          "specClaim": "mission_notes: append-only agent↔user feed"
+          "id": "mission-detail-phase-headers",
+          "desc": "Phases show headers and tasks show a kind glyph",
+          "specClaim": "Phase and work kind are stored facts shown on every surface"
+        },
+        {
+          "id": "mission-detail-shipped-once",
+          "desc": "Shipped/merged work is counted once in the header",
+          "specClaim": "One count of merged work"
         },
         {
           "id": "mission-detail-no-errors",
-          "desc": "Page renders without visible errors",
+          "desc": "Renders with no error text or horizontal overflow",
           "specClaim": "Shipped, live UI"
         }
-      ]
+      ],
+      "paramHint": "Use any existing mission ID (QA_MISSION_ID / mission_id). Skip if no missions exist."
     },
     {
-      "id": "team",
-      "path": "/app/team",
-      "title": "Team / Roles",
-      "specRef": "§2 Role/Skill — isRole, model, allowedTools, canDelegateTo, color; §3 default roles: Organizer, Builder, Researcher",
-      "category": "core",
-      "expectations": [
-        {
-          "id": "team-role-cards",
-          "desc": "Role cards (Organizer, Builder, Researcher at minimum) are rendered",
-          "specClaim": "Default roles seeded per workspace: Organizer, Builder, Researcher"
-        },
-        {
-          "id": "team-active-idle",
-          "desc": "Each role shows active-worker count or idle indicator",
-          "specClaim": "Roles are claim-time routing constraints; UI should reflect load"
-        },
-        {
-          "id": "team-workspace-scoped",
-          "desc": "Roles are scoped to the current workspace (not mixing team-global with workspace-override unexpectedly)",
-          "specClaim": "workspace override > team default precedence (§C.2)"
-        },
-        {
-          "id": "team-no-errors",
-          "desc": "Page renders without visible errors",
-          "specClaim": "Shipped, live UI"
-        }
-      ]
-    },
-    {
-      "id": "tasks",
+      "id": "activity",
       "path": "/app/tasks",
-      "title": "Tasks list / Activity",
-      "specRef": "§2 Task — status lifecycle, mode, outputRequirement, roleSlug; §4 GET /api/tasks",
+      "title": "Activity",
+      "specRef": "surface-ia-home-missions-initiatives; task-state-machine",
       "category": "core",
       "expectations": [
         {
-          "id": "tasks-list",
-          "desc": "Task rows are rendered with status badges visible",
-          "specClaim": "task.status: pending → assigned → in_progress → review → completed/failed"
+          "id": "activity-task-rows",
+          "desc": "Tasks are listed with title, status in words and when it last changed, or a plain empty state",
+          "specClaim": "Activity lists all tasks across workspaces"
         },
         {
-          "id": "tasks-filter",
-          "desc": "Status filter or sort controls are present",
-          "specClaim": "Tasks API supports filtering; UI should expose it"
+          "id": "activity-status-honest",
+          "desc": "A completed task is never labelled Assigned or Running",
+          "specClaim": "Status badge reflects the task state machine"
         },
         {
-          "id": "tasks-create-cta",
-          "desc": "New task button is present and navigable",
-          "specClaim": "POST /api/tasks + dashboard CTA"
+          "id": "activity-open-task",
+          "desc": "Each row links to its task page",
+          "specClaim": "Rows open the task page"
         },
         {
-          "id": "tasks-no-errors",
-          "desc": "Page renders without visible errors",
+          "id": "activity-no-errors",
+          "desc": "Renders with no error text or broken layout",
           "specClaim": "Shipped, live UI"
         }
       ]
@@ -153,34 +139,195 @@
     {
       "id": "task-detail",
       "path": "/app/tasks/:id",
-      "title": "Task detail",
-      "specRef": "§2 Task — status, Worker.waitingFor, milestones, prUrl; sibling bug task 4818f4f8 (status badge stuck on Assigned)",
+      "title": "Task page",
+      "specRef": "task-page; agent-question-protocol",
       "category": "critical",
-      "paramHint": "Use a recently-completed task. The status badge MUST NOT read 'Assigned' for a completed task.",
       "expectations": [
         {
-          "id": "task-detail-status-badge",
-          "desc": "Status badge reflects actual task.status — MUST NOT be stuck on 'Assigned' for a completed/in_progress task",
-          "specClaim": "task.status lifecycle is canonical; badge must track it (sibling bug 4818f4f8)"
+          "id": "task-detail-status",
+          "desc": "The status badge reads the real state; a completed task MUST NOT read Assigned",
+          "specClaim": "Task page state mapping"
         },
         {
-          "id": "task-detail-worker-card",
-          "desc": "Worker card or execution details visible (progress, cost, turns) for tasks that have been claimed",
-          "specClaim": "Worker: status, costUsd, turns, milestones, prUrl"
+          "id": "task-detail-timeline",
+          "desc": "A stopped task shows one Build/Verify/Deliver timeline; a running task leads with the live run",
+          "specClaim": "The task page leads with the live run while running, one timeline when stopped"
         },
         {
-          "id": "task-detail-pr-link",
-          "desc": "PR link visible for tasks where a PR was created",
-          "specClaim": "worker.prUrl / worker.prNumber"
+          "id": "task-detail-question-options",
+          "desc": "A waiting question shows its answer options and its brief",
+          "specClaim": "An open question is one card on every surface"
         },
         {
-          "id": "task-detail-actions",
-          "desc": "Edit / Reassign / Delete actions are present and appear wired (not dead buttons)",
-          "specClaim": "Task CRUD: PATCH /api/tasks/[id], POST /api/tasks/[id]/reassign"
+          "id": "task-detail-details",
+          "desc": "Run and Details sections hold execution material, spec, dependencies and attempts",
+          "specClaim": "Run holds execution material, Details holds spec, dependencies, attempts and time"
         },
         {
           "id": "task-detail-no-errors",
-          "desc": "Page renders without visible errors",
+          "desc": "Renders with no error text or horizontal overflow",
+          "specClaim": "Shipped, live UI"
+        }
+      ],
+      "paramHint": "Use a recently-completed task (QA_TASK_ID / task_id). The status badge MUST NOT read 'Assigned' for a completed task."
+    },
+    {
+      "id": "health",
+      "path": "/app/health",
+      "title": "Health overview",
+      "specRef": "health-runner-timeline; surface-ia-home-missions-initiatives",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "health-sub-nav",
+          "desc": "The Health sub-nav lists Overview, Failures, Runners & capacity, Estimates and Usage",
+          "specClaim": "Every /app/health/* page shares the Health sub-nav"
+        },
+        {
+          "id": "health-summary",
+          "desc": "An overview summary of the fleet and recent failures is shown in words with numbers",
+          "specClaim": "Overview summarises health"
+        },
+        {
+          "id": "health-window",
+          "desc": "Any time-window control states the window it covers",
+          "specClaim": "Counts name their time window"
+        },
+        {
+          "id": "health-no-errors",
+          "desc": "Renders with no error text or broken layout",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "health-runners",
+      "path": "/app/health/runners",
+      "title": "Health: Runners & capacity",
+      "specRef": "health-runner-timeline; runner-liveness",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "health-runners-lanes",
+          "desc": "Each runner shows lanes of its runs as a timeline, or a plain empty state when no runners exist",
+          "specClaim": "Health > Runners draws runner lanes"
+        },
+        {
+          "id": "health-runners-open-ended",
+          "desc": "Only runs actually going are open-ended; finished runs end at their end",
+          "specClaim": "Only runs going are drawn as open-ended"
+        },
+        {
+          "id": "health-runners-question-marker",
+          "desc": "A run that has a question is marked as having one, not as running",
+          "specClaim": "A parked question is a wait, not a running agent"
+        },
+        {
+          "id": "health-runners-capacity",
+          "desc": "Capacity or free slots per runner are stated",
+          "specClaim": "Runners and capacity"
+        },
+        {
+          "id": "health-runners-no-errors",
+          "desc": "Renders with no error text or horizontal overflow",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "specs",
+      "path": "/app/specs",
+      "title": "Specs list",
+      "specRef": "living-specs \u00a79",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "specs-tree",
+          "desc": "Specs are listed as a tree grouped by area, with Unfiled for the rest",
+          "specClaim": "The list shows specs as a tree"
+        },
+        {
+          "id": "specs-row-state",
+          "desc": "Each row says in words its title, where it stands (approved at revision N, draft, retired) and when it last changed",
+          "specClaim": "Each row says its standing in words"
+        },
+        {
+          "id": "specs-waiting-approval",
+          "desc": "A spec whose head revision is newer than the approved one says revision M is waiting for approval",
+          "specClaim": "Rows say when a revision waits for approval"
+        },
+        {
+          "id": "specs-empty-state",
+          "desc": "An empty list says how specs get made and shows no counts",
+          "specClaim": "A workspace with no specs says how specs get made"
+        },
+        {
+          "id": "specs-no-errors",
+          "desc": "Renders with no error text or broken layout",
+          "specClaim": "Shipped, live UI"
+        }
+      ]
+    },
+    {
+      "id": "spec-detail",
+      "path": "/app/specs/:id",
+      "title": "Spec page",
+      "specRef": "living-specs \u00a79",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "spec-detail-revision-line",
+          "desc": "One line names the revision being read and, when newer, that a revision waits for approval",
+          "specClaim": "The page names the revision being read"
+        },
+        {
+          "id": "spec-detail-history",
+          "desc": "Revisions are listed newest first with who wrote and who approved each",
+          "specClaim": "The page lists every revision, newest first"
+        },
+        {
+          "id": "spec-detail-body",
+          "desc": "The spec body renders as Markdown after related specs and history",
+          "specClaim": "The body comes after related specs and revision history"
+        },
+        {
+          "id": "spec-detail-approve",
+          "desc": "A revision waiting for approval can be approved from the same page by someone allowed to",
+          "specClaim": "Approve from the same page"
+        },
+        {
+          "id": "spec-detail-no-errors",
+          "desc": "Renders with no error text or horizontal overflow",
+          "specClaim": "Shipped, live UI"
+        }
+      ],
+      "paramHint": "Use any existing spec ID (QA_SPEC_ID / spec_id). Skip if no specs exist."
+    },
+    {
+      "id": "chat",
+      "path": "/app/chat",
+      "title": "Chat",
+      "specRef": "chat-stream-composition",
+      "category": "core",
+      "expectations": [
+        {
+          "id": "chat-composer",
+          "desc": "A message composer is present and usable at the viewport width",
+          "specClaim": "Chat is a primary destination"
+        },
+        {
+          "id": "chat-threads",
+          "desc": "Earlier chats are listed or reachable, or a plain empty state invites a first message",
+          "specClaim": "Chat lists conversations"
+        },
+        {
+          "id": "chat-stable-turn",
+          "desc": "A turn renders in fixed regions: no duplicated text or overlapping cards",
+          "specClaim": "Streaming text, tools and loading cards never move or duplicate"
+        },
+        {
+          "id": "chat-no-errors",
+          "desc": "Renders with no error text or horizontal overflow",
           "specClaim": "Shipped, live UI"
         }
       ]
@@ -189,17 +336,27 @@
       "id": "settings",
       "path": "/app/settings",
       "title": "Settings",
-      "specRef": "lib/settings-nav.ts (settings information architecture)",
+      "specRef": "settings-audiences; settings-copy",
       "category": "core",
       "expectations": [
         {
-          "id": "settings-renders",
-          "desc": "Settings index renders every section, grouped (Account, Team, Connections, AI, Workspaces)",
-          "specClaim": "Settings is a list of linkable sections; desktop adds a sub-nav"
+          "id": "settings-sections",
+          "desc": "Settings sections are listed by plain names, and open as a full page on a phone",
+          "specClaim": "List then detail on a phone"
+        },
+        {
+          "id": "settings-team-here",
+          "desc": "Team lives under Settings, not as a primary destination",
+          "specClaim": "Team under Settings"
+        },
+        {
+          "id": "settings-plain-copy",
+          "desc": "Labels are sentence case plain words, not internal vocabulary",
+          "specClaim": "settings-copy"
         },
         {
           "id": "settings-no-errors",
-          "desc": "Page renders without visible errors",
+          "desc": "Renders with no error text or broken layout",
           "specClaim": "Shipped, live UI"
         }
       ]
@@ -209,7 +366,7 @@
     "MATCHES-SPEC": "Element/behaviour is present and matches the spec claim",
     "CONTRADICTED": "Element is built but behaves contrary to the spec claim",
     "DOCUMENTED-NOT-BUILT": "Spec claims this should exist but it is absent from the rendered UI",
-    "SHIPPED-NOT-DOCUMENTED": "UI shows something not mentioned in spec — flag for spec backfill"
+    "SHIPPED-NOT-DOCUMENTED": "UI shows something not mentioned in spec \u2014 flag for spec backfill"
   },
   "authSetup": {
     "vercelPreviewBypass": {

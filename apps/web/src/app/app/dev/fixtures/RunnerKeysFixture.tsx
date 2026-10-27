@@ -49,7 +49,7 @@ const localApi: RunnerKeysApi = {
 export default function RunnerKeysFixture() {
   return (
     <div className="min-h-screen bg-surface-1">
-      <SettingsPage title="Connected apps" description="Apps you connected to buildd.">
+      <SettingsPage title="Apps signed in as you" description="Apps you connected to buildd.">
         <RunnerKeysSection keys={KEYS} foreign={FOREIGN} api={localApi} />
       </SettingsPage>
     </div>

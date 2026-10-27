@@ -26,7 +26,7 @@ export default async function TeamAppsSettingsPage({
   ]);
   const teamWorkspaces = workspaces.filter((ws) => ws.teamId === currentTeamId).map((ws) => ({ id: ws.id, name: ws.name }));
   return (
-    <SettingsPage title="Apps">
+    <SettingsPage title="Agent tools">
       <TeamAppsSection teamId={currentTeamId} workspaces={teamWorkspaces} connectedId={connected} errorMsg={error} />
       <AgentAccessSection teamId={currentTeamId} workspaces={teamWorkspaces} focusRequestId={request ?? null} />
     </SettingsPage>

@@ -288,7 +288,7 @@ function countDeep(rows: readonly IndexRow[]): number {
 function indexLine(total: number, areas: number, unfiled: number, taxonomyHref: string | null): { text: string; href: string | null } {
   const specs = plural(total, 'spec');
   if (total === 0) return { text: 'No specs yet', href: null };
-  if (areas === 0) return { text: `${specs}, none filed yet`, href: taxonomyHref };
+  if (areas === 0) return { text: `${specs}, not grouped yet`, href: taxonomyHref };
   return { text: `${specs} in ${plural(areas, 'area')}${unfiled ? `, ${unfiled} unfiled` : ''}`, href: null };
 }
 
