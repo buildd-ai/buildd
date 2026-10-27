@@ -249,7 +249,7 @@ function RequirementGroupsView({ data }: { data: ReturnType<typeof requirementGr
         <span data-testid="requirements-total" className="font-mono">{data.total}</span>
       </h2>
       {data.groups.map(g => (
-        <div key={g.key} data-testid="requirement-group" className="flex flex-col gap-1.5 rounded-[var(--radius-card)] border border-border-default bg-card px-3 py-3">
+        <div key={g.key} data-testid="requirement-group" className="card flex flex-col gap-1.5">
           <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-title">
             {g.href ? <a href={g.href} className="font-medium text-text-primary underline decoration-border-strong underline-offset-4">{g.heading}</a> : <span className="font-medium text-text-primary">{g.heading}</span>}
             <span className="font-mono text-meta text-text-muted">{g.met} of {g.inScope} met</span>
