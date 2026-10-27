@@ -46,6 +46,9 @@ const RESULT_OF: Record<Standing, CriterionLine['result']> = {
   pass: 'passed', fail: 'failed', inconclusive: 'not checked', unsupported: 'not checked', missing: 'not checked', stale: 'out of date', waived: 'waived',
 };
 
+/** Why a result is not counted: an acceptance test was edited and no person has accepted the edit (R-80). */
+export const heldWords = (pr?: number | null): string => `test edited${pr != null ? ` by #${pr}` : ''}, waiting for your accept`;
+
 /**
  * `Nothing checked: 14 test files not found`, when every requirement still open
  * is open for a reason a check named. Null when any open one has no reason,
@@ -56,6 +59,7 @@ export function uncheckedSummary(lines: readonly CriterionLine[]): string | null
   if (open.length === 0 || open.some(l => !l.reason)) return null;
   const parts = [...new Set(open.map(l => l.reason!))].map(reason => {
     const n = open.filter(l => l.reason === reason).length;
+    if (reason.startsWith('test edited')) return `${n} ${n === 1 ? 'test' : 'tests'} waiting for your accept`;
     const noun = reason === 'test file not found' ? `test ${n === 1 ? 'file' : 'files'} not found` : `${n === 1 ? 'test' : 'tests'} could not run`;
     return `${n} ${noun}`;
   });
@@ -123,7 +127,8 @@ export function outcomeSpecView(
 
   const criteria: CriterionLine[] = standings.map(s => {
     const result = waivedIds.has(s.criterionId) ? 'waived' : RESULT_OF[s.standing];
-    return { id: s.criterionId, text: s.text ?? null, result, reason: result === 'not checked' || result === 'failed' ? s.reason ?? null : null };
+    const reason = s.reason === 'test held' ? heldWords(s.heldByPr) : s.reason ?? null;
+    return { id: s.criterionId, text: s.text ?? null, result, reason: result === 'not checked' || result === 'failed' ? reason : null };
   });
   const unchecked = uncheckedSummary(criteria);
 

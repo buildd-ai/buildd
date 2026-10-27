@@ -10,14 +10,13 @@ const cells = (n: number, group: ProgressCell['group'], state = group === 'done'
   Array.from({ length: n }, () => ({ state, group }));
 const text = (pieces: ReturnType<typeof progressPieces>) => (pieces ?? []).map(p => p.text).join('');
 
-const AC14 = [...cells(8, 'done'), ...cells(2, 'active'), ...cells(3, 'waiting'), ...cells(2, 'checks')];
+const AC14 = [...cells(8, 'done'), ...cells(2, 'active'), ...cells(3, 'waiting')];
 
 describe('progressMark', () => {
-  test('done, in progress, waiting and checks each have their own shape and colour', () => {
+  test('done, in progress and waiting each have their own shape and colour', () => {
     expect(progressMark({ state: 'landed', group: 'done' })).toMatchObject({ ch: '■', token: 'success' });
     expect(progressMark({ state: 'running', group: 'active' })).toMatchObject({ ch: '▶', token: 'accent' });
     expect(progressMark({ state: 'blocked', group: 'waiting' })).toMatchObject({ ch: '▢', token: 'queue' });
-    expect(progressMark({ state: 'review', group: 'checks' })).toMatchObject({ ch: '◐', token: 'info' });
   });
 
   test('a failed task is ✗ in the error colour, wherever it sits', () => {
@@ -29,8 +28,11 @@ describe('progressMark', () => {
 
 describe('progressCounts', () => {
   test('counts in words, groups with no task left out', () => {
-    expect(progressCounts(AC14)).toBe('8 done · 2 in progress · 3 ready · 2 checks');
-    expect(progressCounts([...cells(1, 'done'), ...cells(1, 'checks')])).toBe('1 done · 1 check');
+    expect(progressCounts(AC14)).toBe('8 done · 2 in progress · 3 ready');
+    // A cell from an older server's checks group is no longer drawn (spec d25d923d R-12).
+    const old = { state: 'review', group: 'checks' } as unknown as ProgressCell;
+    expect(progressCounts([...cells(1, 'done'), old].filter(c => c.group !== ('checks' as string)))).toBe('1 done');
+    expect(text(progressPieces([...cells(1, 'done'), old], 90, textWidth))).toBe('■   1 done');
   });
 
   test('waiting says for what: ready, blocked, closed unmerged; never a bare "waiting"', () => {
@@ -42,8 +44,8 @@ describe('progressCounts', () => {
 });
 
 describe('progressPieces', () => {
-  test('AC-14: done squares first, then in progress, then waiting, then checks', () => {
-    expect(text(progressPieces(AC14, 90, textWidth))).toBe('■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks');
+  test('AC-14: done squares first, then in progress, then waiting', () => {
+    expect(text(progressPieces(AC14, 90, textWidth))).toBe('■■■■■■■■ ▶▶ ▢▢▢   8 done · 2 in progress · 3 ready');
   });
 
   test('settled runs collapse first, the way the small strip does', () => {
@@ -52,21 +54,30 @@ describe('progressPieces', () => {
   });
 
   test('AC-15: 30 tasks fit one line of an 80-column right pane with the counts whole', () => {
-    const thirty = [...cells(20, 'done'), ...cells(3, 'active'), ...cells(5, 'waiting'), ...cells(2, 'checks')];
+    const thirty = [...cells(20, 'done'), ...cells(3, 'active'), ...cells(5, 'waiting')];
     const room = 56; // 80 columns: 22-column missions pane, divider, one-space indent.
     const t = text(progressPieces(thirty, room, textWidth));
     expect(textWidth(t)).toBeLessThanOrEqual(room);
-    for (const words of ['20 done', '3 in progress', '5 ready', '2 checks']) expect(t).toContain(words);
-    expect(t).toBe('■ 20 done · ▶ 3 in progress · ▢ 5 ready · ◐ 2 checks');
+    for (const words of ['20 done', '3 in progress', '5 ready']) expect(t).toContain(words);
+    expect(t).toBe('■×20 ▶▶▶ ▢×5   20 done · 3 in progress · 5 ready');
   });
 
   test('a failure stays visible when a group shrinks to one glyph', () => {
-    const mixed = [...cells(20, 'done'), ...cells(2, 'active'), { state: 'failed', group: 'active' as const }, ...cells(5, 'waiting'), ...cells(2, 'checks')];
-    expect(text(progressPieces(mixed, 56, textWidth))).toContain('▶✗ 3 in progress');
+    const mixed = [...cells(20, 'done'), ...cells(2, 'active'), { state: 'failed', group: 'active' as const }, ...cells(5, 'waiting')];
+    expect(text(progressPieces(mixed, 46, textWidth))).toContain('▶✗ 3 in progress');
   });
 
   test('no cells, no row (an older server)', () => {
     expect(progressPieces(undefined, 80, textWidth)).toBeNull();
     expect(progressPieces([], 80, textWidth)).toBeNull();
+  });
+});
+
+describe('isHelperTask', () => {
+  test('checks, final verification and the surface audit are helpers; build work is not', async () => {
+    const { isHelperTask } = await import('../../src/top/state');
+    expect(isHelperTask({ title: 'Check spec criterion R-1', taskClass: 'bookkeeping' })).toBe(true);
+    expect(isHelperTask({ title: '[surface audit] M', taskClass: 'work' })).toBe(true);
+    expect(isHelperTask({ title: 'feat: x', taskClass: 'work' })).toBe(false);
   });
 });

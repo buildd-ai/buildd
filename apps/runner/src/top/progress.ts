@@ -7,7 +7,7 @@
  * mission page's own `overviewProgress`), so `top` never orders or groups
  * them itself; this only chooses glyphs and fits the row to the pane.
  *
- *   ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 waiting · 2 checks
+ *   ■■■■■■■■ ▶▶ ▢▢▢   8 done · 2 in progress · 3 waiting
  *
  * When that is too wide, settled runs collapse first ("■×14", as the mission
  * page's small strip does), then every long run, then each group becomes one
@@ -16,7 +16,7 @@
  */
 import type { PaletteToken } from '../terminal-palette';
 
-export type ProgressGroup = 'done' | 'active' | 'waiting' | 'checks';
+export type ProgressGroup = 'done' | 'active' | 'waiting';
 
 export interface ProgressCell {
   /** The strip's display state: landed, running, failed, ready, blocked... */
@@ -38,16 +38,16 @@ const GROUP_MARK: Record<ProgressGroup, ProgressMark> = {
   done: { ch: '■', token: 'success', settled: true },
   active: { ch: '▶', token: 'accent', settled: false },
   waiting: { ch: '▢', token: 'queue', settled: true },
-  checks: { ch: '◐', token: 'info', settled: false },
 };
 const FAILED_MARK: ProgressMark = { ch: '✗', token: 'error', settled: false };
 
 export function progressMark(cell: ProgressCell): ProgressMark {
   if (FAILED.has(cell.state)) return FAILED_MARK;
+  // An older server may still send a `checks` cell: helper runs are not cells (spec d25d923d R-12).
   return GROUP_MARK[cell.group] ?? GROUP_MARK.waiting;
 }
 
-const GROUPS: readonly ProgressGroup[] = ['done', 'active', 'waiting', 'checks'];
+const GROUPS: readonly ProgressGroup[] = ['done', 'active', 'waiting'];
 
 /**
  * Waiting cells by why they wait (from the owner: a bare "1 waiting" never
@@ -73,7 +73,6 @@ function groupWord(group: ProgressGroup, cells: readonly ProgressCell[]): string
     case 'done': return `${n} done`;
     case 'active': return `${n} in progress`;
     case 'waiting': return waitingWords(cells);
-    case 'checks': return `${n} ${n === 1 ? 'check' : 'checks'}`;
   }
 }
 
@@ -145,10 +144,11 @@ const piecesWidth = (pieces: readonly ProgressPiece[], width: (s: string) => num
  * or a mission with nothing to draw.
  */
 export function progressPieces(
-  cells: readonly ProgressCell[] | undefined,
+  all: readonly ProgressCell[] | undefined,
   room: number,
   width: (s: string) => number,
 ): ProgressPiece[] | null {
+  const cells = all?.filter(c => GROUPS.includes(c.group));
   if (!cells || cells.length === 0) return null;
   const counts = progressCounts(cells);
   for (const collapse of ['none', 'settled', 'all'] as const) {

@@ -3476,7 +3476,9 @@ export interface LivingSpecCriterionStanding {
   /** The criterion's own words, kept with the evaluation so a page can show them without reading the spec. Absent on older states. */
   text?: string;
   /** Why a check did not reach a pass or fail, in a few words (`verdictReason`). Absent when it did or when unknown. */
-  reason?: 'test file not found' | 'test could not run' | 'test failed';
+  reason?: 'test file not found' | 'test could not run' | 'test failed' | 'test held';
+  /** With `reason: 'test held'`: the PR whose acceptance-test edit holds this result until a person accepts it (spec 1dc6cc39 R-80). */
+  heldByPr?: number;
 }
 
 /**
@@ -3525,7 +3527,7 @@ export interface MissionStage {
 }
 
 /** The four groups of the mission page's Overview strip, in display order. */
-export type MissionProgressGroup = 'done' | 'active' | 'waiting' | 'checks';
+export type MissionProgressGroup = 'done' | 'active' | 'waiting';
 
 export interface MissionProgressCell {
   /** The strip's display state (`StateKey` in components/ui/states.ts): landed, running, failed, ready, blocked... */
@@ -4452,6 +4454,10 @@ export interface FleetSlotWorker {
   status: string;
   /** Latest phase supported by lifecycle evidence. */
   phase: string | null;
+  /** A helper run (check, audit, final verification): counted under its host, not listed as work. */
+  helper?: boolean;
+  /** The task a helper run checks, when it checks one; else it belongs to its mission. */
+  hostTaskId?: string | null;
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;

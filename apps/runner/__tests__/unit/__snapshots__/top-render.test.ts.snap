@@ -130,7 +130,7 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 80x24 1`]
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
  ▸ Runn… building 2/8 │ Building · 8 of 13 merged                               
-   TUI                │ ■ 8 done · ▶ 2 in progress · ▢ 3 ready · ◐ 2 checks     
+   TUI                │ ■■■■■■■■ ▶▶ ▢▢▢   8 done · 2 in progress · 3 ready      
    Local only     0/1 │─────────────────────────────────────────────────────────
    Specs import   1/2 │ Working now                                             
    Other tasks 1 open │›● name override    Builder     12m Edit config.ts       
@@ -157,7 +157,7 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 120x40 1`
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                     │ Runner TUI                                                        4 running · 2 waiting 
  ▸ Runner TUI    building 2/8 │ Building · 8 of 13 merged                                                               
-   Local on… your session 0/1 │ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks                        
+   Local on… your session 0/1 │ ■■■■■■■■ ▶▶ ▢▢▢   8 done · 2 in progress · 3 ready                                      
    Specs import           1/2 │─────────────────────────────────────────────────────────────────────────────────────────
    Other tasks         1 open │ Working now                                                                             
                               │›● name override              Builder     12m Edit config.ts                      41k tok

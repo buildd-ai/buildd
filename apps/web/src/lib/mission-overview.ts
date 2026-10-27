@@ -49,8 +49,8 @@ export function overviewDefaultSelection(model: Model, order: readonly string[],
 
 // ── Groups (spec f7f67f1a R-1) ───────────────────────────────────────────────
 
-/** Done, In progress and Waiting hold build work; checks holds audit, fix and refresh rows. */
-export type OverviewGroupKey = 'done' | 'active' | 'waiting' | 'checks';
+/** Done, In progress and Waiting hold build work. Audit, fix and refresh rows are helper runs and sit in no group (spec d25d923d R-12). */
+export type OverviewGroupKey = 'done' | 'active' | 'waiting';
 
 export interface OverviewLayout {
   /** Every task, group by group: the order the strip draws and the keys step through. */
@@ -59,7 +59,7 @@ export interface OverviewLayout {
   groups: { key: OverviewGroupKey; ids: string[] }[];
 }
 
-const GROUP_ORDER: readonly OverviewGroupKey[] = ['done', 'active', 'waiting', 'checks'];
+const GROUP_ORDER: readonly OverviewGroupKey[] = ['done', 'active', 'waiting'];
 
 /**
  * A kernel-owned delivery the kernel settled without shipping it: its PR closed
@@ -76,8 +76,8 @@ export function overviewCellState(model: Model, id: string): StateKey {
   return isClosedUnshipped(model, id) ? 'not_landed' : stripState(model, id);
 }
 
-function groupOf(model: Model, id: string): OverviewGroupKey {
-  if (model.tasks[id].deliverableRole !== 'build') return 'checks';
+function groupOf(model: Model, id: string): OverviewGroupKey | null {
+  if (model.tasks[id].deliverableRole !== 'build') return null;
   if (isClosedUnshipped(model, id)) return 'waiting';
   const state = stripState(model, id);
   if (state === 'landed') return 'done';
@@ -91,7 +91,10 @@ function groupOf(model: Model, id: string): OverviewGroupKey {
  */
 export function overviewLayout(model: Model, order: readonly string[] = stripOrder(model)): OverviewLayout {
   const byGroup = new Map<OverviewGroupKey, string[]>(GROUP_ORDER.map(k => [k, []]));
-  for (const id of order) byGroup.get(groupOf(model, id))!.push(id);
+  for (const id of order) {
+    const g = groupOf(model, id);
+    if (g) byGroup.get(g)!.push(id);
+  }
   const groups = GROUP_ORDER.filter(k => byGroup.get(k)!.length > 0).map(key => ({ key, ids: byGroup.get(key)! }));
   return { order: groups.flatMap(g => g.ids), groups };
 }
@@ -136,7 +139,7 @@ function waitWord(model: Model, id: string, wait: OverviewWaitCause): string {
 const WAIT_LEGEND: Record<OverviewWaitCause, string> = { tasks: 'waiting on tasks', slot: 'next in line', hold: 'blocked', unknown: 'not started', closed: 'closed without merging' };
 
 export interface OverviewLegendEntry {
-  key: 'done' | 'active' | OverviewWaitCause | 'checks';
+  key: 'done' | 'active' | OverviewWaitCause;
   count: number;
   text: string;
 }
@@ -146,12 +149,10 @@ export function overviewLegend(model: Model, layout: OverviewLayout): OverviewLe
   const ids = (k: OverviewGroupKey) => layout.groups.find(g => g.key === k)?.ids ?? [];
   const waiting = ids('waiting');
   const byCause = (c: OverviewWaitCause) => waiting.filter(id => overviewWaitCause(model, id) === c).length;
-  const checks = ids('checks').length;
   const entries: OverviewLegendEntry[] = [
     { key: 'done', count: ids('done').length, text: `${ids('done').length} done` },
     { key: 'active', count: ids('active').length, text: `${ids('active').length} in progress` },
     ...(['tasks', 'slot', 'hold', 'unknown', 'closed'] as const).map(c => ({ key: c, count: byCause(c), text: `${byCause(c)} ${WAIT_LEGEND[c]}` })),
-    { key: 'checks', count: checks, text: `${checks} ${checks === 1 ? 'check' : 'checks'}` },
   ];
   return entries.filter(e => e.count > 0);
 }
