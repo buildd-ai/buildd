@@ -23,7 +23,7 @@ import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-stat
 /** Why the review was wrong or stuck, read off its state when the person skipped it. One open bug per cause. */
 export type VisualReviewSkipCause =
   | 'app_boot_failed' | 'no_browser_runner' | 'stalled' | 'auditor_failed' | 'capture_setup' | 'preview_unavailable'
-  | 'waiting_on_failed_work' | 'never_started' | 'still_running' | 'fix_not_rechecked' | 'findings_wrong' | 'unknown';
+  | 'waiting_on_failed_work' | 'audit_not_filed' | 'audit_held' | 'new_commit_unaudited' | 'awaiting_approval' | 'never_started' | 'still_running' | 'fix_not_rechecked' | 'findings_wrong' | 'unknown';
 
 /** The cause in words, for the bug title and the Health readout. */
 export const VISUAL_REVIEW_SKIP_CAUSE_TEXT: Record<VisualReviewSkipCause, string> = {
@@ -34,6 +34,10 @@ export const VISUAL_REVIEW_SKIP_CAUSE_TEXT: Record<VisualReviewSkipCause, string
   capture_setup: 'the screenshot setup was refused',
   preview_unavailable: 'no preview to audit',
   waiting_on_failed_work: 'the audit waited on failed work',
+  audit_not_filed: 'the scheduler would not file the next audit',
+  audit_held: 'the queued audit was held by the claim loop',
+  new_commit_unaudited: 'the new commit was never audited',
+  awaiting_approval: 'the audit waited for an owner to start it',
   never_started: 'the audit never started',
   still_running: 'the audit kept running',
   fix_not_rechecked: 'a merged fix was never re-shot',
@@ -55,9 +59,13 @@ export function visualReviewSkipCause(state: MissionVisualReviewState | null): V
     }
   }
   if (state.waitingOn) return 'waiting_on_failed_work';
+  if (state.scheduleBlock) return 'audit_not_filed';
   if (state.recapture?.next === 'decide') return 'fix_not_rechecked';
   if (state.status === 'findings') return 'findings_wrong';
   if (state.status === 'running') return 'still_running';
+  if (state.status === 'queued' && state.holdReason) return 'audit_held';
+  if (state.status === 'needed' && state.nextActor === 'owner') return 'awaiting_approval';
+  if (state.status === 'needed' && state.staleEvidence) return 'new_commit_unaudited';
   if (state.status === 'queued' || state.status === 'needed') return 'never_started';
   return 'unknown';
 }

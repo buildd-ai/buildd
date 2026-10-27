@@ -1,7 +1,8 @@
 /**
  * An approved Living Spec becomes findable in recall and joins the knowledge
  * graph, against real Postgres: one approved text per spec (a new approval
- * replaces the old chunks), drafts never indexed, edges only from the spec's
+ * replaces the old chunks), drafts indexed only as drafts that recall leaves
+ * out, the cron re-index idempotent, edges only from the spec's
  * own parent / repo refs / prior approval, rebuilt on each approval, and an
  * indexing failure never undoes the approval.
  */
@@ -14,7 +15,7 @@ delete process.env.VOYAGE_API_KEY; // lexical-only store: no network
 
 const { createSpecDraft, reviseSpecDraft } = await import('../../src/lib/specs/store');
 const { approveSpecRevision, specApprovalDeps } = await import('../../src/lib/specs/approval');
-const { specKnowledgeDeps } = await import('../../src/lib/specs/knowledge');
+const { specKnowledgeDeps, reindexSpecCorpus } = await import('../../src/lib/specs/knowledge');
 const { PgVectorStore, buildNamespace } = await import('@buildd/core/knowledge-store');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
@@ -33,7 +34,12 @@ beforeAll(async () => {
 });
 
 const realDeps = { ...specKnowledgeDeps };
-afterEach(() => Object.assign(specKnowledgeDeps, realDeps));
+// The draft index runs after the response; here it is collected and awaited.
+const scheduled: Array<() => Promise<unknown>> = [];
+const flush = async () => { while (scheduled.length) await scheduled.shift()!(); };
+const collect = (t: () => Promise<unknown>) => { scheduled.push(t); };
+specKnowledgeDeps.afterResponse = collect;
+afterEach(async () => { await flush(); Object.assign(specKnowledgeDeps, realDeps); specKnowledgeDeps.afterResponse = collect; });
 
 const user = (userId: string) => ({ kind: 'user' as const, userId });
 const ns = () => buildNamespace(ws, 'spec');
@@ -69,7 +75,9 @@ async function approve(specId: string) {
 }
 const chunks = (specId: string) => q<{ source_id: string; content: string; source_path: string | null; source_url: string | null; metadata: any }>(sql`
   SELECT source_id, content, source_path, source_url, metadata FROM knowledge_chunks
-  WHERE namespace = ${ns()} AND starts_with(source_id, ${`living-spec:${specId}#`}) ORDER BY source_id`);
+  WHERE namespace = ${ns()} AND starts_with(source_id, ${`living-spec:${specId}@`}) ORDER BY source_id`);
+const draftChunks = (specId: string) => q<{ source_id: string; metadata: any }>(sql`
+  SELECT source_id, metadata FROM knowledge_chunks WHERE namespace = ${ns()} AND starts_with(source_id, ${`living-spec-draft:${specId}@`}) ORDER BY source_id`);
 const edges = (specId: string) => q<{ edge: string }>(sql`
   SELECT f.kind || ':' || f.key || ' -' || e.type || '-> ' || t.kind || ':' || t.key AS edge
   FROM knowledge_edges e JOIN knowledge_entities f ON f.id = e.from_entity_id JOIN knowledge_entities t ON t.id = e.to_entity_id
@@ -79,14 +87,21 @@ const edges = (specId: string) => q<{ edge: string }>(sql`
   ORDER BY 1`).then(rows => rows.map(r => r.edge));
 
 describe('approval indexes the approved text', () => {
-  test('a draft is not indexed; approval writes its chunks with the approved hash; recall finds it by title', async () => {
+  test('a draft is indexed only as a draft; approval writes its chunks with the approved hash; recall finds it by title', async () => {
     const title = `Bug Intake ${rand()}`;
     const spec = await draft(title, `# ${title}\n\nEvery defect report lands as one report on one incident.\n`);
+    await flush();
     expect(await chunks(spec.id)).toEqual([]);
+    // R-106: the draft is in the corpus, marked draft, and default recall leaves it out.
+    expect((await draftChunks(spec.id)).map(c => c.metadata.draft)).toEqual([true]);
+    const lexical = (includeDrafts: boolean) => new PgVectorStore(null).query(ns(), { text: 'defect report incident', mode: 'lexical', useGraph: false, trackHits: false, includeDrafts });
+    expect((await lexical(false)).some(h => h.metadata.specId === spec.id)).toBe(false);
+    expect((await lexical(true)).some(h => h.metadata.specId === spec.id)).toBe(true);
 
     const r = await approve(spec.id);
     const rows = await chunks(spec.id);
-    expect(rows.length).toBe(1);
+    expect(rows.map(c => c.source_id)).toEqual([`living-spec:${spec.id}@1#text`]);
+    expect(await draftChunks(spec.id)).toEqual([]);
     expect(rows[0].source_path).toBeNull();
     // A recall hit opens the spec page (§9), not the approval confirm page.
     expect(rows[0].source_url).toMatch(new RegExp(`/app/specs/${spec.id}$`));
@@ -102,15 +117,20 @@ describe('approval indexes the approved text', () => {
     const [s] = await q<{ version: number }>(sql`SELECT version FROM specs WHERE id = ${spec.id}::uuid`);
     const rv = await reviseSpecDraft(user(member), spec.id, { expectedVersion: s.version, body: '# Rates\n\nR-1: Totals are in the shopper currency.\nR-2: Rates are cached for 15 minutes.\n' });
     if (!rv.ok) throw new Error(rv.error);
+    await flush();
     let rows = await chunks(spec.id);
-    expect(rows.map(c => c.metadata.revision)).toEqual([1]);
+    expect(new Set(rows.map(c => c.metadata.revision))).toEqual(new Set([1]));
     expect(rows.some(c => c.content.includes('R-2'))).toBe(false);
+    // The proposed N+1 is a draft: its own prefix, never under the approved one.
+    expect((await draftChunks(spec.id)).map(c => c.source_id)).toContain(`living-spec-draft:${spec.id}@2#R-2`);
 
     await approve(spec.id);
     rows = await chunks(spec.id);
-    expect(rows.length).toBe(1);
-    expect(rows[0].metadata.revision).toBe(2);
-    expect(rows[0].content).toContain('R-2: Rates are cached');
+    // R-102: the whole text and one chunk per criterion, all of revision 2.
+    expect(rows.map(c => c.source_id.split('#')[1]).sort()).toEqual(['R-1', 'R-2', 'text']);
+    expect(rows.every(c => c.metadata.revision === 2)).toBe(true);
+    expect(rows.find(c => c.source_id.endsWith('#R-2'))!.content).toBe('R-2: Rates are cached for 15 minutes.');
+    expect(await draftChunks(spec.id)).toEqual([]);
   });
 });
 
@@ -128,7 +148,7 @@ describe('approval projects the explicit references into the graph', () => {
     // The chunk is linked to the spec, so a graph query can walk from it.
     const [link] = await q<{ n: number }>(sql`
       SELECT count(*)::int AS n FROM chunk_entities ce JOIN knowledge_entities e ON e.id = ce.entity_id
-      WHERE ce.namespace = ${ns()} AND starts_with(ce.chunk_source_id, ${`living-spec:${child.id}#`}) AND e.kind = 'spec' AND e.key = ${child.id}`);
+      WHERE ce.namespace = ${ns()} AND starts_with(ce.chunk_source_id, ${`living-spec:${child.id}@`}) AND e.kind = 'spec' AND e.key = ${child.id}`);
     expect(link.n).toBe(1);
 
     const [s] = await q<{ version: number }>(sql`SELECT version FROM specs WHERE id = ${child.id}::uuid`);
@@ -141,6 +161,31 @@ describe('approval projects the explicit references into the graph', () => {
       `spec_revision:${child.id}@2 -references_doc-> file:${REF_A.path}`,
       `spec_revision:${child.id}@2 -supersedes-> spec_revision:${child.id}@1`,
     ]);
+  });
+});
+
+describe('the cron re-index (once, idempotent, bounded)', () => {
+  test('a spec indexed in the earlier shape is re-indexed once; a second run selects nothing for it', async () => {
+    const spec = await draft(`Legacy ${rand()}`, '# Legacy\n\nR-1: Old shape.\n');
+    await approve(spec.id);
+    // Put it back to the shape written before R-102: one `#<line>` chunk, nothing else.
+    await q(sql`DELETE FROM knowledge_chunks WHERE namespace = ${ns()} AND starts_with(source_id, ${`living-spec:${spec.id}`})`);
+    await new PgVectorStore(null).upsert(ns(), [{ id: `living-spec:${spec.id}#1`, content: 'R-1: Old shape.', sourceType: 'living_spec', metadata: { specId: spec.id, revision: 1 } }]);
+
+    const first = await reindexSpecCorpus(60_000, { workspaceId: ws });
+    expect(first.reindexed).toBeGreaterThanOrEqual(1);
+    expect((await chunks(spec.id)).map(c => c.source_id.split('#')[1]).sort()).toEqual(['R-1', 'text']);
+    // The old-shape chunk is gone with the rest of the earlier approval.
+    const [old] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM knowledge_chunks WHERE namespace = ${ns()} AND source_id = ${`living-spec:${spec.id}#1`}`);
+    expect(old!.n).toBe(0);
+    const before = (await chunks(spec.id)).length;
+    await reindexSpecCorpus(60_000, { workspaceId: ws });
+    expect((await chunks(spec.id)).length).toBe(before);
+  });
+
+  test('no budget: nothing is indexed', async () => {
+    const r = await reindexSpecCorpus(-1, { workspaceId: ws });
+    expect(r).toEqual({ reindexed: 0, failed: 0 });
   });
 });
 

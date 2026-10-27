@@ -138,7 +138,7 @@ describe('one editor per concern', () => {
   it('has one per-workspace settings page holding what config used to', () => {
     expect(exists('workspaces/[id]/config/page.tsx')).toBe(false);
     const page = readFileSync(resolve(PROTECTED, 'settings/workspace/[workspaceId]/page.tsx'), 'utf8');
-    for (const section of ['MergePolicyEditor', 'GitConfigForm', 'BranchStrategySection', 'CiRetrySection', 'ReleaseSection', 'ExecutorSection', 'ConcurrencySection', 'WorkTrackerSection']) {
+    for (const section of ['MergePolicyEditor', 'GitConfigForm', 'BranchStrategySection', 'CiRetrySection', 'ReleaseSection', 'ExecutorSection', 'WorkTrackerSection']) {
       expect(`${section}: ${page.includes(section)}`).toBe(`${section}: true`);
     }
   });

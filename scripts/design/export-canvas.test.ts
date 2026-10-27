@@ -99,6 +99,24 @@ describe('readCanvas', () => {
     ]);
   });
 
+  test('reads a v3 canvas: boards keyed by file name, in `order`, frame sizes as w/h', () => {
+    const project = fixtureCanvas();
+    writeFileSync(join(project, 'canvas.json'), JSON.stringify({
+      v: 3,
+      title: 'Redesign',
+      boards: {
+        'MissionList.dc.html': { x: 0, y: 0, w: 390, h: 844, title: 'Mission list' },
+        'TaskDetail.dc.html': { x: 500, y: 0, w: 1440, h: 900, title: 'Task detail', expand: 'fill' },
+      },
+      order: ['TaskDetail.dc.html', 'MissionList.dc.html'],
+      notes: { t: { x: 0, y: -200, text: 'Phone', kind: 'title1' } },
+    }));
+    expect(readCanvas(project)).toEqual([
+      { file: 'TaskDetail.dc.html', title: 'Task detail', width: 1440, height: 900 },
+      { file: 'MissionList.dc.html', title: 'Mission list', width: 390, height: 844 },
+    ]);
+  });
+
   test('a canvas.json that names no board fails', () => {
     const project = fixtureCanvas();
     writeFileSync(join(project, 'canvas.json'), JSON.stringify({ zoom: 1 }));

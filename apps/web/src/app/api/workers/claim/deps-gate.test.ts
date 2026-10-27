@@ -227,10 +227,9 @@ describe('dependencySatisfied() — early-release arm (dependency_releases)', ()
 describe('depsGate(): two-valued', () => {
   const text = () => dialect.sqlToQuery(depsGate()).sql.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ');
 
-  it('coalesces the force-start bypass so a missing key is FALSE', () => {
-    expect(text()).toMatch(/COALESCE\("tasks"\."context"->>\$\d+, ''\) = 'true'/);
-    expect(dialect.sqlToQuery(depsGate()).params).toContain('bypassDepsGate');
-    expect(text()).not.toMatch(/"tasks"\."context"->>'bypassDepsGate' = 'true'/);
+  it('has no whole-task bypass: a missing intent key is FALSE, never NULL', () => {
+    expect(dialect.sqlToQuery(depsGate()).params).not.toContain('bypassDepsGate');
+    expect(text()).toContain(`COALESCE("tasks"."context"->'forceStart'->'assessDependsOn' ? (dep_id::uuid)::text, FALSE)`);
   });
 
   it('keeps the no-deps and empty-deps escapes and the satisfied check', () => {

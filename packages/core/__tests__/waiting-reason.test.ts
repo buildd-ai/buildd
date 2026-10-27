@@ -37,9 +37,11 @@ describe('waiting-reason', () => {
   });
 
   it('forceable only when every blocking reason is lifted through the start context', () => {
-    expect(canForceStart([r('mission_paced'), r('mission_concurrent')])).toBe(true);
+    expect(canForceStart([r('mission_local'), r('mission_concurrent')])).toBe(true);
+    // A declared dependency is startable by a person (Start anyway, spec 36df686b).
+    expect(canForceStart([r('mission_concurrent'), r('dep_declared')])).toBe(true);
     // One non-forceable reason: the task still would not start.
-    expect(canForceStart([r('mission_concurrent'), r('dep_declared')])).toBe(false);
+    expect(canForceStart([r('dep_declared'), r('provider_unavailable')])).toBe(false);
     // A lane is never forced (Health › Queue R-10): its place is first come.
     expect(canForceStart([migrationEdge('a'), r('mission_local')])).toBe(false);
     expect(canForceStart([r('mission_local')])).toBe(true);
@@ -51,19 +53,19 @@ describe('waiting-reason', () => {
   });
 
   it('capability, budget, seat, hold and unknown kinds are never forceable', () => {
-    for (const k of ['task_held', 'account_slots', 'oauth_parallelism', 'codex_single_flight', 'managed_entitlement',
+    for (const k of ['task_held', 'account_slots', 'codex_single_flight', 'managed_entitlement',
       'budget_paused', 'provider_unavailable', 'role_unavailable', 'capability_mismatch', 'runner_cooldown',
-      'lease_stale', 'dep_declared', 'unknown', 'lane', 'ordered_behind', 'serialized_surface', 'workspace_paused'] as WaitingKind[]) {
+      'lease_stale', 'unknown', 'lane', 'ordered_behind', 'serialized_surface', 'workspace_paused'] as WaitingKind[]) {
       expect(WAITING_KIND_SPEC[k].force).toBeNull();
       expect(isStartForceable(k)).toBe(false);
     }
   });
 
   it('maps kinds to exactly the claim-loop keys they lift', () => {
-    expect(claimLoopKeysFor(['lane', 'mission_paced', 'mission_concurrent']).sort()).toEqual(['mission_concurrent', 'mission_paced']);
+    expect(claimLoopKeysFor(['lane', 'mission_concurrent'])).toEqual(['mission_concurrent']);
     expect(claimLoopKeysFor(['ordered_behind', 'serialized_surface'])).toEqual([]);
     expect(claimLoopKeysFor(['mission_budget', 'task_held', 'dep_declared'])).toEqual([]);
-    expect(prefilterLiftsFor(['mission_local', 'dep_declared'])).toEqual(['local_mission']);
+    expect(prefilterLiftsFor(['mission_local', 'dep_declared']).sort()).toEqual(['declared_assess', 'local_mission']);
   });
 
   it('summary keeps declared dependencies apart from coordination-only ordering', () => {
@@ -85,14 +87,14 @@ describe('waiting-reason', () => {
     expect(d.risk).toBeNull();
   });
 
-  it('refusal body: a declared dependency in the set means no force is offered and says why', () => {
-    const body = coordinationHoldBody([migrationEdge('a'), r('dep_declared', 'z')]);
+  it('refusal body: a non-forceable reason in the set means no force is offered and says why', () => {
+    const body = coordinationHoldBody([migrationEdge('a'), r('provider_unavailable', 'z')]);
     expect(body.canForce).toBe(false);
     expect(body.force).toBeNull();
-    expect(body.notForceable).toEqual(['Serial lane', 'Declared dependency']);
-    const ok = coordinationHoldBody([r('mission_paced', 'm'), r('mission_local', 'm')]);
+    expect(body.notForceable).toEqual(['Provider unavailable', 'Serial lane']);
+    const ok = coordinationHoldBody([r('mission_concurrent', 'm'), r('mission_local', 'm')]);
     expect(ok.canForce).toBe(true);
-    expect(ok.force?.kinds?.sort()).toEqual(['mission_local', 'mission_paced']);
+    expect(ok.force?.kinds?.sort()).toEqual(['mission_concurrent', 'mission_local']);
     const lane = coordinationHoldBody([migrationEdge('a')]);
     expect(lane.canForce).toBe(false);
     expect(lane.notForceable).toEqual(['Serial lane']);

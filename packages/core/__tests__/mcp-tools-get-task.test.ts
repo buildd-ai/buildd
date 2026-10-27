@@ -666,4 +666,34 @@ describe('get_task — governed outcome (Living Specs V1)', () => {
     expect(text).not.toContain('Governed outcome');
     expect((a as any).mock.calls.some((c: unknown[]) => String(c[0]).includes('/outcomes/'))).toBe(false);
   });
+
+  // Living Spec 1b257609 r2 R-10 / AC-9: the facts as data, and the card's lines in words.
+  it('a waiting task prints what waits on the answer and returns it as data', async () => {
+    const waits = {
+      taskId: TASK_ID,
+      mission: { id: 'm1', title: 'Checkout rebuild' },
+      waiting: [{ id: 'b1', title: 'Autostart repair', depth: 1, missionId: 'm1', missionTitle: 'Checkout rebuild', workspaceName: null, after: null, alsoWaitsOnOther: false }],
+      hiddenCount: 1,
+      beyondCount: 0,
+      lanes: [{ lane: 'schema', queued: [{ id: 'q1', title: 'Add index', position: 2 }], hiddenCount: 0 }],
+      criteria: { specId: 's1', specTitle: 'Checkout totals', affected: ['R-1', 'R-2'], total: 5 },
+      askedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+      expiresAt: new Date(Date.now() + 210 * 60_000 + 20_000).toISOString(),
+      onExpiry: { action: 'default', option: 'Ship' },
+      options: [{ label: 'Ship', outcome: 'finishes', effect: "Finishes the task: Autostart repair and 1 task you can't see start; frees the schema lane", recommended: true }],
+    };
+    const api = mock();
+    api.mockResolvedValue({
+      id: TASK_ID, title: 'Acceptance tests', status: 'in_progress', priority: 0,
+      workspace: { name: 'buildd' }, workers: [], artifacts: [], questionWaits: waits,
+    });
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+    const out = (res as any).content[0].text as string;
+    expect(out).toContain('## What waits on this answer');
+    expect(out).toContain("- Waits on this: Autostart repair and 1 task you can't see. Holds the schema lane: 1 queued. Affects the evidence for 2 of 5 criteria in Checkout totals.");
+    expect(out).toContain('- Expires in 3 hours 30 minutes, then the task starts again and the agent goes with Ship.');
+    expect(out).toContain("- Ship (recommended, finishes): Finishes the task: Autostart repair and 1 task you can't see start; frees the schema lane");
+    const json = out.slice(out.indexOf('```json') + 7, out.lastIndexOf('```'));
+    expect(JSON.parse(json)).toEqual(waits);
+  });
 });

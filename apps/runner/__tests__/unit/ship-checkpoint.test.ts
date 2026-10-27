@@ -39,7 +39,8 @@ beforeEach(() => {
   writeFileSync(join(work, 'src/from-bash.ts'), 'x\n');
 });
 
-afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+// Windows can hold a handle on the temp dir briefly after git exits (EBUSY), so retry.
+afterEach(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 function makeWorker(overrides: Record<string, unknown> = {}): any {
   return {

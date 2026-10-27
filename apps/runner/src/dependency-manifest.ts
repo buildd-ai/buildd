@@ -109,7 +109,7 @@ export function verifyDependencyHandover(options: {
     const remove = (path: string) => {
       if (wasRemoved(path)) return;
       if (protectedPath(path, trackedPaths)) throw new Error('tracked_dependency_changed');
-      rmSync(join(repoRoot, path), { recursive: true, force: true }); report.entriesDeleted++; removedPaths.add(path);
+      rmSync(join(repoRoot, path), { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); report.entriesDeleted++; removedPaths.add(path);
     };
     for (const path of new Set([...old.keys(), ...now.keys()])) {
       const a = old.get(path), b = now.get(path);

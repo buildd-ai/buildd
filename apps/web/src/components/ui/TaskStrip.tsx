@@ -186,6 +186,17 @@ export function stripRowCapacity(width: number, groupCount: number): number {
 }
 
 /**
+ * The one cell width every phone row uses, in px: the row's share when it
+ * holds `perRow` cells and every group gap, so a short last row draws the same
+ * cells as the rows above it (R-4). At most 44px, the tap target.
+ */
+export function stripCellWidth(width: number, groupCount: number, perRow: number): number {
+  const usable = width + CELL_GAP - Math.max(0, groupCount - 1) * (GROUP_GAP + CELL_GAP);
+  const w = Math.floor(usable / perRow) - CELL_GAP;
+  return Math.max(STRIP_MIN_CELL, Math.min(44, w));
+}
+
+/**
  * Splits the groups into rows of at most `perRow` cells, in order. A group
  * that spans a row break continues on the next row with its outline.
  */
@@ -207,21 +218,29 @@ export function wrapStripGroups(groups: readonly TaskStripGroup[], perRow: numbe
   return rows;
 }
 
-/** Cells per phone row, measured; unlimited from md and before the first measure. */
-function useRowCapacity(box: RefObject<HTMLDivElement | null>, groupCount: number, enabled: boolean): number {
-  const [perRow, setPerRow] = useState(Number.POSITIVE_INFINITY);
+interface RowCapacity { perRow: number; cellPx: number | null }
+const UNMEASURED: RowCapacity = { perRow: Number.POSITIVE_INFINITY, cellPx: null };
+
+/** Cells per phone row and their one width, measured; unlimited from md and before the first measure. */
+function useRowCapacity(box: RefObject<HTMLDivElement | null>, groupCount: number, enabled: boolean): RowCapacity {
+  const [cap, setCap] = useState<RowCapacity>(UNMEASURED);
   useEffect(() => {
     const el = box.current;
     if (!enabled || !el || typeof ResizeObserver === 'undefined') return;
     const desktop = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 768px)') : null;
-    const measure = () => setPerRow(desktop?.matches ? Number.POSITIVE_INFINITY : stripRowCapacity(el.clientWidth, groupCount));
+    const measure = () => {
+      if (desktop?.matches) return setCap(prev => (prev === UNMEASURED ? prev : UNMEASURED));
+      const perRow = stripRowCapacity(el.clientWidth, groupCount);
+      const cellPx = stripCellWidth(el.clientWidth, groupCount, perRow);
+      setCap(prev => (prev.perRow === perRow && prev.cellPx === cellPx ? prev : { perRow, cellPx }));
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     desktop?.addEventListener?.('change', measure);
     return () => { ro.disconnect(); desktop?.removeEventListener?.('change', measure); };
   }, [box, groupCount, enabled]);
-  return perRow;
+  return cap;
 }
 
 function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true, label = 'Tasks', className = '', groups, ticks: showTicks = true }: TaskStripProps) {
@@ -229,7 +248,7 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
   const n = cells.length;
   const isGrouped = !!groups && groups.length > 0;
   const nonEmpty = isGrouped ? groups!.filter(g => g.ids.length > 0) : [];
-  const perRow = useRowCapacity(ref, nonEmpty.length, isGrouped);
+  const { perRow, cellPx } = useRowCapacity(ref, nonEmpty.length, isGrouped);
   const selIndex = cells.findIndex(c => c.id === selectedId);
   const focusIndex = selIndex === -1 ? 0 : selIndex;
   const numbered = n <= MAX_NUMBERED_TICKS;
@@ -249,7 +268,8 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
   const renderRow = (rowCells: readonly TaskStripCell[], rowGroups: readonly TaskStripGroup[] | null, key: string) => {
     const grouped = rowGroups ? groupedColumns(rowGroups) : null;
     const columns = grouped ? (capped ? GROUPED_VARS_CAPPED : GROUPED_VARS) : capped ? LG_COLUMNS_CAPPED : LG_COLUMNS;
-    const style = (grouped ? { gridTemplateColumns: grouped.template } : { '--n': n }) as CSSProperties;
+    // A measured phone strip fixes every row's cell width; md and unmeasured keep the stylesheet's tracks.
+    const style = (grouped ? { gridTemplateColumns: grouped.template, ...(cellPx != null ? { '--cell': `${cellPx}px` } : {}) } : { '--n': n }) as CSSProperties;
     const place = (id: string): CSSProperties | undefined => (grouped ? { gridColumn: grouped.col.get(id), gridRow: 1 } : undefined);
     const outline = outlineEdge(grouped);
     return (

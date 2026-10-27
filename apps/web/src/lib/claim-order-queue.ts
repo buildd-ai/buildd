@@ -15,7 +15,7 @@
  * Each queued task also carries its one wait (`wait`, lib/queue-wait-load.ts:
  * spec "Overlap scheduling", AC-10): the same reason explain, the task page
  * and the web Queue give, read from the claim route's own query and gates,
- * the lane order, mission pacing and caps, and the loop's fresh limits. A
+ * the lane order, the mission cap, and the loop's fresh limits. A
  * task the claim would refuse is never "now" in the terminal. What only one
  * runner's claim saw (its own cooldown, a provider wall on its login) the
  * runner still adds from its last claim outcome for the task (R-25).
@@ -107,7 +107,6 @@ const HOLD_ORDER: Array<[QueueGateName, RunnerQueueHold]> = [
   ['missionHeld', 'mission_held'],
   ['deps', 'deps_blocked'],
   ['workspacePaused', 'workspace_paused'],
-  ['workspaceCap', 'workspace_cap'],
   ['runnerCooldown', 'runner_cooldown'],
 ];
 

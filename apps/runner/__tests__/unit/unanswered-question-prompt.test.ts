@@ -19,4 +19,10 @@ describe('renderUnansweredQuestion', () => {
   it('still carries the guidance when the question text was not kept', () => {
     expect(renderUnansweredQuestion({ prompt: null, options: [] })).toContain('Do NOT ask for user input');
   });
+
+  it('names the agent\'s recommended option as the default to take (spec 1b257609 R-3)', () => {
+    const out = renderUnansweredQuestion({ prompt: 'Ship it?', options: ['Ship', 'Hold'], recommended: 'Ship' })!;
+    expect(out).toContain('Go with "Ship", the option the earlier attempt recommended');
+    expect(renderUnansweredQuestion({ prompt: 'Ship it?', options: ['Ship'] })).not.toContain('Go with');
+  });
 });

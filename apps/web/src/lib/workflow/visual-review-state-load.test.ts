@@ -98,3 +98,42 @@ it('a caller holding the delivery, ledger and claim holds reads none of them', a
   expect(reads).toEqual([]);
   expect(state?.branch.headSha).toBe('abc1234');
 });
+
+/** A `needed` review waits on the scheduler; when the scheduler's answer is "blocked" the state says so and names who acts. */
+describe('scheduler block on a needed review', () => {
+  const HEAD = 'aaaa1111';
+  const load = (ledger: any[]) => getMissionVisualReviewState('m1', {
+    uiChange: { state: 'yes', source: 'diff', uiFiles: 2 },
+    mission: { id: 'm1', status: 'active', workspaceId: 'ws', autoSurfaceAudit: true, workingBranch: null, primaryPrNumber: 9 },
+    gitConfig: null,
+    tasks: [{ id: 't1', taskClass: 'work', status: 'completed', title: 'Build', roleSlug: 'builder' }] as any,
+    delivery: { state: 'open', currentHeadSha: HEAD, baseRef: 'dev' },
+    ledger,
+    waiver: Promise.resolve(null),
+    model: { audit: null } as any,
+  });
+  const au = (over: Record<string, unknown> = {}) => ({ id: 'a1', status: 'completed', round: 1, headSha: 'old00000', updatedAt: 1, ...over });
+
+  it('five finished rounds on a landed UI mission: rereview_cap, owner next', async () => {
+    const ledger = Array.from({ length: 5 }, (_, i) => au({ id: `d${i}`, round: 5 - i, headSha: `old0000${i}` }));
+    const state = await load(ledger);
+    expect(state?.status).toBe('needed');
+    expect(state?.scheduleBlock?.cause).toBe('rereview_cap');
+    expect(state?.nextActor).toBe('owner');
+  });
+
+  it('cancelled on this head: audit_cancelled, owner next', async () => {
+    const state = await load([au({ status: 'cancelled', headSha: HEAD })]);
+    expect(state?.scheduleBlock?.cause).toBe('audit_cancelled');
+    expect(state?.nextActor).toBe('owner');
+  });
+
+  it('a plannable action leaves the state alone: no block, system next', async () => {
+    for (const ledger of [[], [au({ status: 'failed', headSha: HEAD, updatedAt: Date.now() })]]) {
+      const state = await load(ledger);
+      expect(state?.status).toBe('needed');
+      expect(state?.scheduleBlock).toBeUndefined();
+      expect(state?.nextActor).toBe('system');
+    }
+  });
+});

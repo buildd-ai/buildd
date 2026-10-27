@@ -10,7 +10,6 @@ mock.module('@/lib/api-auth', () => ({
 
 const mockGetBudgetForecast = mock(() =>
   Promise.resolve({
-    oauthSessions: [],
     monthly: null,
     codex: null,
     missions: [],
@@ -86,7 +85,6 @@ describe('GET /api/health/budget', () => {
     mockAuthenticateApiKey.mockResolvedValue(authedAccount());
     mockWorkspacesFindMany.mockResolvedValue([]);
     mockGetBudgetForecast.mockResolvedValue({
-      oauthSessions: [],
       monthly: null,
       codex: null,
       missions: [],
@@ -148,7 +146,6 @@ describe('GET /api/health/budget', () => {
   it('returns 200 with monthly: null when workspace has no usage rows (no workers in window)', async () => {
     // getBudgetForecast returns monthly: null when no monthly cap is configured
     mockGetBudgetForecast.mockResolvedValue({
-      oauthSessions: [],
       monthly: null,
       codex: null,
       missions: [],
@@ -185,7 +182,7 @@ describe('GET /api/health/budget — dashboard session', () => {
     mockGetTeamWorkspaceIds.mockImplementation(async (teamId: string) => (teamId === TEAM_ID ? [VALID_UUID] : [WS_B]));
     mockResolveActiveTeamId.mockImplementation(async () => TEAM_ID);
     mockGetBudgetForecast.mockReset();
-    mockGetBudgetForecast.mockResolvedValue({ oauthSessions: [], monthly: null, codex: null, missions: [] });
+    mockGetBudgetForecast.mockResolvedValue({ monthly: null, codex: null, missions: [] });
   });
 
   it('forecasts the active team (buildd-team cookie) by default', async () => {

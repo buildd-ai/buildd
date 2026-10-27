@@ -259,7 +259,7 @@ export async function evaluateAutoMergeSafety(
     // CI that reports through the Statuses API (Jenkins, CircleCI, Buildkite,
     // Vercel contexts) never creates check runs.
     const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
-    // buildd's own `Buildd / Review approval` status (and its legacy `buildd/landing` name) is the kernel's verdict, published from
+    // buildd's own `Buildd / Review approval` status (and the retired `buildd/landing`, still on older heads) is the kernel's verdict, published from
     // what this merge decides (workflow-kernel-library.md §4): never CI to wait on.
     const notPassing = statuses.items.filter((st) => !LANDING_STATUS_CONTEXTS.includes(st.context ?? '')
       && (opts?.personDecides ? st.state === 'failure' || st.state === 'error' : !isPassingStatus(st)));

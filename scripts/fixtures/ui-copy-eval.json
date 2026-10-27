@@ -1,0 +1,36 @@
+{
+  "note": "Fictional provider answers and stored measurements for scripts/ui-copy-eval.test.ts. Not model output, not labels, not production measurements. measuredFingerprint 'current' stands for the kind's prompt fingerprint at test time.",
+  "access": { "model": "typesafe/jev-1.13" },
+  "modelVersion": "typesafe/jev-1.13-20990101",
+  "measurements": [
+    {
+      "kind": "buildd.ui_copy",
+      "model": "typesafe/jev-1.13",
+      "threshold": 0.55,
+      "measuredFingerprint": "current",
+      "status": "active"
+    },
+    {
+      "kind": "buildd.ui_copy",
+      "model": "acme/stale-judge-1",
+      "threshold": 0.5,
+      "measuredFingerprint": "stale-prompt",
+      "status": "active"
+    },
+    {
+      "kind": "buildd.other_kind",
+      "model": "typesafe/jev-1.13",
+      "threshold": 0.1,
+      "measuredFingerprint": "current",
+      "status": "active"
+    }
+  ],
+  "answers": [
+    { "match": "I looked at the failing test", "answers": { "repetition": ["clear", 0.4], "action_clarity": ["clear", 0.38], "workflow_narration": ["revise", 0.95] } },
+    { "match": "Ready to merge", "answers": { "repetition": ["revise", 0.6], "action_clarity": ["clear", 0.9], "workflow_narration": ["clear", 0.9] } },
+    { "match": "Touch the lease", "answers": { "repetition": ["clear", 0.9], "action_clarity": ["uncertain", 0.9], "workflow_narration": ["clear", 0.9] } }
+  ],
+  "default": { "repetition": ["clear", 0.97], "action_clarity": ["clear", 0.96], "workflow_narration": ["clear", 0.98] },
+  "usage": { "inputTokens": 300, "outputTokens": 9, "costUsd": 0.00004 },
+  "latencyMs": 120
+}

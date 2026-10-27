@@ -806,7 +806,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(await outcomesOf(host, s, 'merge_call'), ['ok:gate_refused:rails:lasting:applied'], 'refused as lasting');
       eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'a person is asked, not the sweep');
       const last = f.github.written.filter((w) => w.op === 'publishStatus').at(-1)!;
-      eq(last.state, 'failure', 'buildd/landing says no');
+      eq(last.state, 'failure', 'Buildd / Review approval says no');
       ok(String(last.description).includes('destructive migration'), `names the rail: ${String(last.description)}`);
       ok((await s.count('notify')) >= 1, 'a person is notified');
       // The person merges it ("Merge anyway"): their door is held to their rails, and it lands.
@@ -983,7 +983,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       await drainKernel(host, s, f.ports);
       eq(published().at(-1), { sha: 'H1', state: 'pending', context: 'Buildd / Review approval' }, 'review pending: pending, not failure');
-      ok(published().some((x) => x.context === 'buildd/landing' && x.sha === 'H1'), 'the legacy name carries the same answer');
+      ok(published().every((x) => x.context === 'Buildd / Review approval'), 'the retired buildd/landing name is never written');
       eq(lastDesc(), 'Review in progress: H1 is waiting for its review', 'names the wait in plain review terms (R-43)');
       const lastTarget = () => f.github.written.filter((w) => w.op === 'publishStatus').at(-1)?.targetUrl;
       ok(f.github.written.filter((w) => w.op === 'publishStatus').every((w) => w.targetUrl === `https://host.test/review/${s.ownerTaskId}`), 'every write links to the delivery\'s review page (R-43)');

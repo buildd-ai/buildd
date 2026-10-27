@@ -18,6 +18,7 @@
  * manifest still gets its lease.
  */
 import { isOpenTaskStatus } from '@buildd/shared';
+import { startAnywayEditRefusal } from '@buildd/core/start-anyway';
 import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -94,7 +95,7 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
 
   const task = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, taskId)),
-    columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, taskClass: true, conflictRetryPrNumber: true, ciRetryPrNumber: true, reviewerRetryPrNumber: true },
+    columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, taskClass: true, conflictRetryPrNumber: true, ciRetryPrNumber: true, reviewerRetryPrNumber: true, context: true, dependsOn: true },
   });
 
   // '**' is advisory-only and must never become a held lock that blocks the
@@ -120,6 +121,25 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
 
   if (!isOpenTaskStatus(task.status)) {
     return { kind: 'bad_status', error: `Cannot claim paths for a task with status "${task.status}"` };
+  }
+
+  // A task started anyway past a prerequisite records its assessment before
+  // it takes file ownership (Living Spec 36df686b R-4, AC-9). Shaped like a
+  // held path so the runner's edit hook refuses the edit under enforcement
+  // and warns otherwise; nothing is leased and no waiter is registered.
+  const assessFirst = startAnywayEditRefusal(task.context as Record<string, unknown> | null);
+  if (assessFirst) {
+    return {
+      kind: 'conflict',
+      body: {
+        claimed: false,
+        code: assessFirst.code,
+        blockingTaskId: ((task.dependsOn as string[] | null) ?? [])[0] ?? task.id,
+        blockingTaskTitle: 'Record your Start anyway assessment first',
+        blockingMissionId: null,
+        message: assessFirst.message,
+      },
+    };
   }
 
   // Serial lane (I-5): a lane path joins the task to its lane at this edit. A

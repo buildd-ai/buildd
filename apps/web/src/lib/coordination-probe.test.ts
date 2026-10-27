@@ -59,7 +59,8 @@ describe('probeCoordination: dependencies, local missions', () => {
     const byBlocker = Object.fromEntries(reasons.map(r => [r.blocker?.id, r]));
     expect(byBlocker.h1.blocker).toMatchObject({ live: true, status: 'in_progress' });
     expect(byBlocker.d1.blocker).toMatchObject({ live: false, status: 'pending' });
-    expect(byBlocker.d1.action.force).toBeNull();
+    // A declared edge is startable by a person as Start anyway (spec 36df686b).
+    expect(byBlocker.d1.action.force?.mechanism).toBe('start_context');
     expect(byBlocker.done).toBeUndefined();
   });
 

@@ -1,0 +1,13 @@
+{
+  "factVersion": "dev-fixtures-ui-verify@1",
+  "scenarios": {
+    "closed-pr-awaiting-confirmation": { "prState": "closed", "replacementState": "candidate" },
+    "closed-pr-abandon-reason": { "prState": "closed", "replacementState": "candidate" },
+    "closed-pr-no-suggestion": { "prState": "closed", "replacementState": "none" },
+    "closed-pr-replaced": { "prState": "closed", "replacementState": "verified" },
+    "visual-review-failed": { "verificationState": "failed", "shownVerificationState": "failed" },
+    "visual-review-stalled": { "verificationState": "failed", "shownVerificationState": "failed" },
+    "visual-review-boot-failed": { "verificationState": "not_started", "shownVerificationState": "pending" },
+    "visual-review-fix-merged": { "verificationState": "pending_recapture", "shownVerificationState": "pending" }
+  }
+}

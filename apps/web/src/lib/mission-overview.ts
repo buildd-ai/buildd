@@ -268,6 +268,49 @@ function prCause(state: string | undefined): string | null {
   return state === 'ci_failed' ? 'CI failed' : state === 'conflict' ? 'Merge conflict' : null;
 }
 
+const STEP_MAX = 64;
+const base = (path: string) => path.trim().replace(/^["'`]|["'`]$/g, '').split('/').filter(Boolean).pop() ?? path;
+
+/**
+ * A raw step label in words (R-5, R-14): a commit reads as its subject (no
+ * `commit:` prefix, no trailers, one line), a tool call as `Reading <file>`,
+ * `Editing <file>` or `Running tests`, and a raw shell command as nothing, so
+ * the caller falls back to the latest milestone. Plain words pass through,
+ * truncated to one line.
+ */
+export function stepWords(label: string | null | undefined): string | null {
+  if (!label) return null;
+  const first = label.split('\n').map(l => l.trim()).find(Boolean) ?? '';
+  const commit = /^commit:\s*(.+)$/i.exec(first);
+  const tool = /^(running|reading|editing|writing|searching|grep|globbing)\s*:\s*(.+)$/i.exec(first);
+  let text: string;
+  if (commit) text = commit[1].replace(/\s*Co-Authored-By:.*$/i, '').trim();
+  else if (tool) {
+    const verb = tool[1].toLowerCase();
+    const arg = tool[2];
+    if (verb === 'running') {
+      if (/\b(test|tests|vitest|jest|pytest)\b/.test(arg)) return 'Running tests';
+      if (/\b(tsc|typecheck|type-check|lint|build)\b/.test(arg)) return /\bbuild\b/.test(arg) ? 'Building' : 'Checking types';
+      return null;
+    }
+    if (verb === 'reading') text = `Reading ${base(arg)}`;
+    else if (verb === 'editing' || verb === 'writing') text = `Editing ${base(arg)}`;
+    else return null;
+  } else text = first;
+  text = text.replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > STEP_MAX ? `${text.slice(0, STEP_MAX - 1).trimEnd()}…` : text;
+}
+
+/** The latest step in words: the newest milestone that reads, else the current action. */
+function latestStepWords(t: { milestones: { label: string }[]; currentAction: string | null }): string | null {
+  for (let i = t.milestones.length - 1; i >= 0; i--) {
+    const w = stepWords(t.milestones[i].label);
+    if (w) return w;
+  }
+  return stepWords(t.currentAction);
+}
+
 const RUNNING = termWord('work.working');
 const FIXING = termWord('pr.fixing');
 const FAILED = termWord('work.failed');
@@ -284,7 +327,7 @@ export function overviewStatus(model: Model, id: string): OverviewStatus {
   const out = (word: string, tone: StateTone, cause: string | null = null, extra: Partial<OverviewStatus> = {}): OverviewStatus => ({
     word, tone, cause, since: null, lastEventAt: null, retryAt: null, closed: null, ...extra,
   });
-  const latestStep = t.milestones.length ? t.milestones[t.milestones.length - 1].label : t.currentAction;
+  const latestStep = latestStepWords(t);
   const live = { since: t.startedAt, lastEventAt: t.lastEventAt ?? null };
   if (isClosedUnshipped(model, id)) return out('Closed', 'q', null, { closed: { replacement: t.replacement ?? null } });
   switch (state) {
