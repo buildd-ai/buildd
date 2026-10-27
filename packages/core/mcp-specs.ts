@@ -552,6 +552,8 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
             ...(params.readIds !== undefined ? { readIds: params.readIds } : {}),
             ...(params.observed !== undefined ? { observed: params.observed } : {}),
             ...(params.reaffirms !== undefined ? { reaffirms: params.reaffirms } : {}),
+            // The final verification's test runs: without this the route records them as reviews, which never count.
+            ...(params.acceptanceTest !== undefined ? { acceptanceTest: params.acceptanceTest } : {}),
           }) });
           return text(`Recorded ${params.verdict} on ${params.criterionId} at the integrated target (verdict ${r.verdictId}).\n${missionStandingText('Outcome spec', r.standing)}`);
         } catch (err) {
