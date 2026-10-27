@@ -29,7 +29,7 @@ import DecisionCard from '@/components/DecisionCard';
 import { useVisualDecisionAct } from './visual-decision-act';
 import { useMissionFocusSnapshot } from '@/components/missions/mission-focus-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementGroups, requirementsCount, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementsCount, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
 import { isClosedUnshipped, overviewCells, overviewLayout } from '@/lib/mission-overview';
 import { stripOrder } from '@/lib/mission-task-strip';
 import type { DecisionView } from '@/lib/needs-you-card';
@@ -41,7 +41,9 @@ import { useMissionLayout } from './MissionLayoutShell';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { PlanTask } from '@/lib/mission-plan';
 import { deliveryBlock, deliveryChecks, type DeliveryTask } from '@/lib/mission-delivery-checks';
-import { BuildCompleteBar, CheckRail, ChecksCard, DeliveryChecks, OutcomeSpecLines, StandardsLineView } from './MissionChecks';
+import { BuildCompleteBar, CheckRail, ChecksCard, DeliveryChecks, OutcomeSpecLines, RequirementsView, StandardsLineView } from './MissionChecks';
+import type { MissionVerifyView } from '@/lib/mission-verify-view';
+import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import MissionBuildStage from './MissionBuildStage';
 import { MissionStageProvider } from '@/components/design-stage';
 
@@ -80,6 +82,31 @@ export interface MissionOverviewProps extends BoardLinkContext {
   deliveryTasks?: readonly DeliveryTask[];
   /** The mission's design, closed: one fixed place after the current stage, on every mission (Navigation R-3). */
   design?: ReactNode;
+  /** Verify's Requirements, one group per selected spec (Navigation R-17; `missionVerifyView`). */
+  verify?: MissionVerifyView | null;
+}
+
+/**
+ * `?criteria=open` and `#mission-criteria` open Verify (Navigation R-2, R-18):
+ * on arrival, and on a tap of any link to the anchor. A delegated click
+ * listener, not `hashchange`: a client-side link writes the hash with
+ * `pushState`, which fires no `hashchange`.
+ */
+function useVerifyRequested(): boolean {
+  const [asked, setAsked] = useState(false);
+  useEffect(() => {
+    const here = () => window.location.hash === `#${MISSION_CRITERIA_ANCHOR}` || new URLSearchParams(window.location.search).get('criteria') === 'open';
+    if (here()) setAsked(true);
+    const onClick = (e: MouseEvent) => {
+      if ((e.target as Element | null)?.closest?.(`a[href$="#${MISSION_CRITERIA_ANCHOR}"]`)) setAsked(true);
+    };
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
+  }, []);
+  useEffect(() => {
+    if (asked) document.getElementById(MISSION_CRITERIA_ANCHOR)?.scrollIntoView?.({ block: 'start' });
+  }, [asked]);
+  return asked;
 }
 
 /** Checks already at work before the build ends (R-13) are shown under the list. */
@@ -96,7 +123,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 function OverviewView({
   model: serverModel, completionText = null, notice, situation, visual: _visual, review,
   checks: checksSource = null, deliveryTasks = [], planTasks = null, held = false, outcomeSpecTitles = null, missionTitle = null, design = null,
-  decisions = [], history = null, expectedMinutes, ...link
+  decisions = [], history = null, expectedMinutes, verify = null, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -154,8 +181,11 @@ function OverviewView({
   const visualCard = decisions.some(d => d.answer.kind === 'visual');
   const showAsk = review && !visualCard;
   const listed = (rows: NonNullable<typeof handoff>['rows']) => (visualCard ? rows.filter(r => r.kind !== 'visual') : rows);
-  // Visual review, Merge into dev and Release as CheckRows; goal criteria keep their own card (I-22).
+  // Visual review, Merge into dev and Release as CheckRows. A selected spec's requirements are
+  // Verify's Requirements (R-17); only a legacy mission's hand-written criteria keep a list of their own.
   type HandoffRow = NonNullable<typeof handoff>['rows'][number];
+  const specIndexes = new Set((checksSource?.criteria ?? []).flatMap((c, i) => (c.type === 'living_spec' ? [`criterion-${i}`] : [])));
+  const legacyCriteria = (rows: readonly HandoffRow[]) => rows.filter(r => r.kind === 'criterion' && !specIndexes.has(r.key));
   const checksBlock = (rows: readonly HandoffRow[], withDelivery: boolean) => {
     const views = deliveryChecks(rows, {
       prNumber: checksSource?.integrationPr?.prNumber ?? null,
@@ -164,18 +194,32 @@ function OverviewView({
       releaseHref: checksSource?.evidence?.release?.[0]?.href ?? null,
       screensHref: checksSource?.evidence?.visual?.[0]?.href ?? null,
     });
-    const isSpec = (r: HandoffRow) => r.kind === 'criterion' && !!r.criteria?.length;
-    const criteria = rows.filter(r => r.kind === 'criterion' && !isSpec(r));
-    const groups = requirementGroups(rows.filter(isSpec));
+    const criteria = legacyCriteria(rows);
     return (
       <>
         <DeliveryChecks checks={views} delivery={withDelivery ? deliveryBlock(deliveryTasks) : null} timelineHref={`/app/missions/${encodeURIComponent(link.missionId)}?layout=feed`} onOpenTask={openTask} />
-        {groups.groups.length > 0 && <RequirementGroupsView data={groups} />}
         {criteria.length > 0 && <ChecksCard rows={criteria} onOpenTask={openTask} />}
       </>
     );
   };
   const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} missionId={link.missionId} />;
+  const verifyAsked = useVerifyRequested();
+  const into = checksSource?.target ?? 'the target branch';
+  // Verify (R-17 to R-19): Requirements by spec, then Standards. No goal criteria panel, no
+  // Screens row and no Run verification: checks run by themselves, `Re-check` is in ⋯.
+  // `legacy`: a hand-written criteria list, read-only, where no checks block already draws it.
+  const verifyBlock = (withTail: boolean, legacy = false) => {
+    const legacyRows = legacy && handoff ? legacyCriteria(handoff.rows) : [];
+    if (!verify && !standards && legacyRows.length === 0) return null;
+    return (
+    <div id={MISSION_CRITERIA_ANCHOR} data-testid="mission-verify" className="flex min-w-0 scroll-mt-4 flex-col gap-4">
+      {verify && <RequirementsView view={verify} />}
+      {legacyRows.length > 0 && <ChecksCard rows={legacyRows} onOpenTask={openTask} />}
+      {standards && <StandardsLineView line={standards} />}
+      {withTail && verify && !verify.allMet && <p className="text-body text-text-muted">{`Delivers into ${into} once every requirement is met.`}</p>}
+    </div>
+    );
+  };
   // History only for what the screen does not already show (R-37): the build rows show in Build, or once unfolded.
   const raised = historyOnScreen(history, { buildRowsShown: stage === 'build' || showBuild, decisions });
 
@@ -195,6 +239,7 @@ function OverviewView({
           {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
           {handoff && listed(handoff.rows).some(r => STARTED.has(r.status)) && checksBlock(listed(handoff.rows).filter(r => STARTED.has(r.status)), false)}
           {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
+          {verifyAsked && verifyBlock(false, true)}
         </>
       )}
       {stage === 'verify' && (
@@ -208,8 +253,8 @@ function OverviewView({
           {situation?.verify}
           {notice}
           {showAsk && <MissionVisualAsk review={review} board={model} />}
+          {verifyBlock(true)}
           {handoff && checksBlock(listed(handoff.rows), true)}
-          {standards && <StandardsLineView line={standards} />}
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
       )}
@@ -222,54 +267,22 @@ function OverviewView({
           </p>
           {situation?.verify}
           {notice}
-          <details data-testid="mission-requirements-fold" className="group">
+          <details data-testid="mission-requirements-fold" className="group" open={verifyAsked || undefined}>
             <summary className="flex min-h-11 cursor-pointer list-none items-baseline gap-x-2 text-body md:min-h-0">
               <span className="text-text-muted">Requirements</span>
-              <span className="font-mono text-meta text-text-muted">{requirementsCount(handoff.rows)} ›</span>
+              <span className="font-mono text-meta text-text-muted">{verify?.summary ?? requirementsCount(handoff.rows)} ›</span>
             </summary>
             <div className="mt-2 flex flex-col gap-3">
               <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>{bar}</BuildCompleteBar>
+              {verifyBlock(false)}
               {checksBlock(handoff.rows, true)}
             </div>
           </details>
-          {standards && <StandardsLineView line={standards} />}
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
       )}
       {design && <MissionStageProvider value={stage}>{design}</MissionStageProvider>}
     </div>
-  );
-}
-
-/** Requirements by spec (R-17): one `From <spec>` header each, unmet ones listed, met ones one line, the total across groups. */
-function RequirementGroupsView({ data }: { data: ReturnType<typeof requirementGroups> }) {
-  return (
-    <section data-testid="requirement-groups" className="flex flex-col gap-3">
-      <h2 className="flex items-baseline gap-x-2 text-meta text-text-muted">
-        <span>Requirements</span>
-        <span data-testid="requirements-total" className="font-mono">{data.total}</span>
-      </h2>
-      {data.groups.map(g => (
-        <div key={g.key} data-testid="requirement-group" className="card flex flex-col gap-1.5">
-          <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-title">
-            {g.href ? <a href={g.href} className="font-medium text-text-primary underline decoration-border-strong underline-offset-4">{g.heading}</a> : <span className="font-medium text-text-primary">{g.heading}</span>}
-            <span className="font-mono text-meta text-text-muted">{g.met} of {g.inScope} met</span>
-          </p>
-          {g.metLine && <p data-testid="requirement-group-met" className="text-body text-text-secondary">{g.metLine}</p>}
-          {g.unmet.length > 0 && (
-            <ul className="flex flex-col gap-2">
-              {g.unmet.map(u => (
-                <li key={u.id} data-testid="requirement-unmet" data-result={u.result} className="flex flex-col gap-0.5 text-body">
-                  <span className="text-text-primary [overflow-wrap:anywhere]">{u.text ?? u.id} <span className="font-mono text-meta text-text-muted">{u.result}</span></span>
-                  {u.evidence && <span className="text-text-secondary">{u.evidence}</span>}
-                  <span className="font-mono text-meta text-text-muted">{u.action}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
-    </section>
   );
 }
 

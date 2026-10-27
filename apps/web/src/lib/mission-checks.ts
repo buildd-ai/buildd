@@ -237,23 +237,24 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
       // on the integrated result passes it; waived and stale never count.
       const v = outcomeSpecView(c, e, { buildDone: ctx.buildComplete });
       const open = v.open.map(o => `${o.label}: ${countWord(o.criterionIds.length)}`);
-      const detail = sentence(v.coverage, v.unchecked ?? (v.open.length ? open.join('. ') : null), v.waived.length ? `Waived: ${countWord(v.waived.length)}` : null, v.unchecked ? null : v.next);
+      // No count here: the Requirements fold's `requirementsCount` is the one count on the page.
+      const detail = sentence(v.unchecked ?? (v.open.length ? open.join('. ') : null), v.waived.length ? `Waived: ${countWord(v.waived.length)}` : null, v.unchecked ? null : v.next);
       const spec = { commit: e?.spec?.targetSha ? e.spec.targetSha.slice(0, 7) : null, href: `/app/specs/${c.specId}?revision=${c.revision}`, ...(v.criteria.length ? { criteria: v.criteria } : {}) };
       if (!e) return row('queued', 'not checked', ctx.buildComplete ? 'The build is done. It is checked on the integrated result next.' : 'Checked on the integrated result once the build work is done.', spec);
       if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) return row('stale', 'out of date', 'The spec selection changed after it was judged. It needs checking again.', spec);
       if (e.verdict === 'pass') return row('passed', 'passed', detail, { ...spec, actor: 'none' });
       // Waived by a person: nothing is open, and it never reads as passed.
       if (v.waived.length > 0 && v.open.length === 0) return row('waived', 'waived', detail, { ...spec, actor: 'none' });
-      if (e.verdict === 'fail') return row('finding', v.short, detail, { ...spec, problem: 'product' });
+      if (e.verdict === 'fail') return row('finding', 'not met', detail, { ...spec, problem: 'product' });
       // Every open check already ended without a result: nothing is verifying it, so it says what is true.
       if (v.unchecked) return row('queued', 'not checked', detail, spec);
       if (e.verdict === 'PENDING') return row('running', 'verifying', detail, spec);
       // Judged on the integration branch before the mission PR merges, so never "after merge".
       if (e.verdict === 'NOT_EVALUATED' || e.verdict === 'UNVERIFIED') {
         const onlyStale = v.open.length > 0 && v.open.every(o => o.standing === 'stale');
-        return row(onlyStale ? 'stale' : 'queued', v.short, detail, spec);
+        return row(onlyStale ? 'stale' : 'queued', onlyStale ? 'out of date' : 'not checked', detail, spec);
       }
-      return row('queued', v.short, detail, spec);
+      return row('queued', 'not checked', detail, spec);
     }
     if (!e) return unjudged();
     if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) {
@@ -353,9 +354,13 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   const passedCount = verifyRows.filter(r => r.status === 'passed').length;
   const counted = verifyRows.filter(r => r.status !== 'not_applicable').length;
   const firstOpen = verifyOpen.find(r => r.kind === 'visual') ?? verifyOpen[0];
+  // A selected spec's requirements read as Verify counts them (Navigation R-17): `18 of 21 met`.
+  const specRows = criteria.filter(r => r.criteria?.length);
   const verifyText = verifyDone
     ? (counted === 0 ? 'nothing to check' : `${passedCount} of ${counted} passed`)
-    : onlyAfterMerge ? `${plural(verifyOpen.length, 'check')} after merge` : `${firstOpen.label.toLowerCase() === 'visual review' ? '' : `${firstOpen.label}: `}${firstOpen.state}`;
+    : onlyAfterMerge ? `${plural(verifyOpen.length, 'check')} after merge`
+      : firstOpen.kind !== 'visual' && specRows.length > 0 && specRows.some(r => verifyOpen.includes(r)) ? requirementsCount(specRows)
+        : `${firstOpen.label.toLowerCase() === 'visual review' ? '' : `${firstOpen.label}: `}${firstOpen.state}`;
   // Checks can start before the build ends (R-13): a visual review already at work shows here.
   const startedEarly = !!visual && EARLY.has(visual.status);
   const verifyStep: RailStep = !buildComplete && !startedEarly
@@ -464,14 +469,15 @@ export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: reado
 
 /**
  * Verify's Standards line: CI and code review as the merge policy applies
- * them, beside the mission's spec standards. On a mission branch both are
+ * them, beside the mission's spec standards (product voice, the design
+ * system; none until the workspace has them). On a mission branch both are
  * read from the mission PR; a direct mission's task PRs each merged past CI,
  * so CI is met once the build has landed. Code review is left out under the
- * auto-threshold tier, which has none. Null when the mission carries no
- * standards: the line is not shown.
+ * auto-threshold tier, which has none. Null for a mission that selects no
+ * spec: a legacy mission's Verify is its hand-written criteria alone.
  */
 export function missionStandardsLine(input: MissionChecksInput, titles: Readonly<Record<string, string>>): StandardsLine | null {
-  if (!input.criteria.some(c => c.type === 'living_spec' && isStandardCriterion(c))) return null;
+  if (!input.criteria.some(c => c.type === 'living_spec')) return null;
   const buildComplete = isBuildComplete(input.build);
   const pr = input.branch === 'mission-branch' ? input.integrationPr : null;
   const merged: StandardItemStatus = input.branch === 'mission-branch'
@@ -533,50 +539,4 @@ export function requirementsCount(rows: readonly CheckRow[]): string {
     }
   }
   return total === 0 ? 'nothing to check' : `${met} of ${total} met`;
-}
-
-/** One selected spec's requirements for the Verify stage (R-17): only what is in scope, only the unmet ones listed. */
-export interface RequirementGroup {
-  key: string;
-  /** `From <spec name>`. */
-  heading: string;
-  href: string | null;
-  inScope: number;
-  met: number;
-  /** Unmet requirements, each with its result word, evidence (the reason a check gave) and the current action. */
-  unmet: { id: string; text: string | null; result: CriterionLine['result']; evidence: string | null; action: string }[];
-  /** `All 3 met`: the one line an all-met group folds into. Null while any is unmet. */
-  metLine: string | null;
-}
-
-export interface RequirementGroups { groups: RequirementGroup[]; total: string }
-
-function currentAction(r: CheckRow, line: CriterionLine): string {
-  if (r.actor === 'owner') return 'Waiting on you';
-  if (r.actor === 'reviewer') return 'With the reviewer';
-  if (r.status === 'running') return 'Verifying now';
-  if (r.status === 'finding' || line.result === 'failed') return r.repairs.some(x => !x.done) ? 'A fix is open' : 'Needs a fix';
-  if (line.result === 'out of date') return 'Checks again next';
-  return 'Checks next';
-}
-
-/**
- * Group the spec rows' requirements by spec, count only those in scope per
- * spec (waived ones are out), and total across the groups: `18 of 21 met`.
- * Rows without per-requirement lines are not groups; `requirementsCount`
- * still counts them.
- */
-export function requirementGroups(rows: readonly CheckRow[]): RequirementGroups {
-  const groups: RequirementGroup[] = [];
-  for (const r of rows) {
-    if (r.kind !== 'criterion' || !r.criteria?.length) continue;
-    const counted = r.criteria.filter(l => l.result !== 'waived');
-    const met = counted.filter(l => l.result === 'passed').length;
-    const unmet = counted.filter(l => l.result !== 'passed').map(l => ({ id: l.id, text: l.text, result: l.result, evidence: l.reason, action: currentAction(r, l) }));
-    groups.push({
-      key: r.key, heading: `From ${r.label}`, href: r.href ?? null, inScope: counted.length, met, unmet,
-      metLine: counted.length > 0 && unmet.length === 0 ? `All ${counted.length} met` : null,
-    });
-  }
-  return { groups, total: requirementsCount(rows) };
 }
