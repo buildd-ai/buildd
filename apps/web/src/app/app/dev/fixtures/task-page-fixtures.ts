@@ -168,7 +168,8 @@ export function taskPageFixture(c: TaskPageCase): TaskPageFixture {
       ];
       attempts = [1, 2].map(n => A({ id: `f${n}`, family: 'review_fix', attemptNo: n, triggerReason: `r${n}`, taskId: `fix-${n}`, status: 'ended', outcome: 'delivered', maxAttempts: 2 }));
       kernelFindings = [
-        FINDING(1, 'Mutation testing does not cover the new guard'),
+        // Raised in round 1 and restated by rounds 2 and 3: one row, "restated 2 times" (fa62b865 R-48).
+        FINDING(1, 'Mutation testing does not cover the new guard', { restatedCount: 2 }),
         FINDING(2, 'Verify the query against a real Postgres, not the mocked db', { status: 'addressed', addressedBySha: HEAD_B }),
         FINDING(3, 'Rename the flag to say what it gates', { status: 'resolved', closedByRoundId: 'r2' }),
       ];

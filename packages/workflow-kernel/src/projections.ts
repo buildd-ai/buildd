@@ -19,12 +19,12 @@
  *     canonical state and its current attempt, never from the worst attempt.
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
-import { findingTotals, openRequiredFindings, type FindingTotals } from './findings';
+import { evidenceRoundFindingIds, findingLine, findingTotals, isRoundFinding, openRequiredFindings, shortFindingId, type FindingTotals } from './findings';
 import { deriveEscalationBrief, type EscalationBrief, type EscalationBriefPermissions } from './escalation-brief';
 import { landingStatusOf } from './landing-gate';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
-import { attemptOrdinal, attemptView } from './reducer';
-import type { AttemptFamily, AttemptSnapshot, CloseActor, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RoundSnapshot } from './types';
+import { attemptOrdinal, attemptView, spentReviewRounds } from './reducer';
+import type { AttemptFamily, AttemptSnapshot, CloseActor, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RemedyClass, RoundSnapshot } from './types';
 
 export type { DeliverySnapshot } from './types';
 
@@ -216,6 +216,85 @@ export interface DeliveryView {
    * same base, no repair running. Null when not parked. Owner is `landing` then.
    */
   laneWait?: LaneWait | null;
+  /**
+   * Living Spec fa62b865 R-50: the one review reading every surface shows (task page, mission
+   * page, get_pr, get_pr_review, explain, the commit status and the sticky comment). No surface
+   * derives a review state of its own.
+   */
+  review: ReviewReading;
+}
+
+/** A review's outcome as every surface names it (R-50). */
+export type ReviewVerdict = 'none' | 'queued' | 'reviewing' | 'collecting_evidence' | 'changes_requested' | 'approved' | 'escalated' | 'failed' | 'merged';
+
+/** One open finding in the shape every surface lists it (R-48): once, by id, with where and what. */
+export interface ReadingFinding {
+  id: string;
+  shortId: string;
+  path: string | null;
+  line: number | null;
+  title: string;
+  status: FindingSnapshot['status'];
+  remedyClass: RemedyClass;
+  restatedCount: number;
+  /** The one-line form: "`ab12cd34:0` src/a.ts:4: off by one (restated twice)". */
+  text: string;
+  /** The finding a request for changes with nothing structured stands for: its words are the review's prose. */
+  standsForRound: boolean;
+}
+
+export interface ReviewReading {
+  /** The delivery's state line (`DeliveryView.headline`): the same words on every surface. */
+  stateLine: string;
+  verdict: ReviewVerdict;
+  /** "Round n of m": the current round's number, and the rounds spent of the budget (§11.1: only code fixes spend). */
+  round: number;
+  roundsSpent: number;
+  roundBudget: number;
+  /** The required findings still open (`open` or `addressed`), oldest first. */
+  openFindings: ReadingFinding[];
+  totals: FindingTotals;
+  /** The review stops the PR until something answers it: open it, never bury it (Task Page AC-28). */
+  blocks: boolean;
+  escalation: EscalationBrief | null;
+}
+
+const REVIEW_ESCALATIONS = new Set(['review_escalated', 'review_exhausted', 'review_unavailable']);
+
+function readingFinding(f: FindingSnapshot): ReadingFinding {
+  return {
+    id: f.id, shortId: shortFindingId(f.id), path: f.path, line: f.line, title: f.title, status: f.status,
+    remedyClass: f.remedyClass ?? 'code_fix', restatedCount: f.restatedCount ?? 0, text: findingLine(f), standsForRound: isRoundFinding(f),
+  };
+}
+
+/** R-50: the review reading, from the delivery alone. */
+export function reviewReadingOf(view: KernelView, headline: string, escalation: EscalationBrief | null): ReviewReading {
+  const d = view.delivery!;
+  const current = view.rounds.find((r) => r.round === d.currentRound) ?? null;
+  const reviewEscalation = d.state === 'ESCALATED' && REVIEW_ESCALATIONS.has(d.stateReason ?? '');
+  const verdict: ReviewVerdict =
+    d.state === 'MERGED' ? 'merged'
+    : reviewEscalation ? 'escalated'
+    : current?.status === 'failed' ? 'failed'
+    : d.state === 'CHANGES_REQUESTED' || d.state === 'FIXING' ? 'changes_requested'
+    : d.state === 'AWAITING_REVIEW' && d.stateReason === 'evidence' ? 'collecting_evidence'
+    : d.state === 'AWAITING_REVIEW' ? (current?.status === 'reviewing' ? 'reviewing' : current ? 'queued' : 'none')
+    : d.currentHeadSha != null && (d.approvedHeads.includes(d.currentHeadSha) || d.compositionHeads.includes(d.currentHeadSha)) ? 'approved'
+    : current?.status === 'decided' && current.effectiveVerdict === 'request_changes' ? 'changes_requested'
+    : current?.status === 'decided' && current.effectiveVerdict === 'approve' ? 'approved'
+    : 'none';
+  return {
+    stateLine: headline,
+    verdict,
+    round: d.currentRound,
+    roundsSpent: spentReviewRounds(view),
+    roundBudget: d.maxRounds,
+    openFindings: openRequiredFindings(view).map(readingFinding),
+    totals: findingTotals(view.findings),
+    blocks: verdict === 'changes_requested' || verdict === 'escalated' || verdict === 'failed',
+    escalation,
+  };
 }
 
 /**
@@ -449,6 +528,14 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       break;
     case 'AWAITING_REVIEW': {
       const round = input.view.rounds.find((r) => r.round === d.currentRound);
+      if (d.stateReason === 'evidence') {
+        // §11.1 R-46: buildd is capturing what an evidence finding needs; no builder is asked, no round spent.
+        const n = evidenceRoundFindingIds(round).length;
+        headline = 'Collecting evidence';
+        detail = `capturing ${n === 1 ? 'one design screen' : `${countWord(n)} design screens`} at ${short(round?.headSha ?? d.currentHeadSha)}`;
+        owner = 'platform';
+        break;
+      }
       headline = round?.status === 'reviewing' ? 'Reviewing' : 'Review queued';
       detail = round ? `round ${round.round} at ${short(round.headSha)}${round.kind === 'delta' ? ' · changes since the last review' : ''}` : null;
       break;
@@ -553,6 +640,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     cta = null;
   }
 
+  const escalation = deriveEscalationBrief(input.view, input.escalationPermissions);
   const attempts: DeliveryView['attempts'] = {};
   for (const fam of ['review_fix', 'ci', 'conflict', 'migration', 'trunk'] as AttemptFamily[]) {
     if (input.view.attempts.some((a) => a.family === fam)) attempts[fam] = attemptView(input.view.attempts, fam, d.maxRounds);
@@ -592,8 +680,9 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     addressedFindings: openRequiredFindings(input.view).filter((f) => f.status === 'addressed').length,
     findingTotals: findingTotals(input.view.findings),
     reviewApproval: reviewApprovalOf(input.view),
-    escalation: deriveEscalationBrief(input.view, input.escalationPermissions),
+    escalation,
     laneWait,
+    review: reviewReadingOf(input.view, headline, escalation),
   };
 }
 

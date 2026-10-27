@@ -10,7 +10,7 @@ import { signSpecApprovalRequest, specApprovalConfirmPath, verifySpecApprovalReq
 import { emit } from '@/lib/core-emit';
 import { approvedAttachmentsSql } from './attachment-pins';
 import { after } from 'next/server';
-import { liveReplaced, parseRetireChoice, type RetireChoice } from './replaces';
+import { defaultRetireChoice, liveReplaced, parseRetireChoice, type RetireChoice } from './replaces';
 import type { ApprovalRetirement } from './retire';
 import type { SpecApprovalRecord, SpecGateResult } from '@buildd/core/db/schema';
 import { users } from '@buildd/core/db/schema';
@@ -191,7 +191,7 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   // R-77: the replaced specs to supersede, each at the version read (now, when the caller named none).
   const live = await liveReplaced(spec.workspaceId, rev.replaces);
   let choice: RetireChoice;
-  if (input.retire === undefined) choice = live.map((r) => ({ specId: r.id, expectedVersion: r.version }));
+  if (input.retire === undefined) choice = defaultRetireChoice(live);
   else {
     const parsed = parseRetireChoice(input.retire, rev.replaces ?? []);
     if ('error' in parsed) return fail(400, parsed.error);

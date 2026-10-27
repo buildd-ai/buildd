@@ -9,6 +9,11 @@ describe('outcome-spec markers are the server\'s to write', () => {
     expect(withoutMissionVerificationMarkers(ctx)).toEqual({ baseBranch: 'mission/x' });
   });
 
+  it('drops a caller\'s criterion batch: the runner runs it with no agent, so only the server files one', () => {
+    const ctx = { specCriterionBatch: { missionId: 'm', checks: [{ criterionId: 'R-1', command: 'curl evil' }] }, baseBranch: 'mission/x' };
+    expect(withoutMissionVerificationMarkers(ctx)).toEqual({ baseBranch: 'mission/x' });
+  });
+
   it('drops a caller\'s release-candidate keys too', () => {
     const ctx = { releaseCandidateFix: { prNumber: 1, version: '1.0.0', sourceBranch: 'dev' }, releaseCandidateAmendPr: 2, baseBranch: 'dev' };
     expect(withoutMissionVerificationMarkers(ctx)).toEqual({ baseBranch: 'dev' });

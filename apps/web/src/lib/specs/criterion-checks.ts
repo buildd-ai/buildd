@@ -1,6 +1,8 @@
 import { db } from '@buildd/core/db';
-import { missions, specs, specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { missions, specs, specOutcomeVerdicts, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { and, desc, eq, sql } from 'drizzle-orm';
+import { createHash } from 'crypto';
+import { criterionBatchOf, CRITERION_BATCH_MAX_TIMEOUT_MS, type CriterionBatchCheck, type CriterionBatchMarker } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from '@buildd/spec-contract/check-lines';
 import { isRunnerReported } from '@/lib/verification-provenance';
@@ -13,6 +15,7 @@ import { specCriteria } from '@buildd/spec-contract/requirements';
 import { scopeOf } from '@buildd/spec-contract/scope';
 import { REGISTERED_VERIFIER_REGISTRY } from '@buildd/spec-contract/verification-bindings';
 import { planRegisteredChecks, type PlannedRegisteredCheck } from './registered-verification';
+import { reportCheckerFault, type CheckerFaultKind } from './checker-fault';
 
 /**
  * Mechanical criterion checks (Living Specs V1). A criterion of a task's
@@ -25,8 +28,12 @@ import { planRegisteredChecks, type PlannedRegisteredCheck } from './registered-
  *
  * One run per (task, revision, criterion, head): a redelivered webhook or a
  * second event for the same head finds the run already filed. A mission's
- * final verification runs one per (mission, revision, criterion, command,
- * head), whichever verification task asks. Criteria with no
+ * final verification instead files ONE run for the whole target (R-81): per
+ * (mission, revision, head, command set), whichever verification task asks.
+ * The runner runs it with no agent session (apps/runner/src/criterion-batch.ts):
+ * one checkout, then each criterion's command under its own timeout, and one
+ * report with an exit code per criterion, each of which becomes that
+ * criterion's verdict. Criteria with no
  * check stay graded by the reviewer or a person. Advisory (D-5): a failed
  * check reads as a failed outcome and blocks nothing.
  *
@@ -55,6 +62,7 @@ export interface CriterionCheckMarker {
 const MAX_EXCERPT = 2000;
 const SHA40 = /^[0-9a-f]{40}$/;
 const TITLE_PREFIX = 'Check spec criterion';
+const BATCH_TITLE_PREFIX = 'Check spec criteria';
 
 type Wake = (task: { id: string; title: string; workspaceId: string; missionId?: string }) => Promise<void>;
 export interface CheckDeps { wake?: Wake }
@@ -88,7 +96,7 @@ const markerOf = (context: unknown): CriterionCheckMarker | null => {
 
 /** True when this task is a criterion check run (cheap context check). */
 export function isCriterionCheckTask(context: unknown): boolean {
-  return markerOf(context) !== null;
+  return markerOf(context) !== null || criterionBatchOf(context) !== null;
 }
 
 async function defaultWake(task: { id: string; title: string; workspaceId: string; missionId?: string }): Promise<void> {
@@ -134,11 +142,13 @@ async function pinnedChecks(taskId: string): Promise<
     const spec = await db.query.specs.findFirst({ where: sqlWhere(eq(specs.id, pin.specId)), columns: { metadata: true } });
     const byCriterion = asRecord(asRecord(spec?.metadata)?.verified_by);
     const known = new Set(specCriteria(read.body).map((c) => c.id));
+    // A criterion's own `check:` line is what the approved words say grades it; verified_by only fills in the rest.
+    const ownCheck = new Set(registered.map((c) => c.criterionId));
     for (const [criterionId, paths] of Object.entries(byCriterion ?? {})) {
+      if (ownCheck.has(criterionId)) continue;
       if (!known.has(criterionId) || !Array.isArray(paths) || !paths.length || !paths.every((p) => typeof p === 'string' && isRepoPath(p))) continue;
       const quote = (v: string) => "'" + v.replace(/'/g, "'\"'\"'") + "'";
       const command = `bun run scripts/run-acceptance-tests.ts ${[criterionId, ...new Set(paths)].map(quote).join(' ')}`;
-      registered = registered.filter((c) => c.criterionId !== criterionId);
       registered.push({ criterionId, command });
     }
   }
@@ -212,10 +222,12 @@ export async function dispatchCriterionChecks(
   if (p.checks.length === 0 && p.registered.length === 0) return { dispatched: 0, reason: 'no criterion this task answers for names a check' };
   const wake = deps.wake ?? defaultWake;
 
-  const runs: FiledRun[] = [
-    ...p.checks.map((check) => commandRun(opts, p.specRevisionId, headSha, check, p.missionId, p.targetKey)),
-    ...p.registered.map((planned) => registeredRun(opts, headSha, planned)),
-  ];
+  const runs: FiledRun[] = p.missionId
+    ? (p.checks.length ? [batchRun(opts, p.specRevisionId, headSha, p.checks, p.missionId, p.targetKey)] : [])
+    : [
+      ...p.checks.map((check) => commandRun(opts, p.specRevisionId, headSha, check)),
+      ...p.registered.map((planned) => registeredRun(opts, headSha, planned)),
+    ];
   let dispatched = 0;
   for (const run of runs) {
     if (run.mission && !opts.rerun && !shouldFileMissionRun(await priorMissionRuns(p.workspaceId, run.mission), headSha, p.targetKey ?? null)) continue;
@@ -257,19 +269,19 @@ interface FiledRun {
   description: string;
   loopConfig: Record<string, unknown> | null;
   context: Record<string, unknown>;
-  /** A mission's run: what earlier runs of the same check are looked up by. */
-  mission?: { missionId: string; specRevisionId: string; criterionId: string; command: string };
+  /** A mission's run: what earlier runs of the same command set are looked up by. */
+  mission?: { missionId: string; specRevisionId: string; commandSet: string };
 }
 
 async function priorMissionRuns(workspaceId: string, m: NonNullable<FiledRun['mission']>): Promise<PriorMissionRun[]> {
   const rows = await db.select({ id: tasks.id, status: tasks.status, context: tasks.context }).from(tasks)
-    .where(and(eq(tasks.workspaceId, workspaceId), sameRun({ specCriterionCheck: m }))).limit(200);
+    .where(and(eq(tasks.workspaceId, workspaceId), sameRun({ specCriterionBatch: m }))).limit(200);
   if (!rows.length) return [];
   const concluded = await db.select({ taskId: sql<string>`${specOutcomeVerdicts.evidence}->>'verificationTaskId'` }).from(specOutcomeVerdicts)
-    .where(and(eq(specOutcomeVerdicts.missionId, m.missionId), eq(specOutcomeVerdicts.criterionId, m.criterionId), sql`${specOutcomeVerdicts.verdict} IN ('pass', 'fail')`));
+    .where(and(eq(specOutcomeVerdicts.missionId, m.missionId), sql`${specOutcomeVerdicts.verdict} IN ('pass', 'fail')`, sql`${specOutcomeVerdicts.evidence}->>'verificationTaskId' IN (${sql.join(rows.map((r) => sql`${r.id}`), sql`, `)})`));
   const done = new Set(concluded.map((r) => r.taskId));
   return rows.flatMap((r) => {
-    const marker = markerOf(r.context);
+    const marker = criterionBatchOf(r.context);
     return marker ? [{
       headSha: marker.headSha, targetKey: marker.targetKey ?? null,
       terminal: ['completed', 'failed', 'cancelled'].includes(r.status), concluded: done.has(r.id),
@@ -279,29 +291,14 @@ async function priorMissionRuns(workspaceId: string, m: NonNullable<FiledRun['mi
 
 type DispatchTarget = { taskId: string; headBranch: string | null };
 
-/**
- * A PR task's run belongs to that task. A mission's run belongs to the
- * mission: every final verification of one target (a re-filed one, or two
- * filed by racing evaluations) reuses the run the first one filed, instead of
- * filing its own set. The command is in the mission key because a mission's
- * command also comes from the spec's verified_by paths, which can change
- * within one revision.
- */
-function commandRun(opts: DispatchTarget, specRevisionId: string, headSha: string, check: CriterionCheck, missionId?: string, targetKey?: string): FiledRun {
-  const marker: CriterionCheckMarker = {
-    subjectTaskId: opts.taskId, specRevisionId, criterionId: check.criterionId, headSha, command: check.command,
-    ...(missionId ? { missionId } : {}),
-    ...(missionId && targetKey ? { targetKey } : {}),
-  };
-  const key = missionId
-    ? { missionId, specRevisionId, criterionId: check.criterionId, headSha, command: check.command }
-    : { subjectTaskId: opts.taskId, specRevisionId, criterionId: check.criterionId, headSha };
+/** A PR task's run: one per (task, revision, criterion, head). */
+function commandRun(opts: DispatchTarget, specRevisionId: string, headSha: string, check: CriterionCheck): FiledRun {
+  const marker: CriterionCheckMarker = { subjectTaskId: opts.taskId, specRevisionId, criterionId: check.criterionId, headSha, command: check.command };
+  const key = { subjectTaskId: opts.taskId, specRevisionId, criterionId: check.criterionId, headSha };
   const command = checkCommandAt(check.command, headSha);
   return {
     key: { specCriterionCheck: key },
-    lockKey: missionId
-      ? `mission:${missionId}:${specRevisionId}:${check.criterionId}:${headSha}`
-      : `${opts.taskId}:${specRevisionId}:${check.criterionId}:${headSha}`,
+    lockKey: `${opts.taskId}:${specRevisionId}:${check.criterionId}:${headSha}`,
     title: `${TITLE_PREFIX} ${check.criterionId} at ${headSha.slice(0, 7)}`,
     description:
       '## Spec criterion check\n\n' +
@@ -310,13 +307,68 @@ function commandRun(opts: DispatchTarget, specRevisionId: string, headSha: strin
       'The runner re-runs the command itself after you finish and reports its exit code. That exit code, not your summary, ' +
       `is the verdict on ${check.criterionId}. Keep your turn short.`,
     loopConfig: { exitCondition: { type: 'command', command }, maxLoops: 1 },
-    ...(missionId ? { mission: { missionId, specRevisionId, criterionId: check.criterionId, command: check.command } } : {}),
     context: {
       specCriterionCheck: marker,
       verificationCommand: command,
       // Cut the worktree from the PR branch; the command checks out headSha itself.
       ...(opts.headBranch ? { baseBranch: opts.headBranch } : {}),
       // One honest run per head: no silent second attempt.
+      retryCount: 1,
+    },
+  };
+}
+
+const TEST_FILE = /(?:^|[\s'"])[^\s'"]+\.(?:test|spec)\.[cm]?[jt]sx?(?=$|[\s'"])/g;
+
+/**
+ * A criterion command's own limit, sized to what it names: two minutes plus
+ * one per test file, or ten minutes for a command that names none (a suite or
+ * a script whose size cannot be read off it). The runner bounds it again.
+ */
+export function criterionTimeoutMs(command: string): number {
+  const files = command.match(TEST_FILE)?.length ?? 0;
+  const ms = files ? 120_000 + 60_000 * files : 600_000;
+  return Math.min(ms, CRITERION_BATCH_MAX_TIMEOUT_MS);
+}
+
+/** What makes two batches the same work: each criterion's command, order-independent. */
+export function commandSetOf(checks: readonly CriterionCheck[]): string {
+  const canonical = [...checks].map((c) => [c.criterionId, c.command]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16);
+}
+
+/**
+ * A mission's run: every in-scope criterion of one target in one runner job.
+ * It belongs to the mission: every final verification of one target (a
+ * re-filed one, or two filed by racing evaluations) reuses the run the first
+ * one filed. The command set is in the key because a mission's commands also
+ * come from the spec's verified_by paths, which can change within one revision.
+ */
+function batchRun(opts: DispatchTarget, specRevisionId: string, headSha: string, checks: readonly CriterionCheck[], missionId: string, targetKey?: string): FiledRun {
+  const commandSet = commandSetOf(checks);
+  const batch: CriterionBatchCheck[] = checks.map((c) => ({ criterionId: c.criterionId, command: c.command, timeoutMs: criterionTimeoutMs(c.command) }));
+  const marker: CriterionBatchMarker = {
+    subjectTaskId: opts.taskId, missionId, specRevisionId, headSha, commandSet, checks: batch,
+    ...(targetKey ? { targetKey } : {}),
+  };
+  return {
+    key: { specCriterionBatch: { missionId, specRevisionId, headSha, commandSet } },
+    lockKey: `mission:${missionId}:${specRevisionId}:${headSha}:${commandSet}`,
+    title: `${BATCH_TITLE_PREFIX} (${checks.length}) at ${headSha.slice(0, 7)}`,
+    description:
+      '## Spec criterion checks\n\n' +
+      `The runner runs this itself, with no agent: it checks out \`${headSha}\` once, runs each criterion's command in turn ` +
+      'under its own timeout and reports one exit code per criterion. Each exit code is that criterion\'s verdict.\n\n' +
+      batch.map((c) => `- ${c.criterionId}: \`${c.command}\``).join('\n') + '\n\n' +
+      'An agent session that reads this was started by a runner that predates these runs: do NOT run anything, ' +
+      'call complete_task with error "runner does not run criterion batches" and stop.',
+    loopConfig: null,
+    mission: { missionId, specRevisionId, commandSet },
+    context: {
+      specCriterionBatch: marker,
+      // Cut the worktree from the mission branch; the runner checks out headSha itself.
+      ...(opts.headBranch ? { baseBranch: opts.headBranch } : {}),
+      // One honest run per target: no silent second attempt.
       retryCount: 1,
     },
   };
@@ -359,12 +411,14 @@ const excerpt = (v: unknown) => (typeof v === 'string' ? v.slice(-MAX_EXCERPT) :
 export async function handleCriterionCheckOutcome(
   verificationTaskId: string,
   evidence?: unknown,
-): Promise<{ recorded: boolean; verdict?: string; reason?: string }> {
+): Promise<{ recorded: boolean; verdict?: string; verdicts?: Record<string, string>; checkerFault?: CheckerFaultKind; reason?: string }> {
   if (!isUuid(verificationTaskId)) return { recorded: false, reason: 'not a task id' };
   const [task] = await db.select({
     id: tasks.id, status: tasks.status, workspaceId: tasks.workspaceId, context: tasks.context,
     loopConfig: tasks.loopConfig, result: tasks.result, creationSource: tasks.creationSource,
   }).from(tasks).where(eq(tasks.id, verificationTaskId)).limit(1);
+  const batch = criterionBatchOf(task?.context);
+  if (task && batch) return handleBatchOutcome(task, batch, evidence);
   const marker = markerOf(task?.context);
   if (!task || !marker) return { recorded: false, reason: 'not a criterion check run' };
   if (!['completed', 'failed', 'cancelled'].includes(task.status)) return { recorded: false, reason: 'the run has not finished' };
@@ -420,4 +474,103 @@ export async function handleCriterionCheckOutcome(
     : await recordCheckVerdict(marker.subjectTaskId, input);
   if (!r.ok) return { recorded: false, reason: r.error };
   return { recorded: true, verdict };
+}
+
+type BatchOutcome = { recorded: boolean; verdicts?: Record<string, string>; checkerFault?: CheckerFaultKind; reason?: string };
+
+/** The runner's report stored on the run's newest worker, for a call that did not pass it. */
+async function storedBatchEvidence(taskId: string): Promise<Record<string, unknown> | null> {
+  const [w] = await db.select({ evidence: workers.verificationEvidence }).from(workers)
+    .where(eq(workers.taskId, taskId)).orderBy(desc(workers.createdAt)).limit(1);
+  return asRecord(w?.evidence);
+}
+
+/**
+ * One verdict per criterion of a mission's batch run, from the runner's one
+ * report. Same rules as a single run: the run is exactly what dispatch filed,
+ * the selection still names each command, and the report is the runner's,
+ * never the agent's. A criterion whose command changed since, or with no
+ * result in the report, records nothing. A run that proved nothing (every
+ * criterion inconclusive, or no report at all) is reported as a checker fault.
+ */
+async function handleBatchOutcome(
+  task: { id: string; status: string; workspaceId: string; creationSource: string | null },
+  marker: CriterionBatchMarker,
+  evidence: unknown,
+): Promise<BatchOutcome> {
+  if (!['completed', 'failed', 'cancelled'].includes(task.status)) return { recorded: false, reason: 'the run has not finished' };
+  if (marker.subjectTaskId === task.id || task.creationSource !== 'orchestrator') return { recorded: false, reason: 'not a run buildd filed' };
+  const p = await pinnedChecks(marker.subjectTaskId);
+  if (!p.ok) return { recorded: false, reason: p.reason };
+  if (p.missionId !== marker.missionId) return { recorded: false, reason: 'the run is not this mission\'s' };
+  if (p.workspaceId !== task.workspaceId || p.specRevisionId !== marker.specRevisionId) return { recorded: false, reason: 'the pinned revision no longer names these checks' };
+  if (!recordMissionVerdict) return { recorded: false, reason: 'no mission verdict recorder is registered' };
+
+  const fault = (kind: CheckerFaultKind, detail: string) => reportCheckerFault({
+    kind, workspaceId: task.workspaceId, missionId: marker.missionId, runTaskId: task.id, headSha: marker.headSha, detail,
+  }).catch((err) => console.error(`[spec-checks] checker fault report failed for run ${task.id}:`, err));
+
+  const ev = asRecord(evidence) ?? await storedBatchEvidence(task.id);
+  if (!ev) {
+    // A cancelled run was stopped on purpose; anything else that ends silent is the checker.
+    if (task.status !== 'cancelled') await fault('no_report', `${task.status} with no result for ${marker.checks.length} criteria`);
+    return { recorded: false, reason: 'no command evidence', ...(task.status !== 'cancelled' ? { checkerFault: 'no_report' as const } : {}) };
+  }
+  if (!isRunnerReported(ev)) return { recorded: false, reason: 'the evidence was reported by the agent in the run, not by the runner' };
+  if (ev.conditionType !== 'criterion_batch' || ev.headSha !== marker.headSha) return { recorded: false, reason: 'the evidence is not this run\'s report' };
+  const results = (Array.isArray(ev.results) ? ev.results : []).map(asRecord).filter((r): r is Record<string, unknown> => !!r);
+
+  const decided: Array<{ check: CriterionBatchCheck; result: Record<string, unknown>; verdict: string }> = [];
+  for (const check of marker.checks) {
+    const current = p.checks.find((c) => c.criterionId === check.criterionId);
+    if (!current || current.command !== check.command) continue;
+    const result = results.find((r) => r.criterionId === check.criterionId && r.command === check.command);
+    const verdict = result ? checkVerdict(result) : null;
+    if (result && verdict) decided.push({ check, result, verdict });
+  }
+  if (!decided.length) return { recorded: false, reason: 'the report has no result for a criterion this run checks' };
+  const allInconclusive = decided.length === marker.checks.length && decided.every((d) => d.verdict === 'inconclusive');
+
+  const done = new Set((await db.select({ criterionId: specOutcomeVerdicts.criterionId }).from(specOutcomeVerdicts)
+    .where(and(eq(specOutcomeVerdicts.missionId, marker.missionId), sql`${specOutcomeVerdicts.evidence}->>'verificationTaskId' = ${task.id}`))
+    .limit(500)).map((r) => r.criterionId));
+
+  const verdicts: Record<string, string> = {};
+  let recorded = 0;
+  let lastError: string | undefined;
+  for (const { check, result, verdict } of decided) {
+    verdicts[check.criterionId] = verdict;
+    if (done.has(check.criterionId)) continue;
+    const r = await recordMissionVerdict(marker.missionId, {
+      specRevisionId: marker.specRevisionId,
+      criterionId: check.criterionId,
+      verdict,
+      headSha: marker.headSha,
+      verificationTaskId: task.id,
+      recordedBy: `check:${task.id}`,
+      evidence: {
+        kind: 'check',
+        verificationTaskId: task.id,
+        command: check.command,
+        outcome: result.outcome,
+        ...(typeof result.exitCode === 'number' ? { exitCode: result.exitCode } : {}),
+        ...(typeof result.durationMs === 'number' ? { durationMs: result.durationMs } : {}),
+        ...(typeof result.timeoutMs === 'number' ? { timeoutMs: result.timeoutMs } : {}),
+        ...(excerpt(result.stdout) ? { stdout: excerpt(result.stdout) } : {}),
+        ...(excerpt(result.stderr) ? { stderr: excerpt(result.stderr) } : {}),
+        ...(allInconclusive ? { checkerFault: 'all_inconclusive' } : {}),
+      },
+    });
+    if (r.ok) recorded++;
+    else lastError = r.error;
+  }
+  if (allInconclusive) {
+    const kinds = [...new Set(decided.map((d) => (d.result.outcome === 'failed' ? `exit ${String(d.result.exitCode)}` : String(d.result.outcome))))].join(', ');
+    await fault('all_inconclusive', `${decided.length} of ${decided.length} criteria inconclusive (${kinds})`);
+  }
+  return {
+    recorded: recorded > 0, verdicts,
+    ...(allInconclusive ? { checkerFault: 'all_inconclusive' as const } : {}),
+    ...(recorded === 0 ? { reason: lastError ?? 'already recorded' } : {}),
+  };
 }

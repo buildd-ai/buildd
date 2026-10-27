@@ -153,6 +153,8 @@ export interface RoundSnapshot {
   trigger?: import('./delta-approval').RoundTrigger | null;
   /** How a round that ended without a verdict of its own ended, e.g. `superseded_by_push`. */
   endReason?: string | null;
+  /** §11.1 R-45: a round whose open findings held no code fix spends no review round. */
+  budgetFree?: boolean;
 }
 
 export interface AttemptSnapshot {
@@ -207,6 +209,33 @@ export interface FindingSnapshot {
   closedBy: string | null;
   closedReason: string | null;
   deferredToTaskId: string | null;
+  /** Who can fix it (Living Spec fa62b865 §11.1, R-44). Absent or null reads as `code_fix`. */
+  remedyClass?: RemedyClass | null;
+  /** How many later rounds restated it (R-48). Absent reads as 0. */
+  restatedCount?: number;
+  /** For an `evidence` finding: what buildd captures, and the capture once attached (R-46). */
+  evidence?: EvidenceTarget | null;
+}
+
+/**
+ * Living Spec fa62b865 §11.1: who can fix a finding. Only `code_fix` is fix work and spends a
+ * review round; `evidence` is captured by buildd; the other three are a person's.
+ */
+export type RemedyClass = 'code_fix' | 'evidence' | 'person_decision' | 'capability_gap' | 'operational_run';
+export const REMEDY_CLASSES: readonly RemedyClass[] = ['code_fix', 'evidence', 'person_decision', 'capability_gap', 'operational_run'];
+
+/** What an `evidence` finding needs captured (a design screen beside the built route), and what came of it. */
+export interface EvidenceTarget {
+  criterionId: string | null;
+  screen: string;
+  /** The real route (a page screen) or the dev fixture (a component screen) to capture. */
+  route: string | null;
+  /** The stored capture, once buildd attached it. */
+  artifactId?: string | null;
+  /** The head the capture was taken at. */
+  capturedAt?: string | null;
+  /** Why the capture could not be made, when it could not. */
+  failure?: string | null;
 }
 
 export interface KernelView {

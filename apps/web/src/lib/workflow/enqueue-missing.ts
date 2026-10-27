@@ -15,6 +15,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { EffectSpec } from './commands';
+import { evidenceRoundFindingIds, isEvidenceRound } from '@buildd/workflow-kernel/findings';
 import { currentPushEntry, PUSH_RECOVERY_BACKOFF_MS, pushChainId } from './reducer';
 import type { KernelView, RoundSnapshot } from './types';
 
@@ -59,6 +60,16 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       const prior = lastDecidedBefore(current.round)?.round ?? null;
       const payload = { roundId: current.id, round: current.round, headSha: current.headSha, kind: current.kind, priorRound: prior, scope: current.scope ?? null };
       const base = `dispatch_review:${d.id}:${current.round}`;
+      // Living Spec fa62b865 R-46: an evidence round's first move is buildd's capture. Its reviewer is
+      // dispatched by EvidenceRecorded (under `base`), so with no `base` key the capture is what is owed.
+      if (isEvidenceRound(current) && !existing.has(base)) {
+        const ids = evidenceRoundFindingIds(current);
+        owed.push({
+          kind: 'dispatch_capture', dedupeKey: `dispatch_capture:${d.id}:${current.round}`,
+          payload: { roundId: current.id, round: current.round, headSha: current.headSha, findings: (view.findings ?? []).filter((f) => ids.includes(f.id)).map((f) => ({ id: f.id, title: f.title, ...(f.evidence ?? {}) })) },
+        });
+        break;
+      }
       if (!existing.has(base)) {
         owed.push({ kind: 'dispatch_review', dedupeKey: base, payload });
         break;

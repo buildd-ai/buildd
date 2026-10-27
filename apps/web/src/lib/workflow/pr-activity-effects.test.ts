@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { ACTIVITY_COMMENT_MARKER } from '@/lib/pr-activity-comment';
-import { activityNoteKey, activityNotesSql, divertActivityNote, divertNoteSql, kernelDeliveryForActivitySql, renderActivityEffect, transitionsSql } from './pr-activity-effects';
+import { activityNoteKey, divertActivityNote, divertNoteSql, kernelDeliveryForActivitySql, renderActivityEffect, transitionsSql } from './pr-activity-effects';
 import { renderVersionMarker } from './pr-activity-render';
 import type { ClaimedEffect } from './effects';
 import type { Exec } from './kernel';
@@ -148,12 +148,6 @@ describe('read SQL renders through PgDialect', () => {
     const q = dialect.sqlToQuery(transitionsSql('d1'));
     expect(q.sql).toContain('FROM workflow_transitions');
     expect(q.sql).toContain('ORDER BY');
-    expect(q.params).toContain('d1');
-  });
-  test("activity notes: only this delivery's activity_note facts", () => {
-    const q = dialect.sqlToQuery(activityNotesSql('d1'));
-    expect(q.sql).toContain('FROM workflow_facts');
-    expect(q.sql + JSON.stringify(q.params)).toContain('activity_note');
     expect(q.params).toContain('d1');
   });
   test('kernel delivery lookup: kernel authority only, scoped by repo and PR (and workspace when given)', () => {
