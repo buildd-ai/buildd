@@ -27,6 +27,7 @@ function deps(over: Partial<HealthQueueDeps> = {}): HealthQueueDeps {
     titles: mock(async () => new Map<string, string>()),
     live: mock(async (ws: string[]) => (ws.length > 1 ? 5 : 2)),
     slots: mock(async () => 6),
+    capacity: mock(async () => ({ used: 2, total: 6 })),
     ...over,
   };
 }
@@ -44,6 +45,7 @@ describe('loadHealthQueue', () => {
     // Running is the filtered scope (2); slots are the team's (6).
     expect(v.tiles.running).toBe(2);
     expect(v.tiles.slots).toBe(6);
+    expect(v.tiles.capacity).toEqual({ used: 2, total: 6 });
     // Idle = 6 slots − 5 team runs = 1: the first ready task starts now.
     expect(v.ready.map(r => r.note)).toEqual(['Starts now', 'Next free slot']);
   });
