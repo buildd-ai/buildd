@@ -77,6 +77,10 @@ export interface FleetWorkerRow {
     roleSlug?: string | null;
     missionId?: string | null;
     taskClass?: string | null;
+    /** A helper run (check, audit, final verification), from `helperRunSql`. */
+    helper?: boolean | null;
+    /** The task a helper checks, when it checks one. */
+    hostTaskId?: string | null;
   } | null;
 }
 
@@ -266,6 +270,8 @@ export function buildFleetSnapshot(
         workerId: w.id, taskId: t?.id ?? null, missionId: t?.missionId ?? null,
         label, rest, name: t ? taskShortName(t) : undefined, title: t?.title ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
         status: w.status, phase: w.phase ?? null,
+        ...(t?.helper ? { helper: true } : {}),
+        ...(t?.helper && t.hostTaskId ? { hostTaskId: t.hostTaskId } : {}),
         startedAt: new Date(iv.start).toISOString(),
         question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Has a question' : null,
         ...(mine !== undefined && { mine }),

@@ -91,8 +91,8 @@ describe('overviewLayout', () => {
   const layout = overviewLayout(ten);
   const groupOf = (id: string) => layout.groups.find(g => g.ids.includes(id))?.key;
 
-  it('puts Done, In progress and Waiting in that order, then checks', () => {
-    expect(layout.groups.map(g => g.key)).toEqual(['done', 'active', 'waiting', 'checks']);
+  it('puts Done, In progress and Waiting in that order, ', () => {
+    expect(layout.groups.map(g => g.key)).toEqual(['done', 'active', 'waiting']);
     expect(layout.order).toEqual(layout.groups.flatMap(g => g.ids));
   });
 
@@ -104,11 +104,11 @@ describe('overviewLayout', () => {
     }
   });
 
-  it('keeps audit, fix and refresh rows out of the build groups', () => {
+  it('leaves audit, fix and refresh rows out of every group and cell (R-12)', () => {
     const audit = Object.values(ten.tasks).find(t => t.deliverableRole !== 'build')!;
-    expect(groupOf(audit.id)).toBe('checks');
-    const build = layout.groups.filter(g => g.key !== 'checks').flatMap(g => g.ids);
-    expect(build.every(id => ten.tasks[id].deliverableRole === 'build')).toBe(true);
+    expect(groupOf(audit.id)).toBeUndefined();
+    expect(layout.order).not.toContain(audit.id);
+    expect(layout.order.every(id => ten.tasks[id].deliverableRole === 'build')).toBe(true);
   });
 
   it('moves a task to Done when it lands; nothing else changes group', () => {
@@ -163,7 +163,7 @@ describe('overviewWaitCause', () => {
 describe('overviewLegend', () => {
   it('says each group in words, waiting split by cause', () => {
     const ten = overviewWavesBoard(20);
-    expect(overviewLegend(ten, overviewLayout(ten)).map(e => e.text)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 blocked', '1 not started', '1 check']);
+    expect(overviewLegend(ten, overviewLayout(ten)).map(e => e.text)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 blocked', '1 not started']);
   });
 
   it('drops a cause nothing has', () => {
