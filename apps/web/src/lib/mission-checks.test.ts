@@ -240,11 +240,24 @@ describe('criteriaChecks: the outcome spec is one Verify row (R-29)', () => {
   it('a waived or stale requirement never reads as passed', () => {
     const [row] = criteriaChecks([spec], state('UNVERIFIED', [['R-1', 'pass'], ['R-2', 'stale'], ['R-3', 'pass']]), ctx);
     expect(row.status).toBe('stale');
-    expect(row.state).toBe('1 of 3 pass');
+    // Counted as Verify counts it: the waived one is left out (Navigation R-17).
+    expect(row.state).toBe('1 of 2 met');
     expect(row.detail).toContain('Out of date: one');
     expect(row.detail).toContain('Waived: one');
     expect(row.criteria?.map(l => [l.id, l.result])).toEqual([['R-1', 'passed'], ['R-2', 'out of date'], ['R-3', 'waived']]);
     expect(row.commit).toBe('abc1234');
+  });
+
+  it('the rail reads the requirements total across selected specs, as Verify does (Navigation R-17, AC-11)', () => {
+    const other: GoalCriterion = { ...spec, specId: '00000000-0000-4000-8000-000000000009', waived: [] } as GoalCriterion;
+    const pass = (n: number, from = 1) => Array.from({ length: n }, (_, i) => [`R-${i + from}`, 'pass'] as [string, 'pass']);
+    const st = criteriaState([
+      { index: 0, type: 'living_spec', verdict: 'fail', fingerprint: fp, spec: { specId: '', revision: 7, targetSha: 'abc', standings: [...pass(15, 10), ['AC-1', 'fail'], ['AC-8', 'missing'], ['AC-9', 'missing']].map(([criterionId, standing]) => ({ criterionId, standing: standing as 'pass', headSha: null })) } },
+      { index: 1, type: 'living_spec', verdict: 'pass', fingerprint: criterionFingerprint(other), spec: { specId: '', revision: 7, targetSha: 'abc', standings: pass(3, 40).map(([criterionId, standing]) => ({ criterionId, standing, headSha: null })) } },
+    ]);
+    const c = missionChecks(input({ branch: 'direct', integrationPr: null, visual: null, criteria: [{ ...spec, waived: [] } as GoalCriterion, other], criteriaState: st }));
+    expect(c.rail[1]).toMatchObject({ state: 'now', text: '18 of 21 met' });
+    expect(requirementsCount(c.rows)).toBe('18 of 21 met');
   });
 
   it('opens the spec at its pinned revision', () => {
@@ -542,7 +555,14 @@ describe('standards in Verify (Living Specs D-43, Navigation R-17)', () => {
     expect(l?.items.map(i => [i.key, i.status])).toEqual([['ci', 'checking'], ['standard-voice', 'not_checked']]);
   });
 
-  it('no line for a mission with no standards', () => {
+  it('a mission that selects a spec and has no standards yet still reads CI and code review (Navigation R-17)', () => {
+    const outcome: GoalCriterion = { type: 'living_spec', specId: 'outcome', specRevisionId: 'r', revision: 3, contentHash: 'h' };
+    const l = missionStandardsLine(input({ criteria: [outcome], integrationPr: { branch: 'mission/x', state: 'merged', prNumber: 128, prUrl: null, taskId: null } }), {});
+    expect(l).toMatchObject({ text: 'All met', allMet: true, open: false });
+    expect(l?.items.map(i => i.label)).toEqual(['CI', 'Code review']);
+  });
+
+  it('no line for a legacy mission with hand-written criteria only', () => {
     expect(missionStandardsLine(input({ criteria: [unitTests] }), {})).toBeNull();
   });
 });

@@ -27,7 +27,6 @@ import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState, type LivingSpecGoalCriterion } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
-import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionNoticeSlot, { noticeNeedsPerson } from './MissionNoticeSlot';
 import { buildStageSituation } from '@/lib/mission-build-notice';
@@ -85,11 +84,12 @@ import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
 import MissionBranchPanel from './MissionBranchPanel';
 import { branchPanelHasAction } from '@/lib/mission-branch-panel';
-import { verifiedHold, visualCheck, waiverActorEmails, waiverActorName, type MergeTier } from '@/lib/mission-checks';
+import { waiverActorEmails, waiverActorName } from '@/lib/mission-checks';
 import MissionVisualRecord from './MissionVisualRecord';
 import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
-import MissionScreensRow from './MissionScreensRow';
+import { loadMissionEvidence } from '@/lib/specs/mission-evidence';
+import { missionVerifyView } from '@/lib/mission-verify-view';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection, missionReleaseRow } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionReleaseStatus, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -584,9 +584,9 @@ async function MissionDetailBody({
   });
   const displayState = missionAnswer?.displayState ?? fallbackView!.displayState;
 
-  // The goal criteria sheet is the page's only `#mission-criteria` target.
+  // Verify is the page's only `#mission-criteria` target (Navigation R-18).
   // The situation does not link to it on a terminal mission whose criteria
-  // do not pass, and the sheet renders nothing on a terminal mission with no
+  // do not pass, and there is nothing to open on a terminal mission with no
   // criteria.
   const missionIsTerminal = ['completed', 'archived'].includes(mission.status);
   const criteriaReachable = (!missionIsTerminal || missionCriteriaOverall === 'pass')
@@ -683,8 +683,6 @@ async function MissionDetailBody({
     ? criteriaStateItems.filter(c => c.verdict === 'pass').length
     : null;
 
-  const allWorkers = allTasks.flatMap(t => (t.workers || []) as any[]);
-
   // Tasks held by a failure incident's recovery, read through the task adapter
   // (failure-incident-recovery §16.4): the notice says what Buildd is doing.
   const recoveryViews = await loadTaskRecoveryViewsForViewer(allTasks.map(t => t.id), { userId: user.id, teamId: mission.teamId ?? null });
@@ -692,14 +690,6 @@ async function MissionDetailBody({
     const view = recoveryViews.get(t.id);
     return view?.holdsCompletion ? [{ taskId: t.id, title: displayTaskTitle(t.title), view }] : [];
   });
-
-  // PRs with failing CI — surfaced in the all_prs_merged criterion panel (AC-3).
-  // Derived from the same worker state the Activity chip reads (no extra GitHub call).
-  const failingCiPrNumbers = allWorkers
-    .filter(w => w.prNumber && w.prLifecycleStatus === 'ci_failed')
-    .map(w => w.prNumber as number)
-    .filter((n, i, arr) => arr.indexOf(n) === i) // dedup
-    .sort((a, b) => a - b);
 
   // Collect all artifacts
   const allArtifacts = mission.tasks?.flatMap((t) =>
@@ -710,12 +700,9 @@ async function MissionDetailBody({
 
   const missionRecords = selectMissionRecords(allArtifacts);
 
-  // Goal criteria — hoisted so the header's Verified pill and its bottom
-  // sheet (MissionVerifiedPill) read the same values the removed
-  // always-visible block used to.
+  // Goal criteria and their evaluated state, read once for Verify and the checks.
   const goalCriteria = ((mission as any).goalCriteria as GoalCriterion[] | null) ?? [];
   const goalCriteriaStateFull = (mission as any).goalCriteriaState as GoalCriteriaState | null;
-  const autoVerifyFlag = (mission as any).autoVerify as boolean | null;
 
   // ── Mission feed (knowledge-base: buildd/design/mission-feed-mobile-continuity.md) ──────────
   // Every mission task in the one input shape the pulse and the grouped list
@@ -955,7 +942,6 @@ async function MissionDetailBody({
   }], newestEstimate, new Map())[0]?.tasks ?? [];
   // Waiting on another mission is an outside wait: no time promise (R-24).
   const waitsOnMission = !!(mission as { dependsOnMissionId?: string | null }).dependsOnMissionId;
-  const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
   const missionPrCard = (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total })
     || (missionIntegrationPr?.shippedDeliveries?.length ?? 0) > 0) && missionIntegrationPr
     // Mission integration PR (Option A′): the mission's review gate, and a
@@ -1313,30 +1299,24 @@ async function MissionDetailBody({
     : [];
   const decisions = criteriaDecision ? [criteriaDecision, ...boardDecisions] : boardDecisions;
   const history = layout === 'board' ? historyRaised(boardModel, withoutStaleRoundCap(openQuestionNotes, boardVisual)) : null;
-  // Verified reads current verdicts, never a stale stored overall: a criterion not
-  // passing on the board's live counts, or a blocking visual review not clear, holds it.
-  const verifiedHoldReason = verifiedHold({
-    criteria: boardModel.criteria,
-    visual: visualReviewState ? visualCheck(visualReviewState, { mergeTier: effectivePolicy.tier as MergeTier }) : null,
-  });
-  const verifiedPill = (
-    <MissionVerifiedPill
-      hold={verifiedHoldReason}
-      liveStates={boardModel.criteria.map(c => c.state)}
-      sheetOnly
-      missionId={id}
-      criteria={goalCriteria}
-      criteriaState={goalCriteriaStateFull}
-      autoVerify={autoVerifyFlag}
-      readonly={isTerminal}
-      failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
-      overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
-    />
-  );
+  // Verify's Requirements (Navigation R-17, AC-11): one group per selected spec, the
+  // evidence under each unmet requirement and the repair working on it. There is no
+  // Goal criteria panel: `?criteria=open` and `#mission-criteria` open Verify. A
+  // failed evidence read costs the links, never the counts.
+  const specEntries = (goalCriteriaStateFull?.criteria ?? []).flatMap(e => (e.spec ? [{ standings: e.spec.standings }] : []));
+  const verifyEvidence = layout === 'board' && goalCriteria.some(c => c.type === 'living_spec')
+    ? await loadMissionEvidence(id, specEntries as never).catch((err) => {
+        console.error('[mission-page] evidence load failed', err);
+        return null;
+      })
+    : null;
+  const verifyView = layout === 'board'
+    ? missionVerifyView({ missionId: id, criteria: goalCriteria, state: goalCriteriaStateFull, titles: outcomeSpecTitles, evidence: verifyEvidence, now: renderedAt })
+    : null;
   // Ask is the docked panel, not a header link (Navigation R-3, R-21).
   // The mission's visual review as a mission command (never the task composer),
-  // started from ⋯ on any open mission with a workspace to run it in; once an
-  // audit exists the footer's Screens row is where it is reviewed.
+  // started from ⋯ on any open mission with a workspace to run it in; its screens
+  // are evidence in Verify and a review needing a person is a decision card.
   const visualReviewEntry = !isTerminal && mission.workspaceId ? { initialOpen: visualReviewParam === '1' } : null;
   const completionFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
   const completionFailingIndex = completionFailingState ? completionFailingState.index : null;
@@ -1383,9 +1363,8 @@ async function MissionDetailBody({
           <MissionReleaseSection step={shippedStep} status={releaseStatus} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
         </div>
       )}
-      {/* The visual review, live: opens the review deck (or, before any
-          screen, the phase and its actions). Any audit phase shows it. */}
-      {boardVisual && <MissionScreensRow missionId={id} step={visualStep} />}
+      {/* No Screens row (Navigation R-18): screenshots are evidence under a
+          requirement, and a visual review needing a person is a decision card. */}
       {/* Only when it carries a person's action or the report: its state line
           alone repeats the Screens row and the checks (spec f7f67f1a R-37). */}
       {visualPresentation && branchPanelHasAction(visualPresentation, isTerminal) && (
@@ -1410,7 +1389,6 @@ async function MissionDetailBody({
     <MissionBoardHeader
       back={back}
       title={mission.title}
-      verified={verifiedPill}
       actions={overflowMenu}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
@@ -1447,7 +1425,7 @@ async function MissionDetailBody({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={layout}
-        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} situation={{ build: buildSituation || null, verify: verifySituation || null }} visual={boardVisual} checks={overviewChecks} deliveryTasks={deliveryTasks} missionTitle={mission.title} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} design={<LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed />} {...boardLink} />)}
+        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} situation={{ build: buildSituation || null, verify: verifySituation || null }} visual={boardVisual} checks={overviewChecks} deliveryTasks={deliveryTasks} missionTitle={mission.title} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} verify={verifyView} design={<LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed />} {...boardLink} />)}
         flow={layout !== 'flow' ? null : boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={layout !== 'feed' ? null : boardHeader(
           <MissionFeedLayout
