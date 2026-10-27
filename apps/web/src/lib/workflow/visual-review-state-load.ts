@@ -52,7 +52,7 @@ export async function loadMissionAuditLedgers(missionIds: readonly string[]): Pr
       missionId: tasksTable.missionId,
       title: tasksTable.title,
       status: tasksTable.status,
-      context: sql<Record<string, unknown> | null>`jsonb_build_object('surfaceAuditRound', ${tasksTable.context} -> 'surfaceAuditRound', 'visualReview', jsonb_build_object('headSha', ${tasksTable.context} -> 'visualReview' -> 'headSha', 'carry', ${tasksTable.context} -> 'visualReview' -> 'carry'))`.as('ledger_context'),
+      context: sql<Record<string, unknown> | null>`jsonb_strip_nulls(jsonb_build_object('surfaceAuditRound', ${tasksTable.context} -> 'surfaceAuditRound', 'visualReview', jsonb_build_object('headSha', ${tasksTable.context} -> 'visualReview' -> 'headSha', 'carry', ${tasksTable.context} -> 'visualReview' -> 'carry')))`.as('ledger_context'),
       failure: sql<unknown>`case when ${tasksTable.status} = 'failed' then ${tasksTable.result} end`.as('failure_result'),
       updatedAt: tasksTable.updatedAt,
       createdAt: tasksTable.createdAt,
