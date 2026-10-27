@@ -107,7 +107,9 @@ describe('DecisionCard', () => {
     const html = container.innerHTML;
     const at = (s: string) => html.indexOf(s);
     expect(at('question-subject')).toBeLessThan(at('decision-summary'));
-    expect(at('decision-summary')).toBeLessThan(at('decision-question'));
+    expect(at('question-subject')).toBeLessThan(at('decision-question'));
+    expect(at('decision-question')).toBeLessThan(at('decision-summary'));
+    expect(at('decision-summary')).toBeLessThan(at('decision-options'));
     expect(at('decision-question')).toBeLessThan(at('decision-option'));
     expect(at('decision-option')).toBeLessThan(at('decision-answer-differently'));
     expect(at('decision-not-now')).toBeLessThan(at('decision-expiry'));
@@ -334,5 +336,17 @@ describe('DecisionCard', () => {
     expect(calls[0].url).toBe('/api/tasks');
     expect(calls[0].body).toMatchObject({ workspaceId: 'w1', missionId: 'm1', title: 'Check the install step by hand on a clean machine' });
     expect(q('[data-answered="true"]')!.textContent).toContain('You chose Check the install step by hand on a clean machine');
+  });
+
+  it('names an asker when an organizer note has no subject task, on its own mission page', () => {
+    const view = decisionFromQuestion({
+      key: 'note:n1',
+      question: { headline: 'Which base?', body: null, noteId: 'n1', options: [{ label: 'dev', description: 'Branch from dev', recommended: true }, { label: 'main', description: 'Branch from main', recommended: false }] },
+      task: null, mission: { id: 'm1', title: 'A mission', href: '/app/missions/m1' }, askedAt: T0 - 9 * 60_000,
+      answer: { kind: 'note', missionId: 'm1', noteId: 'n1' },
+    });
+    act(() => root.render(<DecisionCard view={view} now={T0} pageMissionId="m1" />));
+    expect(q('[data-testid="question-subject"]')!.textContent).toBe('●This mission· asked 9m ago');
+    expect(qa('[data-testid="decision-option"]').map(o => o.textContent)).toEqual(['devBranch from dev', 'mainBranch from main']);
   });
 });

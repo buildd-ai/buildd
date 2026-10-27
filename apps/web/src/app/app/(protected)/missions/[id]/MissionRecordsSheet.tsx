@@ -109,11 +109,10 @@ export default function MissionRecordsSheet({
         type="button"
         data-testid="mission-records-row"
         onClick={() => setOpen(true)}
-        className="flex min-h-11 w-full items-center gap-2 border-t border-border-default text-left font-mono text-[12px] text-text-secondary hover:text-text-primary"
+        className="flex min-h-11 w-full items-center justify-between gap-x-3 border-t border-border-default text-left text-body hover:text-text-primary"
       >
-        <span aria-hidden="true" className="text-text-muted">─</span>
-        <span className="flex-1">{`Records · ${records.length}`}</span>
-        <span aria-hidden="true">›</span>
+        <span className="font-semibold text-text-primary">Records</span>
+        <span className="text-text-muted">{`${records.length} ›`}</span>
       </button>
       <SideSheet
         open={open}

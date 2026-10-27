@@ -182,7 +182,7 @@ describe('lines', () => {
     expect(buildSummaryLine({ total: 10, merged: 6, running: 1, fixing: 0, failed: 0, decision: 0, approval: 1, waiting: 0 })).toBe('6 of 10 merged · 1 running · 1 approval required');
     expect(buildFoldLine(16)).toBe('16 tasks merged ›');
     expect(buildFoldLine(1)).toBe('1 task merged ›');
-    expect(mergedFoldLine(11)).toBe('11 merged ›');
+    expect(mergedFoldLine(11)).toBe('Merged tasks ›');
   });
 
   it('buildRowState maps the strip states', () => {
