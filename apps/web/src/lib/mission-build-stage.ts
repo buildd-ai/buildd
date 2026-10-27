@@ -237,9 +237,9 @@ export function buildFoldLine(total: number): string {
   return `${total} ${total === 1 ? 'task' : 'tasks'} merged ›`;
 }
 
-/** The merged fold inside the list: `11 merged ›`. */
-export function mergedFoldLine(count: number): string {
-  return `${count} merged ›`;
+/** The merged fold inside the list: `Merged tasks ›` (the count is the summary's, once). */
+export function mergedFoldLine(_count: number): string {
+  return 'Merged tasks ›';
 }
 
 export { formatCountdown };

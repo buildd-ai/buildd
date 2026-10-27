@@ -146,13 +146,13 @@ describe('the stage line (Navigation R-3, R-15)', () => {
   const text = () => steps().map(s => s.textContent);
   const bold = () => steps().map(s => s.querySelector('[data-testid="mission-stage-label"]')!.className.includes('font-semibold'));
 
-  it('is one line of text, no progress segments: `Build · 11 of 16   Verify   Deliver`, the current stage bold', () => {
+  it('is one line of text, no progress segments: `Build   Verify   Deliver` with no count (the summary holds it), the current stage bold', () => {
     act(() => root.render(<CheckRail steps={[
       { key: 'build', label: 'Build', state: 'now', text: '11 of 16 done' },
       { key: 'verify', label: 'Verify', state: 'todo', text: 'after build' },
       { key: 'deliver', label: 'Deliver', state: 'todo', text: 'into dev' },
     ]} />));
-    expect(text()).toEqual(['Build · 11 of 16', 'Verify', 'Deliver']);
+    expect(text()).toEqual(['Build', 'Verify', 'Deliver']);
     expect(bold()).toEqual([true, false, false]);
     expect(document.querySelector('[data-testid="mission-check-rail-bar"]')).toBeNull();
     expect(steps()[0].getAttribute('aria-current')).toBe('step');

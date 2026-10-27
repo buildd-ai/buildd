@@ -31,14 +31,11 @@ import { buildFoldLine } from '@/lib/mission-build-stage';
 import type { StandardItemStatus, StandardsLine } from '@/lib/specs/mission-standards-gate';
 import type { MissionVerifyView, UnmetRequirement, VerifyAction, VerifyGroup } from '@/lib/mission-verify-view';
 
-/** Build's count without its trailing word: `11 of 16 done` reads `Build · 11 of 16`. */
-const stageCount = (text: string) => text.replace(/\s+done$/, '');
-
 /**
- * The stage line, `Build · 11 of 16   Verify   Deliver` (Navigation R-3,
+ * The stage line, `Build   Verify   Deliver` (Navigation R-3,
  * R-15): one line of text that says which checkpoint the mission waits on
- * (R-13), no progress segments. The current stage is bold (Build with its
- * count); a finished one is its word and a tick; one not started is one
+ * (R-13), no progress segments. The current stage is bold (the count lives
+ * once, in the Build summary under it); a finished one is its word and a tick; one not started is one
  * word, never a card. A held stage says why in the error hue.
  */
 export function CheckRail({ steps }: { steps: readonly RailStep[] }) {
@@ -49,7 +46,7 @@ export function CheckRail({ steps }: { steps: readonly RailStep[] }) {
       {steps.map(s => {
         const isCurrent = s.key === current;
         const tone = s.state === 'held' ? 'text-status-error' : s.state === 'done' ? 'text-status-success' : isCurrent ? 'text-text-primary' : 'text-text-muted';
-        const detail = s.state === 'held' ? s.text : isCurrent && s.key === 'build' && s.state !== 'done' ? stageCount(s.text) : null;
+        const detail = s.state === 'held' ? s.text : null;
         return (
           <li key={s.key} data-step={s.key} data-state={s.state} aria-current={isCurrent && s.state !== 'done' ? 'step' : undefined} className={`min-w-0 ${tone}`}>
             <span data-testid="mission-stage-label" className={isCurrent ? 'font-semibold' : ''}>{s.state === 'done' ? `${s.label} ✓` : s.label}</span>
