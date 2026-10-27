@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workerHeartbeats } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { isUuid } from '@/lib/uuid';
 import { authorizeRunnerControl, nudgeRunner } from '@/lib/runner-control-access';
 
 /**
@@ -20,6 +21,9 @@ export async function PATCH(
   { params }: { params: Promise<{ heartbeatId: string }> },
 ) {
   const { heartbeatId } = await params;
+  if (!isUuid(heartbeatId)) {
+    return NextResponse.json({ error: `Invalid runner id: expected a UUID, got "${heartbeatId}".` }, { status: 404 });
+  }
   const access = await authorizeRunnerControl(heartbeatId, 'Only a team owner or admin can pause a runner.');
   if (!access.ok) return access.response;
   const { target } = access;

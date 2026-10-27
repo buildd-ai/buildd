@@ -5,7 +5,6 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole } from '@/lib/team-access';
 import { roleHas } from '@/lib/permissions';
-import { isUuid } from '@/lib/uuid';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import { forgetRunnerBeatState, runnerBeatId } from '@/lib/runner-beats';
@@ -22,15 +21,13 @@ export interface RunnerControlTarget {
  * Who may change one runner's controls (slots, Pause) from buildd.dev: a team
  * owner or admin of the runner's team (spec 34a48877 R-23). A runner of
  * another team is not found, not forbidden: its existence is not for this
- * caller. Returns the runner, or the response to send.
+ * caller. The route checks the id is a UUID first (uuid-guard.test.ts).
+ * Returns the runner, or the response to send.
  */
 export async function authorizeRunnerControl(
   heartbeatId: string,
   forbidden: string,
 ): Promise<{ ok: true; target: RunnerControlTarget } | { ok: false; response: NextResponse }> {
-  if (!isUuid(heartbeatId)) {
-    return { ok: false, response: NextResponse.json({ error: `Invalid runner id: expected a UUID, got "${heartbeatId}".` }, { status: 404 }) };
-  }
   const user = await getCurrentUser();
   if (!user) return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
 
