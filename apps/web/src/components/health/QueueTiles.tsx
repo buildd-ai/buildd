@@ -67,8 +67,8 @@ export default function QueueTiles({ running, queued, blocked, scheduled, hrefs,
       <Tile
         testId="queue-tile-running"
         href={hrefs.running}
-        value={runningOfCap(running.used, running.total, 'short')}
-        label={`Running · ${running.total === 1 ? '/1 slot' : `/${running.total} slots`} in use`}
+        value={running.total > 0 ? runningOfCap(running.used, running.total, 'short') : String(running.used)}
+        label={running.total > 0 ? `Running · ${running.total === 1 ? '/1 slot' : `/${running.total} slots`} in use` : 'Running · no slots online'}
       />
       <Tile testId="queue-tile-queued" href={hrefs.queued} value={String(queued)} label="Queued" />
       <Tile testId="queue-tile-blocked" href={hrefs.blocked} value={String(blockedTotal)} label={termWord('queue.blocked')}>
