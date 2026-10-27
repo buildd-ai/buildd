@@ -79,6 +79,16 @@ describe('POST /api/runner/verification-run', () => {
     expect(await (await POST(req())).json()).toEqual({ taskId: 'task-1', workerId: 'worker-1', run: false, reason: 'not_a_verification_run' });
   });
 
+  it("a mission's criterion batch: the head and every criterion's command with its own limit", async () => {
+    const SHA = 'b'.repeat(40);
+    const checks = [{ criterionId: 'AC-1', command: 'bun run a', timeoutMs: 180_000 }, { criterionId: 'AC-2', command: 'bun run b', timeoutMs: 600_000 }];
+    mockTasksFindFirst.mockResolvedValue({
+      context: { specCriterionBatch: { subjectTaskId: 's-1', missionId: 'm-1', specRevisionId: 'r-1', headSha: SHA, commandSet: 'set', checks } },
+      loopConfig: null, loopIteration: 0,
+    });
+    expect(await (await POST(req())).json()).toEqual({ taskId: 'task-1', workerId: 'worker-1', workspaceId: 'ws-1', run: true, kind: 'criterion_batch', headSha: SHA, checks, iteration: 0 });
+  });
+
   it('a verification run with no resolvable command gets no run', async () => {
     mockTasksFindFirst.mockResolvedValue({ ...CRITERION_TASK, context: { criteriaVerification: CRITERION_TASK.context.criteriaVerification } });
     expect(await (await POST(req())).json()).toMatchObject({ run: false, reason: 'no_command' });
