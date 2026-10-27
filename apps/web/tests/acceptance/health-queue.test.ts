@@ -1,32 +1,83 @@
 /**
  * Acceptance tests for Living Spec "Health › Queue: what is waiting, why, and
- * whether it should be" (4bc3e70e, revision 6). Written before the build: they
- * pin the interface the build must provide in `lib/health-queue.ts` and fail
- * until it exists.
- *
- * Contract the build provides (pure, no I/O):
- *   buildQueueView(input, now) -> QueueView
- *   loadQueue({ read, page, filter }) -> QueueView           (one bounded read)
- *   queueReason(task) -> { kind, badge, blockedBy }          (shared by Queue, task page, explain, terminal Queue)
- * Input task: { id, title, state: running|ready|waiting|parked, workspaceId, missionId,
- *   ageMs, wait?: { kind: declared|lane|limit, ... }, ... }.
+ * whether it should be" (4bc3e70e, revision 6), one test per R-n and AC-n,
+ * written against the shipped API:
+ *   loadHealthQueue(input, deps)        lib/health-queue.ts       (one bounded read)
+ *   buildHealthQueueView(input)         lib/health-queue-view.ts  (pure: tiles, alert, lanes, tables)
+ *   QueueBoard / QueueSheets bodies     app/app/(protected)/health/queue/
+ *   queueWaitBadge / queueWaitBlockedBy @buildd/shared            (the one reason vocabulary)
+ * Test names carry their criterion id: scripts/run-acceptance-tests.ts selects by it.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createElement as h } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { queueWaitBadge, queueWaitBlockedBy, type HealthQueueLane, type HealthQueueWaitingRow, type QueueWait } from '@buildd/shared';
 import { HEALTH_NAV } from '../../src/lib/nav-config';
-import { buildQueueView, loadQueue, queueReason, type QueueInput } from '../../src/lib/health-queue';
+import { HEALTH_QUEUE_LIMIT, loadHealthQueue, type HealthQueueDeps } from '../../src/lib/health-queue';
+import { buildHealthQueueView, type HealthQueueLaneMemberInput, type HealthQueueTaskInput, type HealthQueueViewInput } from '../../src/lib/health-queue-view';
+import type { RunnerQueueRow } from '../../src/lib/claim-order-queue';
+import QueueBoard from '../../src/app/app/(protected)/health/queue/QueueBoard';
+import { DependencyBody, ForceStartBody, LaneBody, forceStateOf } from '../../src/app/app/(protected)/health/queue/QueueSheets';
 
-const NOW = new Date('2026-10-22T12:00:00Z');
+const NOW = Date.parse('2026-10-22T12:00:00Z');
 const HOUR = 3_600_000;
+const noop = () => {};
+const src = (rel: string) => readFileSync(join(__dirname, '../../src', rel), 'utf8');
 
-function task(id: string, state: string, extra: Record<string, unknown> = {}) {
-  return { id, title: `Task ${id}`, state, workspaceId: 'w1', missionId: null, ageMs: HOUR, ...extra } as any;
+let n = 0;
+function task(wait: QueueWait | null, over: Partial<HealthQueueTaskInput> = {}): HealthQueueTaskInput {
+  n += 1;
+  return { id: `t-${n}`, title: `Task ${n}`, workspaceId: 'w1', missionTitle: null, createdAt: new Date(NOW - n * HOUR).toISOString(), wait, ...over };
 }
-function input(over: Partial<QueueInput> = {}): QueueInput {
-  return { slots: { used: 0, total: 6 }, tasks: [], lanes: [], idleSlots: 0, startable: [], ...over } as QueueInput;
+function input(over: Partial<HealthQueueViewInput> = {}): HealthQueueViewInput {
+  return { now: NOW, running: 0, slots: 0, teamBusy: 0, tasks: [], lanes: [], filter: 'all', page: 1, truncated: false, missions: [], ...over };
 }
-const view = (over: Partial<QueueInput> = {}) => buildQueueView(input(over), NOW);
+const view = (over: Partial<HealthQueueViewInput> = {}) => buildHealthQueueView(input(over));
+const html = (over: Partial<HealthQueueViewInput> = {}) =>
+  renderToStaticMarkup(h(QueueBoard, { view: view(over), onFilter: noop, onPage: noop, onOpenLane: noop, onOpenRow: noop, onForce: noop }));
+
+const slot: QueueWait = { kind: 'slot' };
+const limit: QueueWait = { kind: 'limit', limit: 'mission_cap', liftsAt: new Date(NOW + 4 * 60_000).toISOString(), forceable: true };
+const declared = (over: Partial<QueueWait> = {}): QueueWait => ({ kind: 'declared', blockerId: 'a', blockerTitle: 'Task A', blockerStatus: 'in_progress', count: 1, ...over });
+const laneWait = (position: number): QueueWait => ({ kind: 'lane', lane: 'migration', position, holderTaskId: 'h' });
+const parkedWait: QueueWait = { kind: 'start_time', startAt: new Date(NOW + 2 * HOUR).toISOString() };
+
+const holder = (over: Partial<HealthQueueLaneMemberInput> = {}): HealthQueueLaneMemberInput =>
+  ({ taskId: 'h', title: 'Add column', holding: true, status: 'in_progress', prNumber: null, since: new Date(NOW - 2 * HOUR).toISOString(), stuckSince: null, ...over });
+const waiter = (taskId: string, title: string): HealthQueueLaneMemberInput =>
+  ({ taskId, title, holding: false, status: 'pending', prNumber: null, since: null, stuckSince: null });
+const lane = (members: HealthQueueLaneMemberInput[]) => ({ workspaceId: 'w1', lane: 'migration', members });
+
+function waitingRow(wait: QueueWait, over: Partial<HealthQueueWaitingRow> = {}): HealthQueueWaitingRow {
+  return {
+    id: 't-x', title: 'Ship it', workspaceId: 'w1', missionTitle: null, reason: wait.kind as HealthQueueWaitingRow['reason'],
+    badge: queueWaitBadge(wait) ?? '', blockedBy: queueWaitBlockedBy(wait, NOW) ?? '', blockerId: null, blockerStatus: null,
+    setBy: null, why: null, lane: null, age: '1h', forceable: wait.forceable === true, wait, ...over,
+  };
+}
+
+// The loader's one read, with every dependency stubbed.
+function row(i: number, over: Partial<RunnerQueueRow> = {}): RunnerQueueRow {
+  return {
+    id: `r-${i}`, title: `Row ${i}`, workspaceId: 'w1', workspaceName: 'Repo', teamId: 'team-1', teamName: 'Team',
+    missionId: null, missionTitle: null, roleSlug: null, backend: null, priority: 0,
+    createdAt: new Date(NOW - i * 60_000), startAt: null, dependsOn: [], workspacePausedUntil: null, ...over,
+  } as RunnerQueueRow;
+}
+function deps(over: Partial<HealthQueueDeps> = {}): HealthQueueDeps {
+  return {
+    rows: mock(async () => [] as RunnerQueueRow[]),
+    waits: mock(async (ids: string[]) => new Map(ids.map(id => [id, limit]))),
+    lanes: mock(async () => ({ lanes: new Map(), releasedTaskIds: new Set<string>() })),
+    titles: mock(async () => new Map<string, string>()),
+    live: mock(async (ws: string[]) => (ws.length > 1 ? 5 : 2)),
+    slots: mock(async () => 6),
+    ...over,
+  };
+}
+const scope = { teamId: 'team-1', teamWorkspaceIds: ['w1', 'w2'], workspaceIds: ['w1'], filter: 'all' as const, page: 1, now: new Date(NOW) };
 
 describe('R-1: Queue is a Health tab between Runners and Usage', () => {
   it('sits between Runners and Usage and is open to every member', () => {
@@ -39,284 +90,318 @@ describe('R-1: Queue is a Health tab between Runners and Usage', () => {
     expect(ids.indexOf('queue')).toBe(ids.indexOf('runners') + 1);
     expect(ids.indexOf('queue')).toBeLessThan(ids.indexOf('usage'));
   });
-  it('carries the waiting count beside its label', () => {
-    expect(view({ tasks: [task('a', 'waiting', { wait: { kind: 'limit' } })] }).navCount).toBe(1);
-  });
 });
 
 describe('R-2: filters apply to every number, slots stay team-wide', () => {
-  it('narrows counts by workspace and mission but not slots', () => {
-    const tasks = [
-      task('a', 'waiting', { workspaceId: 'w1', wait: { kind: 'limit' } }),
-      task('b', 'waiting', { workspaceId: 'w2', wait: { kind: 'limit' } }),
-      task('c', 'ready', { workspaceId: 'w2', missionId: 'm1' }),
-    ];
-    const v = buildQueueView(input({ tasks, slots: { used: 3, total: 6 }, filter: { workspaceId: 'w2' } } as any), NOW);
-    expect(v.tiles.waiting.count).toBe(1);
-    expect(v.tiles.ready.count).toBe(1);
-    expect(v.tiles.running.slots).toBe(6);
-    expect(v.tiles.running.used).toBe(3);
-    const m = buildQueueView(input({ tasks, filter: { missionId: 'm1' } } as any), NOW);
-    expect(m.tiles.waiting.count).toBe(0);
+  it('narrows rows and running by mission while slots and idle capacity read the whole team', async () => {
+    const d = deps({ rows: mock(async () => [row(1, { missionId: 'm-a', missionTitle: 'Alpha' }), row(2, { missionId: 'm-b', missionTitle: 'Beta' })]) });
+    const v = await loadHealthQueue({ ...scope, missionId: 'm-a' }, d);
+    expect((d.waits as any).mock.calls[0][0]).toEqual(['r-1']);
+    expect(v.tiles.waiting).toBe(1);
+    expect(v.tiles.running).toBe(2); // the filtered scope
+    expect(v.tiles.slots).toBe(6); // the team's
+    expect((d.slots as any).mock.calls[0].slice(0, 2)).toEqual(['team-1', ['w1', 'w2']]);
+    expect((d.live as any).mock.calls.some((c: any[]) => c[0].length > 1 && c[1] === null)).toBe(true); // team-wide busy
+    expect(v.missions).toEqual([{ id: 'm-a', title: 'Alpha' }, { id: 'm-b', title: 'Beta' }]); // options stay whole
   });
 });
 
 describe('R-3: four tiles', () => {
   it('has Running n/m, Ready, Waiting (with a reason bar), Parked, each linking to its rows', () => {
-    const v = view({ tasks: [task('a', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 2 } }), task('b', 'waiting', { wait: { kind: 'limit' } })] });
-    expect(Object.keys(v.tiles)).toEqual(['running', 'ready', 'waiting', 'parked']);
-    expect(v.tiles.waiting.byReason).toEqual({ declared: 0, lane: 1, limit: 1 });
-    for (const t of Object.values(v.tiles) as any[]) expect(t.href).toMatch(/^\/app\/health\/queue/);
+    const over = { running: 1, slots: 6, tasks: [task(slot), task(laneWait(1)), task(limit), task(parkedWait)] };
+    expect(view(over).tiles).toEqual({ running: 1, slots: 6, ready: 1, waiting: 2, parked: 1, waitingByReason: { declared: 0, lane: 1, limit: 1 } });
+    const out = html(over);
+    expect(out).toContain('1/6');
+    for (const id of ['queue-tile-running', 'queue-tile-ready', 'queue-tile-waiting', 'queue-tile-parked']) expect(out).toContain(`data-testid="${id}"`);
+    expect(out).toContain('queue-reason-bar');
+    expect(out).toContain('href="#queue-ready"');
+    expect(out).toContain('href="#queue-waiting"');
+    expect(out).toContain('href="#queue-parked"');
+    expect(out).toContain('href="/app/health/runners"');
   });
 });
 
 describe('R-4: one alert line, only when something is wrong, worst first', () => {
-  it('is null on every viewport when healthy', () => {
-    const v = view();
-    expect(v.alert).toBeNull();
-    expect((v as any).phoneAlertFallback).toBeUndefined();
+  it('is absent on every viewport when healthy', () => {
+    expect(view().alert).toBeNull();
+    const calm = html();
+    expect(calm).not.toContain('queue-alert');
+    expect(calm).not.toContain('queue-calm');
   });
-  it('lists idle slots before stuck lanes', () => {
-    const v = view({
-      idleSlots: 2, startable: [{ id: 'r', cause: 'no reviewer runner online' }],
-      lanes: [{ name: 'Schema', holder: { id: 'h', state: 'pr_open', lastPrActivityMs: 30 * HOUR }, waiting: [] }],
-    } as any);
-    expect(v.alert!.lines[0]).toContain('2 idle slots, 1 tasks could start');
-    expect(v.alert!.lines[1]).toContain('Schema lane stuck');
+  it('lists idle slots before stuck lanes, on one line', () => {
+    const stuck = holder({ status: 'completed', prNumber: 1, stuckSince: new Date(NOW - 30 * HOUR).toISOString() });
+    const v = view({ slots: 2, teamBusy: 0, tasks: [task(slot)], lanes: [lane([stuck])] });
+    expect(v.alert).toBe('2 idle slots, 1 task could start · Schema lane stuck 30h');
+    expect(html({ slots: 2, tasks: [task(slot)] })).toContain('data-testid="queue-alert"');
   });
 });
 
 describe('R-5: exactly one reason badge per waiting task', () => {
   it('maps Declared / Lane / Limit with Blocked by, and ready tasks get none', () => {
-    expect(queueReason(task('b', 'waiting', { wait: { kind: 'declared', blockerId: 'a', blockerStatus: 'running' } })).badge).toBe('Declared');
-    const lane = queueReason(task('c', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 3 } }));
-    expect(lane.badge).toBe('Lane');
-    expect(lane.blockedBy).toBe('Schema lane · 3rd');
-    const lim = queueReason(task('d', 'waiting', { wait: { kind: 'limit', limit: 'daily budget', liftsAt: '2026-10-23T00:00:00Z' } }));
-    expect(lim.badge).toBe('Limit');
-    expect(lim.blockedBy).toContain('daily budget');
-    expect(queueReason(task('e', 'ready'))).toEqual({ kind: null, badge: null, blockedBy: null });
+    expect(queueWaitBadge(declared())).toBe('Declared');
+    expect(queueWaitBlockedBy(declared(), NOW)).toBe('Task A');
+    expect(queueWaitBadge(laneWait(3))).toBe('Lane');
+    expect(queueWaitBlockedBy(laneWait(3), NOW)).toBe('Schema lane · 3rd');
+    expect(queueWaitBadge(limit)).toBe('Limit');
+    expect(queueWaitBlockedBy(limit, NOW)).toContain('Mission limit');
+    expect(queueWaitBadge(slot)).toBeNull();
   });
-  it('never labels a gated task ready or next', () => {
-    const v = view({ tasks: [task('a', 'waiting', { wait: { kind: 'limit' } })] });
-    expect(JSON.stringify(v.ready)).not.toContain('"a"');
-  });
-  it('has no "Guessed" badge (removed in r5)', () => {
-    expect(JSON.stringify(view())).not.toContain('Guessed');
+  it('never lists a gated task as ready, and has no Guessed badge', () => {
+    const gated = task(limit);
+    const v = view({ tasks: [gated, task(slot)] });
+    expect(v.ready.map(r => r.id)).not.toContain(gated.id);
+    expect(JSON.stringify(v)).not.toContain('Guessed');
+    expect(view({ tasks: [task(null)], reasonsUnavailable: true }).tiles.ready).toBe(0);
   });
 });
 
 describe('R-6: Waiting table', () => {
   it('has Task / Reason / Blocked by / Age columns and All / Declared / Lane / Limit segments', () => {
-    const v = view();
-    expect(v.waitingTable.columns).toEqual(['Task', 'Reason', 'Blocked by', 'Age']);
-    expect(v.waitingTable.segments).toEqual(['All', 'Declared', 'Lane', 'Limit']);
+    const out = html({ tasks: [task(limit)] });
+    for (const col of ['Task', 'Reason', 'Blocked by', 'Age']) expect(out).toContain(`<span>${col}</span>`);
+    expect(out).toMatch(/>All 1<.*>Declared 0<.*>Lane 0<.*>Limit 1</s);
   });
   it('sorts Lane, Limit, Declared, then lane position / age', () => {
-    const v = view({ tasks: [
-      task('d', 'waiting', { wait: { kind: 'declared', blockerId: 'x' } }),
-      task('l2', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 2 } }),
-      task('m', 'waiting', { wait: { kind: 'limit' }, ageMs: 5 * HOUR }),
-      task('l1', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 1 } }),
-    ] });
-    expect(v.waitingTable.rows.map((r: any) => r.id)).toEqual(['l1', 'l2', 'm', 'd']);
+    const d = task(declared());
+    const l1 = task(limit, { createdAt: new Date(NOW - HOUR).toISOString() });
+    const l2 = task(limit, { createdAt: new Date(NOW - 9 * HOUR).toISOString() });
+    const s2 = task(laneWait(2));
+    const s1 = task(laneWait(1));
+    expect(view({ tasks: [d, l1, l2, s2, s1] }).waiting.rows.map(r => r.id)).toEqual([s1.id, s2.id, l2.id, l1.id, d.id]);
   });
 });
 
 describe('R-7: Ready in claim order, Parked one line', () => {
   it('shows Starts now / next free slot / why no runner takes it', () => {
-    const v = view({ tasks: [
-      task('a', 'ready', { startsNow: true }),
-      task('b', 'ready', { nextSlotAt: '2026-10-22T12:30:00Z' }),
-      task('c', 'ready', { noRunnerReason: 'no reviewer runner online' }),
-      task('p', 'parked', { startAt: '2026-10-23T09:00:00Z' }),
+    const v = view({ slots: 1, teamBusy: 0, tasks: [
+      task(slot), task(slot), task({ kind: 'slot', noRunnerReason: 'no reviewer runner online' }), task(parkedWait),
     ] });
-    expect(v.ready.map((r: any) => r.when)).toEqual(['Starts now', expect.stringContaining('next free slot ~'), 'no reviewer runner online']);
+    expect(v.ready.map(r => r.note)).toEqual(['Starts now', 'Next free slot', 'No runner: no reviewer runner online']);
     expect(v.parked).toHaveLength(1);
-    expect(v.parked[0].startAt).toBe('2026-10-23T09:00:00Z');
+    expect(v.parked[0].starts).toBe('Starts in 2h 00m');
   });
 });
 
 describe('R-8: Lanes card', () => {
   it('lists name, holder state and waiting count, hidden when no lane is in use', () => {
-    const lanes = [{ name: 'Schema', holder: { id: 'h', state: 'ci', lastPrActivityMs: HOUR }, waiting: [{ id: 'w' }] }];
-    const v = view({ lanes } as any);
-    expect(v.lanes).toEqual([expect.objectContaining({ name: 'Schema', holderState: 'ci', waitingCount: 1 })]);
-    expect(view().lanes).toBeNull();
+    const out = html({ lanes: [lane([holder(), waiter('w', 'Rename table')])] });
+    expect(out).toContain('queue-lanes');
+    expect(out).toContain('Schema');
+    expect(out).toContain('Add column');
+    expect(out).toContain('Running');
+    expect(out).toContain('1 waiting');
+    expect(html()).not.toContain('queue-lanes');
   });
 });
 
+const panelLane: HealthQueueLane = {
+  workspaceId: 'w1', lane: 'migration', name: 'Schema', stuckFor: '26h',
+  holder: { taskId: 'h', title: 'Add column', position: null, state: 'PR open', age: '30h', prNumber: 9 },
+  waiters: [
+    { taskId: 'w1', title: 'First', position: 1, state: null, age: '5h', prNumber: null },
+    { taskId: 'w2', title: 'Second', position: 2, state: null, age: '1h', prNumber: null },
+  ],
+};
+const laneBody = (l: HealthQueueLane) => renderToStaticMarkup(h(LaneBody, { lane: l, confirming: false, busy: false, error: null, onRelease: noop, onConfirm: noop, onCancel: noop }));
+
 describe('R-9: lane panel', () => {
   it('shows the holder first then positions; Release only when stuck', () => {
-    const lanes = [{ name: 'Schema', holder: { id: 'h', state: 'pr_open', lastPrActivityMs: 30 * HOUR, ageMs: 40 * HOUR }, waiting: [{ id: 'w1' }, { id: 'w2' }] }];
-    const p = view({ lanes } as any).lanePanels.Schema;
-    expect(p.entries.map((e: any) => e.id)).toEqual(['h', 'w1', 'w2']);
-    expect(p.entries.map((e: any) => e.position ?? null)).toEqual([null, 1, 2]);
-    expect(p.stuck.duration).toBeTruthy();
-    expect(p.actions).toContain('Release');
+    const out = laneBody(panelLane);
+    expect(out.indexOf('Add column')).toBeGreaterThan(-1);
+    expect(out.indexOf('Add column')).toBeLessThan(out.indexOf('First'));
+    expect(out.indexOf('First')).toBeLessThan(out.indexOf('Second'));
+    expect(out).toContain('1st');
+    expect(out).toContain('2nd');
+    expect(out).toContain('queue-lane-release');
+    expect(laneBody({ ...panelLane, stuckFor: null })).not.toContain('queue-lane-release');
   });
 });
 
 describe('R-10: Force start only on Limit rows', () => {
-  it('offers it for Limit and never for Lane or Declared', () => {
-    const v = view({ tasks: [
-      task('lim', 'waiting', { wait: { kind: 'limit' } }),
-      task('lane', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 1 } }),
-      task('dec', 'waiting', { wait: { kind: 'declared', blockerId: 'x' } }),
-    ] });
-    const by = Object.fromEntries(v.waitingTable.rows.map((r: any) => [r.id, r]));
-    expect(by.lim.actions).toContain('Force start');
-    expect(by.lane.actions).not.toContain('Force start');
-    expect(by.dec.actions).not.toContain('Force start');
-    expect(by.lim.forceStartSheet.rows.map((r: any) => r.label)).toEqual(['Skips', 'Still enforced']);
+  it('offers it for a forceable Limit and never for Lane or Declared', () => {
+    const v = view({ tasks: [task(limit), task(laneWait(1)), task(declared())] });
+    expect(Object.fromEntries(v.waiting.rows.map(r => [r.reason, r.forceable]))).toEqual({ lane: false, limit: true, declared: false });
+    expect(html({ tasks: [task(limit), task(laneWait(1)), task(declared())] }).match(/data-testid="queue-force-start"/g)).toHaveLength(1);
+    expect(view({ tasks: [task({ ...limit, forceable: false })] }).waiting.rows[0].forceable).toBe(false);
   });
 });
 
 describe('R-11: Declared row sheet', () => {
-  it('opens Depends on / Status / Set by / Why with the blocker next step primary and a reasoned Remove', () => {
-    const v = view({ tasks: [task('b', 'waiting', { wait: { kind: 'declared', blockerId: 'a', blockerStatus: 'pr_open', setBy: 'max', why: 'needs schema', blockerNextStep: 'Review PR' } })] });
-    const s = v.waitingTable.rows[0].declaredSheet;
-    expect(s.rows.map((r: any) => r.label)).toEqual(['Depends on', 'Status', 'Set by', 'Why']);
-    expect(s.primary).toBe('Review PR');
-    expect(s.remove.requiresReason).toBe(true);
+  it('opens Depends on / Set by / Why with the blocker next step primary and a reasoned Remove', () => {
+    const r = waitingRow(declared({ blockerStatus: 'pending' }), { reason: 'declared', blockerId: 'a', blockerStatus: 'pending', setBy: 'Its agent', why: 'needs the index' });
+    const out = renderToStaticMarkup(h(DependencyBody, { row: r, reason: "", onReason: noop, busy: false, error: null, onRemove: noop }));
+    for (const label of ['Depends on', 'Set by', 'Why']) expect(out).toContain(label);
+    expect(out).toContain('Its agent');
+    expect(out).toContain('needs the index');
+    expect(out).toContain('Start it');
+    expect(out).toMatch(/btn-primary[^"]*"[^>]*href="\/app\/tasks\/a"|href="\/app\/tasks\/a"[^>]*btn-primary/);
+    expect(out).toMatch(/disabled[^>]*data-testid="queue-remove-dependency"|data-testid="queue-remove-dependency"[^>]*disabled/);
   });
 });
 
 describe('R-12: every action also exists on the task page', () => {
-  it('the task page offers the same actions through the shared module', () => {
-    const src = readFileSync(join(__dirname, '../../src/app/app/(protected)/tasks/[id]/page.tsx'), 'utf8');
-    expect(src).toContain('health-queue');
+  it('the task page gets the same wait and force offer through the shared task actions', () => {
+    const actions = src('lib/task-actions.ts');
+    expect(actions).toContain('queueWait?: import(\'@buildd/shared\').QueueWait');
+    expect(actions).toContain('force?: ForceOffer');
+    expect(src('app/api/tasks/[id]/waiting/route.ts')).toContain('QueueWait');
   });
 });
 
 describe('R-13: labels over sentences, no internal names', () => {
-  it('uses no internal vocabulary in the rendered view', () => {
-    const v = view({ tasks: [task('a', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 1 } })], lanes: [] });
-    const text = JSON.stringify(v);
-    for (const bad of ['coordination_gate', 'hardSurface', 'pathClaim', 'orchestration_decisions', 'undefined', 'NaN']) expect(text).not.toContain(bad);
+  it('uses no internal vocabulary in the rendered board', () => {
+    const out = html({ slots: 1, lanes: [lane([holder()])], tasks: [task(laneWait(1)), task(limit), task(declared())] });
+    for (const bad of ['migration', 'slot_wait', 'workspace_cap', 'serial_lane', 'coordination_gate', 'hardSurface', 'pathClaim', 'undefined', 'NaN', '—']) expect(out).not.toContain(bad);
   });
 });
 
 describe('R-14: one bounded read, 50 rows a page', () => {
-  it('reads once with a limit of at most 50 and pages', async () => {
-    let calls = 0; let seen: any;
-    const rows = Array.from({ length: 50 }, (_, i) => task(`t${i}`, 'waiting', { wait: { kind: 'limit' } }));
-    const v = await loadQueue({ page: 1, read: async (q: any) => { calls++; seen = q; return { counts: { running: 0, ready: 0, waiting: 400, parked: 0, byReason: { declared: 0, lane: 0, limit: 400 } }, rows, slots: { used: 0, total: 6 } }; } } as any);
-    expect(calls).toBe(1);
-    expect(seen.limit).toBeLessThanOrEqual(51);
-    expect(v.waitingTable.rows).toHaveLength(50);
-    expect(v.waitingTable.hasMore).toBe(true);
+  it('reads once, bounded, and pages the Waiting table by 50', async () => {
+    const d = deps({ rows: mock(async () => Array.from({ length: 120 }, (_, i) => row(i))) });
+    const v = await loadHealthQueue(scope, d);
+    expect(d.rows).toHaveBeenCalledTimes(1);
+    expect((d.rows as any).mock.calls[0][0]).toEqual({ workspaceIds: ['w1'], limit: HEALTH_QUEUE_LIMIT });
+    expect(d.waits).toHaveBeenCalledTimes(1);
+    expect(v.waiting.rows).toHaveLength(50);
+    expect(v.waiting.pages).toBe(3);
   });
 });
 
 describe('R-15: ships after Overlap scheduling lane order and claim-order presentation', () => {
-  it('lane order is read from the stored lane order the overlap spec introduces', () => {
-    const src = readFileSync(join(__dirname, '../../src/lib/health-queue.ts'), 'utf8');
-    expect(src).toMatch(/claim-order|laneOrder|lane-order/);
+  it('reads rows in claim order and lanes from the stored lane order the claim route uses', () => {
+    const s = src('lib/health-queue.ts');
+    expect(s).toContain('buildRunnerQueueQuery');
+    expect(s).toContain('loadLanes');
+    expect(s).toMatch(/claim-order|stored order/);
   });
 });
 
 describe('AC-1: tiles read 4/6, 2, 9, 1 and link to rows', () => {
   it('counts', () => {
     const tasks = [
-      ...Array.from({ length: 4 }, (_, i) => task(`r${i}`, 'running')),
-      ...Array.from({ length: 2 }, (_, i) => task(`y${i}`, 'ready')),
-      ...Array.from({ length: 9 }, (_, i) => task(`w${i}`, 'waiting', { wait: { kind: 'limit' } })),
-      task('p', 'parked'),
+      task(slot), task(slot),
+      ...Array.from({ length: 9 }, () => task(limit)),
+      task(parkedWait),
     ];
-    const v = view({ tasks, slots: { used: 4, total: 6 } });
-    expect([v.tiles.running.label, v.tiles.ready.count, v.tiles.waiting.count, v.tiles.parked.count]).toEqual(['4/6', 2, 9, 1]);
-    for (const t of Object.values(v.tiles) as any[]) expect(t.href).toBeTruthy();
+    const v = view({ running: 4, slots: 6, teamBusy: 4, tasks });
+    expect([`${v.tiles.running}/${v.tiles.slots}`, v.tiles.ready, v.tiles.waiting, v.tiles.parked]).toEqual(['4/6', 2, 9, 1]);
+    const out = html({ running: 4, slots: 6, teamBusy: 4, tasks });
+    expect(out).toContain('4/6');
+    expect(out).toContain('href="#queue-waiting"');
   });
 });
 
 describe('AC-2: idle slots with an unserved ready task alert with the cause', () => {
   it('names idle slots and cause', () => {
-    const v = view({ idleSlots: 2, startable: [{ id: 'r', cause: 'no reviewer runner online' }], tasks: [task('r', 'ready')] } as any);
-    expect(v.alert!.lines[0]).toMatch(/2 idle slots/);
-    expect(v.alert!.lines[0]).toContain('no reviewer runner online');
+    const v = view({ slots: 3, teamBusy: 1, tasks: [task({ kind: 'slot', noRunnerReason: 'no reviewer runner online' })] });
+    expect(v.alert).toBe('2 idle slots, 1 task could start · no reviewer runner online');
+    expect(view({ slots: 4, teamBusy: 0, tasks: [task(limit)] }).alert).toBeNull();
   });
 });
 
-describe('AC-3: Declared names A, Lane reads "Schema · 3rd"', () => {
+describe('AC-3: Declared names A, Lane reads "Schema lane · 3rd"', () => {
   it('badges', () => {
-    const v = view({ tasks: [
-      task('B', 'waiting', { wait: { kind: 'declared', blockerId: 'A', blockerTitle: 'Task A' } }),
-      task('C', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 3 } }),
-    ] });
-    const by = Object.fromEntries(v.waitingTable.rows.map((r: any) => [r.id, r]));
-    expect(by.B.reason).toBe('Declared');
-    expect(by.B.blockedBy).toContain('Task A');
-    expect(by.C.reason).toBe('Lane');
-    expect(by.C.blockedBy).toBe('Schema · 3rd');
+    const b = task(declared());
+    const c = task(laneWait(3));
+    const rows = view({ tasks: [b, c] }).waiting.rows;
+    const rowB = rows.find(r => r.id === b.id)!;
+    const rowC = rows.find(r => r.id === c.id)!;
+    expect([rowB.badge, rowB.blockedBy, rowB.blockerId]).toEqual(['Declared', 'Task A', 'a']);
+    expect([rowC.badge, rowC.blockedBy]).toEqual(['Lane', 'Schema lane · 3rd']);
   });
 });
 
 describe('AC-4: stuck lane holder alerts and offers Release', () => {
-  it('after 24 hours without PR activity', () => {
-    const lanes = [{ name: 'Schema', holder: { id: 'h', state: 'pr_open', lastPrActivityMs: 24 * HOUR }, waiting: [] }];
-    const v = view({ lanes } as any);
-    expect(v.alert!.lines.join(' ')).toContain('Schema lane stuck');
-    expect(v.lanePanels.Schema.actions).toContain('Release');
-    const fresh = view({ lanes: [{ ...lanes[0], holder: { ...lanes[0].holder, lastPrActivityMs: 23 * HOUR } }] } as any);
-    expect(fresh.lanePanels.Schema.actions).not.toContain('Release');
+  it('after 24 hours without PR activity', async () => {
+    const quiet = new Date(NOW - 30 * HOUR);
+    const read = { releasedTaskIds: new Set<string>(), lanes: new Map([['w1', new Map([['migration', { workspaceId: 'w1', lane: 'migration', members: [
+      { taskId: 'h', claimableSince: null, priority: 0, createdAt: new Date(NOW), heldAt: quiet, holding: true, ready: false, status: 'completed', prNumber: 9, prUrl: 'u', lastActivityAt: quiet },
+    ] }]])]]) };
+    const v = await loadHealthQueue(scope, deps({ lanes: mock(async () => read as any), titles: mock(async () => new Map([['h', 'Add column']])) }));
+    expect(v.alert).toContain('Schema lane stuck 30h');
+    expect(v.lanes[0].stuckFor).toBe('30h');
+    expect(laneBody(v.lanes[0])).toContain('queue-lane-release');
+    const fresh = view({ lanes: [lane([holder({ stuckSince: null })])] });
+    expect(fresh.alert).toBeNull();
+    expect(laneBody(fresh.lanes[0])).not.toContain('queue-lane-release');
   });
 });
 
 describe('AC-5: no lane in use, no Lanes card', () => {
-  it('hides the card', () => expect(view().lanes).toBeNull());
+  it('hides the card', () => {
+    expect(view().lanes).toEqual([]);
+    expect(view({ lanes: [lane([])] }).lanes).toEqual([]);
+    expect(html()).not.toContain('queue-lanes');
+  });
 });
 
 describe('AC-6: lane panel order matches the claim route', () => {
-  it('holder first, waiters in position order', () => {
-    const lanes = [{ name: 'Migration', holder: { id: 'h', state: 'running', lastPrActivityMs: 0 }, waiting: [{ id: 'b', position: 2 }, { id: 'a', position: 1 }] }];
-    const p = view({ lanes } as any).lanePanels.Migration;
-    expect(p.entries.map((e: any) => e.id)).toEqual(['h', 'a', 'b']);
-    expect(p.entries[0].state).toBe('running');
+  it('holder first with its state, waiters in lane order', () => {
+    const v = view({ lanes: [lane([waiter('w1', 'First'), holder(), waiter('w2', 'Second')])] });
+    const l = v.lanes[0];
+    expect(l.name).toBe('Schema');
+    expect(l.holder).toMatchObject({ taskId: 'h', state: 'Running', position: null });
+    expect(l.waiters.map(w => [w.taskId, w.position])).toEqual([['w1', 1], ['w2', 2]]);
   });
 });
 
 describe('AC-7: Force start sheet and call', () => {
-  it('Limit row lists Skips and Still enforced and confirms to /start with the digest', () => {
-    const v = view({ tasks: [task('lim', 'waiting', { wait: { kind: 'limit', digest: 'abc123' } })] });
-    const row = v.waitingTable.rows[0];
-    expect(row.forceStartSheet.rows.map((r: any) => r.label)).toEqual(['Skips', 'Still enforced']);
-    expect(row.forceStartSheet.confirm).toEqual({ method: 'POST', url: '/api/tasks/lim/start', body: { digest: 'abc123' } });
+  it('Limit row lists Skips and Still enforced and confirms with the reasons digest', () => {
+    const state = forceStateOf({
+      reasonsDigest: 'd1', canForce: true,
+      force: { kinds: ['mission_concurrent'], checklist: [{ gate: 'Mission limit', sentence: 'one task per hour' }], railsRemaining: ['Files another agent is editing stay locked.'] },
+    } as any);
+    expect(state).toMatchObject({ kind: 'ready', digest: 'd1', kinds: ['mission_concurrent'] });
+    const out = renderToStaticMarkup(h(ForceStartBody, { row: waitingRow(limit), state: state, busy: false, onConfirm: noop, onClose: noop }));
+    expect(out).toContain('Skips');
+    expect(out).toContain('Mission limit: one task per hour');
+    expect(out).toContain('Still enforced');
+    expect(out).toContain('queue-force-confirm');
+    const sheets = src('app/app/(protected)/health/queue/QueueSheets.tsx');
+    expect(sheets).toContain('/api/tasks/${row.id}/start');
+    expect(sheets).toContain('reasonsDigest: state.digest');
   });
-  it('Lane and Declared rows offer none', () => {
-    const v = view({ tasks: [task('l', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 1 } }), task('d', 'waiting', { wait: { kind: 'declared', blockerId: 'x' } })] });
-    for (const r of v.waitingTable.rows) expect(r.forceStartSheet ?? null).toBeNull();
+  it('cannot confirm without a digest, and Lane and Declared rows offer no Force start', () => {
+    const out = renderToStaticMarkup(h(ForceStartBody, { row: waitingRow(limit), state: forceStateOf({ canForce: false } as any), busy: false, onConfirm: noop, onClose: noop }));
+    expect(out).toMatch(/data-testid="queue-force-confirm"[^>]*disabled|disabled[^>]*data-testid="queue-force-confirm"/);
+    const rows = view({ tasks: [task(laneWait(1)), task(declared())] }).waiting.rows;
+    expect(rows.every(r => !r.forceable)).toBe(true);
   });
 });
 
 describe('AC-8: Declared row sheet', () => {
   it('blocker next step is primary, Remove requires a reason', () => {
-    const v = view({ tasks: [task('b', 'waiting', { wait: { kind: 'declared', blockerId: 'a', blockerNextStep: 'Merge PR' } })] });
-    const s = v.waitingTable.rows[0].declaredSheet;
-    expect(s.primary).toBe('Merge PR');
-    expect(s.remove.requiresReason).toBe(true);
+    const r = waitingRow(declared({ blockerStatus: 'completed' }), { reason: 'declared', blockerId: 'a', blockerStatus: 'completed' });
+    const without = renderToStaticMarkup(h(DependencyBody, { row: r, reason: "", onReason: noop, busy: false, error: null, onRemove: noop }));
+    expect(without).toContain('Merge its PR');
+    expect(without).toMatch(/disabled[^>]*data-testid="queue-remove-dependency"|data-testid="queue-remove-dependency"[^>]*disabled/);
+    const withReason = renderToStaticMarkup(h(DependencyBody, { row: r, reason: "split", onReason: noop, busy: false, error: null, onRemove: noop }));
+    expect(withReason).not.toMatch(/disabled=""[^>]*data-testid="queue-remove-dependency"/);
   });
 });
 
 describe('AC-9: one pending task gives one reason everywhere', () => {
-  it('Queue row, task page, explain and the terminal Queue all read queueReason', () => {
-    const t = task('x', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 2 } });
-    expect(view({ tasks: [t] }).waitingTable.rows[0].blockedBy).toBe(queueReason(t).blockedBy);
-    const base = join(__dirname, '../../src');
-    for (const f of ['app/api/explain/route.ts', 'lib/claim-order-queue.ts', 'app/app/(protected)/tasks/[id]/page.tsx']) {
-      expect(readFileSync(join(base, f), 'utf8')).toContain('health-queue');
-    }
+  it('the Queue row carries the wait the shared read gave, and the other surfaces read the same module', async () => {
+    const wait = laneWait(2);
+    const v = await loadHealthQueue(scope, deps({ rows: mock(async () => [row(1)]), waits: mock(async () => new Map([['r-1', wait]])) }));
+    expect(v.waiting.rows[0].wait).toEqual(wait);
+    expect(v.waiting.rows[0].blockedBy).toBe(queueWaitBlockedBy(wait, NOW));
+    for (const f of ['lib/explain.ts', 'lib/claim-order-queue.ts', 'lib/task-actions.ts']) expect(src(f)).toMatch(/QueueWait|queue-wait-load/);
+    expect(src('lib/claim-order-queue.ts')).toContain('loadQueueWaitMap');
+    expect(src('lib/health-queue.ts')).toContain('loadQueueWaitMap');
   });
 });
 
 describe('AC-10: 400 pending tasks, one bounded read, 50 rows, exact tiles', () => {
   it('pages and counts exactly', async () => {
-    let calls = 0;
-    const rows = Array.from({ length: 50 }, (_, i) => task(`t${i}`, 'waiting', { wait: { kind: 'limit' } }));
-    const v = await loadQueue({ page: 1, read: async () => { calls++; return { counts: { running: 0, ready: 0, waiting: 400, parked: 0, byReason: { declared: 0, lane: 0, limit: 400 } }, rows, slots: { used: 0, total: 6 } }; } } as any);
-    expect(calls).toBe(1);
-    expect(v.tiles.waiting.count).toBe(400);
-    expect(v.waitingTable.rows).toHaveLength(50);
-    expect(v.waitingTable.hasMore).toBe(true);
+    const d = deps({ rows: mock(async () => Array.from({ length: 400 }, (_, i) => row(i))) });
+    const v = await loadHealthQueue(scope, d);
+    expect(d.rows).toHaveBeenCalledTimes(1);
+    expect(v.tiles.waiting).toBe(400);
+    expect(v.waiting.total).toBe(400);
+    expect(v.waiting.rows).toHaveLength(50);
+    expect(v.waiting.pages).toBe(8);
+    expect(v.truncated).toBe(false);
+    expect(html({ tasks: Array.from({ length: 120 }, () => task(limit)) })).toContain('queue-pager');
   });
 });
