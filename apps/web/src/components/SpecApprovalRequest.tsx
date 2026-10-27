@@ -12,6 +12,11 @@ import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import SpecRepoChecksFetch from '@/components/SpecRepoChecksFetch';
 import SpecExplanationCheck from '@/components/SpecExplanationCheck';
 import type { ApprovalRequestView } from '@/lib/specs/approval-view';
+import { needsPasskey, withPasskey } from '@/lib/passkeys/client';
+import { PASSKEY_SETTINGS_PATH } from '@/lib/passkeys/paths';
+
+/** What shows while a team's passkey prompt is open (R-20). */
+const ASKING = { tone: 'info' as const, text: 'Confirm with your passkey.' };
 
 /** The shortest reason that overrides a gate refusal (lib/specs/approval.ts MIN_OVERRIDE_REASON). */
 const MIN_REASON = 10;
@@ -63,26 +68,29 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
   // R-18: what still has to be opened before Approve; none when the explanation covers everything.
   const coverage = view.state === 'ready' ? view.coverage : null;
   const unopened = coverage && !coverage.passed ? coverage.notExplained.filter((i) => !opened.has(i.key)).length : 0;
-  const { shown: result, retry, approve } = useOptimisticApprove(async () => {
+  const passkey = view.state === 'ready' && view.passkey;
+  const { shown: result, retry, approve } = useOptimisticApprove(async (update) => {
     const override = refused ? { overrideReason: reason.trim() } : {};
     const retire = retireChoice(replacing, checked);
-    const res = inbox && view.state === 'ready'
-      ? await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/inbox`, {
+    // R-20: a team that requires a passkey answers the first press with
+    // presence_required; withPasskey runs the prompt and sends again.
+    const { res, body } = await withPasskey((presence) => (inbox && view.state === 'ready'
+      ? fetch(`/api/specs/${encodeURIComponent(specId)}/approve/inbox`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...view.pin, ...(replacing.length ? { retire } : {}), ...override }),
+        body: JSON.stringify({ ...view.pin, ...(replacing.length ? { retire } : {}), ...override, ...(presence ? { presence } : {}) }),
       })
-      : await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
+      : fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ request: token, retire, ...override }),
-      });
-    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string; retirements?: ApprovalRetirementReply[] };
-    if (res.ok) return approvalResultText(revision, body.retirements);
+        body: JSON.stringify({ request: token, retire, ...override, ...(presence ? { presence } : {}) }),
+      })), { onAsk: () => update(ASKING) });
+    if (res?.ok) return approvalResultText(revision, body.retirements as ApprovalRetirementReply[] | undefined);
+    if (needsPasskey(body)) return { tone: 'warn', text: body.error ?? 'Add a passkey to approve.', action: { label: 'Add a passkey', href: PASSKEY_SETTINGS_PATH } };
     // An inbox row that moved under the person: show the new head.
     if (inbox && body.code === 'stale') router.refresh();
     return { tone: body.code === 'request_stale' || body.code === 'request_expired' || body.code === 'stale' ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
-  }, approvedText, inbox ? () => router.refresh() : undefined);
+  }, approvedText, inbox ? () => router.refresh() : undefined, passkey ? ASKING : undefined);
 
   const heading = showTitle && 'title' in view ? (
     <h1 className="font-voice text-2xl text-text-primary" data-testid="spec-approval-title">{view.title}</h1>
@@ -164,7 +172,7 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
         className="sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-10 -mx-4 flex flex-col gap-2 border-t border-border-default bg-surface-1 px-4 py-3 md:bottom-0 md:mx-0 md:flex-row md:items-center md:justify-between md:gap-4 md:px-0"
         data-testid="spec-approval-bar"
       >
-        {result ? <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice> : null}
+        {result ? <Notice tone={result.tone} action={result.action} data-testid="spec-approval-result">{result.text}</Notice> : null}
         {!result || retry ? (
           <>
             <p className="text-meta text-text-secondary [overflow-wrap:anywhere]" data-testid="spec-approval-bar-status">
