@@ -13,6 +13,8 @@
  *    the PR's `review_queued` line. No role that can review answers `no_role`.
  *  - `fixWork` (`Work`, role `fix`): the legacy-shaped fix task under the
  *    ledger row's task id; a dependency bot's PR gets no fix, only a note.
+ *  - `captureWork` (`Work`, role `capture`): buildd's own capture of an evidence
+ *    finding (Living Spec fa62b865 R-46), a visual-auditor task, never the builder.
  *  - `reviewsHost` (`Reviews`): a round's reviewer output, the §5.9
  *    composition attestation, a review GitHub refused, the approval's
  *    supersession of the open fix, the escalation notice.
@@ -25,6 +27,8 @@ import { missionNotes, missions, tasks, workers, workspaces } from '@buildd/core
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { NO_ROLE, type Escalate, type Reviews } from '@buildd/workflow-kernel/ports';
 import type { DeliverySnapshot, RoundSnapshot } from '@buildd/workflow-kernel/types';
+import { findingLine, isRoundFinding } from '@buildd/workflow-kernel/findings';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { githubApi } from '@/lib/github';
 import { notifyTeamOf } from '@/lib/notify';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
@@ -158,13 +162,15 @@ export const reviewWork: WorkBuilder = async (req) => {
 const STOP_AND_REPORT =
   'If this turns out to be a misdiagnosis rather than a real defect, stop and report why instead of patching around it.';
 
-export interface FixFinding { id: string; path: string | null; line: number | null; title: string; status: string }
+export interface FixFinding { id: string; path: string | null; line: number | null; title: string; status: string; restatedCount?: number }
 
 /**
  * §13.13 rule 3: a review fix is an executable builder pinned to the exact target. Its task is the
- * open findings, verbatim, then the reviewer's feedback; the owner's description is background
- * only, and a coordination owner's ("performs no work of its own") is never copied. It names the
- * PR head it must push to and how completion is judged (rule 4).
+ * open code findings (Living Spec fa62b865 R-45, R-48): each once, by id, with `path:line`, the fix
+ * and how often it was restated. The reviewer's prose is not pasted again: it is the task only when
+ * the round named nothing structured. The owner's description is background only, and a coordination
+ * owner's ("performs no work of its own") is never copied. It names the PR head it must push to and
+ * how completion is judged (rule 4).
  */
 export function pinnedFixDescription(p: {
   prNumber: number; round: number | null; headRef: string | null; headSha: string | null; baseRef: string | null;
@@ -175,12 +181,13 @@ export function pinnedFixDescription(p: {
   const lines: string[] = [];
   lines.push(`## Fix the review findings on PR #${p.prNumber}${p.round != null ? ` (round ${p.round})` : ''}`, '');
   if (p.instructions) lines.push('## Instructions from the person who applied this (authoritative)', '', p.instructions, '');
-  if (p.findings.length) {
+  const structured = p.findings.filter((f) => !isRoundFinding(f));
+  if (structured.length) {
     lines.push('These findings are open. Each stays open until a later review verifies it, whatever is pushed:', '');
-    for (const f of p.findings) lines.push(`- \`${f.id}\` ${f.path ? `\`${f.path}${f.line != null ? `:${f.line}` : ''}\`: ` : ''}${f.title}${f.status === 'addressed' ? ' (a push touched its file; check it is really fixed)' : ''}`);
+    for (const f of structured) lines.push(`- ${findingLine(f)}${f.status === 'addressed' ? ' (a push touched its file; check it is really fixed)' : ''}`);
     lines.push('');
-  }
-  if (p.feedback) {
+  } else if (p.feedback) {
+    // Nothing structured: the reviewer's feedback is the only statement of what to fix.
     lines.push(p.instructions ? "## Reviewer's feedback (context; the instructions above take precedence wherever they conflict)" : "## Reviewer's feedback", '', p.feedback, '');
   }
   lines.push(
@@ -294,6 +301,73 @@ export const fixWork: WorkBuilder = async (req) => {
         entry: { kind: 'review_changes_requested', iteration: attemptNo, maxIterations: maxAttempts, note: feedback, taskUrl: taskActivityUrl(row.id), taskTitle: row.title },
         workspaceId: req.workspaceId,
       });
+    },
+  };
+};
+
+// ── Work, role `capture`: buildd captures what an evidence finding needs ────
+
+export interface CaptureFinding { id: string; title: string; criterionId?: string | null; screen?: string; route?: string | null }
+
+/**
+ * Living Spec fa62b865 R-46 / Designs in buildd R-19: what buildd's capture task is told. It renders
+ * each screen's real route (a component screen's dev fixture) at the PR head beside the design screen,
+ * stores both, and reports the stored capture per finding. It judges nothing: the evidence round's
+ * reviewer does.
+ */
+export function captureDescription(p: { prNumber: number; headSha: string | null; findings: CaptureFinding[] }): string {
+  const head = p.headSha ? p.headSha.slice(0, 12) : 'the PR head';
+  const lines = [
+    `## Capture design evidence for PR #${p.prNumber} at \`${head}\``,
+    '',
+    'A review needs these design screens compared with the built page. Capture each one; do not judge it, and do not change code.',
+    '',
+  ];
+  for (const f of p.findings) {
+    lines.push(`- \`${f.id}\`: screen \`${f.screen ?? 'unknown'}\`${f.criterionId ? ` (${f.criterionId})` : ''} on \`${f.route ?? 'the route the screen names'}\``);
+  }
+  lines.push(
+    '',
+    '## How',
+    '',
+    `1. Run \`dispatch_visual_qa\` with \`captureRef\` \`${p.headSha ?? 'the PR head'}\` and each route, at the screen's viewport.`,
+    "2. Read the design screen's render with the design's screen view, at the same viewport.",
+    '3. Store the pair with `upload_artifact` (one artifact per finding).',
+    '4. Complete with `structuredOutput.evidence` `[{ findingId, artifactId }]`, one entry per finding above.',
+    '',
+    'If a route cannot be captured, fail the task and say why: buildd hands it to a person, not to the builder.',
+  );
+  return lines.join('\n');
+}
+
+export const captureWork: WorkBuilder = async (req) => {
+  const prNumber = req.target.prNumber;
+  const ownerTaskId = req.lineage.parentTaskId;
+  if (prNumber == null || !ownerTaskId) return { skipped: 'no_pr' };
+  const owner = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, ownerTaskId)), columns: { id: true, title: true, missionId: true } });
+  if (!owner) return { skipped: 'no_owner' };
+  const detail = req.detail ?? {};
+  const findings = Array.isArray(detail.findings) ? (detail.findings as CaptureFinding[]) : [];
+  const headSha = req.target.headSha ?? null;
+  return {
+    values: {
+      workspaceId: req.workspaceId,
+      title: `Capture design screens for PR #${prNumber}`,
+      description: captureDescription({ prNumber, headSha, findings }),
+      missionId: owner.missionId,
+      parentTaskId: owner.id,
+      taskClass: 'attempt',
+      // Looking, not building: only a runner with a working browser advertises this role (claim/role-gate.ts).
+      roleSlug: VISUAL_AUDITOR_ROLE_SLUG,
+      kind: 'observation',
+      outputRequirement: 'artifact_required',
+      deliveryId: req.lineage.deliveryId,
+      deliveryRole: 'capture',
+      context: { prNumber, headSha, workflowRoundId: detail.roundId, captureFindings: findings },
+      release: 'false',
+      priority: 8,
+      status: 'pending',
+      creationSource: 'webhook',
     },
   };
 };

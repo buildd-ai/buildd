@@ -2408,8 +2408,10 @@ describe('S24–S27', () => {
     const notes = (await q<{ payload: never; observed_at: string }>(sql`SELECT payload, observed_at FROM workflow_facts WHERE delivery_id = ${f.deliveryId}::uuid AND kind = 'activity_note'`))
       .map((n) => ({ entry: n.payload, observedAt: new Date(n.observed_at).toISOString() }));
     expect(body).toBe(renderDeliveryActivity({ view, transitions: log, notes, timezone: 'UTC' }));
-    expect(body).toContain('Changes requested');
-    expect(body).toContain('Pushed `H2`');
+    // One state line and Open in Buildd: the timeline lives in Buildd, not in the comment.
+    expect(body).toContain('Open in Buildd');
+    expect(body).not.toContain('Changes requested');
+    expect(body).not.toContain('Pushed `H2`');
     expect(body).not.toContain('Reviewing');
 
     // Replaying a render is convergent: nothing changes, still one comment.

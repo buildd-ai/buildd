@@ -154,7 +154,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-25
   Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
-- [Task Page](./task-page.md) · @max — verified 2026-10-23
+- [Task Page](./task-page.md) · @max — verified 2026-10-26
   The task page leads with the live run and steering while running, then one Build/Verify/Deliver timeline when stopped; Run holds execution material and Details holds spec, dependencies, attempts and time.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-10-15
   Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
@@ -226,7 +226,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-10-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-23
+- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-26
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-19
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.

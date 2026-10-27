@@ -1,10 +1,10 @@
 {
+  "id": "adb95eee-6bdb-4b9b-b80c-a0f21e1e7d6f",
+  "prevIds": [
+    "81086640-b6b4-438b-bd3f-8a1a9888eb08"
+  ],
   "version": "8",
   "dialect": "postgres",
-  "id": "052f8417-451e-40eb-b9f0-4a479a1c4be9",
-  "prevIds": [
-    "5203f02a-b9e4-4678-85c6-d75214c353ae"
-  ],
   "ddl": [
     {
       "values": [
@@ -662,12 +662,6 @@
     {
       "isRlsEnabled": false,
       "name": "secrets",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "serial_lane_entries",
       "entityType": "tables",
       "schema": "public"
     },
@@ -20070,175 +20064,6 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "workspace_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "lane",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "task_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "claimable_since",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'manifest'",
-      "generated": null,
-      "identity": null,
-      "name": "joined_via",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "held_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "activity_signature",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "activity_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "left_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "left_reason",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "released_by_user_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "gen_random_uuid()",
-      "generated": null,
-      "identity": null,
-      "name": "id",
-      "entityType": "columns",
-      "schema": "public",
       "table": "sibling_probes"
     },
     {
@@ -21992,6 +21817,19 @@
       "generated": null,
       "identity": null,
       "name": "replaces",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_revisions"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "explanation",
       "entityType": "columns",
       "schema": "public",
       "table": "spec_revisions"
@@ -31721,6 +31559,45 @@
       "table": "workflow_findings"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'code_fix'",
+      "generated": null,
+      "identity": null,
+      "name": "remedy_class",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "restated_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "evidence",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -39630,97 +39507,6 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "secrets"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "workspace_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "lane",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "task_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "serial_lane_entries_task_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "workspace_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "lane",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"held_at\" IS NOT NULL AND \"left_at\" IS NULL",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "serial_lane_entries_holder_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "workspace_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "lane",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": "\"left_at\" IS NULL",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "serial_lane_entries_open_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "serial_lane_entries"
     },
     {
       "nameExplicit": true,
@@ -48047,40 +47833,6 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
-      "name": "serial_lane_entries_workspace_id_workspaces_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "task_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "tasks",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "serial_lane_entries_task_id_tasks_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "workspace_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "workspaces",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
       "name": "sibling_probes_workspace_id_workspaces_id_fk",
       "entityType": "fks",
       "schema": "public",
@@ -51481,16 +51233,6 @@
       "name": "secrets_pkey",
       "schema": "public",
       "table": "secrets",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "serial_lane_entries_pkey",
-      "schema": "public",
-      "table": "serial_lane_entries",
       "entityType": "pks"
     },
     {

@@ -511,6 +511,27 @@ export function renderPrActivityComment(
   ].join('\n');
 }
 
+/**
+ * Living Spec fa62b865 R-51: a kernel-owned PR's sticky comment is one state line and "Open in
+ * Buildd", edited in place. No timeline, findings, rounds line or escalation prose: those live in
+ * Buildd, and the line says only what is true now (pr-activity-comment.STYLE.md).
+ */
+export function renderStateLineComment(p: { header: ActivityHeader; url: string | null; startedAt: string | null; timezone?: string }): string {
+  const h = p.header;
+  const marker = h.tone === 'working'
+    ? `<img src="${assetOrigin()}${SPINNER_PATH}" width="12" height="12" alt="working" align="absmiddle" />`
+    : h.tone === 'plain' ? '' : GLYPH[h.tone];
+  const link = p.url ? ` · [Open in Buildd](${p.url})` : '';
+  const started = p.startedAt && Number.isFinite(new Date(p.startedAt).getTime())
+    ? `Started ${formatStamp(p.startedAt, p.timezone ?? DEFAULT_TIMEZONE)} · ` : '';
+  return [
+    ACTIVITY_COMMENT_MARKER,
+    `**buildd** · ${marker ? `${marker} ` : ''}**${h.headline}**${link}`,
+    '',
+    `<sub>${started}edited in place by [buildd](https://buildd.dev)</sub>`,
+  ].join('\n');
+}
+
 function stateBlock(kept: NormalizedEntry[], fold: { startedAt: string | null; folded: number; url: string | null }): string {
   // Fold fields are additive to v1: a reader that only knows `entries` ignores them.
   const meta = {

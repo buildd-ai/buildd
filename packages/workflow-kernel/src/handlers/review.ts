@@ -25,8 +25,8 @@ import type { Command } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, NO_ROLE, type ClaimedEffect, type KernelPorts, type PostedReview, type ReviewOutput } from '../ports';
 import { attemptOrdinal, deltaApprovalOf, PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
-import { openFindings } from '../findings';
-import type { DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
+import { byRemedyRoute, findingLine, isRoundFinding, openFindings } from '../findings';
+import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
@@ -41,14 +41,18 @@ export const REVIEW_DISPATCH_RETRIES = 2;
 export const REVIEW_DISPATCH_BACKOFF_MS = 60_000;
 
 /**
- * The GitHub review body for a request for changes: the actionable findings and nothing else.
- * The verdict, confidence, rationale, scope, head and round stay in buildd (the round row and the
- * `Buildd / Review approval` commit status); an approval posts no review at all, so there is no
- * body for it. Nothing here explains GitHub's own limits or names buildd's internals.
+ * The GitHub review body for a request for changes: the actionable findings and nothing else
+ * (Living Spec fa62b865 R-49). Each code finding the round raised or changed is one line, once:
+ * short id, `path:line`, the fix. The verdict, confidence, rationale, scope, head and round stay in
+ * buildd (the round row and the `Buildd / Review approval` commit status); an approval posts no
+ * review at all. A round that named nothing structured has only its feedback to say.
  */
 export function postReviewBody(
   out: { summary?: string | null; feedback?: string | null },
+  findings: ReadonlyArray<Pick<FindingSnapshot, 'id' | 'path' | 'line' | 'title' | 'restatedCount'>> = [],
 ): string {
+  const structured = findings.filter((f) => !isRoundFinding(f));
+  if (structured.length > 0) return structured.map((f) => `- ${findingLine(f)}`).join('\n');
   return (out.feedback ?? out.summary ?? '').trim() || 'Changes requested. See the task for details.';
 }
 
@@ -74,11 +78,18 @@ function compositionScopeOf(round: RoundSnapshot): { novelDeltaPaths: string[] }
 
 /** What the reviewer is told about the delivery's open findings (§5); `verify`: a verification round's own list. */
 export function findingsBriefOf(view: Pick<KernelView, 'findings'>, round: Pick<RoundSnapshot, 'scope'>): {
-  open: Array<{ id: string; path: string | null; line: number | null; title: string; status: string }>; verify?: string[];
+  open: Array<{
+    id: string; path: string | null; line: number | null; title: string; status: string;
+    remedyClass: string; restatedCount: number; evidence?: FindingSnapshot['evidence'];
+  }>; verify?: string[];
 } {
   const verify = Array.isArray(round.scope?.verifyFindings) ? (round.scope!.verifyFindings as unknown[]).map(String) : undefined;
   return {
-    open: openFindings(view).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status })),
+    // §11: the reviewer reads each finding's class and buildd's capture, so it judges evidence instead of asking for it again.
+    open: openFindings(view).map((f) => ({
+      id: f.id, path: f.path, line: f.line, title: f.title, status: f.status, remedyClass: f.remedyClass ?? 'code_fix', restatedCount: f.restatedCount ?? 0,
+      ...(f.evidence ? { evidence: f.evidence } : {}),
+    })),
     ...(verify ? { verify } : {}),
   };
 }
@@ -89,6 +100,7 @@ const DEAD_EFFECT_COPY: Record<string, string> = {
   merge_call: 'the merge call kept failing',
   verify_merge: 'reading back the merge kept failing',
   dispatch_fix: 'filing the fix task kept failing',
+  dispatch_capture: 'filing the screen capture kept failing',
   dispatch_review: 'filing the review task kept failing',
   post_review: 'posting the review to GitHub kept failing',
 };
@@ -269,7 +281,8 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
         // "attempt N of M" counts dispatched attempts (§5.7 rule 4, 295486ba), as the checks list does.
         roundId: round.id, reviewerTaskId: round.reviewerTaskId ?? null, attemptNo: attemptOrdinal(view.attempts, attempt) ?? attempt.attemptNo, maxAttempts: attempt.maxAttempts, firstAtHead,
         // §5 / rule 3: the repair is pinned to the round and head, and its task is the open findings.
-        round: round.round, findings: openFindings(view).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status })),
+        // §11.1 R-45: a fix is asked only for code findings; buildd's evidence and a person's decisions are not its work.
+        round: round.round, findings: byRemedyRoute(openFindings(view)).fix.map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status, restatedCount: f.restatedCount ?? 0 })),
         ...(human ? { trigger: 'human', humanInstructions, actor: humanActor } : {}),
       },
     });
@@ -286,6 +299,36 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     return { outcome: 'ok' };
   };
 
+  /**
+   * Living Spec fa62b865 §11.1 R-46: buildd's capture for an evidence round, filed through `Work` as
+   * role `capture` (the host's visual check, never the builder). A host that cannot capture answers
+   * `skipped`, and the round's findings become a missing capability a person settles.
+   */
+  const dispatchCapture: EffectHandler = async (e) => {
+    const view = await ports.store.loadView({ deliveryId: e.deliveryId });
+    const d = view.delivery;
+    if (!d || d.state !== 'AWAITING_REVIEW') return { outcome: 'skipped:state_moved' };
+    if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
+    const round = view.rounds.find((r) => r.id === e.payload.roundId);
+    if (!round || round.status !== 'queued' || round.round !== d.currentRound) return { outcome: 'skipped:round_moved' };
+    const work = need(ports, 'work', e.kind);
+    const filed = await work.file({
+      role: 'capture',
+      workspaceId: d.workspaceId,
+      target: { repoFullName: d.repoFullName, prNumber: d.prNumber, headSha: round.headSha, baseRef: d.baseRef },
+      lineage: { deliveryId: d.id, parentTaskId: d.ownerTaskId },
+      dedupeKey: `capture:${round.id}`,
+      detail: { roundId: round.id, round: round.round, findings: Array.isArray(e.payload.findings) ? e.payload.findings : [] },
+    });
+    if (filed.skipped || !filed.taskId) {
+      const why = filed.skipped === NO_ROLE ? 'no runner can capture screens for this workspace (Visual QA)' : `the capture could not be filed (${filed.skipped ?? 'no task'})`;
+      await apply(d.id, { type: 'EvidenceRecorded', actor: 'kernel', roundId: round.id, failure: why });
+      return { outcome: `skipped:${filed.skipped ?? 'no_task'}:escalated` };
+    }
+    if (filed.created || filed.unclaimed === true) await work.wake(filed.taskId, 'review.capture_requested');
+    return { outcome: filed.created ? 'ok' : 'ok:task_exists' };
+  };
+
   const postReview: EffectHandler = async (e) => {
     const view = await ports.store.loadView({ deliveryId: e.deliveryId });
     const d = view.delivery;
@@ -298,12 +341,17 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     const event = e.payload.event === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES';
     // An approval is the `Buildd / Review approval` commit status, never a PR comment.
     if (event === 'APPROVE') return { outcome: 'skipped:approval_is_status' };
+    // R-49: only the code findings this round raised or changed are news. A round that restated what
+    // is already posted posts nothing (older effects carry no list and post as before).
+    const ids = Array.isArray(e.payload.findingIds) ? (e.payload.findingIds as unknown[]).map(String) : null;
+    if (ids && ids.length === 0) return { outcome: 'skipped:restated_only' };
+    const named = ids ? (view.findings ?? []).filter((f) => ids.includes(f.id)) : [];
     const res = await writes.postReview({
       repoFullName: d.repoFullName, prNumber: d.prNumber,
       // §8.4: commit_id is the round's head, never whatever the PR shows now.
       commitId: String(e.payload.commitId ?? round.headSha),
       event,
-      body: postReviewBody(out),
+      body: postReviewBody(out, named),
     }).catch((err: unknown): PostedReview => ({ id: null, posted: false, reason: err instanceof Error ? err.message : 'unknown error' }));
     if (res.posted === false && res.reason !== 'a matching review already exists for this commit') {
       await reviews.postFailed(d, { event, reason: res.reason ?? 'unknown error' });
@@ -393,7 +441,7 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
   const legacyOwns: EffectHandler = async () => ({ outcome: 'skipped:legacy_owns' });
 
   return {
-    dispatch_review: dispatchReview, dispatch_fix: dispatchFix, post_review: postReview, mission_note: missionNote,
+    dispatch_review: dispatchReview, dispatch_fix: dispatchFix, dispatch_capture: dispatchCapture, post_review: postReview, mission_note: missionNote,
     notify, push_recovery: pushRecovery, release_attribution: legacyOwns, gate_event: legacyOwns,
   };
 }

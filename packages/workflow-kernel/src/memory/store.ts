@@ -485,6 +485,7 @@ function applyRoundOps(rounds: Array<RoundSnapshot & { deliveryId: string }>, de
     if (o.set.failureCount !== undefined) r.failureCount = o.set.failureCount;
     if (o.set.clearReviewer) r.reviewerTaskId = null;
     if (o.set.endReason !== undefined) r.endReason = o.set.endReason;
+    if (o.set.budgetFree !== undefined) r.budgetFree = o.set.budgetFree;
   }
 }
 
@@ -533,6 +534,7 @@ function applyFindingOps(findings: Array<FindingSnapshot & { deliveryId: string;
         deliveryId, seq: seq(), id: o.id, originRoundId: o.originRoundId, originRound: o.originRound, originHeadSha: o.originHeadSha,
         ordinal: o.ordinal, path: o.path, line: o.line, title: o.title, required: o.required, status: 'open', lastRound: o.originRound,
         addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+        remedyClass: o.remedyClass ?? 'code_fix', restatedCount: 0, evidence: o.evidence ?? null,
       });
       continue;
     }

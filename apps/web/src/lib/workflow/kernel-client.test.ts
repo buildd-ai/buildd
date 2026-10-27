@@ -937,7 +937,7 @@ describe('AC-74: a door command the control plane never answered is parked for t
     const { PARK_ON_UNAVAILABLE } = await import('./command-outbox');
     const { KERNEL_OPS } = await import('./command-api');
     expect(Object.keys(PARK_ON_UNAVAILABLE).sort()).toEqual([...KERNEL_OPS].sort());
-    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'attempt_requeued', 'observe_base', 'observe_ci_green', 'observe_head', 'record_review_verdict']);
+    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'attempt_requeued', 'observe_base', 'observe_ci_green', 'observe_head', 'record_capture_evidence', 'record_review_verdict']);
     // A fix claim is rolled back and claimed afresh when unanswered: its old command is never re-sent.
     expect(PARK_ON_UNAVAILABLE.claim_fix).toBe(false);
     // AC-1 slice 7: nor a start: the claim projects it on its own host, and a late re-send could start a claim that moved on.

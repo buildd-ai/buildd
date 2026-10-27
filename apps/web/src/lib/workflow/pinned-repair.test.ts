@@ -16,7 +16,7 @@ const base = {
 describe('pinnedFixDescription', () => {
   test('the findings verbatim with their ids, the head to push to, and how completion is judged', () => {
     const d = pinnedFixDescription({ ...base, owner: { description: 'Build the thing.', kind: 'engineering' } });
-    expect(d).toContain('- `r1:0` `src/a.ts:3`: rename the flag (a push touched its file; check it is really fixed)');
+    expect(d).toContain('- `r1:0` src/a.ts:3: rename the flag (a push touched its file; check it is really fixed)');
     expect(d).toContain('- `r1:1` add a test');
     expect(d).toContain("Push to the PR's own head branch `mission/kernel-abc`, currently at `0123456789ab` (base `dev`)");
     expect(d).toContain('A push that changes nothing near them is refused.');

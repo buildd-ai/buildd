@@ -125,7 +125,7 @@ describe('DesignPreview start screen', () => {
 });
 
 describe('DesignPreview loading state', () => {
-  it('shows a themed loading cover until the frame loads, never a white block', () => {
+  it('shows a themed loading cover until the frame loads, never a white block', async () => {
     mount('desktop-mission');
     expect(q('design-frame-loading')?.textContent).toContain('Loading design');
     expect(frame().className).not.toContain('bg-white');
@@ -133,7 +133,24 @@ describe('DesignPreview loading state', () => {
     act(() => {
       frame().dispatchEvent(new Event('load'));
     });
+    // Still covered on the load frame itself: the scaled frame may not have painted yet.
+    expect(q('design-frame-loading')).not.toBeNull();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
     expect(q('design-frame-loading')).toBeNull();
+  });
+});
+
+describe('DesignPreview when storage cannot serve the file', () => {
+  it('centres the fallback across the whole column, not a viewport-sized box', () => {
+    act(() => {
+      root.render(
+        <DesignPreview artifactId="a1" title="Nav" revision={1} frameUrl={null} screens={screens} initialScreenId="desktop-mission" />,
+      );
+    });
+    expect(box().style.width).toBe('');
+    expect(q('design-frame-unavailable')!.className).toContain('w-full');
   });
 });
 

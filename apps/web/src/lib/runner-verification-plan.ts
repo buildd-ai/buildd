@@ -1,4 +1,5 @@
 import { isCriterionCheckTask } from '@/lib/specs/criterion-checks';
+import { criterionBatchOf, type CriterionBatchCheck } from '@buildd/shared';
 
 /**
  * Whether the cloud Worker should run a finished task's check command itself,
@@ -9,10 +10,12 @@ import { isCriterionCheckTask } from '@/lib/specs/criterion-checks';
  * code and which take a late runner report (lib/late-runner-evidence.ts).
  * The command is resolved the way the runner resolves it
  * (apps/runner/src/runner-verification.ts resolveCommand): the loop's exit
- * condition first, then context.verificationCommand.
+ * condition first, then context.verificationCommand. A mission's criterion
+ * batch is planned as its head and every criterion's command and limit.
  */
 export type VerificationRunPlan =
   | { run: true; command: string; iteration: number }
+  | { run: true; batch: { headSha: string; checks: CriterionBatchCheck[] }; iteration: number }
   | { run: false; reason: 'not_a_verification_run' | 'no_command' };
 
 export function verificationRunPlan(task: {
@@ -20,6 +23,8 @@ export function verificationRunPlan(task: {
   loopConfig: unknown;
   loopIteration?: number | null;
 }): VerificationRunPlan {
+  const batch = criterionBatchOf(task.context);
+  if (batch) return { run: true, batch: { headSha: batch.headSha, checks: batch.checks }, iteration: 0 };
   if (!isCriterionCheckTask(task.context) && !isCriteriaVerificationTask(task.context)) {
     return { run: false, reason: 'not_a_verification_run' };
   }
