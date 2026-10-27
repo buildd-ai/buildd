@@ -95,6 +95,31 @@ const DOC_LINES = [
 ];
 const patch = (...lines: string[]) => ['@@ -0,0 +1 @@', ...lines.map(l => `+${l}`)].join('\n');
 
+/**
+ * Collect the raw SQL text chunks and bound param values of a drizzle SQL
+ * fragment. Column/table objects carry no `value`, so they are skipped — we
+ * only want the literals the query itself contributes.
+ */
+function sqlLiterals(node: any, out: string[] = []): string[] {
+  if (node === null || node === undefined) return out;
+  if (typeof node === 'string' || typeof node === 'number') {
+    out.push(String(node));
+    return out;
+  }
+  if (typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const item of node) sqlLiterals(item, out);
+    return out;
+  }
+  if (Array.isArray(node.queryChunks)) {
+    sqlLiterals(node.queryChunks, out);
+    return out;
+  }
+  // StringChunk ({ value: string[] }) and Param ({ value: unknown }).
+  if ('value' in node) sqlLiterals(node.value, out);
+  return out;
+}
+
 function closedPr(repo: string, n: number, over: Record<string, any> = {}) {
   gh[`${repo}/pulls/${n}`] = { number: n, merged: false, state: 'closed', body: '', created_at: '2026-09-01T00:00:00Z', commits: 2, head: { sha: `head${n}` }, ...over };
   gh[`${repo}/issues/${n}/comments`] = [];
@@ -628,10 +653,13 @@ describe('rescanOnMerge', () => {
 
     const r = await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: 't-9' });
 
-    // Verify the where() condition was called with the lineage filter.
-    // The condition is a Drizzle SQL expression and won't have the ids as plain strings,
-    // but it will be truthy and structured.
-    expect(lastWhereCondition).toBeDefined();
+    // Walk the Drizzle SQL object's bound params/literals to prove the lineage
+    // ids ('t-9', 'p-1', 't-6') actually reach the sweep's where() clause —
+    // not just that where() was called with something.
+    const literals = sqlLiterals(lastWhereCondition);
+    expect(literals).toContain('t-9');
+    expect(literals).toContain('p-1');
+    expect(literals).toContain('t-6');
 
     // The closed PR #6 should be nominated and recorded as superseded
     expect(r.nominated).toBe(1);
