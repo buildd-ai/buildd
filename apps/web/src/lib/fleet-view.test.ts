@@ -769,3 +769,18 @@ describe('a runner applying an update', () => {
     expect(runnerBusyLine(buildFleetSnapshot([hb(10_000, null)], [], { now: NOW }).runners[0])).toBe('0 of 12 busy');
   });
 });
+
+describe('helper runs on a slot (spec d25d923d R-13)', () => {
+  it('a live check carries helper and the task it checks; build work carries neither', () => {
+    const hb: FleetHeartbeatRow = { id: 'h', accountId: 'acct', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
+    const w = (id: string, task: NonNullable<FleetWorkerRow['task']>): FleetWorkerRow => ({ id, accountId: 'acct', runner: hb.localUiUrl, status: 'running', startedAt: min(5), task });
+    const snap = buildFleetSnapshot([hb], [
+      w('b', { id: 't-b', title: 'feat: b', missionId: 'm1' }),
+      w('c', { id: 't-c', title: 'Check spec criterion R-1', missionId: 'm1', helper: true, hostTaskId: 't-b' }),
+    ], { now: NOW });
+    const workers = snap.runners[0].slots.map(s => s.worker!);
+    const check = workers.find(x => x.taskId === 't-c')!;
+    expect(check).toMatchObject({ helper: true, hostTaskId: 't-b' });
+    expect(workers.find(x => x.taskId === 't-b')).not.toHaveProperty('helper');
+  });
+});

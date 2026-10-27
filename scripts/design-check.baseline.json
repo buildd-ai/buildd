@@ -1,6 +1,5 @@
 {
   "arbitraryFontSizes": {
-    "apps/web/src/app/app/(protected)/artifacts/[id]/page.tsx": 1,
     "apps/web/src/app/app/(protected)/chat/chat-shell.tsx": 1,
     "apps/web/src/app/app/(protected)/chat/page.tsx": 1,
     "apps/web/src/app/app/(protected)/health/ExperimentsSection.tsx": 3,
@@ -34,12 +33,10 @@
     "apps/web/src/app/app/(protected)/missions/[id]/MissionMonitoringToggle.tsx": 3,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionRecordsSheet.tsx": 5,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionReleaseSection.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionScreensRow.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionSecondaryPanel.tsx": 3,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionSheetRow.tsx": 2,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionShippedHeader.tsx": 9,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionStripControls.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionVerifiedPill.tsx": 2,
     "apps/web/src/app/app/(protected)/missions/[id]/QuietHoursConfig.tsx": 6,
     "apps/web/src/app/app/(protected)/missions/[id]/RaiseBudgetButton.tsx": 6,
     "apps/web/src/app/app/(protected)/missions/[id]/ScheduleWizard.tsx": 12,
@@ -55,7 +52,6 @@
     "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/WorkspaceHealthCard.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx": 23,
     "apps/web/src/app/app/(protected)/tasks/[id]/AuditRoundTrays.tsx": 1,
-    "apps/web/src/app/app/(protected)/tasks/[id]/DeleteTaskButton.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/[id]/InstructWorkerForm.tsx": 2,
     "apps/web/src/app/app/(protected)/tasks/[id]/ModelUsagePanel.tsx": 5,
     "apps/web/src/app/app/(protected)/tasks/[id]/PlanReviewPanel.tsx": 12,
@@ -91,7 +87,6 @@
     "apps/web/src/components/ArtifactList.tsx": 5,
     "apps/web/src/components/ArtifactViewer.tsx": 6,
     "apps/web/src/components/DependencyRail.tsx": 2,
-    "apps/web/src/components/ErrorState.tsx": 1,
     "apps/web/src/components/FixCiButton.tsx": 2,
     "apps/web/src/components/FlightDetailSheet.test.tsx": 4,
     "apps/web/src/components/FlightDetailSheet.tsx": 7,
@@ -170,6 +165,9 @@
     "apps/web/src/components/visual-review/VisualReviewAsk.tsx": 5,
     "apps/web/src/components/visual-review/VisualReviewLine.tsx": 3,
     "apps/web/src/components/visual-review/VisualReviewTray.tsx": 6,
+    "apps/web/src/app/app/(protected)/artifacts/[id]/page.tsx": 1,
+    "apps/web/src/app/app/(protected)/tasks/[id]/DeleteTaskButton.tsx": 1,
+    "apps/web/src/components/ErrorState.tsx": 1,
     "apps/web/src/components/visual-review/review-ui.tsx": 2
   },
   "rawHexColors": {
@@ -213,7 +211,6 @@
     "apps/web/src/app/app/(protected)/missions/[id]/MissionGoalCriteria.tsx": 2,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionInitiativeSelector.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx": 6,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionVerifiedPill.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/QuietHoursConfig.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/RaiseBudgetButton.tsx": 2,
     "apps/web/src/app/app/(protected)/missions/[id]/ScheduleWizard.tsx": 3,

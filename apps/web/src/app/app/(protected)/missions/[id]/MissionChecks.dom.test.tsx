@@ -22,7 +22,9 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ChecksCard, CheckRail, OutcomeSpecLines } = await import('./MissionChecks');
+const { ChecksCard, CheckRail, OutcomeSpecLines, RequirementsView, StandardsLineView } = await import('./MissionChecks');
+import type { MissionVerifyView, VerifyGroup } from '@/lib/mission-verify-view';
+import type { StandardsLine } from '@/lib/specs/mission-standards-gate';
 const { MissionSurfaceAuditWaiverProvider } = await import('./MissionSurfaceAuditWaiver');
 import type { CheckRow } from '@/lib/mission-checks';
 
@@ -260,5 +262,79 @@ describe('the spec row (items 6 to 8)', () => {
     mount([row({ waivable: false })], null);
     expect(q('[data-testid="mission-check-link"]')).toBeNull();
     expect(q('[data-testid="mission-check-criteria"]')).toBeNull();
+  });
+});
+
+describe('Verify: Requirements and Standards (Navigation R-17, R-18, AC-11)', () => {
+  const met = (n: number, from = 1) => Array.from({ length: n }, (_, i) => ({ id: `R-${i + from}`, text: `Requirement ${i + from}` }));
+  const big: VerifyGroup = {
+    key: 'spec-a', specId: 'a', title: 'Cloud runner: deploy from Settings', href: '/app/specs/a?revision=4', scope: null,
+    checked: true, checking: false, metCount: 15, total: 18, count: '15 of 18', allMet: false, waived: 0, met: met(15),
+    unmet: [
+      { id: 'AC-1', text: 'A cloud runner bundle on every release', result: 'Not met', evidence: [{ label: 'Test output', href: '/app/tasks/t1' }],
+        action: { kind: 'fixing', taskId: 'r1', title: 'Publish the bundle on release', href: '/app/tasks/r1', detail: 'running 8m', text: 'Fixing: Publish the bundle on release, running 8m' } },
+      { id: 'AC-8', text: 'The serving release publishes an image digest', result: "Couldn't tell", evidence: [],
+        action: { kind: 'rechecks', taskId: 'r1', title: 'Publish the bundle on release', href: '/app/tasks/r1', detail: null, text: 'rechecks after Publish the bundle on release merges' } },
+      { id: 'AC-9', text: 'Settings shows each deploy step as it runs', result: "Couldn't tell", evidence: [{ label: '2 screenshots', href: '/app/missions/m1?visualReview=1' }], action: null },
+    ],
+  };
+  const small: VerifyGroup = {
+    key: 'spec-b', specId: 'b', title: 'Settings: Runners', href: '/app/specs/b?revision=2', scope: 'the 3 this mission adds',
+    checked: true, checking: false, metCount: 3, total: 3, count: '3 of 3', allMet: true, waived: 0, met: met(3, 40), unmet: [],
+  };
+  const view: MissionVerifyView = { groups: [big, small], metCount: 18, total: 21, summary: '18 of 21 met', allMet: false };
+  const standards: StandardsLine = { text: 'All met', allMet: true, open: false, items: [
+    { key: 'ci', label: 'CI', status: 'met', href: null }, { key: 'code-review', label: 'Code review', status: 'met', href: null },
+  ] };
+
+  it('reads 18 of 21 met with From <spec> for each group', () => {
+    act(() => root.render(<RequirementsView view={view} />));
+    expect(q('[data-testid="mission-requirements-summary"]')!.textContent).toBe('18 of 21 met');
+    const groups = [...document.querySelectorAll('[data-testid="mission-requirements-group"]')] as HTMLElement[];
+    expect(groups).toHaveLength(2);
+    expect(groups[0].textContent).toContain('From Cloud runner: deploy from Settings');
+    expect(groups[0].textContent).toContain('15 of 18');
+    expect(groups[0].querySelector('a')!.getAttribute('href')).toBe('/app/specs/a?revision=4');
+  });
+
+  it('lists the three unmet with their result, evidence and current action', () => {
+    act(() => root.render(<RequirementsView view={view} />));
+    const rows = [...document.querySelectorAll('[data-testid="mission-requirement"]')] as HTMLElement[];
+    expect(rows.map(r => r.getAttribute('data-result'))).toEqual(['Not met', "Couldn't tell", "Couldn't tell"]);
+    expect(rows[0].textContent).toContain('Not met · Test output · Fixing: Publish the bundle on release, running 8m');
+    expect((rows[0].querySelector('a[href="/app/tasks/r1"]') as HTMLAnchorElement).textContent).toBe('Publish the bundle on release');
+    expect(rows[1].textContent).toContain("Couldn't tell · rechecks after Publish the bundle on release merges");
+    expect(rows[2].querySelector('a')!.textContent).toBe('2 screenshots');
+  });
+
+  it('folds the met into one row, and an all-met group is one line', () => {
+    act(() => root.render(<RequirementsView view={view} />));
+    expect(document.querySelectorAll('[data-testid="mission-requirements-met"]')).toHaveLength(1);
+    expect(q('[data-testid="mission-requirements-met"] summary')!.textContent).toContain('15 met');
+    const allMet = q('[data-testid="mission-requirements-group"][data-all-met="true"]')!;
+    expect(allMet.textContent).toBe('From Settings: Runners · the 3 this mission adds✓ 3 of 3');
+    expect(allMet.querySelectorAll('[data-testid="mission-requirement"]')).toHaveLength(0);
+  });
+
+  it('Standards is one line, closed, opening to CI and code review', () => {
+    act(() => root.render(<StandardsLineView line={standards} />));
+    const d = q('[data-testid="mission-standards"]') as HTMLDetailsElement;
+    expect(d.open).toBe(false);
+    expect(q('[data-testid="mission-standards-summary"]')!.textContent).toBe('✓ All met');
+    expect([...document.querySelectorAll('[data-testid="mission-standards-item"]')].map(i => i.textContent)).toEqual(['CI✓ met', 'Code review✓ met']);
+  });
+
+  it('a standard not met opens the line on its own, with the failing one in place', () => {
+    act(() => root.render(<StandardsLineView line={{ text: '1 not met', allMet: false, open: true, items: [{ key: 'ci', label: 'CI', status: 'not_met', href: null }] }} />));
+    expect((q('[data-testid="mission-standards"]') as HTMLDetailsElement).open).toBe(true);
+    expect(q('[data-testid="mission-standards-item"]')!.getAttribute('data-status')).toBe('not_met');
+  });
+
+  it('no Run verification button, Goal criteria panel or Screens row renders', () => {
+    act(() => root.render(<><RequirementsView view={view} /><StandardsLineView line={standards} /></>));
+    expect(document.body.textContent).not.toContain('Run verification');
+    expect(document.body.textContent).not.toContain('Goal criteria');
+    expect(q('[data-testid="mission-criteria-sheet"]')).toBeNull();
+    expect(q('[data-testid="mission-screens-row"]')).toBeNull();
   });
 });

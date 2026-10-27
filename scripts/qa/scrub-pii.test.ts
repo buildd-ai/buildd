@@ -598,6 +598,17 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(sqlSrc.indexOf('DO $unshim$')).toBeLessThan(sqlSrc.lastIndexOf('COMMIT;'));
   });
 
+  // $shim$ adds columns, never triggers, so a trigger an unreleased trunk
+  // migration creates is absent from the clone. A bare ALTER TABLE naming it
+  // fails the whole scrub; the helpers skip a trigger the clone lacks and put
+  // back only what they turned off.
+  test('a named trigger is toggled through the helpers, never a bare ALTER TABLE', () => {
+    const bare = sqlSrc.split('\n').filter((l) => /^\s*ALTER TABLE\b.*\b(DISABLE|ENABLE)\s+TRIGGER\b/i.test(l));
+    expect(bare).toEqual([]);
+    expect(sqlSrc).toContain('CREATE OR REPLACE FUNCTION pg_temp.qa_trigger_off(');
+    expect(sqlSrc).toContain('CREATE OR REPLACE FUNCTION pg_temp.qa_trigger_restore(');
+  });
+
   test('the schema shape is every public table and column of a snapshot, with its type', () => {
     const shape = schemaShape(JSON.parse(readFileSync(latestSnapshotPath(join(root, 'packages/core/drizzle')), 'utf8')));
     expect(shape.tasks.title).toBe('text');

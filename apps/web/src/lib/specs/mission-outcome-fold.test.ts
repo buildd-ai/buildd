@@ -240,4 +240,18 @@ describe('verdictReason / describeStandings', () => {
       { criterionId: 'R-2', standing: 'missing', headSha: null, text: 'Second.' },
     ]);
   });
+  it('a newer held test result gives the held reason, not the older run\'s', () => {
+    const old = { ...row('R-1', 'inconclusive', A, '2026-10-14T10:00:00Z'), id: 'v-old', evidence: missing };
+    const out = describeStandings(
+      [{ criterionId: 'R-1', standing: 'inconclusive', headSha: A, verdictId: 'v-old' }, { criterionId: 'R-2', standing: 'missing', headSha: null }, { criterionId: 'R-3', standing: 'pass', headSha: A }],
+      [{ id: 'R-1', text: 'First.' }, { id: 'R-2', text: 'Second.' }, { id: 'R-3', text: 'Third.' }], [old],
+      new Map([['R-1', { at: '2026-10-14T11:00:00Z', prNumber: 5708 }], ['R-2', { at: '2026-10-14T11:00:00Z', prNumber: null }], ['R-3', { at: '2026-10-14T11:00:00Z', prNumber: 5708 }]]),
+    );
+    expect(out.map((s) => [s.reason, s.heldByPr])).toEqual([['test held', 5708], ['test held', undefined], [undefined, undefined]]);
+  });
+  it('an older held result does not mask a newer run\'s own reason', () => {
+    const fresh = { ...row('R-1', 'inconclusive', A, '2026-10-14T12:00:00Z'), id: 'v-new', evidence: missing };
+    const [s] = describeStandings([{ criterionId: 'R-1', standing: 'inconclusive', headSha: A, verdictId: 'v-new' }], [{ id: 'R-1', text: 'First.' }], [fresh], new Map([['R-1', { at: '2026-10-14T11:00:00Z', prNumber: 1 }]]));
+    expect(s.reason).toBe('test file not found');
+  });
 });
