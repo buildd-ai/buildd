@@ -353,6 +353,8 @@ export async function GET(req: NextRequest) {
             roleSlug: true,
             // `buildd top` tells which provider's limit holds a waiting task.
             backend: true,
+            // `buildd top` leaves helper runs (checks, audit) out of its task list.
+            taskClass: true,
             createdAt: true,
             updatedAt: true,
           },
