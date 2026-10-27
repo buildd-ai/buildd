@@ -203,6 +203,11 @@ export const teams = pgTable('teams', {
   // Seats paid for on the Team plan (subscription quantity). NULL = none; the
   // Team plan still covers TEAM_PLAN_MIN_SEATS members.
   paidSeats: integer('paid_seats'),
+  // Living Spec b7fc9316 R-20: approving, retiring and restoring a spec in
+  // this team's workspaces needs a passkey assertion (WebAuthn, user present)
+  // bound to that exact confirm. Off by default; only an owner changes it,
+  // with their own passkey. Read through apps/web/src/lib/passkeys/presence.ts.
+  specPasskeyRequired: boolean('spec_passkey_required').default(false).notNull(),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
   stripeCustomerIdx: uniqueIndex('teams_stripe_customer_id_idx').on(t.stripeCustomerId),
@@ -276,6 +281,48 @@ export const users = pgTable('users', {
   googleIdIdx: uniqueIndex('users_google_id_idx').on(t.googleId),
   githubIdIdx: uniqueIndex('users_github_id_idx').on(t.githubId),
   emailIdx: index('users_email_idx').on(t.email),
+}));
+
+// A person's passkeys (WebAuthn credentials), for the presence check a team
+// can require on spec approve, retire and restore (Living Spec b7fc9316 R-20).
+// The public key is not a secret: it only verifies assertions the person's
+// authenticator signs. Written and read only through apps/web/src/lib/passkeys/.
+export const userPasskeys = pgTable('user_passkeys', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  // base64url credential id, as the authenticator reports it.
+  credentialId: text('credential_id').notNull(),
+  // base64url COSE public key.
+  publicKey: text('public_key').notNull(),
+  // The authenticator's signature counter at the last verified assertion.
+  counter: bigint('counter', { mode: 'number' }).default(0).notNull(),
+  transports: text('transports').array(),
+  name: text('name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+}, (t) => ({
+  credentialIdx: uniqueIndex('user_passkeys_credential_id_idx').on(t.credentialId),
+  userIdx: index('user_passkeys_user_id_idx').on(t.userId),
+}));
+
+// One WebAuthn challenge, single use: `binding` is the sha256 of the exact
+// act it was issued for (a spec confirm's spec, revision, version and content
+// hash; a passkey registration; a team switch), so an assertion over it
+// counts for that act and nothing else. Consumed by one atomic UPDATE.
+export const passkeyChallenges = pgTable('passkey_challenges', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  // 'register' (a new passkey) or 'presence' (an assertion for one act).
+  purpose: text('purpose').notNull(),
+  binding: text('binding').notNull(),
+  // base64url, as sent to the browser and echoed in clientDataJSON.
+  challenge: text('challenge').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  challengeIdx: uniqueIndex('passkey_challenges_challenge_idx').on(t.challenge),
+  userIdx: index('passkey_challenges_user_id_idx').on(t.userId, t.expiresAt),
 }));
 
 /**

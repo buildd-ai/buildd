@@ -59,7 +59,9 @@ export const author = (c: SpecCaller) => (c.kind === 'user'
   ? { authorKind: 'user' as const, authorId: c.userId, label: `user:${c.userId}` }
   : { authorKind: 'agent' as const, authorId: c.account.id, label: `account:${c.account.id}` });
 
-export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string; duplicates?: DuplicateCandidate[]; gate?: SpecGateResult };
+export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string; duplicates?: DuplicateCandidate[]; gate?: SpecGateResult;
+  /** A team requires a passkey for this act (passkeys/presence.ts): the pin to ask one for, and where to add one. */
+  presence?: import('@/lib/passkeys/binding').PresenceAsk };
 export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
 
 /**

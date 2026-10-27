@@ -15,6 +15,7 @@ import type { ApprovalRetirement } from './retire';
 import type { SpecApprovalRecord, SpecGateResult } from '@buildd/core/db/schema';
 import { users } from '@buildd/core/db/schema';
 import { specApprovalInboxUrl, specPageUrl } from './approval-inbox';
+import { checkSpecPresence } from '@/lib/passkeys/presence';
 
 /** What a request tells the approver: the confirm page's address and the gate's verdict. */
 export interface ApprovalRequestedNotice {
@@ -44,6 +45,12 @@ export interface ApprovalRequestedNotice {
  * body it approves is an artifact revision, which the artifact trigger keeps
  * immutable, so an approved revision is never mutated: a later revise proposes
  * N+1 and leaves N in force until a person approves N+1.
+ *
+ * Presence (spec b7fc9316 R-20): when the workspace's team requires a passkey,
+ * the stamp from a dashboard session also needs a passkey assertion over this
+ * exact revision, version and content hash (lib/passkeys/presence.ts). It is
+ * the last check before the stamp, on every path that stamps: the spec page,
+ * an inbox row, a confirm link and an import confirm.
  */
 
 /**
@@ -160,6 +167,8 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
    * of them, the default choice; [] approves only.
    */
   retire?: unknown;
+  /** A passkey assertion, when the team requires one (R-20); ignored otherwise. */
+  presence?: unknown;
 }, opts: {
   /** How the approval is recorded; a person's own press in the dashboard when absent. */
   record?: SpecApprovalRecord;
@@ -170,6 +179,8 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
    * spec is refused: its file may have moved, and only confirmation checks.
    */
   importConfirmation?: { note: string };
+  /** The caller already passed the presence check for a batch that holds this approval (an import confirm). */
+  presenceChecked?: boolean;
 } = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | { ok: true; spec: SpecRow; pending: PendingSpecApproval } | SpecError> {
   if (!Number.isInteger(input.revision)) return fail(400, 'revision (the spec revision you read and are approving) is required');
   const loaded = await loadForDecision(caller, specId, input.expectedVersion);
@@ -218,6 +229,12 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     const [who] = await db.select({ name: users.name }).from(users).where(eq(users.id, approver)).limit(1);
     await specApprovalDeps.notify({ workspaceId: spec.workspaceId, title: spec.title, revision: n, confirmUrl, gate }).catch(() => {});
     return { ok: true, spec, pending: { confirmUrl, revision: n, expiresAt, gate, sentTo: who?.name?.trim() || 'you', inboxUrl: specApprovalInboxUrl() } };
+  }
+
+  // R-20, last before the stamp: a passkey over exactly what the stamp below is pinned to.
+  if (!opts.presenceChecked) {
+    const refused = await checkSpecPresence(approver, spec.workspaceId, { op: 'approve', specId, revision: n, version: spec.version, contentHash: rev.contentHash }, input.presence);
+    if (refused) return { ...refused, currentVersion: spec.version };
   }
 
   const label = `user:${approver}`;
@@ -292,6 +309,8 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
   overrideReason?: unknown;
   /** The person's own retire choice on the confirm page; omitted, the one the link carries (R-77). */
   retire?: unknown;
+  /** A passkey assertion, when the team requires one (R-20). */
+  presence?: unknown;
 } = {}): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
   if (caller.kind !== 'user') return fail(403, 'Confirm the approval on buildd.dev, signed in. An agent session cannot confirm it.');
   const v = verifySpecApprovalRequest(typeof token === 'string' ? token : null);
@@ -305,7 +324,7 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
   return approvePinned(caller, specId, req, {
     via: req.via ?? 'mcp', staleCode: 'request_stale', workspaceId: req.workspaceId,
     staleText: 'The spec changed since this approval was asked for. Ask for a new link.', overrideReason: opts.overrideReason,
-    retire: opts.retire !== undefined ? opts.retire : req.retire,
+    retire: opts.retire !== undefined ? opts.retire : req.retire, presence: opts.presence,
   });
 }
 
@@ -318,13 +337,13 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
  * is a 409 with code `stale` and approves nothing. One row, one revision: there
  * is no batch form.
  */
-export async function approveFromInbox(caller: SpecCaller, specId: string, input: { revision?: unknown; expectedVersion?: unknown; contentHash?: unknown; overrideReason?: unknown; retire?: unknown }): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
+export async function approveFromInbox(caller: SpecCaller, specId: string, input: { revision?: unknown; expectedVersion?: unknown; contentHash?: unknown; overrideReason?: unknown; retire?: unknown; presence?: unknown }): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
   if (caller.kind !== 'user') return fail(403, 'Approve on buildd.dev, signed in, with a click. A session token, API key or agent run cannot approve.');
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.revision) || !Number.isInteger(input.expectedVersion)) return fail(400, 'revision and expectedVersion (as the page showed them) are required');
   if (typeof input.contentHash !== 'string' || !/^[0-9a-f]{64}$/.test(input.contentHash)) return fail(400, 'contentHash (the sha256 of the revision the page showed) is required');
   return approvePinned(caller, specId, { revision: input.revision as number, expectedVersion: input.expectedVersion as number, contentHash: input.contentHash }, {
-    via: 'dashboard', staleCode: 'stale', staleText: 'The spec changed since this page loaded. It now shows the latest revision; read it, then approve.', overrideReason: input.overrideReason, retire: input.retire,
+    via: 'dashboard', staleCode: 'stale', staleText: 'The spec changed since this page loaded. It now shows the latest revision; read it, then approve.', overrideReason: input.overrideReason, retire: input.retire, presence: input.presence,
   });
 }
 
@@ -342,6 +361,8 @@ async function approvePinned(
     via: SpecApprovalRecord['via']; staleCode: string; staleText: string; overrideReason?: unknown; workspaceId?: string;
     /** R-77: which replaced specs to supersede; omitted, all of them (the default choice). */
     retire?: unknown;
+    /** A passkey assertion, checked by the stamp when the team requires one (R-20). */
+    presence?: unknown;
   },
 ): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
@@ -369,8 +390,8 @@ async function approvePinned(
     if (reason.length > MAX_OVERRIDE_REASON) return fail(400, `The reason is at most ${MAX_OVERRIDE_REASON} characters.`);
   }
   const record: SpecApprovalRecord = { via: opts.via, gate, ...(!gate.passed ? { overrideReason: reason } : {}) };
-  const r = await approveSpecRevision(caller, specId, { revision: pin.revision, expectedVersion: pin.expectedVersion, retire: opts.retire }, { record });
-  if (!r.ok) return r.status === 409 ? { ...r, code: opts.staleCode } : r;
+  const r = await approveSpecRevision(caller, specId, { revision: pin.revision, expectedVersion: pin.expectedVersion, retire: opts.retire, presence: opts.presence }, { record });
+  if (!r.ok) return r.status === 409 && !r.presence ? { ...r, code: opts.staleCode } : r;
   if ('pending' in r) return fail(403, notAPerson(specId));
   return { ok: true, already: false, spec: r.spec, revision: r.revision, retirements: r.retirements };
 }

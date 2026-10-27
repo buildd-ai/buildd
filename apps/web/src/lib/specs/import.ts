@@ -22,6 +22,7 @@ import { FILE_METADATA_KEYS, updateSpecMetadata } from './metadata';
 import { parseSpecFrontmatter } from '@buildd/spec-contract/repo-spec';
 import { specShortId } from '@buildd/spec-contract/repo-copy';
 import { retireSpec } from './retire';
+import { checkSpecPresence } from '@/lib/passkeys/presence';
 import { confirmedRetirements, planImportRetirements, type ImportRetirement } from './import-retire';
 
 /**
@@ -688,7 +689,7 @@ export const importConfirmPath = (workspaceId: string) => `/app/workspaces/${wor
  * whose head moved since (a re-import landed) is skipped, never approved at a
  * revision they did not see. The spec page always sends it; the batch may.
  */
-export async function confirmImportedSpecs(caller: SpecCaller, input: { workspaceId?: unknown; specIds: unknown; expectedRevisions?: unknown }, deps: ImportDeps = defaultImportDeps): Promise<{ ok: true; result: ConfirmResult } | SpecError> {
+export async function confirmImportedSpecs(caller: SpecCaller, input: { workspaceId?: unknown; specIds: unknown; expectedRevisions?: unknown; presence?: unknown }, deps: ImportDeps = defaultImportDeps): Promise<{ ok: true; result: ConfirmResult } | SpecError> {
   const specIds = strList(input.specIds);
   if (!specIds || !specIds.length || specIds.length > MAX_CONFIRM_BATCH || !specIds.every(isUuid)) return fail(400, `specIds is a list of 1 to ${MAX_CONFIRM_BATCH} spec ids`);
   const ex = input.expectedRevisions;
@@ -733,6 +734,12 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
     todo.push({ s, waiting });
   }
   if (!todo.length) return { ok: true, result };
+  // R-20 (spec b7fc9316): confirming approves and retires specs, so a team that
+  // requires a passkey asks for one over this batch, once, before anything is written.
+  if (caller.kind === 'user') {
+    const refused = await checkSpecPresence(caller.userId, workspaceId, { op: 'confirm_import', workspaceId, specIds: specIds as string[] }, input.presence);
+    if (refused) return refused;
+  }
 
   // R-19: each approval only while its file is unchanged since the imported commit, read once at the default branch head.
   const repo = await deps.repo(workspaceId);
@@ -766,6 +773,7 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
       const reason = planned.reason;
       const by = planned.supersededBy ? { specId: planned.supersededBy, title: titles.get(planned.supersededBy) ?? '' } : null;
       const r = await retireSpec(caller, s.id, { reason, supersededBy: by?.specId }, {
+        presenceChecked: true,
         repoFile: { kind: s.repoCopy?.path ? 'copy' : 'source', path: src.path, state: file ? 'already' : 'removed', via: 'import', at: deps.now().toISOString() },
       });
       if (!r.ok || 'pending' in r) { result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'conflict', message: r.ok ? 'not retired' : r.error }); continue; }
@@ -778,7 +786,7 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
       result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'stale', message: `${src.path} changed since ${short}: run import again, then confirm the new revision` });
       continue;
     }
-    const r = await approveSpecRevision(caller, s.id, { revision: s.headRevision, expectedVersion: s.version }, { importConfirmation: { note: `confirmed import of ${src.path}@${short}` } });
+    const r = await approveSpecRevision(caller, s.id, { revision: s.headRevision, expectedVersion: s.version }, { importConfirmation: { note: `confirmed import of ${src.path}@${short}` }, presenceChecked: true });
     if (!r.ok || 'pending' in r) {
       result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'conflict', message: r.ok ? 'not approved' : r.error });
       continue;

@@ -19,14 +19,19 @@ type Ctx = { params: Promise<{ specId: string }> };
  * the approval, ids or { specId, expectedVersion }; omitted, all of them; []
  * approves only. `retirements` says per spec superseded or stale (it moved
  * since it was read: the approval stands, that spec is left as it is).
+ *
+ * presence (Living Spec b7fc9316 R-20): when the team requires a passkey, a
+ * dashboard approve without a valid assertion is a 403 with code
+ * `presence_required` (or `passkey_missing`, `presence_failed`) and the pin to
+ * ask one for; nothing is approved.
  */
 export async function POST(req: NextRequest, { params }: Ctx) {
   const { specId } = await params;
   const caller = await specCaller(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const body = (await req.json().catch(() => null)) as { revision?: unknown; expectedVersion?: unknown; retire?: unknown; via?: unknown } | null;
-  const r = await approveSpecRevision(caller, specId, { revision: body?.revision, expectedVersion: body?.expectedVersion, retire: body?.retire, via: body?.via });
+  const body = (await req.json().catch(() => null)) as { revision?: unknown; expectedVersion?: unknown; retire?: unknown; via?: unknown; presence?: unknown } | null;
+  const r = await approveSpecRevision(caller, specId, { revision: body?.revision, expectedVersion: body?.expectedVersion, retire: body?.retire, via: body?.via, presence: body?.presence });
   if (r.ok && 'pending' in r) return NextResponse.json({ spec: r.spec, pending: r.pending }, { status: 202 });
   if (r.ok) return NextResponse.json({ spec: r.spec, revision: r.revision, retirements: r.retirements });
-  return NextResponse.json({ error: r.error, ...(r.code ? { code: r.code } : {}), ...(r.gate ? { gate: r.gate } : {}), ...(r.currentVersion !== undefined ? { currentVersion: r.currentVersion } : {}) }, { status: r.status });
+  return NextResponse.json({ error: r.error, ...(r.code ? { code: r.code } : {}), ...(r.gate ? { gate: r.gate } : {}), ...(r.currentVersion !== undefined ? { currentVersion: r.currentVersion } : {}), ...(r.presence ? { presence: r.presence } : {}) }, { status: r.status });
 }
