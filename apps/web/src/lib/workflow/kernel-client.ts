@@ -940,6 +940,11 @@ export async function observeConflict(p: KernelOps['observe_conflict']['input'],
  * T6 from the worker PATCH: a kernel review round's verdict, applied where the kernel is hosted (AC-9).
  * The runner reports a verdict once, so during release skew it is applied here (`doorOrHereOnSkew`).
  */
+/** Living Spec fa62b865 R-46: a capture task's end, applied where the kernel is hosted (no other backstop). */
+export async function recordCaptureEvidence(p: KernelOps['record_capture_evidence']['input'], c: DoorCall): Promise<KernelOps['record_capture_evidence']['result']> {
+  return doorOrHereOnSkew('record_capture_evidence', p, c, `capture ${p.task.id}'s evidence`);
+}
+
 export async function recordReviewVerdict(p: KernelOps['record_review_verdict']['input'], c: DoorCall): Promise<KernelOps['record_review_verdict']['result']> {
   return doorOrHereOnSkew('record_review_verdict', p, c, `reviewer ${p.reviewerTask.id}'s verdict`);
 }

@@ -131,6 +131,8 @@ export const REVIEW_STATUS_TERMS = {
   /** An open PR no delivery owns and no review was asked for (open-pr-status.ts). */
   notRequested: 'Review not requested',
   inProgress: 'Review in progress',
+  /** §11.1 R-46: buildd is capturing the screens an evidence finding needs before its review. */
+  collectingEvidence: 'Collecting evidence',
   changesRequested: 'Changes requested',
   finding: 'Unresolved review finding',
   ready: 'Ready to merge',
@@ -226,6 +228,8 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null; c
     }
     return null;
   };
+  // §11.1: buildd capturing evidence is a review still running, not a refusal of the change.
+  if (d.state === 'AWAITING_REVIEW' && d.stateReason === 'evidence') return status('pending', T.collectingEvidence, `capturing design screens at ${at}`);
   // Review not finished is not a refusal: GitHub shows it as pending, never as a red CI.
   const stale = priorApprovalOf(view, d.currentHeadSha);
   const staleNote = stale ? `; the approval of ${short(stale.headSha)} does not cover it` : '';

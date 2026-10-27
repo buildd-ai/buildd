@@ -183,6 +183,19 @@ describe('repeated normalized failure across unrelated tasks', () => {
     expect(detectFailurePatterns(facts({ workerFailures: rows })).filter(c => c.rule === 'repeated_failure')).toHaveLength(0);
   });
 
+  it('messageless failures are not one failure: split by exit cause, dropped when neither is known', () => {
+    const none = Array.from({ length: 8 }, (_, i) => failure({ workerId: `n${i}`, signature: '(no error message)', exitCause: null }));
+    expect(detectFailurePatterns(facts({ workerFailures: none })).filter(c => c.rule === 'repeated_failure')).toHaveLength(0);
+
+    const mixed = Array.from({ length: 4 }, (_, i) => failure({
+      workerId: `m${i}`, signature: '(no error message)', exitCause: i % 2 ? 'code_failure' : 'infra_failure',
+    }));
+    expect(detectFailurePatterns(facts({ workerFailures: mixed })).filter(c => c.rule === 'repeated_failure')).toHaveLength(0);
+
+    const same = Array.from({ length: 3 }, (_, i) => failure({ workerId: `s${i}`, signature: '(no error message)', exitCause: 'infra_failure' }));
+    expect(detectFailurePatterns(facts({ workerFailures: same })).filter(c => c.rule === 'repeated_failure')).toHaveLength(1);
+  });
+
   it('signature is stable across occurrences and keyed on the normalized signature', () => {
     const a = detectFailurePatterns(facts({ workerFailures: Array.from({ length: 3 }, (_, i) => failure({ workerId: `a${i}` })) }))
       .find(c => c.rule === 'repeated_failure')!;

@@ -327,6 +327,12 @@ describe('manage_specs', () => {
     expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/mission-outcomes/${MISSION}`, 'POST', { criterionId: 'R-1', verdict: 'pass', headSha: HEAD, reaffirms: 'v0' }]);
     expect(rec).toContain('Recorded pass on R-1 at the integrated target');
 
+    // An acceptance test run reaches the route, so the exit code decides and the row is a test, not a review.
+    api.mockResolvedValueOnce({ verdictId: 'v2', standing });
+    const run = { exitCode: 0, started: true, testName: 'R-1: works', stdout: ' 1 pass\n 0 fail' };
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', missionId: MISSION, criterionId: 'R-1', verdict: 'pass', headSha: HEAD, acceptanceTest: run }, ctx());
+    expect(JSON.parse(api.mock.calls[2][1].body)).toEqual({ criterionId: 'R-1', verdict: 'pass', headSha: HEAD, acceptanceTest: run });
+
     api.mockRejectedValueOnce(Object.assign(new Error('API error: 403 - {"error":"A mission-level verdict is recorded by a person or by the mission\'s final verification task."}'), {}));
     const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', missionId: MISSION, criterionId: 'R-1', verdict: 'pass', headSha: HEAD }, ctx());
     expect(refused.isError).toBe(true);

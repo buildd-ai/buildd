@@ -1418,7 +1418,13 @@ function withDelivery(answer: ExplainAnswer, v: DeliveryView | null): ExplainAns
   return {
     ...answer,
     ...(deliverySettled(v) ? {} : { presentation: { ...answer.presentation, needsYou: v.needsYou } }),
-    delivery: { state: v.state, owner: v.owner, needsYou: v.needsYou, headline: v.headline, detail: v.detail, attempts: attemptLine(v.attempts) },
+    delivery: {
+      state: v.state, owner: v.owner, needsYou: v.needsYou, headline: v.headline, detail: v.detail, attempts: attemptLine(v.attempts),
+      ...(v.review ? { review: {
+        stateLine: v.review.stateLine, verdict: v.review.verdict, round: v.review.round, roundsSpent: v.review.roundsSpent,
+        roundBudget: v.review.roundBudget, openFindings: v.review.openFindings.map((f) => f.text),
+      } } : {}),
+    },
   };
 }
 

@@ -34,7 +34,14 @@ const DONE: Partial<Record<EscalationActionId, string>> = {
  * The verdict row's button links to `#task-decision-<action>`, which scrolls here and
  * opens that action's sheet, so a phone reaches the decision without GitHub.
  */
-export default function EscalationDecision({ brief, copy, prNumber, workspaceId }: { brief: EscalationBrief; copy: DecisionCopy; prNumber: number; workspaceId: string }) {
+export default function EscalationDecision({ brief, copy, prNumber, workspaceId, findingsBelow = false }: {
+  brief: EscalationBrief; copy: DecisionCopy; prNumber: number; workspaceId: string;
+  /**
+   * The open Code review row right below lists every open finding (Task Page AC-28): the card does not
+   * name them again (Living Spec fa62b865 R-48). Elsewhere (the mission page) the card names them.
+   */
+  findingsBelow?: boolean;
+}) {
   const router = useRouter();
   const ref = useRef<HTMLElement>(null);
   const [busy, setBusy] = useState(false);
@@ -105,7 +112,7 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
   return (
     <section ref={ref} id="task-decision" data-testid="task-decision" data-cause={brief.cause} aria-label={copy.question} className="card-decision mb-6 scroll-mt-4 px-4 py-3 md:px-5">
       {/* The verdict row right above carries the question and why it stopped; the card names what is left and the choices (say it once). */}
-      {named.filter(([, list]) => list.length > 0).map(([label, list], i) => (
+      {!findingsBelow && named.filter(([, list]) => list.length > 0).map(([label, list], i) => (
         <div key={label} data-testid="decision-unresolved" className={i === 0 ? '' : 'mt-3'}>
           <h3 className="text-meta font-medium text-text-muted">{label}</h3>
           <ul className="mt-1 flex list-disc flex-col gap-1 pl-5">

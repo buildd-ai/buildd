@@ -1676,7 +1676,7 @@ export const tasks = pgTable('tasks', {
   // kernel delivery's attempt (legacy, or not PR work). No FK: the delivery row
   // references tasks (owner_task_id), and a delivery is never deleted on its own.
   deliveryId: uuid('delivery_id'),
-  deliveryRole: text('delivery_role').$type<'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review'>(),
+  deliveryRole: text('delivery_role').$type<'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review' | 'capture'>(),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
   // How `category` was decided, once the decision model has looked at the task
@@ -3100,6 +3100,12 @@ export const specRevisions = pgTable('spec_revisions', {
   // specs in the same workspace, checked on write, never read from the body.
   // Approving the revision offers to supersede each (R-77). NULL: none.
   replaces: jsonb('replaces').$type<string[]>(),
+  // What the revision's author says it changes ("Approving specs from a
+  // session" R-15): a one-line summary and one line per changed criterion id
+  // or section heading (SpecExplanation in packages/spec-contract). Written
+  // with the revision and never changed: a trigger refuses any later UPDATE
+  // of it (migration *_spec_revision_explanation_immutable). NULL: none given.
+  explanation: jsonb('explanation').$type<{ summary: string; lines: Record<string, string> }>(),
   // The binding attachments this revision was approved with (living-specs.md
   // §21), each at the artifact revision it had then. Written once, by the
   // approving statement, next to approved_at; reference attachments are never
@@ -5933,6 +5939,12 @@ export const workflowFindings = pgTable('workflow_findings', {
   closedBy: text('closed_by'),
   closedReason: text('closed_reason'),
   deferredToTaskId: uuid('deferred_to_task_id'),
+  // Living Spec fa62b865 §11.1: who can fix it. Only `code_fix` is fix work and spends a review round.
+  remedyClass: text('remedy_class').default('code_fix').notNull().$type<'code_fix' | 'evidence' | 'person_decision' | 'capability_gap' | 'operational_run'>(),
+  // §11.2 R-48: how many later rounds restated it; surfaces say "restated n times" instead of repeating it.
+  restatedCount: integer('restated_count').default(0).notNull(),
+  // §11.1 R-46: an evidence finding's capture target (criterion, screen, route) and, once taken, the capture.
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
