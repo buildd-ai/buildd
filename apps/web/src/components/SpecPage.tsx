@@ -30,6 +30,8 @@ import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView, SpecPanes } from '@/lib/specs/page-view';
 import { nativeHistoryData } from '@/lib/native-history';
 import type { CriterionMark } from '@/lib/specs/delivery-words';
+import { needsPasskey, withPasskey } from '@/lib/passkeys/client';
+import { PASSKEY_SETTINGS_PATH } from '@/lib/passkeys/paths';
 
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
 
@@ -155,13 +157,12 @@ function ConfirmImport({ specId, workspaceId, revision }: { specId: string; work
   const [result, setResult] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string } | null>(null);
   const confirm = async () => {
     setBusy(true);
-    const res = await fetch('/api/specs/import/confirm', {
+    const { res, body } = await withPasskey((presence) => fetch('/api/specs/import/confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, specIds: [specId], expectedRevisions: { [specId]: revision } }),
-    }).catch(() => null);
-    const body = (await res?.json().catch(() => ({}))) as ConfirmReply | undefined;
-    const r = res ? confirmImportResult(res.status, body ?? {}, revision) : { tone: 'err' as const, text: 'Could not reach buildd. Try again.' };
+      body: JSON.stringify({ workspaceId, specIds: [specId], expectedRevisions: { [specId]: revision }, ...(presence ? { presence } : {}) }),
+    }));
+    const r = res ? confirmImportResult(res.status, body as ConfirmReply, revision) : { tone: 'err' as const, text: body.error ?? 'Could not reach buildd. Try again.' };
     setBusy(false);
     setResult(r);
     if (r.tone === 'ok') router.refresh();
@@ -188,20 +189,21 @@ function Approve({ specId, revision, expectedVersion, replacing = [] }: { specId
   const [checked, setChecked] = useState<Set<string>>(() => new Set(replacing.map((r) => r.id)));
   const toggle = (id: string) => setChecked((c) => { const n = new Set(c); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const approvedText = `Approved revision ${revision}.`;
-  const { shown, retry, approve } = useOptimisticApprove(async () => {
-    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve`, {
+  const { shown, retry, approve } = useOptimisticApprove(async (update) => {
+    // A team that requires a passkey (b7fc9316 R-20) asks for it after the press.
+    const { res, body } = await withPasskey((presence) => fetch(`/api/specs/${encodeURIComponent(specId)}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revision, expectedVersion, retire: retireChoice(replacing, checked) }),
-    });
-    const body = (await res.json().catch(() => ({}))) as { error?: string; retirements?: ApprovalRetirementReply[] };
-    if (res.ok) return approvalResultText(revision, body.retirements);
-    return { tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
+      body: JSON.stringify({ revision, expectedVersion, retire: retireChoice(replacing, checked), ...(presence ? { presence } : {}) }),
+    }), { onAsk: () => update({ tone: 'info', text: 'Confirm with your passkey.' }) });
+    if (res?.ok) return approvalResultText(revision, body.retirements as ApprovalRetirementReply[] | undefined);
+    if (needsPasskey(body)) return { tone: 'warn', text: body.error ?? 'Add a passkey to approve.', action: { label: 'Add a passkey', href: PASSKEY_SETTINGS_PATH } };
+    return { tone: res?.status === 409 ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
   }, approvedText, () => router.refresh());
   const retiring = replacing.some((r) => checked.has(r.id));
   return (
     <div className="flex flex-col gap-2">
-      {shown ? <Notice tone={shown.tone} data-testid="spec-page-approve-result">{shown.text}</Notice> : null}
+      {shown ? <Notice tone={shown.tone} action={shown.action} data-testid="spec-page-approve-result">{shown.text}</Notice> : null}
       {!shown || retry ? (
         <>
           <SpecReplacedChoice options={replacing} checked={checked} onToggle={toggle} />
@@ -236,11 +238,12 @@ function Restore({ specId }: { specId: string }) {
   const restore = async () => {
     setBusy(true);
     setError(null);
-    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/retire`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => null);
-    const body = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
+    const { res, body } = await withPasskey((presence) => fetch(`/api/specs/${encodeURIComponent(specId)}/retire`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(presence ? { presence } : {}),
+    }));
     setBusy(false);
     if (res?.ok) router.refresh();
-    else setError(body?.error ?? 'Could not restore the spec. Try again.');
+    else setError(body.error ?? 'Could not restore the spec. Try again.');
   };
   return (
     <div className="flex flex-col gap-2">

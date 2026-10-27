@@ -457,6 +457,7 @@ makes the decision.
 | `apps/web/src/app/app/(protected)/settings/TimezoneSection.tsx` (`TimezoneSection`) | UI: edit team timezone | owner, admin | — | `manage_team_settings` |
 | `apps/web/src/app/app/(protected)/settings/_lib/settings-permissions.ts` (`settingsPermissions`) | UI: every settings control, one flag per permission | per permission, personal team | — | all |
 | `apps/web/src/lib/team-timezone.ts` (`getViewerTimezone`) | own timezone change seeds owned teams | owner | — | `seed_team_timezone` |
+| `apps/web/src/app/api/teams/[id]/spec-passkey/route.ts` (`PUT`) | require a passkey for spec approve, retire and restore (needs the owner's own passkey, both ways) | owner | — | `require_spec_passkey` |
 | `apps/web/src/app/api/teams/[id]/notifications/route.ts` (`authorize`) | PUT team notification settings (GET open to members, booleans only) | owner, admin | — | `manage_team_notifications` |
 | `apps/web/src/app/app/(protected)/home/home-view.ts` (`homeAudience`) | UI: the team admin layout of Home (`admin` audience) | owner, admin | — | `view_team_usage` |
 | `apps/web/src/app/api/insights/flow/route.ts` (`GET`) | team flow insights | owner, admin | — | `view_team_usage` |

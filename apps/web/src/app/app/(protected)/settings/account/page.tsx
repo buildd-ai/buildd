@@ -4,6 +4,8 @@ import PersonalProviderKeys from './PersonalProviderKeys';
 import KeyboardHintsSetting from './KeyboardHintsSetting';
 import StandingRulesSection from './StandingRulesSection';
 import YourTeams from './YourTeams';
+import PasskeysSection from './PasskeysSection';
+import { listPasskeys } from '@/lib/passkeys/guard';
 import SettingsPage from '../_components/SettingsPage';
 import Section from '@/components/ui/Section';
 import { loadSettingsContext } from '../_lib/settings-context';
@@ -14,6 +16,7 @@ export const dynamic = 'force-dynamic';
 /** Settings → Profile (was /app/you; next.config redirects the old path). */
 export default async function AccountSettingsPage() {
   const { user, teams, currentTeamId, perms } = await loadSettingsContext();
+  const passkeys = await listPasskeys(user.id).catch(() => []);
   const initials = getInitials(user.name, user.email);
 
   return (
@@ -38,6 +41,9 @@ export default async function AccountSettingsPage() {
 
       {/* The rules chat loads into every one of your turns; yours only. */}
       <StandingRulesSection />
+
+      {/* What a team can require to approve, retire or restore a spec (b7fc9316 R-20). */}
+      <PasskeysSection initial={passkeys} />
 
       {/* What chat runs on for you; your own keys are managed on You › Keys. */}
       {currentTeamId && (

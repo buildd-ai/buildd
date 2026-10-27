@@ -284,7 +284,6 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
   const e = c.current;
   const bits = [
     `${VIEWPORT_WORD[c.viewport]}${c.variant ? ` (${c.variant})` : ''}`,
-    `round ${e.round}`,
     `agent: ${e.agentVerdict}`,
     e.finding ? `"${one(e.finding)}"` : 'no finding',
     c.fixCheck?.state === 'awaiting_capture'
@@ -444,13 +443,13 @@ function formatVisualReviewBody(
   if (q3) lines.push(q3.slice(1));
   const s = model.summary;
   const human = mcp ? 'await a human' : 'await the user';
-  lines.push(`Screens: ${s.shots} current across ${plural(s.rounds, 'round')}; agent said ${s.ok} ok, ${plural(s.issues, 'issue')}, ${s.unsure} unsure; ${s.awaitingHuman} ${human}; ${s.reviewed} decided by ${mcp ? 'a human' : 'the user'}; ${plural(s.openFixes, 'fix', 'fixes')} open.`);
+  lines.push(`Screens: ${s.shots} current; agent said ${s.ok} ok, ${plural(s.issues, 'issue')}, ${s.unsure} unsure; ${s.awaitingHuman} ${human}; ${s.reviewed} decided by ${mcp ? 'a human' : 'the user'}; ${plural(s.openFixes, 'fix', 'fixes')} open.`);
   // Spec 072de598 I-15: a merged fix waiting for a screenshot names what takes the next step.
   const rc = model.recapture;
   if (rc && rc.screens.length > 0) {
     const named = rc.screens.map(x => [x.route, x.state ?? x.variant, VIEWPORT_WORD[x.viewport]].filter(Boolean).join(' · '));
-    const next = rc.next === 'queued' ? 'a capture of each is queued'
-      : rc.next === 'capture' ? 'a capture of each is filed next'
+    const next = rc.next === 'queued' ? 'a capture of each is queued, no decision from you yet'
+      : rc.next === 'capture' ? 'a capture of each is filed next, no decision from you yet'
       : `no new screenshot is coming: ${mcp ? 'a human decides' : 'the user decides'} fixed or still broken`;
     lines.push(`Fixes merged, waiting for a new screenshot (${rc.screens.length}): ${next}: ${[...new Set(named)].join('; ')}.`);
   }

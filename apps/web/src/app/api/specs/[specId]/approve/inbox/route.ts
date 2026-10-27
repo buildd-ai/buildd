@@ -12,16 +12,17 @@ type Ctx = { params: Promise<{ specId: string }> };
  * only: any Authorization header is a 403 and nothing changes. A pin that no
  * longer matches the spec is a 409 with code `stale`; a gate refusal without
  * a reason of 10+ characters is a 409 with code `gate_refused`. One spec per
- * call: there is no batch form.
+ * call: there is no batch form. presence: the passkey assertion a team that
+ * requires one asks for (R-20, code `presence_required`).
  */
 export async function POST(req: NextRequest, { params }: Ctx) {
   const { specId } = await params;
   const who = await dashboardCaller(req);
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
-  const body = (await req.json().catch(() => null)) as { revision?: unknown; expectedVersion?: unknown; contentHash?: unknown; overrideReason?: unknown; retire?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as { revision?: unknown; expectedVersion?: unknown; contentHash?: unknown; overrideReason?: unknown; retire?: unknown; presence?: unknown } | null;
   const r = await approveFromInbox(who.caller, specId, {
-    revision: body?.revision, expectedVersion: body?.expectedVersion, contentHash: body?.contentHash, overrideReason: body?.overrideReason, retire: body?.retire,
+    revision: body?.revision, expectedVersion: body?.expectedVersion, contentHash: body?.contentHash, overrideReason: body?.overrideReason, retire: body?.retire, presence: body?.presence,
   });
   if (r.ok) return NextResponse.json({ spec: r.spec, revision: r.revision, already: r.already, retirements: r.retirements });
-  return NextResponse.json({ error: r.error, ...(r.code ? { code: r.code } : {}), ...(r.gate ? { gate: r.gate } : {}), ...(r.currentVersion !== undefined ? { currentVersion: r.currentVersion } : {}) }, { status: r.status });
+  return NextResponse.json({ error: r.error, ...(r.code ? { code: r.code } : {}), ...(r.gate ? { gate: r.gate } : {}), ...(r.currentVersion !== undefined ? { currentVersion: r.currentVersion } : {}), ...(r.presence ? { presence: r.presence } : {}) }, { status: r.status });
 }

@@ -10,6 +10,7 @@ import {
   type ImportedGroup, type IndexArea, type IndexRow, type Mix, type PossibleArea, type PossibleGroup,
   type SpecIndexInput, type SpecIndexOptions, type SpecMixState, type SpecSuggestion,
 } from '@/lib/specs/index-view';
+import { withPasskey } from '@/lib/passkeys/client';
 
 /** Solid fills for a status mix (R-21): state hues, never orange, always said in words beside them. */
 const FILL: Record<SpecMixState, string> = {
@@ -65,8 +66,9 @@ export const apiActions = (workspaceId: string | null): IndexActions => ({
     ? send('/api/specs/organize', 'POST', { workspaceId, dryRun: false, areas: [key], ...(source ? { source } : {}) }, ACTION_FAILED)
     : Promise.resolve({ ok: false, error: ACTION_FAILED }),
   confirmImports: async (specIds) => {
-    const res = await fetch('/api/specs/import/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId, specIds }) }).catch(() => null);
-    const got = (await res?.json().catch(() => ({}))) as { error?: string; confirmed?: unknown[]; skipped?: Array<{ reason: string }> } | undefined;
+    // A team that requires a passkey (b7fc9316 R-20) asks for one over the batch.
+    const { res, body } = await withPasskey((presence) => fetch('/api/specs/import/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId, specIds, ...(presence ? { presence } : {}) }) }));
+    const got = body as { error?: string; confirmed?: unknown[]; skipped?: Array<{ reason: string }> };
     if (!res?.ok) return { ok: false, error: got?.error ?? ACTION_FAILED };
     return { ok: true, confirmed: got?.confirmed?.length ?? 0, stale: (got?.skipped ?? []).filter((x) => x.reason === 'stale').length };
   },
