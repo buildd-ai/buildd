@@ -9,12 +9,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import { createFixtureVisualReviewTransport } from '@/components/visual-review/fixture-transport';
-import { buildDeliverySteps } from '@/lib/mission-delivery';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
 import MissionFeedLayout from '@/app/app/(protected)/missions/[id]/MissionFeedLayout';
 import MissionShippedHeader from '@/app/app/(protected)/missions/[id]/MissionShippedHeader';
 import { buildShippedHeaderView, type ShippedHeaderView } from '@/lib/mission-shipped-header';
-import MissionScreensRow from '@/app/app/(protected)/missions/[id]/MissionScreensRow';
 import MissionVisualReviewSetting from '@/app/app/(protected)/missions/[id]/MissionVisualReviewSetting';
 import { MissionVisualReviewProvider } from '@/app/app/(protected)/missions/[id]/MissionVisualReview';
 import AuditRoundTrays from '@/app/app/(protected)/tasks/[id]/AuditRoundTrays';
@@ -35,16 +33,6 @@ export default function MissionBoardVisualFixture() {
   }, []);
   if (!params) return <div className="min-h-screen bg-surface-1" />;
   return <View params={params} />;
-}
-
-function visualStepOf(model: VisualReviewModel) {
-  const s = model.summary;
-  return buildDeliverySteps({
-    missionStatus: 'active', totalTasks: 4, completedTasks: 2, awaitingMerge: 0, integrationPr: null,
-    criteria: { total: 0, passed: null, overall: null }, mergedAt: [], release: null, budget: null,
-    visual: { shots: s.shots, ok: s.ok, issues: s.issues, unsure: s.unsure, ...(s.bootFailed ? { bootFailed: true } : {}) },
-    visualPhase: model,
-  }).find(st => st.key === 'visual') ?? null;
 }
 
 const SHIPPED_COMPLETED_AT = '2026-01-10T14:00:00.000Z';
@@ -128,7 +116,6 @@ function View({ params }: { params: MissionBoardVisualParams }) {
             <MissionOverview model={board} completionText={params.complete && !(params.shipped === 'lede' || params.shipped === 'noshots') ? 'Shipped the example screens and checked them on a phone and a desktop.' : null} visual={visual} {...link} />
           )}
           <div data-testid="mission-board-footer" className="mt-10">
-            <MissionScreensRow missionId={visual.missionId} step={visualStepOf(visual)} />
             <div className="border-t border-border-default py-4">
               <p className="section-label mb-2">Settings sheet (preview)</p>
               <MissionVisualReviewSetting missionId={visual.missionId} initialEnabled visual={visual} />

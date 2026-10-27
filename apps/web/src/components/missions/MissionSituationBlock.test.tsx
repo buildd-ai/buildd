@@ -289,7 +289,7 @@ describe('affordanceFor', () => {
 
     expect(affordanceFor(view.situation.focus, { missionId: 'm-1' })).toEqual({
       kind: 'internal',
-      label: 'Go to goal criteria',
+      label: 'Go to requirements',
       href: '#mission-criteria',
     });
   });

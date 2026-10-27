@@ -414,3 +414,49 @@ describe('MissionOverview design placement (Navigation R-3)', () => {
     expect(html).not.toContain('design-slot');
   });
 });
+
+const { missionVerifyView } = await import('@/lib/mission-verify-view');
+const { criterionFingerprint } = await import('@buildd/core/mission-helpers');
+
+describe('Verify as Requirements and Standards (Navigation R-17 to R-19, AC-11)', () => {
+  const base = { now: Date.UTC(2026, 9, 14, 12), missionCreatedAt: Date.UTC(2026, 9, 14, 11), missionStatus: 'active' as const };
+  const f = handoffFixture('handoff-verifying', base);
+  const big = { type: 'living_spec' as const, specId: 'spec-big', specRevisionId: 'rb', revision: 4, contentHash: 'h' };
+  const small = { type: 'living_spec' as const, specId: 'spec-small', specRevisionId: 'rs', revision: 2, contentHash: 'h', criteria: ['R-40', 'R-41', 'R-42'], narrowedReason: 'the three this mission adds' };
+  const st = (criterionId: string, standing: 'pass' | 'fail' | 'inconclusive') => ({ criterionId, standing, headSha: 'abc', text: `${criterionId} in words` });
+  const state = {
+    evaluatedAt: '2026-10-14T11:30:00Z', evaluatedBy: 'auto' as const, overall: 'fail' as const,
+    criteria: [
+      { index: 0, type: 'living_spec' as const, verdict: 'fail' as const, fingerprint: criterionFingerprint(big), spec: { specId: 'spec-big', revision: 4, targetSha: 'abc', standings: [...Array.from({ length: 15 }, (_, i) => st(`R-${i + 1}`, 'pass')), st('AC-1', 'fail'), st('AC-8', 'inconclusive'), st('AC-9', 'inconclusive')] } },
+      { index: 1, type: 'living_spec' as const, verdict: 'pass' as const, fingerprint: criterionFingerprint(small), spec: { specId: 'spec-small', revision: 2, targetSha: 'abc', standings: [st('R-40', 'pass'), st('R-41', 'pass'), st('R-42', 'pass')] } },
+    ],
+  };
+  const titles = { 'spec-big': 'Cloud runner: deploy from Settings', 'spec-small': 'Settings: Runners' };
+  const checks = { ...f.checks!, criteria: [big, small], criteriaState: state, integrationPr: f.checks!.integrationPr };
+  const verify = missionVerifyView({ missionId: 'mission-1', criteria: [big, small], state, titles, evidence: null, now: base.now });
+  const out = renderToStaticMarkup(<MissionOverview model={f.model} missionId="mission-1" checks={checks} outcomeSpecTitles={titles} verify={verify} />);
+
+  it('reads 18 of 21 met, From <spec> for each, the 3 unmet listed and the all-met group one line', () => {
+    expect(out).toContain('data-stage="verify"');
+    expect(out).toMatch(/data-testid="mission-requirements-summary"[^>]*>18 of 21 met</);
+    expect(out).toContain('From <a href="/app/specs/spec-big?revision=4"');
+    expect((out.match(/data-testid="mission-requirement"/g) ?? []).length).toBe(3);
+    expect(out).toMatch(/data-all-met="true"[^>]*>.*From .*Settings: Runners.*the 3 this mission adds.*✓ 3 of 3/);
+  });
+
+  it('Standards is one line; no Run verification button, Goal criteria panel or Screens row; spec rows are not listed twice', () => {
+    expect(out).toMatch(/data-testid="mission-standards-summary"[^>]*>/);
+    expect(out).not.toContain('Run verification');
+    expect(out).not.toContain('Goal criteria');
+    expect(out).not.toContain('mission-criteria-sheet');
+    expect(out).not.toContain('mission-screens-row');
+    expect(out).not.toMatch(/data-testid="mission-check" data-kind="criterion"/);
+    expect(out).toContain('id="mission-criteria"');
+  });
+
+  it('a legacy mission with hand-written criteria keeps its read-only list', () => {
+    const legacy = renderToStaticMarkup(<MissionOverview model={f.model} missionId="mission-1" checks={f.checks} />);
+    expect(legacy).toMatch(/data-testid="mission-check" data-kind="criterion"/);
+    expect(legacy).not.toContain('data-testid="mission-requirements"');
+  });
+});
