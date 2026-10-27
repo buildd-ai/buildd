@@ -111,14 +111,21 @@ export default function DesignPreview({
     if (!src || loaded) return;
     const t = setTimeout(() => setSlow(true), 8000);
     const et = setTimeout(() => {
-      // If still not loaded after 15 seconds, assume an error (frame failed to load content)
-      if (loadedSrc === artifactId) setFrameError(true);
+      // If still not loaded after 15 seconds, assume the frame failed to load
+      setFrameError(true);
     }, 15000);
     return () => {
       clearTimeout(t);
       clearTimeout(et);
     };
   }, [src, loaded, loadedSrc, artifactId]);
+
+  const handleRetry = useCallback(() => {
+    setLoadedSrc(null);
+    setFrameError(false);
+    setSlow(false);
+    setPainted(null);
+  }, []);
 
   const pick = useCallback((id: string) => {
     chosen.current = true;
@@ -224,13 +231,24 @@ export default function DesignPreview({
             <div
               data-testid="design-frame-loading"
               role="status"
-              className="absolute inset-0 flex items-center justify-center p-4 text-center text-body text-text-muted bg-surface-2"
+              className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center text-body text-text-muted bg-surface-2 gap-3"
             >
-              {frameError
-                ? 'Failed to load design: the file could not be retrieved. Download the file to open it.'
-                : slow
-                  ? 'Still loading the design. If it stays blank, download the file to open it.'
-                  : 'Loading design…'}
+              {frameError ? (
+                <>
+                  <div>Design not loaded. Retry or download the file.</div>
+                  <button
+                    onClick={handleRetry}
+                    data-testid="design-retry"
+                    className="px-3 py-1.5 text-meta bg-surface-3 border border-border-default text-text-secondary hover:bg-surface-4 hover:text-text-primary transition-colors"
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : slow ? (
+                'Still loading the design. If it stays blank, download the file to open it.'
+              ) : (
+                'Loading design…'
+              )}
             </div>
           ) : null}
           {!src ? (

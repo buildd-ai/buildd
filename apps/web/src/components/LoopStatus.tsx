@@ -5,10 +5,10 @@ type ConditionType = LoopExitCondition['type'];
 
 /** The exit condition in words, for the history heading. */
 const CONDITION_GOAL: Record<ConditionType, string> = {
-  command: 'stopped after check passed',
-  pr_checks_green: 'stopped after CI passed',
-  pr_merged: 'stopped after PR merged',
-  structured_predicate: 'stopped after result matched',
+  command: 'until the check passes',
+  pr_checks_green: 'until CI passes',
+  pr_merged: 'until the PR merges',
+  structured_predicate: 'until the result matches',
 };
 
 /** One evaluation's outcome in words: [met, unmet]. */
@@ -110,10 +110,10 @@ export function LoopStatusChip({
       : 'text-purple-400 border-purple-400 bg-purple-500/8';
 
   const fullLabel = loopState === 'exhausted'
-    ? `Looping failed · ${attempt}/${maxLoops}`
+    ? `Waited · failed · ${attempt}/${maxLoops}`
     : loopState === 'satisfied'
-      ? `Looping succeeded · ${attempt}/${maxLoops}`
-      : `Looping · attempt ${attempt}/${maxLoops}`;
+      ? `Waited · passed · ${attempt}/${maxLoops}`
+      : `Waiting · attempt ${attempt}/${maxLoops}`;
 
   return (
     <span
@@ -126,7 +126,7 @@ export function LoopStatusChip({
       ) : (
         <>
           {/* Below md the chip sits shrink-0 beside the task title, so it must stay short. */}
-          <span className="md:hidden" aria-hidden="true">{`LOOP ${attempt}/${maxLoops}`}</span>
+          <span className="md:hidden" aria-hidden="true">{`WAIT ${attempt}/${maxLoops}`}</span>
           <span className="hidden md:inline" aria-hidden="true">
             {fullLabel}
             {deferred && (
@@ -159,7 +159,7 @@ export function LoopHistory({
   return (
     <section className="mb-6" data-testid="loop-history">
       <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-        Loop cycles
+        Attempts
         {goal && <span className="normal-case tracking-normal"> · {goal}</span>}
       </div>
       {loopState === 'exhausted' && (
