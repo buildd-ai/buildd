@@ -45,7 +45,7 @@ export default function ReverifyButton({ missionId, state }: { missionId: string
         data-state={local}
         disabled={busy}
         onClick={press}
-        className="min-h-11 rounded-[var(--radius-card)] border border-border-default px-3 text-meta text-text-primary enabled:hover:border-border-strong disabled:text-text-muted md:min-h-0 md:py-1"
+        className="btn"
       >
         {LABEL[local]}
       </button>
