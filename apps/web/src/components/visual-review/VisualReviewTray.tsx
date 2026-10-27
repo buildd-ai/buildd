@@ -121,7 +121,7 @@ function Thumb({ cell, onOpen }: { cell: VisualReviewCell; onOpen?: (key: string
       <span data-verify-block="label" className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[1px] text-text-muted">
         <ReviewMarker marker={cell.marker} />
         {VIEWPORT_LABEL[cell.viewport]}
-        {awaitingCapture(cell) || cell.fixCheck?.state === 'decide' ? ' · Fix merged' : cell.fixCheck ? ' · After fix' : cell.current.round > 1 ? ` · R${cell.current.round}` : ''}
+        {awaitingCapture(cell) || cell.fixCheck?.state === 'decide' ? ' · Fix merged' : cell.fixCheck ? ' · After fix' : ''}
       </span>
     </>
   );
