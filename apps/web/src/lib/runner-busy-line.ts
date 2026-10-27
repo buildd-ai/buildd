@@ -20,3 +20,13 @@ export function runnerBusyLine(runner: Pick<FleetRunner, 'online' | 'maxSlots' |
   if (busy > runner.maxSlots) return `${busy} running, over its ${runner.maxSlots} slot${runner.maxSlots === 1 ? '' : 's'}`;
   return `${busy} of ${runner.maxSlots} busy`;
 }
+
+/** A section header's numbers: every runner in it, counted as its own row counts it ("N of M busy"). */
+export function runnerGroupCounts(rows: Array<{ online: boolean; maxSlots: number; busy: number }>): { runners: number; offline: number; slots: number; busy: number } {
+  return {
+    runners: rows.length,
+    offline: rows.filter(r => !r.online).length,
+    slots: rows.reduce((n, r) => n + r.maxSlots, 0),
+    busy: rows.reduce((n, r) => n + r.busy, 0),
+  };
+}

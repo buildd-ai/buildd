@@ -30,8 +30,8 @@ describe('RunningNow', () => {
   it('each runner says how busy it is, in words', () => {
     expect(html).toContain('atlas');
     expect(html).toContain('2 of 3 busy');
-    expect(html).toContain('birch');
-    expect(html).toContain('Offline');
+    // An idle or offline runner is listed once, under Your/Team runners, not here.
+    expect(html).not.toContain('birch');
   });
   it('a runner running more than its slots says so, never "3 of 2 busy"', () => {
     const over = { ...fleet, sessions: null, runners: [{ ...fleet.runners[0], maxSlots: 2 }] } as unknown as FleetSnapshot;
