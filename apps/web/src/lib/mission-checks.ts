@@ -534,3 +534,49 @@ export function requirementsCount(rows: readonly CheckRow[]): string {
   }
   return total === 0 ? 'nothing to check' : `${met} of ${total} met`;
 }
+
+/** One selected spec's requirements for the Verify stage (R-17): only what is in scope, only the unmet ones listed. */
+export interface RequirementGroup {
+  key: string;
+  /** `From <spec name>`. */
+  heading: string;
+  href: string | null;
+  inScope: number;
+  met: number;
+  /** Unmet requirements, each with its result word, evidence (the reason a check gave) and the current action. */
+  unmet: { id: string; text: string | null; result: CriterionLine['result']; evidence: string | null; action: string }[];
+  /** `All 3 met`: the one line an all-met group folds into. Null while any is unmet. */
+  metLine: string | null;
+}
+
+export interface RequirementGroups { groups: RequirementGroup[]; total: string }
+
+function currentAction(r: CheckRow, line: CriterionLine): string {
+  if (r.actor === 'owner') return 'Waiting on you';
+  if (r.actor === 'reviewer') return 'With the reviewer';
+  if (r.status === 'running') return 'Verifying now';
+  if (r.status === 'finding' || line.result === 'failed') return r.repairs.some(x => !x.done) ? 'A fix is open' : 'Needs a fix';
+  if (line.result === 'out of date') return 'Checks again next';
+  return 'Checks next';
+}
+
+/**
+ * Group the spec rows' requirements by spec, count only those in scope per
+ * spec (waived ones are out), and total across the groups: `18 of 21 met`.
+ * Rows without per-requirement lines are not groups; `requirementsCount`
+ * still counts them.
+ */
+export function requirementGroups(rows: readonly CheckRow[]): RequirementGroups {
+  const groups: RequirementGroup[] = [];
+  for (const r of rows) {
+    if (r.kind !== 'criterion' || !r.criteria?.length) continue;
+    const counted = r.criteria.filter(l => l.result !== 'waived');
+    const met = counted.filter(l => l.result === 'passed').length;
+    const unmet = counted.filter(l => l.result !== 'passed').map(l => ({ id: l.id, text: l.text, result: l.result, evidence: l.reason, action: currentAction(r, l) }));
+    groups.push({
+      key: r.key, heading: `From ${r.label}`, href: r.href ?? null, inScope: counted.length, met, unmet,
+      metLine: counted.length > 0 && unmet.length === 0 ? `All ${counted.length} met` : null,
+    });
+  }
+  return { groups, total: requirementsCount(rows) };
+}

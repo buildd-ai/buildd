@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimate, criteriaChecks, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementsCount, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import type { CriterionLine } from './mission-outcome-spec-view';
+import { buildEstimate, criteriaChecks, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementGroups, requirementsCount, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type CheckRow, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { planMissions, type PlanTask } from './mission-plan';
 
@@ -544,5 +545,24 @@ describe('standards in Verify (Living Specs D-43, Navigation R-17)', () => {
 
   it('no line for a mission with no standards', () => {
     expect(missionStandardsLine(input({ criteria: [unitTests] }), {})).toBeNull();
+  });
+});
+
+describe('requirementGroups (R-17)', () => {
+  const line = (id: string, result: 'passed' | 'failed' | 'not checked'): CriterionLine => ({ id, text: `Requirement ${id}.`, result, reason: result === 'passed' ? null : 'test file not found' });
+  const specRow = (key: string, label: string, lines: CriterionLine[]): CheckRow => ({
+    key, kind: 'criterion', label, chip: 'goal', blocks: true, status: 'queued', state: 'not checked', detail: null, target: null, commit: null,
+    actor: 'system', problem: null, findings: null, repairs: [], evidence: [], criteria: lines,
+  });
+  it('totals across specs, lists only unmet ones, folds an all-met spec into one line', () => {
+    const a = Array.from({ length: 18 }, (_, i) => line(`A-${i}`, i < 15 ? 'passed' : 'not checked'));
+    const b = Array.from({ length: 3 }, (_, i) => line(`B-${i}`, 'passed'));
+    const g = requirementGroups([specRow('c0', 'Alpha', a), specRow('c1', 'Beta', b)]);
+    expect(g.total).toBe('18 of 21 met');
+    expect(g.groups.map(x => x.heading)).toEqual(['From Alpha', 'From Beta']);
+    expect(g.groups[0]).toMatchObject({ inScope: 18, met: 15, metLine: null });
+    expect(g.groups[0].unmet).toHaveLength(3);
+    expect(g.groups[0].unmet[0]).toMatchObject({ result: 'not checked', evidence: 'test file not found', action: 'Checks next' });
+    expect(g.groups[1]).toMatchObject({ inScope: 3, met: 3, unmet: [], metLine: 'All 3 met' });
   });
 });

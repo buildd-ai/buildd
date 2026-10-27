@@ -29,7 +29,7 @@ import DecisionCard from '@/components/DecisionCard';
 import { useVisualDecisionAct } from './visual-decision-act';
 import { useMissionFocusSnapshot } from '@/components/missions/mission-focus-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementsCount, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, requirementGroups, requirementsCount, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
 import { isClosedUnshipped, overviewCells, overviewLayout } from '@/lib/mission-overview';
 import { stripOrder } from '@/lib/mission-task-strip';
 import type { DecisionView } from '@/lib/needs-you-card';
@@ -163,10 +163,13 @@ function OverviewView({
       releaseHref: checksSource?.evidence?.release?.[0]?.href ?? null,
       screensHref: checksSource?.evidence?.visual?.[0]?.href ?? null,
     });
-    const criteria = rows.filter(r => r.kind === 'criterion');
+    const isSpec = (r: HandoffRow) => r.kind === 'criterion' && !!r.criteria?.length;
+    const criteria = rows.filter(r => r.kind === 'criterion' && !isSpec(r));
+    const groups = requirementGroups(rows.filter(isSpec));
     return (
       <>
         <DeliveryChecks checks={views} delivery={withDelivery ? deliveryBlock(deliveryTasks) : null} timelineHref={`/app/missions/${encodeURIComponent(link.missionId)}?layout=feed`} onOpenTask={openTask} />
+        {groups.groups.length > 0 && <RequirementGroupsView data={groups} />}
         {criteria.length > 0 && <ChecksCard rows={criteria} onOpenTask={openTask} />}
       </>
     );
@@ -234,6 +237,38 @@ function OverviewView({
       )}
       {design && <MissionStageProvider value={stage}>{design}</MissionStageProvider>}
     </div>
+  );
+}
+
+/** Requirements by spec (R-17): one `From <spec>` header each, unmet ones listed, met ones one line, the total across groups. */
+function RequirementGroupsView({ data }: { data: ReturnType<typeof requirementGroups> }) {
+  return (
+    <section data-testid="requirement-groups" className="flex flex-col gap-3">
+      <h2 className="flex items-baseline gap-x-2 text-meta text-text-muted">
+        <span>Requirements</span>
+        <span data-testid="requirements-total" className="font-mono">{data.total}</span>
+      </h2>
+      {data.groups.map(g => (
+        <div key={g.key} data-testid="requirement-group" className="flex flex-col gap-1.5 rounded-[var(--radius-card)] border border-border-default bg-card px-3 py-3">
+          <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-title">
+            {g.href ? <a href={g.href} className="font-medium text-text-primary underline decoration-border-strong underline-offset-4">{g.heading}</a> : <span className="font-medium text-text-primary">{g.heading}</span>}
+            <span className="font-mono text-meta text-text-muted">{g.met} of {g.inScope} met</span>
+          </p>
+          {g.metLine && <p data-testid="requirement-group-met" className="text-body text-text-secondary">{g.metLine}</p>}
+          {g.unmet.length > 0 && (
+            <ul className="flex flex-col gap-2">
+              {g.unmet.map(u => (
+                <li key={u.id} data-testid="requirement-unmet" data-result={u.result} className="flex flex-col gap-0.5 text-body">
+                  <span className="text-text-primary [overflow-wrap:anywhere]">{u.text ?? u.id} <span className="font-mono text-meta text-text-muted">{u.result}</span></span>
+                  {u.evidence && <span className="text-text-secondary">{u.evidence}</span>}
+                  <span className="font-mono text-meta text-text-muted">{u.action}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </section>
   );
 }
 
