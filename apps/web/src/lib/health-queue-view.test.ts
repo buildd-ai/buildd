@@ -34,7 +34,8 @@ describe('AC-1: tiles', () => {
       task(parked),
     ];
     const v = buildHealthQueueView(input({ running: 4, slots: 6, teamBusy: 4, tasks }));
-    expect(v.tiles).toEqual({ running: 4, slots: 6, ready: 2, waiting: 9, parked: 1, waitingByReason: { declared: 2, lane: 2, limit: 5 } });
+    expect(buildHealthQueueView(input({ running: 1, slots: 0, capacity: { used: 0, total: 0 } })).tiles.capacity).toEqual({ used: 0, total: 0 });
+    expect(v.tiles).toEqual({ running: 4, slots: 6, capacity: { used: 4, total: 6 }, ready: 2, waiting: 9, parked: 1, waitingByReason: { declared: 2, lane: 2, limit: 5 } });
     expect(v.ready.map(r => r.id)).toEqual([tasks[0].id, tasks[1].id]);
     expect(v.parked).toHaveLength(1);
     expect(v.parked[0].starts).toBe('Starts in 2h 00m');

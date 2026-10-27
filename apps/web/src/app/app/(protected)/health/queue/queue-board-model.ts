@@ -19,7 +19,7 @@ export const REASON_OF: Record<HealthQueueReason, QueueReason> = { lane: 'lane',
  * the Capacity block on Runners shows (R-3, AC-14). Total is team-wide (R-2).
  */
 export function runningOf(tiles: HealthQueueTiles): QueueTilesProps['running'] {
-  return { used: tiles.running, total: tiles.slots };
+  return tiles.capacity;
 }
 
 export function queueTilesProps(view: HealthQueueResponse): Omit<QueueTilesProps, 'layout' | 'className'> {

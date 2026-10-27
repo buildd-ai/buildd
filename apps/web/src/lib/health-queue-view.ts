@@ -54,6 +54,8 @@ export interface HealthQueueViewInput {
   running: number;
   /** Team-wide schedulable runner slots. */
   slots: number;
+  /** The Capacity block's pair (R-3, AC-14); defaults to running of slots. */
+  capacity?: { used: number; total: number };
   /** Team-wide live runs, for idle slots. */
   teamBusy: number;
   tasks: HealthQueueTaskInput[];
@@ -191,6 +193,7 @@ export function buildHealthQueueView(input: HealthQueueViewInput): HealthQueueRe
     tiles: {
       running: input.running,
       slots: input.slots,
+      capacity: input.capacity ?? { used: input.running, total: input.slots },
       ready: ready.length,
       waiting: waiting.length,
       parked: parked.length,
