@@ -111,15 +111,13 @@ describe('DEFAULT_MISSION_HEARTBEAT_CHECKLIST', () => {
     expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toMatch(/heartbeat/i);
   });
 
-  it('states that only a concrete pathManifest buys serialization', () => {
-    // The old text promised edges "when manifests overlap" — true only for
-    // concrete manifests. A task filed without paths defaults to '**', which is
-    // advisory and mints no edges at all.
-    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toContain(
-      'The API auto-adds dependsOn edges when manifests overlap',
-    );
-    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('concrete');
-    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('no serialization');
+  it('teaches lanes, parallel work and the edit-time lock', () => {
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('first come');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('edit-time file lock');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('everything else runs in parallel');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('dependsOn only for a real ordering need');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).not.toContain('auto-adds dependsOn');
+    expect(DEFAULT_MISSION_HEARTBEAT_CHECKLIST).toContain('report blocked with the sibling taskId so a dependsOn edge can be added');
   });
 });
 

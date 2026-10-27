@@ -33,6 +33,7 @@ import {
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { applyCriteriaRearm } from '@/lib/criteria-rearm';
 import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
+import { repairMissionChecklists } from './maintenance/mission-checklists';
 import { runMissionArchive } from './maintenance/archive-missions';
 import { sweepTaskCategories } from '@/lib/task-category-sweep';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
@@ -1080,6 +1081,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const overdueHeartbeatAlerts = await runOverdueHeartbeatAlerts(now);
 
     const archivedMissions = await runMissionArchive(now);
+    const missionChecklists = await repairMissionChecklists().catch((err) => {
+      console.error('[Cron] mission checklist repair failed', err instanceof Error ? err.message : err);
+      return { updated: 0, customized: 0, current: 0, raced: 0, error: true };
+    });
 
     // Category looks for tasks created off the POST /api/tasks path (missions,
     // schedules, webhooks, retries). Bounded and last, so it can't crowd out the
@@ -1127,8 +1132,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     report({
       processed,
       changed: created,
-      errors: errors + healthWatcherErrors,
-      result: { created, skipped, deferred, errors, triggerChecks, archivedMissions, taskCategories, healthWatcher, overdueHeartbeatAlerts, qualityScout, qualityScoutExpiry },
+      errors: errors + healthWatcherErrors + ('error' in missionChecklists ? 1 : 0),
+      result: { created, skipped, deferred, errors, triggerChecks, archivedMissions, missionChecklists, taskCategories, healthWatcher, overdueHeartbeatAlerts, qualityScout, qualityScoutExpiry },
     });
 
     return NextResponse.json({
@@ -1145,6 +1150,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       criteriaRearmInvocations,
       healthWatcher,
       archivedMissions,
+      missionChecklists,
       overdueHeartbeatAlerts,
       taskCategories,
       qualityScout,
