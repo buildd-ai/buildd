@@ -10,7 +10,7 @@
 import Link from 'next/link';
 import { NO_RUNNER_WORK, OccupancySparkline } from '@/components/fleet/OccupancySparkline';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
-import { agentsSummary, elapsedLabel, type AgentSquare, type AgentsModel } from '@/lib/home-agents';
+import { agentsSummary, checksRunningLabel, elapsedLabel, type AgentSquare, type AgentsModel } from '@/lib/home-agents';
 import { idleStretchLabel, type IdleStretch } from '@/lib/idle-while-queued';
 
 const RUNNERS_HREF = '/app/health/runners';
@@ -70,7 +70,7 @@ export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: 
                 <Square kind={l.waiting ? 'waiting' : 'busy'} size="mt-[5px] h-2 w-2" testId="agent-line-square" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-body font-medium text-text-primary">{l.name}{l.rest ? <span className="font-normal text-text-secondary"> {l.rest}</span> : null}</span>
-                  {l.mission && <span className="block truncate text-meta text-text-muted">{l.mission}</span>}
+                  {(l.mission || l.checks > 0) && <span data-testid="agent-line-context" className="block truncate text-meta text-text-muted">{[l.mission, l.checks > 0 ? checksRunningLabel(l.checks) : null].filter(Boolean).join(' · ')}</span>}
                 </span>
                 <span className="shrink-0 font-mono text-meta tabular-nums text-text-muted">
                   {l.waiting && <span className="text-accent-text">waiting on you{l.elapsedMs != null ? ' · ' : ''}</span>}
