@@ -5,7 +5,7 @@
  * with an existing remediation offers Run/Repair instead of a second fix (S37).
  */
 import { describe, expect, test } from 'bun:test';
-import { attemptFailureCounts, attemptLine, deriveDeliveryView, landingEscalationCopy, ownerOfNextMove, type DeliveryViewInput } from './projections';
+import { attemptFailureCounts, attemptLine, deliveryPrState, deriveDeliveryView, landingEscalationCopy, ownerOfNextMove, type DeliveryViewInput } from './projections';
 import { replacedFailedTaskIds } from './delivery-display';
 
 describe('attemptLine (§5.7 rule 4)', () => {
@@ -284,6 +284,14 @@ describe('S37: conflict remediation already exists', () => {
     const v = view({ view: V(D({ state: 'AWAITING_REVIEW', mergeable: 'dirty', mergeableHeadSha: 'OLD', currentRound: 1 }), [R()]) });
     expect(v.cta).toBeNull();
     expect(v.headline).toBe('Review queued');
+  });
+
+  test('deliveryPrState: a dirty reading on an older head is awaiting_ci, escalated or not', () => {
+    for (const state of ['AWAITING_REVIEW', 'ESCALATED'] as const) {
+      const d = D({ state, mergeable: 'dirty', mergeableHeadSha: 'OLD', currentHeadSha: 'NEW', prNumber: 7 });
+      expect(deliveryPrState(d)).toBe('awaiting_ci');
+    }
+    expect(deliveryPrState(D({ state: 'ESCALATED', mergeable: 'dirty', mergeableHeadSha: 'NEW', currentHeadSha: 'NEW', prNumber: 7 }))).toBe('conflict');
   });
 
   test('a merged delivery never shows a conflict CTA', () => {

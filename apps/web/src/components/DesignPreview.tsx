@@ -92,10 +92,18 @@ export default function DesignPreview({
 
   const scale = zoom === 'full' || !viewport || !columnWidth ? 1 : fitScale(viewport.width, columnWidth);
   const label = `Design preview · ${title} · revision ${revision}`;
-  const shortLabel = `${title} · revision ${revision}`;
+  const shortLabel = `Revision ${revision}`; // the page H1 already carries the title
   const src = frameUrl ? frameSrc(frameUrl, screenId) : null;
 
-  const loaded = !!src && loadedSrc === artifactId;
+  // `load` fires before a sandboxed, scaled frame has necessarily painted: hold the
+  // status overlay two more frames so a not-yet-painted frame reads as loading, never blank.
+  const [painted, setPainted] = useState<string | null>(null);
+  useEffect(() => {
+    if (loadedSrc !== artifactId) return;
+    const id = requestAnimationFrame(() => requestAnimationFrame(() => setPainted(artifactId)));
+    return () => cancelAnimationFrame(id);
+  }, [loadedSrc, artifactId]);
+  const loaded = !!src && loadedSrc === artifactId && painted === artifactId;
   useEffect(() => {
     setSlow(false);
     if (!src || loaded) return;
@@ -178,7 +186,7 @@ export default function DesignPreview({
           data-testid="design-frame-box"
           className="relative overflow-hidden bg-surface-2"
           style={
-            viewport
+            viewport && src
               ? { width: Math.round(viewport.width * scale), height: Math.round(viewport.height * scale) }
               : undefined
           }
@@ -213,8 +221,8 @@ export default function DesignPreview({
           {!src ? (
             <div
               data-testid="design-frame-unavailable"
-              className="flex items-center justify-center h-full min-h-[160px] p-4 text-center text-body text-text-muted"
-              style={viewport ? undefined : { height: '40vh' }}
+              className="flex items-center justify-center w-full min-h-[160px] p-4 text-center text-body text-text-muted"
+              style={{ minHeight: viewport ? Math.min(viewport.height, 320) : undefined, height: viewport ? undefined : '40vh' }}
             >
               Preview unavailable: file storage is not configured here. Download the file to open it.
             </div>
