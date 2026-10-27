@@ -27,6 +27,7 @@
  *  - Block an integration PR that already merged. Then the review is recovery
  *    (`postMergeRecovery`), reported as such and never as pre-merge assurance.
  */
+import { uiDeltaLine } from './workflow/visual-review-carry';
 import type { MissionVisualReviewState, VisualReviewNextActor } from './workflow/visual-review-state';
 
 export type ReadyToMergeBlockerCode =
@@ -101,7 +102,9 @@ export function decideReadyToMerge(facts: ReadyToMergeFacts): ReadyToMergeDecisi
     } else if (v.staleEvidence) {
       blockers.push({
         code: 'visual_review_stale',
-        reason: `The last visual review looked at an older commit than this one${where}. A new review of this commit is required before it merges.`,
+        reason: v.uiDelta
+          ? `${uiDeltaLine(v.uiDelta)}${where}. A new review of this commit is required before it merges.`
+          : `The last visual review looked at an older commit than this one${where}. A new review of this commit is required before it merges.`,
         nextActor: BLOCKED_ACTOR(v),
       });
       scheduleVisualReview = true;

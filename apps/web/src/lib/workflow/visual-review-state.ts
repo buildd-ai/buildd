@@ -17,6 +17,7 @@
 import { OPEN_TASK_STATUSES, isTerminalTaskStatus, type VisualReviewModel, type VisualReviewPhase } from '@buildd/shared';
 import { parseVisualReviewSkipNote, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
 import type { ResolvedVisualReviewPolicy } from './visual-review-policy';
+import type { ReviewCarry } from './visual-review-carry';
 
 export const MISSION_VISUAL_REVIEW_STATUSES = [
   'not_applicable', 'optional', 'needed', 'queued', 'running', 'findings', 'blocked', 'passed', 'waived',
@@ -78,6 +79,8 @@ export interface VisualReviewStateInput {
    * commit, and an audit that recorded none cannot prove it.
    */
   auditedSha?: string | null;
+  /** The scheduler's path-diff judgement of the latest audit against the current head (`judgeReviewCarry`); ignored unless it names this head and this audit's commit. */
+  carry?: ReviewCarry | null;
   /**
    * The mission is completed or archived. Its completion gate already ran, and
    * the scheduler files nothing for a closed mission, so a pass on an earlier
@@ -145,6 +148,10 @@ export interface MissionVisualReviewState {
   passedOnEarlierCommit: boolean;
   /** The commit the latest audit judged, when it recorded one. */
   evidenceSha: string | null;
+  /** The review still stands for this head because no UI the mission owns changed since this commit. */
+  carriedFrom?: string;
+  /** The review was voided by these UI files changing since the reviewed commit. */
+  uiDelta?: string[];
   nextActor: VisualReviewNextActor;
   policy: Pick<ResolvedVisualReviewPolicy, 'mode' | 'origin' | 'waiverAllowed' | 'locked'>;
   scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean; /** What the impact read said: `unknown` when the builders' files could not be read. */ impact?: 'yes' | 'no' | 'unknown' };
@@ -239,6 +246,8 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
   let blocked: MissionVisualReviewState['blocked'];
   let blockedActor: VisualReviewNextActor | null = null;
   let staleEvidence = false;
+  let carriedFrom: string | undefined;
+  let uiDelta: string[] | undefined;
   let passedOnEarlierCommit = false;
   let waitingOn: MissionVisualReviewState['waitingOn'];
   const recapture = review?.recapture && review.recapture.screens.length > 0 ? review.recapture : null;
@@ -287,8 +296,15 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       // automatic fix rounds are spent and the audit still finds issues is it theirs.
       nextActor = findings.exhausted ? 'owner' : findings.stage === 'fixing' ? 'system' : 'jev';
     } else if (input.auditedSha !== undefined && input.uiChange.state !== 'no' && branch.headSha && input.auditedSha !== branch.headSha) {
-      // Same-commit evidence only: a pass on another commit (or on none we can name) is not a pass for this head.
+      // Same-commit evidence only, unless the mission's own UI did not move since: a pass on another commit (or on none we can name) is not a pass for this head.
+      const carry = input.carry && input.auditedSha && input.carry.headSha === branch.headSha.toLowerCase() && input.carry.from === input.auditedSha.toLowerCase()
+        ? input.carry : null;
+      if (carry?.state === 'carried') {
+        carriedFrom = carry.from;
+        status = 'passed';
+      } else {
       staleEvidence = true;
+      if (carry?.state === 'changed' && carry.files.length > 0) uiDelta = carry.files;
       if (input.missionClosed) {
         // Closed: nothing re-checks it. Say what was checked, never that it checks again.
         passedOnEarlierCommit = true;
@@ -296,6 +312,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       } else {
         status = 'needed';
         nextActor = policy.mode === 'ask' ? 'owner' : 'system';
+      }
       }
     } else {
       status = 'passed';
@@ -328,6 +345,8 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     staleEvidence,
     passedOnEarlierCommit,
     evidenceSha: input.auditedSha ?? null,
+    ...(carriedFrom ? { carriedFrom } : {}),
+    ...(uiDelta ? { uiDelta } : {}),
     nextActor: required || status === 'waived' || status === 'passed' ? nextActor : 'none',
     policy: { mode: policy.mode, origin: policy.origin, waiverAllowed: policy.waiverAllowed, locked: policy.locked },
     scope: {

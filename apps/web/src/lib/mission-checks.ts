@@ -10,6 +10,7 @@
  * state exists, one row per goal criterion, the mission PR on a mission-branch
  * mission, the release when one is configured. There is no fixed checklist.
  */
+import { uiDeltaLine } from './workflow/visual-review-carry';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint, isStandardCriterion } from '@buildd/core/mission-helpers';
 import { earlierCommitDetail, presentVisualReview } from './workflow/visual-review-presentation';
@@ -157,7 +158,7 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   if (state.status === 'passed') {
     // Closed: the pass stands as the record, and the row says which commit it judged.
     if (state.passedOnEarlierCommit) return row('stale', 'passed on an earlier commit', earlierCommitDetail(state), 'none');
-    if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last pass. A new check is being filed.', 'system');
+    if (state.staleEvidence) return row('stale', 'out of date', state.uiDelta ? `${uiDeltaLine(state.uiDelta)}. A new check is being filed.` : 'The branch changed after the last pass. A new check is being filed.', 'system');
     return row('passed', 'passed', p.record?.detail ?? p.detail, 'none');
   }
   if (state.status === 'blocked') {
@@ -179,7 +180,7 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   if (state.recapture && state.recapture.next !== 'decide' && state.status !== 'running') {
     return row('queued', 'waiting for a new screenshot', sentence(p.label, p.detail));
   }
-  if (state.staleEvidence) return row('stale', 'out of date', state.nextActor === 'system' ? 'The branch changed after the last check. A new check is being filed.' : 'The branch changed after the last check. None is scheduled; Check again starts one.');
+  if (state.staleEvidence) return row('stale', 'out of date', state.uiDelta ? `${uiDeltaLine(state.uiDelta)}.` : state.nextActor === 'system' ? 'The branch changed after the last check. A new check is being filed.' : 'The branch changed after the last check. None is scheduled; Check again starts one.');
   if (state.status === 'running') {
     const pr = state.progress;
     const text = pr?.expected ? `capturing ${pr.captured} of ${pr.expected}` : 'checking';
