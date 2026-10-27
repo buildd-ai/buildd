@@ -23,6 +23,12 @@ const CHECKS_PENDING = new Set<string | null>([null, 'pr_open', 'ci_running']);
  */
 const KERNEL_OWNS_NEXT_MOVE = new Set(['AWAITING_REVIEW', 'REPAIRING', 'LANDING', 'APPROVED', 'BLOCKED_ON_TRUNK']);
 
+/**
+ * fe45dc7d: delivery states where the PR's next move is a person's. The kernel stopped retrying;
+ * another owner pass would push commits it ignores and then fail the task over its escalation.
+ */
+const PERSON_OWNS_NEXT_MOVE = new Set(['ESCALATED']);
+
 /** The kernel delivery this loop task owns (null = none, or released to legacy). Never throws. */
 async function ownerDelivery(taskId: string): Promise<{ state: string; prNumber: number | null; mergedAt: string | null } | null> {
   try {
@@ -116,6 +122,12 @@ export async function loopPolicy(input: LoopInput): Promise<LoopVerdict> {
   // the merge or check_suite webhook (lib/loop-webhook.ts) settles the loop. Unlike the CI wait
   // below, not once per PR: each completion while the kernel owns the PR is the same wait.
   if (delivery && KERNEL_OWNS_NEXT_MOVE.has(delivery.state)) return webhookHold({ deliveryState: delivery.state });
+  // fe45dc7d: the delivery escalated to a person, so the loop owns no retry. Nothing is requeued
+  // (a hold would be claimed again at its expiry) and nothing fails: the task ends as the kernel
+  // projects it, and explain reads the delivery's state.
+  if (delivery && PERSON_OWNS_NEXT_MOVE.has(delivery.state)) {
+    return { kind: 'defer', deliveryState: delivery.state, progress: { iteration: currentIteration, history: existingHistory } };
+  }
 
   // pr_checks_green with a PR whose CI has not reported: nothing for another
   // session to do, so wait for the check_suite / merge webhook

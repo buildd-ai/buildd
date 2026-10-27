@@ -8,8 +8,21 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 let workerRow: any = null;
 let insertedRows: any[] = [];
+/** What the guarded `startParkedOwnerPass` update returns (empty: the owner is not parked). */
+let parkedUpdateRows: any[] = [];
+const taskUpdates: any[] = [];
 mock.module('@buildd/core/db', () => ({
   db: {
+    update: () => ({
+      set: (v: any) => ({
+        where: () => ({
+          returning: async () => {
+            taskUpdates.push(v);
+            return parkedUpdateRows;
+          },
+        }),
+      }),
+    }),
     query: {
       workers: { findFirst: async () => workerRow },
       workspaces: { findFirst: async () => ({ id: 'ws1', name: 'ws', gitConfig: {} }) },
@@ -48,9 +61,10 @@ mock.module('@/lib/dispatch-authority', () => ({
 }));
 
 let failedJobNames: string[] = ['Build'];
+let prGate: Record<string, unknown> = { draft: false, closed: false, merged: false, headRef: 'buildd/task-1-fix-bug', baseRef: 'dev' };
 mock.module('@/lib/ci-failure-inspect', () => ({
   checkPrIsDraft: async () => false,
-  fetchPrRetryGate: async () => ({ draft: false, closed: false, merged: false }),
+  fetchPrRetryGate: async () => prGate,
   fetchCIFailureLogs: async () => ({ summary: 'tests failed', runId: 1, runUrl: 'https://ci.example.test/run/1', failedJobId: 2, failedJobNames }),
 }));
 mock.module('@/lib/mission-notifications', () => ({ notifyMissionPrReady: async () => {} }));
@@ -90,6 +104,9 @@ mock.module('@/lib/workflow/seam', () => ({ observeCiFailure: mockObserveCiFailu
 const realKernelClient = await import('@/lib/workflow/kernel-client');
 mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observeCiFailure: mockObserveCiFailure }));
 const gateEvents: any[] = [];
+let flakeOutcome: any = { rerun: false, reason: 'not_flake' };
+const mockRerunIfKnownFlake = mock(async (_input: any) => flakeOutcome);
+mock.module('@/lib/ci-flake-rerun', () => ({ rerunIfKnownFlake: mockRerunIfKnownFlake }));
 mock.module('@/lib/policy-overrides', () => ({ policyValue: () => 3, POLICY_DEFAULTS: { maxCiRetries: 3 } }));
 
 const { retryCiFailureForPr, kernelCiOutcome } = await import('./ci-failure-retry');
@@ -163,12 +180,48 @@ describe('retryCiFailureForPr on a kernel-owned PR (§5.7, T10)', () => {
     expect(insertedRows).toEqual([]);
   });
 
+  it('an owner parked on a future loop pass (delivery WORKING, no worker) starts now instead of reading as a fix in flight', async () => {
+    mockWakeTask.mockClear();
+    taskUpdates.length = 0;
+    parkedUpdateRows = [{ id: 't1' }];
+    workerRow.task = { ...workerRow.task, status: 'pending', deliveryRole: 'owner', loopState: 'condition_unmet', startAt: new Date(Date.now() + 4 * 3600_000) };
+    kernelSeen = { handled: true, attemptTaskId: null, result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } };
+    expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'owner_pass_started', inFlightTaskId: 't1' });
+    expect(taskUpdates).toHaveLength(1);
+    expect(taskUpdates[0].startAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(mockWakeTask.mock.calls).toEqual([['t1', 'ci.retry']]);
+    expect(insertedRows).toEqual([]);
+  });
+
+  it('a WORKING owner that is not parked (claimed, or due already) stays a fix in flight and names itself as the holder', async () => {
+    mockWakeTask.mockClear();
+    parkedUpdateRows = [];
+    workerRow.task = { ...workerRow.task, status: 'in_progress', deliveryRole: 'owner' };
+    kernelSeen = { handled: true, attemptTaskId: null, result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } };
+    expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'fix_in_flight', inFlightTaskId: 't1' });
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('a repair in flight never pulls the owner forward', async () => {
+    taskUpdates.length = 0;
+    parkedUpdateRows = [{ id: 't1' }];
+    workerRow.task = { ...workerRow.task, status: 'pending', deliveryRole: 'owner' };
+    kernelSeen = { handled: true, attemptTaskId: null, result: { result: 'rejected', reason: 'fix_in_flight', current: { state: 'REPAIRING' } } };
+    expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'fix_in_flight' });
+    expect(taskUpdates).toEqual([]);
+  });
+
   it('maps every kernel answer onto a CI-door outcome', () => {
     expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'REPAIRING' } }, attemptTaskId: null })).toMatchObject({ kind: 'skipped', reason: 'fix_in_flight' });
     expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'CHANGES_REQUESTED' } } })).toMatchObject({ reason: 'fix_in_flight' });
-    expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } })).toMatchObject({ reason: 'fix_in_flight' });
+    expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'WORKING' } } })).toMatchObject({ reason: 'fix_in_flight', kernelState: 'WORKING' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'state_not_allowed', current: { state: 'ESCALATED' } } })).toMatchObject({ reason: 'kernel_owned' });
     expect(kernelCiOutcome({ result: { result: 'stale', reason: 'head_not_current', current: { state: 'AWAITING_REVIEW' } } })).toMatchObject({ reason: 'kernel_owned' });
+  });
+
+  it('210caad3: a delivery waiting in the landing lane is not a fix in flight: T10 replaces the wait with the CI fix', () => {
+    // T10 now applies on REPAIRING(behind) with its refresh unrun, so the door reads a dispatch.
+    expect(kernelCiOutcome({ result: { result: 'applied', decision: { toState: 'REPAIRING' } }, attemptTaskId: 'ci-fix-1' })).toEqual({ kind: 'dispatched', taskId: 'ci-fix-1' });
   });
 
   it('S24: a trunk-blocked delivery is a blocked_on_trunk skip: the sweep files no per-PR retry and does not come back for it', () => {
@@ -219,5 +272,64 @@ describe('legacy CI budget: allocation is consumption, never author or context.i
     const out = await retryCiFailureForPr(input);
     expect(out.kind).toBe('dispatched');
     expect(mockWakeTask.mock.calls.length).toBe(1);
+  });
+});
+
+describe('a known flake is re-run, never a CI-fix attempt', () => {
+  beforeEach(() => {
+    mockWakeTask.mockClear();
+    insertedRows = [];
+    failedJobNames = ['Runner unit tests (windows)'];
+    kernelSeen = { handled: false };
+    mockObserveCiFailure.mockClear();
+    mockRerunIfKnownFlake.mockClear();
+    workerRow = {
+      id: 'w1', branch: 'buildd/x', prNumber: 7, prLifecycleStatus: 'open',
+      task: { id: 't1', title: 'Do it', description: null, workspaceId: 'ws1', missionId: null, status: 'completed', context: {}, result: null },
+    };
+  });
+
+  it('skips with flake_rerun: no task filed, no kernel attempt, so no budget spent', async () => {
+    flakeOutcome = { rerun: true, runId: 9, runAttempt: 1, tests: [{ signature: 'ci-flake:x' }], friction: [{ signature: 'ci-flake:x', taskId: 'f1', outcome: 'created' }] };
+    expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'flake_rerun' });
+    expect(insertedRows).toEqual([]);
+    expect(mockObserveCiFailure).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
+    expect(mockRerunIfKnownFlake.mock.calls[0][0]).toEqual({ installationId: 1, repoFullName: 'o/r', prNumber: 7, headSha: 'abc1234', workspaceId: 'ws1' });
+  });
+
+  it('a flake that already had its re-run goes to the normal fix path', async () => {
+    flakeOutcome = { rerun: false, reason: 'attempts_exhausted' };
+    expect((await retryCiFailureForPr(input)).kind).toBe('dispatched');
+  });
+});
+
+// e2ea3764: a CI fix filed without the PR's head ref resumed the worker row's branch, found it
+// missing on the remote, and was cut from dev: it could change nothing on the PR.
+describe('legacy CI retry: never filed without the PR head GitHub names', () => {
+  beforeEach(() => {
+    insertedRows = [];
+    failedJobNames = ['Build'];
+    kernelSeen = { handled: false };
+    workerRow = {
+      id: 'w1', branch: 'buildd/x', prNumber: 7, prLifecycleStatus: 'open',
+      task: { id: 't1', title: 'Do it', description: null, workspaceId: 'ws1', missionId: null, status: 'completed', context: {}, result: null },
+    };
+  });
+
+  it('an unreadable PR head is a pr_unreadable skip, nothing inserted', async () => {
+    prGate = { draft: false, closed: false, merged: false };
+    try {
+      expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'pr_unreadable' });
+      expect(insertedRows).toEqual([]);
+    } finally {
+      prGate = { draft: false, closed: false, merged: false, headRef: 'buildd/task-1-fix-bug', baseRef: 'dev' };
+    }
+  });
+
+  it('a readable head pins the fix to it', async () => {
+    const out = await retryCiFailureForPr(input);
+    expect(out.kind).toBe('dispatched');
+    expect(insertedRows[0].context).toMatchObject({ resumeBranch: 'buildd/task-1-fix-bug', repairTarget: { prNumber: 7, headRef: 'buildd/task-1-fix-bug' } });
   });
 });

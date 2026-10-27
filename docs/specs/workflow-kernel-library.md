@@ -10,6 +10,24 @@ related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
 verified_by: [apps/web/src/lib/workflow/trunk-recheck.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/workflow-probe-killswitch.test.ts, apps/web/tests/db/epoch-effects.test.ts, apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
 supersedes: []
+assertions:
+  - id: "kernel-command-api"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "symbol"
+    name: "COMMAND_PATH"
+    path: "apps/web/src/lib/workflow/command-api.ts"
+  - id: "kernel-control-plane-url"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "symbol"
+    name: "CONTROL_PLANE_URL"
+    path: "apps/web/src/lib/workflow/kernel-client.ts"
+  - id: "kernel-conformance-suite"
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: "test_file"
+    path: "packages/workflow-kernel/src/conformance/conformance.test.ts"
 ---
 # Workflow Kernel Library and Single Host
 
@@ -901,9 +919,12 @@ recorded as such, never as an approval.
   `buildd/landing` is no longer written; heads published before it was
   retired may still carry it, and readers that skip buildd's own status skip
   that name too. It is `success` only
-  when the kernel would land that head (approved or landing, covered, no open
-  verdict), `pending` while review of that head has not finished (so ongoing
-  review never reads as failing CI), and `failure` while a required finding is
+  when the kernel would land that head now (approved or landing, covered, no open
+  verdict, and CI recorded green at that head: the `CiObserved` reading, or the
+  merge effect's own rails read just before it publishes), `pending` while review
+  of that head has not finished (so ongoing review never reads as failing CI) and
+  while an approved head waits on CI ("Approved, waiting to merge: … waiting for
+  CI on <sha>"), and `failure` while a required finding is
   open, a verdict stands against the head, or a person has to decide. Its
   description leads with one plain term (R-43): "Review in progress",
   "Changes requested", "Unresolved review finding: <the finding>", "Ready to
@@ -918,8 +939,9 @@ recorded as such, never as an approval.
   newer answer, and an effect that runs out of retries publishes `failure`,
   never leaves a success standing. It is one GitHub App and one commit-status
   check, separate from CI: no second App and no native GitHub self-approval.
-  CI is not part of it: CI has its own checks,
-  and the merge rails never read either name as CI. Making `Buildd / Review approval` a required
+  It does not replace CI's own checks: it waits on them, so a person reading
+  GitHub never sees "Ready to merge" while required CI is still running, and the
+  merge rails never read either name as CI. Making `Buildd / Review approval` a required
   check on trunk is an owner decision (today `main` requires `build` and
   `release candidate verified`, `dev` has no rule, and admins are not
   enforced, so a manual GitHub merge on `dev` over an open finding is not

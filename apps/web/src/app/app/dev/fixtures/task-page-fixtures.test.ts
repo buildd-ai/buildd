@@ -60,7 +60,7 @@ describe('task page regression cases', () => {
     expect(f.verdict?.cause).toContain('Automation stopped after three review rounds');
     expect(f.escalation?.copy.unresolved.open).toEqual(['Mutation testing does not cover the new guard']);
     expect(f.verdict?.actions[0]).toMatchObject({ label: 'Request another fix', href: '#task-decision-request_fix', tone: 'primary' });
-    expect(f.escalation?.copy.actions.map(a => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review']);
+    expect(f.escalation?.copy.actions.map(a => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review', 'land_pr']);
     expect(f.checks.rounds?.githubNote).toContain('Commented');
   });
 });

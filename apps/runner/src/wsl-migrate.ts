@@ -32,6 +32,7 @@
 import { spawnSync } from 'child_process';
 import { mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { WSL2_DOCS_URL } from '@buildd/shared';
 import { parseDistributions } from './wsl-setup';
 import { resolveServicePaths, scheduledTaskStatus, uninstallService, windowsTaskStatus, type CommandResult, type CommandRunner, type ServicePaths } from './service';
 import { headlessRunnerKey } from './runner-host';
@@ -102,6 +103,8 @@ export interface MigrateDeps {
     activeWork: () => Promise<{ title: string; status: string }[] | { error: string }>;
     /** Pending tasks pinned to the Windows runner; [] when lookup fails or none pinned. */
     pendingPinned: () => Promise<{ title: string }[]>;
+    /** Stop the foreground Windows runner that still answers; `name` says which process (pid or socket) when it cannot. */
+    stop: () => Promise<{ ok: boolean; name: string }>;
   };
 }
 
@@ -259,7 +262,7 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
   const distro = args.distro ?? (wsl2.length === 1 ? wsl2[0].name : undefined);
   if (!distro) {
     log(wsl2.length === 0
-      ? 'No WSL2 distribution found. Set one up first (apps/runner/WSL2.md). Nothing changed.'
+      ? `No WSL2 distribution found. Set one up first (${WSL2_DOCS_URL}). Nothing changed.`
       : 'More than one WSL2 distribution: pass the one with the runner, buildd wsl migrate --distro <name> (see wsl --list --verbose). Nothing changed.');
     return 1;
   }
@@ -268,7 +271,7 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
     return 1;
   }
   if (!DISTRO_NAME.test(distro)) {
-    log(`Distribution "${distro}" has a name this command cannot pass safely; rename it or run the steps in apps/runner/WSL2.md by hand. Nothing changed.`);
+    log(`Distribution "${distro}" has a name this command cannot pass safely; rename it or run the steps in ${WSL2_DOCS_URL} by hand. Nothing changed.`);
     return 1;
   }
   const inWsl = (script: string) => run('wsl.exe', ['--distribution', distro, '--exec', 'sh', '-lc', script]);
@@ -280,7 +283,7 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
   if (p === null) return refuse(`Could not check the distribution: ${failure(pre)}. Open wsl --distribution ${distro} and resolve its startup error.`);
   if (p === 'no-runner') return refuse(`No buildd runner is installed inside ${distro}. Inside it run: curl -fsSL https://buildd.dev/install.sh | bash`);
   if (p === 'no-login') return refuse(`The runner inside ${distro} is not logged in. Inside it run: buildd login`);
-  if (!p.verify) return refuse(`Claude confinement inside ${distro} did not verify. Inside it run bun ~/.buildd/apps/runner/src/isolation-check.ts --verify-wsl and follow its remedy (apps/runner/WSL2.md step 4).`);
+  if (!p.verify) return refuse(`Claude confinement inside ${distro} did not verify. Inside it run bun ~/.buildd/apps/runner/src/isolation-check.ts --verify-wsl and follow its remedy (${WSL2_DOCS_URL}#verify).`);
   if (!p.systemd) return refuse(`systemd is not running in ${distro}, so the runner cannot run as a service there. Enable it (${SYSTEMD_DOCS}), run wsl --shutdown once nothing is running, then rerun buildd wsl migrate.`);
   if (p.foreground) return refuse(`A runner is running in the foreground inside ${distro}. Close it (Ctrl+C in its terminal) so the service does not run beside it, then rerun buildd wsl migrate.`);
   log(`  The runner inside ${distro} is installed, logged in and confined (bwrap, linux-wsl).`);
@@ -403,14 +406,15 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
     const removed = uninstallService(deps.paths, 'win32', run);
     if (!removed.ok) return stuck(`Could not remove the Windows runner's Scheduled Task: ${removed.message}`);
     log(`  Windows runner: ${removed.message}`);
-    let named = false;
-    while (await deps.windows.live()) {
-      if (!named) {
-        log('  A Windows runner is still running in a terminal. Close it (Ctrl+C in its window); waiting for it to exit...');
-        named = true;
-      }
-      await deps.sleep(pollMs);
+    // A runner started in a terminal outlives its Scheduled Task. Stop it only once it has no active work.
+    if (await deps.windows.live()) {
+      const again = await drain();
+      if (again) return stuck(`A Windows runner is still running in a terminal and did not say what it is running: ${again}`);
+      const stopped = await deps.windows.stop();
+      if (stopped.ok) log(`  Stopped the Windows runner still running in a terminal (${stopped.name}); it had no active work.`);
+      else log(`  A Windows runner is still running in a terminal and could not be stopped (${stopped.name}). Close it yourself (Ctrl+C in its window); waiting for it to exit...`);
     }
+    while (await deps.windows.live()) await deps.sleep(pollMs);
   }
 
   log(`Done. The runner inside ${distro} now does this machine's work and starts at each Windows logon.`);
@@ -455,7 +459,11 @@ export async function listPendingPinned(opts: PendingPinnedOptions): Promise<{ t
     const apiKey = opts.apiKey ?? (config.apiKey || process.env.BUILDD_API_KEY);
     if (!apiKey) return unchecked('no API key');
     const baseUrl = (opts.baseUrl ?? (process.env.BUILDD_CLIENT_URL || config.builddServer || 'https://buildd.dev')).replace(/\/+$/, '');
-    const pin = `runner:${opts.runnerKey ?? headlessRunnerKey({ hostname: undefined, platform: 'windows' })}`;
+    const headlessKey = opts.runnerKey ?? headlessRunnerKey({ hostname: undefined, platform: 'windows' });
+    const keyPin = `runner:${headlessKey}`;
+    // Also check for hostname-based pins: extract hostname from headless key (headless://HOSTNAME) and use it as a pin
+    const hostnameFromKey = headlessKey.replace(/^headless:\/\//, '');
+    const hostnamePin = `runner:${hostnameFromKey}`;
     const doFetch = opts.fetchFn ?? fetch;
     const found: { title: string }[] = [];
     let cursor: string | null = null;
@@ -469,7 +477,7 @@ export async function listPendingPinned(opts: PendingPinnedOptions): Promise<{ t
         nextCursor?: string | null;
       };
       for (const task of data.tasks ?? []) {
-        if (task.status === 'pending' && task.requiredCapabilities?.includes(pin)) found.push({ title: task.title });
+        if (task.status === 'pending' && task.requiredCapabilities && (task.requiredCapabilities.includes(keyPin) || task.requiredCapabilities.includes(hostnamePin))) found.push({ title: task.title });
       }
       if (!data.hasMore || !data.nextCursor) return found;
       cursor = data.nextCursor;
@@ -507,6 +515,14 @@ export async function main(argv: string[]): Promise<number> {
         if ((await probeRunnerSocket(socketPath)).state !== 'live') return [];
         const agents = await listAgents({ socketPath });
         return 'error' in agents ? agents : agents.map(a => ({ title: a.title, status: a.status }));
+      },
+      stop: async () => {
+        const probe = await probeRunnerSocket(socketPath);
+        if (probe.state !== 'live') return { ok: true, name: 'already gone' };
+        if (probe.pid === null) return { ok: false, name: `the process holding ${socketPath}, which gave no pid` };
+        const name = `pid ${probe.pid}`;
+        try { process.kill(probe.pid); } catch (err) { return { ok: false, name: `${name}: ${err instanceof Error ? err.message : String(err)}` }; }
+        return { ok: true, name };
       },
       pendingPinned: () => listPendingPinned({ configFile, log: (line) => console.log(line) }),
     },

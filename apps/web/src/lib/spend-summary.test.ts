@@ -50,6 +50,11 @@ describe('spend queries', () => {
     expect(text).toMatch(/group by ms\."created_by_user_id"/);
     expect(params).toContain('team-1');
   });
+
+  it('counts only real (per-token) cost, never a subscription login\'s virtual figure', () => {
+    const { text } = render(agentSpendSql({ teamId: 'team-1', dayStart, monthStart }));
+    expect(text).toMatch(/w\."cost_basis" = 'real'/);
+  });
 });
 
 describe('foldSpend', () => {

@@ -282,6 +282,16 @@ describe('summarizePrFixAttempts', () => {
     expect(summarizePrFixAttempts([row({ status: 'completed' }), row({ status: 'failed' })], 42).inFlight).toBeNull();
   });
 
+  it('does not count a pending row deferred to a future startAt (a loop pass hours away) as in flight', () => {
+    const later = new Date(Date.now() + 4 * 60 * 60_000);
+    const deferred = row({ id: 'loop', status: 'pending', startAt: later });
+    expect(summarizePrFixAttempts([deferred], 42).inFlight).toBeNull();
+    // Due now, or claimed: it is in flight again.
+    expect(summarizePrFixAttempts([{ ...deferred, startAt: new Date(Date.now() - 1000) }], 42).inFlight?.id).toBe('loop');
+    expect(summarizePrFixAttempts([{ ...deferred, status: 'in_progress' }], 42).inFlight?.id).toBe('loop');
+    expect(summarizePrFixAttempts([{ ...deferred, startAt: later.toISOString() }], 42).inFlight).toBeNull();
+  });
+
   it('ignores a long-pending conflict-fix attempt but not a fresh one', () => {
     const stale = row({ id: 'c', status: 'pending', ciRetryPrNumber: null, conflictRetryPrNumber: 42 });
     expect(summarizePrFixAttempts([stale], 42).inFlight).toBeNull();

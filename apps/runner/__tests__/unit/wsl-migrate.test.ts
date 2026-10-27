@@ -41,6 +41,8 @@ interface Machine {
   /** A Windows runner started in a terminal, not by the task: survives /End until `closeForegroundAfter` probes. */
   windowsForeground: boolean;
   closeForegroundAfter: number;
+  /** Stopping the foreground runner fails: it must be named and waited for. */
+  stopFails: boolean;
   held: boolean;
   /** What each activeWork() call answers, in order; the last one repeats. */
   active: Agent[][];
@@ -56,7 +58,7 @@ function machine(over: Partial<Machine> = {}) {
     distros: '  NAME STATE VERSION\n* Ubuntu Running 2\n',
     runner: true, login: true, systemd: 'yes', service: 'no', linger: 'no', wslForeground: false, verify: 'pass',
     serviceInstallFails: false, logonCreateFails: false,
-    winTask: true, windowsLive: true, windowsForeground: false, closeForegroundAfter: 0, held: false,
+    winTask: true, windowsLive: true, windowsForeground: false, closeForegroundAfter: 0, stopFails: false, held: false,
     active: [[]], logonTask: 'absent', lingerAnswer: 0,
     ...over,
   };
@@ -139,6 +141,12 @@ function machine(over: Partial<Machine> = {}) {
         return now;
       },
       pendingPinned: async () => [],
+      stop: async () => {
+        events.push('stop');
+        if (m.stopFails) return { ok: false, name: 'pid 4242' };
+        m.windowsLive = false;
+        return { ok: true, name: 'pid 4242' };
+      },
     },
   });
   return { m, calls, events, lines, deps, sleeps: () => sleeps, out: () => lines.join('\n') };
@@ -261,10 +269,27 @@ describe('buildd wsl migrate', () => {
     }
   });
 
-  test('a Windows runner started in a terminal is named and waited for after the task is removed (R-16)', async () => {
-    const t = machine({ windowsForeground: true, closeForegroundAfter: 2 });
+  test('a foreground Windows runner is stopped after the drain shows no work (R-16)', async () => {
+    const t = machine({ windowsForeground: true, closeForegroundAfter: 99 });
     expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
-    expect(t.out()).toMatch(/still running in a terminal/i);
+    expect(t.events).toContain('stop');
+    expect(t.events.indexOf('stop')).toBeGreaterThan(t.events.lastIndexOf('active:0') - 1);
+    expect(t.out()).toContain('Stopped the Windows runner');
+    expect(t.m.windowsLive).toBe(false);
+  });
+
+  test('a foreground Windows runner with active work is never stopped (R-16)', async () => {
+    const t = machine({ windowsForeground: true, closeForegroundAfter: 99, active: [[], [], [{ title: 'Busy', status: 'working' }], [{ title: 'Busy', status: 'working' }], []] });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
+    const busy = t.events.lastIndexOf('active:1');
+    expect(busy).toBeGreaterThan(-1);
+    expect(t.events.indexOf('stop')).toBeGreaterThan(busy);
+  });
+
+  test('a foreground Windows runner that cannot be stopped is named and waited for (R-16)', async () => {
+    const t = machine({ windowsForeground: true, closeForegroundAfter: 2, stopFails: true });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
+    expect(t.out()).toMatch(/still running in a terminal and could not be stopped \(pid 4242\)/i);
     expect(t.m.windowsLive).toBe(false);
   });
 
@@ -424,7 +449,7 @@ describe('acceptance criteria', () => {
       confirm: null,
       sleep: async () => {},
       pollMs: 1,
-      windows: { live: async () => false, hold: async () => ({ ok: true, message: '' }), activeWork: async () => [] },
+      windows: { live: async () => false, hold: async () => ({ ok: true, message: '' }), activeWork: async () => [], pendingPinned: async () => [], stop: async () => ({ ok: true, name: '' }) },
     });
     expect(await runWslMigrate({ undo: false, distro: 'Ubuntu' }, deps())).toBe(0);
     expect(await runWslMigrate({ undo: false, distro: 'Debian' }, deps())).toBe(0);
@@ -516,6 +541,17 @@ describe('acceptance criteria', () => {
       const { result, lines } = await run(() => { throw new Error('offline'); });
       expect(result).toEqual([]);
       expect(lines).toHaveLength(1);
+    });
+
+    // R-25: a task pinned by hostname (not headless key) is also listed
+    test('R-25: tasks pinned to the Windows runner by hostname are also listed', async () => {
+      const HOSTNAME_PIN = 'runner:WIN-BOX';
+      const { result } = await run(() => Response.json({ tasks: [
+        task('pinned by hostname', 'pending', [HOSTNAME_PIN]),
+        task('pinned by headless key', 'pending', [PIN]),
+        task('pinned by other hostname', 'pending', ['runner:OTHER-BOX']),
+      ], hasMore: false, nextCursor: null }));
+      expect(result.map(r => r.title)).toEqual(['pinned by hostname', 'pinned by headless key']);
     });
   });
 });

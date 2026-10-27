@@ -552,6 +552,9 @@ async function runPhaseWork(opts: ExecuteMigrationOpts, phase: MigrationPhase): 
         callerDep.workspace(workspaceId),
         callerDep.teamOpenWorkspaces(sourceTeamId),
         callerDep.teamOpenWorkspaces(destinationTeamId),
+        // An MCP connection covering the destination team as a whole reaches it now.
+        callerDep.teamWorkspaces(sourceTeamId),
+        callerDep.teamWorkspaces(destinationTeamId),
       );
       return { moved: true };
     }

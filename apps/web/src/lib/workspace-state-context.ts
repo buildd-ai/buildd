@@ -3,6 +3,7 @@ import { missions, tasks, pathClaims, workers, initiatives, teams } from '@build
 import { eq, and, ne, isNull, isNotNull, sql, desc } from 'drizzle-orm';
 import { computeInitiativeProgress, type MissionStatus } from '@buildd/core/mission-helpers';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { getRealMonthSpendUsd } from '@/lib/budget-forecast';
 import { TERMS } from '@buildd/shared';
 import { missionGateTerm } from '@buildd/shared';
 
@@ -435,7 +436,6 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
         where: sqlWhere(eq(teams.id, teamId)),
         columns: {
           monthlyBudgetUsd: true,
-          monthlyCostUsd: true,
         },
       });
       if (!team?.monthlyBudgetUsd) return null;
@@ -443,7 +443,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
       const budgetUsd = parseFloat(team.monthlyBudgetUsd as string);
       if (!budgetUsd || budgetUsd <= 0) return null;
 
-      const spentUsd = parseFloat((team.monthlyCostUsd as string) ?? '0');
+      const spentUsd = await getRealMonthSpendUsd(teamId);
       const pctUsed = Math.round((spentUsd / budgetUsd) * 100);
       return `monthly: ${pctUsed}% used`;
     },

@@ -69,9 +69,32 @@ describe('owner of the next move (§4)', () => {
     expect(v.detail).toBe('touches the auth boundary');
   });
 
+  // 08d752ed (#5539): an escalation whose head is red says so, so the person is not misled.
+  test('an escalation on a red head names the red check in the headline', () => {
+    const red = D({ state: 'ESCALATED', stateReason: 'push_undeliverable', ci: 'red', ciHeadSha: 'H1abcdef' });
+    expect(view({ view: V(red) }).headline).toBe('The fix never reached GitHub · PR is red');
+    const ci = { command: 'CiObserved', fromState: 'ESCALATED', toState: 'ESCALATED', evidence: { verdict: 'red', liveChecks: { complete: true, failing: ['lint and type check', 'unit tests'] } }, createdAt: '2026-10-23T19:09:00Z' };
+    expect(view({ view: V(red), lastTransition: ci }).headline).toBe('The fix never reached GitHub · PR is red: lint and type check and 1 more');
+    // Red on an older head, or a CI escalation that already says it, adds nothing.
+    expect(view({ view: V({ ...red, ciHeadSha: 'H0' }) }).headline).toBe('The fix never reached GitHub');
+    expect(view({ view: V({ ...red, stateReason: 'ci_exhausted' }) }).headline).toBe('CI fix budget spent');
+  });
+
   test('a review round that is being reviewed reads Reviewing, a queued one Review queued', () => {
     expect(view({ view: V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R({ status: 'reviewing' })]) }).headline).toBe('Reviewing');
     expect(view({ view: V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()]) }).headline).toBe('Review queued');
+  });
+
+  test('a server gate that overrode the reviewer is named as the gate, not the reviewer', () => {
+    const overridden = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'escalate' });
+    const v = view({
+      view: V(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentRound: 1 }), [overridden]),
+      lastTransition: { command: 'ReviewVerdictRecorded', fromState: 'AWAITING_REVIEW', toState: 'ESCALATED', evidence: { reason: 'PR mixes EXPAND and CONTRACT migrations' }, createdAt: '2026-10-24T00:00:00Z' },
+    });
+    expect(v.headline).toBe('The reviewer approved; a merge gate escalated this PR');
+    expect(v.detail).toBe('PR mixes EXPAND and CONTRACT migrations');
+    const own = R({ status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate' });
+    expect(view({ view: V(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentRound: 1 }), [own]) }).headline).toBe('The reviewer escalated this PR');
   });
 });
 
@@ -317,6 +340,27 @@ describe('a behind refresh says what it is doing, and whom it waits for in the l
   test('parked in the lane: names the PR landing first', () => {
     expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #7 is merging into dev first', needsYou: false });
     expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is merging into dev first');
+  });
+
+  // e07ee9cf: a parked refresh has no worker and no repair; the lane owns the next move.
+  test('parked in the lane: owner is landing, not a worker, though the refresh row is queued', () => {
+    expect(behind().owner).toBe('worker');
+    const v = behind({ laneWait: { behindPr: 7, position: 2 } });
+    expect(v).toMatchObject({ owner: 'landing', needsYou: false, laneWait: { behindPr: 7, position: 2 } });
+    expect(v.detail).toBe('PR #7 is merging into dev first; position 2 in the queue');
+  });
+
+  test('parked in the lane on an approved head: says approved and queued to land', () => {
+    const v = view({
+      view: V(D({ state: 'REPAIRING', stateReason: 'behind', baseRef: 'dev', prNumber: 12, boundAttemptId: 'm1', currentHeadSha: 'H1', approvedHeads: ['H1'] }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'queued' })]),
+      laneWait: { behindPr: 7 },
+    });
+    expect(v).toMatchObject({ headline: 'Approved · queued to land behind PR #7', owner: 'landing' });
+  });
+
+  test('a lane wait on a non-behind repair is ignored', () => {
+    const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'ci' })), laneWait: { behindPr: 7 } });
+    expect(v).toMatchObject({ headline: 'Fixing CI', laneWait: null });
   });
 
   test('other repairs keep their copy', () => {

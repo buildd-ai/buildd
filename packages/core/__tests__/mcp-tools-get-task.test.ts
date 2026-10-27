@@ -690,8 +690,8 @@ describe('get_task — governed outcome (Living Specs V1)', () => {
     const res = await handleBuilddAction(api as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
     const out = (res as any).content[0].text as string;
     expect(out).toContain('## What waits on this answer');
-    expect(out).toContain("- Waits on this: Autostart repair and 1 task you can't see. Holds the schema lane: 1 queued. Affects the evidence for 2 of 5 criteria in Checkout totals.");
-    expect(out).toContain('- Expires in 3 hours 30 minutes, then the task starts again and the agent goes with Ship.');
+    expect(out).toContain("- Blocks Autostart repair and 1 task you can't see. Holds the schema lane: 1 queued. Affects the evidence for 2 of 5 criteria in Checkout totals.");
+    expect(out).toContain('- Expires in 3h 30m. Goes with Ship.');
     expect(out).toContain("- Ship (recommended, finishes): Finishes the task: Autostart repair and 1 task you can't see start; frees the schema lane");
     const json = out.slice(out.indexOf('```json') + 7, out.lastIndexOf('```'));
     expect(JSON.parse(json)).toEqual(waits);

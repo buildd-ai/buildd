@@ -2,19 +2,21 @@
 
 /**
  * `?state=mcp-connections`: Settings → Connected apps with fake data and a
- * local api (nothing is sent anywhere). Sections, top to bottom: the page as a
- * team admin sees it (your apps with an "acts as you" connection open and
- * older connections folded; team apps with one open); team apps as a member
- * sees them; an agent connection open, with a workspace out of reach; the
- * workspace picker, as "Add or remove" opens it, on a large team; no
+ * local api (nothing is sent anywhere; edits apply to an in-memory model).
+ * Sections, top to bottom: the page as a team admin sees it (your apps with an
+ * "acts as you" connection open: one team on all current and future
+ * workspaces, one on specific workspaces; older connections folded; team apps
+ * with one open); team apps as a member sees them; an agent connection open,
+ * with a workspace out of reach; a team's access editor switching from all to
+ * specific workspaces on a large team; a save that met a newer change; no
  * connections.
  */
 import SettingsPage from '../../(protected)/settings/_components/SettingsPage';
-import ConnectionsSection, { type ConnectionsApi, type ConnectionsData } from '../../(protected)/settings/connections/ConnectionsSection';
-import WorkspacePicker from '../../(protected)/settings/connections/WorkspacePicker';
+import ConnectionsSection, { type ConnectionsApi, type ConnectionsData, type PatchBody } from '../../(protected)/settings/connections/ConnectionsSection';
+import TeamAccessEditor from '../../(protected)/settings/connections/TeamAccessEditor';
 import TeamAppsSection, { type TeamAppsData } from '../../(protected)/settings/connections/connectors/TeamAppsSection';
 import { CONNECTOR_CATALOG, customerCatalogEntry } from '@/lib/connector-catalog';
-import type { ConnectionSummary } from '@/lib/mcp-grant-patch';
+import type { ConnectionSummary, ConnectionTeam, ConnectionWorkspace } from '@/lib/mcp-grant-patch';
 import type { ConsentTeam } from '@/lib/oauth/account-consent';
 
 const NOW = new Date('2026-10-09T12:00:00Z');
@@ -29,21 +31,81 @@ function team(id: string, name: string, role: string, n: number): ConsentTeam {
 const TEAMS: ConsentTeam[] = [team('team-a', 'Acme Platform', 'owner', 26), team('team-b', 'Side projects', 'member', 3)];
 const ws = (t: ConsentTeam, i: number) => ({ id: t.workspaces[i].id, name: t.workspaces[i].name, teamId: t.id, teamName: t.name });
 
-const PERSON: ConnectionSummary = {
-  id: 'fixture-person', clientName: 'Claude Code', actsAs: 'person', access: 'read-write',
-  createdAt: '2026-09-20T09:00:00Z', lastActiveAt: '2026-10-09T10:40:00Z', expiresAt: null, unreachableCount: 0,
-  workspaces: [ws(TEAMS[0], 0), ws(TEAMS[0], 2), ws(TEAMS[1], 1)],
-};
-const AGENT: ConnectionSummary = {
-  id: 'fixture-agent', clientName: 'Team connector', actsAs: 'agent', access: 'read',
-  createdAt: '2026-09-02T09:00:00Z', lastActiveAt: '2026-10-06T08:00:00Z', expiresAt: null, unreachableCount: 1,
-  workspaces: [ws(TEAMS[0], 4)],
-};
+/** What a fixture connection covers: whole teams, and workspaces one by one. */
+type Rows = { whole: string[]; specific: string[] };
 
-const localApi: ConnectionsApi = {
-  async patch(id, body) {
-    const base = id === PERSON.id ? PERSON : AGENT;
-    return { ok: true, connection: { ...base, ...(body.access ? { access: body.access } : {}), ...(body.actsAs ? { actsAs: body.actsAs } : {}) } };
+/** The summary the API would return for these rows (same shape, same order). */
+function summary(base: Omit<ConnectionSummary, 'workspaces' | 'teams' | 'unreachableTeamCount'>, rows: Rows): ConnectionSummary {
+  const reached = new Map<string, ConnectionWorkspace>();
+  for (const t of TEAMS) {
+    t.workspaces.forEach((w, i) => {
+      if (rows.whole.includes(t.id) || rows.specific.includes(w.id)) reached.set(w.id, ws(t, i));
+    });
+  }
+  const flat = [...reached.values()].sort((a, b) => a.teamName.localeCompare(b.teamName) || a.name.localeCompare(b.name));
+  const teams: ConnectionTeam[] = [];
+  for (const t of TEAMS) {
+    const here = flat.filter((w) => w.teamId === t.id);
+    if (rows.whole.includes(t.id)) teams.push({ teamId: t.id, teamName: t.name, mode: 'all', workspaces: here });
+    else if (here.length > 0) teams.push({ teamId: t.id, teamName: t.name, mode: 'specific', workspaces: here });
+  }
+  return { ...base, workspaces: flat, teams, unreachableTeamCount: 0 };
+}
+
+const PERSON_BASE = {
+  id: 'fixture-person', clientName: 'Claude Code', actsAs: 'person' as const, access: 'read-write' as const,
+  createdAt: '2026-09-20T09:00:00Z', lastActiveAt: '2026-10-09T10:40:00Z', expiresAt: null, unreachableCount: 0, revision: 3,
+};
+const AGENT_BASE = {
+  id: 'fixture-agent', clientName: 'Team connector', actsAs: 'agent' as const, access: 'read' as const,
+  createdAt: '2026-09-02T09:00:00Z', lastActiveAt: '2026-10-06T08:00:00Z', expiresAt: null, unreachableCount: 1, revision: 1,
+};
+const PERSON_ROWS: Rows = { whole: ['team-a'], specific: [TEAMS[1].workspaces[1].id] };
+const AGENT_ROWS: Rows = { whole: [], specific: [TEAMS[0].workspaces[4].id] };
+const PERSON = summary(PERSON_BASE, PERSON_ROWS);
+const AGENT = summary(AGENT_BASE, AGENT_ROWS);
+
+/** Apply a PATCH body to fixture rows the way the server would. */
+function applyPatch(rows: Rows, body: PatchBody): Rows {
+  const whole = new Set(rows.whole);
+  const specific = new Set(rows.specific);
+  for (const t of body.teams ?? []) {
+    const team = TEAMS.find((x) => x.id === t.teamId)!;
+    if (t.mode === 'all') { whole.add(t.teamId); continue; }
+    whole.delete(t.teamId);
+    for (const w of team.workspaces) specific.delete(w.id);
+    if (t.mode === 'specific') for (const id of t.workspaceIds) specific.add(id);
+  }
+  for (const id of body.addWorkspaceIds ?? []) specific.add(id);
+  for (const id of body.removeWorkspaceIds ?? []) specific.delete(id);
+  return { whole: [...whole], specific: [...specific] };
+}
+
+function localApi(): ConnectionsApi {
+  const state: Record<string, { base: typeof PERSON_BASE | typeof AGENT_BASE; rows: Rows }> = {
+    [PERSON.id]: { base: { ...PERSON_BASE }, rows: PERSON_ROWS },
+    [AGENT.id]: { base: { ...AGENT_BASE }, rows: AGENT_ROWS },
+  };
+  return {
+    async patch(id, body) {
+      const s = state[id];
+      s.rows = applyPatch(s.rows, body);
+      s.base = { ...s.base, ...(body.access ? { access: body.access } : {}), ...(body.actsAs ? { actsAs: body.actsAs } : {}), revision: s.base.revision + 1 } as typeof s.base;
+      return { ok: true, connection: summary(s.base, s.rows) };
+    },
+    async revoke() { return { ok: true }; },
+  };
+}
+
+/** Every save meets a newer change made elsewhere, as when another tab saved first. */
+const staleApi: ConnectionsApi = {
+  async patch() {
+    return {
+      ok: false,
+      code: 'stale_connection',
+      error: 'This connection changed since you opened it. Review what it has now and make your change again.',
+      connection: summary({ ...PERSON_BASE, revision: PERSON_BASE.revision + 1 }, { whole: ['team-a'], specific: [] }),
+    };
   },
   async revoke() { return { ok: true }; },
 };
@@ -78,7 +140,7 @@ export default function ConnectionsFixture() {
     <div className="min-h-screen bg-surface-1">
       <SettingsPage title="Connected apps" description={description}>
         <ConnectionsSection
-          api={localApi}
+          api={localApi()}
           now={NOW}
           initiallyOpen={PERSON.id}
           initial={data({ legacy: [{ clientName: 'Claude Code', workspaceName: 'billing', lastActiveAt: '2026-10-07T12:00:00Z' }] })}
@@ -89,15 +151,29 @@ export default function ConnectionsFixture() {
         <TeamAppsSection workspaces={TEAM_WS} initial={MEMBER} />
       </SettingsPage>
       <SettingsPage title="Connected apps: an agent" description="Fixture: an agent connection open, one workspace out of reach.">
-        <ConnectionsSection api={localApi} now={NOW} initiallyOpen={AGENT.id} initial={data({ connections: [AGENT] })} />
+        <ConnectionsSection api={localApi()} now={NOW} initiallyOpen={AGENT.id} initial={data({ connections: [AGENT] })} />
       </SettingsPage>
-      <SettingsPage title="Connected apps: adding workspaces" description="Fixture: the picker as Add or remove opens it.">
-        <div className="border-y border-border-default py-4">
-          <WorkspacePicker teams={TEAMS} clientName="Claude Code" initialSelected={PERSON.workspaces.map((w) => w.id)} onCancel={() => {}} onSave={() => {}} />
+      <SettingsPage title="Connected apps: switching to specific workspaces" description="Fixture: a team on all workspaces, its editor on Specific workspaces, prefilled with what it reaches now.">
+        <div className="border-y border-border-default py-4" data-testid="fixture-team-editor">
+          <TeamAccessEditor connection={PERSON} team={TEAMS[0]} initialChoice="specific" saving={false} error={null} onCancel={() => {}} onSave={() => {}} />
         </div>
       </SettingsPage>
+      <SettingsPage title="Connected apps: a newer change" description="Fixture: Save met a change made in another tab; the page shows the connection as it is now.">
+        <div className="border-y border-border-default py-4">
+          <TeamAccessEditor
+            connection={PERSON}
+            team={TEAMS[1]}
+            initialChoice="all"
+            saving={false}
+            error="This connection changed since you opened it. Review what it has now and make your change again."
+            onCancel={() => {}}
+            onSave={() => {}}
+          />
+        </div>
+        <ConnectionsSection api={staleApi} now={NOW} initial={data({ connections: [PERSON] })} />
+      </SettingsPage>
       <SettingsPage title="Connected apps: none" description="Fixture: nothing connected.">
-        <ConnectionsSection api={localApi} now={NOW} initial={data({ connections: [] })} />
+        <ConnectionsSection api={localApi()} now={NOW} initial={data({ connections: [] })} />
       </SettingsPage>
     </div>
   );

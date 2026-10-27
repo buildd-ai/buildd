@@ -7,6 +7,7 @@ import { inspectPullRequestMigrations } from './migration-inspector';
 
 const DIR = 'packages/core/drizzle';
 const BASE_SHA = 'base-tip-sha';
+const TRUNK_SHA = 'trunk-tip-sha';
 
 function blob(content: string) {
   return { encoding: 'base64', content: Buffer.from(content).toString('base64') };
@@ -18,14 +19,20 @@ function blob(content: string) {
  * and head SQL. A missing key is a 404.
  */
 function github(opts: {
-  files: Array<{ filename: string; status?: string }>;
+  files: Array<{ filename: string; status?: string; previous_filename?: string }>;
   head?: Record<string, string>;
   base?: Record<string, string>;
   /** Migration filenames listed in the drizzle dir at the target's tip; absent = listing unavailable. */
   baseDir?: string[];
   /** Drizzle v1 migration folders in the same listing (directory entries). */
   baseFolders?: string[];
+  /** Folders in the drizzle dir at this PR's head; absent = listing unavailable. */
+  headFolders?: string[];
   baseRef?: string;
+  /** Path → SQL at trunk's (`dev`, the repo default) tip; set when the PR targets another branch. */
+  trunk?: Record<string, string>;
+  /** Drizzle v1 folders listed at trunk's tip. */
+  trunkFolders?: string[];
   peers?: Array<{
     number: number;
     baseRef?: string;
@@ -36,7 +43,10 @@ function github(opts: {
   mockGithubApi.mockImplementation(async (_installation, url) => {
     if (url.includes('/pulls/42/files')) return opts.files;
     if (url.endsWith('/pulls/42')) return { number: 42, base: { ref: opts.baseRef ?? 'dev' } };
-    if (url.includes('/git/ref/heads/')) return { object: { sha: BASE_SHA } };
+    if (url.endsWith('/repos/acme/app')) return { default_branch: 'dev' };
+    if (url.includes('/git/ref/heads/')) {
+      return { object: { sha: opts.trunk && url.endsWith('/heads/dev') ? TRUNK_SHA : BASE_SHA } };
+    }
     if (url.includes('/pulls?')) {
       return [
         { number: 42 },
@@ -58,9 +68,16 @@ function github(opts: {
           ...(opts.baseFolders ?? []).map((name) => ({ name, type: 'dir' })),
         ];
       }
+      if (decodeURIComponent(path) === DIR && ref === 'abc123' && opts.headFolders) {
+        return opts.headFolders.map((name) => ({ name, type: 'dir' }));
+      }
+      if (decodeURIComponent(path) === DIR && ref === TRUNK_SHA && opts.trunkFolders) {
+        return opts.trunkFolders.map((name) => ({ name, type: 'dir' }));
+      }
       const source =
         ref === 'abc123' ? opts.head
           : ref === BASE_SHA ? opts.base
+            : ref === TRUNK_SHA ? opts.trunk
             : opts.peers?.find((p) => ref === `peer-${p.number}`)?.head;
       const sql = source?.[decodeURIComponent(path)];
       if (sql === undefined) throw new Error('Not Found');
@@ -476,6 +493,70 @@ describe('inspectPullRequestMigrations', () => {
   });
 });
 
+describe('inspectPullRequestMigrations — a PR into a mission branch that is behind trunk', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  const OLD = `${DIR}/20261024125823_open_sunset_bain/migration.sql`;
+  const NEW = `${DIR}/20261024130000_open_sunset_bain/migration.sql`;
+  const BODY = 'ALTER TABLE "tasks" DROP COLUMN "old";';
+  const rename = [{ filename: NEW, status: 'renamed', previous_filename: OLD }];
+
+  it('a folder rename that already exists on trunk is inherited, not authored', async () => {
+    github({
+      baseRef: 'mission/delivery-2',
+      files: rename,
+      head: { [NEW]: BODY },
+      trunk: { [NEW]: BODY },
+      trunkFolders: ['20261024130000_open_sunset_bain'],
+    });
+    // Read the base from the PR, as the verdict-time re-check does.
+    expect(await inspect()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a rename the PR authors stays lineage', async () => {
+    github({
+      baseRef: 'mission/delivery-2',
+      files: rename,
+      head: { [NEW]: BODY },
+      trunk: {},
+      trunkFolders: ['20261024125823_open_sunset_bain'],
+    });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage', reason: `modifies existing migration ${NEW}` });
+  });
+
+  it('a rename whose old folder trunk still runs stays lineage', async () => {
+    github({
+      baseRef: 'mission/delivery-2',
+      files: rename,
+      head: { [NEW]: BODY },
+      trunk: { [NEW]: BODY, [OLD]: BODY },
+      trunkFolders: ['20261024125823_open_sunset_bain', '20261024130000_open_sunset_bain'],
+    });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  it('a rename stays lineage when trunk cannot be listed', async () => {
+    github({ baseRef: 'mission/delivery-2', files: rename, head: { [NEW]: BODY }, trunk: { [NEW]: BODY } });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  it('a modification trunk already carries is inherited', async () => {
+    github({ baseRef: 'mission/delivery-2', files: [{ filename: OLD, status: 'modified' }], head: { [OLD]: BODY }, trunk: { [OLD]: BODY } });
+    expect(await inspect()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a modification trunk does not carry stays lineage', async () => {
+    github({ baseRef: 'mission/delivery-2', files: [{ filename: OLD, status: 'modified' }], head: { [OLD]: BODY }, trunk: { [OLD]: SAFE } });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage', reason: `modifies existing migration ${OLD}` });
+  });
+
+  it('does not consult trunk for a PR into trunk itself', async () => {
+    github({ baseRef: 'dev', files: rename, head: { [NEW]: BODY }, trunk: { [NEW]: BODY }, trunkFolders: [] });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage' });
+    expect(mockGithubApi.mock.calls.some((c) => c[1].includes(`ref=${TRUNK_SHA}`))).toBe(false);
+  });
+});
+
 describe('inspectPullRequestMigrations — integration-refresh PR (deltaBase)', () => {
   beforeEach(() => mockGithubApi.mockReset());
 
@@ -735,6 +816,28 @@ describe('inspectPullRequestMigrations — a refresh PR that renumbers the missi
         expect((verdict as { reason: string }).reason).toMatch(/needs rebase/);
       });
 
+      it('refuses a fork by folder names when the snapshots cannot be read', async () => {
+        github({
+          files: prFiles,
+          head: { [V1]: SAFE },
+          baseFolders: folders('s-2'),
+          headFolders: ['20260901090000_baseline', OLD, '20261012120000_add_busy_since'],
+        });
+        const verdict = await inspect('dev');
+        expect(verdict).toMatchObject({ safe: false, kind: 'stale_parent' });
+        expect((verdict as { reason: string }).reason).toMatch(/no longer a leaf.*migrations:regenerate/);
+      });
+
+      it('lands when the base gained nothing since the branch was cut', async () => {
+        github({
+          files: prFiles,
+          head: { [V1]: SAFE },
+          baseFolders: folders('s-1'),
+          headFolders: [...folders('s-1'), '20261012120000_add_busy_since'],
+        });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+      });
+
       it('accepts a chain of the PR’s own migrations whose outer parent is the leaf', async () => {
         const V1B = `${DIR}/20261012120500_second/migration.sql`;
         const V1B_SNAPSHOT = `${DIR}/20261012120500_second/snapshot.json`;
@@ -765,5 +868,49 @@ describe('inspectPullRequestMigrations — a refresh PR that renumbers the missi
       });
       expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
     });
+  });
+});
+
+describe('inspectPullRequestMigrations — functions and triggers', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  const OWN = `${DIR}/20261024130028_explanation_immutable/migration.sql`;
+  const BASE_TRIGGER = `${DIR}/20261010170119_artifact_revisions_trigger/migration.sql`;
+  const trigger = (fn: string, table: string) => [
+    `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$;`,
+    `DROP TRIGGER IF EXISTS ${fn} ON ${table};`,
+    `CREATE TRIGGER ${fn} BEFORE UPDATE ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}();`,
+  ].join('\n--> statement-breakpoint\n');
+
+  it('a new trigger is EXPAND once the base is read and does not define it', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('spec_revisions_explanation_immutable', 'spec_revisions') },
+      base: { [BASE_TRIGGER]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('redefining a trigger the base defines stays CONTRACT', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      base: { [BASE_TRIGGER]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toMatchObject({
+      safe: false,
+      reason: 'replaces function artifact_revisions_immutable, which the base already defines',
+    });
+  });
+
+  it('fails closed when a base migration cannot be read', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('spec_revisions_explanation_immutable', 'spec_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toMatchObject({ safe: false, operationClass: 'CONTRACT' });
   });
 });

@@ -11,19 +11,25 @@ export const dynamic = 'force-dynamic';
  * (lib/mcp-grant-admin.ts, docs/specs/auth-oauth-boundaries.md "Managing
  * connections").
  *
- *   PATCH  { addWorkspaceIds?, removeWorkspaceIds?, access?: 'read'|'read-write', actsAs?: 'agent' }
+ *   PATCH  { addWorkspaceIds?, removeWorkspaceIds?,
+ *            teams?: [{ teamId, mode: 'all' } | { teamId, mode: 'specific', workspaceIds }],
+ *            access?: 'read'|'read-write', actsAs?: 'agent', ifRevision? }
  *          -> { connection }
+ *          409 stale_connection { connection } when ifRevision is behind;
+ *          409 inherited_from_team when removing a workspace a whole-team
+ *          choice still covers.
  *   DELETE -> { revoked: true }
  *
  * Dashboard session only (see ../route.ts). Someone else's connection, a
  * revoked one and an id that does not exist all answer the same 404. No
  * error repeats an id from the request. Both take effect on the app's next
- * request: grant sessions are never cached.
+ * request: every change clears the grant's cached session.
  */
 type Ctx = { params: Promise<{ id: string }> };
 
-function refuse(r: { status: number; code: string; error: string }) {
-  return NextResponse.json({ error: r.error, code: r.code }, { status: r.status });
+function refuse(r: { status: number; code: string; error: string; connection?: unknown }) {
+  // A stale edit gets the connection as it is now, so the page can show it.
+  return NextResponse.json({ error: r.error, code: r.code, ...(r.connection ? { connection: r.connection } : {}) }, { status: r.status });
 }
 
 export async function PATCH(req: NextRequest, { params }: Ctx) {

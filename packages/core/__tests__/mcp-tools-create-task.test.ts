@@ -338,14 +338,53 @@ describe('create_task — parentTaskId support', () => {
     expect(result.content[0].text).toContain('Resolution: relative');
   });
 
+  // A runner as GET /api/workers/active lists it: its key is a URL, list_runners
+  // leads with the account name, and its workers report the hostname.
+  const listedRunners = {
+    activeLocalUis: [
+      { localUiUrl: 'http://100.64.0.1:8766', accountName: 'team-runner', environment: { labels: { hostname: 'build-host' } } },
+      { localUiUrl: 'headless://the-mac', accountName: 'mac', environment: { labels: { hostname: 'the-mac' } } },
+    ],
+  };
+  const withRunners = (active: unknown) => mockApi.mockImplementation(async (path: string) =>
+    path === '/api/workers/active' ? active : { id: 'task-new', title: 'Probe', priority: 0 });
+  const taskBody = () => JSON.parse(mockApi.mock.calls.find(c => c[0] === '/api/tasks')![1].body);
+
   it('forwards requiredCapabilities and a runner pin as a runner:<name> capability', async () => {
+    withRunners(listedRunners);
     await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'create_task',
       { title: 'Probe', description: 'Mac probe', requiredCapabilities: ['browser'], runner: 'the-mac' },
       createMockContext(),
     );
-    expect(JSON.parse(mockApi.mock.calls[0][1].body).requiredCapabilities).toEqual(['browser', 'runner:the-mac']);
+    expect(taskBody().requiredCapabilities).toEqual(['browser', 'runner:the-mac']);
+  });
+
+  it.each([['team-runner'], ['build-host'], ['http://100.64.0.1:8766']])(
+    'accepts a pin by any name the runner answers to (%p)',
+    async (pin) => {
+      withRunners(listedRunners);
+      await handleBuilddAction(mockApi as unknown as ApiFn, 'create_task', { title: 'Probe', description: 'x', runner: pin }, createMockContext());
+      expect(taskBody().requiredCapabilities).toEqual([`runner:${pin}`]);
+    },
+  );
+
+  it('refuses a pin no runner answers to, listing the valid names, and files nothing', async () => {
+    withRunners(listedRunners);
+    const call = handleBuilddAction(mockApi as unknown as ApiFn, 'create_task', { title: 'Probe', description: 'x', runner: 'coder' }, createMockContext());
+    await expect(call).rejects.toThrow('runner "coder" matches no online runner');
+    await expect(call).rejects.toThrow('"build-host", "the-mac"');
+    expect(mockApi.mock.calls.some(c => c[0] === '/api/tasks')).toBe(false);
+  });
+
+  it('files the pin unchecked when the runner list cannot be read', async () => {
+    mockApi.mockImplementation(async (path: string) => {
+      if (path === '/api/workers/active') throw new Error('API error: 403 forbidden');
+      return { id: 'task-new', title: 'Probe', priority: 0 };
+    });
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'create_task', { title: 'Probe', description: 'x', runner: 'anything' }, createMockContext());
+    expect(taskBody().requiredCapabilities).toEqual(['runner:anything']);
   });
 
   it('rejects a malformed runner pin', async () => {

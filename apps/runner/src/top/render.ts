@@ -645,11 +645,11 @@ interface QueueCols { est: boolean; workspace: boolean; by: number; mission: num
  * wide and never wraps.
  */
 export function queueColumnsFor(cols: number, estimatesOn: boolean): QueueCols {
-  const mission = cols < 60 ? 12 : cols < 110 ? 14 : 17;
+  const mission = cols < 60 ? 12 : cols < 110 ? 12 : cols < 120 ? 14 : 15;
   // The by column (R-58): "you", a first name, or "-"; a long name is cut.
   const by = cols < 110 ? 6 : 9;
-  // Wide enough for "when #4 ends (same files)"; a held row's title gets more at 120.
-  const starts = cols < 60 ? 10 : cols < 80 ? 13 : cols < 110 ? 26 : 36;
+  // Wide enough for "Blocked · needs settings this runner lacks".
+  const starts = cols < 60 ? 10 : cols < 80 ? 20 : cols < 110 ? 26 : cols < 120 ? 36 : 42;
   // The by column stays at every width (R-58); est. and workspace give way first.
   const fixed = 1 + POS_W + by + mission + starts;
   const est = estimatesOn && cols - fixed - QWS_W - QEST_W >= QTITLE_MIN;
@@ -665,7 +665,7 @@ function queueHeading(section: QueueSection, cols: number, c: QueueCols, p: Pale
     (c.workspace ? fit('workspace', QWS_W) : '') +
     fit('mission', c.mission) +
     (c.est ? fit('est.', QEST_W) : '') +
-    fit('starts', c.starts);
+    fit('status', c.starts);
   return p.fg('muted', fit(text, cols));
 }
 
@@ -674,9 +674,8 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
   const primary: PaletteToken = selected ? 'selectedText' : row.position === null ? 'muted' : 'text';
   // Every column is cut with "…" and followed by a space (R-21).
   const col = (s: string, w: number) => fit(s, w - 1) + ' ';
-  // "now" is in the accent; a start held to a time stands out; a wait in words does not.
-  const now = row.position !== null && row.starts === 'now';
-  const timed = (row.position !== null || row.held === true) && /\d\d:\d\d/.test(row.starts);
+  // Only Running is in the accent (R-16); Queued and Blocked are plain.
+  const running = row.status === 'running';
   const line =
     (selected ? p.fg('accent', '›') : ' ') +
     p.fg('muted', pos) +
@@ -685,7 +684,7 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
     (c.workspace ? p.fg('muted', col(row.workspace, QWS_W)) : '') +
     p.fg('muted', col(row.mission, c.mission)) +
     (c.est ? p.fg('muted', col(row.est ?? '-', QEST_W)) : '') +
-    p.fg(now ? 'accent' : timed ? 'warning' : 'muted', fit(row.starts, c.starts));
+    p.fg(running ? 'accent' : 'muted', fit(row.starts, c.starts));
   return selected ? p.selectedBg(line) : line;
 }
 
@@ -709,11 +708,17 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
       lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
       // Under the selected row: the work it starts alongside (I-38).
       if (sel?.taskId === r.taskId && r.alongside) lines.push({ text: p.fg('muted', fit(' '.repeat(POS_W + 1) + r.alongside, cols)) });
+      // Provider hold sentence on a runner_seat wall (R-11).
+      if (r.status === 'blocked' && r.providerHoldSentence) lines.push({ text: p.fg('muted', fit(' '.repeat(POS_W + 1) + r.providerHoldSentence, cols)) });
     }
     if (section.rows.length === 0) lines.push({ text: p.fg('muted', fit('    Nothing this runner takes is waiting.', cols)) });
     if (section.held.length > 0) {
       lines.push({ text: p.fg('muted', fit(' Not yet', cols)) });
-      for (const r of section.held) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+      for (const r of section.held) {
+        lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+        // Provider hold sentence on a runner_seat wall (R-11).
+        if (r.providerHoldSentence) lines.push({ text: p.fg('muted', fit(' '.repeat(POS_W + 1) + r.providerHoldSentence, cols)) });
+      }
     }
     if (section.notFor.length > 0) {
       lines.push({ text: p.fg('muted', fit(' Not for this runner', cols)) });

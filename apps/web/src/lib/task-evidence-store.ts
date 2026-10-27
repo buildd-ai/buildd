@@ -137,6 +137,7 @@ export async function persistTaskEvidence(
         added: typeof result.added === 'number' ? result.added : 0,
         removed: typeof result.removed === 'number' ? result.removed : 0,
       },
+      commits: typeof result.commits === 'number' ? result.commits : 0,
       traces,
       ciDigest,
       ciChecks,

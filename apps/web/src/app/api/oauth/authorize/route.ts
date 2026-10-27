@@ -17,10 +17,11 @@ import {
   renderGrantInterstitial,
   renderLegacyConsentPage,
   renderLegacyInterstitial,
-  validateApproval,
+  validateAccountApproval,
   type ClientIdentity,
   type ConsentState,
   type ConsentTeam,
+  type GrantedTeamSummary,
 } from '@/lib/oauth/account-consent';
 import { createGrant } from '@/lib/mcp-grants';
 import { consentTeamsForUser } from '@/lib/mcp-grant-admin';
@@ -387,6 +388,21 @@ export async function POST(req: NextRequest) {
   );
 }
 
+/** What a new grant reaches, team by team, for the confirmation page. */
+function grantedTeams(teams: ConsentTeam[], teamIds: string[], workspaceIds: string[]): GrantedTeamSummary[] {
+  const whole = new Set(teamIds);
+  const ticked = new Set(workspaceIds);
+  const out: GrantedTeamSummary[] = [];
+  for (const t of teams) {
+    if (whole.has(t.id)) out.push({ name: t.name, mode: 'all', count: t.workspaces.filter((w) => !w.system || ticked.has(w.id)).length });
+    else {
+      const n = t.workspaces.filter((w) => ticked.has(w.id)).length;
+      if (n > 0) out.push({ name: t.name, mode: 'specific', count: n });
+    }
+  }
+  return out;
+}
+
 function redirectHostOf(redirectUri: string): string {
   try {
     const u = new URL(redirectUri);
@@ -469,7 +485,7 @@ async function accountConsentPost(args: {
     return page(applyNav(readConsentForm(form, consentTeams, requested), nav, consentTeams));
   }
 
-  const check = validateApproval(form, consentTeams, requested);
+  const check = validateAccountApproval(form, consentTeams, requested);
   if (!check.ok) {
     if (check.showPage) return page(readConsentForm(form, consentTeams, requested), check.message, check.status);
     return plainError(check.message, check.status);
@@ -481,9 +497,10 @@ async function accountConsentPost(args: {
     actsAs: check.actsAs,
     scopes: check.scopes,
     workspaceIds: check.workspaceIds,
+    teamIds: check.teamIds,
   });
   if (!created.ok) {
-    return plainError('One of the chosen workspaces is not available to you. Start the connection again.', 403);
+    return plainError('One of the chosen teams or workspaces is not available to you. Start the connection again.', 403);
   }
 
   const code = await createAuthCode({
@@ -503,7 +520,7 @@ async function accountConsentPost(args: {
     renderGrantInterstitial({
       clientName: args.identity.name,
       redirectUrl: cbUrl.toString(),
-      workspaceCount: check.workspaceIds.length,
+      teams: grantedTeams(consentTeams, check.teamIds, check.workspaceIds),
       actsAs: check.actsAs,
     }),
     { status: 200, headers: HTML_HEADERS },

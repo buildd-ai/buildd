@@ -56,6 +56,15 @@ export function classifySessionEnd(signals: SessionEndSignals): SessionEndLabel 
   return 'genuinely_blocked';
 }
 
+/** The label as a person reads it; the enum itself never reaches a card. */
+export const SESSION_END_LABEL_TEXT: Record<SessionEndLabel, string> = {
+  done: 'Finished',
+  waiting_on_background_job: 'Stopped on a background job',
+  asking_permission_it_has: 'Stopped to ask for permission it has',
+  believes_done_no_deliverable: 'Ended with no PR',
+  genuinely_blocked: 'Blocked',
+};
+
 export type PushableSessionEndLabel = Exclude<SessionEndLabel, 'done' | 'genuinely_blocked'>;
 
 /**

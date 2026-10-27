@@ -13,27 +13,33 @@ import { NOW, fixtureState } from './top-fixture';
 import { QUEUE, queueState } from './top-queue-fixture';
 
 const key = (ch: string) => ({ name: 'char' as const, ch });
+/** The rows waiting in a section: the running agents above them are not queued work. */
+/** Running agents come first in the list ↑↓ moves over. */
+const RUN = queueRowList(queueState(), NOW).filter(r => r.status === 'running').length;
+const waiting = (sec: { rows: Array<{ status: string }> }) => sec.rows.filter(r => r.status !== 'running') as any[];
 
 describe('queue sections (R-26)', () => {
   test('per team, in the server order, with position, workspace, mission, estimate and start', () => {
     const [one, two] = queueSections(queueState(), NOW);
     expect(one.teamName).toBe('Team One');
-    expect(one.rows.map(r => [r.position, r.title, r.workspace, r.mission, r.est, r.starts])).toEqual([
-      [1, 'fix(kernel): review composition', 'alpha', 'Workflow kernel', '40m', 'Thu 00:00'],
-      // One of 3 slots is free (2 agents run): the first row nothing holds starts now.
-      [2, 'feat(intake): one intake door', 'alpha', 'Bug intake', '1h', 'now'],
-      [3, 'chore(web): cache /fonts', 'alpha', '-', '15m', 'when a slot frees'],
-      [4, 'docs: kernel commands', 'alpha', 'Workflow kernel', '-', 'after its dependency'],
+    expect(waiting(one).map(r => [r.position, r.title, r.workspace, r.mission, r.est, r.starts])).toEqual([
+      [1, 'fix(kernel): review composition', 'alpha', 'Workflow kernel', '40m', 'Blocked · until Thu 00:00'],
+      // One of 3 slots is free (2 agents run): every row nothing holds waits for a slot, Queued.
+      [2, 'feat(intake): one intake door', 'alpha', 'Bug intake', '1h', 'Queued'],
+      [3, 'chore(web): cache /fonts', 'alpha', '-', '15m', 'Queued'],
+      [4, 'docs: kernel commands', 'alpha', 'Workflow kernel', '-', 'Blocked · after its dependency'],
     ]);
     // A start time of its own is held, listed after the queue: its mission, then the time and why.
     expect(one.held.map(r => [r.position, r.title, r.mission, r.starts, r.reason])).toEqual([
-      [null, 'chore: rotate the logs', 'Workflow kernel', '17:00 · scheduled', 'scheduled, 17:00'],
+      [null, 'chore: rotate the logs', 'Workflow kernel', 'Blocked · until 17:00 · scheduled', 'scheduled, 17:00'],
     ]);
     // The organizer's planning run is not work (R-22).
-    expect(one.rows.map(r => r.taskId)).not.toContain('q-plan');
+    expect(waiting(one).map(r => r.taskId)).not.toContain('q-plan');
+    // The agents running now are rows above the queued ones (R-15).
+    expect(one.rows.slice(0, 2).every(r => r.status === 'running')).toBe(true);
     expect(two.teamName).toBe('Team Two');
     // The free slot went to Team One's row ahead of it in the claim order.
-    expect(two.rows.map(r => [r.position, r.est, r.starts])).toEqual([[1, null, 'when a slot frees']]);
+    expect(waiting(two).map(r => [r.position, r.est, r.starts])).toEqual([[1, null, 'Queued']]);
   });
 
   test('a row sharing only mergeable files with other work says it starts alongside it (I-38)', () => {
@@ -45,12 +51,12 @@ describe('queue sections (R-26)', () => {
             : q) }, QUEUE.teams[1]] };
     const s = reduce(queueState(), { type: 'queue', queue });
     const [one] = queueSections(s, NOW);
-    const by = new Map(one.rows.map(r => [r.taskId, r]));
-    expect(by.get('q-intake')).toMatchObject({ starts: 'now', alongside: 'starts alongside #41 (same files, merges at the end)' });
+    const by = new Map(waiting(one).map(r => [r.taskId, r]));
+    expect(by.get('q-intake')).toMatchObject({ starts: 'Queued', alongside: 'starts alongside #41 (same files, merges at the end)' });
     // No PR: the holder by title.
     expect(by.get('q-fonts')?.alongside).toBe('starts alongside "fix(kernel): review com…" (same files, merges at the end)');
     // A row something holds says what it waits for, not alongside.
-    expect(by.get('q-docs')?.starts).toBe('after its dependency');
+    expect(by.get('q-docs')?.starts).toBe('Blocked · after its dependency');
     expect(by.get('q-docs')?.alongside).toBeUndefined();
     expect(by.get('q-review')?.alongside).toBeUndefined();
   });
@@ -64,11 +70,11 @@ describe('queue sections (R-26)', () => {
     ] }, QUEUE.teams[1]] };
     const s = reduce({ ...queueState(), claimOutcomes: { tasks: {}, broad: null } }, { type: 'queue', queue });
     const [one] = queueSections(s, NOW);
-    expect(one.rows.map(r => [r.position, r.starts])).toEqual([[1, 'now'], [2, 'when a slot frees']]);
+    expect(waiting(one).map(r => [r.position, r.starts])).toEqual([[1, 'Queued'], [2, 'Queued']]);
     expect(one.held).toHaveLength(1);
     expect(one.held[0].reason).toMatch(/^retries after failures, /);
     // The time first, so a narrow column keeps it, then why.
-    expect(one.held[0].starts).toMatch(/^.+ · retries after failures$/);
+    expect(one.held[0].starts).toMatch(/^Blocked · until .+ · retries after failures$/);
     expect(one.held[0].held).toBe(true);
   });
 
@@ -82,8 +88,8 @@ describe('queue sections (R-26)', () => {
     const s = reduce({ ...queueState(), claimOutcomes: { tasks: {}, broad: null } }, { type: 'queue', queue });
     const [one] = queueSections(s, NOW);
     expect(one.held.map(r => [r.reason, r.starts])).toEqual([
-      ['paused by a person', 'paused · by a person'],
-      ['mission is paused', 'paused · mission is paused'],
+      ['paused by a person', 'Blocked · paused by a person'],
+      ['mission is paused', 'Blocked · mission is paused'],
     ]);
   });
 
@@ -91,17 +97,17 @@ describe('queue sections (R-26)', () => {
     const [one] = queueSections(queueState(), NOW);
     // The why goes in the starts column; the mission column always names the mission.
     expect(one.notFor.map(r => [r.position, r.title, r.starts, r.exclusion])).toEqual([
-      [null, 'Runner terminal: round 3 audit', 'runs from your session', 'local_session'],
-      [null, 'fix(supersession): close the old PR', 'another runner takes it', 'another_runner'],
-      [null, 'design: the queue tab', 'needs Designer', 'role_missing'],
+      [null, 'Runner terminal: round 3 audit', 'Blocked · runs from your session', 'local_session'],
+      [null, 'fix(supersession): close the old PR', 'Blocked · another runner takes it', 'another_runner'],
+      [null, 'design: the queue tab', 'Blocked · needs Designer', 'role_missing'],
     ]);
     expect(one.notFor.every(r => r.mission === r.mission.trim() && !/local session|another runner/.test(r.mission))).toBe(true);
   });
 
-  test('without a claim outcome holding it, position 1 starts now on the free slot', () => {
+  test('without a claim outcome holding it, position 1 is Queued and a free slot takes it', () => {
     let s = queueState();
     s = { ...s, claimOutcomes: { tasks: {}, broad: null } };
-    expect(queueSections(s, NOW)[0].rows[0].starts).toBe('now');
+    expect(waiting(queueSections(s, NOW)[0])[0]).toMatchObject({ starts: 'Queued', startsNow: true });
   });
 
   test('t narrows to one team and w to one workspace (R-23)', () => {
@@ -132,7 +138,7 @@ describe('the queue follows the server (AC-12)', () => {
     };
     const next = reduce(s, { type: 'queue', queue: after });
     const [one] = queueSections(next, NOW);
-    expect(one.rows[0]).toMatchObject({ position: 1, title: 'feat(intake): one intake door', starts: 'now' });
+    expect(waiting(one)[0]).toMatchObject({ position: 1, title: 'feat(intake): one intake door', starts: 'Queued' });
     expect(one.notFor[0]).toMatchObject({ title: 'fix(kernel): review composition', reason: 'another runner takes it' });
   });
 
@@ -158,7 +164,8 @@ describe('Queue view keys', () => {
 
   test('↑↓ move over every queue row, "Not for this runner" included, and stop at the ends', () => {
     let s = queueState();
-    expect(selectedQueueRow(s, NOW)?.taskId).toBe('q-review');
+    expect(RUN).toBeGreaterThan(0);
+    expect(selectedQueueRow(s, NOW)?.status).toBe('running');
     s = handleKey(s, { name: 'up' }, NOW).state;
     expect(s.queueCursor).toBe(0);
     for (let i = 0; i < 20; i++) s = handleKey(s, { name: 'down' }, NOW).state;
@@ -169,7 +176,7 @@ describe('Queue view keys', () => {
 
   test('c on a queue row claims it through the same claim effect as the Missions view', () => {
     let s = queueState();
-    s = handleKey(s, { name: 'down' }, NOW).state;
+    for (let i = 0; i < RUN + 1; i++) s = handleKey(s, { name: 'down' }, NOW).state;
     const r = handleKey(s, key('c'), NOW);
     expect(r.effects).toEqual([{ type: 'claim', taskId: 'q-intake', title: 'feat(intake): one intake door' }]);
     expect(r.state.status?.text).toBe('Claiming "feat(intake): one intake door" onto this runner…');
@@ -177,7 +184,7 @@ describe('Queue view keys', () => {
 
   test('c on a "Not for this runner" row is refused with the reason, and claims nothing', () => {
     let s = queueState();
-    for (let i = 0; i < 6; i++) s = handleKey(s, { name: 'down' }, NOW).state;
+    for (let i = 0; i < 6 + RUN; i++) s = handleKey(s, { name: 'down' }, NOW).state;
     expect(selectedQueueRow(s, NOW)?.taskId).toBe('q-other');
     const r = handleKey(s, key('c'), NOW);
     expect(r.effects).toEqual([]);
@@ -193,7 +200,13 @@ describe('Queue view keys', () => {
   });
 
   test('o opens the selected queue row on buildd', () => {
-    expect(handleKey(queueState(), key('o'), NOW).effects).toEqual([{ type: 'open', taskId: 'q-review' }]);
+    expect(handleKey(queueState(), key('o'), NOW).effects).toEqual([{ type: 'open', taskId: selectedQueueRow(queueState(), NOW)!.taskId }]);
+  });
+
+  test('c on a running agent\'s row claims nothing', () => {
+    const r = handleKey(queueState(), key('c'), NOW);
+    expect(r.effects).toEqual([]);
+    expect(r.state.status?.tone).toBe('error');
   });
 
   test('the worker keys point back to Missions instead of acting on a hidden row', () => {
@@ -215,5 +228,29 @@ describe('Queue view keys', () => {
 
   test('q quits from the Queue view', () => {
     expect(handleKey(queueState(), key('q'), NOW).effects).toEqual([{ type: 'quit' }]);
+  });
+});
+
+describe('provider hold sentence on a row (R-11)', () => {
+  const withWall = (taskId: string, kind: string, backend = 'claude') =>
+    reduce(queueState(), { type: 'claim_outcome', taskId, outcome: {
+      at: NOW - 60_000, reason: 'budget_exhausted', walls: [{ kind, backend, resetsAt: new Date(NOW + 3_600_000).toISOString() }],
+    } } as any);
+  const row = (s: ReturnType<typeof queueState>, id: string) =>
+    queueSections(s, NOW).flatMap(sec => [...sec.rows, ...sec.held]).find(r => r.taskId === id) as any;
+
+  test('a runner_seat wall carries the sentence, naming the provider', () => {
+    expect(row(queueState(), 'q-review').providerHoldSentence).toContain("This runner's Claude login");
+  });
+
+  test('a non-claude backend names its own provider', () => {
+    const s = withWall('q-review', 'runner_seat', 'codex');
+    const r = row({ ...s, queue: { ...s.queue!, teams: s.queue!.teams.map(t => ({ ...t, queue: t.queue.map(q => q.id === 'q-review' ? { ...q, backend: 'codex' } : q) })) } } as any, 'q-review');
+    expect(r.providerHoldSentence).toContain("This runner's Codex login");
+  });
+
+  test('an account_seat wall or no outcome carries none', () => {
+    expect(row(withWall('q-review', 'account_seat'), 'q-review').providerHoldSentence).toBeUndefined();
+    expect(row(queueState(), 'q-fonts').providerHoldSentence).toBeUndefined();
   });
 });

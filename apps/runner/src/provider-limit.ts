@@ -94,9 +94,9 @@ export class ProviderLimitHolds {
       .sort((a, b) => a.untilMs - b.untilMs);
   }
 
-  /** Every provider a runner can start work on is held. */
-  allHeld(now: number = Date.now()): boolean {
-    return this.isHeld('claude', now) && this.isHeld('codex', now);
+  /** Every provider a runner can start work on is held; `startable` names those (default: both). */
+  allHeld(now: number = Date.now(), startable: readonly LimitProvider[] = ['claude', 'codex']): boolean {
+    return startable.length > 0 && startable.every(p => this.isHeld(p, now));
   }
 
   /** The soonest lift among live holds, or null. */

@@ -57,7 +57,7 @@ export const VISUAL_TONE_TEXT: Record<VisualReviewTone, string> = {
 const MAX_DOTS = 24;
 
 export interface VisualReviewLineProps {
-  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary' | 'needsYou' | 'cells'>;
+  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary' | 'needsYou' | 'cells' | 'onEarlierCommit'>;
   /** `full` adds the detail sentence under the label. */
   variant?: 'compact' | 'full';
   className?: string;
