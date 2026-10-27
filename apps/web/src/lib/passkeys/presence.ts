@@ -81,7 +81,7 @@ export async function checkSpecPresence(userId: string, workspaceId: string, pin
 
 async function requirePresence(userId: string, pin: PresencePin, proof: unknown, keys: number, lead: string): Promise<PresenceRefusal | null> {
   if (keys === 0) {
-    return refuse('passkey_missing', `${lead} ${WHAT[pin.op]}, and you have not added one yet. Add a passkey in Settings › Profile › Passkeys (${addUrl()}), then try again. Nothing changed.`, pin);
+    return refuse('passkey_missing', `${lead} ${WHAT[pin.op]}, and you have no passkey. Add one in Settings › Profile › Passkeys, then try again. Nothing changed.`, pin);
   }
   if (proof === undefined || proof === null) {
     return refuse('presence_required', `${lead} ${WHAT[pin.op]}. Confirm with your passkey; nothing changes until you do.`, pin);
@@ -135,7 +135,7 @@ function isCredentialResponse(r: unknown): r is { id: string; rawId: string; typ
 export async function issuePresenceChallenge(userId: string, pin: PresencePin): Promise<{ ok: true; options: PublicKeyCredentialRequestOptionsJSON } | PresenceRefusal> {
   const keys = await db.select({ credentialId: userPasskeys.credentialId, transports: userPasskeys.transports })
     .from(userPasskeys).where(eq(userPasskeys.userId, userId));
-  if (!keys.length) return refuse('passkey_missing', `You have not added a passkey yet. Add one in Settings › Profile › Passkeys (${addUrl()}).`, pin);
+  if (!keys.length) return refuse('passkey_missing', 'You have no passkey. Add one in Settings › Profile › Passkeys.', pin);
   const challenge = await storeChallenge(userId, 'presence', presenceBinding(userId, 'presence', pin));
   if (!challenge) return refuse('passkey_limit', 'Too many passkey checks are open. Wait a few minutes, then try again.', undefined, 409);
   const { rpID } = passkeyRelyingParty();

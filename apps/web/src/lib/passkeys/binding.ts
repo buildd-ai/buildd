@@ -24,7 +24,7 @@ export interface PresenceAsk {
   addUrl: string;
 }
 
-export const PASSKEY_SETTINGS_PATH = '/app/settings/account#passkeys';
+export { PASSKEY_SETTINGS_PATH } from './paths';
 
 const HASH = /^[0-9a-f]{64}$/;
 const STATUS = /^[a-z_]{1,32}$/;

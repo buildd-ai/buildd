@@ -11,6 +11,7 @@ import { nativeSourceOn } from './repo-copy';
 import { attachmentSources, type AttachmentSource } from './attachments';
 import { liveReplaced } from './replaces';
 import { runApprovalGate } from './approval-gate';
+import { specPasskeyRequired } from '@/lib/passkeys/presence';
 import type { SpecGateResult } from '@buildd/core/db/schema';
 import type { RevisionReview } from './revision-changes';
 import { explanationCoverage, sectionWordChanges, type ExplanationCoverage, type SpecExplanation } from '@buildd/spec-contract/explanation';
@@ -62,6 +63,8 @@ export type ApprovalRequestView =
     coverage: ExplanationCoverage | null;
     /** Each changed section's words outside the criteria (R-17), keyed by heading path. */
     sectionWords: Record<string, WordOp[]>;
+    /** The team requires a passkey to approve (R-20): Approve asks for it after the click. */
+    passkey: boolean;
   };
 
 export async function approvalRequestView(userId: string, specId: string, token: string | null | undefined): Promise<ApprovalRequestView> {
@@ -97,9 +100,10 @@ export async function approvalPinView(userId: string, specId: string, pin: Appro
   if (spec.version !== pin.expectedVersion || spec.headRevision !== pin.revision) return { state: 'stale', ...base };
 
   const repoChecks = nativeSourceOn({ livingSpecs: (await personReach(userId, spec.workspaceId))?.livingSpecs });
-  const [attachments, { gate, review }] = await Promise.all([
+  const [attachments, { gate, review }, passkey] = await Promise.all([
     attachmentSources(specId, pin.revision).catch(() => ({})),
     runApprovalGate(spec, pin.revision),
+    specPasskeyRequired(spec.workspaceId),
   ]);
   const replacing = (await liveReplaced(spec.workspaceId, rev.replaces)).map((r) => {
     const chosen = opts.retire?.find((c) => c.specId === r.id);
@@ -108,7 +112,7 @@ export async function approvalPinView(userId: string, specId: string, pin: Appro
   const changes = review ? { summary: review.summary, lines: review.lines, otherText: review.otherText, mismatch: review.mismatch } : null;
   const explanation = rev.explanation ?? null;
   const coverage = changes ? explanationCoverage(explanation, changes.lines, changes.otherText) : null;
-  const ready = { ...base, pin: { revision: pin.revision, expectedVersion: pin.expectedVersion, contentHash: pin.contentHash }, repoChecks, attachments, gate, changes, explanation, coverage };
+  const ready = { ...base, pin: { revision: pin.revision, expectedVersion: pin.expectedVersion, contentHash: pin.contentHash }, repoChecks, attachments, gate, changes, explanation, coverage, passkey };
   if (spec.approvedRevision) {
     const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: pin.revision, rows: true });
     if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
