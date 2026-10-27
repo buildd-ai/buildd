@@ -24,6 +24,8 @@ export interface HealthQueueTiles {
   running: number;
   /** Team-wide runner slots a claim can fill: never narrowed by a filter (R-2). */
   slots: number;
+  /** What the Running tile shows: the same pair Capacity shows on Runners (AC-14). */
+  capacity: { used: number; total: number };
   ready: number;
   waiting: number;
   parked: number;
