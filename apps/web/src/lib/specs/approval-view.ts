@@ -13,6 +13,8 @@ import { liveReplaced } from './replaces';
 import { runApprovalGate } from './approval-gate';
 import type { SpecGateResult } from '@buildd/core/db/schema';
 import type { RevisionReview } from './revision-changes';
+import { explanationCoverage, sectionWordChanges, type ExplanationCoverage, type SpecExplanation } from '@buildd/spec-contract/explanation';
+import type { WordOp } from '@buildd/spec-contract/criterion-review';
 
 /**
  * What the confirm page (/app/specs/[specId]/approve) shows a signed-in person
@@ -54,6 +56,12 @@ export type ApprovalRequestView =
     gate: SpecGateResult;
     /** What the revision changes, by criterion (the Review change list); null when it cannot be read. */
     changes: Pick<RevisionReview, 'summary' | 'lines' | 'otherText' | 'mismatch'> | null;
+    /** What the revision's author says it changes (b7fc9316 R-15), as stored with the revision; null when none was given. */
+    explanation: SpecExplanation | null;
+    /** The explanation checked against `changes` (R-16), no model; null when the change list cannot be read. */
+    coverage: ExplanationCoverage | null;
+    /** Each changed section's words outside the criteria (R-17), keyed by heading path. */
+    sectionWords: Record<string, WordOp[]>;
   };
 
 export async function approvalRequestView(userId: string, specId: string, token: string | null | undefined): Promise<ApprovalRequestView> {
@@ -98,16 +106,20 @@ export async function approvalPinView(userId: string, specId: string, pin: Appro
     return { id: r.id, title: r.title, version: chosen?.expectedVersion ?? r.version, checked: opts.retire ? !!chosen : true };
   });
   const changes = review ? { summary: review.summary, lines: review.lines, otherText: review.otherText, mismatch: review.mismatch } : null;
-  const ready = { ...base, pin: { revision: pin.revision, expectedVersion: pin.expectedVersion, contentHash: pin.contentHash }, repoChecks, attachments, gate, changes };
+  const explanation = rev.explanation ?? null;
+  const coverage = changes ? explanationCoverage(explanation, changes.lines, changes.otherText) : null;
+  const ready = { ...base, pin: { revision: pin.revision, expectedVersion: pin.expectedVersion, contentHash: pin.contentHash }, repoChecks, attachments, gate, changes, explanation, coverage };
   if (spec.approvedRevision) {
     const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: pin.revision, rows: true });
     if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
-    return { state: 'ready', ...ready, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, replacing };
+    const sectionWords = changes ? sectionWordChanges(d.diff.fromBody ?? '', d.diff.toBody, changes.otherText) : {};
+    return { state: 'ready', ...ready, sectionWords, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, replacing };
   }
   // Nothing approved yet: the whole revision is what comes into force.
   const s = await getSpec(caller, specId, { revision: pin.revision });
   if (!s.ok || typeof s.view.body !== 'string') return { state: 'stale', ...base };
   const d = diffSpecBodies('', s.view.body);
   const h = diffSpecHunks('', s.view.body);
-  return { state: 'ready', ...ready, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, replacing };
+  const sectionWords = changes ? sectionWordChanges('', s.view.body, changes.otherText) : {};
+  return { state: 'ready', ...ready, sectionWords, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, replacing };
 }
