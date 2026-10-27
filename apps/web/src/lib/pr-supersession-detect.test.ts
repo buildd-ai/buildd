@@ -78,7 +78,7 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mock((e: any) => { gateEvents.push(e); return 'id'; }),
 }));
 
-import { detectPrSupersession, prRefsIn, rescanOnMerge, sweepClosedUnsupersededPrs, verifyPrCarriedBy, RESCAN_AFTER_MS, RESCAN_ON_MERGE_CAP } from './pr-supersession-detect';
+import { detectPrSupersession, findTaskLineageForSupersession, prRefsIn, rescanOnMerge, sweepClosedUnsupersededPrs, verifyPrCarriedBy, RESCAN_AFTER_MS, RESCAN_ON_MERGE_CAP } from './pr-supersession-detect';
 
 const DOC_LINES = [
   '# Strategy notes',
@@ -600,6 +600,42 @@ describe('rescanOnMerge', () => {
   it('never throws when GitHub or the database fails', async () => {
     sweepRows = null as any;
     expect(await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: null })).toEqual({ nominated: 0, results: [] });
+  });
+});
+
+// Task 9e379e31: most of the closed-unmerged backlog was retries whose PR closed
+// because a later attempt (or the task it replaced) merged — not named in any PR
+// body, not a mission sibling. findTaskLineageForSupersession is what rescanOnMerge
+// now asks, on top of claims and mission siblings, before falling back to file overlap.
+describe('findTaskLineageForSupersession', () => {
+  it('includes the task itself, its parent (the task it is an attempt of), and its attempt children', async () => {
+    mergedTask = { parentTaskId: 'p-1', taskClass: 'attempt' };
+    siblingTasks = [{ id: 'a-1' }, { id: 'a-2' }];
+    const ids = await findTaskLineageForSupersession('t-9');
+    expect(ids).toEqual(['t-9', 'p-1', 'a-1', 'a-2']);
+  });
+
+  it('is just the task itself when it has no parent and no attempt children', async () => {
+    mergedTask = { parentTaskId: null, taskClass: 'work' };
+    siblingTasks = [];
+    expect(await findTaskLineageForSupersession('t-9')).toEqual(['t-9']);
+  });
+
+  it('is just the task itself when the task row cannot be found', async () => {
+    mergedTask = null;
+    expect(await findTaskLineageForSupersession('t-9')).toEqual(['t-9']);
+  });
+
+  it('adds only the parent when there are no attempt children', async () => {
+    mergedTask = { parentTaskId: 'p-1', taskClass: 'attempt' };
+    siblingTasks = [];
+    expect(await findTaskLineageForSupersession('t-9')).toEqual(['t-9', 'p-1']);
+  });
+
+  it('adds only the attempt children when the task has no parent', async () => {
+    mergedTask = { parentTaskId: null, taskClass: 'work' };
+    siblingTasks = [{ id: 'a-1' }];
+    expect(await findTaskLineageForSupersession('t-9')).toEqual(['t-9', 'a-1']);
   });
 });
 

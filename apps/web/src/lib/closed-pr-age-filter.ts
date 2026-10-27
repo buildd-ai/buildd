@@ -1,53 +1,49 @@
 /**
- * Filter for aging out old closed-unmerged PRs from explain surfaces.
+ * Ages a closed-unmerged PR out of explain's attention surfaces.
  *
- * A closed-unmerged PR on a task that is terminal (status='completed',
- * 'cancelled', etc.) and belongs to no open mission is aged out after N days
- * (default 14). It remains visible in history but is excluded from:
- * - explain's waiting/attention subjects
- * - pr_closed_unmerged gate conditions for non-mission tasks
+ * A closed PR on a task with no open mission to answer for it sits forever
+ * as `pr_closed_unmerged` unless a person or the auto-supersession scan
+ * (pr-supersession-detect.ts) resolves it. Most of the backlog this was
+ * written against (task 9e379e31) was exactly that: retries whose PR closed
+ * because a later attempt merged, now caught by `rescanOnMerge`'s
+ * task-lineage nomination, plus dead standalone experiments nobody will ever
+ * resolve.
  *
- * This is a read-side rule: no database write is needed. Readers filter by
- * calling shouldIncludeClosedPrInExplain() before adding a subject.
+ * This is a read-side rule, not a write: nothing is recorded, nothing is
+ * abandoned. A task whose mission is still open always counts, whatever its
+ * age — mission completion still needs the PR answered. Everything else
+ * (no mission, or a mission that is itself terminal) stops counting once the
+ * PR has been closed for CLOSED_PR_AGE_OUT_DAYS. History (the task's own
+ * explain, get_pr, the PR scope view) is unaffected — only the "needs
+ * attention" / waiting signal is suppressed.
  */
 
 export const CLOSED_PR_AGE_OUT_DAYS = 14;
 
+/** Mission statuses (MISSION_STATUSES in @buildd/shared) that no longer need anything answered for them. */
+const MISSION_TERMINAL_STATUSES = new Set(['completed', 'archived']);
+
 /**
- * Whether a closed-unmerged PR should be included in explain surfaces based on age.
- *
- * Returns true (include) when:
- * - The task is part of an open mission, OR
- * - The closed PR is less than CLOSED_PR_AGE_OUT_DAYS old
- *
- * Returns false (exclude/age-out) when:
- * - The task is not part of an open mission AND
- * - The PR closed >= CLOSED_PR_AGE_OUT_DAYS ago
+ * Whether a closed-unmerged PR should stop counting toward explain's waiting
+ * surfaces. True = age out (exclude). False = still counts.
  */
-export function shouldIncludeClosedPrInExplain(input: {
-  /** Task's missionId, or null if not part of a mission. */
-  taskMissionId: string | null;
-  /** Mission status (if taskMissionId is set): 'completed', 'running', etc. */
+export function closedPrAgedOutOfExplain(input: {
+  /** The task's mission, or null when it has none. */
+  missionId: string | null;
+  /** That mission's status, when it has one. */
   missionStatus?: string | null;
-  /** When the worker's PR closed (ISO string or Date). */
-  prClosedAt: string | Date | null | undefined;
-  /** Current time for age calculation. */
+  /** When the PR closed. Absent/unparseable = never age out (nothing proves it's old). */
+  closedAt: string | Date | null | undefined;
   now?: Date;
 }): boolean {
-  const now = input.now ?? new Date();
+  const missionOpen = !!input.missionId && !!input.missionStatus && !MISSION_TERMINAL_STATUSES.has(input.missionStatus);
+  if (missionOpen) return false;
 
-  // If the task is part of an open mission, always include it (mission completion
-  // still needs the closed PR explained, regardless of age).
-  // Only exclude from explain if the mission is terminal (completed, cancelled, etc.)
-  const isInOpenMission = input.taskMissionId && input.missionStatus && !['completed', 'cancelled'].includes(input.missionStatus);
-  if (isInOpenMission) return true;
+  if (!input.closedAt) return false;
+  const closedAtMs = new Date(input.closedAt).getTime();
+  if (!Number.isFinite(closedAtMs)) return false;
 
-  // For terminal/no-mission tasks, exclude if the PR is old enough.
-  if (!input.prClosedAt) return true; // No close time = uncertain; include it
-  const closedAt = new Date(input.prClosedAt).getTime();
-  if (!Number.isFinite(closedAt)) return true; // Invalid date = uncertain; include it
-
-  const ageMs = now.getTime() - closedAt;
-  const ageDays = ageMs / (1000 * 60 * 60 * 24);
-  return ageDays < CLOSED_PR_AGE_OUT_DAYS;
+  const nowMs = (input.now ?? new Date()).getTime();
+  const ageDays = (nowMs - closedAtMs) / (1000 * 60 * 60 * 24);
+  return ageDays >= CLOSED_PR_AGE_OUT_DAYS;
 }

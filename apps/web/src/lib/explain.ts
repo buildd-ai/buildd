@@ -50,6 +50,7 @@ import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { presentMissionState } from '@/lib/mission-state-presentation';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
+import { closedPrAgedOutOfExplain } from '@/lib/closed-pr-age-filter';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, kernelDeliveryOwnerForPr, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
@@ -317,6 +318,8 @@ type LoadedTask = {
     observedTouches: string[] | null;
     error: string | null;
     startedAt: Date | null;
+    /** When this row last changed — the closest proxy for "when did the PR close" on the legacy path. */
+    updatedAt?: Date | null;
     waitingFor?: unknown;
     supersededByPrNumber: number | null;
     supersededByPrUrl: string | null;
@@ -1189,7 +1192,7 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
   const parentMission = task.missionId
     ? await db.query.missions.findFirst({
         where: sqlWhere(eq(missions.id, task.missionId)),
-        columns: { executor: true, isHeld: true },
+        columns: { executor: true, isHeld: true, status: true },
       })
     : null;
   // A reviewer task is runner-claimable whatever the mission's executor (the
@@ -1252,6 +1255,19 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
         }]
       : [];
 
+  // Age out a closed-unmerged PR that no open mission needs answered
+  // (closed-pr-age-filter.ts): it stops being "awaiting merge" after
+  // CLOSED_PR_AGE_OUT_DAYS, so a dead standalone PR does not read as active
+  // forever. History (buildHistory, explainPr) is unaffected — this only
+  // trims what feeds the waiting/completion signal below. A task whose
+  // mission is still open always counts, whatever its age.
+  const closedAtProxy = prDelivery?.lastTransition?.createdAt ?? (worker?.updatedAt ? iso(worker.updatedAt) : null);
+  const unmergedPrFiltered = unmergedPr.filter(p => !p.closedUnsuperseded || !closedPrAgedOutOfExplain({
+    missionId: task.missionId ?? null,
+    missionStatus: parentMission?.status ?? null,
+    closedAt: closedAtProxy,
+  }));
+
   // The newest open fix attempt (builder-after-review, CI retry). While one is
   // open the PR is about to change, so it — not the merge — is what this task
   // is waiting on. Without this the task read "waiting on you to merge" while a
@@ -1302,9 +1318,9 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
   const health = deriveTaskHealthSignal({}, deliveryLive ? family.filter(t => t.status !== 'failed') : family, { scope: 'family' });
 
   // Why the unmerged PR cannot land, from stored landing facts (§13.11 rule 3).
-  const openPr = unmergedPr.find(p => !p.closedUnsuperseded) ?? null;
+  const openPr = unmergedPrFiltered.find(p => !p.closedUnsuperseded) ?? null;
   const ciRed = deriveCiRedChains(
-    unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (prDelivery ? { ...p, ciRed: prDelivery.prState === 'ci_failed' } : p)),
+    unmergedPrFiltered.filter(p => !p.closedUnsuperseded).map(p => (prDelivery ? { ...p, ciRed: prDelivery.prState === 'ci_failed' } : p)),
     family,
   );
   // An exhausted CI-fix chain says more than "its checks are failing", so it keeps the reading.
@@ -1317,7 +1333,7 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
     // A cancelled task is closed, not idle. `completed` is only terminal for
     // this view once its PR has landed — the merge rule below decides that.
     status: task.status === 'cancelled'
-      || (task.status === 'completed' && unmergedPr.length === 0 && !openAttempt)
+      || (task.status === 'completed' && unmergedPrFiltered.length === 0 && !openAttempt)
       || (!!prDelivery && deliverySettled(prDelivery) && prDelivery.state !== 'FAILED' && !openAttempt)
       ? 'completed'
       : 'active',
@@ -1339,14 +1355,14 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
     landingBlocked,
     ciRed,
-    completion: unmergedPr.length > 0 && !openAttempt
+    completion: unmergedPrFiltered.length > 0 && !openAttempt
       ? {
           ok: false,
           code: 'awaiting_merge',
-          reason: `${unmergedPr[0].taskFailed ? 'Task failed, but' : 'Task completed but'} PR #${unmergedPr[0].prNumber} `
-            + (unmergedPr[0].closedUnsuperseded ? 'closed unmerged, no supersession recorded' : 'has not merged'),
+          reason: `${unmergedPrFiltered[0].taskFailed ? 'Task failed, but' : 'Task completed but'} PR #${unmergedPrFiltered[0].prNumber} `
+            + (unmergedPrFiltered[0].closedUnsuperseded ? 'closed unmerged, no supersession recorded' : 'has not merged'),
           awaitingMerge: 1,
-          awaitingMergeDetails: unmergedPr,
+          awaitingMergeDetails: unmergedPrFiltered,
         }
       : null,
   };

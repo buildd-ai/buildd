@@ -1,40 +1,54 @@
 import { describe, it, expect } from 'bun:test';
+import { closedPrAgedOutOfExplain, CLOSED_PR_AGE_OUT_DAYS } from './closed-pr-age-filter';
 
-/**
- * Tests for aging out old closed-unmerged PRs from `explain` surfaces.
- *
- * A closed-unmerged PR on a task that is terminal and belongs to no open mission
- * stops counting as `pr_closed_unmerged` in explain after N days (default 14).
- *
- * It stays visible in history but is not listed in the waiting/attention surfaces.
- * This is a read-side rule: no write is needed.
- */
+const NOW = new Date('2026-10-27T00:00:00Z');
+const daysAgo = (n: number) => new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
 
-describe('Age out closed PRs from explain', () => {
-  it('excludes a closed PR on a terminal non-mission task from explain after 14 days', async () => {
-    // Task: status='completed', no missionId
-    // Worker: prLifecycleStatus='closed', mergedAt=null, abandonedAt=null, supersededByPrNumber=null
-    // closedAt was 15 days ago
-    // Expected: not returned by explain as a waiting subject
-
-    expect.todo('implement age-based filtering in explain for closed PRs');
+describe('closedPrAgedOutOfExplain', () => {
+  it('ages out a closed PR on a standalone (no-mission) task after 15 days', () => {
+    expect(closedPrAgedOutOfExplain({
+      missionId: null,
+      closedAt: daysAgo(15),
+      now: NOW,
+    })).toBe(true);
   });
 
-  it('includes a closed PR on a terminal non-mission task before 14 days in explain', async () => {
-    // Task: status='completed', no missionId
-    // Worker: prLifecycleStatus='closed', mergedAt=null, abandonedAt=null, supersededByPrNumber=null
-    // closedAt was 13 days ago
-    // Expected: returned by explain as a waiting subject (pr_closed_unmerged)
-
-    expect.todo('implement age-based filtering in explain for closed PRs');
+  it('keeps listing a closed PR on a standalone task before 14 days', () => {
+    expect(closedPrAgedOutOfExplain({
+      missionId: null,
+      closedAt: daysAgo(13),
+      now: NOW,
+    })).toBe(false);
   });
 
-  it('always includes a closed PR on a task in an open mission, regardless of age', async () => {
-    // Task: status='completed', missionId='m-1' (mission is in open/running status)
-    // Worker: prLifecycleStatus='closed', mergedAt=null, abandonedAt=null, supersededByPrNumber=null
-    // closedAt was 30 days ago
-    // Expected: returned by explain as a waiting subject (mission completion still needs it answered)
+  it('keeps listing a closed PR on a task in an open mission whatever its age', () => {
+    expect(closedPrAgedOutOfExplain({
+      missionId: 'm-1',
+      missionStatus: 'active',
+      closedAt: daysAgo(30),
+      now: NOW,
+    })).toBe(false);
+  });
 
-    expect.todo('implement age-based filtering in explain for closed PRs');
+  it('ages out a closed PR on a task whose mission is itself terminal', () => {
+    expect(closedPrAgedOutOfExplain({
+      missionId: 'm-1',
+      missionStatus: 'completed',
+      closedAt: daysAgo(20),
+      now: NOW,
+    })).toBe(true);
+  });
+
+  it('is exactly at the boundary at 14 days (ages out)', () => {
+    expect(closedPrAgedOutOfExplain({
+      missionId: null,
+      closedAt: daysAgo(CLOSED_PR_AGE_OUT_DAYS),
+      now: NOW,
+    })).toBe(true);
+  });
+
+  it('never ages out when the close time is unknown', () => {
+    expect(closedPrAgedOutOfExplain({ missionId: null, closedAt: null, now: NOW })).toBe(false);
+    expect(closedPrAgedOutOfExplain({ missionId: null, closedAt: undefined, now: NOW })).toBe(false);
   });
 });
