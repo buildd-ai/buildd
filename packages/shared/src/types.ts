@@ -3476,7 +3476,9 @@ export interface LivingSpecCriterionStanding {
   /** The criterion's own words, kept with the evaluation so a page can show them without reading the spec. Absent on older states. */
   text?: string;
   /** Why a check did not reach a pass or fail, in a few words (`verdictReason`). Absent when it did or when unknown. */
-  reason?: 'test file not found' | 'test could not run' | 'test failed';
+  reason?: 'test file not found' | 'test could not run' | 'test failed' | 'test held';
+  /** With `reason: 'test held'`: the PR whose acceptance-test edit holds this result until a person accepts it (spec 1dc6cc39 R-80). */
+  heldByPr?: number;
 }
 
 /**

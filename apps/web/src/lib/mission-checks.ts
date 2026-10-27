@@ -237,23 +237,24 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
       // on the integrated result passes it; waived and stale never count.
       const v = outcomeSpecView(c, e, { buildDone: ctx.buildComplete });
       const open = v.open.map(o => `${o.label}: ${countWord(o.criterionIds.length)}`);
-      const detail = sentence(v.coverage, v.unchecked ?? (v.open.length ? open.join('. ') : null), v.waived.length ? `Waived: ${countWord(v.waived.length)}` : null, v.unchecked ? null : v.next);
+      // No count here: the Requirements fold's `requirementsCount` is the one count on the page.
+      const detail = sentence(v.unchecked ?? (v.open.length ? open.join('. ') : null), v.waived.length ? `Waived: ${countWord(v.waived.length)}` : null, v.unchecked ? null : v.next);
       const spec = { commit: e?.spec?.targetSha ? e.spec.targetSha.slice(0, 7) : null, href: `/app/specs/${c.specId}?revision=${c.revision}`, ...(v.criteria.length ? { criteria: v.criteria } : {}) };
       if (!e) return row('queued', 'not checked', ctx.buildComplete ? 'The build is done. It is checked on the integrated result next.' : 'Checked on the integrated result once the build work is done.', spec);
       if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) return row('stale', 'out of date', 'The spec selection changed after it was judged. It needs checking again.', spec);
       if (e.verdict === 'pass') return row('passed', 'passed', detail, { ...spec, actor: 'none' });
       // Waived by a person: nothing is open, and it never reads as passed.
       if (v.waived.length > 0 && v.open.length === 0) return row('waived', 'waived', detail, { ...spec, actor: 'none' });
-      if (e.verdict === 'fail') return row('finding', v.short, detail, { ...spec, problem: 'product' });
+      if (e.verdict === 'fail') return row('finding', 'not met', detail, { ...spec, problem: 'product' });
       // Every open check already ended without a result: nothing is verifying it, so it says what is true.
       if (v.unchecked) return row('queued', 'not checked', detail, spec);
       if (e.verdict === 'PENDING') return row('running', 'verifying', detail, spec);
       // Judged on the integration branch before the mission PR merges, so never "after merge".
       if (e.verdict === 'NOT_EVALUATED' || e.verdict === 'UNVERIFIED') {
         const onlyStale = v.open.length > 0 && v.open.every(o => o.standing === 'stale');
-        return row(onlyStale ? 'stale' : 'queued', v.short, detail, spec);
+        return row(onlyStale ? 'stale' : 'queued', onlyStale ? 'out of date' : 'not checked', detail, spec);
       }
-      return row('queued', v.short, detail, spec);
+      return row('queued', 'not checked', detail, spec);
     }
     if (!e) return unjudged();
     if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) {

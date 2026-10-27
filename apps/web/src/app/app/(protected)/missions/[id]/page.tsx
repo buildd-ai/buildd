@@ -123,6 +123,8 @@ import {
 } from '@/lib/mission-integration-pr';
 import { MissionPrLine, MissionScopeUpdates } from './MissionPrLine';
 import MissionAcceptanceTests from './MissionAcceptanceTests';
+import MissionAcceptanceHolds from './MissionAcceptanceHolds';
+import { loadAcceptanceHolds } from '@/lib/acceptance-edit-holds';
 import { testsFromContext } from '@/lib/specs/acceptance-gate-apply';
 import { standardsGateEnforced } from '@/lib/specs/mission-standards-gate';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
@@ -964,7 +966,10 @@ async function MissionDetailBody({
     ? <MissionPrLine pr={missionIntegrationPr} />
     : null;
   const acceptanceTests = testsFromContext(decisionTasks.find(t => (t.context as Record<string, unknown> | null)?.acceptanceTests != null)?.context as Record<string, unknown> | null);
-  const acceptanceBlock = acceptanceTests.length > 0 ? <MissionAcceptanceTests tests={acceptanceTests} /> : null;
+  const acceptanceHolds = await loadAcceptanceHolds(id).catch(() => []);
+  const acceptanceBlock = acceptanceTests.length > 0 || acceptanceHolds.length > 0
+    ? <>{acceptanceHolds.length > 0 && <MissionAcceptanceHolds holds={acceptanceHolds} readonly={isTerminal} />}{acceptanceTests.length > 0 && <MissionAcceptanceTests tests={acceptanceTests} />}</>
+    : null;
   const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
 
   // The task PRs behind Delivery's count line (spec 072de598 I-23).

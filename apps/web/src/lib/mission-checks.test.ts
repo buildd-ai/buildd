@@ -240,7 +240,8 @@ describe('criteriaChecks: the outcome spec is one Verify row (R-29)', () => {
   it('a waived or stale requirement never reads as passed', () => {
     const [row] = criteriaChecks([spec], state('UNVERIFIED', [['R-1', 'pass'], ['R-2', 'stale'], ['R-3', 'pass']]), ctx);
     expect(row.status).toBe('stale');
-    expect(row.state).toBe('1 of 3 pass');
+    expect(row.state).toBe('out of date');
+    expect(row.detail).not.toMatch(/of (one|two|three|\d+) pass/i);
     expect(row.detail).toContain('Out of date: one');
     expect(row.detail).toContain('Waived: one');
     expect(row.criteria?.map(l => [l.id, l.result])).toEqual([['R-1', 'passed'], ['R-2', 'out of date'], ['R-3', 'waived']]);
