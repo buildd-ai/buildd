@@ -1261,7 +1261,9 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
   // forever. History (buildHistory, explainPr) is unaffected — this only
   // trims what feeds the waiting/completion signal below. A task whose
   // mission is still open always counts, whatever its age.
-  const closedAtProxy = prDelivery?.lastTransition?.createdAt ?? (worker?.updatedAt ? iso(worker.updatedAt) : null);
+  // Use task.completedAt as the reference point: it's immutable after set
+  // (never bumped by rescans), not worker.updatedAt which changes on any write.
+  const closedAtProxy = prDelivery?.lastTransition?.createdAt ?? (task.completedAt ? iso(task.completedAt) : null);
   const unmergedPrFiltered = unmergedPr.filter(p => !p.closedUnsuperseded || !closedPrAgedOutOfExplain({
     missionId: task.missionId ?? null,
     missionStatus: parentMission?.status ?? null,

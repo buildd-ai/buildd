@@ -764,6 +764,29 @@ describe('explainTask', () => {
     expect(answer.because.some(l => l.claim.includes('record_pr_supersession'))).toBe(true);
   });
 
+  // Task 9e379e31: a closed PR on a completed task that is older than
+  // CLOSED_PR_AGE_OUT_DAYS should not count as awaiting_merge; it should read
+  // as completed. The age-out uses task.completedAt (immutable) not worker.updatedAt
+  // (which gets bumped by rescans and never ages out).
+  it('ages out a closed PR older than CLOSED_PR_AGE_OUT_DAYS and reads the task as completed', async () => {
+    const NOW = new Date('2026-10-27T00:00:00Z');
+    const completedAt = new Date(NOW.getTime() - 20 * 24 * 60 * 60 * 1000); // 20 days ago
+    taskRows = [
+      task({
+        id: 'task-aged',
+        status: 'completed',
+        completedAt,
+        missionId: null, // No mission, so age-out applies
+        workers: [worker({ id: 'w-aged', prNumber: 99, prUrl: 'https://example.invalid/99', prLifecycleStatus: 'closed' })],
+      }),
+    ];
+
+    const result = await explainTask('task-aged', ACTOR);
+    const answer = result!.subjects[0];
+    // The PR should be aged out and not cause awaiting_merge status
+    expect(answer.state).not.toBe('awaiting_merge');
+  });
+
   // A request-changes review queued a builder-after-review attempt. The PR is
   // still open and unmerged, but the owner has nothing to merge yet — the next
   // push is the platform's. "Waiting on you to merge" here is the false headline.

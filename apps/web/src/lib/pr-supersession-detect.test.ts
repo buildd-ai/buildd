@@ -601,6 +601,27 @@ describe('rescanOnMerge', () => {
     sweepRows = null as any;
     expect(await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: null })).toEqual({ nominated: 0, results: [] });
   });
+
+  it('a closed attempt PR nominated via lineage is recorded as superseded by the merged PR', async () => {
+    // Task 9e379e31: when a later attempt's PR merges, earlier closed attempt PRs should be recorded superseded.
+    // mergedPr sets up #9 (merged); we nominate #6 (closed) via task lineage, not PR body reference.
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
+    closedPr('org/kb', 6);
+    // The merged PR belongs to task 't-9'; the closed PR belongs to task 't-6' (an attempt).
+    // When findTaskLineageForSupersession runs on 't-9', it finds no parent but returns siblings (other attempts).
+    // The closed PR is nominated because its worker task 't-6' is in the lineage of 't-9' (a sibling attempt).
+    // In this case, task 't-9' has parentTaskId 'p-1' (it's an attempt of p-1),
+    // and task 't-6' also has parentTaskId 'p-1' (sibling attempt).
+    mergedTask = { parentTaskId: 'p-1', taskClass: 'attempt' };
+    siblingTasks = [{ id: 't-6', parentTaskId: 'p-1', taskClass: 'attempt' }];
+    sweepRows = [{ id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' }];
+    const r = await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: 't-9' });
+    // The closed PR #6 should be nominated and recorded as superseded
+    expect(r.nominated).toBe(1);
+    expect(r.results[0]).toMatchObject({ prUrl: 'https://github.com/org/kb/pull/6', outcome: 'recorded' });
+    expect(recordCalls[0]).toMatchObject({ workerId: 'w-6', supersedingPrNumber: 9 });
+    expect(gateEvents[0]).toMatchObject({ outcome: 'accepted', surface: 'webhook pull_request.closed (merged)' });
+  });
 });
 
 // Task 9e379e31: most of the closed-unmerged backlog was retries whose PR closed
