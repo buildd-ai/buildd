@@ -387,7 +387,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause', 'replaces'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause', 'replaces', 'explanation'] as const) if (params[k] !== undefined) payload[k] = params[k];
       let spec;
       let duplicateCheck: DuplicateCheckView | null = null;
       let suggestedParent: { specId: string; title: string; reason: string } | null = null;
@@ -458,6 +458,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
       if (params.design !== undefined) payload.design = params.design;
       if (params.replaces !== undefined) payload.replaces = params.replaces;
+      if (params.explanation !== undefined) payload.explanation = params.explanation;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);

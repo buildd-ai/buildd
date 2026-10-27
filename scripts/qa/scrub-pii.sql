@@ -702,6 +702,21 @@ UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence), criterion
 DELETE FROM spec_criteria;
 DELETE FROM spec_revision_reviews;
 UPDATE spec_revisions SET criteria_count = NULL;
+-- A revision's explanation (Living Spec b7fc9316 R-15) is its author's prose:
+-- the summary and each line become placeholders of the same length; a
+-- criterion id key is kept (it names a criterion of the scrubbed body, so the
+-- coverage check still reads), a section heading key is hashed. The column
+-- refuses any UPDATE (migration *_spec_revision_explanation_immutable), so that
+-- trigger is off for this one statement, on the throwaway clone only.
+ALTER TABLE spec_revisions DISABLE TRIGGER spec_revisions_explanation_immutable;
+UPDATE spec_revisions SET explanation = jsonb_build_object(
+  'summary', pg_temp.qa_text(explanation->>'summary'),
+  'lines', (SELECT coalesce(jsonb_object_agg(
+      CASE WHEN k ~ '^(R|AC)-[0-9]+$' THEN k ELSE 'section-' || left(md5(k), 8) END,
+      to_jsonb(pg_temp.qa_text(v))), '{}'::jsonb)
+    FROM jsonb_each_text(coalesce(explanation->'lines', '{}'::jsonb)) AS e(k, v)))
+WHERE explanation IS NOT NULL;
+ALTER TABLE spec_revisions ENABLE TRIGGER spec_revisions_explanation_immutable;
 -- Spec neighbours: the reason detail names repo paths and criterion ids; kind and source are fixed words.
 UPDATE spec_neighbors SET detail = pg_temp.qa_json(detail);
 -- Spec filings: a proposed new area's title and charter (spec prose) ride in
