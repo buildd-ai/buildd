@@ -83,11 +83,18 @@ describe('PATCH /api/runners/[heartbeatId]/slots', () => {
     expect((await call({ slots: 12 }, 'nope')).status).toBe(404);
   });
 
-  it('refuses a value outside 1 to 50 or not a whole number with 400', async () => {
-    for (const slots of [0, 51, -1, 2.5, '8', null, undefined]) {
+  it('refuses a value outside 0 to 50 or not a whole number with 400', async () => {
+    for (const slots of [51, -1, 2.5, '8', null, undefined]) {
       expect((await call({ slots })).status).toBe(400);
     }
     expect((await call({ slots: 1 })).status).toBe(200);
     expect((await call({ slots: 50 })).status).toBe(200);
+  });
+
+  it('accepts 0: the runner claims nothing (spec 97b1bd0b R-18)', async () => {
+    const res = await call({ slots: 0 });
+    expect(res.status).toBe(200);
+    expect(updates[0]).toMatchObject({ desiredSlots: 0, desiredSlotsOrigin: 'dashboard' });
+    expect((await res.json()).desiredSlots.slots).toBe(0);
   });
 });

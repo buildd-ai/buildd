@@ -3757,6 +3757,13 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   desiredSlotsOrigin: text('desired_slots_origin').$type<'dashboard' | 'machine'>(),
   desiredSlotsSetBy: text('desired_slots_set_by'),
   desiredSlotsSetAt: timestamp('desired_slots_set_at', { withTimezone: true }),
+  // Paused (take no new work, let running work finish; the runner's hold),
+  // with who changed it and when, under the same rule as the slots above.
+  // Null until a runner reports its hold or an owner pauses it.
+  desiredPaused: boolean('desired_paused'),
+  desiredPauseOrigin: text('desired_pause_origin').$type<'dashboard' | 'machine'>(),
+  desiredPauseSetBy: text('desired_pause_set_by'),
+  desiredPauseSetAt: timestamp('desired_pause_set_at', { withTimezone: true }),
   activeWorkerCount: integer('active_worker_count').default(0).notNull(),
   environment: jsonb('environment').$type<WorkerEnvironment>(),
   sandboxEnabled: boolean('sandbox_enabled'),

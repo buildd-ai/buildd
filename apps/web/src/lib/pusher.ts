@@ -210,6 +210,6 @@ export const events = {
   WORKER_CONNECTOR_PERMISSION_INSUFFICIENT: 'worker:connector-permission-insufficient',
   // Release row state changed (dispatched → deploying → healthy / failed)
   RELEASE_UPDATED: 'release:updated',
-  // A runner's slots were set on the dashboard: heartbeat now to pick the value up.
+  // A runner's slots or Pause were set on the dashboard: heartbeat now to pick the value up.
   RUNNER_SLOTS: 'runner:slots',
 } as const;

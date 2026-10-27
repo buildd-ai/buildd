@@ -1111,9 +1111,9 @@ describe('POST /api/workers/heartbeat — fleet identity of a --once run', () =>
     expect(capturedConflictSet.maxConcurrentWorkers).toBe(9);
   });
 
-  it('a malformed slots value falls back to the account default', async () => {
+  it('a malformed slots value falls back to the account default (0 is a real value: spec 97b1bd0b R-18)', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
-    for (const bad of [0, -2, 2.5, 'nine', 500]) {
+    for (const bad of [-2, 2.5, 'nine', 500]) {
       await POST(createMockRequest({
         headers: { Authorization: 'Bearer bld_test' },
         body: { localUiUrl: 'http://atlas.local:8766', environment: env(), maxConcurrent: bad },
@@ -1641,5 +1641,80 @@ describe('POST /api/workers/heartbeat — slots set on buildd.dev (spec 34a48877
     mockHeartbeatsFindFirst.mockResolvedValue(row());
     const data = await (await beat()).json();
     expect(data.desiredSlots).toBeNull();
+  });
+});
+
+describe('POST /api/workers/heartbeat — concurrency 0 and Pause set on buildd.dev (spec 97b1bd0b R-18)', () => {
+  const RUNNER = 'http://localhost:8766';
+  const HELD = { since: '2026-10-27T10:00:00.000Z', until: null };
+  const beat = (body: Record<string, unknown> = {}) => POST(createMockRequest({
+    headers: { Authorization: 'Bearer bld_test' },
+    body: { localUiUrl: RUNNER, activeWorkerCount: 2, activeWorkerIds: [], maxConcurrent: 3, slotsChangedAt: 3000, ...body },
+  }));
+  const row = (over: Record<string, unknown> = {}) => ({
+    viewerToken: 'tok', updateAvailable: null, updateAvailableSince: null,
+    desiredSlots: 3, desiredSlotsOrigin: 'machine', desiredSlotsSetBy: null, desiredSlotsSetAt: new Date(3000),
+    desiredPaused: true, desiredPauseOrigin: 'dashboard', desiredPauseSetBy: 'Max', desiredPauseSetAt: new Date(5000),
+    ...over,
+  });
+
+  beforeEach(() => {
+    redisUp = false;
+    redisKeys.clear();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsInsert.mockReset();
+    mockHeartbeatsInsert.mockImplementation(() => ({ values: mock(() => ({ onConflictDoUpdate: mock(() => Promise.resolve()) })) }));
+    mockGetLatestVersion.mockResolvedValue({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' });
+    leaseUpdateCalls = [];
+    leaseRenewedRows = [];
+    leaseUpdateThrows = null;
+  });
+
+  it('a runner reporting 0 slots is stored at 0, not the account default', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row({ desiredPaused: null, desiredPauseOrigin: null, desiredPauseSetBy: null, desiredPauseSetAt: null }));
+    let stored: any = null;
+    mockHeartbeatsInsert.mockImplementation(() => ({ values: mock((v: any) => { stored = v; return { onConflictDoUpdate: mock(() => Promise.resolve()) }; }) }));
+    await beat({ maxConcurrent: 0, slotsChangedAt: 4000, environment: { hold: null } });
+    expect(stored?.maxConcurrentWorkers).toBe(0);
+    const write = leaseUpdateCalls.find(c => 'desiredSlots' in c.set);
+    expect(write?.set).toMatchObject({ desiredSlots: 0, desiredSlotsOrigin: 'machine' });
+  });
+
+  it('hands a dashboard Pause to a runner that is not held, with who and when', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat({ environment: { hold: null }, holdChangedAt: 1000 })).json();
+    expect(data.desiredPause).toEqual({ paused: true, setBy: 'Max', setAt: 5000 });
+    // Pause leaves the slots alone.
+    expect(data.desiredSlots).toBeNull();
+  });
+
+  it('a runner already held gets nothing back', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat({ environment: { hold: HELD }, holdChangedAt: 5000 })).json();
+    expect(data.desiredPause).toBeNull();
+  });
+
+  it('`buildd resume` on the machine after the dashboard Pause wins and is recorded', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat({ environment: { hold: null }, holdChangedAt: 6000 })).json();
+    expect(data.desiredPause).toBeNull();
+    const write = leaseUpdateCalls.find(c => 'desiredPaused' in c.set);
+    expect(write?.set).toMatchObject({ desiredPaused: false, desiredPauseOrigin: 'machine', desiredPauseSetBy: null });
+    expect(write?.set.desiredPauseSetAt.getTime()).toBe(6000);
+    expect('desiredSlots' in write!.set).toBe(false);
+  });
+
+  it('a dashboard Resume reaches a runner held before it', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row({ desiredPaused: false, desiredPauseSetAt: new Date(7000) }));
+    const data = await (await beat({ environment: { hold: HELD }, holdChangedAt: 6000 })).json();
+    expect(data.desiredPause).toEqual({ paused: false, setBy: 'Max', setAt: 7000 });
+  });
+
+  it('a runner whose environment carries no hold is not sent a Pause', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat({ environment: { envKeys: [] } })).json();
+    expect(data.desiredPause).toBeNull();
   });
 });
