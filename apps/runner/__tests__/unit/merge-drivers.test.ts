@@ -442,7 +442,7 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
       expect(finish.error).toBeTruthy();
       expect(git(remote, 'rev-parse', 'refs/heads/feature')).toBe(theirs);
     } finally {
-      rmSync(other, { recursive: true, force: true });
+      cleanup(other);
     }
   });
 

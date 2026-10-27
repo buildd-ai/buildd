@@ -131,7 +131,7 @@ export function affordanceFor(
     case 'criterion_failing':
     case 'criterion_unverified':
       if (ctx.criteriaReachable === false) return null;
-      return { kind: 'internal', label: 'Go to goal criteria', href: `#${MISSION_CRITERIA_ANCHOR}` };
+      return { kind: 'internal', label: 'Go to requirements', href: `#${MISSION_CRITERIA_ANCHOR}` };
     case 'task_failed':
       return taskAffordance('Open the failed task', focus.taskIds[0], ctx.missionId);
     case 'claim_deferral':
