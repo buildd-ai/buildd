@@ -3,7 +3,9 @@
 import Capacity from '@/components/ui/Capacity';
 import IdleAlert from '@/components/ui/IdleAlert';
 
-export const CAPACITY_FIXTURE_STATE = 'capacity-and-idle-alert';
+import { CAPACITY_FIXTURE_STATE } from './visual-review-fixtures';
+
+export { CAPACITY_FIXTURE_STATE };
 
 const mockChart = [
   22, 30, 18, 12, 100, 100, 100, 44, 67, 89, 78, 56, 61, 72, 50, 39, 44, 58, 63, 47, 35, 28, 33, 33,
