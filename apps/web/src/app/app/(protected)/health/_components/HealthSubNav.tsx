@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { healthItemFor, healthNavFor, type HealthViewer } from '@/lib/health-nav';
@@ -25,6 +25,29 @@ export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
     activeTabRef.current?.scrollIntoView?.({ inline: 'center', block: 'nearest' });
   }, [active?.id]);
 
+  // The Queue tab carries the Waiting tile's number (spec R-1): the same read,
+  // scoped by ?workspace=. A failed read leaves the label bare.
+  const [waiting, setWaiting] = useState<number | null>(null);
+  const hasQueue = items.some(i => i.id === 'queue');
+  useEffect(() => {
+    if (!hasQueue) return;
+    let live = true;
+    const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+    fetch(`/api/health/queue${qs}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(v => { if (live) setWaiting(typeof v?.tiles?.waiting === 'number' ? v.tiles.waiting : null); })
+      .catch(() => { if (live) setWaiting(null); });
+    return () => { live = false; };
+  }, [hasQueue, workspace, pathname]);
+
+  const labelOf = (item: { id: string; label: string }) =>
+    item.id === 'queue' && waiting !== null ? (
+      <>
+        {item.label}
+        <span data-testid="queue-tab-count" className="ml-1.5 font-mono text-meta text-text-muted">{waiting}</span>
+      </>
+    ) : item.label;
+
   const href = (base: string) => (workspace ? `${base}?workspace=${encodeURIComponent(workspace)}` : base);
 
   return (
@@ -47,7 +70,7 @@ export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
                         : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3'
                     }`}
                   >
-                    {item.label}
+                    {labelOf(item)}
                   </Link>
                 </li>
               );
@@ -72,7 +95,7 @@ export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
                 isActive ? 'border-text-primary text-text-primary font-semibold' : 'border-transparent text-text-secondary'
               }`}
             >
-              {item.label}
+              {labelOf(item)}
             </Link>
           );
         })}
