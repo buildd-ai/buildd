@@ -255,3 +255,45 @@ describe('verdictReason / describeStandings', () => {
     expect(s.reason).toBe('test file not found');
   });
 });
+
+describe('foldMissionSpec: an older row never outranks a newer current one', () => {
+  const OLD = 'c'.repeat(40);
+  it('a newer test pass at the current head replaces an older test pass at another head', () => {
+    const rows = [row('R-1', 'pass', OLD, '2026-10-27T03:00:00Z'), row('R-1', 'pass', A, '2026-10-27T12:00:00Z')];
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration(A) });
+    expect(r.standings[0].standing).toBe('pass');
+    expect(r.verdict).toBe('pass');
+  });
+
+  it('a current review is the standing when the only test is at an older head (the test is stale, not deciding)', () => {
+    const review = { ...row('R-1', 'pass', A, '2026-10-27T12:00:00Z'), source: 'review' as const };
+    const rows = [row('R-1', 'pass', OLD, '2026-10-27T03:00:00Z'), review];
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration(A) });
+    expect(r.standings[0].standing).toBe('pass');
+    expect(r.standings[0].verdictId).toBe(review.id);
+  });
+
+  it('a current test still outranks a current review', () => {
+    const review = { ...row('R-1', 'fail', A, '2026-10-27T13:00:00Z'), source: 'review' as const };
+    const rows = [row('R-1', 'pass', A, '2026-10-27T12:00:00Z'), review];
+    expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration(A) }).standings[0].standing).toBe('pass');
+  });
+
+  it('with no current row the newest older row reads stale', () => {
+    const rows = [row('R-1', 'pass', OLD, '2026-10-27T03:00:00Z')];
+    expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration(A) }).standings[0].standing).toBe('stale');
+  });
+
+  it('a current review over an older test is open, not a pass: the test must run again', () => {
+    const review = { ...row('R-1', 'pass', A, '2026-10-27T12:00:00Z'), source: 'review' as const };
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [row('R-1', 'pass', OLD, '2026-10-27T03:00:00Z'), review], target: integration(A) });
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.evidence).toContain('R-1 has a current review but no current test result');
+  });
+
+  it('the summary names criteria it leaves out of the tested count', () => {
+    const review = { ...row('R-2', 'pass', A), source: 'review' as const };
+    const r = foldMissionSpec({ scope: ['R-1', 'R-2', 'R-3'], waived: [], rows: [row('R-1', 'pass', A), review], target: integration(A) });
+    expect(r.evidence).toContain('of three in scope');
+  });
+});
