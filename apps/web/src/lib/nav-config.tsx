@@ -82,14 +82,16 @@ export interface HealthNavItem {
   operatorOnly?: boolean;
   /** Only people holding view_team_usage in the active team see this item. */
   teamAdminOnly?: boolean;
+  /** A core workflow: the visual-QA manifest must cover it (visual-qa-routes.test.ts). */
+  core?: boolean;
 }
 
 export const HEALTH_INDEX_HREF = '/app/health';
 
 export const HEALTH_NAV: readonly HealthNavItem[] = [
-  { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF },
+  { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF, core: true },
   { id: 'failures', label: 'Failures', href: '/app/health/failures' },
-  { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners' },
+  { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners', core: true },
   { id: 'estimates', label: 'Estimates', href: '/app/health/estimates' },
   { id: 'usage', label: 'Usage', href: '/app/health/usage' },
   { id: 'insights', label: 'Insights', href: '/app/health/insights', teamAdminOnly: true },

@@ -66,6 +66,11 @@ on:
         type: string
         required: false
         default: ""
+      spec_id:
+        description: "Resolves /app/specs/:id in the manifest or a plan (not in routes)."
+        type: string
+        required: false
+        default: ""
       theme:
         description: "'light' or 'dark': emulates prefers-color-scheme (and seeds buildd's own theme key); recorded per capture as theme. Empty = app default."
         type: string
@@ -435,6 +440,7 @@ jobs:
           QA_THEME: ${{ inputs.theme }}
           QA_MISSION_ID: ${{ inputs.mission_id }}
           QA_TASK_ID: ${{ inputs.task_id }}
+          QA_SPEC_ID: ${{ inputs.spec_id }}
 
       # --- Typed capture failure (docs/specs/failure-incident-recovery.md §16.5) ---
       # Whatever failed (clone, migrations, scrub, guard, app boot, browser) is
