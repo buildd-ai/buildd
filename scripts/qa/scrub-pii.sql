@@ -127,6 +127,36 @@ LANGUAGE sql STABLE AS $f$
   SELECT s IS NOT NULL AND s ~* pg_temp.qa_ids()
 $f$;
 
+-- Turn a named trigger off around one scrub statement, and back on after.
+-- The harness is trunk's and the clone is prod's: a trigger an unreleased
+-- trunk migration creates is absent ($shim$ adds columns, not triggers), and
+-- a bare ALTER TABLE naming it fails the whole scrub. So: skip a trigger the
+-- clone lacks, leave one prod keeps disabled alone, and restore only what was
+-- turned off here.
+CREATE TEMP TABLE qa_triggers_off (tbl_name text NOT NULL, tg_name text NOT NULL) ON COMMIT DROP;
+
+CREATE OR REPLACE FUNCTION pg_temp.qa_trigger_off(tbl text, tg text) RETURNS void
+LANGUAGE plpgsql AS $f$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_trigger
+             WHERE tgrelid = to_regclass(format('public.%I', tbl)) AND tgname = tg
+               AND NOT tgisinternal AND tgenabled <> 'D') THEN
+    EXECUTE format('ALTER TABLE public.%I DISABLE TRIGGER %I', tbl, tg);
+    INSERT INTO qa_triggers_off VALUES (tbl, tg);
+  END IF;
+END
+$f$;
+
+CREATE OR REPLACE FUNCTION pg_temp.qa_trigger_restore(tbl text, tg text) RETURNS void
+LANGUAGE plpgsql AS $f$
+BEGIN
+  DELETE FROM qa_triggers_off WHERE tbl_name = tbl AND tg_name = tg;
+  IF FOUND THEN
+    EXECUTE format('ALTER TABLE public.%I ENABLE TRIGGER %I', tbl, tg);
+  END IF;
+END
+$f$;
+
 -- Same-length hex-ish token for a value that must not survive.
 CREATE OR REPLACE FUNCTION pg_temp.qa_token(s text) RETURNS text
 LANGUAGE sql IMMUTABLE AS $f$
@@ -318,6 +348,8 @@ DELETE FROM conversations;
 DELETE FROM chat_directives;
 DELETE FROM local_sessions;         -- presence of people's local coding sessions (repo, client)
 DELETE FROM presence_tokens;        -- people's machine names; a clone's tokens can't verify anyway
+DELETE FROM passkey_challenges;     -- live WebAuthn challenges; a clone's origin can't redeem them
+DELETE FROM user_passkeys;          -- people's passkey public keys and device names
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
@@ -702,6 +734,21 @@ UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence), criterion
 DELETE FROM spec_criteria;
 DELETE FROM spec_revision_reviews;
 UPDATE spec_revisions SET criteria_count = NULL;
+-- A revision's explanation (Living Spec b7fc9316 R-15) is its author's prose:
+-- the summary and each line become placeholders of the same length; a
+-- criterion id key is kept (it names a criterion of the scrubbed body, so the
+-- coverage check still reads), a section heading key is hashed. The column
+-- refuses any UPDATE (migration *_spec_revision_explanation_immutable), so that
+-- trigger is off for this one statement, on the throwaway clone only.
+DO $t$ BEGIN PERFORM pg_temp.qa_trigger_off('spec_revisions', 'spec_revisions_explanation_immutable'); END $t$;
+UPDATE spec_revisions SET explanation = jsonb_build_object(
+  'summary', pg_temp.qa_text(explanation->>'summary'),
+  'lines', (SELECT coalesce(jsonb_object_agg(
+      CASE WHEN k ~ '^(R|AC)-[0-9]+$' THEN k ELSE 'section-' || left(md5(k), 8) END,
+      to_jsonb(pg_temp.qa_text(v))), '{}'::jsonb)
+    FROM jsonb_each_text(coalesce(explanation->'lines', '{}'::jsonb)) AS e(k, v)))
+WHERE explanation IS NOT NULL;
+DO $t$ BEGIN PERFORM pg_temp.qa_trigger_restore('spec_revisions', 'spec_revisions_explanation_immutable'); END $t$;
 -- Spec neighbours: the reason detail names repo paths and criterion ids; kind and source are fixed words.
 UPDATE spec_neighbors SET detail = pg_temp.qa_json(detail);
 -- Spec filings: a proposed new area's title and charter (spec prose) ride in

@@ -1,4 +1,5 @@
 import { admitsNoteToNeedsYou } from '@buildd/core/needs-you';
+import { helperRunSql } from '@/lib/helper-run-sql';
 import { after } from 'next/server';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { peekGithubApproval, refreshGithubApprovals, type ApprovalRefresh } from '@/lib/github-approval';
@@ -58,6 +59,7 @@ import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveRev
 import type { ReviewerGateResult, ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
+import PageColumn from '@/components/ui/PageColumn';
 import HomeLive, { type HomeRegion } from './HomeLive';
 import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
@@ -266,19 +268,19 @@ async function HomePage({
         </Suspense>
       )}
       {view.hostedRunnerBanner && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <HostedRunnerBanner level={view.hostedRunnerBanner.level} text={view.hostedRunnerBanner.text} />
-        </div>
+        </PageColumn>
       )}
       {view.serviceStatus.banner && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <ServiceStatusBanner status={view.serviceStatus.banner} href="/app/health" />
-        </div>
+        </PageColumn>
       )}
       {view.modelUpgradeTeamId && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <ModelUpgradeNotice teamId={view.modelUpgradeTeamId} />
-        </div>
+        </PageColumn>
       )}
       <HomeLive
           region={region}
@@ -481,7 +483,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
       .limit(HOME_LIVE_SUMMARY_CAP + 1),
     // Count total tasks: whether a first task has succeeded. Attempt tasks nest under parents.
     taskCounts: hasWs ? db.select({ status: tasks.status, count: sql<number>`count(*)::int` }).from(tasks)
-      .where(and(inArray(tasks.workspaceId, wsIds), isNull(tasks.parentTaskId))).groupBy(tasks.status) : null,
+      .where(and(inArray(tasks.workspaceId, wsIds), isNull(tasks.parentTaskId), sql`not ${helperRunSql()}`)).groupBy(tasks.status) : null,
     // The team's workspaces, for the PR cards' policy and names.
     inboxWorkspaces: hasWs ? db.query.workspaces.findMany({
       where: sqlWhere(inArray(workspacesTable.id, wsIds)),
@@ -510,6 +512,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
         inArray(tasks.workspaceId, wsIds),
         eq(tasks.status, 'failed'),
         isNull(tasks.parentTaskId),
+        sql`not ${helperRunSql()}`,
         gte(tasks.updatedAt, new Date(now - 7 * 86_400_000)),
       )),
       columns: { id: true, title: true, status: true, backend: true, missionId: true, workspaceId: true },

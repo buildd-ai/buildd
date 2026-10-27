@@ -240,4 +240,60 @@ describe('verdictReason / describeStandings', () => {
       { criterionId: 'R-2', standing: 'missing', headSha: null, text: 'Second.' },
     ]);
   });
+  it('a newer held test result gives the held reason, not the older run\'s', () => {
+    const old = { ...row('R-1', 'inconclusive', A, '2026-10-14T10:00:00Z'), id: 'v-old', evidence: missing };
+    const out = describeStandings(
+      [{ criterionId: 'R-1', standing: 'inconclusive', headSha: A, verdictId: 'v-old' }, { criterionId: 'R-2', standing: 'missing', headSha: null }, { criterionId: 'R-3', standing: 'pass', headSha: A }],
+      [{ id: 'R-1', text: 'First.' }, { id: 'R-2', text: 'Second.' }, { id: 'R-3', text: 'Third.' }], [old],
+      new Map([['R-1', { at: '2026-10-14T11:00:00Z', prNumber: 5708 }], ['R-2', { at: '2026-10-14T11:00:00Z', prNumber: null }], ['R-3', { at: '2026-10-14T11:00:00Z', prNumber: 5708 }]]),
+    );
+    expect(out.map((s) => [s.reason, s.heldByPr])).toEqual([['test held', 5708], ['test held', undefined], [undefined, undefined]]);
+  });
+  it('an older held result does not mask a newer run\'s own reason', () => {
+    const fresh = { ...row('R-1', 'inconclusive', A, '2026-10-14T12:00:00Z'), id: 'v-new', evidence: missing };
+    const [s] = describeStandings([{ criterionId: 'R-1', standing: 'inconclusive', headSha: A, verdictId: 'v-new' }], [{ id: 'R-1', text: 'First.' }], [fresh], new Map([['R-1', { at: '2026-10-14T11:00:00Z', prNumber: 1 }]]));
+    expect(s.reason).toBe('test file not found');
+  });
+});
+
+describe('foldMissionSpec: an older row never outranks a newer current one', () => {
+  const OLD = 'c'.repeat(40);
+  it('a newer test pass at the current head replaces an older test pass at another head', () => {
+    const rows = [row('R-1', 'pass', OLD, '2026-10-27T03:00:00Z'), row('R-1', 'pass', A, '2026-10-27T12:00:00Z')];
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration(A) });
+    expect(r.standings[0].standing).toBe('pass');
+    expect(r.verdict).toBe('pass');
+  });
+
+  it('a current review is the standing when the only test is at an older head (the test is stale, not deciding)', () => {
+    const review = { ...row('R-1', 'pass', A, '2026-10-27T12:00:00Z'), source: 'review' as const };
+    const rows = [row('R-1', 'pass', OLD, '2026-10-27T03:00:00Z'), review];
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration(A) });
+    expect(r.standings[0].standing).toBe('pass');
+    expect(r.standings[0].verdictId).toBe(review.id);
+  });
+
+  it('a current test still outranks a current review', () => {
+    const review = { ...row('R-1', 'fail', A, '2026-10-27T13:00:00Z'), source: 'review' as const };
+    const rows = [row('R-1', 'pass', A, '2026-10-27T12:00:00Z'), review];
+    expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration(A) }).standings[0].standing).toBe('pass');
+  });
+
+  it('with no current row the newest older row reads stale', () => {
+    const rows = [row('R-1', 'pass', OLD, '2026-10-27T03:00:00Z')];
+    expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration(A) }).standings[0].standing).toBe('stale');
+  });
+
+  it('a current review over an older test is open, not a pass: the test must run again', () => {
+    const review = { ...row('R-1', 'pass', A, '2026-10-27T12:00:00Z'), source: 'review' as const };
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [row('R-1', 'pass', OLD, '2026-10-27T03:00:00Z'), review], target: integration(A) });
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.evidence).toContain('R-1 has a current review but no current test result');
+  });
+
+  it('the summary names criteria it leaves out of the tested count', () => {
+    const review = { ...row('R-2', 'pass', A), source: 'review' as const };
+    const r = foldMissionSpec({ scope: ['R-1', 'R-2', 'R-3'], waived: [], rows: [row('R-1', 'pass', A), review], target: integration(A) });
+    expect(r.evidence).toContain('of three in scope');
+  });
 });

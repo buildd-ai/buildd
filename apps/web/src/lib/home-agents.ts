@@ -22,6 +22,8 @@ export interface AgentLine {
   href: string | null;
   waiting: boolean;
   elapsedMs: number | null;
+  /** Helper runs (checks, audit, final verification) running under this work. */
+  checks: number;
 }
 
 export interface AgentsModel {
@@ -33,6 +35,7 @@ export interface AgentsModel {
 
 export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitles: ReadonlyMap<string, string> = new Map(), taskHref: (w: { missionId: string | null; taskId: string }) => string = ({ taskId }) => `/app/tasks/${taskId}`): AgentsModel {
   const lines: AgentLine[] = [];
+  const helpers: Array<{ taskId: string | null; hostTaskId: string | null; missionId: string | null; line: AgentLine }> = [];
   const squares: AgentSquare[] = [];
   for (const runner of fleet.runners) {
     if (!runner.online) continue;
@@ -41,7 +44,7 @@ export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitle
       if (!w) { squares.push('free'); continue; }
       const waiting = w.question != null || w.status === 'waiting_input';
       squares.push(waiting ? 'waiting' : 'busy');
-      lines.push({
+      const line: AgentLine = {
         key: w.workerId,
         taskId: w.taskId,
         // A friction or invariant task's label is a machine identifier
@@ -54,8 +57,20 @@ export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitle
         href: w.taskId ? taskHref({ missionId: w.missionId ?? null, taskId: w.taskId }) : null,
         waiting,
         elapsedMs: w.startedAt ? Math.max(0, now - new Date(w.startedAt).getTime()) : null,
-      });
+        checks: 0,
+      };
+      if (w.helper) helpers.push({ taskId: w.taskId, hostTaskId: w.hostTaskId ?? null, missionId: w.missionId, line });
+      else lines.push(line);
     }
+  }
+  // Helper runs are counted under the work they check (spec d25d923d R-13):
+  // its task, else its mission's oldest line. With nothing to count under they
+  // stay listed, so a running agent is never hidden.
+  for (const h of helpers) {
+    const host = (h.hostTaskId ? lines.find(l => l.taskId === h.hostTaskId) : undefined)
+      ?? (h.missionId ? lines.filter(l => l.missionId === h.missionId).sort((a, b) => (b.elapsedMs ?? 0) - (a.elapsedMs ?? 0))[0] : undefined);
+    if (host) host.checks++;
+    else lines.push(h.line);
   }
   // Slots the runners advertise beyond what the snapshot drew stay free.
   while (squares.length < fleet.capacity) squares.push('free');
@@ -63,6 +78,9 @@ export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitle
   lines.sort((a, b) => (b.elapsedMs ?? 0) - (a.elapsedMs ?? 0));
   return { busy: squares.filter(s => s !== 'free').length, total, squares, lines };
 }
+
+/** `2 checks running`: the helper runs under a line. */
+export const checksRunningLabel = (n: number) => `${n} ${n === 1 ? 'check' : 'checks'} running`;
 
 /** "3 of 4 busy". */
 export const agentsSummary = (m: Pick<AgentsModel, 'busy' | 'total'>) => `${m.busy} of ${m.total} busy`;

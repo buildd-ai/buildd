@@ -17,7 +17,9 @@
  * - `task.pr_merge_delivered` (every delivery): a loop waiting on the merge
  *   advances; a task PR landing on the integration branch opens the mission PR.
  * - `task.pr_merged` (once per merge, after the status transition): the
- *   mission wakes, and missions gated on this one's merges are unblocked.
+ *   mission wakes, missions gated on this one's merges are unblocked, and the
+ *   mission's criteria are checked again when the merge completes the build,
+ *   lands a repair or moves the merged result (Navigation R-19).
  * - `pr.closed` / `pr.base_changed`: surface ordering's change intents settle
  *   or follow the PR to its new base (network work in after()).
  * - `pr.needs_human`: the mission's "PR ready" notification.
@@ -51,6 +53,7 @@ import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@
 import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
 import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
+import { recheckMissionAfterMerge } from '@/lib/mission-verify-recheck';
 
 async function taskContext(taskId: string): Promise<unknown> {
   const [row] = await db
@@ -222,6 +225,14 @@ export const missionSubscribers: readonly AnySubscriber[] = [
       ),
     );
   }),
+  // Navigation R-19: verification runs by itself when the build completes, after
+  // each repair and whenever the merged result changes, not only on a completion
+  // attempt. After the response; never fails the merge.
+  subscriber('missions', 'task.pr_merged', 'recheck-criteria-on-merge', e => {
+    if (!e.missionId) return;
+    const { missionId, taskId } = e;
+    after(() => recheckMissionAfterMerge(missionId, taskId).then(() => {}));
+  }),
   // §6 (workflow-kernel-library.md): a mission PR merged on GitHub itself
   // (no buildd door ran) is still a merged delivery. Every door records it
   // too; the kernel's transition is idempotent, so the second is a noop.
@@ -236,6 +247,10 @@ export const missionSubscribers: readonly AnySubscriber[] = [
     if (!task?.missionId || !isMissionPrTask(task)) return;
     const { recordMissionPrMerged } = await import('@/lib/mission-epoch-door');
     await recordMissionPrMerged(task, e.installationId, e.repoFullName, e.prNumber);
+    // The merged result now sits on its target: checked again there (R-19).
+    const { missionId } = task;
+    const taskId = e.taskId;
+    after(() => recheckMissionAfterMerge(missionId, taskId).then(() => {}));
   }),
   subscriber('missions', 'pr.closed', 'settle-surface-intents', async e => {
     const settle = () => import('@/lib/surface-ordering')

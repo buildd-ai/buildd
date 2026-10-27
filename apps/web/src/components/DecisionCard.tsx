@@ -30,7 +30,7 @@
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useId, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Kbd } from '@/components/KeyHints';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
@@ -257,15 +257,30 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
   const waitsParts = view.waits ? waitsSummary(view.waits) : [];
   const footer = view.waits ? waitsFooter(view.waits, now) : null;
 
+  const cardRef = useRef<HTMLElement | null>(null);
+  const answeredRef = useRef(false);
+
   // Collapsed: answered, or set aside.
   const chosen = submit.outcome
     ? (submit.outcome.kind === 'sent' ? submit.outcome.answer : submit.outcome.recordedAnswer ?? submit.outcome.answer)
     : noteOutcome?.label ?? null;
+  // Once answered, focus moves to the next item that still needs the person.
+  const isAnswered = chosen != null;
+  useEffect(() => {
+    if (!isAnswered || answeredRef.current) return;
+    answeredRef.current = true;
+    const el = cardRef.current;
+    if (!el) return;
+    // Any decision card, whatever its testId (the home feed uses its own), still open: the next after this one, else the first.
+    const open = Array.from(document.querySelectorAll<HTMLElement>('article[data-kind]:not([data-answered]):not([data-later])'));
+    const next = open.find(c => !!(el.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING)) ?? open[0];
+    next?.querySelector<HTMLElement>('button, a[href]')?.focus();
+  }, [isAnswered]);
   if (chosen != null) {
     const lines = submit.outcome ? answerOutcomeLines(submit.outcome) : null;
     const already = submit.outcome?.kind === 'already_answered';
     return (
-      <article data-testid={testId ?? 'decision-card'} data-kind={view.kind} data-answered="true" className="flex min-w-0 flex-col gap-1 border-t border-[var(--line-soft)] py-3 text-body">
+      <article ref={cardRef} data-testid={testId ?? 'decision-card'} data-kind={view.kind} data-answered="true" className="flex min-w-0 flex-col gap-1 border-t border-[var(--line-soft)] py-3 text-body">
         <p className="text-text-primary [overflow-wrap:anywhere]">
           {already ? 'Already answered' : 'You chose'} <span className="font-semibold">{chosen}</span> · just now
         </p>

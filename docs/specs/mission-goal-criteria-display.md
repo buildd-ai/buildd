@@ -1,8 +1,9 @@
 ---
 title: Mission Goal Criteria Display
-status: active
+status: superseded
+superseded_by: 'living-spec:Navigation: one place per task'
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-27
 summary: A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet.
 domain: surfaces
 surfaces: [apps/web/src/lib/mission-board.ts, apps/web/src/components/ui/Criteria.tsx, apps/web/src/lib/mission-overview.ts]

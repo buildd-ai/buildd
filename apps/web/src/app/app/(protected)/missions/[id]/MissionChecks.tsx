@@ -24,11 +24,13 @@ import Card from '@/components/ui/Card';
 import CheckRowView, { CheckIcon } from '@/components/ui/CheckRow';
 import type { DeliveryCheckView, DeliveryView } from '@/lib/mission-delivery-checks';
 import { VISUAL_REVIEW_SKIP_REASONS, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
+import ReverifyButton from './ReverifyButton';
 import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
 import type { CriterionLine } from '@/lib/mission-outcome-spec-view';
 import { buildFoldLine } from '@/lib/mission-build-stage';
 import type { StandardItemStatus, StandardsLine } from '@/lib/specs/mission-standards-gate';
+import type { MissionVerifyView, UnmetRequirement, VerifyAction, VerifyGroup } from '@/lib/mission-verify-view';
 
 /** Build's count without its trailing word: `11 of 16 done` reads `Build · 11 of 16`. */
 const stageCount = (text: string) => text.replace(/\s+done$/, '');
@@ -81,30 +83,133 @@ export function OutcomeSpecLines({ lines }: { lines: readonly OutcomeSpecLine[] 
   );
 }
 
-const STANDARD_STATUS: Record<StandardItemStatus, string> = { met: 'met', not_met: 'not met', checking: 'checking', not_checked: 'not checked' };
+const STANDARD_STATUS: Record<StandardItemStatus, string> = { met: '✓ met', not_met: 'not met', checking: 'checking', not_checked: 'not checked' };
+const STANDARD_TONE: Record<StandardItemStatus, string> = { met: 'text-status-success', not_met: 'text-status-error', checking: 'text-accent-text', not_checked: 'text-text-muted' };
 
 /**
- * Verify's Standards line (Navigation R-17): CI and code review beside the
- * mission's standards, one line that opens on its own only when one is not met.
+ * Verify's Standards (Navigation R-17): one line, `Standards   ✓ All met`,
+ * opening to CI, code review and the workspace's standards on request, and on
+ * its own only when one is not met, with that one in place.
  */
 export function StandardsLineView({ line }: { line: StandardsLine }) {
+  const tone = line.allMet ? 'text-status-success' : line.open ? 'text-status-error' : 'text-text-muted';
   return (
-    <details data-testid="mission-standards" open={line.open} className="text-body">
-      <summary className="flex min-h-11 cursor-pointer items-baseline gap-x-2 md:min-h-0">
-        <span className="shrink-0 text-text-muted">Standards</span>
-        <span data-testid="mission-standards-summary" className={`font-mono text-meta ${line.open ? 'text-status-error' : 'text-text-muted'}`}>{line.text}</span>
-      </summary>
-      <ul aria-label="Standards" className="mt-1 flex flex-col gap-1 pl-4">
-        {line.items.map(it => (
-          <li key={it.key} data-testid="mission-standards-item" data-status={it.status} className="flex min-w-0 items-baseline gap-x-2 whitespace-nowrap">
-            {it.href
-              ? <a href={it.href} title={it.label} className="min-w-0 truncate text-text-primary underline-offset-4 hover:underline">{it.label}</a>
-              : <span className="min-w-0 truncate text-text-primary">{it.label}</span>}
-            <span className="shrink-0 font-mono text-meta text-text-muted">{STANDARD_STATUS[it.status]}</span>
-          </li>
-        ))}
-      </ul>
-    </details>
+    <Card as="section" aria-label="Standards" padding="sm" className="py-0 md:px-5">
+      <details data-testid="mission-standards" open={line.open} className="py-1">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-x-3 text-body">
+          <span className="font-semibold text-text-primary">Standards</span>
+          <span data-testid="mission-standards-summary" className={tone}>{line.allMet ? `✓ ${line.text}` : line.text}</span>
+        </summary>
+        <ul aria-label="Standards" className="mb-2 flex flex-col">
+          {line.items.map(it => (
+            <li key={it.key} data-testid="mission-standards-item" data-status={it.status} className="flex min-h-11 min-w-0 items-center justify-between gap-x-3 border-t border-[var(--line-soft)] text-body md:min-h-9">
+              {it.href
+                ? <a href={it.href} title={it.label} className="min-w-0 truncate text-text-primary underline-offset-4 hover:underline">{it.label}</a>
+                : <span className="min-w-0 truncate text-text-primary">{it.label}</span>}
+              <span className={`shrink-0 ${STANDARD_TONE[it.status]}`}>{STANDARD_STATUS[it.status]}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </Card>
+  );
+}
+
+/** A small ring for a requirement that is not met for a reason other than a failure. */
+function OpenRing() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="mt-0.5 text-text-muted"><circle cx="12" cy="12" r="6" /></svg>;
+}
+function NotMetCross() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true" className="mt-0.5 text-status-error"><path d="M6 6l12 12M18 6L6 18" /></svg>;
+}
+
+const LINK = 'text-accent-text underline decoration-border-strong underline-offset-2 hover:decoration-current';
+
+/** `Fixing: <task>, running 8m` or `rechecks after <task> merges`, the task a link to its page. */
+function RequirementAction({ action }: { action: VerifyAction }) {
+  const task = <a href={action.href} className={LINK}>{action.title}</a>;
+  return action.kind === 'fixing'
+    ? <span data-testid="mission-requirement-action" data-kind="fixing">Fixing: {task}{action.detail ? `, ${action.detail}` : ''}</span>
+    : <span data-testid="mission-requirement-action" data-kind="rechecks">rechecks after {task} merges</span>;
+}
+
+function UnmetRow({ u }: { u: UnmetRequirement }) {
+  const parts: ReactNode[] = [<span key="result" className={u.result === 'Not met' ? 'text-status-error' : undefined}>{u.result}</span>];
+  for (const e of u.evidence) parts.push(<a key={`e-${e.label}`} href={e.href} className={LINK}>{e.label}</a>);
+  if (u.action) parts.push(<RequirementAction key="action" action={u.action} />);
+  return (
+    <li data-testid="mission-requirement" data-result={u.result} className="grid grid-cols-[18px_minmax(0,1fr)] gap-x-2.5 border-t border-[var(--line-soft)] py-3 text-body md:grid-cols-[20px_52px_minmax(0,1fr)]">
+      {u.result === 'Not met' ? <NotMetCross /> : <OpenRing />}
+      <span className="font-mono text-meta text-text-muted max-md:hidden">{u.id}</span>
+      <span className="flex min-w-0 flex-col gap-1">
+        <span className="text-text-primary [overflow-wrap:anywhere]">{u.text ?? u.id}</span>
+        <span className="text-meta text-text-muted [overflow-wrap:anywhere]">
+          {parts.map((p, i) => <span key={i}>{i > 0 && ' · '}{p}</span>)}
+        </span>
+      </span>
+    </li>
+  );
+}
+
+function GroupFrom({ g }: { g: VerifyGroup }) {
+  return (
+    <span className="min-w-0 [overflow-wrap:anywhere]">
+      From <a href={g.href} className={LINK}>{g.title}</a>{g.scope ? ` · ${g.scope}` : ''}
+    </span>
+  );
+}
+
+function RequirementsGroup({ g }: { g: VerifyGroup }) {
+  // All met: one line (R-17).
+  if (g.allMet) {
+    return (
+      <div data-testid="mission-requirements-group" data-all-met="true" className="flex min-h-11 items-baseline justify-between gap-x-3 border-t border-border-default py-3 text-meta text-text-muted first:border-t-0">
+        <GroupFrom g={g} />
+        <span className="shrink-0 text-status-success">{`✓ ${g.count}`}</span>
+      </div>
+    );
+  }
+  const state = g.count ?? (g.checking ? 'checking' : 'not checked');
+  return (
+    <div data-testid="mission-requirements-group" className="flex flex-col border-t border-border-default first:border-t-0">
+      <div className="flex min-h-11 items-baseline justify-between gap-x-3 py-2 text-meta text-text-muted">
+        <GroupFrom g={g} />
+        <span className="shrink-0">{state}</span>
+      </div>
+      {g.unmet.length > 0 && <ul aria-label={`Not met from ${g.title}`} className="flex flex-col">{g.unmet.map(u => <UnmetRow key={u.id} u={u} />)}</ul>}
+      {g.met.length > 0 && (
+        <details data-testid="mission-requirements-met" className="border-t border-[var(--line-soft)]">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-body text-text-muted">
+            <span>{`${g.metCount} met${g.waived ? `, ${g.waived} waived` : ''}`}</span>
+            <span aria-hidden="true">›</span>
+          </summary>
+          <ul className="flex flex-col gap-1.5 pb-3">
+            {g.met.map(m => <li key={m.id} className="text-body text-text-secondary [overflow-wrap:anywhere]">{`✓ ${m.text ?? m.id}`}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Verify's Requirements (Navigation R-17, AC-11): `18 of 21 met`, one group per
+ * selected spec, only the unmet listed with their evidence and what is being
+ * done, the met folded, an all-met group one line. Drawn from
+ * `missionVerifyView` (lib/mission-verify-view.ts); this only renders it.
+ */
+export function RequirementsView({ view }: { view: MissionVerifyView }) {
+  return (
+    <Card as="section" data-testid="mission-requirements" aria-label="Requirements" padding="sm" className="flex flex-col py-1 md:px-5">
+      <div className="flex items-baseline justify-between gap-x-3 pb-1 pt-3">
+        <h2 className="text-title font-semibold text-text-primary">Requirements</h2>
+        <span className="flex items-baseline gap-3">
+          <span data-testid="mission-requirements-summary" className="text-body text-text-muted">{view.summary}</span>
+          {view.reverify && <ReverifyButton missionId={view.reverify.missionId} state={view.reverify.state} />}
+        </span>
+      </div>
+      {view.groups.map(g => <RequirementsGroup key={g.key} g={g} />)}
+    </Card>
   );
 }
 

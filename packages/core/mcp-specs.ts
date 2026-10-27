@@ -387,7 +387,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause', 'replaces'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause', 'replaces', 'explanation'] as const) if (params[k] !== undefined) payload[k] = params[k];
       let spec;
       let duplicateCheck: DuplicateCheckView | null = null;
       let suggestedParent: { specId: string; title: string; reason: string } | null = null;
@@ -458,6 +458,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
       if (params.design !== undefined) payload.design = params.design;
       if (params.replaces !== undefined) payload.replaces = params.replaces;
+      if (params.explanation !== undefined) payload.explanation = params.explanation;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
@@ -544,6 +545,14 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
             const r = await api(path);
             const outs = r.outcomes as Array<{ criterion: { revision: number; label?: string }; standing: MissionStanding }>;
             return text(outs.length === 0 ? 'This mission has no selected outcome spec.' : outs.map((o) => missionStandingText(o.criterion.label ?? `revision ${o.criterion.revision}`, o.standing)).join('\n\n'));
+          }
+          if (params.verdicts !== undefined) {
+            // Many in one request, one short reply: counts, what was refused, what did not settle.
+            const r = await api(path, { method: 'POST', body: JSON.stringify({
+              verdicts: params.verdicts, headSha: need(params.headSha, 'headSha'),
+              ...(params.specId !== undefined ? { specId: params.specId } : {}),
+            }) });
+            return text(batchSummaryText(r.summary));
           }
           const r = await api(path, { method: 'POST', body: JSON.stringify({
             criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), headSha: need(params.headSha, 'headSha'),
@@ -873,4 +882,19 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       }
     }
   }
+}
+
+
+interface BatchSummary {
+  recorded: number; counts: Record<string, number>; refused: Array<{ criterionId: unknown; error: string }>;
+  unsettled: Array<{ criterionId: string; standing: string }>; scope: number; passing: number; verdict: string;
+}
+
+/** The short reply to a batch of mission verdicts: counts, then only what did not settle. */
+export function batchSummaryText(s: BatchSummary): string {
+  const counts = Object.entries(s.counts).map(([k, n]) => `${n} ${k}`).join(', ');
+  const lines = [`Recorded ${s.recorded} verdict${s.recorded === 1 ? '' : 's'}${counts ? ` (${counts})` : ''}. ${s.passing} of ${s.scope} in scope pass on the target; mission verdict ${s.verdict}.`];
+  if (s.refused.length) lines.push(`Not recorded: ${s.refused.map((r) => `${r.criterionId} (${r.error})`).join('; ')}`);
+  if (s.unsettled.length) lines.push(`Not settled: ${s.unsettled.map((u) => `${u.criterionId} ${u.standing}`).join(', ')}`);
+  return lines.join('\n');
 }

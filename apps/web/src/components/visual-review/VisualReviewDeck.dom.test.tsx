@@ -694,3 +694,26 @@ describe('undo over the real server contract', () => {
     expect(calls).toEqual([ids[0]]);
   });
 });
+
+describe('waiting for a new screenshot, and earlier shots', () => {
+  it('a queued recapture offers no Looks right / Needs fix: the deck has nothing to decide', () => {
+    const m = buildVisualReviewFixtureModel('queued', { scenario: 'recapture-queued' });
+    expect(m.recapture?.next).toBe('queued');
+    expect(m.queue).toEqual([]);
+    renderDeck({ model: m, startKey: m.recapture!.screens[0].key });
+    expect(q('deck-settled')?.textContent).toContain('waiting for a new screenshot');
+    expect(q('deck-looks-right')).toBeNull();
+    expect(q('deck-needs-fix')).toBeNull();
+  });
+
+  it('a superseded shot is listed under Earlier on the screen that replaced it, not as a screen of its own', () => {
+    const m = deckModel();
+    const [first, ...rest] = m.cells;
+    const older = { ...first.current, shot: { ...first.current.shot, id: 'older-shot' } };
+    const withEarlier = { ...m, cells: [{ ...first, earlier: [older] }, ...rest] };
+    renderDeck({ model: withEarlier, startKey: first.key });
+    const earlier = q('deck-earlier')!;
+    expect(earlier.textContent).toContain('Earlier: 1 older screenshot');
+    expect(q('deck-progress')!.textContent).toBe(`${toReview(m)} to review`);
+  });
+});

@@ -201,7 +201,7 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
       const owner: VisualReviewOwnerDecision = {
         kind: 'judge',
         label: `Check ${plural(n, 'fixed screen')}`,
-        detail: `Fixed or Still broken: ${screensPhrase(state.recapture.screens)}.`,
+        detail: `A new screenshot can no longer be taken automatically, so it needs your call. Fixed or Still broken: ${screensPhrase(state.recapture.screens)}.`,
       };
       return {
         ...quiet, ...common, stage: 'judgment', tone: 'warning', label: n === 1 ? 'A fix merged with no new screenshot' : `${n} fixes merged with no new screenshot`,

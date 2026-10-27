@@ -37,6 +37,8 @@ export interface MissionVisualReviewSummary {
   label?: string;
   /** A person owes the review a decision (`presentVisualReview(state).needsYou`). */
   needsOwner?: boolean;
+  /** Merged fixes wait on a new screenshot that is queued or about to be filed: nothing is asked of a person. */
+  recaptureComing?: boolean;
 }
 
 /** The visual review as the mission state reads it: one cause, from the review's own state. */
@@ -49,5 +51,6 @@ export function summarizeVisualReview(state: MissionVisualReviewState | null | u
       : null,
     holdReason: state.status === 'queued' ? state.holdReason ?? null : null,
     ...(state.blocksMerge ? { blocksMerge: true, label: presentVisualReview(state).label, needsOwner: presentVisualReview(state).needsYou } : {}),
+    ...(state.recapture && state.recapture.next !== 'decide' ? { recaptureComing: true } : {}),
   };
 }

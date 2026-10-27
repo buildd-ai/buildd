@@ -70,7 +70,7 @@ describe('S3 retirements', () => {
   });
 
   it('the Delivery glyph colours have one definition, shared by every step row', () => {
-    for (const file of ['MissionScreensRow.tsx', 'MissionReleaseSection.tsx']) {
+    for (const file of ['MissionReleaseSection.tsx']) {
       const src = readFileSync(join(import.meta.dir, file), 'utf8');
       expect(src).not.toMatch(/const STATE_TEXT\b/);
       expect(src).toContain('DELIVERY_STATE_TEXT');
@@ -122,11 +122,16 @@ describe('Visual review retirements (docs/design/visual-qa-human-review.md, "Whe
     expect(src.match(/visual=\{boardVisual\}/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
   });
 
-  it('the footer renders the Screens row next to Shipped, inside the review provider', () => {
+  it('no Screens row, Goal criteria panel or Run verification on the page; the review provider stays (Navigation R-18, R-19, AC-11)', () => {
     const src = readFileSync(PAGE, 'utf8');
-    expect(src).toContain('<MissionScreensRow missionId={id} step={visualStep} />');
-    expect(src.indexOf('<MissionReleaseSection')).toBeLessThan(src.indexOf('<MissionScreensRow'));
+    expect(src).not.toContain('MissionScreensRow');
+    expect(src).not.toContain('MissionVerifiedPill');
+    expect(src).not.toContain('MissionGoalCriteria');
+    expect(src).not.toContain('CriteriaCheckNow');
     expect(src).toContain('<MissionVisualReviewProvider missionId={id} visual={boardVisual}>');
+    // Verify is fed the Requirements view, with the evidence behind it.
+    expect(src).toMatch(/<MissionOverview [^>]*verify=\{verifyView\}/);
+    expect(src).toContain('loadMissionEvidence(');
   });
 
   it('the Settings sheet carries the auto-audit switch, read from the mission row', () => {

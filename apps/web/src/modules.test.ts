@@ -87,7 +87,7 @@ describe('composition root', () => {
     expect(byEvent('task.override_started')).toEqual(['jev-decisions:override-start-decision']);
     // The mission wakes and dependents unblock before the release trigger.
     expect(byEvent('task.pr_merged')).toEqual([
-      'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
+      'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'missions:recheck-criteria-on-merge', 'releases:release-path-b-trigger',
       'experiments:task-estimate-actuals-merged', 'jev-decisions:verdict-on-merge',
     ]);
     // The verdict is measured before the reviewer is superseded.

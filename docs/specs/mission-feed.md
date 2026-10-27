@@ -132,7 +132,8 @@ Timeline and Structure views are unchanged and are covered by
 - `apps/web/src/lib/mission-delivery.ts` — the Delivery steps
   (`buildDeliverySteps`, `formatDeliverySummary`, `deliveryReleaseInput`,
   `missionTrunkMergedAt`), rendered as the footer's Shipped row
-  (`MissionReleaseSection.tsx`) and Screens row (`MissionScreensRow.tsx`).
+  (`MissionReleaseSection.tsx`). The Screens row is retired (Navigation
+  d25d923d R-18): screenshots are evidence under a requirement in Verify.
 - `apps/web/src/app/app/(protected)/missions/[id]/mission-feed-view.ts` — the
   page's one feed derivation (`buildMissionFeedView`).
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionRecordsSheet.tsx` —

@@ -18,9 +18,23 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+// The browser's passkey prompt (Living Spec b7fc9316 R-20): answered, or dismissed.
+let passkeyAnswer: 'complete' | 'dismiss' = 'complete';
+const prompts: unknown[] = [];
+mock.module('@simplewebauthn/browser', () => ({
+  startAuthentication: async (o: { optionsJSON: unknown }) => {
+    prompts.push(o.optionsJSON);
+    if (passkeyAnswer === 'dismiss') throw new Error('NotAllowedError');
+    return { id: 'cred', type: 'public-key', response: { clientDataJSON: 'x' } };
+  },
+  startRegistration: async () => ({}),
+  browserSupportsWebAuthn: () => true,
+}));
+
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: SpecApprovalRequest } = await import('./SpecApprovalRequest');
+const { explanationCoverage } = await import('@buildd/spec-contract/explanation');
 
 const SPEC = '11111111-1111-4111-8111-111111111111';
 let container: HTMLElement;
@@ -43,6 +57,7 @@ const LONG = `R-1: ${'a very long requirement line that has to wrap rather than 
 const ready = {
   state: 'ready' as const, title: 'Checkout', revision: 3, replaces: 2 as number | null,
   pin: { revision: 3, expectedVersion: 7, contentHash: 'c'.repeat(64) },
+  passkey: false,
   sections: [{ kind: 'changed' as const, path: 'Checkout > Totals', level: 2, linesAdded: 1, linesRemoved: 1 }],
   hunks: [{
     kind: 'changed' as const, path: 'Checkout > Totals', linesAdded: 1, linesRemoved: 1,
@@ -61,7 +76,11 @@ const ready = {
     otherText: [], mismatch: null,
   } as { summary: string | null; lines: never[]; otherText: never[]; mismatch: string | null },
   body: '# Checkout\n\n## Totals\n\n- R-1: **Totals** are in the shopper currency.\n',
+  explanation: { summary: 'Totals round to cents.', lines: { 'R-1': 'Totals now round to the cent.' } } as { summary: string; lines: Record<string, string> } | null,
+  coverage: null as ReturnType<typeof explanationCoverage> | null,
+  sectionWords: {} as Record<string, Array<{ op: '=' | '+' | '-'; text: string }>>,
 };
+ready.coverage = explanationCoverage(ready.explanation, ready.changes.lines, []);
 const first = { ...ready, replaces: null, sections: [{ kind: 'added' as const, path: 'Checkout', level: 1, linesAdded: 5, linesRemoved: 0 }] };
 const q = (id: string) => container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 const radio = (label: string) => [...container.querySelectorAll('[role="radio"]')].find((b) => b.textContent === label) as HTMLButtonElement;
@@ -150,9 +169,10 @@ describe('SpecApprovalRequest', () => {
     expect(container.textContent).toContain('Nothing is approved yet.');
     const rendered = q('spec-approval-rendered');
     expect(rendered).not.toBeNull();
-    // The action comes before the text it approves.
-    const approveBtn = q('spec-approval-approve')!;
-    expect(approveBtn.compareDocumentPosition(rendered!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The action sits in a sticky bar after the text it approves, so it is in view while the text is read (b7fc9316 R-14).
+    const bar = q('spec-approval-bar')!;
+    expect(rendered!.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bar.className).toContain('sticky');
     expect(rendered!.querySelector('h2')!.textContent).toBe('Totals');
     expect(rendered!.querySelector('strong')!.textContent).toBe('Totals');
     expect(q('spec-approval-diff')).toBeNull();
@@ -284,6 +304,152 @@ describe('SpecApprovalRequest', () => {
       expect(container.textContent).toContain('The spec changed since this page loaded.');
       expect(refreshes).toBe(1);
       expect(approveButton()).toBeNull();
+    });
+  });
+});
+
+/** One decision on one screen (Living Spec b7fc9316 R-14 to R-19, AC-12 to AC-17). */
+describe('SpecApprovalRequest: the explanation and its check', () => {
+  // Enough unchanged words that the change reads inline (marked words), not as Was and Now.
+  const words = (was: string, now: string) => [{ op: '=' as const, text: 'Every total in the cart is ' }, { op: '-' as const, text: was }, { op: '+' as const, text: now }, { op: '=' as const, text: ' before the shopper pays for the order.' }];
+  const ch = (id: string) => ({ kind: 'changed' as const, id, text: `${id} now`, oldText: `${id} was`, words: words(`${id} was`, `${id} now`), section: 'Checkout > Totals' });
+  const four = [ch('R-1'), ch('R-2'), ch('R-3'), ch('AC-1')];
+  const other = [{ kind: 'changed' as const, section: 'Checkout > Context' }];
+  const viewWith = (lines: Record<string, string> | null, opts: { other?: boolean } = {}) => {
+    const explanation = lines ? { summary: 'Totals round to cents.', lines } : null;
+    const otherText = opts.other ? other : [];
+    const changes = { summary: 'Totals.', lines: four as never[], otherText: otherText as never[], mismatch: null };
+    return {
+      ...ready, changes, explanation,
+      coverage: explanationCoverage(explanation, four, otherText),
+      sectionWords: opts.other ? { 'Checkout > Context': words('old context', 'new context') } : {},
+    };
+  };
+  const all = { 'R-1': 'a', 'R-2': 'b', 'R-3': 'c', 'AC-1': 'd' };
+  const toggleFor = (key: string) => container.querySelector(`[data-testid="spec-explain-item"][data-key="${key}"] [data-testid="spec-explain-toggle"]`) as HTMLButtonElement;
+
+  it('AC-12: the explanation and its check lead, and the page holds exactly one Approve, in a bar that stays in view', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith(all)} />));
+    const decision = q('spec-approval-decision')!;
+    // The check is the first thing after the title line, above the change list and the full text.
+    const order = [...decision.querySelectorAll('[data-testid="spec-explain"], [data-testid="spec-review-changes"], [data-testid="spec-approval-bar"]')].map((e) => e.getAttribute('data-testid'));
+    expect(order).toEqual(['spec-explain', 'spec-review-changes', 'spec-approval-bar']);
+    expect(container.querySelectorAll('[data-testid="spec-approval-approve"]').length).toBe(1);
+    const bar = q('spec-approval-bar')!;
+    expect(bar.contains(approveButton())).toBe(true);
+    // Sticky to the bottom of the view: above the phone tab bar, at the edge from md.
+    expect(bar.className).toContain('sticky');
+    expect(bar.className).toContain('bottom-[calc(3.5rem+env(safe-area-inset-bottom))]');
+    expect(bar.className).toContain('md:bottom-0');
+    // It is the last thing in the decision, so it sticks for the whole length of the revision.
+    expect(decision.lastElementChild).toBe(bar);
+  });
+
+  it('AC-13: four changed criteria and a line for each read "covers 4 of 4" and Approve is enabled', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith(all)} />));
+    expect(q('spec-explain-coverage')!.textContent).toBe('Explanation covers 4 of 4 changes');
+    expect(q('spec-explain-missing')).toBeNull();
+    expect(approveButton()!.disabled).toBe(false);
+  });
+
+  it('AC-14: a criterion the explanation misses is under Not explained, and Approve waits until it is opened', async () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith({ 'R-1': 'a', 'R-2': 'b', 'AC-1': 'd' })} />));
+    expect(q('spec-explain-coverage')!.textContent).toBe('Covers 3 of 4: 1 not explained');
+    const missing = [...q('spec-explain-missing')!.querySelectorAll('[data-testid="spec-explain-item"]')].map((e) => e.getAttribute('data-key'));
+    expect(missing).toEqual(['R-3']);
+    expect(approveButton()!.disabled).toBe(true);
+    expect(q('spec-approval-bar-status')!.textContent).toBe('Open the change marked Not explained to approve.');
+    // Opening an explained line is not required and does not enable it.
+    await act(async () => { toggleFor('R-1').click(); });
+    expect(approveButton()!.disabled).toBe(true);
+    await act(async () => { toggleFor('R-3').click(); });
+    expect(approveButton()!.disabled).toBe(false);
+  });
+
+  it('AC-15: a line naming a criterion that did not change is shown apart', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith({ ...all, 'R-9': 'ghost' })} />));
+    const extra = q('spec-explain-extra')!;
+    expect(extra.textContent).toContain('Explains something that did not change');
+    expect([...extra.querySelectorAll('[data-testid="spec-explain-extra-item"]')].map((e) => e.getAttribute('data-key'))).toEqual(['R-9']);
+  });
+
+  it('AC-16: with no explanation every change is not explained, and Approve enables once each is opened', async () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith(null, { other: true })} />));
+    expect(q('spec-explain-coverage')!.textContent).toBe('No explanation: 0 of 5 changes explained');
+    expect(q('spec-approval-bar-status')!.textContent).toBe('Open the 5 changes marked Not explained to approve.');
+    for (const key of ['R-1', 'R-2', 'R-3', 'AC-1']) {
+      expect(approveButton()!.disabled).toBe(true);
+      await act(async () => { toggleFor(key).click(); });
+    }
+    expect(approveButton()!.disabled).toBe(true);
+    await act(async () => { toggleFor('Checkout > Context').click(); });
+    expect(approveButton()!.disabled).toBe(false);
+  });
+
+  it('AC-17: any line opens in place to the exact changed words of its criterion or section', async () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith({ ...all, Context: 'Reworded the context.' }, { other: true })} />));
+    const item = (key: string) => container.querySelector(`[data-testid="spec-explain-item"][data-key="${key}"]`)!;
+    expect(item('R-2').querySelector('[data-testid="spec-explain-words"]')).toBeNull();
+    await act(async () => { toggleFor('R-2').click(); });
+    const opened = item('R-2').querySelector('[data-testid="spec-explain-words"]')!;
+    expect(opened.querySelector('[data-testid="spec-review-word-removed"]')!.textContent).toBe('R-2 was');
+    expect(opened.querySelector('[data-testid="spec-review-word-added"]')!.textContent).toBe('R-2 now');
+    expect(toggleFor('R-2').getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { toggleFor('Checkout > Context').click(); });
+    const section = item('Checkout > Context').querySelector('[data-testid="spec-explain-words"]')!;
+    expect(section.querySelector('[data-testid="spec-review-word-removed"]')!.textContent).toBe('old context');
+    expect(section.querySelector('[data-testid="spec-review-word-added"]')!.textContent).toBe('new context');
+  });
+
+  it('R-18: the page says what the check proves, and that the explanation is the agent\'s', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith(all)} />));
+    expect(q('spec-explain-honesty')!.textContent).toBe('The agent wrote this explanation. The check confirms it mentions every change; whether it is right is yours to judge.');
+  });
+
+  describe('a team that requires a passkey (R-20, AC-19)', () => {
+    const PIN = { op: 'approve', specId: SPEC, revision: 3, version: 7, contentHash: 'c'.repeat(64) };
+    const asked = () => new Response(JSON.stringify({ error: 'This team requires a passkey to approve a spec.', code: 'presence_required', presence: { pin: PIN, addUrl: 'x' } }), { status: 403 });
+    function serve(final: () => Response) {
+      const calls: Array<[string, Record<string, unknown>]> = [];
+      globalThis.fetch = mock(async (url: string, init: RequestInit) => {
+        const body = JSON.parse((init.body as string) ?? '{}');
+        calls.push([url, body]);
+        if (url === '/api/passkeys/presence') return new Response(JSON.stringify({ options: { challenge: 'chal' } }), { status: 200 });
+        return body.presence ? final() : asked();
+      }) as unknown as typeof fetch;
+      return calls;
+    }
+
+    it('completing the passkey sends the assertion over the pin the server named, and the revision is approved', async () => {
+      passkeyAnswer = 'complete';
+      const calls = serve(() => new Response(JSON.stringify({ already: false }), { status: 200 }));
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={{ ...ready, passkey: true }} />));
+      await act(async () => { approveButton()!.click(); });
+      expect(calls.map((c) => c[0])).toEqual([`/api/specs/${SPEC}/approve/inbox`, '/api/passkeys/presence', `/api/specs/${SPEC}/approve/inbox`]);
+      expect(calls[1][1]).toEqual({ pin: PIN });
+      expect(calls[2][1].presence).toMatchObject({ id: 'cred', type: 'public-key' });
+      expect(q('spec-approval-result')!.textContent).toContain('Approved revision 3.');
+    });
+
+    it('dismissing the prompt sends nothing more, says nothing changed, and offers Approve again', async () => {
+      passkeyAnswer = 'dismiss';
+      const calls = serve(() => new Response('{}', { status: 200 }));
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={{ ...ready, passkey: true }} />));
+      await act(async () => { approveButton()!.click(); });
+      expect(calls.filter((c) => c[1].presence).length).toBe(0);
+      expect(q('spec-approval-result')!.textContent).toContain('Nothing changed.');
+      expect(approveButton()).not.toBeNull();
+      passkeyAnswer = 'complete';
+    });
+
+    it('a person with no passkey is told how to add one, with a link to add it', async () => {
+      globalThis.fetch = mock(async () => new Response(JSON.stringify({ error: 'This team requires a passkey to approve a spec, and you have no passkey. Add one in Settings › Profile › Passkeys, then try again. Nothing changed.', code: 'passkey_missing', presence: { pin: PIN, addUrl: 'x' } }), { status: 403 })) as unknown as typeof fetch;
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={{ ...ready, passkey: true }} />));
+      await act(async () => { approveButton()!.click(); });
+      const result = q('spec-approval-result')!;
+      expect(result.textContent).toContain('Settings › Profile › Passkeys');
+      const link = [...result.querySelectorAll('a')].find((a) => a.textContent === 'Add a passkey') as HTMLAnchorElement;
+      expect(link.getAttribute('href')).toBe('/app/settings/account#passkeys');
     });
   });
 });
