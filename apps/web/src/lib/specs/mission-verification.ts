@@ -8,6 +8,9 @@ import { TERMINAL_TASK_STATUSES, type LivingSpecGoalCriterion } from '@buildd/sh
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import type { MissionSpecStanding } from './mission-outcome';
+import { renderBuilderClaims } from './builder-claims';
+import { loadBuilderClaims } from './builder-claims-store';
+import { cleanUpSupersededFailures, describeCleanup } from './mission-cleanup';
 
 /**
  * The mission's final requirement verification (Living Specs Slice 12,
@@ -24,6 +27,12 @@ import type { MissionSpecStanding } from './mission-outcome';
  * Deduped by its marker (mission, criterion fingerprint, target commit): a new
  * integrated commit or a changed selection gets a new verification, the same
  * one never gets two.
+ *
+ * Before one is filed, failed tasks a completed replacement already did are
+ * cancelled and their dependents re-pointed (./mission-cleanup.ts, R-4), so
+ * repairs are not filed for work that landed. The verifier is given what the
+ * builders claimed (./builder-claims.ts, R-2) to confirm or contradict, and
+ * judges the tasks together against the spec, not only each criterion.
  */
 
 export interface FinalVerificationContext {
@@ -109,6 +118,12 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
   const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)) });
   if (!workspace) return { kind: 'unavailable', reason: 'workspace not found' };
 
+  // Cleanup first: the claims below then read the cancelled tasks as superseded.
+  const cleanup = await cleanUpSupersededFailures(missionId, mission.workspaceId, 'system:final-verification')
+    .catch((err) => { console.error(`[final-verification] cleanup for mission ${missionId} failed:`, err instanceof Error ? err.message : err); return null; });
+  const cleanedUp = cleanup ? describeCleanup(cleanup) : [];
+  const claims = renderBuilderClaims(await loadBuilderClaims(missionId));
+
   const marker: FinalVerificationContext = { missionId, specId: criterion.specId, specRevisionId: criterion.specRevisionId, fingerprint, targetSha, targetKey: key };
   const roleSlug = await pickEffectiveRole(mission.workspaceId, ['reviewer', 'researcher']);
   const base = missionIntegrationBase(mission);
@@ -128,7 +143,12 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
     ``,
     `Still open: ${open.length ? open.map((s) => `${s.criterionId} (${s.standing})`).join(', ') : 'none'}.`,
     ``,
-    `Runner-owned check tasks run the acceptance commands at the integrated commit and record test verdicts from exit codes. For each in-scope criterion, read the code, inspect its \`check:\` line where it has one, and record one verdict at the target:`,
+    ...(cleanedUp.length ? [``, `Before this verification, failed tasks a completed replacement already did were cleaned up:`, ...cleanedUp] : []),
+    ...(claims.length ? [``, ...claims] : []),
+    ``,
+    `## Recording verdicts`,
+    ``,
+    `One runner-owned check run, with no agent, runs every acceptance command at the integrated commit and records each test verdict from its exit code. For each in-scope criterion, read the code, inspect its \`check:\` line where it has one, and record one verdict at the target:`,
     `\`manage_specs action=verdict { missionId: "${missionId}", specId: "${criterion.specId}", criterionId, verdict: pass|fail|inconclusive|unsupported, headSha: <target>, evidenceRefs, observed }\`.`,
     `For a criterion whose acceptance test you ran at the target, pass the run instead of a verdict: \`acceptanceTest: { exitCode, testName, stdout, stderr }\`. The exit code decides the result (0 pass, any other code fail, a run that never started inconclusive) and the row is recorded as a test, which outranks any reviewer on the same commit.`,
     `A criterion that passed on an earlier target and that the new commits did not touch is re-affirmed explicitly: record a new verdict at the target with \`reaffirms: <earlier verdict id>\` and say which diff you read. Nothing carries over on its own.`,

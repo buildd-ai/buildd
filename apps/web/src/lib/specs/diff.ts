@@ -237,6 +237,8 @@ export interface SpecRevisionDiff extends SpecBodyDiff {
   /** With `rows`: the same diff as numbered rows, and the whole `to` body (the approval page shows both). */
   hunks?: DiffHunk[];
   toBody?: string;
+  /** With `rows`: the `from` body, so the approval page can show a section's changed words (never sent to a client whole). */
+  fromBody?: string;
 }
 
 /**
@@ -293,5 +295,5 @@ export async function diffSpecRowRevisions(caller: SpecCaller, spec: typeof spec
     });
   }
   const side = (n: number) => ({ revision: n, contentHash: byN.get(n)!.contentHash, approved: spec.approvedRevision === n });
-  return { ok: true, diff: { specId, from: side(from), to: side(to), ...d, ...(numbered ? { hunks: numbered.hunks, toBody: bodies[1] } : {}) } };
+  return { ok: true, diff: { specId, from: side(from), to: side(to), ...d, ...(numbered ? { hunks: numbered.hunks, toBody: bodies[1], fromBody: bodies[0] } : {}) } };
 }
