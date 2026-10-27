@@ -28,8 +28,6 @@ const TOKEN_EXEMPT: Array<{ file: string; context: string; why: string }> = [
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[9px] transition-transform duration-200', why: 'disclosure chevron glyph' },
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[9px] rotate-90 inline-block">▶', why: 'disclosure chevron glyph' },
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[10px]">▶</span>', why: 'disclosure chevron glyph' },
-  { file: 'components/ui/StageMeter.tsx', context: 'text-[10px] leading-none rounded-[3px]', why: 'one-letter stage glyph inside a 14px meter cell' },
-  { file: 'components/ui/DeliveryBar.tsx', context: 'text-[10px] font-bold leading-none', why: 'one-letter stage glyph inside a 14px marker' },
 ];
 
 /** A text-[Npx] token with its full variant chain, e.g. `dark:hover:text-[9px]`. */
