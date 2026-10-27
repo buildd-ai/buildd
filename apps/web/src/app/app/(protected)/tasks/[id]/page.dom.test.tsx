@@ -1,7 +1,7 @@
 /**
  * DOM tests for task page layout and jargon issues (task page ~390px and 1280px).
  * - Jargon: 'LOOP SATISFIED · 1/3' → plainer; 'Attempts · until CI passes' → plainer
- * - CI stated once in timeline
+ * - CI stated once in timeline (no duplicate in LoopHistory)
  * - Design preview blank: empty state with message and retry
  * - Layout: check aligned on "Code review · Approved", download doesn't wrap on phone, disclosures match
  */
@@ -60,7 +60,7 @@ describe('Task page — loop status jargon', () => {
     expect(html).not.toContain('LOOP');
   });
 
-  it('Loop history section uses Attempts header', () => {
+  it('Loop history section uses Attempts header and does not duplicate outcomes', () => {
     const entries = [
       {
         iteration: 0,
@@ -82,6 +82,9 @@ describe('Task page — loop status jargon', () => {
     expect(html).toContain('Attempts');
     expect(html).not.toContain('Loop cycles');
     expect(html).not.toContain('LOOP HISTORY');
+    // Iteration number should be shown but not the outcome (to avoid duplication with timeline)
+    expect(html).toContain('Iteration 1');
+    expect(html).not.toContain('CI passed');
   });
 
   it('Loop condition goal uses until language not stopped after', () => {

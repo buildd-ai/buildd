@@ -179,12 +179,7 @@ export function LoopHistory({
               <div key={`${entry.iteration}-${entry.workerId}-${entry.evaluatedAt}`} className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-sm text-text-primary">Iteration {entry.iteration + 1}</span>
-                      <span className={`text-xs font-medium ${entry.satisfied ? 'text-status-success' : 'text-status-error'}`}>
-                        {outcomeLabel(entry.conditionType, entry.satisfied)}
-                      </span>
-                    </div>
+                    <div className="font-medium text-sm text-text-primary">Iteration {entry.iteration + 1}</div>
                     <p className="mt-1 text-sm text-text-secondary">{entry.summary}</p>
                   </div>
                   <div className="text-right text-[11px] text-text-muted shrink-0">
