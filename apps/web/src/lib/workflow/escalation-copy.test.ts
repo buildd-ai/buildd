@@ -72,7 +72,7 @@ describe('decisionCopy', () => {
 
   test('offers Review findings plus only actions this person may take; never an approval it cannot back', () => {
     const c = decisionCopy(deriveEscalationBrief(stuck)!, { rounds, ledger });
-    expect(c.actions.map((a) => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review']);
+    expect(c.actions.map((a) => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review', 'land_pr']);
     expect(c.actions.every((a) => a.available)).toBe(true);
     expect(c.actions.some((a) => a.id === 'approve_override')).toBe(false);
     // Policy allows it but this viewer lacks merge permission: still not offered.
@@ -82,7 +82,7 @@ describe('decisionCopy', () => {
 
   test('approve and override is offered when the server says this viewer may, and is never the primary', () => {
     const permitted = decisionCopy(deriveEscalationBrief(stuck, { overridePermitted: true, hasMergePermission: true })!, { rounds, ledger });
-    expect(permitted.actions.map((a) => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review', 'approve_override']);
+    expect(permitted.actions.map((a) => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review', 'land_pr', 'approve_override']);
     expect(permitted.primary.id).toBe('request_fix');
   });
 
@@ -91,7 +91,7 @@ describe('decisionCopy', () => {
     const onlyAddressed = view([F(1, 'Add the index', { status: 'addressed', addressedBySha: 'H3' })]);
     const c = decisionCopy(deriveEscalationBrief(onlyAddressed)!, { rounds, ledger });
     expect(c.primary.id).toBe('force_re_review');
-    expect(c.actions.map((a) => a.id)).toEqual(['review_findings', 'force_re_review']);
+    expect(c.actions.map((a) => a.id)).toEqual(['review_findings', 'force_re_review', 'land_pr']);
   });
 
   test('with no head to act on, Review findings is the one thing left', () => {

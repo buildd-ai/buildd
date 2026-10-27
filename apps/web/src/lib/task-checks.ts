@@ -68,10 +68,19 @@ export interface TaskChecks {
   review?: string;
   /** AC-24: each round with buildd's verdict at its head, and the note that GitHub lists those reviews as Commented. */
   rounds?: { line: string; githubNote: string | null };
+  /**
+   * Task Page AC-28 / AC-29 (mobile-decision-flow §3.7's rule): the review blocks (changes requested,
+   * a review escalation, a spent budget, a failed round), so Code review is open without a tap.
+   */
+  reviewOpen?: boolean;
+  /** Living Spec fa62b865 R-48 / R-50: the open findings as the kernel reading lists them, each once. */
+  openFindings?: Array<{ id: string; text: string }>;
+  /** "2 of 3 review rounds spent": the same count get_pr gives (the round line above names the round). */
+  reviewRoundLine?: string;
 }
 
 export type ChecksInput = Pick<DeliveryView, 'state' | 'stateReason' | 'prNumber' | 'headSha' | 'prState' | 'rounds' | 'ledger' | 'approvedCurrentHead' | 'approvalBasis'>
-  & Partial<Pick<DeliveryView, 'findings' | 'supersededBy'>>;
+  & Partial<Pick<DeliveryView, 'findings' | 'supersededBy' | 'laneWait' | 'review'>>;
 
 function repairOf(a: AttemptSnapshot, v: ChecksInput): CheckRepair {
   return { label: repairLabelOf(a, v.ledger), status: repairPhaseOf(a, v), taskId: a.taskId };
@@ -158,7 +167,15 @@ function mergeRow(v: ChecksInput): CheckRow | null {
       return { ...base, state: 'passed', result: n != null ? `Merged in #${n}` : 'Merged in another PR' };
     }
     case 'REPAIRING': {
-      if (v.stateReason === 'behind') return { ...base, state: 'running', result: 'Updating branch' };
+      if (v.stateReason === 'behind') {
+        // Parked in the landing lane: queued behind another PR, nothing running yet.
+        if (v.laneWait) {
+          const behind = v.laneWait.behindPr != null ? `#${v.laneWait.behindPr}` : 'another PR';
+          const place = v.laneWait.position != null && v.laneWait.position > 0 ? `, position ${v.laneWait.position}` : '';
+          return { ...base, state: 'pending', result: `Queued to land behind ${behind}${place}` };
+        }
+        return { ...base, state: 'running', result: 'Updating branch' };
+      }
       if (v.stateReason === 'conflict' || v.stateReason === 'migration') {
         const family = v.stateReason === 'migration' ? 'migration' : 'conflict';
         const fix = newest(repairs(v.ledger).filter(a => a.family === family && a.boundHeadSha === v.headSha));
@@ -196,10 +213,16 @@ export function deriveTaskChecks(v: ChecksInput): TaskChecks {
     });
   const summary = reviewSummaryOf(v);
   const read = reviewRoundsOf(v.rounds);
+  const reading = v.review;
   return {
     current: rows, history,
     ...(summary ? { review: reviewSummaryLine(summary) } : {}),
     ...(read ? { rounds: { line: read.line, githubNote: read.githubNote } } : {}),
+    ...(reading ? {
+      reviewOpen: reading.blocks,
+      openFindings: reading.openFindings.filter((f) => !f.standsForRound).map((f) => ({ id: f.id, text: f.text })),
+      reviewRoundLine: `${reading.roundsSpent} of ${reading.roundBudget} review rounds spent`,
+    } : {}),
   };
 }
 

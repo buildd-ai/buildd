@@ -30,6 +30,9 @@ const REPAIR_WORD: Record<CheckRepair['status'], string> = { ...REPAIR_PHASE_WOR
 
 type Findings = Map<string, ReviewFindings>;
 
+/** The kernel reading's part of an open Code review row (Task Page AC-28). */
+interface OpenReading { roundLine: string; findings: Array<{ id: string; text: string }> }
+
 function RepairLine({ repair, currentTaskId }: { repair: CheckRepair; currentTaskId: string }) {
   const text = `${repair.label} · ${REPAIR_WORD[repair.status]}`;
   return (
@@ -46,14 +49,24 @@ function RepairLine({ repair, currentTaskId }: { repair: CheckRepair; currentTas
  * findings or a plain account of why there are none. Never a bare pointer at
  * this page ("This review run"); another task's review keeps its link.
  */
-function ReviewDetailBody({ d, currentTaskId }: { d: ReviewDetail; currentTaskId: string }) {
+function ReviewDetailBody({ d, currentTaskId, reading }: { d: ReviewDetail; currentTaskId: string; reading: OpenReading | null }) {
   const { round } = d;
   return (
     <>
       <p data-testid="task-check-review-round" className="font-mono text-meta text-text-muted">
         Round {round.round} · head {round.headSha}{round.carried ? ' · carried to the current head after a branch update' : ''}
       </p>
-      {d.kind === 'findings'
+      {reading && <p data-testid="task-check-review-budget" className="text-meta text-text-secondary">{reading.roundLine}</p>}
+      {/* Living Spec fa62b865 R-48: each open finding once, by id, from the kernel; the reviewer's prose is not repeated beside them. */}
+      {reading && reading.findings.length > 0
+        ? (
+          <ul data-testid="task-check-open-findings" className="flex flex-col gap-1">
+            {reading.findings.map((f) => (
+              <li key={f.id} className="text-body [overflow-wrap:anywhere]"><MarkdownContent content={f.text} /></li>
+            ))}
+          </ul>
+        )
+        : d.kind === 'findings'
         ? <div data-testid="task-check-findings" className="text-body [overflow-wrap:anywhere]"><MarkdownContent content={d.prose} /></div>
         : (
           <p data-testid="task-check-review-state" data-kind={d.kind} className={`text-body ${d.kind === 'unavailable' || d.kind === 'run-failed' ? 'text-status-error' : 'text-text-secondary'}`}>
@@ -84,10 +97,10 @@ function RowHead({ row }: { row: Pick<CheckRow, 'name' | 'state' | 'result'> }) 
   );
 }
 
-function rowDetail(row: CheckRow, p: { findings: Findings; findingsUnavailable: boolean; prUrl: string | null; currentTaskId: string }) {
+function rowDetail(row: CheckRow, p: { findings: Findings; findingsUnavailable: boolean; prUrl: string | null; currentTaskId: string; reading: OpenReading | null }) {
   const parts: ReactNode[] = [];
   const review = reviewDetailOf(row, p);
-  if (review) parts.push(<ReviewDetailBody key="review" d={review} currentTaskId={p.currentTaskId} />);
+  if (review) parts.push(<ReviewDetailBody key="review" d={review} currentTaskId={p.currentTaskId} reading={p.reading} />);
   if (row.key === 'tests' && p.prUrl) {
     parts.push(<a key="checks" href={`${p.prUrl.replace(/\/+$/, '')}/checks`} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center text-meta text-accent-text hover:underline">View checks on GitHub ↗</a>);
   }
@@ -139,11 +152,14 @@ export default function TaskChecks({
       )}
       <ul className="flex flex-col">
         {checks.current.map(row => {
-          const detail = rowDetail(row, { findings, findingsUnavailable, prUrl, currentTaskId });
+          const reading = row.key === 'review' && checks.reviewRoundLine ? { roundLine: checks.reviewRoundLine, findings: checks.openFindings ?? [] } : null;
+          const detail = rowDetail(row, { findings, findingsUnavailable, prUrl, currentTaskId, reading });
+          // Task Page AC-28 / AC-29: a review that blocks is open without a tap; an approved or merged one stays closed.
+          const open = row.key === 'review' && checks.reviewOpen === true;
           return (
             <li key={row.key} data-testid="task-check" data-check={row.key} data-state={row.state} className="border-b border-border-default">
               {detail ? (
-                <details className="group">
+                <details className="group" open={open}>
                   <summary className={`${ROW_CLS} cursor-pointer list-none [&::-webkit-details-marker]:hidden`}>
                     <RowHead row={row} />
                     <span aria-hidden="true" className="shrink-0 text-text-muted transition-transform group-open:rotate-90">›</span>

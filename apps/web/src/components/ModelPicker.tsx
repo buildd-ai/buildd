@@ -230,8 +230,8 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
           )}
           {!modelsLoading && modelsFetched && models.length > 0 && !catalogComplete && (
             <p className="text-[11px] text-text-muted" data-testid="tier-only-hint">
-              Showing your configured tiers. Connect Claude or Codex under Settings,
-              Runners to see every model release.
+              Showing your configured tiers. Add a Claude or OpenAI key in
+              Settings › Models to see every model release.
             </p>
           )}
           <p className="text-[11px] md:text-[10px] text-text-muted">

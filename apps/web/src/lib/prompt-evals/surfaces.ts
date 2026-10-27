@@ -62,6 +62,27 @@ export const REVIEWER_REMEDY_EVAL_CASES = [
       remedyEvidence: { resolveCapabilityResult: 'model.inference: available via request_capability', contradictsPinnedCriterion: true, existingCapabilityCovers: true, capability: 'model.inference' },
     },
   },
+  {
+    // Living Spec fa62b865 §11.1 (the #5727 shape): a screen-named criterion with no comparison is
+    // evidence buildd captures, not a request to the author for screenshots.
+    id: 'design-comparison-is-evidence-not-builder-work',
+    promptId: 'buildd.reviewer.remedy_doctrine',
+    context: {
+      pinnedCriterion: 'AC-9: the activity row matches design screen phone-row.\n  - screen: phone-row',
+      builderClaim: 'The row matches the design.',
+      resolveCapability: 'visual capture: buildd dispatches it',
+    },
+    /** Asks the author for shots: a round the author cannot satisfy. */
+    badFinding: {
+      title: 'Attach screenshots of the real route beside design screen phone-row',
+      path: 'apps/web/src/components/Row.tsx',
+    },
+    expectedFinding: {
+      title: 'Compare AC-9 screen phone-row with the built page',
+      remedyClass: 'evidence',
+      evidence: { criterionId: 'AC-9', screen: 'phone-row', route: '/app/activity' },
+    },
+  },
 ] as const;
 
 export function promptSurface(id: string): PromptSurface {

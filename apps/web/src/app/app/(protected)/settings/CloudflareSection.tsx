@@ -5,7 +5,7 @@ import CopyBlock from '@/components/CopyBlock';
 import { useConfirm } from '@/components/useConfirm';
 import { Select } from '@/components/ui/Select';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
-import { CLOUD_RUNNER_DEPLOY_COMMAND, CLOUD_RUNNER_DEPLOY_DOCS, cloudflareState } from './_lib/cloudflare-state';
+import { CLOUD_RUNNER_DEPLOY_COMMAND, cloudflareState } from './_lib/cloudflare-state';
 import Disclosure from '@/components/ui/Disclosure';
 import { useCloudflareCredential } from './_lib/use-cloudflare-credential';
 import { describeCloudflareCapability, type CloudflareCapabilities, type CloudflareCapability } from '@/lib/cloudflare-credential-shared';
@@ -238,9 +238,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
             <Disclosure summary="Deploy from a terminal instead">
               <div data-testid="cloudflare-deploy" className="space-y-2 pb-2">
                 <p className="text-xs text-text-secondary">
-                  Needs a checkout of the buildd repo, Docker and an admin key. The{' '}
-                  <a href={CLOUD_RUNNER_DEPLOY_DOCS} target="_blank" rel="noreferrer" className="underline">cloud runner README</a>{' '}
-                  has the steps.
+                  Needs a checkout of the buildd repo, Docker and an admin key. This prints the steps:
                 </p>
                 <CopyBlock text={CLOUD_RUNNER_DEPLOY_COMMAND} />
               </div>

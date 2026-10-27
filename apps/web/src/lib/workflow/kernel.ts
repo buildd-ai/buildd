@@ -26,7 +26,7 @@ import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, Recor
 import { postgresStore } from './postgres-store';
 import { prFactProjectionSql, prLiveProjectionSql } from '@buildd/core/pr-fact-sql';
 import { prRowOfDeliverySql } from './pr-fact-scope';
-import { attemptEndTaskProjectionCtes, escalationTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, reopenTaskProjectionCtes, requeueTaskProjectionCtes, startTaskProjectionCtes, withdrawTaskProjectionCtes } from './task-projection';
+import { attemptEndTaskProjectionCtes, ciGreenTaskProjectionCtes, escalationTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, reopenTaskProjectionCtes, requeueTaskProjectionCtes, startTaskProjectionCtes, withdrawTaskProjectionCtes } from './task-projection';
 import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
@@ -126,9 +126,11 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
     if (o.set.decided) sets.push(sql`decided_at = now()`);
     if (o.set.failureCount !== undefined) sets.push(sql`failure_count = ${o.set.failureCount}::int`);
     if (o.set.clearReviewer) sets.push(sql`reviewer_task_id = NULL`);
-    if (o.set.endReason !== undefined) {
-      sets.push(sql`scope = COALESCE(rr.scope, '{}'::jsonb) || jsonb_build_object(${ROUND_END_REASON_KEY}::text, ${o.set.endReason}::text)`);
-    }
+    // endReason and budgetFree both live in scope: one SET of the column, merging what this op names.
+    const scopeKeys: SQL[] = [];
+    if (o.set.endReason !== undefined) scopeKeys.push(sql`${ROUND_END_REASON_KEY}::text, ${o.set.endReason}::text`);
+    if (o.set.budgetFree !== undefined) scopeKeys.push(sql`${ROUND_BUDGET_FREE_KEY}::text, ${o.set.budgetFree}::boolean`);
+    if (scopeKeys.length) sets.push(sql`scope = COALESCE(rr.scope, '{}'::jsonb) || jsonb_build_object(${sql.join(scopeKeys, sql`, `)})`);
     out.push(sql`${sql.identifier(`r_upd_${i}`)} AS (
   UPDATE workflow_review_rounds rr SET ${sql.join(sets, sql`, `)}
   FROM ${sql.identifier(src)} s
@@ -202,12 +204,12 @@ function findingCtes(ops: FindingOp[], src: string): SQL[] {
   if (inserts.length) {
     const rows = inserts.map((o) => ({
       id: o.id, origin_round_id: o.originRoundId, origin_round: o.originRound, origin_head_sha: o.originHeadSha, ordinal: o.ordinal,
-      path: o.path, line: o.line, title: o.title, required: o.required,
+      path: o.path, line: o.line, title: o.title, required: o.required, remedy_class: o.remedyClass ?? 'code_fix', evidence: o.evidence ?? null,
     }));
     out.push(sql`f_ins AS (
-  INSERT INTO workflow_findings (id, delivery_id, origin_round_id, origin_round, origin_head_sha, ordinal, path, line, title, required, status, last_round)
-  SELECT x.id, s.delivery_id, x.origin_round_id, x.origin_round, x.origin_head_sha, x.ordinal, x.path, x.line, x.title, x.required, 'open', x.origin_round
-  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id text, origin_round_id uuid, origin_round int, origin_head_sha text, ordinal int, path text, line int, title text, required boolean)
+  INSERT INTO workflow_findings (id, delivery_id, origin_round_id, origin_round, origin_head_sha, ordinal, path, line, title, required, status, last_round, remedy_class, evidence)
+  SELECT x.id, s.delivery_id, x.origin_round_id, x.origin_round, x.origin_head_sha, x.ordinal, x.path, x.line, x.title, x.required, 'open', x.origin_round, x.remedy_class, x.evidence
+  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id text, origin_round_id uuid, origin_round int, origin_head_sha text, ordinal int, path text, line int, title text, required boolean, remedy_class text, evidence jsonb)
   RETURNING id
 )`);
   }
@@ -219,6 +221,9 @@ function findingCtes(ops: FindingOp[], src: string): SQL[] {
     if (v.lastRound !== undefined) sets.push(sql`last_round = ${v.lastRound}::int`);
     if (v.title !== undefined) sets.push(sql`title = ${v.title}::text`);
     if (v.required !== undefined) sets.push(sql`required = ${v.required}::boolean`);
+    if (v.remedyClass !== undefined) sets.push(sql`remedy_class = ${v.remedyClass}::text`);
+    if (v.restatedCount !== undefined) sets.push(sql`restated_count = ${v.restatedCount}::int`);
+    if (v.evidence !== undefined) sets.push(sql`evidence = ${jsonb(v.evidence)}`);
     if (v.addressedBySha !== undefined) sets.push(sql`addressed_by_sha = ${v.addressedBySha}::text`);
     // A uuid column only ever takes a full id: anything else would abort the whole transition (and with
     // it the verdict), so it is written as NULL. The reducer refuses such a deferral before it gets here.
@@ -302,6 +307,8 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   ctes.push(...requeueTaskProjectionCtes(d, 'd'));
   // AC-1 slice 8: a CI escalation (its repairs spent) fails the owner task, in this statement.
   ctes.push(...escalationTaskProjectionCtes(d, 'd'));
+  // CI went green on the head a CI escalation failed the owner task for: it completes again.
+  ctes.push(...ciGreenTaskProjectionCtes(d, 'd'));
   // AC-1 slice 9: AttemptReopened opens a settled owner task again, AttemptWithdrawn gives a claim's
   // start back (or refuses a queued task), in this statement.
   ctes.push(...reopenTaskProjectionCtes(d, 'd'));
@@ -459,10 +466,12 @@ export function toDeliverySnapshot(r: J): DeliverySnapshot {
 /** Where a round's trigger and end reason live inside `workflow_review_rounds.scope` (58c8961e). */
 export const ROUND_TRIGGER_KEY = 'trigger';
 export const ROUND_END_REASON_KEY = 'endReason';
+/** Living Spec fa62b865 §11.1 R-45: a round that spends no review round. */
+export const ROUND_BUDGET_FREE_KEY = 'budgetFree';
 
 export function toRoundSnapshot(r: J): RoundSnapshot {
   const raw = (r.scope as Record<string, unknown> | null) ?? null;
-  const { [ROUND_TRIGGER_KEY]: trigger, [ROUND_END_REASON_KEY]: endReason, ...rest } = raw ?? {};
+  const { [ROUND_TRIGGER_KEY]: trigger, [ROUND_END_REASON_KEY]: endReason, [ROUND_BUDGET_FREE_KEY]: budgetFree, ...rest } = raw ?? {};
   const scope = raw && Object.keys(rest).length > 0 ? rest : null;
   return {
     id: String(r.id), round: n(r.round), headSha: String(r.head_sha), kind: r.kind as RoundSnapshot['kind'],
@@ -472,6 +481,7 @@ export function toRoundSnapshot(r: J): RoundSnapshot {
     scope,
     ...(isRoundTrigger(trigger) ? { trigger } : {}),
     ...(typeof endReason === 'string' ? { endReason } : {}),
+    ...(budgetFree === true ? { budgetFree: true } : {}),
   };
 }
 
@@ -481,6 +491,9 @@ export function toFindingSnapshot(r: J): FindingSnapshot {
     ordinal: n(r.ordinal), path: s(r.path), line: r.line == null ? null : Number(r.line), title: String(r.title), required: r.required !== false,
     status: r.status as FindingSnapshot['status'], lastRound: n(r.last_round), addressedBySha: s(r.addressed_by_sha),
     closedByRoundId: s(r.closed_by_round_id), closedBy: s(r.closed_by), closedReason: s(r.closed_reason), deferredToTaskId: s(r.deferred_to_task_id),
+    remedyClass: (s(r.remedy_class) ?? 'code_fix') as FindingSnapshot['remedyClass'],
+    restatedCount: n(r.restated_count),
+    evidence: (r.evidence as FindingSnapshot['evidence']) ?? null,
   };
 }
 

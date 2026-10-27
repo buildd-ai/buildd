@@ -453,6 +453,31 @@ export function escalationTaskProjectionCtes(decision: Pick<ApplyDecision, 'comm
 )`];
 }
 
+/**
+ * The `t_ci_green` CTE: CI went green on the delivery's current head after a CI escalation had failed
+ * its owner task (a repair, or a push from elsewhere, turned the head green). The failure was the
+ * escalation's, and the head it escalated is no longer red, so the owner task completes, as an
+ * owner end that reported success would have. Fires on the transition that clears `ci_exhausted`
+ * (`CiObserved` green, evidence `cleared`) and on a CI repair's green end (`CiGreenObserved`); the
+ * delivery CTE `d` is empty on a version miss, so a stale reading writes nothing. Only a `failed`
+ * owner task moves; a cancelled one, and a kernel-merged completion, keep what they have.
+ */
+export function ciGreenTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'evidence'>, d = 'd'): SQL[] {
+  const ev = (decision.evidence ?? {}) as { cleared?: unknown };
+  const clears = (decision.command === 'CiObserved' && ev.cleared === 'ci_exhausted') || decision.command === 'CiGreenObserved';
+  if (!clears) return [];
+  const a = sql.raw(d);
+  return [sql`t_ci_green AS (
+  UPDATE tasks tk SET status = 'completed', updated_at = now()
+  FROM ${a} JOIN workflow_deliveries od ON od.id = ${a}.id
+  WHERE tk.id = od.owner_task_id
+    AND tk.status = 'failed'
+    AND ${a}.ci = 'green'
+    AND ${notKernelMergedTaskSql(tkCols)}
+  RETURNING tk.id
+)`];
+}
+
 // ── AC-1 slice 8: a loop's exit settles the owner task it held ──────────────────────────
 
 /**

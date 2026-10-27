@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { foldMissionSpec, verdictIsCurrent, type MissionTarget, type MissionVerdictRow } from './mission-outcome-fold';
+import { describeStandings, verdictReason, foldMissionSpec, verdictIsCurrent, type MissionTarget, type MissionVerdictRow } from './mission-outcome-fold';
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
@@ -215,5 +215,29 @@ describe('R-80: unaccepted acceptance test edits drop test results', () => {
     expect(r.standings[0].standing).toBe('missing');
     expect(r.standings[1].standing).toBe('pass');
     expect(r.evidence).toContain('One of two');
+  });
+});
+
+describe('verdictReason / describeStandings', () => {
+  const missing = { kind: 'check', exitCode: 125, stderr: 'Missing acceptance test: tests/acceptance/x.test.ts' };
+  it('names a missing test file, a run that could not start, and a failed test', () => {
+    expect(verdictReason('inconclusive', missing)).toBe('test file not found');
+    expect(verdictReason('inconclusive', { kind: 'check', exitCode: 125 })).toBe('test could not run');
+    expect(verdictReason('fail', { kind: 'check', exitCode: 1 })).toBe('test failed');
+  });
+  it('gives a pass or a reviewer verdict no reason', () => {
+    expect(verdictReason('pass', { kind: 'check', exitCode: 0 })).toBeUndefined();
+    expect(verdictReason('inconclusive', { kind: 'review' })).toBeUndefined();
+  });
+  it('adds the criterion words and the reason to each standing that did not pass', () => {
+    const r = { ...row('R-1', 'inconclusive'), id: 'v-missing', evidence: missing };
+    const out = describeStandings(
+      [{ criterionId: 'R-1', standing: 'inconclusive', headSha: A, verdictId: 'v-missing' }, { criterionId: 'R-2', standing: 'missing', headSha: null }],
+      [{ id: 'R-1', text: 'First.' }, { id: 'R-2', text: 'Second.' }], [r],
+    );
+    expect(out).toEqual([
+      { criterionId: 'R-1', standing: 'inconclusive', headSha: A, verdictId: 'v-missing', text: 'First.', reason: 'test file not found' },
+      { criterionId: 'R-2', standing: 'missing', headSha: null, text: 'Second.' },
+    ]);
   });
 });

@@ -46,6 +46,8 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
+import { runCriterionBatch, summarizeCriterionBatch } from './criterion-batch';
+import { criterionBatchOf, type CriterionBatchMarker } from '@buildd/shared';
 import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, readMergirafLedgerAsync, reportAgentMerges, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
@@ -66,7 +68,7 @@ import {
   ContextBreaker,
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
-import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit } from './provider-limit';
+import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit, type LimitProvider } from './provider-limit';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
@@ -190,6 +192,7 @@ import {
   GENUINELY_BLOCKED_RETRY_OPTION,
   isBackgroundJobOutstanding,
   lastToolWasDeniedByRunner,
+  SESSION_END_LABEL_TEXT,
   SESSION_END_PUSH_TEXT,
   type SessionEndLabel,
 } from './session-end-classification.js';
@@ -862,6 +865,9 @@ export class WorkerManager {
   private contextBreaker = new ContextBreaker();
   /** Providers this runner's login is at its limit on (provider-limit.ts): new work waits, running work finishes. */
   private providerLimits = new ProviderLimitHolds();
+  private startableProviders(): LimitProvider[] {
+    return this.codexAuth === 'none' ? ['claude'] : ['claude', 'codex'];
+  }
   // Distinct role-env gaps this runner has started workers with — one warning
   // per gap, and listed in getInternalState (/api/debug/internals).
   private roleEnvGapLog = new RoleEnvGapLog();
@@ -2271,13 +2277,6 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
-    // Every provider this runner can start on is at its login limit: poll when the first lifts.
-    if (this.providerLimits.allHeld()) {
-      const lift = this.providerLimits.nextLift();
-      if (lift !== null) this.scheduleResumeAt(lift, 'provider limit reset');
-      return [];
-    }
-
     let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
     // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
@@ -2681,7 +2680,11 @@ export class WorkerManager {
     this.noteProviderLimitOutcome();
     this.scheduleResumeAt(untilMs, 'provider limit reset');
     // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
-    if (this.providerLimits.allHeld()) {
+    // A runner with no Codex login of its own cannot start Codex work, so a held Claude login holds every claim:
+    // pause the poll (running sessions are untouched) until the first hold lifts.
+    if (this.providerLimits.allHeld(Date.now(), this.startableProviders())) {
+      this.claimsPaused = true;
+      this.claimsPausedUntil = Math.max(this.claimsPausedUntil, this.providerLimits.nextLift() ?? untilMs);
       this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
     } else {
       this.emit({ type: 'provider_limit', provider: limit.provider, pausedUntil: untilMs, kind: limit.kind });
@@ -3222,6 +3225,7 @@ export class WorkerManager {
         // so later steps (git stats, the prompt, parking) read the ref the
         // worktree really uses instead of re-deriving it.
         worker.worktreeBaseRef = setupResult.base;
+        worker.worktreeBaseSha = setupResult.baseSha;
         worker.resumedFrom = setupResult.resumed?.from;
         // The PR's base, which the path-claim sweep measures against. Read
         // after setup: a fallback to a fresh base has already cleared the
@@ -3448,6 +3452,14 @@ export class WorkerManager {
       }
       // After the branch is persisted: the completion's PR lookup reads it.
       if (derivedMerge && await this.finishDerivedMergeWithoutAgent(worker, fullTask, sessionCwd, derivedMerge.result, derivedMerge.baseRef)) {
+        return;
+      }
+      // A mission's criterion checks: the runner runs them all, no agent session.
+      const criterionBatch = criterionBatchOf(fullTask.context);
+      if (criterionBatch) {
+        if (deps) await deps.job.promise;
+        if (deps?.block) throw new Error(deps.block);
+        await this.finishCriterionBatchWithoutAgent(worker, sessionCwd, criterionBatch);
         return;
       }
       await this.startSession(worker, sessionCwd, fullTask);
@@ -3849,7 +3861,7 @@ export class WorkerManager {
     // that ran — its work is not on GitHub, which is not the work failing.
     const handOff = isHandOffRefusal(refusal)
       ? handOffUnproven(
-        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha),
         worker.commits.length,
       )
       : null;
@@ -3953,7 +3965,7 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
     // No TASK_ERROR checkpoint: a parked question or a pause is not a failure,
     // and a "Task failed" milestone right after "Paused" read as one.
-    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
     // Mirrors the sibling non-abort branch's local 'waiting' state — the
     // session is gone here, but 'waiting' + no live session is already a
     // recognized local state elsewhere in this file.
@@ -4043,8 +4055,8 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${gateReply?.disposition ?? disposition}`, worker.taskId);
     const base: WaitingFor = {
       type: 'question',
-      prompt: 'This session ended without delivering anything, and nothing here decided it for you.',
-      context: `Classified as: ${label}. ${note}`.trim(),
+      prompt: 'Ended with nothing delivered',
+      context: `${SESSION_END_LABEL_TEXT[label]}. ${note}`.trim(),
     };
     // The gate's own disposition when it answered (so a recovered blocker is
     // not admitted to Needs You); with no reply the server re-checks the park.
@@ -4120,7 +4132,7 @@ export class WorkerManager {
       action: 'park',
       disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
       reply,
-      text: reply.reason || (reply.disposition === 'hold' ? 'Not sent yet: it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
+      text: reply.reason || (reply.disposition === 'hold' ? 'Held: not urgent enough to interrupt anyone.' : 'Needs a person.'),
     };
   }
 
@@ -6176,7 +6188,7 @@ export class WorkerManager {
         // backend and the claim breaker walls the seat for an hour.
         sessionLog(worker.id, 'error', 'session_budget_capped', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
         worker.status = 'error';
         worker.error = SESSION_BUDGET_CAP_ERROR;
         worker.currentAction = 'Session cost cap';
@@ -6251,7 +6263,7 @@ export class WorkerManager {
           const lastLabel: SessionEndLabel = worker.sessionEndPushes?.[worker.sessionEndPushes.length - 1]?.label ?? 'genuinely_blocked';
           await this.parkSessionEnd(
             worker, lastLabel, 'ask',
-            `This session used its ${SESSION_END_MAX_PUSHES} pushes (${(worker.sessionEndPushes ?? []).map(p => p.label).join(', ')}) and still has nothing delivered.`,
+            `Used all ${SESSION_END_MAX_PUSHES} pushes. Nothing delivered.`,
           );
           return;
         }
@@ -6279,7 +6291,7 @@ export class WorkerManager {
           error: errMsg,
           // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
           ...handOffUnproven(
-            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha),
             worker.commits.length,
           ),
           milestones: worker.milestones,
@@ -6361,7 +6373,7 @@ export class WorkerManager {
         // A clean completion proves the credential works — reset the auth-failure
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
 
         // B (write-back): After a successful OAuth Codex session, the CLI may have
         // silently refreshed the tokens. Read the auth.json we left in place
@@ -7085,6 +7097,46 @@ export class WorkerManager {
     this.emit({ type: 'worker_update', worker });
     storeSaveWorker(worker);
     return true;
+  }
+
+  /**
+   * Run a mission's criterion checks (context.specCriterionBatch) and complete
+   * the worker with their evidence, on the runner's own key. No agent session
+   * is started: the exit codes are the result, and nothing needs judging.
+   * A refused completion is left for the server's late-evidence path; the
+   * worker still ends here.
+   */
+  private async finishCriterionBatchWithoutAgent(worker: LocalWorker, cwd: string, marker: CriterionBatchMarker): Promise<void> {
+    this.addMilestone(worker, { type: 'status', label: `Running ${marker.checks.length} criterion check(s) at ${marker.headSha.slice(0, 7)}; no agent needed`, ts: Date.now() });
+    const evidence = await runCriterionBatch({
+      workerId: worker.id, cwd, marker,
+      onCheck: (criterionId, i) => {
+        worker.currentAction = `Checking ${criterionId} (${i + 1} of ${marker.checks.length})`;
+        this.emit({ type: 'worker_update', worker });
+      },
+    });
+    // Aborted while running: the abort path already reported it.
+    if (worker.status === 'error' || worker.status === 'done') return;
+    const summary = summarizeCriterionBatch(evidence);
+    this.addMilestone(worker, { type: 'status', label: `Criterion checks finished: ${evidence.results.filter((r) => r.outcome === 'ok').length} of ${evidence.results.length} exit 0`, ts: Date.now() });
+    try {
+      await this.buildd.updateWorker(worker.id, {
+        status: 'completed',
+        summary,
+        // Runner-authored but deliberate and factual, not a captured aside.
+        summarySource: 'agent',
+        milestones: worker.milestones,
+        verificationEvidence: evidence as unknown as Record<string, unknown>,
+      });
+    } catch (err) {
+      console.warn(`[Worker ${worker.id}] Completion of the criterion checks was refused: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    worker.status = 'done';
+    worker.currentAction = 'Completed by the runner (no agent)';
+    worker.hasNewActivity = true;
+    worker.completedAt = Date.now();
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
   }
 
   /**

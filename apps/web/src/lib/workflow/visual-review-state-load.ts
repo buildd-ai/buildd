@@ -197,6 +197,11 @@ export async function getMissionVisualReviewState(
     if (plan.action === 'blocked') {
       return { ...withHold, nextActor: plan.nextActor, scheduleBlock: { cause: plan.cause, reason: plan.reason } };
     }
+    // The scheduler files nothing while build work is still open, so a new
+    // commit on a mission with unfinished tasks is not "about to be audited".
+    if (plan.action === 'none' && plan.why === 'work_not_landed') {
+      return { ...withHold, holdReason: withHold.holdReason ?? 'The mission still has build work open. The new commit is reviewed once it finishes.' };
+    }
   }
   return withHold;
 }

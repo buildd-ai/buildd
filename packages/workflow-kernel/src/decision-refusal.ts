@@ -8,11 +8,12 @@
  * a sentence that names nothing internal.
  */
 
-export type DecisionAction = 'request_fix' | 'force_re_review' | 'approve_override' | 'dispose_finding';
+export type DecisionAction = 'request_fix' | 'force_re_review' | 'land_pr' | 'approve_override' | 'dispose_finding';
 
 const ACTION_WORDS: Record<DecisionAction, string> = {
   request_fix: 'Another fix was not requested',
   force_re_review: 'A forced re-review was not requested',
+  land_pr: 'The landing task was not filed',
   approve_override: 'The approval was not recorded',
   dispose_finding: 'Finding not closed',
 };

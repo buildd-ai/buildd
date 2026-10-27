@@ -213,3 +213,31 @@ function describeOpen(open: LivingSpecCriterionStanding[], staleFails: ReadonlyS
 function list(ids: string[]): string {
   return ids.length > 4 ? `${ids.slice(0, 4).join(', ')} and ${ids.length - 4} more` : ids.join(', ');
 }
+
+/**
+ * Why a runner check ended without a pass, in a few words. Only a check run's
+ * own evidence says: a reviewer's verdict has none, so it gets no reason.
+ */
+export function verdictReason(verdict: MissionVerdictRow['verdict'], evidence: Record<string, unknown> | undefined): LivingSpecCriterionStanding['reason'] | undefined {
+  if (verdict === 'pass' || evidence?.kind !== 'check') return undefined;
+  const output = [evidence.stderr, evidence.stdout].filter((v): v is string => typeof v === 'string').join('\n');
+  if (/Missing acceptance test:/.test(output)) return 'test file not found';
+  if (verdict === 'fail') return 'test failed';
+  return evidence.exitCode === 125 || verdict === 'inconclusive' ? 'test could not run' : undefined;
+}
+
+/** Each standing with the criterion's own words and, for one that did not pass, why its check did not. */
+export function describeStandings(
+  standings: readonly LivingSpecCriterionStanding[],
+  scope: readonly { id: string; text: string }[],
+  rows: readonly MissionVerdictRow[],
+): LivingSpecCriterionStanding[] {
+  const text = new Map(scope.map((c) => [c.id, c.text]));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return standings.map((s) => {
+    const row = s.verdictId ? byId.get(s.verdictId) : undefined;
+    const reason = s.standing === 'pass' || s.standing === 'waived' || s.standing === 'missing' || !row ? undefined : verdictReason(row.verdict, row.evidence);
+    const words = text.get(s.criterionId);
+    return { ...s, ...(words ? { text: words } : {}), ...(reason ? { reason } : {}) };
+  });
+}

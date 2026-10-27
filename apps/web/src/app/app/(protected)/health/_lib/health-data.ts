@@ -6,7 +6,7 @@ import { cookies } from 'next/headers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
-import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import { isRunnerOnline, isRunnerRecentlySeen } from '@/lib/runner-heartbeats-shared';
 import {
   isolationBlockedCounts,
   isolationStrandedCount,
@@ -330,7 +330,7 @@ export async function loadHealth({
   // health, budget forecast, consumption, aggregated failure analytics, and
   // backends stranding pending work
   const [
-    runners,
+    heartbeats,
     usageStats,
     scheduleRows,
     recentFailureRows,
@@ -668,6 +668,8 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   ]);
   // An unknown or stale probe refuses every task, so any waiting one makes it a Problem.
   const protectedWorkPending = pendingIsolation.length > 0;
+  // Only runners seen recently are listed and counted; a long-gone one is not part of the fleet.
+  const runners = heartbeats.filter(r => isRunnerRecentlySeen(r.lastHeartbeatAt, now));
   const onlineRunners = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
   const isolationStranded = isolationStrandedCount(onlineRunners.map(r => r.isolation), pendingIsolation);
   for (const r of runners) r.isolationBlocked = isolationBlockedCounts(r.isolation, pendingIsolation);

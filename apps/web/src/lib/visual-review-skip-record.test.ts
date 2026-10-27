@@ -52,6 +52,7 @@ describe('the cause a wrong-or-stuck Skip is filed under', () => {
     expect(visualReviewSkipCause(state({ status: 'needed', scheduleBlock: { cause: 'rereview_cap', reason: '5 review rounds have run' } }))).toBe('audit_not_filed');
     expect(visualReviewSkipCause(state({ status: 'queued' }))).toBe('never_started');
     expect(visualReviewSkipCause(state({ status: 'queued', holdReason: 'no browser runner' }))).toBe('audit_held');
+    expect(visualReviewSkipCause(state({ status: 'needed', staleEvidence: true, holdReason: 'build work open' }))).toBe('audit_held');
     expect(visualReviewSkipCause(state({ status: 'needed', nextActor: 'owner' }))).toBe('awaiting_approval');
     expect(visualReviewSkipCause(state({ status: 'needed', nextActor: 'system', staleEvidence: true }))).toBe('new_commit_unaudited');
     expect(visualReviewSkipCause(state({ status: 'running' }))).toBe('still_running');

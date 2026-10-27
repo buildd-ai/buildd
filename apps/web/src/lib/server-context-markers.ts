@@ -6,10 +6,12 @@
  * create path and every template, like the review system's own keys
  * (lib/verdict-provenance.ts): the final verification is filed by
  * `ensureFinalVerification`, and a repair is stamped only when the mission's
- * own final verification task files it (`specRepairStamp`).
+ * own final verification task files it (`specRepairStamp`). `specCriterionBatch`
+ * is a mission's criterion-check run, which the runner executes with no agent
+ * (lib/specs/criterion-checks.ts inserts it directly, never through a route).
  */
 
-export const MISSION_VERIFICATION_CONTEXT_KEYS = ['finalVerification', 'specRepair', 'acceptanceTests'] as const;
+export const MISSION_VERIFICATION_CONTEXT_KEYS = ['finalVerification', 'specRepair', 'acceptanceTests', 'specCriterionBatch'] as const;
 
 /**
  * Context keys only the release flow writes. `releaseCandidateFix` is stamped

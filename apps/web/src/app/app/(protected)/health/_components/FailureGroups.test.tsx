@@ -42,15 +42,13 @@ describe('FailureGroupsSection', () => {
 });
 
 describe('failureProblemLine', () => {
-  it('counts the causes and names the biggest one', () => {
+  it('counts the causes and names none: the causes are behind the row', () => {
     const failures = [w('a', "You've hit your session limit · resets 3pm"), w('b', "You've hit your session limit · resets 4pm"), w('c', 'TypeError: x is undefined')];
-    const line = failureProblemLine(data(failures), '7d');
-    expect(line).toStartWith('Failures: 2 causes this week, mostly ');
-    expect(line).toContain("hit the model provider's usage limit");
+    expect(failureProblemLine(data(failures), '7d')).toBe('2 failure causes this week');
   });
 
   it('one cause reads as one, in the window it was counted in', () => {
-    expect(failureProblemLine(data([w('a', 'TypeError: x is undefined')]), '24h')).toStartWith('Failures: 1 cause in the last day: ');
+    expect(failureProblemLine(data([w('a', 'TypeError: x is undefined')]), '24h')).toBe('1 failure cause in the last day');
   });
 });
 

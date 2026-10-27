@@ -98,6 +98,7 @@ export function requiredScopeForAction(action: string, params: Record<string, un
   // help (docs and workflow guidance) is a read: any token that reads tasks.
   if (action === 'help') return 'tasks:read';
   if (['manage_missions', 'manage_initiatives', 'manage_workspaces', 'manage_designs'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
+  if (action === 'manage_designs' && params.action === 'screen') return 'tasks:read';
   // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
   if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
   if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff', 'comments', 'attachments', 'history', 'awaiting_approval'].includes(String(params.action))) return 'tasks:read';

@@ -304,8 +304,9 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
-    // Created open: the team's accounts reach it on their next call.
-    await clearCallerCache(callerDep.teamOpenWorkspaces(teamId));
+    // Created open: the team's accounts reach it on their next call; so does
+    // an MCP connection covering the team as a whole.
+    await clearCallerCache(callerDep.teamOpenWorkspaces(teamId), callerDep.teamWorkspaces(teamId));
 
     // Modules react (e.g. connectors preinstalled from the team's catalog).
     await emit({ type: 'workspace.created', workspaceId: workspace.id, teamId, origin: req.nextUrl.origin });

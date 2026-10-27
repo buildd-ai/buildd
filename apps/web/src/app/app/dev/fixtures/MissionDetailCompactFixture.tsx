@@ -109,6 +109,7 @@ export default function MissionDetailCompactFixture() {
               completionText={variant === 'all-landed' ? 'Shipped readable export schedules and limits, checked on a phone and a desk.' : null}
               checks={fixture.checks}
               planTasks={fixture.planTasks}
+              missionTitle={title}
               outcomeSpecTitles={fixture.specTitles}
               decisions={fixture.decisions}
               history={fixture.history}

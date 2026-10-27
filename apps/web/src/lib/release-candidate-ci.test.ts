@@ -7,6 +7,7 @@ import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import {
   buildReleaseCandidateFixTask,
   classifyCiRedReleasePr,
+  isCandidateShapedReleasePr,
   releaseCandidateBranchPushRefusal,
 } from './release-candidate-ci';
 
@@ -55,6 +56,20 @@ describe('classifyCiRedReleasePr', () => {
   });
 });
 
+describe('isCandidateShapedReleasePr (the conflict and refresh doors)', () => {
+  it('any candidate branch into prodBranch, trusted or not', () => {
+    expect(isCandidateShapedReleasePr(config, { headRef: 'release/v0.381.0', baseRef: 'main' })).toBe(true);
+  });
+
+  it('not an ordinary PR, a release/v* branch into another base, the legacy PR, or a workspace without candidates', () => {
+    expect(isCandidateShapedReleasePr(config, { headRef: 'buildd/abc-fix', baseRef: 'dev' })).toBe(false);
+    expect(isCandidateShapedReleasePr(config, { headRef: 'release/v1.2.3', baseRef: 'dev' })).toBe(false);
+    expect(isCandidateShapedReleasePr({ ...config, candidate: undefined, releaseBranch: 'dev' } as WorkspaceReleaseConfig, { headRef: 'dev', baseRef: 'main' })).toBe(false);
+    expect(isCandidateShapedReleasePr(null, { headRef: 'release/v1.2.3', baseRef: 'main' })).toBe(false);
+    expect(isCandidateShapedReleasePr(config, { headRef: null, baseRef: null })).toBe(false);
+  });
+});
+
 describe('buildReleaseCandidateFixTask', () => {
   const built = buildReleaseCandidateFixTask({
     workspaceId: 'ws1',
@@ -89,6 +104,14 @@ describe('buildReleaseCandidateFixTask', () => {
     expect(built.description).toContain('Integration: 4 tests failed');
     expect(built.description).toContain('/repos/acme/app/actions/jobs/9/logs');
     expect(built.description).not.toContain('--allow-escape-sequences');
+  });
+
+  it('cannot complete without a PR and routes to a tier that can diagnose', () => {
+    expect(built.outputRequirement).toBe('pr_required');
+    expect(built.tier).toBe('premium');
+    expect(built.description).toContain('alreadyShippedIn');
+    // A fix pushed straight to dev (no PR) is named by its commit, which amends the candidate.
+    expect(built.description).toContain('commit (its SHA) when it was pushed without one');
   });
 
   it('the refusal text names the source branch and the amendment', () => {
