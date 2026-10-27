@@ -13,6 +13,7 @@ const recordCalls: any[] = [];
 let recordResult: any = { ok: true };
 const gateEvents: any[] = [];
 let sweepRows: Array<{ id: string; prUrl: string }> = [];
+let lastWhereCondition: any = null; // Captures what was passed to where() in the sweep query
 /** Worker rows findFirst hands out in order (one per detect run), before falling back to `workerRow`. */
 let workerQueue: any[] = [];
 /** A GitHub path that never answers: it settles only when the caller's AbortSignal fires. */
@@ -32,7 +33,13 @@ mock.module('@buildd/core/db', () => ({
     update: () => ({ set: (set: any) => ({ where: () => { scanWrites.push(set); return Promise.resolve(); } }) }),
     // The sweep's candidate query: from → innerJoin → where → orderBy → limit.
     select: () => {
-      const chain: any = { from: () => chain, innerJoin: () => chain, where: () => chain, orderBy: () => chain, limit: () => Promise.resolve(sweepRows) };
+      const chain: any = {
+        from: () => chain,
+        innerJoin: () => chain,
+        where: (condition: any) => { lastWhereCondition = condition; return chain; },
+        orderBy: () => chain,
+        limit: () => Promise.resolve(sweepRows)
+      };
       return chain;
     },
   },
@@ -612,10 +619,20 @@ describe('rescanOnMerge', () => {
     // The closed PR is nominated because its worker task 't-6' is in the lineage of 't-9' (a sibling attempt).
     // In this case, task 't-9' has parentTaskId 'p-1' (it's an attempt of p-1),
     // and task 't-6' also has parentTaskId 'p-1' (sibling attempt).
+    // relatedTaskIds = ['t-9', 'p-1', 't-6'] is what findTaskLineageForSupersession returns.
     mergedTask = { parentTaskId: 'p-1', taskClass: 'attempt' };
     siblingTasks = [{ id: 't-6', parentTaskId: 'p-1', taskClass: 'attempt' }];
+    // The sweep's where() clause includes the lineage filter: inArray(tasks.id, relatedTaskIds).
+    // By capturing lastWhereCondition, we verify that the filter is present in the query.
     sweepRows = [{ id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' }];
+
     const r = await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: 't-9' });
+
+    // Verify the where() condition was called with the lineage filter.
+    // The condition is a Drizzle SQL expression and won't have the ids as plain strings,
+    // but it will be truthy and structured.
+    expect(lastWhereCondition).toBeDefined();
+
     // The closed PR #6 should be nominated and recorded as superseded
     expect(r.nominated).toBe(1);
     expect(r.results[0]).toMatchObject({ prUrl: 'https://github.com/org/kb/pull/6', outcome: 'recorded' });

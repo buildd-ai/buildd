@@ -766,9 +766,9 @@ describe('explainTask', () => {
 
   // Task 9e379e31: a closed PR on a completed task that is older than
   // CLOSED_PR_AGE_OUT_DAYS should not count as awaiting_merge; it should read
-  // as completed. The age-out uses task.completedAt (immutable) not worker.updatedAt
+  // as complete. The age-out uses task.completedAt (immutable) not worker.updatedAt
   // (which gets bumped by rescans and never ages out).
-  it('ages out a closed PR older than CLOSED_PR_AGE_OUT_DAYS and reads the task as completed', async () => {
+  it('ages out a closed PR older than CLOSED_PR_AGE_OUT_DAYS and reads the task as complete', async () => {
     const NOW = new Date('2026-10-27T00:00:00Z');
     const completedAt = new Date(NOW.getTime() - 20 * 24 * 60 * 60 * 1000); // 20 days ago
     taskRows = [
@@ -783,8 +783,58 @@ describe('explainTask', () => {
 
     const result = await explainTask('task-aged', ACTOR);
     const answer = result!.subjects[0];
-    // The PR should be aged out and not cause awaiting_merge status
-    expect(answer.state).not.toBe('awaiting_merge');
+    // The PR should be aged out and the state should be complete
+    expect(answer.state).toBe('complete');
+  });
+
+  it('still lists a closed PR on a standalone task before 14 days as awaiting_merge', async () => {
+    const NOW = new Date('2026-10-27T00:00:00Z');
+    const completedAt = new Date(NOW.getTime() - 13 * 24 * 60 * 60 * 1000); // 13 days ago
+    taskRows = [
+      task({
+        id: 'task-13d',
+        status: 'completed',
+        completedAt,
+        missionId: null, // No mission, so age-out applies
+        workers: [worker({ id: 'w-13d', prNumber: 100, prUrl: 'https://example.invalid/100', prLifecycleStatus: 'closed' })],
+      }),
+    ];
+
+    const result = await explainTask('task-13d', ACTOR);
+    const answer = result!.subjects[0];
+    // At 13 days, the PR should still count as awaiting_merge
+    expect(answer.state).toBe('awaiting_merge');
+    // The closed PR should be the waiting reason
+    expect(answer.waitingOn?.kind).toBe('pr_closed_unmerged');
+    expect(answer.because.some(l => l.refs.prNumber === 100)).toBe(true);
+  });
+
+  it('still lists a closed PR on a task in an open mission whatever its age', async () => {
+    const NOW = new Date('2026-10-27T00:00:00Z');
+    const completedAt = new Date(NOW.getTime() - 20 * 24 * 60 * 60 * 1000); // 20 days ago
+    taskRows = [
+      task({
+        id: 'task-in-mission',
+        status: 'completed',
+        completedAt,
+        missionId: 'm-1', // In a mission
+        workers: [worker({ id: 'w-mission', prNumber: 101, prUrl: 'https://example.invalid/101', prLifecycleStatus: 'closed' })],
+      }),
+    ];
+    missionRows = [
+      {
+        id: 'm-1',
+        status: 'active',
+      },
+    ];
+
+    const result = await explainTask('task-in-mission', ACTOR);
+    const answer = result!.subjects[0];
+    // Even at 20 days, a PR on a task in an open mission should still count as awaiting_merge
+    expect(answer.state).toBe('awaiting_merge');
+    // The closed PR should be the waiting reason
+    expect(answer.waitingOn?.kind).toBe('pr_closed_unmerged');
+    expect(answer.because.some(l => l.refs.prNumber === 101)).toBe(true);
   });
 
   // A request-changes review queued a builder-after-review attempt. The PR is
