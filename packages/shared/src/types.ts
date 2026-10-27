@@ -3525,7 +3525,7 @@ export interface MissionStage {
 }
 
 /** The four groups of the mission page's Overview strip, in display order. */
-export type MissionProgressGroup = 'done' | 'active' | 'waiting' | 'checks';
+export type MissionProgressGroup = 'done' | 'active' | 'waiting';
 
 export interface MissionProgressCell {
   /** The strip's display state (`StateKey` in components/ui/states.ts): landed, running, failed, ready, blocked... */
@@ -4452,6 +4452,10 @@ export interface FleetSlotWorker {
   status: string;
   /** Latest phase supported by lifecycle evidence. */
   phase: string | null;
+  /** A helper run (check, audit, final verification): counted under its host, not listed as work. */
+  helper?: boolean;
+  /** The task a helper run checks, when it checks one; else it belongs to its mission. */
+  hostTaskId?: string | null;
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;
