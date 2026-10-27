@@ -4,9 +4,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ChatSetupCard, { chatSetupCopy } from './ChatSetupCard';
 
 describe('ChatSetupCard', () => {
-  it('the title is a heading on the kit card, the body under it, the fix as a link', () => {
+  it('the title is a heading on a Card, the body under it, the fix as a button link', () => {
     const html = renderToStaticMarkup(createElement(ChatSetupCard, { reason: 'no_key', canManage: true }));
-    expect(html).toMatch(/<h3[^>]*data-testid="kit-setup-title"[^>]*>Connect a model provider<\/h3><p class="kit-note">Chat is where/);
+    expect(html).toMatch(/<h3[^>]*data-testid="chat-setup-title"[^>]*>Connect a model provider<\/h3><p[^>]*>Chat is where/);
+    expect(html).toContain('btn btn-primary');
+    expect(html).not.toMatch(/kit-|font-mono|uppercase/);
     expect(html).toContain('href="/app/settings/models#keys"');
   });
 });

@@ -117,7 +117,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
     <p data-testid="home-also" className="mb-8 text-meta text-text-muted">
       {inProgress > 0 && <>{inProgressLine(inProgress)}{' '}</>}
       {quietMissions > 0 ? quietMissionsLine(quietMissions, quietCauses) : inProgress > 0 ? '' : 'Everything else in motion is in Activity.'}{' '}
-      <Link href="/app/tasks" className="inline-flex min-h-11 items-center text-text-secondary hover:text-text-primary md:min-h-0">Activity →</Link>
+      <Link href="/app/tasks" className="-my-3 inline-block py-3 text-text-secondary hover:text-text-primary md:my-0 md:py-0">Activity →</Link>
     </p>
     <div data-testid="home-body" data-layout={layout} className={BODY_GRID[layout]}>
       {agents}

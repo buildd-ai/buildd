@@ -111,6 +111,9 @@ export function healthItemFor(pathname: string): HealthNavItem | null {
 /** `/app/workspaces/:id/memory` — a workspace sub-page that needs a phone title and a way back. */
 const WORKSPACE_MEMORY_PATH = /^\/app\/workspaces\/([^/]+)\/memory$/;
 
+/** The specs hub, a workspace's specs, a spec and the approvals list: they open on the same header, not a blank band. Approve and retire are forms with their own spacing. */
+const SPECS_PATH = /^\/app\/(specs(\/approvals|\/[^/]+)?|workspaces\/[^/]+\/specs)\/?$/;
+
 /**
  * Top-level pages get a mobile header (title + team switcher + account menu).
  * Detail pages return null — they render their own headers.
@@ -121,7 +124,7 @@ export function mobilePageTitle(pathname: string, opts: { billing?: boolean } = 
   if (pathname === '/app/missions') return 'Missions';
   if (pathname === '/app/missions/plan') return 'Plan';
   if (pathname === '/app/releases') return 'Releases';
-  if (pathname === '/app/specs') return 'Specs';
+  if (SPECS_PATH.test(pathname)) return 'Specs';
   if (pathname === '/app/workspaces') return 'Workspaces';
   if (pathname === '/app/tasks') return 'Activity';
   if (pathname === '/app/team') return 'Team';

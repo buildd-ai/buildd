@@ -1238,13 +1238,6 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     .buildd-approval .kit-actions { gap: 10px; }
   }
 
-  /* ── Setup card: the one inline "chat can't start yet" state. */
-  .kit-card.buildd-setup { gap: 6px; padding: 16px 20px; border: 2px dashed var(--border-strong); background: var(--card); }
-  .buildd-setup > .kit-eyebrow { font-weight: 700; letter-spacing: 2px; color: var(--accent-text); }
-  .buildd-setup > .kit-card-title { font-family: var(--kit-font-mono); font-size: 16px; font-weight: 600; color: var(--text-primary); }
-  .buildd-setup > .kit-note { font-size: 14px; line-height: 1.625; color: var(--text-secondary); }
-  .buildd-setup > .kit-actions { margin-top: 6px; align-items: center; gap: 12px; }
-
   /* ── The empty canvas (ChatWorkspace): the kit's ChatEmpty with an overline
      and its mood square, the greeting in the voice face, a sub line, and the
      picked questions as square numbered rows under their header. Anchored (the
