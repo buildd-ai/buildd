@@ -23,6 +23,32 @@ test('AC-10: unrelated', () => expect(true).toBe(false));`);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 120_000);
 
+  it('passes a criterion tested in one of several files; a file without its test does not make it inconclusive', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acceptance-fixture-'));
+    try {
+      const a = join(dir, 'a.test.ts');
+      const b = join(dir, 'b.test.ts');
+      writeFileSync(a, `import { test, expect } from 'bun:test';
+test('R-1: works', () => expect(true).toBe(true));
+test('R-2: broken', () => expect(true).toBe(false));`);
+      writeFileSync(b, `import { test, expect } from 'bun:test';
+test('R-3: other', () => expect(true).toBe(true));
+test('R-2: also here', () => expect(true).toBe(true));`);
+      const run = async (...args: string[]) => {
+        const proc = Bun.spawn([process.execPath, 'run', 'scripts/run-acceptance-tests.ts', ...args], { stdout: 'pipe', stderr: 'pipe' });
+        return proc.exited;
+      };
+      expect(await run('R-1', a, b)).toBe(0);
+      expect(await run('R-1', b, a)).toBe(0);
+      // A failure in any file still decides.
+      expect(await run('R-2', a, b)).toBe(1);
+      // No file holds a test for it: still inconclusive, never a vacuous pass.
+      expect(await run('R-9', a, b)).toBe(125);
+      // A named file that does not exist is a broken mapping, even beside a pass.
+      expect(await run('R-1', a, join(dir, 'missing.test.ts'))).toBe(125);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 120_000);
+
   it('matches the exact criterion token in test names', () => {
     const re = new RegExp(acceptancePattern('AC-1'));
     expect(re.test('AC-1: works')).toBe(true);
