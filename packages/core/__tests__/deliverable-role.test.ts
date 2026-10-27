@@ -82,3 +82,30 @@ describe('acceptance tests (spec 1dc6cc39 R-76)', () => {
     expect(deliverableRole({ title: '[acceptance tests] X', context: { acceptanceTests: { missionId: 'm', specId: 's' } } })).toBe('verification');
   });
 });
+
+describe('verifyHostOf / isHelperRun (spec d25d923d R-11, R-12)', () => {
+  const { verifyHostOf, isHelperRun } = require('../mission-helpers');
+  it('a criterion check hosts under its subject task', () => {
+    const t = { taskClass: 'bookkeeping', title: 'Check spec criterion R-1', context: { specCriterionCheck: { subjectTaskId: 'T1' } } };
+    expect(verifyHostOf(t)).toEqual({ kind: 'task', taskId: 'T1' });
+    expect(isHelperRun(t)).toBe(true);
+    expect(deliverableRole(t)).toBe('verification');
+  });
+  it('final verification and the surface audit host under their mission', () => {
+    const fv = { taskClass: 'bookkeeping', context: { finalVerification: { missionId: 'M1' } } };
+    expect(verifyHostOf(fv)).toEqual({ kind: 'mission', missionId: 'M1' });
+    expect(isHelperRun(fv)).toBe(true);
+    const audit = { taskClass: 'work', title: '[surface audit] M' };
+    expect(verifyHostOf(audit)).toEqual({ kind: 'mission', missionId: null });
+    expect(isHelperRun(audit)).toBe(true);
+  });
+  it('an attempt hosts under its parent; a spec repair under its filer', () => {
+    expect(verifyHostOf({ taskClass: 'attempt', parentTaskId: 'P' })).toEqual({ kind: 'task', taskId: 'P' });
+    expect(verifyHostOf({ taskClass: 'work', context: { specRepair: { filedBy: 'F' } } })).toEqual({ kind: 'task', taskId: 'F' });
+  });
+  it('build work is not a helper', () => {
+    const t = { taskClass: 'work', title: 'feat: x' };
+    expect(verifyHostOf(t)).toBeNull();
+    expect(isHelperRun(t)).toBe(false);
+  });
+});
