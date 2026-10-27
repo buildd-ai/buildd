@@ -45,8 +45,19 @@ export function QueueTiles({ view }: { view: HealthQueueResponse }) {
   return (
     <Card padding="sm" className="grid grid-cols-4 divide-x divide-[var(--line-soft)]" data-testid="queue-tiles">
       <Tile label="Running" href="/app/health/runners" testId="queue-tile-running">
-        <Count>{tiles.running}/{tiles.slots}</Count>
-        <div className="text-meta text-text-muted">slots</div>
+        {tiles.running > tiles.slots ? (
+          <>
+            <Count>{tiles.running}</Count>
+            <div className="text-meta text-text-muted">
+              {tiles.slots > 0 ? `running, over ${tiles.slots} slots` : 'running, slot total unknown'}
+            </div>
+          </>
+        ) : (
+          <>
+            <Count>{tiles.running}/{tiles.slots}</Count>
+            <div className="text-meta text-text-muted">slots</div>
+          </>
+        )}
       </Tile>
       <Tile label="Ready" href="#queue-ready" testId="queue-tile-ready">
         <Count>{tiles.ready}</Count>
