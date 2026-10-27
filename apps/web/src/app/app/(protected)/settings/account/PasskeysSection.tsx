@@ -19,6 +19,7 @@ export interface PasskeyRow { id: string; name: string; createdAt: string; lastU
 // One fixed format on the server and in the browser, so the first render matches.
 const DAY = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 const day = (iso: string) => DAY.format(new Date(iso));
+const ADD_FAILED = 'Could not add the passkey. Try again.';
 
 /** A name for the passkey from the device it was made on; the person sees it in this list only. */
 function deviceName(): string {
@@ -55,11 +56,11 @@ export default function PasskeysSection({ initial }: { initial: PasskeyRow[] }) 
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ response, name, ...(presence ? { presence } : {}) }),
       }));
-      if (!res?.ok) throw new Error(body.error ?? 'Could not add the passkey. Try again.');
+      if (!res?.ok) throw new Error(body.error ?? ADD_FAILED);
       setKeys((k) => [...k, body.passkey as PasskeyRow]);
       setMsg({ tone: 'ok', text: 'Passkey added.' });
     } catch (e) {
-      setMsg({ tone: 'err', text: e instanceof Error ? e.message : 'Could not add the passkey. Try again.' });
+      setMsg({ tone: 'err', text: e instanceof Error ? e.message : ADD_FAILED });
     } finally {
       setBusy(null);
     }
