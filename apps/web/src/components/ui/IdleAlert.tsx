@@ -27,12 +27,14 @@ export default function IdleAlert({ idleSlots, queuedTasks, cause, href = QUEUE_
     <Link
       href={href}
       data-testid="idle-alert"
-      className="notice notice-warn flex min-h-11 w-full items-center gap-2.5 text-body no-underline"
+      className="notice notice-warn flex min-h-11 w-full items-center py-2 gap-2.5 text-body no-underline"
     >
       <span aria-hidden="true" className="font-mono font-semibold">!</span>
-      <span className="font-semibold">{idleAlertText(idleSlots, queuedTasks)}</span>
-      <span className="min-w-0 truncate text-meta text-[var(--text-secondary)]">{cause}</span>
-      <span aria-hidden="true" className="ml-auto">›</span>
+      <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-x-2.5">
+        <span className="font-semibold">{idleAlertText(idleSlots, queuedTasks)}</span>
+        <span className="min-w-0 text-meta text-[var(--text-secondary)]">{cause}</span>
+      </span>
+      <span aria-hidden="true" className="shrink-0">›</span>
     </Link>
   );
 }
