@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "052f8417-451e-40eb-b9f0-4a479a1c4be9",
+  "id": "9951dfbc-a897-4693-9a03-35a2f617626e",
   "prevIds": [
-    "5203f02a-b9e4-4678-85c6-d75214c353ae"
+    "adb95eee-6bdb-4b9b-b80c-a0f21e1e7d6f"
   ],
   "ddl": [
     {
@@ -22004,6 +22004,19 @@
       "default": null,
       "generated": null,
       "identity": null,
+      "name": "explanation",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_revisions"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
       "name": "approved_attachments",
       "entityType": "columns",
       "schema": "public",
@@ -31716,6 +31729,45 @@
       "generated": null,
       "identity": null,
       "name": "deferred_to_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'code_fix'",
+      "generated": null,
+      "identity": null,
+      "name": "remedy_class",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "restated_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "evidence",
       "entityType": "columns",
       "schema": "public",
       "table": "workflow_findings"
