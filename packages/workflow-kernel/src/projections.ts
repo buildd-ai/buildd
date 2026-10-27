@@ -314,7 +314,11 @@ export function deliveryPrState(d: DeliverySnapshot): PrDisplayState | null {
   }
   const onHead = (sha: string | null) => sha != null && sha === d.currentHeadSha;
   if (d.state === 'REPAIRING' && (d.stateReason === 'conflict' || d.stateReason === 'migration')) return 'conflict';
-  if (d.mergeable === 'dirty' && onHead(d.mergeableHeadSha)) return 'conflict';
+  // If mergeable is dirty, return conflict even if the reading is stale (not on current head).
+  // A stale conflict reading still indicates a live conflict unless explicitly resolved.
+  // When the head moves (e.g., a conflict-fix push), we conservatively assume the conflict
+  // persists until GitHub re-reads mergeable on the new head.
+  if (d.mergeable === 'dirty') return 'conflict';
   if ((d.state === 'REPAIRING' && d.stateReason === 'ci') || d.state === 'BLOCKED_ON_TRUNK') return 'ci_failed';
   if (d.ci === 'red' && onHead(d.ciHeadSha)) return 'ci_failed';
   if (d.ci === 'green' && onHead(d.ciHeadSha)) return 'ci_passed';
