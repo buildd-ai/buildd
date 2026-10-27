@@ -6,6 +6,8 @@ import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import type { StatusRequestView } from '@/lib/specs/retire';
+import { needsPasskey, withPasskey } from '@/lib/passkeys/client';
+import { PASSKEY_SETTINGS_PATH } from '@/lib/passkeys/paths';
 
 const CLOSED: Record<Exclude<StatusRequestView['state'], 'ready' | 'stale'>, { tone: 'warn' | 'err'; text: string }> = {
   invalid: { tone: 'err', text: 'This link is not valid.' },
@@ -18,10 +20,11 @@ const CLOSED: Record<Exclude<StatusRequestView['state'], 'ready' | 'stale'>, { t
  * The confirm step for a retire or restore asked for from an OAuth session
  * (Living Spec b7fc9316 R-11, R-12): what changes, the reason given, and one
  * Confirm that sends the request to POST /api/specs/[specId]/retire/confirm
- * from this signed-in session. Closed states carry no action.
+ * from this signed-in session. Closed states carry no action. A team that
+ * requires a passkey asks for it after the click (R-20).
  */
 export default function SpecStatusRequest({ specId, token, view }: { specId: string; token: string; view: StatusRequestView }) {
-  const [result, setResult] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+  const [result, setResult] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string; action?: { label: string; href: string } } | null>(null);
   const [pending, startTransition] = useTransition();
 
   if (view.state !== 'ready') {
@@ -39,14 +42,14 @@ export default function SpecStatusRequest({ specId, token, view }: { specId: str
   const doneText = view.op === 'retire' ? `Done: the spec is ${view.to}.` : `Done: the spec is ${view.to} again.`;
   function submit() {
     startTransition(async () => {
-      const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/retire/confirm`, {
+      const { res, body } = await withPasskey((presence) => fetch(`/api/specs/${encodeURIComponent(specId)}/retire/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ request: token }),
-      }).catch(() => null);
-      const body = (await res?.json().catch(() => ({}))) as { error?: string; code?: string } | undefined;
+        body: JSON.stringify({ request: token, ...(presence ? { presence } : {}) }),
+      }));
       if (res?.ok) setResult({ tone: 'ok', text: doneText });
-      else setResult({ tone: body?.code === 'request_stale' ? 'warn' : 'err', text: body?.error ?? 'That did not work. Try again.' });
+      else if (needsPasskey(body)) setResult({ tone: 'warn', text: body.error ?? 'Add a passkey first.', action: { label: 'Add a passkey', href: PASSKEY_SETTINGS_PATH } });
+      else setResult({ tone: body.code === 'request_stale' ? 'warn' : 'err', text: body.error ?? 'That did not work. Try again.' });
     });
   }
 
@@ -67,7 +70,7 @@ export default function SpecStatusRequest({ specId, token, view }: { specId: str
         <h2 className="text-eyebrow font-semibold text-text-muted">Reason given</h2>
         <p className="text-body text-text-primary [overflow-wrap:anywhere]" data-testid="spec-status-reason">{view.reason}</p>
       </section>
-      {result ? <Notice tone={result.tone} data-testid="spec-status-result">{result.text}</Notice> : null}
+      {result ? <Notice tone={result.tone} action={result.action} data-testid="spec-status-result">{result.text}</Notice> : null}
       {!result || result.tone === 'err' ? (
         <div>
           <PrimaryAction onClick={submit} disabled={pending} fullWidthOnMobile data-testid="spec-status-confirm">

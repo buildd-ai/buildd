@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateTaskScopedCaller, taskScopeAllowsMission } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { readMissionSpecOutcomes, recordMissionSpecVerdict } from '@/lib/specs/mission-outcome';
+import { readMissionSpecOutcomes, recordMissionSpecVerdict, recordMissionSpecVerdicts } from '@/lib/specs/mission-outcome';
 import type { SpecCaller } from '@/lib/specs/store';
 
 type Ctx = { params: Promise<{ missionId: string }> };
@@ -37,6 +37,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 }
 
 /**
+ * POST /api/specs/mission-outcomes/[missionId] { specId?, headSha, verdicts: [{ criterionId, verdict?, acceptanceTest? }] } records many in one request and answers a short summary { recorded, counts, refused, unsettled, scope, passing }.
  * POST /api/specs/mission-outcomes/[missionId] { specId?, criterionId, verdict, headSha, evidenceRefs?, readIds?, observed?, reaffirms?, acceptanceTest? }:
  * with acceptanceTest { exitCode, started?, testName?, stdout?, stderr? } the exit code decides the verdict (0 pass, other fail, none inconclusive)
  * and the row is authored as a test (`check:acceptance:<criterion>`):
@@ -49,6 +50,11 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const c = await caller(req, missionId);
   if (c instanceof NextResponse) return c;
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  // verdicts: [{ criterionId, verdict | acceptanceTest }] with one shared specId and headSha: one request, one short summary.
+  if (body && body.verdicts !== undefined) {
+    const b = await recordMissionSpecVerdicts(c, missionId, { specId: body.specId, headSha: body.headSha }, body.verdicts);
+    return b.ok ? NextResponse.json({ summary: b }) : NextResponse.json({ error: b.error }, { status: b.status });
+  }
   const r = await recordMissionSpecVerdict(c, missionId, {
     specId: body?.specId, criterionId: body?.criterionId, verdict: body?.verdict, headSha: body?.headSha,
     evidenceRefs: body?.evidenceRefs, readIds: body?.readIds, observed: body?.observed, reaffirms: body?.reaffirms,
