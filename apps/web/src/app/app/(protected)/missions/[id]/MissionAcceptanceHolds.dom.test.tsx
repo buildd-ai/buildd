@@ -47,7 +47,8 @@ describe('MissionAcceptanceHolds', () => {
     const diffLinks = rows[0].querySelectorAll('[data-testid="acceptance-hold-diff"]');
     expect(diffLinks).toHaveLength(1);
     const link = diffLinks[0] as HTMLAnchorElement;
-    expect(link.href).toContain('/pull/5708/files#diff-');
+    expect(link.href).toBe('https://github.com/example/repo/pull/5708/files#diff-3eb7b6953021505b04c6227eb1837aa7c37031e8d7557f5b30ae327997aa462b');
+    expect(link.textContent).toBe('See changes in queue.test.ts');
     expect(rows[1].textContent).toContain('PR #5709');
     expect(rows[1].textContent).toContain('2 tests');
     expect(rows[1].querySelectorAll('[data-testid="acceptance-hold-diff"]')).toHaveLength(2);

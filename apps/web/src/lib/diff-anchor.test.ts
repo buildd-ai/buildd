@@ -4,10 +4,8 @@ import { diffAnchor } from './diff-anchor';
 describe('diffAnchor', () => {
   it('returns the correct GitHub diff anchor for a known file path', async () => {
     const anchor = await diffAnchor('tests/acceptance/queue.test.ts');
-    // Precomputed SHA-256 hex for 'tests/acceptance/queue.test.ts'
-    const expected = '#diff-7b7d7f5d8c5c3e5b5c5a5c5e5c5a5c5e5c5a5c5e5c5a5c5e5c5a5c5e5c5a5c5e';
-    // Verify it has the correct format
-    expect(anchor).toMatch(/^#diff-[0-9a-f]{64}$/);
+    // SHA-256 of 'tests/acceptance/queue.test.ts'
+    expect(anchor).toBe('#diff-3eb7b6953021505b04c6227eb1837aa7c37031e8d7557f5b30ae327997aa462b');
     // Verify it's deterministic (same input gives same output)
     const anchor2 = await diffAnchor('tests/acceptance/queue.test.ts');
     expect(anchor2).toBe(anchor);
@@ -22,11 +20,19 @@ describe('diffAnchor', () => {
   it('returns empty string when crypto.subtle is unavailable', async () => {
     const originalCrypto = globalThis.crypto;
     try {
-      (globalThis as any).crypto = undefined;
+      Object.defineProperty(globalThis, 'crypto', {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
       const anchor = await diffAnchor('tests/acceptance/queue.test.ts');
       expect(anchor).toBe('');
     } finally {
-      (globalThis as any).crypto = originalCrypto;
+      Object.defineProperty(globalThis, 'crypto', {
+        value: originalCrypto,
+        writable: true,
+        configurable: true,
+      });
     }
   });
 });

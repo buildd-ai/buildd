@@ -30,8 +30,9 @@ export default function MissionAcceptanceHolds({ holds, readonly }: { holds: rea
     loadAnchors();
   }, [holds]);
 
-  function buildDiffUrl(baseUrl: string, path: string): string {
-    const anchor = anchors.get(path) || '';
+  function buildDiffUrl(baseUrl: string, path: string): string | null {
+    const anchor = anchors.get(path);
+    if (!anchor) return null;
     return `${baseUrl}${anchor}`;
   }
 
@@ -68,7 +69,7 @@ function AcceptanceHoldRow({
   readonly?: boolean;
   isAccepted: boolean;
   onAccepted: () => void;
-  buildDiffUrl: (baseUrl: string, path: string) => string;
+  buildDiffUrl: (baseUrl: string, path: string) => string | null;
 }) {
   const [error, setError] = useState<string | null>(null);
   const { shown: result, retry, approve } = useOptimisticApprove(
@@ -100,6 +101,7 @@ function AcceptanceHoldRow({
           <div className="mt-1 flex flex-col gap-1">
             {hold.paths.map((path) => {
               const url = buildDiffUrl(hold.diffUrl, path);
+              if (!url) return null;
               const fileName = getFileName(path);
               return (
                 <a
@@ -123,7 +125,6 @@ function AcceptanceHoldRow({
           {!result || retry ? (
             <PrimaryAction
               onClick={approve}
-              disabled={result?.tone === 'err'}
               data-testid="acceptance-hold-accept"
               className="min-h-11 md:min-h-0"
             >
