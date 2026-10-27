@@ -18,6 +18,7 @@ import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWa
 import { loadVisualReview } from '@/lib/visual-review-load';
 import type { VisualReviewModel } from '@buildd/shared';
 import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
+import { readReviewCarry } from './visual-review-carry';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
 import { autoRetriesLeft, planVisualReviewSchedule, type ScheduleAudit } from './visual-review-schedule';
 import {
@@ -51,7 +52,7 @@ export async function loadMissionAuditLedgers(missionIds: readonly string[]): Pr
       missionId: tasksTable.missionId,
       title: tasksTable.title,
       status: tasksTable.status,
-      context: sql<Record<string, unknown> | null>`jsonb_build_object('surfaceAuditRound', ${tasksTable.context} -> 'surfaceAuditRound', 'visualReview', jsonb_build_object('headSha', ${tasksTable.context} -> 'visualReview' -> 'headSha'))`.as('ledger_context'),
+      context: sql<Record<string, unknown> | null>`jsonb_strip_nulls(jsonb_build_object('surfaceAuditRound', ${tasksTable.context} -> 'surfaceAuditRound', 'visualReview', jsonb_build_object('headSha', ${tasksTable.context} -> 'visualReview' -> 'headSha', 'carry', ${tasksTable.context} -> 'visualReview' -> 'carry')))`.as('ledger_context'),
       failure: sql<unknown>`case when ${tasksTable.status} = 'failed' then ${tasksTable.result} end`.as('failure_result'),
       updatedAt: tasksTable.updatedAt,
       createdAt: tasksTable.createdAt,
@@ -67,6 +68,7 @@ export async function loadMissionAuditLedgers(missionIds: readonly string[]): Pr
       status: r.status,
       round: surfaceAuditRound(r),
       headSha: readAuditedSha(r.context),
+      carry: readReviewCarry(r.context),
       updatedAt: new Date(r.updatedAt ?? r.createdAt).getTime(),
       captureConfigError: r.status === 'failed' ? captureConfigErrorFrom(r.failure) : null,
       dependencyFailed: r.status === 'failed' ? dependencyFailureOf(r.failure) : null,
@@ -181,6 +183,7 @@ export async function getMissionVisualReviewState(
     review: audit ? reviewInputFromModel(model) : null,
     waiver,
     auditedSha: latestAudit ? latestAudit.headSha : null,
+    carry: latestAudit?.carry ?? null,
     missionClosed: mission.status === 'completed' || mission.status === 'archived',
     autoRetriesLeft: autoRetriesLeft(failedOnHead),
     captureConfigError: latestAudit?.captureConfigError ?? null,
