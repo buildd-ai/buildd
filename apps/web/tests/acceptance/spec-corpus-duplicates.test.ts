@@ -108,7 +108,8 @@ describe('R-106: drafts are indexed in the spec corpus, marked draft', () => {
     await new Promise((r) => setTimeout(r, 200));
     const draftChunks = mem.held.filter((h) => JSON.stringify(h.metadata).includes(first.spec.id) || h.id.includes(first.spec.id));
     expect(draftChunks.length).toBeGreaterThan(0);
-    for (const c of draftChunks) expect(c.metadata.draft ?? c.metadata.isDraft ?? c.metadata.status).toMatch(/true|draft/);
+    // The flag is a boolean `draft: true`; stringify so a status string would pass too.
+    for (const c of draftChunks) expect(String(c.metadata.draft ?? c.metadata.isDraft ?? c.metadata.status)).toMatch(/true|draft/);
 
     const second = await createSpecDraft(user(), { workspaceId: wsA, title: `Loyalty ${rand()}`, body: body.replace('Shoppers', 'Customers') }, { duplicates: judging('overlap', 0.8) });
     expect(second.ok).toBe(true);
