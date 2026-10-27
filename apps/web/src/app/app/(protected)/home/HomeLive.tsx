@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { useRouter } from 'next/navigation';
 import { createRegionReader } from '@/lib/region-reader';
+import PageColumn from '@/components/ui/PageColumn';
 import HomeAutoRefresh from './HomeAutoRefresh';
 import { HomeBody } from './HomeBody';
 
@@ -46,9 +47,9 @@ export default function HomeLive({ region: initial, load, workspaceIds, ...rest 
   return (
     <>
       <HomeAutoRefresh workspaceIds={workspaceIds} refresher={reader.refresher} />
-      <div className="mx-auto max-w-[1320px]">
+      <PageColumn>
         <HomeBody {...rest} {...region} />
-      </div>
+      </PageColumn>
     </>
   );
 }
