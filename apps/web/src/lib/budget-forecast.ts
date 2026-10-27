@@ -1,8 +1,27 @@
 import { db } from '@buildd/core/db';
-import { teams, missions, workers, tasks, tenantBudgets, backendPauses } from '@buildd/core/db/schema';
+import { teams, missions, workers, workspaces, tasks, tenantBudgets, backendPauses } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, isNotNull, isNull, or, desc, sql } from 'drizzle-orm';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { readRound } from '@/lib/read-round';
+
+/**
+ * The team's real (per-token API) spend this UTC month, summed from worker
+ * rows. The one figure the Health budget row and the budget line read; virtual
+ * (subscription-valued) cost never counts.
+ */
+export async function getRealMonthSpendUsd(teamId: string, now: Date = new Date()): Promise<number> {
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const [row] = await db
+    .select({ spend: sql<string>`COALESCE(SUM(${workers.costUsd}), '0')` })
+    .from(workers)
+    .innerJoin(workspaces, eq(workspaces.id, workers.workspaceId))
+    .where(and(
+      eq(workspaces.teamId, teamId),
+      eq(workers.costBasis, 'real'),
+      gte(sql`COALESCE(${workers.startedAt}, ${workers.createdAt})`, monthStart),
+    ));
+  return parseFloat(row?.spend ?? '0') || 0;
+}
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -197,7 +216,6 @@ export async function getBudgetForecast(
       where: sqlWhere(eq(teams.id, teamId)),
       columns: {
         monthlyBudgetUsd: true,
-        monthlyCostUsd: true,
         monthlyCostMonth: true,
       },
     }),
@@ -285,7 +303,7 @@ export async function getBudgetForecast(
   const budgetUsd = rawBudgetUsd ?? envBudgetUsd;
 
   if (budgetUsd && budgetUsd > 0) {
-    const spentUsd = teamRow?.monthlyCostUsd ? parseFloat(teamRow.monthlyCostUsd as string) : 0;
+    const spentUsd = await getRealMonthSpendUsd(teamId, now);
     const recentWorkerCosts = (recentWorkerRows as { costUsd: string }[])
       .map(r => parseFloat(r.costUsd))
       .filter(v => v > 0);

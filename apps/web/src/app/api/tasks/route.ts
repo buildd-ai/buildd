@@ -1,3 +1,4 @@
+import { isLivingSpecRevisionTask, LIVING_SPEC_REVISION_ROLE_REFUSAL } from '@/lib/revision-task-guard';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
@@ -1557,6 +1558,17 @@ export async function POST(req: NextRequest) {
     }
     const statedRoleRows = statedRole.rows;
 
+    // A Living Spec revision may not run as builder: that role cannot change
+    // acceptance criteria, so the task would fail at its first revise and come
+    // back as an owner question. Refuse here, with the reason, instead.
+    const isSpecRevisionTask = isLivingSpecRevisionTask({
+      title: typeof title === 'string' ? title : '',
+      description: typeof description === 'string' ? description : '',
+    });
+    if (isSpecRevisionTask && statedRoleSlug?.trim().toLowerCase() === 'builder') {
+      return NextResponse.json({ error: LIVING_SPEC_REVISION_ROLE_REFUSAL }, { status: 400 });
+    }
+
     // Validate and resolve requiredConnectors (team-scoped role lookup).
     const requiredConnectorsCheck = await validateRequiredConnectors(rawRequiredConnectors, {
       roleSlug: typeof roleSlug === 'string' ? roleSlug : null,
@@ -1693,6 +1705,9 @@ export async function POST(req: NextRequest) {
             taskClass: isBookkeepingTitle ? 'bookkeeping' : 'work',
             candidates: kindCandidates,
           });
+          // The kind default for engineering work is builder; a Living Spec
+          // revision must not inherit it. Left role-less it runs unscoped.
+          if (isSpecRevisionTask && kindDefaultSlug?.trim().toLowerCase() === 'builder') kindDefaultSlug = null;
         }
       } catch (err) {
         console.warn('[tasks] role lookup for routing preview failed:', err);

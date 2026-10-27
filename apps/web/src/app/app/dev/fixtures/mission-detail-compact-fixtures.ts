@@ -11,6 +11,8 @@
  *   &variant=all-landed   every task landed, the mission complete
  *   &variant=verify       the build done: `10 tasks merged ›` and the checks (AC-9)
  *   &variant=delivered    merged and released: `Delivered into dev` with the requirements folded (AC-9)
+ *   &variant=criteria     the build stopped on one failed task and the goal-criteria decision card
+ *                         (Navigation R-16, R-20), under a spec titled as the mission is
  *   &select=04|09         open on that strip position (tick), the way a tap would
  *
  * Illustrative rows only (made-up ids and titles) through the real
@@ -21,13 +23,13 @@ import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type Mis
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 import type { MissionChecksSource } from '@/app/app/(protected)/missions/[id]/MissionOverview';
 import type { PlanTask } from '@/lib/mission-plan';
-import { historyRaised, missionDecisions, type HistoryRaised } from '@/lib/mission-decisions';
+import { criteriaEscalationDecision, historyRaised, missionDecisions, type HistoryRaised } from '@/lib/mission-decisions';
 import type { DecisionView } from '@/lib/needs-you-card';
 import { dagTasks, handoffFixture, stripFixtureId, type DagSpec } from './mission-task-strip-fixtures';
 import { MISSION_DETAIL_COMPACT_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_DETAIL_COMPACT_STATE = MISSION_DETAIL_COMPACT_FIXTURE_STATE;
-export const MISSION_DETAIL_COMPACT_VARIANTS = ['building', 'eleven', 'long-title', 'no-tasks', 'all-landed', 'verify', 'delivered'] as const;
+export const MISSION_DETAIL_COMPACT_VARIANTS = ['building', 'eleven', 'long-title', 'no-tasks', 'all-landed', 'verify', 'delivered', 'criteria'] as const;
 export type MissionDetailCompactVariant = (typeof MISSION_DETAIL_COMPACT_VARIANTS)[number];
 
 export const COMPACT_TITLE = 'Billing exports: readable schedules, clear retention and enforceable limits';
@@ -42,6 +44,20 @@ export const BUILDING_SPEC_ID = stripFixtureId(960);
 export const BUILDING_SPEC_TITLE = 'Cloud runner: deploy from Settings';
 
 const T0 = Date.UTC(2026, 0, 1, 12, 0, 0);
+
+/** The criteria variant: a mission whose outcome spec has the same title. */
+export const CRITERIA_TITLE = 'Windows runner through WSL2: one guided setup';
+export const CRITERIA_GOAL = 'A person on Windows installs WSL2 and a runner from one guided setup, with no terminal knowledge.';
+const CRITERIA_SPEC_ID = stripFixtureId(970);
+const CRITERIA_DAG: DagSpec = {
+  tasks: ['A', 'B', 'C', 'D', 'E'],
+  edges: { B: ['A'], C: ['B'], D: ['C'], E: ['D'] },
+  states: { A: 'landed', B: 'landed', C: 'landed', D: 'failed' },
+};
+const CRITERIA_TITLES: Record<string, string> = {
+  A: 'Setup script installs WSL2', B: 'Runner service starts on boot', C: 'Setup reports each step',
+  D: 'Re-grade WSL2 guided setup spec criteria', E: 'Guided setup docs',
+};
 
 /** The board's criteria; the header's Verified pill gets the same three. */
 export const CRITERIA = [
@@ -262,6 +278,32 @@ export function missionDetailCompactFixture(variant: MissionDetailCompactVariant
       history: historyRaised(model, []),
       // Every unmerged task estimated, so the summary names what sets the finish (AC-18).
       expectedMinutes: { [stripFixtureId(12)]: 40, [stripFixtureId(13)]: 30, [stripFixtureId(14)]: 25, [stripFixtureId(15)]: 35, [stripFixtureId(16)]: 20 },
+    };
+  }
+  if (variant === 'criteria') {
+    const tasks = dagTasks(CRITERIA_DAG).map((t, i) => shifted({
+      ...t, title: CRITERIA_TITLES[CRITERIA_DAG.tasks[i]],
+      ...(CRITERIA_DAG.tasks[i] === 'D' ? { result: { error: 'Missing acceptance test: tests/acceptance/wsl2-setup.test.ts' } } : {}),
+    }, opened - T0));
+    const model = buildMissionBoard({ ...base, missionStatus: 'active', tasks });
+    const checks: MissionChecksSource = {
+      branch: 'direct', target: 'dev', mergeTier: 'agent-review', visual: null,
+      criteria: [{ type: 'living_spec', specId: CRITERIA_SPEC_ID, revision: 1 } as MissionChecksSource['criteria'][number]],
+      criteriaState: null, integrationPr: null, release: 'not_configured',
+    };
+    const verifier = stripFixtureId(4);
+    return {
+      ...empty, variant, title: CRITERIA_TITLE, goal: CRITERIA_GOAL, model, checks,
+      specTitles: { [CRITERIA_SPEC_ID]: CRITERIA_TITLE },
+      decisions: [criteriaEscalationDecision({
+        missionId: MISSION_ID, workspaceId: stripFixtureId(951),
+        unmet: { count: 4, state: 'not checked', names: ['Setup script installs WSL2', 'Runner service starts on boot', 'Setup reports each step', 'A failed step says what to change'] },
+        fileWorkHref: `/app/tasks/new?missionId=${MISSION_ID}`,
+        mission: { id: MISSION_ID, title: CRITERIA_TITLE, href: `/app/missions/${MISSION_ID}` },
+        asker: { id: verifier, title: CRITERIA_TITLES.D, href: hrefFor(verifier) },
+        askedAt: now - 2 * 3_600_000,
+      })],
+      history: historyRaised(model, []),
     };
   }
   if (variant === 'verify' || variant === 'delivered') {

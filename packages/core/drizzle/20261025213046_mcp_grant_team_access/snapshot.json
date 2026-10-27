@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "36eda409-9694-48d6-b834-a17706f776d6",
+  "id": "5203f02a-b9e4-4678-85c6-d75214c353ae",
   "prevIds": [
     "8839506b-5c4f-4b3a-8b09-2f1a20b9905a"
   ],
@@ -397,6 +397,18 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "mcp_oauth_grant_events",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "mcp_oauth_grant_teams",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "mcp_oauth_grant_workspaces",
       "entityType": "tables",
       "schema": "public"
@@ -650,12 +662,6 @@
     {
       "isRlsEnabled": false,
       "name": "secrets",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "serial_lane_entries",
       "entityType": "tables",
       "schema": "public"
     },
@@ -11199,6 +11205,136 @@
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "grant_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "actor_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "action",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "before",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "after",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "occurred_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "grant_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_teams"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_teams"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grant_teams"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
@@ -11346,6 +11482,19 @@
       "generated": null,
       "identity": null,
       "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mcp_oauth_grants"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "revision",
       "entityType": "columns",
       "schema": "public",
       "table": "mcp_oauth_grants"
@@ -19903,175 +20052,6 @@
       "entityType": "columns",
       "schema": "public",
       "table": "secrets"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "gen_random_uuid()",
-      "generated": null,
-      "identity": null,
-      "name": "id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "workspace_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "lane",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "task_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "claimable_since",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'manifest'",
-      "generated": null,
-      "identity": null,
-      "name": "joined_via",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "held_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "activity_signature",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "activity_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "left_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "left_reason",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "released_by_user_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "serial_lane_entries"
     },
     {
       "type": "uuid",
@@ -36771,6 +36751,55 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "grant_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "occurred_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "mcp_oauth_grant_events_grant_occurred_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "team_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "mcp_oauth_grant_teams_team_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "mcp_oauth_grant_teams"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "workspace_id",
           "isExpression": false,
           "asc": true,
@@ -39426,97 +39455,6 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "secrets"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "workspace_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "lane",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "task_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "serial_lane_entries_task_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "workspace_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "lane",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": true,
-      "where": "\"held_at\" IS NOT NULL AND \"left_at\" IS NULL",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "serial_lane_entries_holder_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "workspace_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "lane",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": "\"left_at\" IS NULL",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "serial_lane_entries_open_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "serial_lane_entries"
     },
     {
       "nameExplicit": true,
@@ -46296,6 +46234,74 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "mcp_oauth_grant_events_grant_id_mcp_oauth_grants_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "actor_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "users",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "mcp_oauth_grant_events_actor_user_id_users_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "grant_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "mcp_oauth_grants",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "mcp_oauth_grant_teams_grant_id_mcp_oauth_grants_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "mcp_oauth_grant_teams"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "team_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "teams",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "mcp_oauth_grant_teams_team_id_teams_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "mcp_oauth_grant_teams"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "grant_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "mcp_oauth_grants",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "mcp_oauth_grant_workspaces_grant_id_mcp_oauth_grants_id_fk",
       "entityType": "fks",
       "schema": "public",
@@ -47762,40 +47768,6 @@
       "entityType": "fks",
       "schema": "public",
       "table": "secrets"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "workspace_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "workspaces",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "serial_lane_entries_workspace_id_workspaces_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "serial_lane_entries"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
-        "task_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "tasks",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "serial_lane_entries_task_id_tasks_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "serial_lane_entries"
     },
     {
       "nameExplicit": false,
@@ -50208,6 +50180,17 @@
     {
       "columns": [
         "grant_id",
+        "team_id"
+      ],
+      "nameExplicit": false,
+      "name": "mcp_oauth_grant_teams_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "mcp_oauth_grant_teams"
+    },
+    {
+      "columns": [
+        "grant_id",
         "workspace_id"
       ],
       "nameExplicit": false,
@@ -50795,6 +50778,16 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "mcp_oauth_grant_events_pkey",
+      "schema": "public",
+      "table": "mcp_oauth_grant_events",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "mcp_oauth_grants_pkey",
       "schema": "public",
       "table": "mcp_oauth_grants",
@@ -51188,16 +51181,6 @@
       "name": "secrets_pkey",
       "schema": "public",
       "table": "secrets",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "serial_lane_entries_pkey",
-      "schema": "public",
-      "table": "serial_lane_entries",
       "entityType": "pks"
     },
     {

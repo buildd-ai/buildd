@@ -117,7 +117,8 @@ export function verifyDependencyHandover(options: {
       if (JSON.stringify(a) === JSON.stringify(b)) continue;
       report.entriesChanged++;
       if (!b) { report.entriesExplained++; continue; } // frozen install repairs removed files
-      if (a?.kind === 'directory' && b.kind === 'directory' && a.ino === b.ino && a.dev === b.dev) {
+      // Windows has no mode bits and its 64-bit file ids lose precision as numbers, so a same-id directory is not proof it is the original.
+      if (process.platform !== 'win32' && a?.kind === 'directory' && b.kind === 'directory' && a.ino === b.ino && a.dev === b.dev) {
         if (a.mode !== b.mode) chmodSync(join(repoRoot, path), a.mode & 0o7777); report.entriesExplained++; continue;
       }
       if (b.kind !== 'file' || !a || a.ino !== b.ino || a.dev !== b.dev || a.kind !== 'file') {

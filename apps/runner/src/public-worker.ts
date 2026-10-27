@@ -91,6 +91,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   recoveryRef: true, // a branch@sha or archive path, like worktreePath
   sessionCwd: true,
   worktreeBaseRef: true,
+  worktreeBaseSha: true,
   prBaseRef: true,
   resumedFrom: true,
   derivedMergeNote: true,

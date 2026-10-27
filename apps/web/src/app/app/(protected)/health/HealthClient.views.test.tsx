@@ -297,7 +297,7 @@ describe('HealthClient — pages', () => {
     // itself lives only there.
     expect(html).not.toContain('data-testid="top-failure-groups"');
     expect(html).toContain('data-testid="problem-failures"');
-    expect(html).toContain('Failures: 8 causes this week');
+    expect(html).toContain('8 failure causes this week');
     expect(html).toContain('href="/app/health/failures"');
     // The old 24h signature rows and their overflow line are gone from Overview.
     expect(html).not.toContain('data-testid="problem-failure-group"');

@@ -1,10 +1,36 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-10-19
-**Previous scan**: 2026-10-12
-**Current SDK version in Buildd**: `^0.3.290` (runner + core; `bun.lock` resolves `0.3.290`). npm head is `0.3.303` (Oct 18) — 13 patch versions behind. The pin did not move this week, so last week's bump recommendation is still open.
+**Last updated**: 2026-10-26
+**Previous scan**: 2026-10-19
+**Current SDK version in Buildd**: `^0.3.290` (runner + core). SDK head is `0.3.310` (CLI parity 2.1.310) — 20 patch versions behind. Pin did not move for a third week; the bump recommendation is still open.
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## Oct 26 scan (Oct 20 – Oct 26)
+
+TypeScript SDK 0.3.304–0.3.310 (from the SDK CHANGELOG summary only; `npm` is unavailable in the sandbox so publish dates/exact per-version split were not verified). Community repos not re-scanned.
+
+| Theme | Change |
+|-------|--------|
+| MCP | Per-server timeouts; per-tool permission policies (`always_ask` / `always_deny`) on sdk MCP configs; per-server instruction token shares in context usage |
+| Context | Structured `context_usage` payloads (replaces markdown-table parsing); stable row IDs |
+| Packaging | New `@anthropic-ai/claude-agent-sdk/core` entry point (smaller bundles); browser bundle ~40% smaller |
+| Startup | `prewarm()` and `SpareProcess.claim()` (alpha) — pre-spawned CLI process |
+| Sessions | `sessionStore` transcript mirroring; transcript rows preserved on rewind |
+| Subagents | `parent_task_id` / `agent_id` on messages; better background task lifecycle; subagent final-report isolation |
+| Security | Sandbox credential masking for JWT, AWS SigV4, env vars; cross-session message hold-back for bypassed-permission sessions |
+| Tools | Task-tracking tools default on only for Opus 4.0+/Sonnet 4.0+; other models must list them explicitly |
+
+### Recommendations
+
+1. **Bump `^0.3.290` → `^0.3.310`** (runner + core). Open three weeks; drift grows. Before bumping, check `apps/runner/src/workers.ts`: it reads `sdkMsg.structured_output` (~l.5973) and passes `outputFormat` (~l.5471) for plan tasks — 0.3.302 changed `structured_output` result handling to error; and fork subagents are now default-on (cost/context change). Verify with the existing worker tests.
+2. **Task-tracking default change**: `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` is already set in workers.ts, so Haiku/other tiers should keep TodoWrite; low risk.
+3. **`context_usage` structured payload**: use it for context-pressure telemetry rather than parsing text. Medium.
+4. **`parent_task_id`/`agent_id`**: attribute subagent cost/activity per worker in the dashboard. Medium.
+5. **`prewarm()`**: alpha; could cut worker start latency. Watch, don't adopt yet.
+6. Carried (unverified this week): Sonnet 5.5 cache-read price $0.10/MTok in `model-prices.ts`; Haiku 5.5 entry in `MODEL_MIN_CLI_VERSION` (don't guess the floor); Agent-tool `effort`; `claude_code_version` gating.
 
 ---
 

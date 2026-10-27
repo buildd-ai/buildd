@@ -205,12 +205,37 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     }
   }, [view.answer, noteSending, onAnswered, router]);
 
+  // The criteria escalation's Answer differently: the person's words become a task on the
+  // mission, which clears the escalation the way filing the work does (POST /api/tasks).
+  const fileAnswer = useCallback(async (text: string) => {
+    if (view.answer.kind !== 'criteria' || !view.answer.workspaceId || noteSending) return;
+    setNoteSending(text);
+    setNoteError(null);
+    try {
+      const res = await fetch('/api/tasks', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ workspaceId: view.answer.workspaceId, missionId: view.answer.missionId, title: text.length > 120 ? `${text.slice(0, 119)}…` : text, description: text }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error || 'Could not file the answer. Try again.');
+      }
+      setNoteOutcome({ label: text, at: Date.now() });
+      onAnswered?.(text);
+      router.refresh();
+    } catch (e) {
+      setNoteError(e instanceof Error ? e.message : 'Could not reach buildd.');
+    } finally {
+      setNoteSending(null);
+    }
+  }, [view.answer, noteSending, onAnswered, router]);
+
   const pick = useCallback((label: string) => {
     if (view.answer.kind === 'worker') void submit.submit(label);
     else if (view.answer.kind === 'note') void answerNote(label);
     else if (view.answer.kind === 'visual') void answerVisual(label);
-    else if (view.answer.kind === 'criteria') void waive(label);
-  }, [view.answer.kind, submit, answerNote, answerVisual, waive]);
+    else if (view.answer.kind === 'criteria') void (view.options.some(o => o.label === label) ? waive(label) : fileAnswer(label));
+  }, [view.answer.kind, view.options, submit, answerNote, answerVisual, waive, fileAnswer]);
 
   const primary = view.options[0] ?? null;
   const sending = submit.sending ?? noteSending;
@@ -331,7 +356,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
         </form>
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-x-4">
-        {view.answer.kind === 'link' || view.answer.kind === 'criteria'
+        {view.answer.kind === 'link' || (view.answer.kind === 'criteria' && !view.answer.workspaceId)
           ? <span />
           : !differently
             ? <button type="button" data-testid="decision-answer-differently" onClick={() => setDifferently(true)} className={TEXT_BUTTON}>Answer differently</button>

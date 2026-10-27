@@ -10,8 +10,8 @@ import {
   connectedProviders,
   loneProviderLine,
   usedForView,
-  detectPaste,
-  groupProviders,
+  listedProviders,
+  providerRows,
   keyRuleLine,
   maskedValue,
   providersTitle,
@@ -131,7 +131,6 @@ describe('cardView', () => {
     const v = cardView(listing(res, 'litellm'), 'mine', res);
     expect(v.closed).toBe((listing(res, 'litellm').scopes.mine as { reason: string }).reason);
     expect(v.edit.kind).toBe('none');
-    expect(cardView(listing(res, 'claude-subscription'), 'mine', res).closed).toBeTruthy();
   });
 
   it('Mine is read-only under team-only policy, and for a caller who is not a person', () => {
@@ -142,16 +141,6 @@ describe('cardView', () => {
     expect(cardView(listing(unset, 'anthropic'), 'mine', unset).readOnly).toBeNull();
     const key = fixtureResponse({ canSetMine: false, credentialPolicy: 'personal_first' });
     expect(cardView(listing(key, 'anthropic'), 'mine', key).readOnly).toBe(MINE_NEEDS_PERSON);
-  });
-
-  it('subscription seats paste a setup token where one exists, and always offer the browser flow', () => {
-    const res = fixtureResponse({});
-    const claude = cardView(listing(res, 'claude-subscription'), 'team', res);
-    expect(claude.edit).toEqual({ kind: 'paste', shape: 'setup_token' });
-    expect(claude.connectInBrowser).toBe(true);
-    const codex = cardView(listing(res, 'codex-subscription'), 'team', res);
-    expect(codex.edit.kind).toBe('none');
-    expect(codex.connectInBrowser).toBe(true);
   });
 
   it('gateways and endpoints are set up with their own forms', () => {
@@ -183,34 +172,33 @@ describe('whose key copy', () => {
 });
 
 describe('rows', () => {
-  it('groups Claude and OpenAI, in registry order', () => {
+  it('one row per key, gateway and endpoint provider, in registry order; no subscription row', () => {
     const res = fixtureResponse({});
-    expect(groupProviders(res.providers).map((g) => [g.id, g.label, g.members.map((m) => m.id)])).toEqual([
-      ['claude', 'Claude', ['anthropic', 'claude-subscription']],
-      ['openai', 'OpenAI', ['openai', 'codex-subscription']],
-      ['openrouter', 'OpenRouter', ['openrouter']],
-      ['litellm', 'LiteLLM gateway', ['litellm']],
-      ['custom-endpoint', 'Custom endpoint', ['custom-endpoint']],
+    expect(providerRows(res.providers).map((g) => [g.id, g.label, g.provider.id])).toEqual([
+      ['claude', 'Claude', 'anthropic'],
+      ['openai', 'OpenAI', 'openai'],
+      ['openrouter', 'OpenRouter', 'openrouter'],
+      ['litellm', 'LiteLLM gateway', 'litellm'],
+      ['custom-endpoint', 'Custom endpoint', 'custom-endpoint'],
     ]);
+    expect(listedProviders(res.providers).some((p) => p.connectFlow === 'oauth')).toBe(false);
   });
 
-  it('reads the pasted format: Claude key, Claude setup token, OpenAI key', () => {
-    expect(detectPaste('claude', ' sk-ant-api03-x ')).toEqual({ provider: 'anthropic', shape: 'api_key' });
-    expect(detectPaste('claude', 'sk-ant-oat01-x')).toEqual({ provider: 'claude-subscription', shape: 'setup_token' });
-    expect(detectPaste('openai', 'sk-proj-x')).toEqual({ provider: 'openai', shape: 'api_key' });
-    expect('error' in detectPaste('claude', 'sk-proj-x')).toBe(true);
-    expect('error' in detectPaste('openai', 'nope')).toBe(true);
+  it('a stored subscription row is not a connected provider', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'claude-subscription', scope: 'team', shape: 'setup_token' }, { provider: 'openrouter', scope: 'team' }] });
+    expect(connectedProviders(res).map((p) => p.id)).toEqual(['openrouter']);
+    expect(usedForView(res, {})).toBeNull();
   });
 
   it('one status word per row', () => {
     const r = (o: Record<string, unknown>) => ({ health: 'unknown', lastVerificationError: null, ...o }) as never;
-    expect(rowState([r({ health: 'healthy' })], [], null).word).toBe('Working');
-    expect(rowState([r({ health: 'revoked' })], [], null).word).toBe('Needs attention');
-    expect(rowState([r({ lastVerificationError: 'bad' })], [], null).word).toBe('Needs attention');
-    expect(rowState([], [r({})], null).word).toBe('Team key');
-    expect(rowState([], [], 'team only').word).toBe('Not set up');
-    expect(rowState([], [], null).word).toBe('Not set up');
-    expect(rowState([], [r({})], null, 'Acme').word).toBe("Acme's key");
+    expect(rowState([r({ health: 'healthy' })], []).word).toBe('Working');
+    expect(rowState([r({ health: 'revoked' })], []).word).toBe('Needs attention');
+    expect(rowState([r({ lastVerificationError: 'bad' })], []).word).toBe('Needs attention');
+    expect(rowState([], [r({})]).word).toBe('Team key');
+    // Nothing set: no word, the row's action says it.
+    expect(rowState([], [], null).word).toBeNull();
+    expect(rowState([], [r({})], 'Acme').word).toBe("Acme's key");
   });
 
   it('names the team: its key, its settings, and the Providers heading when the caller is in several', () => {
@@ -225,10 +213,9 @@ describe('rows', () => {
     expect(providersTitle(null)).toBe('Providers');
   });
 
-  it('masks a key by its last four, and names a subscription', () => {
+  it('masks a key by its last four', () => {
     expect(maskedValue({ shape: 'api_key', last4: 'a1b2' })).toBe('…a1b2');
-    expect(maskedValue({ shape: 'setup_token', last4: 'bAAA' })).toBe('Subscription …bAAA');
-    expect(maskedValue({ shape: 'oauth_managed', last4: null })).toBe('Subscription');
+    expect(maskedValue({ shape: 'api_key', last4: null })).toBe('Set');
     expect(maskedValue({ shape: 'gateway', last4: 'zz' })).toBe('Configured');
   });
 });
@@ -249,14 +236,15 @@ describe('Used for: a choice only once there is one', () => {
   });
 
   it('two connected: one row per surface, impossible options disabled with what they need', () => {
-    const res = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'codex-subscription', scope: 'team', shape: 'oauth_managed' }] });
+    const res = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'openai', scope: 'team' }] });
     const rows = usedForView(res, {})!;
     expect(rows.map((r) => r.surface)).toEqual(['chat', 'agent-claude', 'agent-codex', 'cloud-egress']);
-    const chat = rows.find((r) => r.surface === 'chat')!;
-    const seat = chat.options.find((o) => o.value === 'codex-subscription')!;
-    expect(seat.disabled).toBe(true);
-    expect(seat.description).toBeTruthy();
-    expect(chat.options.find((o) => o.value === 'openrouter')!.disabled).toBe(false);
+    const claude = rows.find((r) => r.surface === 'agent-claude')!;
+    const openai = claude.options.find((o) => o.value === 'openai')!;
+    expect(openai.disabled).toBe(true);
+    // What it needs names only providers this page lists.
+    expect(openai.description).toBe('Needs OpenRouter or LiteLLM gateway');
+    expect(claude.options.find((o) => o.value === 'openrouter')!.disabled).toBe(false);
     expect(rows.every((r) => r.value === null)).toBe(true);
   });
 
@@ -269,23 +257,6 @@ describe('Used for: a choice only once there is one', () => {
     const chat = usedForView(res, {})!.find((r) => r.surface === 'chat')!;
     expect(chat.options.find((o) => o.value === 'anthropic')!.label).toBe('Claude');
     expect(chat.options.find((o) => o.value === 'openai')).toMatchObject({ label: 'OpenAI', disabled: true, description: 'Needs a working key' });
-    // Two of one group serving the same surface: each by its own name.
-    const both = fixtureResponse({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'claude-subscription', scope: 'team', shape: 'setup_token' }] });
-    const claude = usedForView(both, {})!.find((r) => r.surface === 'agent-claude')!;
-    expect(claude.options.map((o) => o.label).sort()).toEqual(['Anthropic', 'Claude subscription'].sort());
-  });
-
-  it('a group appears once per surface: a member that cannot serve it is left out when another can', () => {
-    const both = fixtureResponse({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'claude-subscription', scope: 'team', shape: 'setup_token' }, { provider: 'openrouter', scope: 'team' }] });
-    const rows = usedForView(both, {})!;
-    const chat = rows.find((r) => r.surface === 'chat')!;
-    expect(chat.options.filter((o) => o.label === 'Claude')).toEqual([{ value: 'anthropic', label: 'Claude', disabled: false }]);
-    expect(chat.options.some((o) => o.value === 'claude-subscription')).toBe(false);
-    // Where no member serves, the group still shows once, disabled with what it needs.
-    for (const r of rows) {
-      const labels = r.options.map((o) => o.label);
-      expect(labels).toEqual([...new Set(labels)]);
-    }
   });
 
   it('a stored pick shows; a pick the surface cannot use reads as automatic', () => {

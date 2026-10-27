@@ -88,12 +88,12 @@ let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 async function flush() { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); }
-async function mount(o: FixtureOpts = {}, withSignIns = false, workspaces = WORKSPACES, scope: 'team' | 'workspace' | 'mine' = 'team', operator = false) {
+async function mount(o: FixtureOpts = {}, workspaces = WORKSPACES, scope: 'team' | 'workspace' | 'mine' = 'team', operator = false) {
   opts = o;
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin={o.admin !== false} workspaces={workspaces} signIns={withSignIns ? { workspaces: workspaces.map((w) => ({ ...w, teamId: 't' })), currentTeamId: 't' } : undefined} scope={scope} operator={operator} workspaceId={scope === 'workspace' ? workspaces[0]?.id ?? null : null} />); });
+  await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin={o.admin !== false} workspaces={workspaces} scope={scope} operator={operator} workspaceId={scope === 'workspace' ? workspaces[0]?.id ?? null : null} />); });
   await flush();
   await flush();
 }
@@ -116,14 +116,27 @@ async function type(input: HTMLInputElement, value: string) {
 const toggle = (id: string, list = 'team') => $('[data-testid="provider-row-toggle"]', cardOf(id, list));
 
 describe('one row per provider, in registry order', () => {
-  it('Claude and OpenAI each group their key and subscription; no compatibility text anywhere', async () => {
+  it('key, gateway and endpoint providers only; no subscription, no compatibility text anywhere', async () => {
     await mount();
     const ids = [...host.querySelectorAll('[data-testid="provider-list-team"] [data-testid^="provider-card-"][data-scope]')].map((e) => e.getAttribute('data-testid')!.replace('provider-card-', ''));
     expect(ids).toEqual(['claude', 'openai', 'openrouter', 'litellm', 'custom-endpoint']);
     const text = host.textContent!;
     expect(text).not.toMatch(/Not (chat|codex|claude|cloud)/i);
     expect(text).not.toContain('What runs?');
-    expect(text).not.toMatch(/\bruns\b|wire|seat/i);
+    expect(text).not.toMatch(/\bruns\b|wire|seat|subscription|sign-in|Moving/i);
+  });
+
+  it('a row with nothing set is its name and one action, no status word', async () => {
+    await mount();
+    expect($('[data-testid="provider-card-state"]', cardOf('claude'))).toBeNull();
+    expect(buttons(cardOf('claude')).filter((b) => b !== 'Claude')).toEqual(['Add key']);
+    expect(buttons(cardOf('litellm')).filter((b) => b !== 'LiteLLM gateway')).toEqual(['Set up']);
+  });
+
+  it('a stored subscription login shows nowhere', async () => {
+    await mount({ rows: [{ provider: 'claude-subscription', scope: 'team', shape: 'setup_token', last4: 'bAAA' }] });
+    expect(cardOf('claude').getAttribute('data-set')).toBe('false');
+    expect(host.textContent).not.toContain('bAAA');
   });
 
   it('a row is name, status word, masked key and one action; detail opens on tap', async () => {
@@ -148,54 +161,33 @@ describe('one row per provider, in registry order', () => {
   });
 });
 
-describe('connect: one input, the format decides', () => {
+describe('connect', () => {
   it('a Claude API key goes to Anthropic', async () => {
     await mount();
-    await click(button(cardOf('claude'), 'Connect Claude'));
+    await click(button(cardOf('claude'), 'Add key'));
+    expect($('label', cardOf('claude'))!.textContent).toBe('Claude API key');
     await type($('input[type="password"]', cardOf('claude')) as HTMLInputElement, PASTED);
     await click(button(cardOf('claude'), 'Save'));
     expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'anthropic', shape: 'api_key', scope: 'team' });
     expect(host.innerHTML).not.toContain(PASTED);
   });
 
-  it('a Claude setup token goes to the subscription', async () => {
-    await mount();
-    await click(button(cardOf('claude'), 'Connect Claude'));
-    await type($('input[type="password"]', cardOf('claude')) as HTMLInputElement, 'sk-ant-oat01-illustrative-not-real');
-    await click(button(cardOf('claude'), 'Save'));
-    expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'claude-subscription', shape: 'setup_token' });
-  });
-
-  it('something that is neither is refused before anything is sent', async () => {
-    await mount();
-    await click(button(cardOf('claude'), 'Connect Claude'));
-    await type($('input[type="password"]', cardOf('claude')) as HTMLInputElement, 'not-a-key');
-    await click(button(cardOf('claude'), 'Save'));
-    expect(calls.filter((x) => x.method === 'PUT')).toHaveLength(0);
-    expect($('[role="alert"]', cardOf('claude'))!.textContent).toContain('sk-ant-api');
-  });
-
-  it('sign-ins are folded into the provider row, not linked to another section', async () => {
-    await mount({}, true);
-    expect($('[data-testid="provider-connect-seat"]', cardOf('openai'))).toBeNull();
-    expect($('#sign-ins')).toBeTruthy();
-    // Shut, the Claude and OpenAI sign-ins are hidden; open, they show.
-    expect($('[data-testid="provider-sign-in"]', cardOf('openai'))!.hasAttribute('hidden')).toBe(true);
+  it('the page has no sign-in anywhere; old #sign-ins links still land', async () => {
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'openai', scope: 'team' }] });
     await click(toggle('openai'));
-    const openai = $('[data-testid="provider-sign-in"]', cardOf('openai'))!;
-    expect(openai.hasAttribute('hidden')).toBe(false);
-    expect($('[data-testid="codex-row"]', openai)).toBeTruthy();
-    await click(toggle('claude'));
-    expect($('[data-testid="claude-row"]', $('[data-testid="provider-sign-in"]', cardOf('claude'))!)).toBeTruthy();
-    // One row per provider: no second row header for the same provider.
-    expect(host.querySelectorAll('[data-testid="codex-row"] button[aria-expanded]')).toHaveLength(0);
-    expect($('[data-testid="provider-sign-in"]', cardOf('openrouter'))).toBeNull();
+    expect($('[data-testid="provider-sign-in"]')).toBeNull();
+    expect($('[data-testid="codex-row"]')).toBeNull();
+    expect($('[data-testid="claude-row"]')).toBeNull();
+    expect(host.textContent).not.toContain('Runner sign-ins');
+    expect($('#sign-ins')).toBeTruthy();
   });
 
-  it('the page has no Runner sign-ins section', async () => {
-    await mount({}, true);
-    expect(host.textContent).not.toContain('Runner sign-ins');
-    expect($('[data-testid="models-sign-ins"]')).toBeNull();
+  it('Claude and OpenAI keys both set: provider routing sits under Used for', async () => {
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'openai', scope: 'team' }] });
+    expect($('#used-for [data-testid="routing-row"]')).toBeTruthy();
+    act(() => root.unmount()); host.remove();
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }, { provider: 'openrouter', scope: 'team' }] });
+    expect($('[data-testid="routing-row"]')).toBeNull();
   });
 
   it('the gateway and the custom endpoint set up in their own rows; old Routing links still land', async () => {
@@ -220,10 +212,10 @@ describe('connect: one input, the format decides', () => {
   });
 
   it('a workspace page leaves out a row it cannot set there, unless the team has one', async () => {
-    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }] }, false, WORKSPACES, 'workspace');
+    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }] }, WORKSPACES, 'workspace');
     expect($('[data-testid="provider-list-workspace"] [data-testid="provider-card-litellm"]')).toBeNull();
     act(() => root.unmount()); host.remove();
-    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }, { provider: 'litellm', scope: 'team', shape: 'gateway' }] }, false, WORKSPACES, 'workspace');
+    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }, { provider: 'litellm', scope: 'team', shape: 'gateway' }] }, WORKSPACES, 'workspace');
     expect($('[data-testid="provider-card-state"]', cardOf('litellm', 'workspace'))!.textContent).toBe('Team key');
   });
 
@@ -248,19 +240,19 @@ describe('connect: one input, the format decides', () => {
   });
 
   it('a platform operator gets the decision model row under Used for', async () => {
-    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] }, false, WORKSPACES, 'team', true);
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] }, WORKSPACES, 'team', true);
     expect($('[data-testid="used-for-decisions"] [data-testid="decision-model"]')).toBeTruthy();
   });
 
   it('a platform operator keeps the decision model row with one provider, under its one line', async () => {
-    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }] }, false, WORKSPACES, 'team', true);
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }] }, WORKSPACES, 'team', true);
     expect($('[data-testid="used-for-decisions"] [data-testid="decision-model"]')).toBeTruthy();
     expect($('[data-testid="provider-lone"]')!.textContent).toMatch(/^OpenRouter is used for chat/);
     expect($('[data-testid="used-for-chat"]')).toBeNull();
   });
 
   it('a platform operator keeps the decision model row with no provider connected', async () => {
-    await mount({}, false, WORKSPACES, 'team', true);
+    await mount({}, WORKSPACES, 'team', true);
     expect($('[data-testid="used-for-decisions"] [data-testid="decision-model"]')).toBeTruthy();
   });
 
@@ -314,14 +306,14 @@ describe('one scope per page', () => {
   });
 
   it('a workspace page: uses team settings until an admin overrides, then pastes go to that workspace', async () => {
-    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] }, false, WORKSPACES, 'workspace');
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] }, WORKSPACES, 'workspace');
     expect($('[data-testid="workspace-uses-team"]')!.textContent).toContain('Uses team settings.');
     expect(host.querySelector('[data-testid="provider-list-workspace"]')).toBeNull();
     expect(host.querySelector('[data-testid="provider-list-team"]')).toBeNull();
     await click(button(host, 'Override')!);
     const c = cardOf('claude', 'workspace');
     expect($('[data-testid="provider-card-state"]', c)!.textContent).toBe('Team key');
-    await click(button(c, 'Connect Claude'));
+    await click(button(c, 'Add key'));
     await type($('input[type="password"]', c) as HTMLInputElement, PASTED);
     await click(button(c, 'Save'));
     expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'anthropic', scope: 'workspace', workspaceId: WORKSPACES[0].id, shape: 'api_key' });
@@ -329,7 +321,7 @@ describe('one scope per page', () => {
 
   it("a workspace page names the team it inherits from: Uses <team>'s settings, <team>'s key", async () => {
     team = { teamName: 'Acme', teamCount: 2 };
-    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] }, false, WORKSPACES, 'workspace');
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] }, WORKSPACES, 'workspace');
     expect($('[data-testid="workspace-uses-team"]')!.textContent).toContain("Uses Acme's settings.");
     await click(button(host, 'Override')!);
     expect($('[data-testid="provider-card-state"]', cardOf('claude', 'workspace'))!.textContent).toBe("Acme's key");
@@ -347,13 +339,13 @@ describe('one scope per page', () => {
   });
 
   it('a workspace page with its own key lists it straight away', async () => {
-    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }] }, false, WORKSPACES, 'workspace');
+    await mount({ rows: [{ provider: 'anthropic', scope: 'workspace' }] }, WORKSPACES, 'workspace');
     expect($('[data-testid="workspace-uses-team"]')).toBeNull();
     expect(host.querySelector('[data-testid="provider-list-workspace"]')).toBeTruthy();
   });
 
   it('Keys holds only your keys: no team rows, no routing, the policy as a line', async () => {
-    await mount({ credentialPolicy: 'personal_first' }, false, WORKSPACES, 'mine');
+    await mount({ credentialPolicy: 'personal_first' }, WORKSPACES, 'mine');
     expect(host.querySelector('[role="tablist"]')).toBeNull();
     expect(new Set([...host.querySelectorAll('[data-scope]')].map((e) => e.getAttribute('data-scope')))).toEqual(new Set(['mine']));
     expect(host.textContent).not.toContain('Routing');
@@ -365,17 +357,17 @@ describe('one scope per page', () => {
   });
 
   it('Keys: team-only providers say so only when opened, with no action', async () => {
-    await mount({ credentialPolicy: 'personal_first' }, false, WORKSPACES, 'mine');
-    expect($('[data-testid="provider-card-state"]', cardOf('litellm', 'mine'))!.textContent).toBe('Not set up');
-    expect(buttons(cardOf('litellm', 'mine')).filter((b) => b !== 'LiteLLM gateway')).toEqual([expect.stringContaining('LiteLLM')]);
+    await mount({ credentialPolicy: 'personal_first' }, WORKSPACES, 'mine');
+    expect($('[data-testid="provider-card-state"]', cardOf('litellm', 'mine'))).toBeNull();
+    expect(buttons(cardOf('litellm', 'mine')).filter((b) => b !== 'LiteLLM gateway')).toEqual([]);
     await click(toggle('litellm', 'mine'));
     expect($('[data-testid="provider-closed"]', cardOf('litellm', 'mine'))!.textContent).toContain("team's shared configuration");
-    expect(button(cardOf('claude', 'mine'), 'Connect Claude')).toBeDefined();
+    expect(button(cardOf('claude', 'mine'), 'Add key')).toBeDefined();
   });
 
   it('Keys is read-only under a team-only policy, and says why', async () => {
-    await mount({ credentialPolicy: 'team' }, false, WORKSPACES, 'mine');
-    expect(button(cardOf('claude', 'mine'), 'Connect Claude')).toBeUndefined();
+    await mount({ credentialPolicy: 'team' }, WORKSPACES, 'mine');
+    expect(button(cardOf('claude', 'mine'), 'Add key')).toBeUndefined();
     await click(toggle('claude', 'mine'));
     expect($('[data-testid="provider-read-only"]', cardOf('claude', 'mine'))!.textContent).toBe("Your team's policy doesn't use personal keys.");
   });

@@ -85,6 +85,8 @@ export interface TopTask {
   dependsOn?: string[] | null;
   startAt?: string | null;
   claimedBy?: string | null;
+  /** The runner that holds it, by name, when the server says (the Queue's "Taken by"). */
+  claimedByName?: string | null;
   roleSlug?: string | null;
   /** The agent provider that runs it (claude | codex); absent from older servers, read as claude. */
   backend?: string | null;
@@ -229,6 +231,8 @@ export interface ClaimOutcome {
   walls?: Array<{ kind: string; backend: string; resetsAt: string | null }>;
   summary?: string;
   deferrals?: Record<string, number>;
+  /** Broad claim: the tasks it turned away, each with its code. */
+  deferredTasks?: Array<{ taskId: string; code: string; until?: string }>;
   status?: number;
   refusal?: string;
   /** A broad claim that took work: how many agents it started. */
@@ -450,7 +454,15 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       const e = event as Extract<TopEvent, { type: 'claim_outcome' }>;
       if (!e.outcome || typeof e.outcome.reason !== 'string') return state;
       // A broad outcome is the claim coming back: no longer looking.
-      if (!e.taskId) return { ...state, lookingForWork: false, claimOutcomes: { ...state.claimOutcomes, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
+      if (!e.taskId) {
+        // Tasks the broad claim named as turned away read as refused, like a claim of that task alone.
+        const named = (e.outcome.deferredTasks ?? []).filter(d => d && typeof d.taskId === 'string' && typeof d.code === 'string');
+        const tasks = { ...state.claimOutcomes.tasks };
+        for (const d of named) {
+          tasks[d.taskId] = { at: e.outcome.at, reason: e.outcome.reason, exclusion: d.code, ...(d.until ? { until: d.until } : {}) };
+        }
+        return { ...state, lookingForWork: false, claimOutcomes: { ...state.claimOutcomes, tasks, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
+      }
       const tasks = { ...state.claimOutcomes.tasks };
       if (e.outcome.reason === 'claimed') delete tasks[e.taskId];
       else tasks[e.taskId] = e.outcome;
@@ -1176,7 +1188,7 @@ function taskBackend(t: TopTask): string {
   return t.backend || 'claude';
 }
 
-const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
+export const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
 // provider_pause is a limit recorded for every runner of the team (a shared
 // key or credential); runner_seat is this machine's own login (spec "A
 // runner", R-9, R-12). Neither is necessarily an API rate limit.
@@ -1558,6 +1570,7 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
   // work of this mission it did not send comes from the queue top last read.
   const listed = new Set(tasks.map(t => t.id));
   for (const q of queueRowList(state, now)) {
+    if (q.status === 'running') continue;
     const wsByName = workspaceList(state).find(w => w.name === q.workspace);
     if ((q.missionId || keyOf({ workspaceId: wsByName?.id })) !== mission.key || listed.has(q.taskId)) continue;
     listed.add(q.taskId);
@@ -1580,7 +1593,10 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
  * reason, or why this runner never takes it.
  */
 export function queueRowReason(q: QueueRow): string {
-  if (q.position !== null) return q.starts === 'now' ? `#${q.position} in queue · starts on the next claim` : `#${q.position} in queue · ${q.starts}`;
+  if (q.position !== null) {
+    const tail = q.status === 'queued' ? 'starts on the next claim' : q.status === 'blocked' ? (q.why ?? q.starts) : q.starts.toLowerCase();
+    return `#${q.position} in queue · ${tail}`;
+  }
   return q.reason ?? q.starts;
 }
 

@@ -122,13 +122,13 @@ describe('missionDecisions (R-16, AC-10)', () => {
 describe('historyRaised (R-6, AC-8)', () => {
   it('an open organizer decision raises History and names it', () => {
     const model = board([digest]);
-    const r = historyRaised(model, [{ type: 'question', status: 'open', title: 'Keep the legacy export?', subjectTaskId: id(2) }]);
-    expect(r).toEqual({ kind: 'decision', text: 'Decision open: Keep the legacy export?', taskId: id(2) });
+    const r = historyRaised(model, [{ id: 'n1', type: 'question', status: 'open', title: 'Keep the legacy export?', subjectTaskId: id(2) }]);
+    expect(r).toEqual({ kind: 'decision', text: 'Decision open: Keep the legacy export?', taskId: id(2), noteId: 'n1' });
   });
 
   it('a failure a person must fix raises it; a dependency failure does not', () => {
     const failed = task(5, 'Mirror the runner image', { status: 'failed', workers: [worker({ status: 'failed', completedAt: min(5), updatedAt: min(5) })] });
-    expect(historyRaised(board([failed]), [])).toEqual({ kind: 'failed', text: 'Failed: Mirror the runner image', taskId: id(5) });
+    expect(historyRaised(board([failed]), [])).toEqual({ kind: 'failed', text: 'Failed: Mirror the runner image', taskId: id(5), noteId: null });
   });
 
   it('a reopened task raises it; a quiet mission raises nothing', () => {
@@ -139,7 +139,7 @@ describe('historyRaised (R-6, AC-8)', () => {
         worker({ startedAt: min(1), completedAt: min(3), updatedAt: min(3), mergedAt: min(3), prNumber: 401, prLifecycleStatus: 'merged' }),
       ],
     });
-    expect(historyRaised(board([reopened]), [])).toEqual({ kind: 'reopened', text: 'Reopened: feat: reopened', taskId: id(6) });
+    expect(historyRaised(board([reopened]), [])).toEqual({ kind: 'reopened', text: 'Reopened: feat: reopened', taskId: id(6), noteId: null });
     expect(historyRaised(board([digest]), [{ type: 'question', status: 'answered', title: 'Old' }])).toBeNull();
   });
 });

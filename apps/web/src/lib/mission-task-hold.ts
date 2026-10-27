@@ -344,6 +344,8 @@ function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHol
   }
 
   // 3. No runner able to take it: the gate's reason, else no browser runner, else none online.
+  // A pin is not a missing capability: name the one runner it waits for.
+  if (reason === 'runner_capability' && str(detail.pinnedRunner)) return queued('no_runner', `waiting for runner ${detail.pinnedRunner}`, reason);
   if (reason && reasonKind === 'no_runner') return noRunner(noRunnerReason(reason, detail), reason);
   if (input.missingBrowser) return noRunner(BROWSER_RUNNER_MISSING, 'browser_runner');
   if (input.runnerOnline === false) return noRunner('none is online', 'runner_offline');

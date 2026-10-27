@@ -20,7 +20,12 @@ beforeEach(() => { target.target.releaseConfig = baseReleaseConfig(); });
 mock.module('@/lib/release/target', () => ({ resolveReleaseTarget: async () => target }));
 mock.module('@/lib/release/record', () => ({ recordAndDispatchRelease: async () => ({ ok: true }) }));
 
-const { amendCandidateOnFixMerge, RELEASE_CANDIDATE_AMEND_PR_KEY } = await import('./candidate-amend');
+const activities: any[] = [];
+mock.module('@/lib/pr-activity-comment', () => ({
+  appendPrActivity: async (p: any) => { activities.push(p); return { action: 'updated' }; },
+}));
+
+const { amendCandidateOnFixMerge, amendCandidateOnFixCompletion, RELEASE_CANDIDATE_AMEND_PR_KEY } = await import('./candidate-amend');
 const { RELEASE_CANDIDATE_FIX_KEY } = await import('@/lib/release-candidate-ci');
 const { parseWorkflowDispatchInputs } = await import('@/lib/workflow-dispatch-inputs');
 
@@ -37,7 +42,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const dialect = new PgDialect();
 const render = (q: unknown) => dialect.sqlToQuery(q as any);
 
-function stubDb(opts: { taskContext?: Record<string, unknown> | null; claim?: boolean; worker?: boolean }) {
+function stubDb(opts: { taskContext?: Record<string, unknown> | null; taskResult?: Record<string, unknown> | null; claim?: boolean; worker?: boolean }) {
   const updates: any[] = [];
   const wheres: any[] = [];
   const notes: any[] = [];
@@ -45,7 +50,7 @@ function stubDb(opts: { taskContext?: Record<string, unknown> | null; claim?: bo
     insert: () => ({ values: (v: any) => { notes.push(v); return Promise.resolve(); } }),
     query: {
       workers: { findFirst: async () => (opts.worker === false ? undefined : { taskId: 't1' }) },
-      tasks: { findFirst: async () => ({ id: 't1', workspaceId: 'ws1', context: opts.taskContext === undefined ? { [RELEASE_CANDIDATE_FIX_KEY]: fixCtx } : opts.taskContext }) },
+      tasks: { findFirst: async () => ({ id: 't1', workspaceId: 'ws1', missionId: null, context: opts.taskContext === undefined ? { [RELEASE_CANDIDATE_FIX_KEY]: fixCtx } : opts.taskContext, result: opts.taskResult ?? null }) },
     },
     update: () => ({
       set: (v: any) => ({
@@ -74,10 +79,11 @@ function gh(candidate: { state: string; sha: string }, fixPr: { merged: boolean;
 }
 
 describe('amendCandidateOnFixMerge', () => {
-  it('dispatches the amendment once with amend and amend_confirm, and comments on the candidate', async () => {
+  it('dispatches the amendment once with amend and amend_confirm, updates activity, and comments on the fix PR', async () => {
+    activities.length = 0;
     const { db } = stubDb({});
     const g = gh({ state: 'open', sha: 'cand-sha' });
-    const dispatch = mock(async (_p: any) => ({ ok: true as const, releaseId: 'r1', deduped: false, headSha: 'x' }));
+    const dispatch = mock(async (_p: any) => ({ ok: true as const, releaseId: 'r1', deduped: false, headSha: 'x', runUrl: 'https://example.test/run/1' }));
     const out = await amendCandidateOnFixMerge(input, { db, githubApi: g.fn, dispatch: dispatch as any, readInputs: readsWorkflow() as any, notify: noNotify });
     expect(out).toEqual({ kind: 'amended', version: '1.2.3', candidatePr: 90 });
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -85,10 +91,29 @@ describe('amendCandidateOnFixMerge', () => {
     expect(p.inputs.amend).toBe('1.2.3');
     expect(p.inputs.amend_confirm).toBe('1.2.3');
     expect(p.ref).toBe('dev');
+    // Activity comment on candidate PR — updated ci_fixing and appended two new entries
+    expect(activities).toHaveLength(3);
+    // First entry: update ci_fixing with fix PR link
+    expect(activities[0].prNumber).toBe(90);
+    expect(activities[0].entry.kind).toBe('ci_fixing');
+    expect(activities[0].entry.detail).toContain('fix via #101');
+    expect(activities[0].entry.url).toBe('https://github.com/o/r/pull/101');
+    // Second entry: fix PR opened
+    expect(activities[1].prNumber).toBe(90);
+    expect(activities[1].entry.kind).toBe('fix_pr_opened');
+    expect(activities[1].entry.note).toContain('Fix opened in #101');
+    expect(activities[1].entry.url).toBe('https://github.com/o/r/pull/101');
+    // Third entry: amendment dispatched
+    expect(activities[2].prNumber).toBe(90);
+    expect(activities[2].entry.kind).toBe('release_amended');
+    expect(activities[2].entry.note).toContain('The fix merged in #101');
+    expect(activities[2].entry.note).toContain('Release candidate v1.2.3 was amended automatically');
+    expect(activities[2].entry.url).toBe('https://example.test/run/1');
+    // Standing comment on the candidate PR
     const comment = g.calls.find((c) => c.path === '/repos/o/r/issues/90/comments');
-    expect(comment?.opts.method).toBe('POST');
-    expect(JSON.parse(comment!.opts.body).body).toContain('amend: 1.2.3');
-    expect(JSON.parse(comment!.opts.body).body).toMatch(/^The fix for this candidate merged in #\d+\. /);
+    expect(comment?.opts?.method).toBe('POST');
+    expect(JSON.parse(comment!.opts!.body).body).toContain('amend: 1.2.3');
+    expect(JSON.parse(comment!.opts!.body).body).toMatch(/^The fix for this candidate merged in #\d+\. /);
   });
 
   it('does nothing a second time for the same fix PR (marker already taken)', async () => {
@@ -267,5 +292,77 @@ describe('amendCandidateOnFixMerge', () => {
       expect(out).toMatchObject({ kind: 'needs_recut', reason: 'contract_not_in_workflow' });
       expect(dispatch).not.toHaveBeenCalled();
     });
+  });
+});
+
+// v0.381.0: the candidate was red because dev forked; the fix was an `autofix:`
+// commit pushed straight to dev and its PR was closed. No fix PR ever merged, so
+// nothing amended the candidate until an operator did, two hours later.
+describe('amendCandidateOnFixCompletion: a fix task that names where the fix already is', () => {
+  const FIX = 'b9c6a996b0000000000000000000000000000000';
+  /** GitHub for the commit route: FIX is on dev, and the red candidate head does not hold it. */
+  function ghCommit(candidate: { state: string; sha: string }, opts: { onDev?: boolean } = {}) {
+    const calls: Array<{ installationId: number; path: string; opts?: any }> = [];
+    const fn: any = async (installationId: number, path: string, o?: any) => {
+      calls.push({ installationId, path, opts: o });
+      if (path.endsWith('/comments')) return {};
+      if (path.endsWith(`/commits/${FIX}`)) return { sha: FIX };
+      const m = /\/compare\/([^.]+)\.\.\.(.+)$/.exec(path);
+      if (m) return { status: m[2] === 'dev' && opts.onDev !== false ? 'ahead' : 'diverged' };
+      if (path.endsWith('/pulls/77')) return { merged: true, base: { ref: 'dev' } };
+      return { state: candidate.state, head: { sha: candidate.sha } };
+    };
+    return { fn, calls };
+  }
+  const ok = () => mock(async (_p: any) => ({ ok: true as const, releaseId: 'r1', deduped: false, headSha: 'x' }));
+
+  it('a completion naming a dev commit already holding the fix amends the candidate, and says which commit', async () => {
+    const { db, updates } = stubDb({ taskResult: { candidateFixLanded: { commitSha: FIX, sourceBranch: 'dev', candidatePr: 90 } } });
+    const g = ghCommit({ state: 'open', sha: 'cand-sha' });
+    const dispatch = ok();
+    const out = await amendCandidateOnFixCompletion({ taskId: 't1' }, { db, githubApi: g.fn, dispatch: dispatch as any, readInputs: readsWorkflow() as any, notify: noNotify });
+    expect(out).toEqual({ kind: 'amended', version: '1.2.3', candidatePr: 90 });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect((dispatch.mock.calls[0] as any)[0].inputs).toEqual({ amend: '1.2.3', amend_confirm: '1.2.3' });
+    // The marker is the commit, so a replay of the same completion is a no-op.
+    expect(render(updates[0].context).sql).toContain('to_jsonb($2::text)');
+    expect(render(updates[0].context).params[1]).toBe(FIX);
+    const comment = JSON.parse(g.calls.find((c) => c.path === '/repos/o/r/issues/90/comments')!.opts.body).body;
+    expect(comment).toContain('The fix for this candidate landed on `dev` in `b9c6a996b000`');
+  });
+
+  it('re-checks the commit: one that is no longer on the source branch amends nothing', async () => {
+    const { db, updates } = stubDb({ taskResult: { candidateFixLanded: { commitSha: FIX, sourceBranch: 'dev', candidatePr: 90 } } });
+    const dispatch = ok();
+    const out = await amendCandidateOnFixCompletion({ taskId: 't1' }, { db, githubApi: ghCommit({ state: 'open', sha: 'cand-sha' }, { onDev: false }).fn, dispatch: dispatch as any, readInputs: readsWorkflow() as any, notify: noNotify });
+    expect(out).toEqual({ kind: 'skipped', reason: 'commit_not_on_source' });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+  });
+
+  it('a completion accepted on a merged PR another task owns (alreadyShippedIn) amends too', async () => {
+    const { db } = stubDb({ taskResult: { alreadyShippedIn: { prNumber: 77, prUrl: 'https://github.com/o/r/pull/77' } } });
+    const g = ghCommit({ state: 'open', sha: 'cand-sha' });
+    const dispatch = ok();
+    const out = await amendCandidateOnFixCompletion({ taskId: 't1' }, { db, githubApi: g.fn, dispatch: dispatch as any, readInputs: readsWorkflow() as any, notify: noNotify });
+    expect(out).toEqual({ kind: 'amended', version: '1.2.3', candidatePr: 90 });
+    expect(JSON.parse(g.calls.find((c) => c.path.endsWith('/comments'))!.opts.body).body).toContain('merged in #77');
+  });
+
+  it('an ordinary task, or a fix task that named nothing, is left alone', async () => {
+    const dispatch = ok();
+    expect(await amendCandidateOnFixCompletion({ taskId: 't1' }, { db: stubDb({ taskContext: {}, taskResult: { alreadyShippedIn: { prNumber: 77 } } }).db, githubApi: ghCommit({ state: 'open', sha: 'cand-sha' }).fn, dispatch: dispatch as any, readInputs: readsWorkflow() as any, notify: noNotify }))
+      .toEqual({ kind: 'skipped', reason: 'not_a_candidate_fix' });
+    expect(await amendCandidateOnFixCompletion({ taskId: 't1' }, { db: stubDb({ taskResult: { summary: 'done' } }).db, githubApi: ghCommit({ state: 'open', sha: 'cand-sha' }).fn, dispatch: dispatch as any, readInputs: readsWorkflow() as any, notify: noNotify }))
+      .toEqual({ kind: 'skipped', reason: 'no_fix_named' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('a candidate someone already amended is not amended again', async () => {
+    const { db } = stubDb({ taskResult: { candidateFixLanded: { commitSha: FIX, sourceBranch: 'dev', candidatePr: 90 } } });
+    const dispatch = ok();
+    const out = await amendCandidateOnFixCompletion({ taskId: 't1' }, { db, githubApi: ghCommit({ state: 'open', sha: 'amended-sha' }).fn, dispatch: dispatch as any, readInputs: readsWorkflow() as any, notify: noNotify });
+    expect(out).toEqual({ kind: 'skipped', reason: 'candidate_moved' });
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });

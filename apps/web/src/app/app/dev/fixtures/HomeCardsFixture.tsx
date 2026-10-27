@@ -118,7 +118,7 @@ const CHECKS = deriveHomeAttention({
 // `&data=red-checks`: the two cards Home showed on 2026-10-23 as "Tests are failing.", as they read now.
 const RED = (n: number, title: string, record: Omit<RedCheckRecord, 'headSha' | 'runId' | 'runAttempt' | 'at' | 'signature'>, history: { pushedNothing: number; noChange: number }, reviewApproved = false): ActionQueueItem => ({
   subjectKey: `red${n}`, chip: 'BLOCKED', prNumber: n, workspaceId: 'ws', taskTitle: title, prUrl: PR(n),
-  ciGate: { kind: 'blocked', reason: 'CI failing', recommendation: null, red: redCheckView({ headSha: 'h', runId: 1, runAttempt: 1, at: '', signature: 's', ...record }, history), ...(reviewApproved ? { reviewApproved } : {}) },
+  ciGate: { kind: 'blocked', reason: 'CI failing', recommendation: null, red: redCheckView({ headSha: 'h', runId: 1, runAttempt: 1, at: new Date(Date.now() - 4 * 60000).toISOString(), signature: 's', ...record }, history), ...(reviewApproved ? { reviewApproved } : {}) },
 } as ActionQueueItem);
 const RED_CHECKS = deriveHomeAttention({
   queue: [

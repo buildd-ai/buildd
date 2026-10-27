@@ -43,16 +43,17 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkFixLandedGreen, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
 import { endingWorkerIsCurrentSql, isAttemptRow, notOwnerTaskSql, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectReopenSql, projectRequeueSql, projectWithdrawSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { taskPrOf } from './task-pr';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
-import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
+import { diffTouchesFindings, isRemedyClass, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 import { wakeHeldMergesOn } from '@buildd/workflow-kernel/merge-hold';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -442,7 +443,7 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
  * retried request, a door re-sent after an unknown outcome) carries the same id, so the kernel
  * answers it with the transition it already made.
  */
-export function humanDecision(action: 'request_fix' | 'force_re_review' | 'approve_override', headSha: string, version: number): { id: string; headSha: string } {
+export function humanDecision(action: 'request_fix' | 'force_re_review' | 'land_pr' | 'approve_override', headSha: string, version: number): { id: string; headSha: string } {
   return { id: `${action}:${headSha}:v${version}`, headSha };
 }
 
@@ -477,6 +478,8 @@ export async function applyRecommendationThroughKernel(p: {
    * answered by the first (`duplicate`), and a head that moved refuses it (`decision_head_stale`).
    */
   decisionHeadSha?: string | null;
+  /** Which decision the card named: a bounded fix by default, or the landing task (`land_pr`). */
+  decisionAction?: 'request_fix' | 'land_pr';
 }, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
   const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
   if (!repo) return null;
@@ -499,7 +502,7 @@ export async function applyRecommendationThroughKernel(p: {
   const result = await applyCommand(
     {
       type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined,
-      ...(p.decisionHeadSha ? { decision: humanDecision('request_fix', p.decisionHeadSha, expectedVersion) } : {}),
+      ...(p.decisionHeadSha ? { decision: humanDecision(p.decisionAction ?? 'request_fix', p.decisionHeadSha, expectedVersion) } : {}),
     },
     { ref: { deliveryId }, exec: deps.exec },
   );
@@ -515,6 +518,44 @@ export async function applyRecommendationThroughKernel(p: {
     current: await currentOf(),
     attempt: human ? { id: human.id, attemptNo: human.attemptNo, maxAttempts: human.maxAttempts, taskId: human.taskId } : null,
   };
+}
+
+/**
+ * What the one landing task is told to do, from the delivery as it stands: merge the base in when
+ * the PR is behind or conflicted, fix red CI, and answer each open required finding by name.
+ * Nothing here is a number or a path from outside the delivery; the task still verifies each claim.
+ */
+export function landingInstructions(view: Pick<KernelView, 'delivery' | 'findings'>): string {
+  const d = view.delivery;
+  const open = (view.findings ?? []).filter((f) => f.required && (f.status === 'open' || f.status === 'addressed'));
+  const lines = ['Get this PR landable. Work on the PR branch only; do not open a new PR.'];
+  lines.push('1. Merge the base branch into the PR branch and resolve any conflict, if it is behind or conflicted.');
+  if (d?.ci === 'red') lines.push('2. CI is red on the current head: find the failing check and fix it.');
+  else lines.push('2. Confirm CI is green after the merge; fix anything it flags.');
+  if (open.length > 0) {
+    lines.push('3. Address every open review finding:');
+    for (const f of open) lines.push(`   - ${f.title.replace(/\s+/g, ' ').slice(0, 200)}${f.path ? ` (${f.path}${f.line != null ? `:${f.line}` : ''})` : ''}`);
+  }
+  lines.push('Push once when done. One review of the pushed head is granted; the review budget is otherwise spent.');
+  return lines.join('\n');
+}
+
+/**
+ * "Get this PR landable" on a kernel-owned PR's escalation: one T23 HumanResolve filing a single
+ * human-triggered fix task on the PR branch with `landingInstructions`, bound to the head and
+ * version the card showed. The fix leaves the delivery out of the held-budget state, so its push
+ * starts exactly one review round (the only review a post-escalation push ever gets, and only
+ * because a person asked). Null = not the kernel's PR.
+ */
+export async function landEscalatedThroughKernel(p: {
+  workspaceId: string; prNumber: number; actor: string; expectedVersion?: number | null; decisionHeadSha?: string | null;
+}, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const instructions = landingInstructions(await loadView({ deliveryId }, deps.exec));
+  return applyRecommendationThroughKernel({ ...p, instructions, decisionAction: 'land_pr' }, deps);
 }
 
 /**
@@ -788,6 +829,8 @@ export async function attemptEnded(p: {
   reviewFailure?: 'prose_verdict' | 'no_verdict' | 'infra' | 'human_takeover';
   /** §13.13 rule 4: a review fix's verified no-op claim (`noopEvidenceOf`). */
   noopEvidence?: { findingIds: string[]; evidence: string } | null;
+  /** A CI fixer's report that the failure is the base's (`blockedOnBaseOf`). */
+  blockedOnBase?: boolean;
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
@@ -901,6 +944,17 @@ export async function attemptEnded(p: {
     if (d.state === 'REPAIRING' && d.approvalBasis && d.approvalBasis !== 'policy') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
     if (!carryForward && deltaApprovalSource(view)) delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
   }
+  // A CI fixer that reports the failure is upstream: open or join the trunk incident for the
+  // delivery's signature; the kernel takes T25 with it (only for a CI repair on its bound head).
+  let blockedOnBase: { incidentId: string; signature: string } | null = null;
+  if (p.blockedOnBase && ciAttempt?.family === 'ci' && ciAttempt.triggerReason && d.state === 'REPAIRING' && d.repoFullName && (live?.baseRef ?? d.baseRef)) {
+    const signature = ciAttempt.triggerReason;
+    const row = ((await (deps.exec ?? seamExec)(openOrJoinIncidentSql({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: (live?.baseRef ?? d.baseRef)!, signature, deliveryId }))).rows ?? [])[0] as { id: string } | undefined;
+    if (row) {
+      await scheduleTrunkRecheck(String(row.id));
+      blockedOnBase = { incidentId: String(row.id), signature };
+    }
+  }
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
@@ -921,6 +975,7 @@ export async function attemptEnded(p: {
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
     ...(baseOnly ? { baseOnly: true } : {}),
+    ...(blockedOnBase ? { blockedOnBase } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (attemptKind !== 'owner' && result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence?.carryForward && live) {
@@ -1088,6 +1143,11 @@ export function noopEvidenceOf(output: unknown): { findingIds: string[]; evidenc
   const ids = Array.isArray(o.findingIds) ? o.findingIds.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
   const evidence = typeof o.evidence === 'string' ? o.evidence.trim() : '';
   return ids.length && evidence ? { findingIds: ids, evidence } : null;
+}
+
+/** A CI fixer's `structuredOutput.blockedOnBase: true`: the failure is the base branch's, not this PR's. */
+export function blockedOnBaseOf(output: unknown): boolean {
+  return !!output && typeof output === 'object' && (output as Record<string, unknown>).blockedOnBase === true;
 }
 
 /**
@@ -1328,6 +1388,47 @@ export async function recordReviewVerdict(p: {
 }
 
 /**
+ * Living Spec fa62b865 R-46: buildd's capture task for an evidence round ended. Its stored
+ * captures (`structuredOutput.evidence: [{ findingId, artifactId }]`) attach to the findings and
+ * send the round to its reviewer; a failed task, or one that stored nothing, records why, and the
+ * findings become a missing capability a person settles. Never a builder's round.
+ */
+export async function recordCaptureEvidence(p: {
+  /** The workspace the capture is for: a delivery of any other is not acted on. */
+  workspaceId: string;
+  task: { id: string; deliveryId: string | null; context: unknown };
+  status: 'completed' | 'failed';
+  output?: unknown;
+  error?: string | null;
+}, deps: SeamDeps = {}): Promise<CommandResult | null> {
+  const roundId = ctxOf(p.task).workflowRoundId as string | undefined;
+  if (!p.task.deliveryId || !roundId) return null;
+  const deliveryId = await kernelDeliveryInWorkspace(p.task.deliveryId, p.workspaceId, deps.exec);
+  if (!deliveryId) return null;
+  const captures = captureEvidenceOf(p.output);
+  const failure = p.status === 'failed'
+    ? (p.error?.trim() || 'the capture task failed')
+    : captures.length === 0 ? 'the capture task ended without a stored screenshot' : null;
+  const result = await applyCommand({
+    type: 'EvidenceRecorded', actor: `capture:${p.task.id}`, roundId,
+    ...(failure ? { failure: failure.slice(0, 300) } : { captures }),
+  }, { ref: { deliveryId }, exec: deps.exec });
+  await drainDelivery(deliveryId, deps);
+  return result;
+}
+
+/** A capture task's `structuredOutput.evidence`, read defensively: `[{ findingId, artifactId }]`. */
+export function captureEvidenceOf(output: unknown): Array<{ findingId: string; artifactId: string }> {
+  const o = (output && typeof output === 'object' ? output : {}) as Record<string, unknown>;
+  if (!Array.isArray(o.evidence)) return [];
+  return o.evidence.flatMap((e) => {
+    const r = (e && typeof e === 'object' ? e : {}) as Record<string, unknown>;
+    return typeof r.findingId === 'string' && r.findingId && typeof r.artifactId === 'string' && r.artifactId
+      ? [{ findingId: r.findingId, artifactId: r.artifactId }] : [];
+  });
+}
+
+/**
  * 00d288fd: a reviewer that ran outside the kernel's rounds (filed by a door
  * before the delivery opened) judged a PR the kernel owns. Its verdict at the
  * current head is the kernel's to keep: recorded as a decided round while the
@@ -1412,10 +1513,17 @@ export function verdictFindingsOf(output: unknown): VerdictFindings {
       const r = (f && typeof f === 'object' ? f : {}) as Record<string, unknown>;
       const title = str(r.title);
       if (!title) return [];
+      // Living Spec fa62b865 §11.1: who can fix it, and for evidence what buildd captures. A class the
+      // kernel does not know is dropped (the finding reads as a code fix), never guessed at.
+      const remedyClass = isRemedyClass(r.remedyClass) ? r.remedyClass : null;
+      const ev = (r.evidence && typeof r.evidence === 'object' ? r.evidence : null) as Record<string, unknown> | null;
+      const screen = ev ? str(ev.screen) : null;
       return [{
         ...(str(r.id) ? { id: str(r.id) } : {}),
         path: str(r.path), line: typeof r.line === 'number' && Number.isFinite(r.line) ? Math.trunc(r.line) : null, title,
         ...(r.required === false ? { required: false } : {}),
+        ...(remedyClass ? { remedyClass } : {}),
+        ...(remedyClass === 'evidence' && screen ? { evidence: { screen, criterionId: str(ev!.criterionId), route: str(ev!.route) } } : {}),
       }];
     });
   }
@@ -1910,7 +2018,7 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
   return s;
 }
 
-type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string };
+type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string; trunk_fix_task_id?: string | null };
 
 /**
  * One incident's recheck, the floor's and the recheck queue's alike: read the base head now and resolve
@@ -1927,8 +2035,12 @@ async function recheckTrunkIncident(inc: TrunkIncidentRow, deps: SeamDeps, s: Tr
     readBase = !!reader;
     const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
     const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
-    // Unknown, or the incident's checks still running, is never read as recovered.
-    if (trunkRecoveredOnRuns(inc.signature, runs)) {
+    // Unknown, or the incident's checks still running, is never read as recovered. A base head with
+    // no runs at all (a mission branch has no CI of its own) is recovered by its fix PR landing green.
+    if (trunkRecoveredOnRuns(inc.signature, runs) || (head && reader && runs === null && inc.trunk_fix_task_id && await trunkFixLandedGreen({
+      repoFullName: inc.repo_full_name, baseRef: inc.base_ref, baseHead: head, signature: inc.signature, reader,
+      fixPrNumber: (await taskPrOf(String(inc.trunk_fix_task_id), exec))?.prNumber ?? null,
+    }))) {
       const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
       if (won) s.resolved++;
       return { resolved: true, readBase };

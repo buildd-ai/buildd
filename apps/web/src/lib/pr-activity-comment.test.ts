@@ -32,12 +32,14 @@ const {
   SPINNER_PATH,
   appendPrActivity,
   parsePrActivityState,
+  parsePrActivityFold,
   renderPrActivityComment,
   formatOffset,
   GLYPH,
   MAX_ACTIVITY_ENTRIES,
   MAX_NOTE_CHARS,
 } = await import('./pr-activity-comment');
+type PrActivityEntry = import('./pr-activity-comment').PrActivityEntry;
 
 function bodyOf(call: Call): string {
   return JSON.parse(call.options.body as string).body as string;
@@ -400,6 +402,35 @@ describe('renderPrActivityComment — state block', () => {
     expect(body).not.toContain('`sha0`');
   });
 
+  it('keeps the real start and says how many rows were folded, across later edits', () => {
+    const entries: PrActivityEntry[] = Array.from({ length: MAX_ACTIVITY_ENTRIES + 3 }, (_, i) => ({
+      kind: 'changes_pushed' as const,
+      sha: `sha${i}`,
+      at: new Date(Date.UTC(2026, 7, 29, 14, 3 + i * 10)).toISOString(),
+      ...(i === 0 ? { taskUrl: 'https://buildd.dev/app/tasks/t1' } : {}),
+    }));
+    const first = renderPrActivityComment(entries);
+    expect(first).toContain('Started Aug 29, 14:03 UTC');
+    expect(first).toContain('- 3 earlier events · [see Buildd](https://buildd.dev/app/tasks/t1)');
+    // The first kept row is offset from the real start, not `0m`.
+    expect(first).toContain('- `+30m` Pushed `sha3`');
+
+    // The legacy writer re-renders from the state block: the fold must survive it.
+    const next = renderPrActivityComment(
+      [...parsePrActivityState(first), { kind: 'changes_pushed', sha: 'late', at: '2026-08-29T20:00:00.000Z' }],
+      'UTC',
+      { fold: parsePrActivityFold(first) },
+    );
+    expect(next).toContain('Started Aug 29, 14:03 UTC');
+    expect(next).toContain('- 4 earlier events · [see Buildd](https://buildd.dev/app/tasks/t1)');
+  });
+
+  it('shows no fold line while everything fits', () => {
+    const body = renderPrActivityComment([{ kind: 'reviewing', at: at(0) }]);
+    expect(body).not.toContain('earlier event');
+    expect(parsePrActivityFold(body).folded).toBeUndefined();
+  });
+
   it('points the spinner at a camo-reachable origin, never at localhost', () => {
     const original = process.env.NEXT_PUBLIC_APP_URL;
     try {
@@ -667,5 +698,21 @@ describe('state words come from the terms catalog', () => {
     const { TERMS } = await import('@buildd/shared');
     expect(headerOf(renderPrActivityComment([reviewing, { kind: 'merged', at: at(5) }]))).toContain(`**${TERMS['pr.merged'].word}**`);
     expect(headerOf(renderPrActivityComment([reviewing, { kind: 'closed_unmerged', at: at(5) }]))).toContain(`**${TERMS['pr.closed'].word}**`);
+  });
+});
+
+describe('queued fix rows are marked moot by a later push', () => {
+  it('a ci_fixing row before a push reads as superseded, a trailing one does not', () => {
+    const at = (m: number) => new Date(Date.UTC(2026, 9, 24, 12, m)).toISOString();
+    const moot = renderPrActivityComment([
+      { kind: 'ci_fixing', at: at(0) },
+      { kind: 'changes_pushed', sha: '284ce78', at: at(5) },
+    ]);
+    expect(moot).toMatch(/fix queued · superseded by the push at `284ce78`/);
+    const live = renderPrActivityComment([
+      { kind: 'changes_pushed', sha: '284ce78', at: at(0) },
+      { kind: 'ci_fixing', at: at(5) },
+    ]);
+    expect(live).not.toContain('superseded by the push');
   });
 });

@@ -140,6 +140,17 @@ describe('mission state presentation — scenario matrix', () => {
     expect(p.needsYou).toBe(false);
   });
 
+  // 26b969db: explain answered presentation.needsYou true beside delivery.needsYou false for a PR
+  // waiting on its review, which is buildd's step. A landing blocker owned by the platform needs nobody.
+  it('a landing blocker the platform owns does not need you; one a person owns does', () => {
+    const view = (owner: 'platform' | 'person') => ({
+      kind: 'waiting', nextAction: 'Nothing to do yet',
+      waitingOn: { kind: 'landing_blocked', tone: 'info', label: 'PR #5 is waiting for its review', count: 1, cause: 'review_pending', owner, nextAction: 'Nothing to do yet', prNumbers: [5], prUrls: [], taskIds: [] },
+    }) as unknown as Parameters<typeof presentMissionState>[0];
+    expect(presentMissionState(view('platform'))).toMatchObject({ state: 'delivering', needsYou: false });
+    expect(presentMissionState(view('person'))).toMatchObject({ state: 'delivering', needsYou: true });
+  });
+
   it('AC-22: a read does not evaluate criteria (no completion decision is requested)', () => {
     // The presentation takes only the sealed view; it has no input to evaluate with.
     expect(presentMissionState.length).toBe(1);

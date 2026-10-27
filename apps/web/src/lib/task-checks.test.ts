@@ -40,6 +40,13 @@ describe('deriveTaskChecks', () => {
     expect(row(c, 'review')?.repair).toBeNull();
   });
 
+  test('e07ee9cf: a refresh parked in the landing lane is queued behind the PR landing first, not running', () => {
+    const approved = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+    const refresh = A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', boundHeadSha: 'HEADB000', taskId: null, status: 'queued' });
+    const c = deriveTaskChecks(V({ state: 'REPAIRING', stateReason: 'behind', rounds: [approved], ledger: [refresh], approvedCurrentHead: true, laneWait: { behindPr: 5657, position: 2 } }));
+    expect(row(c, 'merge')).toMatchObject({ state: 'pending', result: 'Queued to land behind #5657, position 2', repair: null });
+  });
+
   test('AC-3: CI red with an agent fix running: Tests failed, repair Fixing', () => {
     const fix = A({ id: 'c1', family: 'ci', triggerReason: 'ci', boundHeadSha: 'HEADB000', taskId: 'cifix', status: 'running' });
     const c = deriveTaskChecks(V({ state: 'REPAIRING', stateReason: 'ci', prState: 'ci_failed', ledger: [fix] }));

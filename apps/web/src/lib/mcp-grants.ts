@@ -8,13 +8,19 @@
  * workspaces, so what a token reaches is decided here, server-side, on every
  * request and at every refresh:
  *
- *   reachable = the grant's workspaces ∩ workspaces whose team the user is a
- *               member of right now
+ *   reachable = (the grant's specific workspaces
+ *                ∪ every non-internal workspace of a team the grant covers
+ *                  as a whole)
+ *               ∩ workspaces whose team the user is a member of right now
  *
- * A revoked or expired grant, a removed membership, a deleted workspace or a
- * workspace moved to a team the user is not in all drop out immediately; no
- * token claim can widen the set. New workspaces are never added to a grant
- * implicitly.
+ * Per team a grant has one of two access modes: "all current and future
+ * workspaces" (a mcp_oauth_grant_teams row; the default for a new consent)
+ * or "specific workspaces" (mcp_oauth_grant_workspaces rows). A workspace
+ * created in, or moved into, a team the grant covers as a whole is reached on
+ * the next request; one moved out of it, or deleted, drops out. A revoked or
+ * expired grant, a removed membership, or a workspace moved to a team the user
+ * is not in all drop out immediately; no token claim can widen the set, and a
+ * team the grant does not cover is never added implicitly.
  *
  * A legacy token (a `workspace_id` claim, from the per-workspace connection)
  * is treated as an implicit single-workspace 'person' grant, so existing
@@ -24,7 +30,9 @@ import { and, asc, eq, gt, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import {
   githubRepos,
+  mcpOauthGrantEvents,
   mcpOauthGrants,
+  mcpOauthGrantTeams,
   mcpOauthGrantWorkspaces,
   oauthRefreshTokens,
   teamMembers,
@@ -37,6 +45,7 @@ import { isGrantClaims, type AnyAccessTokenClaims } from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { normalizedRepoSql } from './repo-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { displayTeamName, isSystemWorkspace } from '@buildd/shared';
 import { clearCallerCache, callerDep } from './caller-cache';
 
 export type { McpGrantActsAs, McpGrantScope };
@@ -60,6 +69,13 @@ export interface ResolvedGrant {
   scopes: McpGrantScope[];
   /** Granted ∩ current membership, ordered by workspace id. */
   workspaces: GrantedWorkspace[];
+  /**
+   * Teams the grant covers as a whole (all current and future workspaces),
+   * whether or not the user is still on them. What it reaches there changes
+   * when a workspace joins or leaves the team, so a cached session rests on
+   * each (callerDep.teamWorkspaces). Absent or empty on a legacy token.
+   */
+  teamIds?: string[];
   /** When the grant itself expires (null = never); absent on a legacy token. */
   expiresAt?: Date | string | null;
 }
@@ -108,10 +124,22 @@ export type CreateGrantResult =
   | { ok: true; grantId: string }
   | { ok: false; error: 'invalid_request' | 'workspace_not_accessible' };
 
+/** Teams among `teamIds` the user is a member of now. */
+export async function memberTeamIds(userId: string, teamIds: string[]): Promise<string[]> {
+  if (teamIds.length === 0) return [];
+  const rows = await db
+    .select({ teamId: teamMembers.teamId })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.userId, userId), inArray(teamMembers.teamId, teamIds)));
+  return [...new Set(rows.map((r) => r.teamId))];
+}
+
 /**
- * Record a grant. Every workspace must be one the user can reach right now;
- * if any is not, nothing is written and the error names none of them (a
- * caller cannot use it to probe which workspace ids exist).
+ * Record a grant. `teamIds` are teams it covers as a whole (all current and
+ * future workspaces); `workspaceIds` are specific workspaces. Every team must
+ * be one the user is on, and every workspace one they can reach, right now; if
+ * any is not, nothing is written and the error names none of them (a caller
+ * cannot use it to probe which ids exist).
  */
 export async function createGrant(args: {
   userId: string;
@@ -119,17 +147,19 @@ export async function createGrant(args: {
   actsAs: McpGrantActsAs;
   scopes: McpGrantScope[];
   workspaceIds: string[];
+  teamIds?: string[];
   expiresAt?: Date | null;
 }): Promise<CreateGrantResult> {
   if (!isUuid(args.userId) || !args.clientId || !isActsAs(args.actsAs)) return { ok: false, error: 'invalid_request' };
   const scopes = normaliseScopes(args.scopes);
   if (!scopes) return { ok: false, error: 'invalid_request' };
   const ids = [...new Set(args.workspaceIds)];
-  if (ids.length === 0) return { ok: false, error: 'invalid_request' };
-  if (!ids.every(isUuid)) return { ok: false, error: 'workspace_not_accessible' };
+  const teamIds = [...new Set(args.teamIds ?? [])];
+  if (ids.length === 0 && teamIds.length === 0) return { ok: false, error: 'invalid_request' };
+  if (!ids.every(isUuid) || !teamIds.every(isUuid)) return { ok: false, error: 'workspace_not_accessible' };
 
-  const reachable = await memberWorkspaces(args.userId, ids);
-  if (reachable.length !== ids.length) return { ok: false, error: 'workspace_not_accessible' };
+  const [reachable, teamsNow] = await Promise.all([memberWorkspaces(args.userId, ids), memberTeamIds(args.userId, teamIds)]);
+  if (reachable.length !== ids.length || teamsNow.length !== teamIds.length) return { ok: false, error: 'workspace_not_accessible' };
 
   const [grant] = await db.insert(mcpOauthGrants).values({
     userId: args.userId,
@@ -141,14 +171,58 @@ export async function createGrant(args: {
   if (!grant) return { ok: false, error: 'invalid_request' };
 
   try {
-    await db.insert(mcpOauthGrantWorkspaces).values(ids.map((workspaceId) => ({ grantId: grant.id, workspaceId })));
+    if (ids.length > 0) await db.insert(mcpOauthGrantWorkspaces).values(ids.map((workspaceId) => ({ grantId: grant.id, workspaceId })));
+    if (teamIds.length > 0) await db.insert(mcpOauthGrantTeams).values(teamIds.map((teamId) => ({ grantId: grant.id, teamId })));
   } catch (err) {
-    // No interactive transactions on neon-http. A grant without its workspace
-    // rows reaches nothing, but do not leave one behind.
+    // No interactive transactions on neon-http. A grant without its rows
+    // reaches less than was consented to; do not leave one behind.
     await db.delete(mcpOauthGrants).where(eq(mcpOauthGrants.id, grant.id)).catch(() => {});
     throw err;
   }
+  await recordGrantEvent(grant.id, args.userId, 'connection.created', null, {
+    access: scopes.includes('write') ? 'read-write' : 'read',
+    actsAs: args.actsAs,
+    wholeTeamIds: [...teamIds].sort(),
+    specificWorkspaceIds: [...ids].sort(),
+  });
   return { ok: true, grantId: grant.id };
+}
+
+/** What one connection covers, as the change history records it: ids and modes, never names or tokens. */
+export interface GrantReachSnapshot {
+  access: 'read' | 'read-write';
+  actsAs: McpGrantActsAs;
+  /** Teams on all current and future workspaces. */
+  wholeTeamIds: string[];
+  /** Workspaces granted one by one. */
+  specificWorkspaceIds: string[];
+}
+
+export type GrantEventAction = 'connection.created' | 'connection.updated' | 'connection.revoked';
+
+/**
+ * Append one row to a connection's change history (mcp_oauth_grant_events).
+ * Written after the change it records; a failure to write is logged, never
+ * turned into a failed change the person would retry against a moved grant.
+ */
+export async function recordGrantEvent(
+  grantId: string,
+  actorUserId: string,
+  action: GrantEventAction,
+  before: GrantReachSnapshot | null,
+  after: GrantReachSnapshot | null,
+): Promise<void> {
+  try {
+    await db.insert(mcpOauthGrantEvents).values({
+      grantId,
+      actorUserId,
+      action,
+      before: before as Record<string, unknown> | null,
+      after: after as Record<string, unknown> | null,
+    });
+  } catch (err) {
+    console.error('[mcp-grants] could not record a connection change', action, err);
+  }
 }
 
 /** The grant row, if it is the user's and still active (not revoked, not expired). */
@@ -163,6 +237,7 @@ export async function getActiveGrant(grantId: string, userId: string) {
       actsAs: mcpOauthGrants.actsAs,
       scopes: mcpOauthGrants.scopes,
       expiresAt: mcpOauthGrants.expiresAt,
+      revision: mcpOauthGrants.revision,
     })
     .from(mcpOauthGrants)
     .where(and(
@@ -180,27 +255,55 @@ export async function getActiveGrant(grantId: string, userId: string) {
 }
 
 /**
- * The workspaces a grant reaches right now: its workspaces ∩ the user's
- * current team memberships. Empty for a grant that is not the user's, is
- * revoked or has expired. One query; every predicate is in SQL.
+ * The workspaces a grant reaches right now: its specific workspaces, and every
+ * non-internal workspace of a team it covers as a whole, ∩ the user's current
+ * team memberships. Empty for a grant that is not the user's, is revoked or
+ * has expired. Two queries; every predicate is in SQL except the internal
+ * workspace test (a name prefix, lib `isSystemWorkspace`).
  */
 export async function resolveGrantedWorkspaces(grantId: string, userId: string): Promise<GrantedWorkspace[]> {
   if (!isUuid(grantId) || !isUuid(userId)) return [];
   const now = new Date();
+  const active = and(
+    eq(mcpOauthGrants.id, grantId),
+    eq(mcpOauthGrants.userId, userId),
+    isNull(mcpOauthGrants.revokedAt),
+    or(isNull(mcpOauthGrants.expiresAt), gt(mcpOauthGrants.expiresAt, now)),
+  );
+  const [specific, whole] = await Promise.all([
+    db
+      .select({ workspaceId: workspaces.id, teamId: workspaces.teamId, role: teamMembers.role })
+      .from(mcpOauthGrants)
+      .innerJoin(mcpOauthGrantWorkspaces, eq(mcpOauthGrantWorkspaces.grantId, mcpOauthGrants.id))
+      .innerJoin(workspaces, eq(workspaces.id, mcpOauthGrantWorkspaces.workspaceId))
+      .innerJoin(teamMembers, and(eq(teamMembers.teamId, workspaces.teamId), eq(teamMembers.userId, mcpOauthGrants.userId)))
+      .where(active),
+    db
+      .select({ workspaceId: workspaces.id, teamId: workspaces.teamId, role: teamMembers.role, name: workspaces.name })
+      .from(mcpOauthGrants)
+      .innerJoin(mcpOauthGrantTeams, eq(mcpOauthGrantTeams.grantId, mcpOauthGrants.id))
+      .innerJoin(teamMembers, and(eq(teamMembers.teamId, mcpOauthGrantTeams.teamId), eq(teamMembers.userId, mcpOauthGrants.userId)))
+      .innerJoin(workspaces, eq(workspaces.teamId, mcpOauthGrantTeams.teamId))
+      .where(active),
+  ]);
+  const byId = new Map<string, GrantedWorkspace>();
+  for (const r of specific) byId.set(r.workspaceId, { workspaceId: r.workspaceId, teamId: r.teamId, role: r.role ?? null });
+  for (const r of whole) {
+    if (isSystemWorkspace(r.name)) continue;
+    byId.set(r.workspaceId, { workspaceId: r.workspaceId, teamId: r.teamId, role: r.role ?? null });
+  }
+  return [...byId.values()].sort((a, b) => (a.workspaceId < b.workspaceId ? -1 : a.workspaceId > b.workspaceId ? 1 : 0));
+}
+
+/** The teams a grant covers as a whole, membership aside. */
+export async function grantTeamIds(grantId: string): Promise<string[]> {
+  if (!isUuid(grantId)) return [];
   const rows = await db
-    .select({ workspaceId: workspaces.id, teamId: workspaces.teamId, role: teamMembers.role })
-    .from(mcpOauthGrants)
-    .innerJoin(mcpOauthGrantWorkspaces, eq(mcpOauthGrantWorkspaces.grantId, mcpOauthGrants.id))
-    .innerJoin(workspaces, eq(workspaces.id, mcpOauthGrantWorkspaces.workspaceId))
-    .innerJoin(teamMembers, and(eq(teamMembers.teamId, workspaces.teamId), eq(teamMembers.userId, mcpOauthGrants.userId)))
-    .where(and(
-      eq(mcpOauthGrants.id, grantId),
-      eq(mcpOauthGrants.userId, userId),
-      isNull(mcpOauthGrants.revokedAt),
-      or(isNull(mcpOauthGrants.expiresAt), gt(mcpOauthGrants.expiresAt, now)),
-    ))
-    .orderBy(asc(workspaces.id));
-  return rows.map((r) => ({ workspaceId: r.workspaceId, teamId: r.teamId, role: r.role ?? null }));
+    .select({ teamId: mcpOauthGrantTeams.teamId })
+    .from(mcpOauthGrantTeams)
+    .where(eq(mcpOauthGrantTeams.grantId, grantId))
+    .orderBy(asc(mcpOauthGrantTeams.teamId));
+  return rows.map((r) => r.teamId);
 }
 
 /**
@@ -212,7 +315,7 @@ export async function resolveGrantedWorkspaces(grantId: string, userId: string):
 export async function resolveGrant(grantId: string, userId: string, clientId: string): Promise<ResolvedGrant | null> {
   const grant = await getActiveGrant(grantId, userId);
   if (!grant || grant.clientId !== clientId) return null;
-  const reachable = await resolveGrantedWorkspaces(grantId, userId);
+  const [reachable, teamIds] = await Promise.all([resolveGrantedWorkspaces(grantId, userId), grantTeamIds(grantId)]);
   return {
     grantId: grant.id,
     userId,
@@ -220,6 +323,7 @@ export async function resolveGrant(grantId: string, userId: string, clientId: st
     actsAs: grant.actsAs,
     scopes: grant.scopes,
     workspaces: reachable,
+    teamIds,
     expiresAt: grant.expiresAt ?? null,
   };
 }
@@ -284,7 +388,10 @@ export async function revokeGrant(grantId: string, userId: string): Promise<bool
     .set({ revokedAt: now })
     .where(and(eq(oauthRefreshTokens.grantId, grantId), eq(oauthRefreshTokens.userId, userId), isNull(oauthRefreshTokens.revokedAt)));
   // Access tokens on it are refused on their next call, on every instance.
-  if (rows.length > 0) await clearCallerCache(callerDep.grant(grantId));
+  if (rows.length > 0) {
+    await clearCallerCache(callerDep.grant(grantId));
+    await recordGrantEvent(grantId, userId, 'connection.revoked', null, null);
+  }
   return rows.length > 0;
 }
 
@@ -352,7 +459,7 @@ export async function describeGrantWorkspaces(grant: ResolvedGrant): Promise<Gra
     const r = byId.get(w.workspaceId);
     if (!r) continue;
     const repo = (r.githubFullName?.toLowerCase() || (r.repo as unknown as string) || '') || null;
-    out.push({ workspaceId: w.workspaceId, name: r.name, repo, teamId: w.teamId, teamName: r.teamName, level: levelForTeamRole(w.role), access });
+    out.push({ workspaceId: w.workspaceId, name: r.name, repo, teamId: w.teamId, teamName: displayTeamName(r.teamName, w.teamId), level: levelForTeamRole(w.role), access });
   }
   return out.sort((a, b) => a.teamName.localeCompare(b.teamName) || a.name.localeCompare(b.name) || a.workspaceId.localeCompare(b.workspaceId));
 }

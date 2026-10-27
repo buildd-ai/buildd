@@ -5,11 +5,11 @@
  * until they exist. The SQL that moves the statuses is not asserted here: these
  * pin the decisions in front of it.
  *
- *   parseReplaces(raw, selfId?)          -> { ok, ids } | { ok: false, error }
+ *   parseReplaces(raw, supersedes?)      -> undefined (absent) | null (none) | ids | { error }
  *   replacedSpecProblem(self, target)    -> string | null   (null = may be replaced)
- *   retireChoice(replaces, checked?)     -> the ids to supersede on approval
- *   approvalRetireReason(replacement, revision) -> the change row's reason
- *   signSpecApprovalRequest({..., retireReplaced}) carries the choice into the link
+ *   defaultRetireChoice(live) / parseRetireChoice(checked, replaces) -> what to supersede on approval
+ *   approvalRetireReason({ title, revision }) -> the change row's reason
+ *   signSpecApprovalRequest({..., retire}) carries the choice into the link
  */
 import { describe, expect, it } from 'bun:test';
 
@@ -24,10 +24,11 @@ const OTHER_WS = '55555555-5555-4555-8555-555555555555';
 describe('R-76: a draft or revision names the specs it replaces, as data', () => {
   it('R-76: replaces is a list of spec ids, a bad shape is refused, and nothing named means nothing replaced', async () => {
     const { parseReplaces } = await import('../../src/lib/specs/replaces');
-    expect(parseReplaces(undefined, B)).toEqual({ ok: true, ids: [] });
-    expect(parseReplaces([A, A, C], B)).toEqual({ ok: true, ids: [A, C] });
-    for (const bad of ['not a list', [A, 'checkout'], [B], [1]]) {
-      expect(parseReplaces(bad, B)).toMatchObject({ ok: false });
+    expect(parseReplaces(undefined)).toBeUndefined();
+    expect(parseReplaces([])).toBeNull();
+    expect(parseReplaces([A, A, C])).toEqual([A, C]);
+    for (const bad of ['not a list', [A, 'checkout'], [1]]) {
+      expect(parseReplaces(bad)).toHaveProperty('error');
     }
   });
 
@@ -45,18 +46,18 @@ describe('R-76: a draft or revision names the specs it replaces, as data', () =>
 
 describe('R-77 and AC-122: approving a replacement offers to retire what it replaces', () => {
   it('AC-122: the default choice supersedes every replaced spec; unchecking approves only', async () => {
-    const { retireChoice } = await import('../../src/lib/specs/replaces');
-    expect(retireChoice([A], undefined)).toEqual([A]);
-    expect(retireChoice([A, C], null)).toEqual([A, C]);
-    expect(retireChoice([A], [])).toEqual([]);
-    expect(retireChoice([A, C], [C])).toEqual([C]);
+    const { defaultRetireChoice, parseRetireChoice } = await import('../../src/lib/specs/replaces');
+    const live = [{ id: A, title: 'A', version: 2 }, { id: C, title: 'C', version: 4 }];
+    expect(defaultRetireChoice(live).map((x) => x.specId)).toEqual([A, C]);
+    expect(parseRetireChoice([], [A])).toEqual([]);
+    expect(parseRetireChoice([C], [A, C])).toEqual([{ specId: C }]);
     // An id the revision does not name is never retired by approving it.
-    expect(retireChoice([A], [A, B])).toEqual([A]);
+    expect(parseRetireChoice([A, B], [A])).toHaveProperty('error');
   });
 
   it('AC-122: each superseded spec gets its own change row, whose reason names the approval', async () => {
     const { approvalRetireReason } = await import('../../src/lib/specs/replaces');
-    const reason = approvalRetireReason({ id: B, title: 'Checkout v2' }, 3);
+    const reason = approvalRetireReason({ title: 'Checkout v2', revision: 3 });
     expect(reason).toContain('Checkout v2');
     expect(reason).toContain('revision 3');
     expect(reason.length).toBeGreaterThanOrEqual(10);
@@ -67,14 +68,14 @@ describe('R-77 and AC-122: approving a replacement offers to retire what it repl
     const { signSpecApprovalRequest, verifySpecApprovalRequest } = await import('../../src/lib/specs/approval-request');
     const token = signSpecApprovalRequest({
       specId: B, workspaceId: WS, revision: 3, expectedVersion: 5, contentHash: 'a'.repeat(64), requestedBy: 'u1',
-      retireReplaced: [A],
-    } as never);
+      retire: [{ specId: A }],
+    });
     const v = verifySpecApprovalRequest(token);
-    expect(v.ok && (v.payload as unknown as { retireReplaced?: string[] }).retireReplaced).toEqual([A]);
+    expect(v.ok && v.payload.retire).toEqual([{ specId: A }]);
     // The choice is part of what is signed and is checked: a list that is not spec ids is a malformed request.
     const bad = signSpecApprovalRequest({
       specId: B, workspaceId: WS, revision: 3, expectedVersion: 5, contentHash: 'a'.repeat(64), requestedBy: 'u1',
-      retireReplaced: [42],
+      retire: [42],
     } as never);
     expect(verifySpecApprovalRequest(bad)).toEqual({ ok: false, reason: 'malformed' });
   });

@@ -10,7 +10,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
-- [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-16
+- [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-25
   Inbound credentials MUST resolve to an account and apply claim limits according to how the runner pays for model usage.
 - [Capability Requests and Grants](./capability-requests.md) · @max — verified 2026-10-23
   An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
@@ -22,7 +22,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 - [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-23
   A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
-- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-15
+- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-25
   OAuth tokens MUST be PKCE-protected and confined to their grant or legacy workspace, connection changes MUST apply on the next request, and JWKS MUST publish public assertion keys.
 - [Team Permissions](./team-permissions.md) · @max — verified 2026-10-15
   Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
@@ -69,7 +69,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### missions (6)
 
-- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-14
+- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-24
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-17
   Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
@@ -90,7 +90,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-10-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
-- [Release Flow](./release-flow.md) · @max — verified 2026-10-23
+- [Release Flow](./release-flow.md) · @max — verified 2026-10-24
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
 ### runners (14)
@@ -152,9 +152,9 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Settings index descriptions MUST be one short fragment stating what the page manages, with no team-policy conditions, trailing filler or em dashes; the voice authority stays design-system section 5 and copy-rules.
 - [Settings Models Page](./settings-models.md) · @max — verified 2026-10-13
   Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
-- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-23
+- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-25
   Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
-- [Task Page](./task-page.md) · @max — verified 2026-10-23
+- [Task Page](./task-page.md) · @max — verified 2026-10-26
   The task page leads with the live run and steering while running, then one Build/Verify/Deliver timeline when stopped; Run holds execution material and Details holds spec, dependencies, attempts and time.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-10-15
   Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
@@ -226,7 +226,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-10-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-23
+- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-26
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-19
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.

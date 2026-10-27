@@ -16,9 +16,6 @@ let keyAccount: any = { id: 'acct-1', name: 'CI', teamId: '11111111-1111-4111-81
 
 mock.module('@/auth', () => ({ auth: async () => null }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => keyAccount, invalidateAccountCacheByHash: () => {} }));
-mock.module('@/lib/backend-strand', () => ({
-  getBackendStrandSummary: async ({ teamId }: { teamId: string }) => ({ teamId, backends: [] }),
-}));
 mock.module('@/lib/default-roles', () => ({ seedDefaultRolesForTeam: async () => {} }));
 
 const teamRow = (id: string) => ({ id, name: `Team ${id}`, slug: id, plan: 'free' });
@@ -61,7 +58,6 @@ const membersRoute = await import('./[id]/members/route');
 const memberRoute = await import('./[id]/members/[userId]/route');
 const invitationsRoute = await import('./[id]/invitations/route');
 const invitationRoute = await import('./[id]/invitations/[invitationId]/route');
-const readinessRoute = await import('./[id]/backend-readiness/route');
 const acceptRoute = await import('../invitations/[token]/accept/route');
 const connectRoute = await import('../connectors/[id]/connect/route');
 
@@ -130,8 +126,4 @@ describe('API keys can read their own team only', () => {
     expect((await membersRoute.GET(req('GET'), p({ id: '33333333-3333-4333-8333-333333333333' }))).status).toBe(404);
   });
 
-  it('GET /api/teams/[id]/backend-readiness is scoped to the key team', async () => {
-    expect((await readinessRoute.GET(req('GET'), p({ id: '11111111-1111-4111-8111-111111111111' }))).status).toBe(200);
-    expect((await readinessRoute.GET(req('GET'), p({ id: '33333333-3333-4333-8333-333333333333' }))).status).toBe(404);
-  });
 });

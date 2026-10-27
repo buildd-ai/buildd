@@ -25,13 +25,15 @@
 import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
-import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import type { WorkspaceGitConfig, WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { findBlockingPr, isDownstreamOf } from '@buildd/core/path-overlap';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
+import { isCandidateShapedReleasePr, releaseCandidateConflictRefusal } from '@/lib/release-candidate-ci';
+import { releaseCandidatePolicy } from '@buildd/core/release-candidate';
 import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import type { SemanticAssessment } from '@/lib/semantic-refresh';
 import type { BranchUpdateFailure } from '@/lib/pr-branch-update';
@@ -651,6 +653,11 @@ export interface DispatchConflictRetryResult {
   /** The PR belongs to a dependency bot — nothing was pushed or filed. */
   dependencyBot?: boolean;
   /**
+   * The PR is a frozen release candidate (release/vX.Y.Z → prodBranch): nothing
+   * was pushed or filed. Holds the refusal, which names the amend flow.
+   */
+  releaseCandidate?: string;
+  /**
    * Behind-only refresh outcomes that are NOT conflicts (base-refresh.ts). None
    * spawns an agent. Deliberately distinct from `exhausted`, which callers
    * escalate as an exhausted conflict-fix budget.
@@ -757,6 +764,24 @@ export function kernelConflictOutcome(seen: ConflictSeen): DispatchConflictRetry
       : { dispatched: false, refreshInFlight: true, kernel };
   }
   return { dispatched: false, kernel };
+}
+
+/**
+ * The refusal for a PR shaped like a frozen release candidate, else null. Read
+ * only for a workspace that cuts candidates. A failed PR read reads as not a
+ * candidate: every later step needs GitHub too.
+ */
+async function releaseCandidateRefusal(
+  params: Pick<DispatchConflictRetryParams, 'prNumber' | 'repoFullName'>,
+  workspace: { releaseConfig?: WorkspaceReleaseConfig | null; githubInstallation?: { installationId: number } | null },
+): Promise<string | null> {
+  const config = workspace.releaseConfig ?? null;
+  const policy = releaseCandidatePolicy(config);
+  const installationId = workspace.githubInstallation?.installationId;
+  if (!installationId || !policy) return null;
+  const pr = await githubApi(installationId, `/repos/${params.repoFullName}/pulls/${params.prNumber}`).catch(() => null);
+  const refs = { headRef: pr?.head?.ref ?? null, baseRef: pr?.base?.ref ?? null };
+  return isCandidateShapedReleasePr(config, refs) ? releaseCandidateConflictRefusal(params.prNumber, policy.sourceBranch) : null;
 }
 
 /** The kernel door: T12 for a kernel-owned PR, null when legacy owns it. */
@@ -951,6 +976,15 @@ export async function dispatchConflictRetry(
   if (!workspace) {
     console.warn(`[conflict-retry] workspace ${workspaceId} not found — skipping dispatch`);
     return { dispatched: false };
+  }
+
+  // A frozen release candidate is never refreshed or conflict-fixed on its
+  // branch: any push the release workflow did not make un-candidates it. Ahead
+  // of the kernel door and of a person's tap, which would push to it too.
+  const candidate = await releaseCandidateRefusal(params, workspace);
+  if (candidate) {
+    console.log(`[conflict-retry] ${candidate}`);
+    return { dispatched: false, releaseCandidate: candidate };
   }
 
   // The workflow kernel owns the conflict family for its PRs (spec §6.7): the

@@ -4,8 +4,8 @@
  * workers.cost_usd), today and this month in the team's timezone.
  *
  * Agent runs are attributed to the person who created the run's mission; runs
- * with no mission have no person and are reported as unattributed. On a
- * subscription seat, agent-run cost is the SDK's virtual figure, not a bill.
+ * with no mission have no person and are reported as unattributed. Only real
+ * (per-token) cost counts; a subscription login's virtual figure is not a bill.
  */
 
 import { sql, type SQL } from 'drizzle-orm';
@@ -68,6 +68,7 @@ export function agentSpendSql(w: Window): SQL {
     from "workers" w join "workspaces" ws on ws."id" = w."workspace_id"
     left join "tasks" t on t."id" = w."task_id" left join "missions" ms on ms."id" = t."mission_id"
     where ws."team_id" = ${w.teamId}
+      and w."cost_basis" = 'real'
       and ${at} >= ${w.monthStart.toISOString()}::timestamptz
     group by ms."created_by_user_id"
   `;

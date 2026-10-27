@@ -120,3 +120,21 @@ describe('a broad claim keeps the provider limits that have not lifted', () => {
     expect(store.recordBroad({ at: NOW, reason: 'claimed' }).walls).toEqual([wall]);
   });
 });
+
+describe('broad claim deferredTasks (parallelism limits R-14)', () => {
+  test('outcomeFromDiagnostics keeps them; the store records a per-task outcome for each', () => {
+    const o = outcomeFromDiagnostics({ reason: 'all_candidates_deferred', deferredTasks: [{ taskId: 'a', code: 'role_env_unsatisfied' }, { taskId: 'b', code: 'path_overlap', until: '2099-01-01T00:00:00.000Z' }] } as any, NOW);
+    expect(o.deferredTasks).toHaveLength(2);
+    const store = new ClaimOutcomeStore();
+    store.recordBroad(o);
+    const snap = store.snapshot(NOW);
+    expect(snap.tasks.a).toMatchObject({ exclusion: 'role_env_unsatisfied', reason: 'all_candidates_deferred' });
+    expect(snap.tasks.b).toMatchObject({ exclusion: 'path_overlap', until: '2099-01-01T00:00:00.000Z' });
+  });
+
+  test('without deferredTasks nothing is recorded', () => {
+    const store = new ClaimOutcomeStore();
+    store.recordBroad(outcomeFromDiagnostics({ reason: 'all_candidates_deferred', deferrals: { path_overlap: 1 } } as any, NOW));
+    expect(store.snapshot(NOW).tasks).toEqual({});
+  });
+});

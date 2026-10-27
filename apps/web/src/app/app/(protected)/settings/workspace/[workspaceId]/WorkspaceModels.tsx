@@ -1,9 +1,9 @@
 import ModelProvidersClient from '../../providers/ModelProvidersClient';
 import { loadSettingsContext } from '../../_lib/settings-context';
-import { NO_PERMISSIONS, teamIdsHolding } from '../../_lib/settings-permissions';
+import { NO_PERMISSIONS } from '../../_lib/settings-permissions';
 
 /**
- * Settings › Workspace › Models: this workspace's own model keys and sign-ins,
+ * Settings › Workspace › Models: this workspace's own model keys,
  * the one place a workspace override is set (the team Models page only names
  * which workspaces have one). "Uses team settings" until an admin overrides.
  */
@@ -18,13 +18,6 @@ export default async function WorkspaceModels({ workspaceId, teamId }: { workspa
       workspaceId={workspaceId}
       isAdmin={perms.manage_inference_providers}
       workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
-      signIns={{
-        workspaces,
-        currentTeamId: teamId,
-        manageableTeamIds: teamIdsHolding(permsByTeam, 'manage_team_credentials'),
-        canManage: perms.manage_team_credentials,
-        canManageRouting: perms.manage_team_settings,
-      }}
     />
   );
 }

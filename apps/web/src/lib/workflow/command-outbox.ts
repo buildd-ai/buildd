@@ -44,6 +44,7 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   // A person or an agent asked and got the 503: they ask again, and the landing sweep re-drives an approved PR.
   land: false,
   apply_recommendation: false,
+  land_escalated: false,
   policy_merge: false,
   request_review: false,
   request_ci_retry: false,
@@ -82,6 +83,8 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   observe_ci_green: true,
   // The runner reports a reviewer's verdict once, in its completion PATCH.
   record_review_verdict: true,
+  // A capture task's end is reported once, like a reviewer's verdict: nothing else re-sends it.
+  record_capture_evidence: true,
   adopt_review_verdict: true,
   // Never: the claim it revalidates is rolled back to pending when unanswered and claimed afresh on the
   // next poll, under a new key. Re-sending the old one would claim a fix for a claim that moved on.

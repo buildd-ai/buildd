@@ -23,7 +23,7 @@
  */
 import type { ApplyDecision, AttemptOp, Command, EffectKind, FindingOp, RecordOnly, RoundOp } from '../commands';
 import { effectRetry } from '../effects';
-import { holdsLane, LANE_PARKED_OUTCOME } from '../landing-lane';
+import { holdsLane, refreshTakesLane, LANE_MAX_TENURE_MS, LANE_PARKED_OUTCOME } from '../landing-lane';
 import { MERGE_HELD_OUTCOME } from '../merge-hold';
 import type {
   ClaimedEffect, DeliveryRef, EffectAuthority, EffectSnapshot, FactInsert, FollowupEffect, LaneKey, Store, StoredFact, TransitionWrite,
@@ -387,9 +387,13 @@ export class MemoryStore implements Store {
 
   // ── Landing lane ─────────────────────────────────────────────────────────
 
+  private attemptsOf(deliveryId: string): Array<{ family: string; status: string }> {
+    return this.attempts.filter((a) => a.deliveryId === deliveryId);
+  }
+
   private laneHolds(l: LaneRecord): boolean {
     const d = this.deliveries.get(l.deliveryId);
-    return ms(l.leaseUntil) > this.clock.ms() && !!d && holdsLane(d);
+    return ms(l.leaseUntil) > this.clock.ms() && ms(l.grantedAt) + LANE_MAX_TENURE_MS > this.clock.ms() && !!d && holdsLane(d, this.attemptsOf(l.deliveryId));
   }
 
   async acquireLane(k: LaneKey & { deliveryId: string; headSha: string; holdMs: number }): Promise<boolean> {
@@ -402,7 +406,7 @@ export class MemoryStore implements Store {
       return true;
     }
     if (cur.deliveryId !== k.deliveryId && this.laneHolds(cur)) return false;
-    this.lanes.set(key, { ...cur, deliveryId: k.deliveryId, headSha: k.headSha, grantedAt: cur.deliveryId === k.deliveryId ? cur.grantedAt : now, leaseUntil });
+    this.lanes.set(key, { ...cur, deliveryId: k.deliveryId, headSha: k.headSha, grantedAt: cur.deliveryId === k.deliveryId && ms(cur.leaseUntil) > this.clock.ms() ? cur.grantedAt : now, leaseUntil });
     return true;
   }
 
@@ -427,7 +431,7 @@ export class MemoryStore implements Store {
       .filter((e) => {
         const d = this.deliveries.get(e.deliveryId);
         return e.kind === 'refresh_branch' && e.status === 'pending' && (e.outcome ?? '').startsWith(LANE_PARKED_OUTCOME)
-          && d?.repoFullName === k.repoFullName && d?.baseRef === k.baseRef;
+          && d?.repoFullName === k.repoFullName && d?.baseRef === k.baseRef && refreshTakesLane(d, this.attemptsOf(e.deliveryId));
       })
       .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || a.seq - b.seq)[0];
     if (!next) return null;
@@ -481,6 +485,7 @@ function applyRoundOps(rounds: Array<RoundSnapshot & { deliveryId: string }>, de
     if (o.set.failureCount !== undefined) r.failureCount = o.set.failureCount;
     if (o.set.clearReviewer) r.reviewerTaskId = null;
     if (o.set.endReason !== undefined) r.endReason = o.set.endReason;
+    if (o.set.budgetFree !== undefined) r.budgetFree = o.set.budgetFree;
   }
 }
 
@@ -529,6 +534,7 @@ function applyFindingOps(findings: Array<FindingSnapshot & { deliveryId: string;
         deliveryId, seq: seq(), id: o.id, originRoundId: o.originRoundId, originRound: o.originRound, originHeadSha: o.originHeadSha,
         ordinal: o.ordinal, path: o.path, line: o.line, title: o.title, required: o.required, status: 'open', lastRound: o.originRound,
         addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+        remedyClass: o.remedyClass ?? 'code_fix', restatedCount: 0, evidence: o.evidence ?? null,
       });
       continue;
     }
