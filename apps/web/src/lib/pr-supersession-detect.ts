@@ -1071,6 +1071,40 @@ export function prRefsIn(text: string | null | undefined, defaultRepo: string): 
  * Each is then scanned in full, so an edge is still recorded only when the content verifies.
  * Never throws.
  */
+/**
+ * Find closed-unmerged PRs from task-lineage relationships that may be superseded
+ * by a merged PR. Returns taskIds of related tasks whose workers' closed PRs should
+ * be nominated for supersession when the merged PR's task merged.
+ */
+async function findTaskLineageForSupersession(taskId: string): Promise<string[]> {
+  const relatedTasks: string[] = [taskId];
+
+  // Find the task's parent and children to include all related attempts
+  const task = await db.query.tasks.findFirst({
+    where: sqlWhere(eq(tasks.id, taskId)),
+    columns: { parentTaskId: true, taskClass: true },
+  });
+
+  if (!task) return relatedTasks;
+
+  // If this is an attempt task, add its parent (the task it's an attempt of)
+  if (task.parentTaskId) {
+    relatedTasks.push(task.parentTaskId);
+  }
+
+  // Find all attempt children of this task (tasks where parentTaskId = taskId and taskClass='attempt')
+  const children = await db.query.tasks.findMany({
+    where: sqlWhere(and(eq(tasks.parentTaskId, taskId), sql`${tasks.taskClass} = 'attempt'`)),
+    columns: { id: true },
+  });
+
+  for (const child of children) {
+    relatedTasks.push(child.id);
+  }
+
+  return relatedTasks;
+}
+
 export async function rescanOnMerge(p: {
   workspaceId: string;
   repoFullName: string;
@@ -1096,9 +1130,14 @@ export async function rescanOnMerge(p: {
       sql`${workers.supersessionScan}->'suggestion'->>'prNumber' = ${String(p.prNumber)}`,
       sql`lower(${workers.supersessionScan}->'suggestion'->>'repo') = ${repo.toLowerCase()}`,
     );
+
+    // Find task-lineage related tasks (parent, children) whose closed PRs should be nominated
+    const relatedTaskIds = p.taskId ? await findTaskLineageForSupersession(p.taskId) : [];
+
     const nominee = or(
       and(eq(workers.workspaceId, p.workspaceId), or(suggestedThis, ...(named.length ? [inArray(workers.prUrl, named)] : []))),
       ...(missionId ? [eq(tasks.missionId, missionId)] : []),
+      ...(relatedTaskIds.length ? [inArray(tasks.id, relatedTaskIds)] : []),
     );
     const rows = await db
       .select({ id: workers.id, prUrl: workers.prUrl, missionId: tasks.missionId })
