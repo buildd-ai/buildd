@@ -24,6 +24,12 @@ describe('pinnedFixDescription', () => {
     expect(d).toContain('structuredOutput.noopEvidence');
     expect(d.indexOf('## Background: the original task')).toBeGreaterThan(d.indexOf('## When it is done'));
   });
+  test('a review fix must pass the type check and build before it pushes', () => {
+    const d = pinnedFixDescription({ ...base, owner: { description: null } });
+    expect(d).toContain('## Before you push');
+    expect(d).toContain('bun run type-check');
+    expect(d.indexOf('## Before you push')).toBeLessThan(d.indexOf('## When it is done'));
+  });
   test('a coordination or bookkeeping owner\'s description is never copied', () => {
     for (const owner of [{ description: 'It performs no work of its own.', kind: 'coordination' }, { description: 'It performs no work of its own.', category: 'bookkeeping' }]) {
       const d = pinnedFixDescription({ ...base, owner });
