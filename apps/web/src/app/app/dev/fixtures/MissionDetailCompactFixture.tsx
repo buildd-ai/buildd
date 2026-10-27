@@ -96,6 +96,7 @@ export default function MissionDetailCompactFixture() {
               decisions={fixture.decisions}
               history={fixture.history}
               expectedMinutes={fixture.expectedMinutes ?? undefined}
+              verify={fixture.verify ?? null}
               {...link}
             />,
           )}
