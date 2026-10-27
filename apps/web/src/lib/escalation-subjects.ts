@@ -120,7 +120,11 @@ export function prSubjectFor(i: PrSubjectInput): GatedSubject {
     : i.approved ? 'approved_needs_merge'
     : 'human_tier';
   const prState = i.kernel?.prState ?? null;
-  const conflict = prState === 'conflict' || (!prState && i.lifecycle === 'conflict');
+  // A PR with conflict_fixes_spent still has a conflict (that's why the fixes were spent).
+  // The kernel's prState may be 'awaiting_ci' if mergeable hasn't been re-read on the new
+  // head yet after a conflict-fix push, so we also check the why (task c73af3d3).
+  const conflict = prState === 'conflict' || (!prState && i.lifecycle === 'conflict')
+    || (why === 'conflict_fixes_spent');
   const subject: EscalationSubject = {
     key: i.prNumber != null ? `pr:${i.workspaceId}:${i.prNumber}` : `task:${i.taskId ?? 'none'}`,
     workspaceId: i.workspaceId,

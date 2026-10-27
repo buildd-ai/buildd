@@ -205,6 +205,9 @@ export function escalationRule(s: EscalationSubject): EscalationVerdict | null {
   if (s.missionPrRole === 'ship' && (s.why === 'reviewer_escalated' || s.why === 'review_exhausted')) return person('mission_ship_escalation');
 
   if (s.landingStranded || (s.handoffCause && STRANDED_CAUSES.has(s.handoffCause))) return buildd('retry_landing');
+  // When conflict fixes are spent and there's a conflict, don't wait for CI — escalate.
+  // The conflict can't be fixed by Buildd anymore, so a person needs to decide next steps.
+  if (s.why === 'conflict_fixes_spent' && s.conflict) return person('no_next_step');
   if (s.ci === 'running' || s.ci === 'unknown') return buildd('wait_ci');
   if (isPolicyMerge(s)) return buildd('policy_merge');
   return isReviewerConcern(s) ? null : person('no_next_step');

@@ -89,6 +89,31 @@ describe('prSubjectFor', () => {
     expect(prSubjectFor(input({ lifecycle: 'conflict', conflictFixesSpent: true })).why).toBe('conflict_fixes_spent');
     expect(escalationRule(prSubjectFor(input({ lifecycle: 'conflict' })))).toMatchObject({ action: 'conflict_fix' });
   });
+
+  it('ESCALATED + head moved + checks complete does not stay "wait_ci"', () => {
+    // Scenario: PR #5500 is ESCALATED with conflict_fixes_spent. A conflict-fix push
+    // happens on 2026-10-24. GitHub checks completed but haven't been re-read on the new
+    // head (>1h stale). ciStateOf returns 'unknown' because the kernel's prState is
+    // 'awaiting_ci' (mergeable not yet re-read on new head). The escalation rule should
+    // not page the owner as 'wait_ci' — conflicts can't be fixed again, so it goes to person.
+    const headSha = 'new-conflict-fix-push';
+
+    const s = prSubjectFor(input({
+      escalated: { reason: 'Automatic conflict fixes were used up' },
+      conflictFixesSpent: true,
+      headSha,
+      // Kernel says awaiting_ci because mergeable hasn't been re-read on new head
+      kernel: { stateReason: 'conflict_fixes_spent', prState: 'awaiting_ci', detail: null, headline: null },
+      // CI reads are stale (recorded on old head, not current head)
+      lifecycle: null, // Not set when kernel owns it
+    }));
+
+    const rule = escalationRule(s);
+    // The escalation should not be 'wait_ci' — conflict fixes are all spent, so it escalates to person.
+    // Before the fix, this incorrectly returned 'wait_ci' because s.ci === 'unknown'.
+    expect(rule.owner).toBe('person');
+    expect(rule.rail).toBe('no_next_step');
+  });
 });
 
 describe('prSubjectFor: data migrations', () => {
