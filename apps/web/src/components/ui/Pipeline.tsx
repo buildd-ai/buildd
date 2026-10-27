@@ -95,14 +95,14 @@ export default function Pipeline({ deliveries, layout = 'stack', hrefFor, classN
       data-layout={layout}
       className={`grid w-full text-text-primary ${row
         ? 'grid-cols-[120px_repeat(3,minmax(0,1fr))] border-y border-border-default'
-        : 'grid-cols-[56px_repeat(3,minmax(0,1fr))] items-end'} ${className}`}
+        : 'grid-cols-[56px_repeat(3,minmax(0,1fr))] items-start'} ${className}`}
     >
       {PIPELINE_STAGES.map(stage => {
         const group = groups[stage];
         const queued = stage === 'queued';
         const href = hrefFor?.(stage);
         const cellClass = queued
-          ? `flex min-h-11 ${row ? 'items-center py-4' : 'items-end'}`
+          ? `flex min-h-11 ${row ? 'items-center py-4' : 'items-start'}`
           : `flex min-h-11 min-w-0 border-l border-border-default ${row ? 'flex-row flex-wrap items-center gap-x-3.5 gap-y-1.5 px-5 py-4' : 'flex-col gap-1.5 px-2.5'}`;
         const body = (
           <>
