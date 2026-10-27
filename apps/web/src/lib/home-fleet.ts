@@ -22,6 +22,7 @@ import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHe
 import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
+import { helperRunSql, helperHostTaskSql } from './helper-run-sql';
 import { deriveRunEvidence } from '@buildd/core/run-evidence';
 import { homeQuestionView } from './home-attention';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
@@ -115,6 +116,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
         prNumber: workers.prNumber, error: workers.error, modelRoute: workers.modelRoute,
         taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
+        helper: helperRunSql(), hostTaskId: helperHostTaskSql(),
       })
       .from(workers)
       .leftJoin(tasks, eq(workers.taskId, tasks.id))
@@ -127,7 +129,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber, error: r.error, modelRoute: r.modelRoute,
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
-      roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
+      roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass, helper: r.helper, hostTaskId: r.hostTaskId,
     } : null,
   }));
   return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS });
@@ -247,6 +249,7 @@ export async function loadHomeFleet(input: {
         outputRequirement: tasks.outputRequirement,
         taskStatus: tasks.status, taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
+        helper: helperRunSql(), hostTaskId: helperHostTaskSql(),
       })
       .from(workers)
       .leftJoin(tasks, eq(workers.taskId, tasks.id))
@@ -271,7 +274,7 @@ export async function loadHomeFleet(input: {
     phase: deriveRunEvidence(r).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
-      roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
+      roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass, helper: r.helper, hostTaskId: r.hostTaskId,
     } : null,
   }));
   // Lanes: runs inside the window (plus every live one).
