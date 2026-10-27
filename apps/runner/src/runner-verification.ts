@@ -97,9 +97,12 @@ export async function runVerificationCommand(opts: {
   command: string;
   cwd: string;
   timeoutMs?: number;
+  /** How each stream is cut down to an excerpt; the head by default. */
+  excerpt?: (text: string) => string;
 }): Promise<VerificationEvidence> {
   const { workerId, iteration, command, cwd } = opts;
   const timeoutMs = opts.timeoutMs ?? VERIFICATION_COMMAND_TIMEOUT_MS;
+  const cut = opts.excerpt ?? ((text: string) => truncateExcerpt(text));
 
   const base: Omit<VerificationEvidence, 'outcome'> = {
     workerId,
@@ -122,8 +125,8 @@ export async function runVerificationCommand(opts: {
       ...base,
       exitCode: 0,
       durationMs,
-      stdout: truncateExcerpt(stdout ?? ''),
-      stderr: truncateExcerpt(stderr ?? ''),
+      stdout: cut(stdout ?? ''),
+      stderr: cut(stderr ?? ''),
       outcome: 'ok',
     };
   } catch (err: unknown) {
@@ -148,8 +151,8 @@ export async function runVerificationCommand(opts: {
         ...base,
         exitCode: e.code,
         durationMs,
-        stdout: truncateExcerpt(e.stdout?.toString?.() ?? ''),
-        stderr: truncateExcerpt(e.stderr?.toString?.() ?? ''),
+        stdout: cut(e.stdout?.toString?.() ?? ''),
+        stderr: cut(e.stderr?.toString?.() ?? ''),
         outcome: 'failed',
       };
     }

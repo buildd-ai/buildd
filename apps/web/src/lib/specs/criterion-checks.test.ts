@@ -14,7 +14,7 @@ let body: string;
 let serverOk: boolean;
 let batches: any[];
 const db = {
-  select: () => ({ from: () => ({ where: () => ({ limit: async () => reads.shift() ?? [] }) }) }),
+  select: () => ({ from: () => ({ where: () => { const limit = async () => reads.shift() ?? []; return { limit, orderBy: () => ({ limit }) }; } }) }),
   query: {
     missions: { findFirst: async () => ({ workspaceId: 'ws', goalCriteria: [selected] }) },
     specs: { findFirst: async () => ({ metadata }) },
@@ -25,13 +25,16 @@ const db = {
 mock.module('@buildd/core/db', () => ({ db }));
 mock.module('./pin', () => ({ readPinnedSpecRevision: async () => ({ ok: true, body }) }));
 mock.module('./outcome', () => ({ recordCheckVerdict: async (...args: unknown[]) => { taskWrites.push(args); return { ok: true }; } }));
+let faults: any[] = [];
+mock.module('./checker-fault', () => ({ reportCheckerFault: async (f: unknown) => { faults.push(f); return { signature: 's', taskId: null, appended: false }; } }));
 
 const { dispatchCriterionChecks, handleCriterionCheckOutcome, registerMissionVerdictRecorder, shouldFileMissionRun } = await import('./criterion-checks');
 registerMissionVerdictRecorder(async (...args: unknown[]) => { missionWrites.push(args); return serverOk ? { ok: true } : { ok: false, error: 'stale integrated target' }; });
+const batchCtx = (b: any) => JSON.parse((b[1].queryChunks as unknown[]).find((c): c is string => typeof c === 'string' && c.includes('"checks"'))!);
 const subject = () => ({ workspaceId: 'ws', missionId: 'mission', creationSource: 'orchestrator', context: { finalVerification: { missionId: 'mission', specRevisionId: 'revision' } } });
 const run = () => ({ id: ID, workspaceId: 'ws', status: 'completed', creationSource: 'orchestrator', context: { specCriterionCheck: { subjectTaskId: SUBJECT, specRevisionId: 'revision', criterionId: 'AC-1', headSha: SHA, command: COMMAND } }, loopConfig: { exitCondition: { type: 'command', command: checkCommandAt(COMMAND, SHA) } } });
 beforeEach(() => {
-  reads = []; missionWrites = []; taskWrites = []; batches = []; serverOk = true;
+  reads = []; missionWrites = []; taskWrites = []; batches = []; faults = []; serverOk = true;
   metadata = { verified_by: { 'AC-1': ['apps/web/src/lib/acceptance.test.ts'] } };
   selected = { type: 'living_spec', specId: 'spec', specRevisionId: 'revision', contentHash: 'hash', revision: 1 };
   body = 'AC-1: Works.\nAC-2: Also works.\n check: bun run other\n';
@@ -51,13 +54,12 @@ describe('runner checks on the merged mission result', () => {
     metadata = { verified_by: { 'AC-2': ['apps/web/src/lib/acceptance.test.ts'] } };
     reads = [[subject()], []];
     expect(await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} })).toEqual({ dispatched: 1 });
-    const ctx = JSON.parse((batches[0][1].queryChunks as unknown[]).find((c): c is string => typeof c === 'string' && c.includes('verificationCommand'))!);
-    expect(ctx.specCriterionCheck).toMatchObject({ criterionId: 'AC-2', command: 'bun run other' });
+    expect(batchCtx(batches[0]).specCriterionBatch.checks).toEqual([expect.objectContaining({ criterionId: 'AC-2', command: 'bun run other' })]);
   });
   it('keys a mission run by the mission, so a second final verification of the same target reuses the first one\'s run', async () => {
     selected.criteria = ['AC-1'];
     const OTHER = '00000000-0000-4000-8000-000000000003';
-    const keysOf = (b: any) => (b[1].queryChunks as unknown[]).filter((c): c is string => typeof c === 'string' && c.includes('specCriterionCheck') && !c.includes('verificationCommand'));
+    const keysOf = (b: any) => (b[1].queryChunks as unknown[]).filter((c): c is string => typeof c === 'string' && c.includes('specCriterionBatch') && !c.includes('"checks"'));
     reads = [[subject()], []];
     await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} });
     reads = [[subject()], []];
@@ -65,11 +67,10 @@ describe('runner checks on the merged mission result', () => {
     expect(batches).toHaveLength(2);
     const [first, second] = batches.map(keysOf);
     expect(first).toEqual(second);
-    const key = JSON.parse(first[0]).specCriterionCheck;
-    expect(key).toEqual({ missionId: 'mission', specRevisionId: 'revision', criterionId: 'AC-1', headSha: SHA, command: COMMAND });
+    const key = JSON.parse(first[0]).specCriterionBatch;
+    expect(key).toEqual({ missionId: 'mission', specRevisionId: 'revision', headSha: SHA, commandSet: expect.stringMatching(/^[0-9a-f]{16}$/) });
     // The run still names who filed it, for the outcome handler to re-read the selection through.
-    const ctx = JSON.parse((batches[1][1].queryChunks as unknown[]).find((c): c is string => typeof c === 'string' && c.includes('verificationCommand'))!);
-    expect(ctx.specCriterionCheck).toMatchObject({ subjectTaskId: OTHER, missionId: 'mission' });
+    expect(batchCtx(batches[1]).specCriterionBatch).toMatchObject({ subjectTaskId: OTHER, missionId: 'mission' });
   });
   it('refuses a mission run whose marker names another mission', async () => {
     const r = run();
@@ -164,5 +165,89 @@ describe('a mission check at a new head', () => {
     expect(shouldFileMissionRun([run({ concluded: true, targetKey: 'merges:a,b' })], HEAD2, 'merges:a,b')).toBe(false);
     expect(shouldFileMissionRun([run({ concluded: true })], HEAD2, 'merges:a,b')).toBe(false);
     expect(shouldFileMissionRun([run({ concluded: true, targetKey: 'merges:a' })], HEAD2, 'merges:a,b')).toBe(true);
+  });
+});
+
+describe('one batched run per mission target (R-81)', () => {
+  const CHECKS = [
+    { criterionId: 'AC-1', command: COMMAND, timeoutMs: 180_000 },
+    { criterionId: 'AC-2', command: 'bun run other', timeoutMs: 600_000 },
+  ];
+  const batchRun = (over: Record<string, unknown> = {}) => ({
+    id: ID, workspaceId: 'ws', status: 'completed', creationSource: 'orchestrator', loopConfig: null, result: null,
+    context: { specCriterionBatch: { subjectTaskId: SUBJECT, missionId: 'mission', specRevisionId: 'revision', headSha: SHA, commandSet: 'set', checks: CHECKS } },
+    ...over,
+  });
+  const report = (results: unknown[], over: Record<string, unknown> = {}) => ({ reportedVia: 'runner', conditionType: 'criterion_batch', workerId: 'w', headSha: SHA, checkout: 'ok', results, ...over });
+  const ok = (criterionId: string, command: string, durationMs = 4_100) => ({ criterionId, command, outcome: 'ok', exitCode: 0, durationMs, stdout: ' 17 pass\n 0 fail' });
+
+  it('one mission target with N criteria files one run, with no agent and a timeout per criterion', async () => {
+    reads = [[subject()], []];
+    const woke: Array<{ title: string }> = [];
+    expect(await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'mission/x' }, { wake: async (t) => { woke.push(t); } })).toEqual({ dispatched: 1 });
+    expect(batches).toHaveLength(1);
+    expect(woke).toHaveLength(1);
+    expect(woke[0].title).toBe(`Check spec criteria (2) at ${SHA.slice(0, 7)}`);
+    const ctx = batchCtx(batches[0]);
+    expect(ctx.specCriterionBatch.checks.map((c: any) => c.criterionId).sort()).toEqual(['AC-1', 'AC-2']);
+    // Commands run as written: the runner checks the head out once for all of them.
+    expect(ctx.specCriterionBatch.checks.find((c: any) => c.criterionId === 'AC-1').command).toBe(COMMAND);
+    for (const c of ctx.specCriterionBatch.checks) expect(c.timeoutMs).toBeGreaterThan(60_000);
+    // No loop: the runner, not an agent, completes it.
+    expect(ctx.verificationCommand).toBeUndefined();
+    const params = (batches[0][1].queryChunks as unknown[]).filter((c): c is string => typeof c === 'string');
+    expect(params.some((c) => c.includes('exitCondition'))).toBe(false);
+  });
+
+  it('records N verdicts from one runner report, a 4s pass included', async () => {
+    reads = [[batchRun()], [subject()], []];
+    const r = await handleCriterionCheckOutcome(ID, report([ok('AC-1', COMMAND), { criterionId: 'AC-2', command: 'bun run other', outcome: 'failed', exitCode: 1, durationMs: 2_000, stdout: '(fail) AC-2: x' }]));
+    expect(r).toMatchObject({ recorded: true, verdicts: { 'AC-1': 'pass', 'AC-2': 'fail' } });
+    expect(missionWrites.map(([m, i]) => [m, i.criterionId, i.verdict, i.headSha, i.recordedBy])).toEqual([
+      ['mission', 'AC-1', 'pass', SHA, `check:${ID}`],
+      ['mission', 'AC-2', 'fail', SHA, `check:${ID}`],
+    ]);
+    expect(missionWrites[0][1].evidence).toMatchObject({ kind: 'check', verificationTaskId: ID, command: COMMAND, exitCode: 0, durationMs: 4_100, stdout: expect.stringContaining('0 fail') });
+    expect(faults).toHaveLength(0);
+  });
+
+  it('never takes the agent\'s word, nor a result for a command the run was not filed with', async () => {
+    reads = [[batchRun()], [subject()], []];
+    expect(await handleCriterionCheckOutcome(ID, report([ok('AC-1', COMMAND)], { reportedVia: 'task_token' }))).toMatchObject({ recorded: false });
+    reads = [[batchRun()], [subject()], []];
+    expect(await handleCriterionCheckOutcome(ID, report([ok('AC-1', 'true'), ok('AC-2', 'bun run other')]))).toMatchObject({ recorded: true, verdicts: { 'AC-2': 'pass' } });
+    expect(missionWrites.map(([, i]) => i.criterionId)).toEqual(['AC-2']);
+    reads = [[batchRun({ creationSource: 'api' })]];
+    expect((await handleCriterionCheckOutcome(ID, report([ok('AC-1', COMMAND)]))).recorded).toBe(false);
+  });
+
+  it('skips a criterion already recorded from this run', async () => {
+    reads = [[batchRun()], [subject()], [{ criterionId: 'AC-1' }]];
+    expect(await handleCriterionCheckOutcome(ID, report([ok('AC-1', COMMAND), ok('AC-2', 'bun run other')]))).toMatchObject({ recorded: true });
+    expect(missionWrites.map(([, i]) => i.criterionId)).toEqual(['AC-2']);
+  });
+
+  it('an all-inconclusive run raises the checker-fault signal', async () => {
+    reads = [[batchRun()], [subject()], []];
+    const r = await handleCriterionCheckOutcome(ID, report([
+      { criterionId: 'AC-1', command: COMMAND, outcome: 'failed', exitCode: 125, durationMs: 0 },
+      { criterionId: 'AC-2', command: 'bun run other', outcome: 'timeout', durationMs: 600_000 },
+    ]));
+    expect(r).toMatchObject({ recorded: true, verdicts: { 'AC-1': 'inconclusive', 'AC-2': 'inconclusive' }, checkerFault: 'all_inconclusive' });
+    expect(faults).toEqual([expect.objectContaining({ kind: 'all_inconclusive', missionId: 'mission', runTaskId: ID, headSha: SHA, workspaceId: 'ws' })]);
+    expect(missionWrites.every(([, i]) => i.evidence.checkerFault === 'all_inconclusive')).toBe(true);
+  });
+
+  it('a run that ended with no report at all is a checker fault too', async () => {
+    reads = [[batchRun({ status: 'failed' })], [subject()], []];
+    expect(await handleCriterionCheckOutcome(ID, undefined)).toMatchObject({ recorded: false, checkerFault: 'no_report' });
+    expect(faults).toEqual([expect.objectContaining({ kind: 'no_report' })]);
+    expect(missionWrites).toHaveLength(0);
+  });
+
+  it('a run still in flight records nothing and reports nothing', async () => {
+    reads = [[batchRun({ status: 'in_progress' })]];
+    expect((await handleCriterionCheckOutcome(ID, undefined)).recorded).toBe(false);
+    expect(faults).toHaveLength(0);
   });
 });
