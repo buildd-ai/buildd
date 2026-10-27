@@ -345,6 +345,9 @@ describe('assertion coverage over the real migration corpus', () => {
     //    conflict/collision attempt edges, with no schema assertions.
     //  - 0289_artifact_revisions_trigger: plpgsql functions and triggers only
     //    (artifact body history); its table and columns are in 0288.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(4);
+    //  - *_spec_revision_explanation_immutable: one plpgsql function and its
+    //    trigger refusing an UPDATE of spec_revisions.explanation; the column
+    //    is in the migration before it.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(5);
   });
 });
