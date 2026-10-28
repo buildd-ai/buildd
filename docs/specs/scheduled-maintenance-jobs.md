@@ -7,7 +7,7 @@ summary: The thirteen background cron routes that keep derived state, alerts and
 domain: integrations
 surfaces: [cron-manifest.json, apps/web/src/app/api/cron/orchestration-readout/route.ts, apps/web/src/app/api/cron/role-outcomes/route.ts, apps/web/src/app/api/cron/mission-summaries/route.ts, apps/web/src/app/api/cron/feedback-digest/route.ts, apps/web/src/app/api/cron/chat-retro/route.ts, apps/web/src/app/api/cron/page-budget-health/route.ts, apps/web/src/app/api/cron/experiment-health/route.ts, apps/web/src/app/api/cron/memory-digest-guardrail/route.ts, apps/web/src/app/api/cron/runner-update-notify/route.ts, apps/web/src/app/api/cron/visual-review-schedule/route.ts, apps/web/src/app/api/cron/post-session-quality/route.ts, apps/web/src/app/api/cron/stall-notify/route.ts, apps/web/src/app/api/cron/task-archive/route.ts]
 related: [external-cron-triggers, runner-liveness]
-keywords: [cron, maintenance, cron_runs, lease expiry, task archive, stall notify, role outcomes]
+keywords: [cron, maintenance, cron_runs, task archive, stall notify, role outcomes]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
