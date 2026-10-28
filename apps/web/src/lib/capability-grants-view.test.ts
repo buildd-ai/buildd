@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   accessStatusLine,
+  defaultEffectText,
   approveLabel,
   decisionResultText,
   effectsFor,
@@ -65,3 +66,11 @@ describe('decisionResultText', () => {
   });
 });
 
+
+describe('defaultEffectText for a brokered Neon read', () => {
+  it('a Neon read asks a person with no rule; other providers keep the mount default', () => {
+    expect(defaultEffectText('read', 'neon')).toBe('Ask a person');
+    expect(defaultEffectText('read', 'axiom')).toBe('Allow if the agent uses it');
+    expect(defaultEffectText('write', 'neon')).toBe('Ask a person');
+  });
+});

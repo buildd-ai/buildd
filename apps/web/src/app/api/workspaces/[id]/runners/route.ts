@@ -4,7 +4,7 @@ import { workerHeartbeats, accountWorkspaces, workspaces } from '@buildd/core/db
 import { and, eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { freeSlots, RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -77,7 +77,7 @@ export async function GET(
           lastHeartbeatAt: hb.lastHeartbeatAt,
           maxConcurrentWorkers: hb.maxConcurrentWorkers,
           activeWorkerCount: hb.activeWorkerCount,
-          capacity: freeSlots(hb.maxConcurrentWorkers, hb.activeWorkerCount),
+          capacity: Math.max(0, hb.maxConcurrentWorkers - hb.activeWorkerCount),
           environment: hb.environment,
         };
       })

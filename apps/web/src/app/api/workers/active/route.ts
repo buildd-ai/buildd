@@ -8,7 +8,7 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { listOpenWorkspaces, isOpenWithinTeams } from '@/lib/open-workspaces';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { freeSlots, workerHoldsRunnerSlot } from '@buildd/shared';
+import { workerHoldsRunnerSlot } from '@buildd/shared';
 import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
@@ -235,7 +235,7 @@ export async function GET(req: NextRequest) {
           accountName: hb.account?.name || 'Unknown',
           maxConcurrent,
           activeWorkers: effectiveActiveWorkers,
-          capacity: fleet.ephemeral ? 0 : freeSlots(hb.maxConcurrentWorkers, effectiveActiveWorkers),
+          capacity: fleet.ephemeral ? 0 : Math.max(0, hb.maxConcurrentWorkers - effectiveActiveWorkers),
           // What this runner is in the fleet: null for a long-lived runner;
           // for a `--once` run its executor and elastic group (list_runners
           // groups on it).

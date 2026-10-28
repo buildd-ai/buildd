@@ -116,11 +116,6 @@ export const RUNNER_RECENTLY_SEEN_MS = 10 * LIVENESS_PING_INTERVAL_MS;
 export const RUNNER_ONLINE_THRESHOLD_MS = 1.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 export const RUNNER_STALE_CUTOFF_MS = 2.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 
-/** Slots a runner can still take: its limit minus what is running, never negative. */
-export function freeSlots(maxConcurrent: number, active: number): number {
-  return Math.max(0, maxConcurrent - active);
-}
-
 // ─── Interactive (MCP-claimed) workers ──────────────────────────────────────
 //
 // `claim_task` from an MCP session mints a worker with `runner = 'mcp'`: a

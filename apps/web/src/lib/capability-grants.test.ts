@@ -391,3 +391,42 @@ describe('toModelInferenceGrant', () => {
     expect(toModelInferenceGrant(grant({ capability: 'model.inference', provider: 'openrouter', scope: { models: ['m1'], operations: ['decide'], budget: { ...budget, maxUsd: 1e9 } } }))).toBeNull();
   });
 });
+
+// ── database.query (brokered Neon reads) ─────────────────────────────────────
+
+describe('database.query', () => {
+  const NEON_CONN = '55555555-5555-4555-8555-555555555555';
+  const neonCand = cand({ slug: 'neon', connectorId: NEON_CONN, access: 'permitted', roles: { evaluated: { slug: 'builder', mounts: true }, withAccess: ['builder'] } });
+
+  it('{ provider: neon, access: read } resolves to the brokered read, not the Neon connector', () => {
+    const r = req({ provider: 'neon', access: 'read', reason: 'forensics' });
+    expect(r).toMatchObject({ capability: 'database.query', provider: 'neon', risk: 'read', tool: null, resource: null, environment: null });
+    expect(req({ capability: 'database.query' })).toMatchObject({ capability: 'database.query', provider: 'neon', risk: 'read' });
+    // A write, or an exact Neon tool, still goes to the connector (and a person).
+    expect(req({ provider: 'neon', access: 'write' }).capability).toBe('neon:write');
+    expect(req({ provider: 'neon', access: 'read', tool: 'run_sql' }).capability).toBe('neon:read');
+    expect(parseCapabilityRequest({ provider: 'neon', access: 'read', resource: 'secrets' }).ok).toBe(false);
+  });
+
+  it('asks a person by default, even where a role mounts the Neon connector', () => {
+    const r = resolveCapabilityRequest(ctx({ request: req({ provider: 'neon', access: 'read' }), discovery: discovery([neonCand]) }));
+    expect(r.kind).toBe('pending_approval');
+    expect(r.target).toEqual({ provider: 'neon', connectorId: null, connectorName: null });
+  });
+
+  it("the team's Neon read policy is the auto-grant setting", () => {
+    const auto = [rule({ provider: 'neon', risk: 'read', effect: 'auto_grant' })];
+    expect(resolveCapabilityRequest(ctx({ request: req({ provider: 'neon', access: 'read' }), discovery: null, rules: auto })).kind).toBe('auto_granted');
+    const forbid = [rule({ provider: 'neon', risk: 'read', effect: 'forbidden' })];
+    expect(resolveCapabilityRequest(ctx({ request: req({ provider: 'neon', access: 'read' }), discovery: null, rules: forbid })).kind).toBe('forbidden');
+  });
+
+  it('a policy grant stops when the policy goes back to ask', () => {
+    const g = grant({ capability: 'database.query', provider: 'neon', connectorId: null, risk: 'read', decidedBy: 'policy' });
+    const use = { capability: 'database.query', provider: 'neon', connectorId: null, tool: null, resource: null, environment: null, risk: 'read' as const };
+    expect(checkGrantUse(g, use, useCtx({ candidate: null, rules: [rule({ provider: 'neon', risk: 'read', effect: 'auto_grant' })] }))).toBeNull();
+    expect(checkGrantUse(g, use, useCtx({ candidate: null }))).toBe('policy_tightened');
+    expect(checkGrantUse({ ...g, decidedBy: 'human' }, use, useCtx({ candidate: null }))).toBeNull();
+    expect(checkGrantUse({ ...g, decidedBy: 'human' }, use, useCtx({ candidate: null, taskStatus: 'completed' }))).toBe('task_terminal');
+  });
+});

@@ -11,9 +11,47 @@ for *why the code is shaped that way*.
 
 ## 1. Prod DB — the only place outcomes live
 
-**Direct `psql` to Neon times out from a laptop** (5432 is not reachable; the
-sandbox is not the problem — `dangerouslyDisableSandbox` fails identically).
-Go over the neon HTTP driver instead, which is what the app itself uses.
+### As an agent: ask buildd for the read, never shell out
+
+A buildd agent (a runner worker, or a subagent of a session working a buildd
+task) reads prod through the capability broker. It never runs `neonctl`,
+`psql` or a script against a connection string it found on the machine, even
+if one is there: that is the owner's credential, nothing limits it to reads,
+and buildd never sees the request.
+
+```
+buildd action=request_capability params={ provider: "neon", access: "read", reason: "<what you are measuring>" }
+# pending_approval: keep working on the GitHub / KB parts; ask again (same request) until it is granted
+buildd action=query_database params={ sql: "select merged_at, pr_lifecycle_status from workers where task_id = $1", params: ["<task id>"] }
+```
+
+- One SELECT (or `WITH … SELECT`) per call, `$1`-style `params`, `maxRows`
+  up to 1000 (default 200; `truncated: true` means there were more — narrow
+  the query or aggregate in SQL rather than paging).
+- It reads the forensics tables only: `workflow_*`, `gate_events`, `missions`,
+  `tasks`, `workers`, `spec_outcome_verdicts`, `decision_records`,
+  `decision_outcomes`, `orchestration_decisions`. Any other table, system
+  catalogs (`information_schema`, `pg_*`) and every write are refused. Need
+  another table? Say so in a note or a PR adding it to `DATABASE_QUERY_TABLES`;
+  do not route around it.
+- Columns: read them from `packages/core/db/schema.ts`, not
+  `information_schema`.
+- Every query lands on your task's Access trail with its SQL, row count and
+  duration; the owner reads it there. Results are not recorded, so keep what
+  you need in your artifact.
+- `no_grant` answers with the exact request to make. `query_role_unconfigured`
+  means the deployment has no read-only role yet: report it, do not look for
+  another way in.
+
+Spec: `docs/specs/database-query-agent-capability.md`.
+
+### As a person, on your own machine
+
+An interactive session run by a person may still use that person's own Neon
+access; it is their credential, not an agent's grant. Direct `psql` to Neon
+times out from a laptop (5432 is not reachable; `dangerouslyDisableSandbox`
+fails identically), so go over the neon HTTP driver, which is what the app
+itself uses:
 
 ```bash
 S=<scratchpad>
@@ -25,7 +63,8 @@ bun .claude/skills/delivery-forensics/scripts/q.ts $S/dburl $S/queries.sql
 branch — never analyse from it. `vercel env pull` returns no `DATABASE_URL`.
 
 `q.ts` splits on `;\n`, prints one TSV block per statement, and prints `ERR <msg>`
-instead of aborting, so a whole batch survives one bad column name.
+instead of aborting, so a whole batch survives one bad column name. Do not
+hand this recipe to an agent you spawn: give it the broker steps above.
 
 ### Which column answers which question
 
@@ -38,7 +77,7 @@ instead of aborting, so a whole batch survives one bad column name.
 | Which remediation kind, and for which PR | `tasks.ci_retry_pr_number` / `conflict_retry_pr_number` / `reviewer_retry_pr_number` |
 | Retry rounds on one PR | `count(*)` of the above grouped by the PR number |
 | Why the worker stopped | `workers.exit_cause` (`code_failure`/`infra_failure`/`sandbox_mount_gap`/`silent_start`/`budget_limited`/`never_started`) |
-| Collision *avoidance* coverage | `path_claims` — join back to `tasks` to get the adoption rate; zero contention means low adoption, not a working lock |
+| Collision *avoidance* coverage (owner session only; not on the broker's allowlist) | `path_claims` — join back to `tasks` to get the adoption rate; zero contention means low adoption, not a working lock |
 | Mission rollup | `missions` + `tasks.mission_id` + `workers.task_id`; `missions.integration_branch_enabled`, `merge_policy` |
 
 Gotchas:
@@ -50,8 +89,9 @@ Gotchas:
   *mix* is not determinable from the DB at all. Dense substitutes: remediation
   dispatch (`tasks.*_retry_pr_number`) for "went red / conflicted", the Actions
   API for CI outcomes, and `gh` for PR size.
-- `worker_error_traces` has **no `created_at`** — check
-  `information_schema.columns` before writing a windowed query.
+- `worker_error_traces` has **no `created_at`** — check the table in
+  `packages/core/db/schema.ts` before writing a windowed query (it is outside
+  the broker's allowlist; `get_failure_analytics` serves it).
 - Retry-task *status* matters as much as count: a large `cancelled` share means
   the remediation was thrown away, not that it succeeded.
 - `tasks.title` carries the loop depth in prose (`[Conflict Retry #1] [reviewer

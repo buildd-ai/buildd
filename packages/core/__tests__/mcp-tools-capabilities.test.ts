@@ -140,3 +140,37 @@ describe('invoke_model_inference', () => {
     expect(res.content[0].text).toContain('"debitedUsd":0.005');
   });
 });
+
+describe('query_database', () => {
+  let api: ReturnType<typeof mock>;
+  beforeEach(() => { api = mock(); });
+
+  it('is a worker-level action beside request_capability, never trigger-level', () => {
+    expect(workerActions as readonly string[]).toContain('query_database');
+    expect(triggerActions as readonly string[]).not.toContain('query_database');
+    expect(mcpGroupOf('query_database')).toBe(mcpGroupOf('request_capability'));
+    expect(requiredScopeForAction('query_database')).toBe('tasks:write');
+  });
+
+  it('posts the SELECT as this worker to the broker', async () => {
+    api.mockResolvedValueOnce({ rows: [{ id: 't1' }], rowCount: 1 });
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'query_database', { sql: 'select id from tasks where status = $1', params: ['failed'], maxRows: 5 }, ctx());
+    expect(api.mock.calls[0][0]).toBe('/api/agent-capabilities/database-query');
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ workerId: '00000000-0000-0000-0000-000000000002', sql: 'select id from tasks where status = $1', params: ['failed'], maxRows: 5 });
+    expect(JSON.parse(res.content[0].text).rowCount).toBe(1);
+  });
+
+  it('needs sql, and sends nothing without it', async () => {
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'query_database', {}, ctx());
+    expect(res.isError).toBe(true);
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it('with no grant, names the request_capability call to make', async () => {
+    api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"No live database.query grant","code":"no_grant"}'));
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'query_database', { sql: 'select 1 from tasks' }, ctx());
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('no_grant');
+    expect(res.content[0].text).toContain('request_capability {"provider":"neon","access":"read"');
+  });
+});

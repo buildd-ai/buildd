@@ -85,6 +85,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   resolve_capability: 'analytics:read',
   request_capability: 'tasks:write',
   invoke_model_inference: 'tasks:write',
+  query_database: 'tasks:write',
   list_releases: 'releases', get_release: 'releases', release_status: 'releases', trigger_release: 'releases',
   manage_missions: 'missions:admin', manage_initiatives: 'missions:admin', link_tracker: 'missions:admin', get_visual_review: 'missions:admin', adjudicate_discrepancy: 'missions:admin', promote_discrepancy: 'missions:admin',
   list_skills: 'tasks:read', get_skill: 'tasks:read', register_skill: 'skills:admin', update_skill: 'skills:admin', delete_skill: 'skills:admin',
