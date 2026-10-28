@@ -214,6 +214,12 @@ timeout.** Running either without an explicit extended timeout gets it killed mi
 (SIGTERM / exit 143) before any result, which looks like a hang but isn't — set a timeout
 that covers the full run instead.
 
+In a buildd runner session the Bash tool's default timeout is raised to 10 minutes (max 30),
+and the runner refuses a `bun run test`, `type-check` or build call capped below 10 minutes by a
+`timeout N` wrapper or a short `timeout` parameter, and refuses `complete_task` while the last
+test or typecheck run failed (or was killed, exit 143) with no later pass — see
+`apps/runner/src/verify-guard.ts`. Run a targeted file instead of capping the whole suite.
+
 **On failure:** `bun run test` ends with a digest of every failing file and test name, and writes full per-file output to `.test-report.log` (gitignored). Grep that log instead of re-running the suite:
 ```bash
 grep -A30 -F 'apps/web/src/lib/foo.test.ts' .test-report.log

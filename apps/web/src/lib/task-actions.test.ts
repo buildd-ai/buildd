@@ -26,14 +26,14 @@ describe('taskActionSet', () => {
     expect(taskActionSet({ ...base, missionExecutor: 'local' })).toEqual(['claim_hint', 'run_now']);
   });
 
-  it('a failed task offers retry, the other backend and its history', () => {
-    expect(taskActionSet({ ...base, phase: 'failed' })).toEqual(['retry', 'switch_backend', 'history']);
-    expect(taskActionSet({ ...base, phase: 'failed', backend: null, hasHistory: false })).toEqual(['retry']);
+  it('a failed task offers retry, cancel, the other backend and its history', () => {
+    expect(taskActionSet({ ...base, phase: 'failed' })).toEqual(['retry', 'cancel', 'switch_backend', 'history']);
+    expect(taskActionSet({ ...base, phase: 'failed', backend: null, hasHistory: false })).toEqual(['retry', 'cancel']);
   });
 
   it('the other backend is offered only when it is not known to be unconfigured', () => {
-    expect(taskActionSet({ ...base, phase: 'failed', otherBackendAvailable: false })).toEqual(['retry', 'history']);
-    expect(taskActionSet({ ...base, phase: 'failed', otherBackendAvailable: true })).toEqual(['retry', 'switch_backend', 'history']);
+    expect(taskActionSet({ ...base, phase: 'failed', otherBackendAvailable: false })).toEqual(['retry', 'cancel', 'history']);
+    expect(taskActionSet({ ...base, phase: 'failed', otherBackendAvailable: true })).toEqual(['retry', 'cancel', 'switch_backend', 'history']);
   });
 
   it('a dependency-blocked task only says so', () => {
@@ -82,8 +82,8 @@ describe('taskActionSet with who acts next (R-20)', () => {
     expect(set).not.toContain('retry');
   });
 
-  it('a failure a person must act on keeps Retry', () => {
-    expect(taskActionSet({ ...base, phase: 'failed', trouble: { kind: 'needs_person', cause: 'auth' } })).toEqual(['retry', 'switch_backend', 'history']);
+  it('a failure a person must act on keeps Retry and offers Cancel', () => {
+    expect(taskActionSet({ ...base, phase: 'failed', trouble: { kind: 'needs_person', cause: 'auth' } })).toEqual(['retry', 'cancel', 'switch_backend', 'history']);
   });
 });
 

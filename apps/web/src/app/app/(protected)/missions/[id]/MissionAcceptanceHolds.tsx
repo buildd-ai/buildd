@@ -88,40 +88,36 @@ function AcceptanceHoldRow({
     'Accepted.',
   );
 
-  const getFileName = (path: string) => path.split('/').pop() || path;
 
   return (
     <li data-testid="acceptance-hold" className="flex min-w-0 flex-col gap-1.5 md:flex-row md:items-start md:justify-between md:gap-4">
       <div className="min-w-0">
         <p className="text-text-primary">{hold.prNumber != null ? `PR #${hold.prNumber}` : 'A pull request'} changes {hold.paths.length === 1 ? 'a test' : `${hold.paths.length} tests`}</p>
         <ul className="font-mono text-meta text-text-muted">
-          {hold.paths.map((p) => <li key={p} className="[overflow-wrap:anywhere]">{p}</li>)}
+          {hold.paths.map((p) => {
+            const url = hold.diffUrl ? buildDiffUrl(hold.diffUrl, p) : null;
+            return (
+              <li key={p} className="[overflow-wrap:anywhere]">
+                {url ? (
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid="acceptance-hold-diff"
+                    aria-label={`See changes in ${p}`}
+                    className="inline-block min-h-11 md:min-h-0 py-2.5 md:py-0 text-text-primary underline underline-offset-2 [overflow-wrap:anywhere]"
+                  >
+                    {p}
+                  </a>
+                ) : p}
+              </li>
+            );
+          })}
         </ul>
         {hold.weakened.length > 0 && (
           <ul data-testid="acceptance-hold-weakened" className="mt-1 list-disc pl-4 text-meta text-text-secondary">
             {hold.weakened.map((w) => <li key={`${w.path}:${w.text}`} className="[overflow-wrap:anywhere]">{w.text}</li>)}
           </ul>
-        )}
-        {hold.diffUrl && (
-          <div className="mt-1 flex flex-col gap-1">
-            {hold.paths.map((path) => {
-              const url = buildDiffUrl(hold.diffUrl!, path);
-              if (!url) return null;
-              const fileName = getFileName(path);
-              return (
-                <a
-                  key={path}
-                  href={url}
-                  target="_blank"
-                  rel="noreferrer"
-                  data-testid="acceptance-hold-diff"
-                  className="inline-flex min-h-11 md:min-h-0 items-center text-meta underline underline-offset-2 w-fit"
-                >
-                  See changes in {fileName}
-                </a>
-              );
-            })}
-          </div>
         )}
         {error && <p role="alert" className="mt-1 text-meta text-status-error">{error}</p>}
       </div>
