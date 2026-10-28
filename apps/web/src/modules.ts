@@ -247,6 +247,27 @@ export async function republishPrHeads(
 }
 
 /**
+ * The reviews module's auto-review of a PR buildd did not open (lib/auto-review-unowned.ts), for the
+ * GitHub PR webhook: when the workspace opts in (`mergePolicy.autoReviewUnowned`), a foreign PR asks
+ * for buildd's review through the `request_pr_review` door. Lazy, like republishPrHeads.
+ */
+export async function maybeAutoReviewUnownedPr(
+  ...args: Parameters<typeof import('@/lib/auto-review-unowned').maybeAutoReviewUnownedPr>
+): ReturnType<typeof import('@/lib/auto-review-unowned').maybeAutoReviewUnownedPr> {
+  return (await import('@/lib/auto-review-unowned')).maybeAutoReviewUnownedPr(...args);
+}
+
+/**
+ * Whether buildd has no record of a PR at all (lib/auto-review-unowned.ts), for the open-PR status:
+ * a foreign PR in a workspace that does not auto-review it carries no `Buildd / Review approval`.
+ */
+export async function isForeignPr(
+  ...args: Parameters<typeof import('@/lib/auto-review-unowned').isForeignPr>
+): Promise<boolean> {
+  return (await import('@/lib/auto-review-unowned')).isForeignPr(...args);
+}
+
+/**
  * The question gate's recover slot (lib/question-gate-check.ts): a recoverable
  * blocker an agent tried to ask about is filed as a repair task instead.
  */
