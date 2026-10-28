@@ -11,7 +11,9 @@
  */
 import { and, count, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
+import { taskEstimates, tasks, workers } from '@buildd/core/db/schema';
+import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
+import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
 import { LIVE_WORKER_STATUSES, type HealthQueueFilter, type HealthQueueResponse, type QueueWait } from '@buildd/shared';
 import { buildRunnerQueueQuery, type RunnerQueueRow } from '@/lib/claim-order-queue';
 import type { LaneRead } from '@/lib/serial-lanes-store';
@@ -44,6 +46,8 @@ export interface HealthQueueDeps {
   slots?: (teamId: string, teamWorkspaceIds: string[], now: Date) => Promise<number>;
   /** The Capacity numbers Runners shows: slots busy on online runners, slots online. */
   capacity?: (teamId: string, teamWorkspaceIds: string[], now: Date) => Promise<{ used: number; total: number }>;
+  /** Expected end (epoch ms) of each live run with a frozen estimate. */
+  runEnds?: (teamId: string, teamWorkspaceIds: string[]) => Promise<number[]>;
   /** For declared waits: who set each edge (the wait exit, inferred from files). */
   edges?: (taskIds: string[]) => Promise<Map<string, DeclaredEdges>>;
 }
@@ -118,6 +122,17 @@ async function readLive(workspaceIds: string[], missionId: string | null): Promi
   return Number(row?.n ?? 0);
 }
 
+/** When each live run is expected to end: its start plus its frozen p50, only for teams with estimates on. */
+async function readRunEnds(teamId: string, workspaceIds: string[]): Promise<number[]> {
+  if (workspaceIds.length === 0 || !(await taskEstimatesEnabled(teamId))) return [];
+  const rows = await db
+    .select({ startedAt: workers.startedAt, p50: taskEstimates.p50Minutes })
+    .from(workers)
+    .innerJoin(taskEstimates, and(eq(taskEstimates.taskId, workers.taskId), eq(taskEstimates.estimatorVersion, ESTIMATOR_VERSION)))
+    .where(and(inArray(workers.workspaceId, workspaceIds), inArray(workers.status, [...LIVE_WORKER_STATUSES])));
+  return rows.filter(r => r.startedAt).map(r => r.startedAt!.getTime() + r.p50 * 60_000);
+}
+
 async function readSlots(teamId: string, teamWorkspaceIds: string[], now: Date): Promise<number> {
   const [{ loadFleetHeartbeats }, { fleetSlotCounts, FLEET_ONLINE_WINDOW_MS }] = await Promise.all([
     import('@/lib/home-fleet'), import('@/lib/fleet-view'),
@@ -145,13 +160,14 @@ const isoOf = (v: Date | string | null | undefined): string | null => {
 export async function loadHealthQueue(input: HealthQueueInput, deps: HealthQueueDeps = {}): Promise<HealthQueueResponse> {
   const now = input.now ?? new Date();
   const missionId = input.missionId ?? null;
-  const [rowsRead, lanes, live, teamBusy, slots, capacity] = await Promise.all([
+  const [rowsRead, lanes, live, teamBusy, slots, capacity, runEnds] = await Promise.all([
     (deps.rows ?? readRows)({ workspaceIds: input.workspaceIds, limit: HEALTH_QUEUE_LIMIT }),
     (deps.lanes ?? readLanes)(input.workspaceIds, now).catch(() => null),
     (deps.live ?? readLive)(input.workspaceIds, missionId).catch(() => 0),
     (deps.live ?? readLive)(input.teamWorkspaceIds, null).catch(() => 0),
     (deps.slots ?? readSlots)(input.teamId, input.teamWorkspaceIds, now).catch(() => 0),
     (deps.capacity ?? readCapacity)(input.teamId, input.teamWorkspaceIds, now).catch(() => null),
+    (deps.runEnds ?? readRunEnds)(input.teamId, input.teamWorkspaceIds).catch(() => [] as number[]),
   ]);
   const truncated = rowsRead.length > HEALTH_QUEUE_LIMIT;
   const scoped = rowsRead.slice(0, HEALTH_QUEUE_LIMIT);
@@ -212,6 +228,7 @@ export async function loadHealthQueue(input: HealthQueueInput, deps: HealthQueue
     slots,
     capacity: capacity ?? undefined,
     teamBusy,
+    runEnds,
     tasks: taskRows,
     lanes: laneList,
     filter: input.filter,

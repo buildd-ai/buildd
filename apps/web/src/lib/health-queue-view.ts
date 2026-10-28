@@ -58,6 +58,8 @@ export interface HealthQueueViewInput {
   capacity?: { used: number; total: number };
   /** Team-wide live runs, for idle slots. */
   teamBusy: number;
+  /** Measured: when each live run is expected to end (epoch ms), from its frozen estimate. Absent or short: no estimate. */
+  runEnds?: number[];
   tasks: HealthQueueTaskInput[];
   lanes: Array<{ workspaceId: string; lane: string; members: HealthQueueLaneMemberInput[] }>;
   filter: HealthQueueFilter;
@@ -168,13 +170,18 @@ export function buildHealthQueueView(input: HealthQueueViewInput): HealthQueueRe
 
   const idle = Math.max(0, input.slots - input.teamBusy);
   let startsNow = idle;
+  const runEnds = [...(input.runEnds ?? [])].sort((a, b) => a - b);
+  let freeIdx = 0;
   // Claim order, as read (R-7, R-15): the first free slots go to the first rows.
   const readyRows = ready.slice(0, HEALTH_QUEUE_PAGE_SIZE).map(t => {
     const row = { id: t.id, title: t.title, missionTitle: t.missionTitle, createdAt: t.createdAt };
     const noRunner = t.wait?.noRunnerReason ?? null;
     if (noRunner) return { ...row, note: `No runner: ${noRunner}`, noRunner: true };
     if (startsNow > 0) { startsNow -= 1; return { ...row, note: 'Starts now', noRunner: false }; }
-    return { ...row, note: 'Next free slot', noRunner: false };
+    // The k-th row past the idle slots takes the k-th earliest end; no measured end, no time.
+    const end = runEnds[freeIdx++];
+    const note = end != null ? `Next free slot ~${queueAge(Math.max(0, end - now))}` : 'Next free slot';
+    return { ...row, note, noRunner: false };
   });
 
   const lanes = input.lanes.map(l => laneView(l, now)).filter((l): l is HealthQueueLane => !!l);
