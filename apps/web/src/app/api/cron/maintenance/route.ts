@@ -22,6 +22,10 @@
  *      schema lane.
  *   6. Serial lanes (./lanes.ts): rows for every unfinished lane task, ended
  *      holders let go, holder PR activity recorded for the stuck-lane report.
+ *   7. Spec revisions that change no criterion (lib/specs/auto-approve.ts,
+ *      spec b7fc9316 R-21): `check:no-criteria-change` over the specs already
+ *      waiting for approval. A revise runs it as it writes; this catches what
+ *      waited before that, and any revise whose check did not run.
  *
  * They live here so a deployment that schedules only the `core` cron profile
  * keeps them (cron-manifest.json, `cron:sync --profile core,ops`). On
@@ -43,6 +47,7 @@ import { sweepStaleUploads } from '@/lib/artifact-upload';
 import { removeOrphanChatAttachments } from '@/lib/artifact-attachment-cleanup';
 import { removeDetachedTeamFiles } from '@/lib/artifact-team-files';
 import { isStorageConfigured } from '@/lib/storage';
+import { sweepNoCriteriaChange } from '@/lib/specs/auto-approve';
 
 export async function GET(req: NextRequest) {
   return withCronRun('maintenance', req, report => runCronJob(report));
@@ -75,9 +80,13 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
     console.error('[maintenance] unused OAuth client sweep failed', err instanceof Error ? err.message : err);
     return 0;
   });
-  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, laneTasksSynced, uploads, chatAttachments, teamFiles, oauthClientsPruned };
+  const specsAutoApproved = await sweepNoCriteriaChange().catch((err) => {
+    console.error('[maintenance] no-criteria-change spec sweep failed', err instanceof Error ? err.message : err);
+    return { checked: 0, approved: 0, failed: 0 };
+  });
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, laneTasksSynced, uploads, chatAttachments, teamFiles, oauthClientsPruned, specsAutoApproved };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
   // Every sweep logs and swallows its own failures, so errors stays 0 here.
-  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned, errors: 0, result });
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned + specsAutoApproved.approved, errors: 0, result });
   return NextResponse.json(result);
 }

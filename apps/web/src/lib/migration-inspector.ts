@@ -13,6 +13,7 @@ import {
 } from '@/lib/migration-safety';
 import { effectiveDeltaFiles } from '@/lib/integration-refresh';
 import { pairMovedMigrations } from '@buildd/core/generated-artifacts';
+import { findMissionSchemaOverlap, openMissionBranches, type MissionBranchRef } from '@/lib/mission-schema-overlap';
 
 interface GitHubPullRequestFile {
   filename: string;
@@ -85,26 +86,26 @@ async function branchTip(installationId: number, repoFullName: string, ref: stri
 }
 
 /**
- * Trunk's current tip, when the PR targets some other branch (a mission
- * integration branch). Trunk is `trunkRef`, else the repo's default branch.
- * Undefined when the PR targets trunk itself or trunk can't be read.
+ * Trunk's name and, when the PR targets some other branch (a mission
+ * integration branch), its current tip. Trunk is `trunkRef`, else the repo's
+ * default branch. No sha when the PR targets trunk itself or trunk can't be read.
  */
-async function resolveTrunkSha(
+async function resolveTrunk(
   installationId: number,
   repoFullName: string,
   trunkRef: string | null | undefined,
   baseRef: string | undefined,
-): Promise<string | undefined> {
+): Promise<{ ref?: string; sha?: string }> {
+  let ref = trunkRef ?? undefined;
   try {
-    let ref = trunkRef ?? undefined;
     if (!ref) {
       const repo = await githubApi(installationId, `/repos/${repoFullName}`);
       ref = typeof repo?.default_branch === 'string' ? repo.default_branch : undefined;
     }
-    if (!ref || !baseRef || ref === baseRef) return undefined;
-    return await branchTip(installationId, repoFullName, ref);
+    if (!ref || !baseRef || ref === baseRef) return { ref };
+    return { ref, sha: await branchTip(installationId, repoFullName, ref) };
   } catch {
-    return undefined;
+    return { ref };
   }
 }
 
@@ -283,6 +284,11 @@ async function inspectOnce(params: {
    * the PR it supersedes (spec workflow-state-kernel §13.11 rule 5).
    */
   ignorePrNumbers?: readonly number[];
+  /**
+   * Other missions' integration branches in this repo, for the cross-mission
+   * schema check (`findMissionSchemaOverlap`). Read from the DB when omitted.
+   */
+  missionBranches?: () => Promise<readonly MissionBranchRef[]>;
 }): Promise<MigrationSafety> {
   let completeFiles: GitHubPullRequestFile[] | null = null;
   let usedDelta = false;
@@ -342,9 +348,9 @@ async function inspectOnce(params: {
       ? readFileAtRef(params.installationId, params.repoFullName, path, baseSha).catch(() => undefined)
       : Promise.resolve(undefined);
   // Trunk is read only for a migration the base does not already explain.
-  let trunkSha: Promise<string | undefined> | null = null;
-  const trunkTip = () =>
-    (trunkSha ??= resolveTrunkSha(params.installationId, params.repoFullName, params.trunkRef, base.ref));
+  let trunk: Promise<{ ref?: string; sha?: string }> | null = null;
+  const trunkTip = async () =>
+    (await (trunk ??= resolveTrunk(params.installationId, params.repoFullName, params.trunkRef, base.ref))).sha;
   const readOnTrunk = async (path: string) => {
     const sha = await trunkTip();
     return sha ? readFileAtRef(params.installationId, params.repoFullName, path, sha).catch(() => undefined) : undefined;
@@ -525,8 +531,49 @@ async function inspectOnce(params: {
     if (stale) return stale;
     const fork = await forkedFromBase(params, novelV1, baseSha);
     if (fork) return fork;
+    const hold = await sharedWithOtherMission(params, novelV1, base.ref, baseSha, () =>
+      (trunk ??= resolveTrunk(params.installationId, params.repoFullName, params.trunkRef, base.ref)));
+    if (hold && verdict.safe) return { ...verdict, hold };
   }
   return verdict;
+}
+
+/**
+ * A table, enum or column this PR adds that another open mission's integration
+ * branch already adds over trunk (see `findMissionSchemaOverlap`). Read last and
+ * only for a PR with novel v1 migrations; any failure, the mission lookup
+ * included, means no hold.
+ */
+async function sharedWithOtherMission(
+  params: { installationId: number; repoFullName: string; prNumber: number; headSha: string; missionBranches?: () => Promise<readonly MissionBranchRef[]> },
+  novelV1: readonly string[],
+  baseRef: string | undefined,
+  baseSha: string,
+  trunkOf: () => Promise<{ ref?: string; sha?: string }>,
+) {
+  try {
+    const branches = await (params.missionBranches ?? (() => openMissionBranches(params.repoFullName)))();
+    if (branches.length === 0) return null;
+    const trunk = await trunkOf();
+    const trunkRef = trunk.ref ?? baseRef;
+    // A mission base whose trunk could not be read has nothing to diff against.
+    if (!trunkRef || (!trunk.sha && trunkRef !== baseRef)) return null;
+    const pr = await githubApi(params.installationId, `/repos/${params.repoFullName}/pulls/${params.prNumber}`).catch(() => null);
+    return await findMissionSchemaOverlap({
+      installationId: params.installationId,
+      repoFullName: params.repoFullName,
+      dir: novelV1[0]!.split('/').slice(0, -2).join('/'),
+      headSha: params.headSha,
+      baseSha,
+      baseRef,
+      headRef: typeof pr?.head?.ref === 'string' ? pr.head.ref : undefined,
+      trunkSha: trunk.sha ?? baseSha,
+      trunkRef,
+      missionBranches: branches,
+    });
+  } catch {
+    return null;
+  }
 }
 
 /**

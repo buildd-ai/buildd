@@ -1,3 +1,5 @@
+import type { SchemaOverlapHold } from '@/lib/mission-schema-overlap';
+
 export type OperationClass = 'EXPAND' | 'CONTRACT';
 
 export interface MigrationCollision {
@@ -44,7 +46,16 @@ export interface MigrationCollision {
 export type MigrationUnsafeKind = 'destructive' | 'data' | 'lineage' | 'mixed' | 'collision' | 'stale_parent' | 'uninspectable';
 
 export type MigrationSafety =
-  | { safe: true; operationClass: 'EXPAND' }
+  | {
+      safe: true;
+      operationClass: 'EXPAND';
+      /**
+       * The SQL is safe, but another open mission's integration branch already
+       * adds a schema object this PR adds (see `findMissionSchemaOverlap`):
+       * the merge waits, it is not a decision for a person.
+       */
+      hold?: SchemaOverlapHold;
+    }
   | {
       safe: false;
       reason: string;

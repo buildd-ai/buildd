@@ -25,7 +25,7 @@ import { wordDiff, type ChangeLine, type SectionTextChange } from '@buildd/spec-
  *   explanation leaves one change out and names one that did not change
  *   (Living Spec b7fc9316 R-14 to R-19): Approve waits in its bar.
  */
-export const SPEC_PAGE_VARIANTS = ['approved', 'waiting', 'retired', 'imported', 'approve-replaces', 'approve-explained'] as const;
+export const SPEC_PAGE_VARIANTS = ['approved', 'waiting', 'retired', 'imported', 'auto-approved', 'approve-replaces', 'approve-explained'] as const;
 export type SpecPageVariant = (typeof SPEC_PAGE_VARIANTS)[number];
 
 const SECTIONS: Array<[string, string[]]> = [
@@ -176,6 +176,25 @@ export function specPageFixtureView(v: Exclude<SpecPageVariant, 'approve-replace
       replacesSpecs: SPEC_PAGE_APPROVAL_VIEW.replacing.map(({ id, title }) => ({ id, title })),
       revisions: [
         { revision: 3, author: 'agent', changeSummary: SPEC_PAGE_APPROVAL_VIEW.changes!.summary, approvedBy: null, approvedAt: null, createdAt: at, createdAgo: '1h ago', approvedAgo: null },
+        ...APPROVED.revisions,
+      ],
+    };
+  }
+  if (v === 'auto-approved') {
+    // b7fc9316 R-23: revision 3 changed only prose, so check:no-criteria-change approved it; no person did.
+    const hash = (c: string) => c.repeat(64);
+    return {
+      ...APPROVED, spec: { ...APPROVED.spec, headRevision: 3, approvedRevision: 3, version: 5 }, standing: 'approved at revision 3',
+      reading: { revision: 3, approved: true, isHead: true },
+      revisions: [
+        {
+          revision: 3, author: 'agent', changeSummary: 'Clarifies the context; no criterion changes.', approvedBy: 'check:no-criteria-change', approvedAt: at, createdAt: at, createdAgo: '1h ago', approvedAgo: '1h ago',
+          approvedByCheck: {
+            from: { revision: 2, contentHash: hash('a'), criteriaHash: hash('c'), designHash: hash('d') },
+            to: { revision: 3, contentHash: hash('b'), criteriaHash: hash('c'), designHash: hash('d') },
+            criteria: 6, otherChangedLines: 4,
+          },
+        },
         ...APPROVED.revisions,
       ],
     };

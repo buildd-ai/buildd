@@ -538,7 +538,12 @@ function History({ view, base, reviewing, at }: { view: Ok; base: string; review
                   </span>
                 </span>
                 {r.changeSummary ? <span className="truncate text-meta text-text-secondary" title={r.changeSummary}>{r.changeSummary}</span> : null}
-                {r.approvedAt ? (
+                {r.approvedAt && r.approvedByCheck ? (
+                  <span className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-approved-by-check">
+                    Approved automatically by <code className="font-mono">{r.approvedBy}</code> {r.approvedAgo}: no criterion or design binding changed since revision {r.approvedByCheck.from.revision}
+                    {' '}(criteria {r.approvedByCheck.to.criteriaHash.slice(0, 12)}, design {r.approvedByCheck.to.designHash.slice(0, 12)}, equal on both; {r.approvedByCheck.otherChangedLines} other {r.approvedByCheck.otherChangedLines === 1 ? 'line' : 'lines'} changed). No person approved it.
+                  </span>
+                ) : r.approvedAt ? (
                   <span className="text-meta text-text-muted" data-testid="spec-page-approved-by">
                     Approved by {r.approvedBy} {r.approvedAgo}
                   </span>
