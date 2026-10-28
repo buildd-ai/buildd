@@ -12,6 +12,7 @@
  *
  *  - never double-file: a live audit is the answer, whatever head it was stamped for;
  *  - a new head SHA with UI impact re-files (the old pass is not evidence), up to a ceiling;
+ *    a pass voided by the mission's own UI moving (`uiDelta`) re-files past it: new work is a new question;
  *  - a system failure (the audit task failed: browser, preview, runner) retries with
  *    exponential backoff, a bounded number of times, then names who acts next;
  *  - a product finding is never a retry: it is a `[surface fix]` and the findings loop's;
@@ -53,7 +54,7 @@ export interface ScheduleAudit {
 }
 
 export interface ScheduleInput {
-  state: Pick<MissionVisualReviewState, 'status' | 'policy' | 'branch' | 'scope' | 'recapture'>;
+  state: Pick<MissionVisualReviewState, 'status' | 'policy' | 'branch' | 'scope' | 'recapture' | 'uiDelta'>;
   /** The classifier's verdict for the current head, or null when it was not (or could not be) assessed. */
   impact: { verdict: 'review_required' | 'not_applicable'; headSha: string | null } | null;
   /** Newest first. */
@@ -143,7 +144,10 @@ export function planVisualReviewSchedule(input: ScheduleInput): ScheduleAction {
   const maxRound = audits.reduce((m, a) => Math.max(m, a.round), 0);
   const isRetry = !!lastFailure;
   const round = isRetry ? lastFailure!.round : maxRound + 1;
-  if (!isRetry && round > MAX_TOTAL_SURFACE_AUDIT_ROUNDS) {
+  // The ceiling stops churn: re-filing for heads that may not have moved the mission's UI. A pass voided
+  // by named UI files the mission itself changed is not churn, so the new work gets its review.
+  const ownUiMoved = (state.uiDelta?.length ?? 0) > 0;
+  if (!isRetry && !ownUiMoved && round > MAX_TOTAL_SURFACE_AUDIT_ROUNDS) {
     return { action: 'blocked', cause: 'rereview_cap', nextActor: 'owner', reason: `${completed.length} review rounds have run; a new one is not filed automatically.` };
   }
 
