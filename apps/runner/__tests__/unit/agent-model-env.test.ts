@@ -545,6 +545,7 @@ describe('workers.ts model auth wiring', () => {
   test('workers.ts no longer receives or writes a server-delivered Claude login', async () => {
     const src = await Bun.file(new URL('../../src/workers.ts', import.meta.url)).text();
     expect(src).not.toContain('claudeAccessToken');
+    expect(src).not.toContain('shouldUseClaudeCredential');
     expect(src).not.toContain('serverOauthToken');
     expect(src).not.toContain('tenantOauthToken');
   });
