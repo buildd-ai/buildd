@@ -590,7 +590,7 @@ function deriveCardState(
         criteriaCount,
         overall: (criteriaState?.overall as any) ?? null,
         items: (criteriaState?.criteria ?? []) as any,
-        completionAttempted: s.progress >= 100,
+        completionAttempted: isBuildComplete(s.build),
       });
   const integrationPr = deriveMissionIntegrationPr({ mission: row as any, tasks: tasks as any });
   const unmergedPrs = ownerUnmergedPrs(tasks, s.now);

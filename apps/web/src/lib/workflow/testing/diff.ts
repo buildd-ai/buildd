@@ -431,6 +431,37 @@ export const SUPERSEDED_DECISIONS: SupersededDecision[] = [
         && !replayed.effects.some((e) => e.kind === 'dispatch_review');
     },
   },
+  {
+    // #5796 (spec §6.5): a repair that ended cleanly with nothing local beyond the head it was
+    // bound to (its reported head IS the unmoved PR head) used to park in
+    // AWAITING_PUSH(head_not_advanced) and end at a person as push_undeliverable; now it is a
+    // no-change end at that head.
+    id: 'a repair with nothing to push is a no-change end, not AWAITING_PUSH (#5796, spec §6.5)',
+    matches(recorded, replayed) {
+      const r = recorded.transition;
+      const p = replayed.transition;
+      if (!r || !p || r.command !== 'AttemptEnded' || p.command !== 'AttemptEnded' || r.idempotencyKey !== p.idempotencyKey) return false;
+      if (r.fromState !== 'REPAIRING' || p.fromState !== 'REPAIRING' || r.toState !== 'AWAITING_PUSH' || p.toState === 'AWAITING_PUSH') return false;
+      const e = r.evidence;
+      const pe = p.evidence;
+      return isObj(e) && isObj(pe) && e.outcome === 'success' && isObj(e.proof) && e.proof.reason === 'head_not_advanced' && pe.nothingToPush === true;
+    },
+  },
+  {
+    // #5764 (spec §6.5 row `commitCount>0`): an owner attempt that ended cleanly with no commits
+    // of its own used to park in AWAITING_PUSH whenever the worktree head it reported was not the
+    // PR head (an adopted PR's owner parked on the base); now it hands on at the live head.
+    id: 'an owner end with zero commits hands on at the live head (#5764, spec §6.5)',
+    matches(recorded, replayed) {
+      const r = recorded.transition;
+      const p = replayed.transition;
+      if (!r || !p || r.command !== 'AttemptEnded' || p.command !== 'AttemptEnded' || r.idempotencyKey !== p.idempotencyKey) return false;
+      if (r.fromState !== 'WORKING' || p.fromState !== 'WORKING' || r.toState !== 'AWAITING_PUSH' || p.toState === 'AWAITING_PUSH') return false;
+      const e = r.evidence;
+      const pe = p.evidence;
+      return isObj(e) && isObj(pe) && e.outcome === 'success' && e.commitCount === 0 && typeof e.localHeadSha === 'string' && pe.nothingLocal === true;
+    },
+  },
 ];
 
 /**
