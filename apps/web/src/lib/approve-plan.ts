@@ -107,7 +107,7 @@ export type { PlanStep } from '@buildd/shared';
 
 export interface DroppedPlanStep {
   ref: string;
-  reason: 'coordination_intent' | 'exact_title';
+  reason: 'coordination_intent' | 'exact_title' | 'coordinate_only';
   /** The existing task this step duplicated. Absent for an in-plan duplicate
    * dropped before any task existed to point at (see `survivorRef`). */
   matchedTaskId?: string;
@@ -185,6 +185,7 @@ export async function approvePlan(
     where: sqlWhere(eq(tasks.id, planningTaskId)),
     columns: {
       id: true, workspaceId: true, missionId: true, context: true, pathManifest: true, mode: true,
+      creationSource: true,
       // Who the plan is for (resolveTaskRequesterUserId): its children are too.
       createdByUserId: true, parentTaskId: true, scheduleId: true,
       // mission-legibility R-9: a re-plan raised inside a phase keeps its children in it.
@@ -217,7 +218,7 @@ export async function approvePlan(
   const mission = task.missionId
     ? await db.query.missions.findFirst({
         where: sqlWhere(eq(missions.id, task.missionId)),
-        columns: { workingBranch: true, integrationBranchEnabled: true },
+        columns: { workingBranch: true, integrationBranchEnabled: true, decompositionSkipped: true },
       })
     : null;
   const integrationBase = missionIntegrationBase(mission);
@@ -306,6 +307,17 @@ export async function approvePlan(
     }
 
     survivingPlan = kept;
+  }
+
+  // Coordinate-only mission (`decomposition: "none"`, or pre-filed tasks
+  // detected): the persisted flag means the organizer must not decompose. The
+  // prompt says so, but a plan the organizer returns anyway is materialized
+  // here without passing POST /api/tasks' decomposition gate, so the flag is
+  // enforced on this path too. Only an organizer cycle is held to it; a plan
+  // someone filed themselves (spec tasks, doc-fix) is not a decomposition.
+  if (mission?.decompositionSkipped && task.creationSource === 'orchestrator') {
+    for (const step of survivingPlan) droppedSteps.push({ ref: step.ref, reason: 'coordinate_only' });
+    survivingPlan = [];
   }
 
   // A doc-fix task's plan is a net-enhancement PROPOSAL about one spec doc, not
