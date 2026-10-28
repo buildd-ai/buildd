@@ -1373,6 +1373,18 @@ describe('landPr — safety rails', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('a schema object another open mission also ships is a wait, not parked for a person', async () => {
+    gh.prFiles = ['packages/core/drizzle/20261027000000_t/migration.sql'];
+    const reason = 'shared schema hold: this PR adds table "t", which mission "B" already carries on its branch mission/b-bbbbbbbb';
+    mockInspectMigrations.mockImplementation(async () => ({
+      safe: true, operationClass: 'EXPAND',
+      hold: { missionId: 'm-b', missionTitle: 'B', branch: 'mission/b-bbbbbbbb', entities: ['table "t"'], landedBy: null, reason },
+    }));
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'waiting_ci', reason });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
   it('a stale dirty flag that merged cleanly is a branch update, not a conflict fix', async () => {
     gh.mergeableState = 'dirty';
     mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, branchUpdated: true, conflictFalsePositive: true }));
