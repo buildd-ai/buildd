@@ -128,8 +128,8 @@ describe('R-4: one alert line, only when something is wrong, worst first', () =>
     expect(view().alert).toBeNull();
     const calm = html();
     expect(calm).not.toContain('queue-alert');
-    // The phone shows one calm line instead (r8); it is hidden from md up.
-    expect(calm).toMatch(/data-testid="queue-calm"[^>]*md:hidden/);
+    // Nothing is wrong, so nothing renders at any width: no alert, no calm line.
+    expect(calm).not.toContain('queue-calm');
   });
   it('lists idle slots before stuck lanes, on one line', () => {
     const stuck = holder({ status: 'completed', prNumber: 1, stuckSince: new Date(NOW - 30 * HOUR).toISOString() });
