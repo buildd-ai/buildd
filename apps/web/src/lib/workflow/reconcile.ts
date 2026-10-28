@@ -117,17 +117,25 @@ export interface TreadmillCycleCandidate {
 }
 
 /**
- * S15 cycles: kernel deliveries whose CURRENT state is the behind-refresh
- * treadmill's escalation (the transition that produced `d.version` carries the
- * `:treadmill` key), made at least `cooldownMs` ago. Any later move (a person's
- * override, a merge refusal, a new head) is a newer version and drops it. The
- * caller pins `expectedVersion` to `version`, so a move between this read and
- * the restart is refused too.
+ * S15 cycles: kernel deliveries whose CURRENT stay in `ESCALATED(landing_needs_human)`
+ * was opened by the behind-refresh treadmill's escalation (the newest transition INTO
+ * `ESCALATED` carries the `:treadmill` key), made at least `cooldownMs` ago. A person's
+ * override or a merge refusal leaves `ESCALATED`, so the state check drops it, and a
+ * later escalation of another kind is a newer entry. A head or CI fact recorded while
+ * escalated (`ESCALATED` → `ESCALATED`) is a newer version of the same stay and does NOT
+ * drop it (#5766: anchoring on `d.version` hid every delivery that had one such fact
+ * from the sweep, and they waited for a person instead of the next cycle). The caller
+ * pins `expectedVersion` to `version`, so a move between this read and the restart is
+ * refused, and the reducer still refuses a head nothing covers (`head_not_approved`).
  */
 export function treadmillCycleCandidatesSql(o: { limit: number; cooldownMs: number }): SQL {
   return sql`-- workflow:treadmill_cycle_candidates
 SELECT d.id, d.version, d.workspace_id, d.repo_full_name, d.pr_number FROM workflow_deliveries d
-JOIN workflow_transitions t ON t.delivery_id = d.id AND t.to_version = d.version
+JOIN LATERAL (
+  SELECT e.idempotency_key, e.created_at FROM workflow_transitions e
+  WHERE e.delivery_id = d.id AND e.to_state = 'ESCALATED' AND e.from_state IS DISTINCT FROM 'ESCALATED'
+  ORDER BY e.to_version DESC LIMIT 1
+) t ON TRUE
 WHERE d.authority = 'kernel' AND d.state = 'ESCALATED' AND d.state_reason = 'landing_needs_human'
   AND d.pr_number IS NOT NULL
   AND t.idempotency_key LIKE '%:treadmill'

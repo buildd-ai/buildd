@@ -306,7 +306,7 @@ describe('HealthClient — Problems', () => {
       runners: [runner({ lastHeartbeatAt: ago(60 * 1000), isolation: isolation('darwin', { mechanism: 'seatbelt', scope: ['write'] }) })],
     });
     expect(html).toContain('macOS');
-    expect(html).toContain('sandboxed');
+    expect(html).not.toContain('sandboxed');
     expect(html).not.toContain('data-testid="runner-isolation"');
     expect(html).not.toContain('Seatbelt');
     expect(html).not.toContain('Check health');
