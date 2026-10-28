@@ -268,12 +268,36 @@ export function scanToolResult(
 /** Bash non-zero-exit traces one worker may file over its whole session. */
 export const BASH_FAILURE_CAP_PER_WORKER = 25;
 
+/** A verify command that failed and has not been followed by a passing run of its family. */
+export interface OpenVerifyFailure {
+  family: VerifyFamily;
+  /** The redacted command, as the trace header carries it. */
+  command: string;
+  exitCode: number;
+  /** Exit 143 (SIGTERM) or the Bash tool's own "Command timed out" line: killed, not red. */
+  timedOut: boolean;
+}
+
 interface BashFailureState {
   filed: number;
   seen: Set<string>;
   failedFamilies: Set<VerifyFamily>;
+  /** The newest failure per open family, for the complete_task guard (verify-guard.ts). */
+  lastFailure: Map<VerifyFamily, OpenVerifyFailure>;
 }
 const bashFailureState: Map<string, BashFailureState> = new Map();
+
+/**
+ * The verify families (test / typecheck / lint) this worker last saw fail
+ * without a later pass of the same kind, newest failure each. The runner-side
+ * twin of the server's `last_command_failed` mismatch: read here before a
+ * success is reported, instead of flagged after it.
+ */
+export function unrecoveredVerifyFailures(workerId: string): OpenVerifyFailure[] {
+  const state = bashFailureState.get(workerId);
+  if (!state) return [];
+  return [...state.failedFamilies].map(f => state.lastFailure.get(f)).filter((f): f is OpenVerifyFailure => !!f);
+}
 
 /**
  * Record what a Bash call hit, whatever it was. `scanToolResult` only matches
@@ -300,13 +324,14 @@ export function scanBashResult(
 
   let state = bashFailureState.get(workerId);
   if (!state) {
-    state = { filed: 0, seen: new Set(), failedFamilies: new Set() };
+    state = { filed: 0, seen: new Set(), failedFamilies: new Set(), lastFailure: new Map() };
     bashFailureState.set(workerId, state);
   }
   const family = verifyFamilyOf(command);
 
   if (!isError) {
     if (family && state.failedFamilies.delete(family)) {
+      state.lastFailure.delete(family);
       return [{
         pattern: BASH_RECOVERED_PATTERN,
         excerpt: redact(formatBashTraceExcerpt({ command, exitCode: 0, output: '' })),
@@ -319,7 +344,15 @@ export function scanBashResult(
   const exitCode = parseExitCode(content);
   if (exitCode === null) return [];
   const output = stripExitCodeLine(content);
-  if (family) state.failedFamilies.add(family);
+  if (family) {
+    state.failedFamilies.add(family);
+    state.lastFailure.set(family, {
+      family,
+      command: redact(command.split('\n').map(l => l.trim()).filter(Boolean).join(' ⏎ ')),
+      exitCode,
+      timedOut: exitCode === 143 || /\bCommand timed out\b/i.test(output),
+    });
+  }
   if (output.trim() === '' && exitCode === 1) return [];
 
   const lastLine = output.split('\n').map(l => l.trim()).filter(Boolean).pop() ?? '';
