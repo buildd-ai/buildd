@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "a0c28572-9a06-4eef-9560-b8b5d13581d6",
+  "id": "68213b21-d800-40aa-9b16-531d26ecb3dd",
   "prevIds": [
     "e00c7be4-99a9-4593-95cd-7a058b66631d"
   ],
@@ -28686,6 +28686,58 @@
       "generated": null,
       "identity": null,
       "name": "desired_slots_set_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "desired_paused",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "desired_pause_origin",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "desired_pause_set_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "desired_pause_set_at",
       "entityType": "columns",
       "schema": "public",
       "table": "worker_heartbeats"

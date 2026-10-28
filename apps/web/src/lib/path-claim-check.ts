@@ -95,7 +95,7 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
 
   const task = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, taskId)),
-    columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, taskClass: true, conflictRetryPrNumber: true, ciRetryPrNumber: true, reviewerRetryPrNumber: true, context: true, dependsOn: true },
+    columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, context: true, dependsOn: true, taskClass: true, conflictRetryPrNumber: true, ciRetryPrNumber: true, reviewerRetryPrNumber: true },
   });
 
   // '**' is advisory-only and must never become a held lock that blocks the

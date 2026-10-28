@@ -100,6 +100,14 @@ export type TermKey =
   | 'wait.agent'
   | 'wait.checks'
   | 'wait.review'
+  // Queue (Health › Queue): tabs, reasons and the row words around them
+  | 'queue.blocked'
+  | 'queue.lane'
+  | 'queue.limit'
+  | 'queue.dependency'
+  | 'queue.needs_review'
+  | 'queue.retrying'
+  | 'queue.retried'
   // Runner, release, totals
   | 'runner.paused'
   | 'release.releasing'
@@ -250,6 +258,23 @@ const TERM_LIST: Term[] = [
   { key: 'wait.review', word: 'Waiting for review', short: 'waiting for review', tone: 'q',
     means: 'The PR waits for a reviewer to pick it up.', from: [] },
 
+  // ── Queue (Health › Queue). Tabs: Queued, Blocked, Scheduled, Paused. Reasons: Lane, Limit, Dependency.
+  // Display words only: the internal values stay mapped by the terms above.
+  { key: 'queue.blocked', word: 'Blocked', short: 'blocked', tone: 'q',
+    means: 'The task cannot start yet; its reason (Lane, Limit or Dependency) says why.', from: [] },
+  { key: 'queue.lane', word: 'Lane', short: 'lane', tone: 'q',
+    means: 'Another task holds the lane it needs: the same files or the same runner.', from: [] },
+  { key: 'queue.limit', word: 'Limit', short: 'limit', tone: 'q',
+    means: 'A cap is reached: slots, budget or the provider’s usage limit.', from: [] },
+  { key: 'queue.dependency', word: 'Dependency', short: 'dependency', tone: 'q',
+    means: 'It waits on another task and starts by itself when that one finishes.', from: [] },
+  { key: 'queue.needs_review', word: 'Needs review', short: 'needs review', tone: 'act',
+    means: 'The PR is open and waits for a reviewer.', from: [] },
+  { key: 'queue.retrying', word: 'Retrying', short: 'retrying', tone: 'run',
+    means: 'A new attempt at this work is running.', from: [] },
+  { key: 'queue.retried', word: 'Retried', short: 'retried', tone: 'q',
+    means: 'A later attempt took over this work.', from: [] },
+
   // ── Runners, releases, totals ─────────────────────────────────────────────
   { key: 'runner.paused', word: 'Paused', short: 'paused', tone: 'q', glyph: '‖',
     means: 'This runner starts nothing new; running agents finish.', liftedBy: 'buildd resume',
@@ -296,8 +321,16 @@ export const termWord = (key: TermKey): string => TERMS[key].word;
 export const termShort = (key: TermKey): string => TERMS[key].short;
 
 /**
- * Runner capacity: "2 of 3 slots in use". Never busy, running or working,
- * which are state words (§2.4). `short` is the terminal header form.
+ * Runner capacity is a stat row, not a sentence: `Running 3/9`, `Runners 2/3`,
+ * `Sessions 2`, Peak, Avg. `short` is the terminal header form.
+ */
+export function runningOfCap(running: number, cap: number, form: 'long' | 'short' = 'long'): string {
+  return form === 'short' ? `${running}/${cap}` : `Running ${running}/${cap}`;
+}
+
+/**
+ * @deprecated "N of M slots in use" is retired wording; read `runningOfCap`.
+ * Kept only until the surfaces that still call it move over.
  */
 export function slotsInUse(used: number, total: number, form: 'long' | 'short' = 'long'): string {
   return form === 'short' ? `${used}/${total} in use` : `${used} of ${total} ${total === 1 ? 'slot' : 'slots'} in use`;
@@ -344,9 +377,12 @@ export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: strin
     why: 'Review was Auditing, In audit or In review, and a fix was Repairing on the web and Fixing everywhere else.' },
   { word: /^(?:Pending|Never started|Assigned|Starting|Running now)$/, use: 'Queued, Waiting on <task>, Running, Not started',
     why: 'Pending and Queued named one row; Assigned, Starting and Running now all meant an agent is on it. The task words are Navigation R-14\'s.' },
+  // Retired Queue words (Health › Queue r9). Bare Ready and Waiting are retired too, but surfaces still render them; they join this list as each moves to the new words.
+  { word: /^(?:Parked|Declared)$/, use: 'Queued, Blocked, Scheduled, Paused · Lane, Limit, Dependency',
+    why: 'Parked and Declared named queue states the Queue tabs (Queued, Blocked, Scheduled, Paused) and reasons (Lane, Limit, Dependency) now say.' },
   { word: /\bwaiting for a worker\b/i, use: 'Waiting for an agent',
     why: '"Worker" is the platform’s internal noun for one agent session.' },
-  { word: /\b(?:of|\/)\s*\S+\s+busy\b|\bslots? (?:is |are )?busy\b|\bevery slot is busy\b/i, use: '2 of 3 slots in use',
+  { word: /\b(?:of|\/)\s*\S+\s+busy\b|\bslots? (?:is |are )?busy\b|\bevery slot is busy\b/i, use: 'Running 3/9',
     why: 'Capacity read busy, running or working; those are state words.' },
   { word: /^completed$|\bcompleted this week\b/i, use: 'Done, Merged',
     why: 'A task marked Completed drew the merged glyph even when it had no PR.' },

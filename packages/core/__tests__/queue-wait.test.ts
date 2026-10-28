@@ -58,6 +58,12 @@ const TABLE: Row[] = [
     badge: 'Lane', blockedBy: 'Billing lane · 3rd', headline: 'In the billing lane, 3rd in line', short: 'billing lane, 3rd', next: false,
   },
   {
+    name: 'limit: mission budget, with when it lifts',
+    reasons: [reason('mission_budget', { liftsAt: '2026-10-22T12:04:00Z' })],
+    wait: { kind: 'limit', limit: 'mission_budget', liftsAt: '2026-10-22T12:04:00Z', forceable: false },
+    badge: 'Limit', blockedBy: 'Mission budget · lifts in 4m', headline: 'Waiting: mission budget, lifts in 4m', short: 'mission budget, in 4m', next: false,
+  },
+  {
     name: 'limit: mission cap',
     reasons: [reason('mission_concurrent')],
     wait: { kind: 'limit', limit: 'mission_cap', forceable: true },
@@ -135,6 +141,7 @@ describe('queueWaitOf: one reason per pending task, the same words everywhere', 
     expect(queueWaitOf([reason('mission_concurrent'), lane(1), declared('d')]).kind).toBe('declared');
     expect(queueWaitOf([reason('mission_concurrent'), lane(1)]).kind).toBe('lane');
     expect(queueWaitOf([reason('mission_concurrent'), reason('account_slots')])).toMatchObject({ limit: 'mission_cap' });
+    expect(queueWaitOf([reason('mission_concurrent'), reason('mission_budget')])).toMatchObject({ limit: 'mission_budget' });
     expect(queueWaitOf([declared('a'), declared('b'), declared('c')])).toMatchObject({ kind: 'declared', blockerId: 'a', count: 3 });
     expect(queueWaitHeadline(queueWaitOf([declared('a'), declared('b')]), NOW)).toBe('Waiting on “Task a” and 1 more');
   });

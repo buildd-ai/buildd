@@ -117,15 +117,15 @@ describe('serial lane rows (spec: Overlap scheduling, I-3)', () => {
  * claim would refuse never reads "now", and "now" needs a slot wait.
  */
 describe('the server\'s one wait', () => {
-  test('a declared dependency, a lane place and a limit each read as themselves, never "now"', () => {
+  test('a declared dependency, a lane place and a limit each read as Blocked with their own words; only a slot wait is Queued', () => {
     const s = stateWith(6, 0, [
       task({ id: 'dep', wait: { kind: 'declared', blockerId: 'x', blockerTitle: '“Rework claim order”', count: 1 } }),
       task({ id: 'lane', wait: { kind: 'lane', lane: 'migration', position: 2, holderTaskId: 'h' } }),
-      task({ id: 'lim', wait: { kind: 'limit', limit: 'mission_cap', liftsAt: iso(NOW + 4 * MIN) } }),
+      task({ id: 'lim', wait: { kind: 'limit', limit: 'mission_budget', liftsAt: iso(NOW + 4 * MIN) } }),
       task({ id: 'go', wait: { kind: 'slot', noRunnerReason: null } }),
     ]);
     const rows = queueSections(s, NOW)[0].rows;
-    expect(rows.map(r => r.starts)).toEqual(['Blocked · after “Rework claim order”', 'Blocked · schema lane, 2nd', 'Blocked · mission limit, in 4m', 'Queued']);
+    expect(rows.map(r => r.starts)).toEqual(['Blocked · after “Rework claim order”', 'Blocked · schema lane, 2nd', 'Blocked · mission budget, in 4m', 'Queued']);
     expect(rows.map(r => r.wait ?? null)).toEqual(['dependency', 'same_files', 'limit', null]);
   });
 

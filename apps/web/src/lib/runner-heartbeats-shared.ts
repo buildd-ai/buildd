@@ -93,6 +93,21 @@ export interface RunnerHeartbeat {
     setAt: string | null;
     canEdit: boolean;
   };
+  /**
+   * Pause (spec 97b1bd0b R-18): take no new work, let running work finish.
+   * `held` is what the runner reported on its last beat (its `buildd hold`);
+   * `desired` and the rest are the saved value and who changed it, from
+   * either side (worker_heartbeats.desired_pause*). `desired` differing from
+   * `held` is a change the runner has not taken yet (offline: on reconnect).
+   * Who may change it is `slots.canEdit`. Absent where a loader does not fill it.
+   */
+  pause?: {
+    held: boolean;
+    desired: boolean | null;
+    origin: 'dashboard' | 'machine' | null;
+    setBy: string | null;
+    setAt: string | null;
+  };
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */

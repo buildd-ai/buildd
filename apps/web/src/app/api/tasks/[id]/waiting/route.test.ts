@@ -20,8 +20,8 @@ import { makeWaitingReason } from '@buildd/core/waiting-reason';
 
 const call = () => GET(new NextRequest('http://localhost/api/tasks/t1/waiting'), { params: Promise.resolve({ id: 't1' }) });
 const paced = makeWaitingReason('mission_concurrent', {
-  because: 'the mission starts a task at most every 10 min',
-  blocker: { type: 'mission', id: 'm', label: 'mission limit' },
+  because: 'the mission runs at most 2 tasks at once and 2 are running',
+  blocker: { type: 'mission', id: 'm', label: 'the mission limit' },
   provenance: { source: 'probe', derivedFrom: 't' },
 });
 const laneHold = makeWaitingReason('lane', {
