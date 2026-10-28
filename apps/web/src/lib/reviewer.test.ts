@@ -224,6 +224,7 @@ import {
   createReviewerTask,
   DELTA_APPROVAL_REVIEW_TIER,
   enforceServerSideEscalation,
+  personApprovedScope,
   scopeToCompositionDelta,
   compositionScopeSection,
   preflightEscalationCheck,
@@ -1401,6 +1402,52 @@ describe('enforceServerSideEscalation', () => {
 
     expect(result.verdict).toBe('escalate');
     expect(result.overrideReason).toContain('drops column tasks.legacy');
+  });
+
+  // 52a0de67: a person who approved head A decided on exactly those bytes. At a later head the
+  // gate judges only what changed since; a migration byte-identical to the approved one is not
+  // re-escalated to the same person.
+  it('an identical migration keeps the owner approval: files unchanged since a person approved are not re-gated', () => {
+    const decided = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+      personApproved: { headSha: 'A', unchangedPaths: ['packages/core/drizzle/0099_add_column.sql'] },
+    });
+    expect(decided).toEqual({ verdict: 'approve', overrideReason: null });
+    // A migration the person never saw (changed or added since A) is gated as always.
+    const changed = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: [...MIGRATION, { filename: 'packages/core/drizzle/0100_new.sql' }],
+      policy: OPEN_POLICY,
+      personApproved: { headSha: 'A', unchangedPaths: ['packages/core/drizzle/0099_add_column.sql'] },
+    });
+    expect(changed.verdict).toBe('escalate');
+    expect(changed.overrideReason).toContain('migration');
+    // The inspector's own unsafe verdict is about the files it read; the caller scopes those the same way.
+    const unsafe = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+      migrationSafety: { safe: false, reason: 'drops a column still read by live code' },
+      personApproved: { headSha: 'A', unchangedPaths: ['packages/core/drizzle/0099_add_column.sql'] },
+    });
+    expect(unsafe.verdict).toBe('escalate');
+  });
+
+  it('personApprovedScope: a person\'s approval covers the files the delta since it did not touch; unread or not a person\'s covers nothing', () => {
+    const human = { approvalBasis: 'human', approvedHeads: ['A'] };
+    const delta = { fromHeadSha: 'A', toHeadSha: 'B', files: [{ path: 'apps/web/src/lib/foo.ts' }, { path: 'docs/new.md', previousPath: 'docs/old.md' }] };
+    const files = [...MIGRATION, { filename: 'docs/old.md' }];
+    expect(personApprovedScope(human, 'B', files, delta)).toEqual({ headSha: 'A', unchangedPaths: ['packages/core/drizzle/0099_add_column.sql'] });
+    // The very head the person approved: everything is theirs.
+    expect(personApprovedScope(human, 'A', MIGRATION, null)?.unchangedPaths).toEqual(MIGRATION.map((f) => f.filename));
+    // Unread, for another range, a reviewer's approval, or no approval: nothing is covered.
+    expect(personApprovedScope(human, 'B', MIGRATION, null)).toBeNull();
+    expect(personApprovedScope(human, 'B', MIGRATION, { ...delta, fromHeadSha: 'Z' })).toBeNull();
+    expect(personApprovedScope({ approvalBasis: 'verdict', approvedHeads: ['A'] }, 'B', MIGRATION, delta)).toBeNull();
+    expect(personApprovedScope({ approvalBasis: 'human', approvedHeads: [] }, 'B', MIGRATION, delta)).toBeNull();
+    expect(personApprovedScope(null, 'B', MIGRATION, delta)).toBeNull();
   });
 
   it('lets an additive (EXPAND) schema change through without a human', () => {
