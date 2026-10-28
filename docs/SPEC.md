@@ -122,9 +122,7 @@ Analytics reads a reviewer depends on report `status` — `OK` / `NO_DATA` reach
 the data; `FORBIDDEN` / `UNAUTHORIZED` / `TOOL_UNAVAILABLE` did not and are never
 evidence of zero rows.
 
-> **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
-> `secrets` table. Kept for back-compat, slated for removal. The parallel
-> `anthropicApiKey` column has already been dropped.
+> The `accounts.oauthToken` and `anthropicApiKey` columns have been dropped.
 
 ### Workspace
 A repo + config boundary. Holds tasks, workers, missions, roles/skills, schedules.

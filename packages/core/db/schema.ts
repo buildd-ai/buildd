@@ -369,9 +369,6 @@ export const accounts = pgTable('accounts', {
   totalCost: decimal('total_cost', { precision: 10, scale: 2 }).default('0').notNull(),
 
   // For OAuth-based auth (seat-based)
-  // @deprecated — OAuth tokens are now stored encrypted in the `secrets` table (purpose='oauth_token').
-  // This column is kept for backward compatibility and will be removed in a future migration.
-  oauthToken: text('oauth_token'),
   seatId: text('seat_id'),
   maxConcurrentSessions: integer('max_concurrent_sessions'),
   activeSessions: integer('active_sessions').default(0).notNull(),
@@ -4880,29 +4877,6 @@ export const prReverts = pgTable('pr_reverts', {
   workspaceDedupeIdx: uniqueIndex('pr_reverts_workspace_dedupe_idx').on(t.workspaceId, t.dedupeKey),
   workspacePrIdx: index('pr_reverts_workspace_pr_idx').on(t.workspaceId, t.revertedPrNumber),
 }));
-
-// Per-credential lease: exactly one broker may hold a given credential's lease at a time.
-// The unique index on credential_id is the DB-level enforcement — a second runner racing
-// for the same lease gets 0 rows back from the conditional INSERT ON CONFLICT and backs off.
-// The broker renews the lease via heartbeat every 60s (TTL = 5 min), so stale leases from
-// crashed brokers expire naturally within 5 minutes and become acquirable again.
-export const credentialLeases = pgTable('credential_leases', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  credentialId: uuid('credential_id')
-    .notNull()
-    .references(() => secrets.id, { onDelete: 'cascade' }),
-  heldByRunnerId: text('held_by_runner_id').notNull(),
-  acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
-  heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }).notNull().defaultNow(),
-  // Broker extends this every heartbeat; if it lapses, a competing runner may steal the lease.
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-}, (t) => ({
-  credentialIdUniq: uniqueIndex('credential_leases_credential_id_uniq').on(t.credentialId),
-  expiresAtIdx: index('credential_leases_expires_at_idx').on(t.expiresAt),
-}));
-
-export type CredentialLease = typeof credentialLeases.$inferSelect;
-export type NewCredentialLease = typeof credentialLeases.$inferInsert;
 
 // Per-team notification preferences (config, not a credential — the channel
 // itself lives in `secrets` as purpose 'pushover' / 'notify_webhook').
