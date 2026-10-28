@@ -122,6 +122,17 @@ describe('RunnerKeysSection: foreign runners grouped by workspace', () => {
   });
 });
 
+describe('RunnerKeysSection: many foreign workspaces', () => {
+  it('shows the first few groups and reveals the rest on request', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ ...foreign, accountId: `a-${i}`, workspaceId: `w-${i}`, workspaceName: `ws ${i}` }));
+    await act(async () => { root.render(createElement(RunnerKeysSection, { keys: [key], foreign: many })); });
+    expect(all('foreign-runner-group').length).toBe(5);
+    await click(q('foreign-runners-show-all'));
+    expect(all('foreign-runner-group').length).toBe(12);
+    expect(q('foreign-runners-show-all')).toBeNull();
+  });
+});
+
 describe('workspace picks', () => {
   it('collapses the list behind a count, closed by default', async () => {
     const picked: Key = {
