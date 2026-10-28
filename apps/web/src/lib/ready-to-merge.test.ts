@@ -57,6 +57,20 @@ describe('decideReadyToMerge', () => {
     expect(d.scheduleVisualReview).toBe(false);
   });
 
+  it('under automatic policy, exhausted findings do not block the merge (AC-14 second half)', () => {
+    const exhaustedFindings = { phase: 'needs_you' as const, screens: 3, effectiveIssues: 2, awaitingHuman: 0, openFixes: 0, roundCapOpen: true, needsYouReason: 'round_cap' as const, captured: 3, expected: 3 };
+    const d = decide(visual({ audit, review: exhaustedFindings, auditedSha: 'aaaa1111', policy: resolveVisualReviewPolicy({ workspace: 'automatic' }) }));
+    expect(d.ready).toBe(true);
+    expect(d.blockers).toEqual([]);
+  });
+
+  it('under strict policy, exhausted findings still block the merge', () => {
+    const exhaustedFindings = { phase: 'needs_you' as const, screens: 3, effectiveIssues: 2, awaitingHuman: 0, openFixes: 0, roundCapOpen: true, needsYouReason: 'round_cap' as const, captured: 3, expected: 3 };
+    const d = decide(visual({ audit, review: exhaustedFindings, auditedSha: 'aaaa1111', policy: resolveVisualReviewPolicy({ workspace: 'strict' }) }));
+    expect(d.ready).toBe(false);
+    expect(d.blockers[0]).toMatchObject({ code: 'visual_review_findings', nextActor: 'owner' });
+  });
+
   it('after the fix merges the head moves, the pass is stale and the review re-runs before merge', () => {
     const fixed = visual({ audit, review: reviewed, auditedSha: 'aaaa1111', branch: { ...input().branch, headSha: 'bbbb2222' } });
     expect(decide(fixed).blockers.map(b => b.code)).toEqual(['visual_review_stale']);

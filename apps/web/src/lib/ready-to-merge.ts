@@ -82,16 +82,21 @@ export function decideReadyToMerge(facts: ReadyToMergeFacts): ReadyToMergeDecisi
     if (v.status === 'findings') {
       const owner = v.nextActor === 'owner';
       const screens = v.recapture?.next === 'decide' ? [...new Set(v.recapture.screens)] : [];
-      const why = screens.length > 0
-        ? `${screens.length === 1 ? 'a fix merged' : `${screens.length} fixes merged`} with no new screenshot of ${screens.join(', ')}; decide Fixed or Still broken, or skip the review`
-        : v.findings?.stage === 'fixing' ? 'fixes are in progress'
-        : owner ? 'the automatic fixes did not settle them; decide on the flagged screens, or skip the review'
-        : 'a decision on the flagged screens is pending';
-      blockers.push({
-        code: 'visual_review_findings',
-        reason: `The visual review found issues${where} that are not resolved yet (${why}).${owner ? '' : ' It re-runs on the fixed commit before this can merge.'}`,
-        nextActor: BLOCKED_ACTOR(v),
-      });
+      // Under automatic policy, exhausted findings (round cap or recapture exhausted) do not block the merge;
+      // they are filed as [surface fix] tasks and listed in the completion record (AC-14 second half, AC-33 second half).
+      const automaticExhausted = v.policy.mode === 'automatic' && v.findings?.exhausted === true;
+      if (!automaticExhausted) {
+        const why = screens.length > 0
+          ? `${screens.length === 1 ? 'a fix merged' : `${screens.length} fixes merged`} with no new screenshot of ${screens.join(', ')}; decide Fixed or Still broken, or skip the review`
+          : v.findings?.stage === 'fixing' ? 'fixes are in progress'
+          : owner ? 'the automatic fixes did not settle them; decide on the flagged screens, or skip the review'
+          : 'a decision on the flagged screens is pending';
+        blockers.push({
+          code: 'visual_review_findings',
+          reason: `The visual review found issues${where} that are not resolved yet (${why}).${owner ? '' : ' It re-runs on the fixed commit before this can merge.'}`,
+          nextActor: BLOCKED_ACTOR(v),
+        });
+      }
     } else if (v.status === 'blocked') {
       blockers.push({
         code: 'visual_review_blocked',

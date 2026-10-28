@@ -650,6 +650,19 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     .sort((a, b) => queueRankOf(a) - queueRankOf(b) || byPlace(a, b))
     .map(c => c.key);
 
+  // Exhausted findings: cells awaiting a decision when the round cap is reached (spec 072de598, AC-14 second half).
+  // Under automatic policy these are filed as [surface fix] tasks after merge; under other policies they block.
+  const exhaustedFindings = recapture?.next === 'decide' ? recapture.screens.map(s => {
+    const cell = liveCells.find(c => c.key === s.key);
+    return cell ? {
+      key: s.key,
+      route: s.route,
+      viewport: s.viewport,
+      variant: s.variant,
+      issues: cell.current.agentVerdict === 'issue' ? 1 : 0,
+    } : null;
+  }).filter((x): x is NonNullable<typeof x> => !!x) : [];
+
   // Every [surface fix] of the mission, plus any fix a cell links.
   for (const t of tasks) if (isSurfaceFixTask(t.title)) fixFor(t.id, 'auditor');
   const humanFixIds = new Set([...activeReview.values()].map(r => r.fixTaskId).filter(Boolean));
@@ -787,6 +800,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     recapture,
     replacedAudits,
     waitingOn: phase === 'waiting_on_failed_work' ? waitingOn : null,
+    ...(exhaustedFindings.length > 0 ? { exhaustedFindings } : {}),
     generatedAt: new Date(now).toISOString(),
   };
 }
