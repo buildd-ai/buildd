@@ -243,6 +243,31 @@ export const INCIDENT_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: '#5796 replay: a CI repair that ends with nothing to push (its worktree head is the unmoved PR head) is a no-change end at that head, never AWAITING_PUSH and ESCALATED(push_undeliverable)',
+    async run(host) {
+      // v1–v6: opened at H1, round 1 approves H1.
+      const s = await (await new Delivery(host, 5796).open()).approvedAt('H1');
+      // v7: the base moved under the approved head; a mechanical refresh is queued.
+      applied(await s.submit({ type: 'ConflictObserved', actor: 'door:conflict', headSha: 'H1', mergeable: 'behind', maxAgentAttempts: 3 }), 'REPAIRING', 'v7: behind, a refresh is queued');
+      // v8: CI red at H1 before the refresh ran: the refresh row is left, a ci repair is filed at the same head.
+      applied(await s.ciRed('H1', { liveChecks: { complete: true, failing: ['DB architecture (real Postgres) · merge ref'] } }), 'REPAIRING', 'v8: ci red at H1');
+      eq((await s.d()).stateReason, 'ci', 'v8: the ci repair owns the head');
+      const repair = (await s.view()).attempts.find((a) => a.family === 'ci')!;
+      applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: repair.id, revalidation: { live: s.live('H1'), approved: false } }), 'REPAIRING', 'v9: the fix is claimed');
+      // v10: the fixer found a flake, re-ran the job and changed nothing. The runner reports its
+      // worktree as it stands: HEAD is H1 (the PR's own commit, one ahead of the base). Nothing is
+      // local, so there is nothing push recovery could ever deliver.
+      const r10 = await s.submit({ type: 'AttemptEnded', actor: 'runner', workerId: 'wk-fix', attemptId: repair.id, taskId: repair.taskId ?? host.newId(), outcome: 'success', localHeadSha: 'H1', commitCount: 1, live: s.live('H1') });
+      applied(r10, 'APPROVED', 'v10: nothing to push, so the approved head resumes (not AWAITING_PUSH)');
+      eq(pick((await s.view()).attempts.find((a) => a.id === repair.id), ['status', 'outcome']), { status: 'ended', outcome: 'noop' }, 'v10: the repair ends with no change and spends its row');
+      ok(!(await s.effectKinds()).includes('push_recovery'), 'v10: no push recovery for a head GitHub already holds');
+      eq((await s.d()).boundAttemptId, null, 'v10: no repair is bound any more');
+      // v12 (as recorded): the re-run went green at the same head. On the approved head the door lands it.
+      applied(await s.submit({ type: 'CiObserved', actor: 'landing:ci_reading', headSha: 'H1', verdict: 'green', liveChecks: { complete: true, failing: [] }, allPassing: true }), 'APPROVED', 'v12: green recorded on the approved head');
+      applied(await s.land('H1'), 'LANDING', 'the approved, green head lands without a person');
+    },
+  },
+  {
     name: '#4686 end to end: the mission PR opens with a delivery, changes are requested, a coordination repair ends with no edits and is not accepted, a person merges on GitHub over it',
     async run(host) {
       // The mission PR opens: its epoch records the PR and the PR gets a kernel delivery (§6).
