@@ -4,9 +4,9 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (85)
+## Active (83)
 
-### auth (9)
+### auth (8)
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
@@ -16,8 +16,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-05
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
-- [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-10-16
-  A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 - [Deployment Actions](./deployment-actions.md) · @max — verified 2026-10-05
   A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 - [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-23
@@ -124,7 +122,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-17
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (20)
+### surfaces (19)
 
 - [Chat Stream Composition](./chat-stream-composition.md) · @max — verified 2026-10-10
   An assistant chat turn MUST render in fixed, keyed regions so streaming text, finished tools and loading cards never move, reparent or duplicate what is already on screen.
@@ -146,8 +144,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 - [Settings Audiences](./settings-audiences.md) · @max — verified 2026-10-15
   Every setting MUST live on the page of whose it is (you, the team, one workspace), show a member one read-only line instead of controls, and never surface platform-operator machinery to a team.
-- [Settings Copy](./settings-copy.md) · @max — verified 2026-10-12
-  Settings index descriptions MUST be one short fragment stating what the page manages, with no team-policy conditions, trailing filler or em dashes; the voice authority stays design-system section 5 and copy-rules.
 - [Settings Models Page](./settings-models.md) · @max — verified 2026-10-13
   Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-25
@@ -231,10 +227,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workspace Routing and Reach](./workspace-routing-and-reach.md) · @max — verified 2026-10-19
   Every task MUST be filed into the workspace its subject lives in, with the reason recorded, and MUST reach any other workspace only through a named, person-granted delegation checked before it runs.
 
-## Superseded (9)
+## Superseded (11)
 
 - [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-22
   Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract. → replaced by Living Spec `75217f55`
+- [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-10-16
+  A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop. → replaced by Living Spec `a8d1eb82`
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-15
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped. → replaced by `agent-question-protocol`
 - [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-27
@@ -249,5 +247,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path. → replaced by `runner-heartbeat`
 - [Runner Model Auth Source](./runner-model-auth-source.md) · @max — verified 2026-10-14
   A runner MUST detect the model login on its own machine, use it with no setup, say which one it uses, and report that label (never the value) to the server. → replaced by Living Spec `runner-model-login-detect-say-report`
+- [Settings Copy](./settings-copy.md) · @max — verified 2026-10-12
+  Settings index descriptions MUST be one short fragment stating what the page manages, with no team-policy conditions, trailing filler or em dashes; the voice authority stays design-system section 5 and copy-rules. → replaced by Living Spec `d4613613`
 - [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-23
   Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates. → replaced by `mission-feed`

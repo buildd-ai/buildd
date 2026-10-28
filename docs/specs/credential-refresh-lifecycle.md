@@ -1,6 +1,7 @@
 ---
 title: Credential Refresh Lifecycle
-status: active
+status: superseded
+superseded_by: "living-spec:a8d1eb82"
 owner: max
 last_verified: 2026-10-16
 summary: A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
