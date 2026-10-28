@@ -910,3 +910,34 @@ export { describeVisualPhase, visualPhaseDetailRole } from '@buildd/core/visual-
 export function emptyVisualReviewModel(missionId: string, now: number): VisualReviewModel {
   return buildVisualReviewModel({ missionId, shots: [], tasks: [], reviews: [], roundCapOpen: false, browserRunnerOnline: null, captureRef: null, missionIntegrationBranch: null, now });
 }
+
+/** One screen the review left open: what the auditor saw there and the shot it saw it in. */
+export interface OpenVisualFinding {
+  route: string;
+  viewport: VisualReviewCell['viewport'];
+  variant: string | null;
+  artifactId: string;
+  finding: string;
+}
+
+/**
+ * The screens still waiting on a person when the review ran out of rounds
+ * (an issue nobody is fixing, an unsure verdict, a merged fix with no new
+ * shot). Under policy `automatic` these ship with the mission and become
+ * `[surface fix]` tasks on trunk.
+ */
+export function openFindingsOf(m: Pick<VisualReviewModel, 'cells'>): OpenVisualFinding[] {
+  return m.cells
+    .filter(c => cellStanding(c) === 'to_review')
+    .map(c => ({
+      route: c.route,
+      viewport: c.viewport,
+      variant: c.variant,
+      artifactId: c.current.shot.id,
+      finding: (c.current.finding ?? '').replace(/\s+/g, ' ').trim(),
+    }));
+}
+
+/** The review ran out of automatic rounds: the round cap, or a merged fix no screenshot will be taken of. */
+export const reviewExhausted = (m: Pick<VisualReviewModel, 'roundCapOpen' | 'recapture'>): boolean =>
+  m.roundCapOpen || m.recapture?.next === 'decide';

@@ -183,7 +183,9 @@ mock.module('@/lib/goal-criteria-accepted', () => ({
 let surfaceGate: any = { required: false, why: 'no_ui_change' };
 const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGate);
 let auditWaived = false;
+let reviewMode: string | null = 'strict';
 mock.module('@/lib/mission-surface-audit-gate', () => ({
+  visualReviewModeOf: mock(async () => reviewMode),
   evaluateSurfaceAuditGate: mockEvaluateSurfaceAuditGate,
   surfaceAuditWaived: mock(async () => auditWaived),
 }));
@@ -272,6 +274,7 @@ function reset() {
   mockRequestMissionSurfaceAudit.mockClear();
   delete process.env.VISUAL_REVIEW_GATE;
   delete process.env.STANDARDS_GATE;
+  reviewMode = 'strict';
 }
 
 /** A real CI-retry row: taskClass 'attempt', which is NOT a deliverable. */
@@ -1754,6 +1757,57 @@ describe('canCompleteMission — visual review hold', () => {
     expect(d.code).not.toBe('visual_review_open');
     expect(d.ok).toBe(true);
     expect(d.visualReviewHold ?? null).toBeNull();
+  });
+
+  // Policy x (round cap exhausted, leftover decide cells): only `automatic` stops holding.
+  const decideCell = { key: 'r|d|', route: '/app/x', viewport: 'desktop', variant: null, current: { shot: { id: 'art-1' }, finding: 'Header overlaps', agentVerdict: 'issue' }, fixCheck: { state: 'decide' }, standing: 'to_review' };
+  const exhaustedCases: Array<[string, any]> = [
+    ['round cap open', { ...heldModel(0, true), cells: [decideCell] }],
+    ['leftover decide cells', { ...heldModel(0, false), summary: { awaitingHuman: 1 }, recapture: { next: 'decide' }, cells: [decideCell] }],
+  ];
+  for (const [label, model] of exhaustedCases) {
+    for (const mode of ['strict', 'ask', 'off'] as const) {
+      it(`${mode}: ${label} still holds when enforced`, async () => {
+        process.env.VISUAL_REVIEW_GATE = 'enforce';
+        activeMission();
+        taskRows = [work('completed'), auditRow()];
+        visualModel = model;
+        reviewMode = mode;
+        const d = await canCompleteMission('m1');
+        expect(d.code).toBe('visual_review_open');
+        expect(d.carriedFindings ?? undefined).toBeUndefined();
+      });
+    }
+    it(`automatic: ${label} no longer holds and the open screens are carried`, async () => {
+      process.env.VISUAL_REVIEW_GATE = 'enforce';
+      activeMission();
+      taskRows = [work('completed'), auditRow()];
+      visualModel = model;
+      reviewMode = 'automatic';
+      const d = await canCompleteMission('m1');
+      expect(d.ok).toBe(true);
+      expect(d.visualReviewHold ?? null).toBeNull();
+      expect(d.carriedFindings).toEqual([{ route: '/app/x', viewport: 'desktop', variant: null, artifactId: 'art-1', finding: 'Header overlaps' }]);
+    });
+  }
+
+  it('automatic: unsure screens before the rounds run out still hold (the round is not exhausted)', async () => {
+    process.env.VISUAL_REVIEW_GATE = 'enforce';
+    activeMission();
+    taskRows = [work('completed'), auditRow()];
+    visualModel = heldModel(2);
+    reviewMode = 'automatic';
+    const d = await canCompleteMission('m1');
+    expect(d.code).toBe('visual_review_open');
+  });
+
+  it('an unreadable policy keeps holding', async () => {
+    process.env.VISUAL_REVIEW_GATE = 'enforce';
+    activeMission();
+    taskRows = [work('completed'), auditRow()];
+    visualModel = heldModel(0, true);
+    reviewMode = null;
+    expect((await canCompleteMission('m1')).code).toBe('visual_review_open');
   });
 
   it('nothing awaiting a human: no hold, even when enforced', async () => {
