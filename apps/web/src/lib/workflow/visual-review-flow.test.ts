@@ -125,8 +125,8 @@ describe('findings', () => {
     expect(t.merge.ready).toBe(true);
   });
 
-  it('an ambiguous screen is Jev\'s, not the owner\'s; only spent fix rounds reach a person', async () => {
-    const m = newMission({ files: [SCREEN_EDIT] });
+  it('an ambiguous screen is Jev\'s, not the owner\'s; only spent fix rounds reach a person (strict)', async () => {
+    const m = newMission({ files: [SCREEN_EDIT], workspace: 'strict' });
     await tick(m);
     finishAudit(m, { status: 'completed', review: REVIEW.unsure });
     let t = await tick(m);
@@ -139,6 +139,20 @@ describe('findings', () => {
     expect(t.view).toMatchObject({ needsYou: true, problem: 'product' });
     expect(t.view.owner?.kind).toBe('judge');
     expect(t.merge.ready).toBe(false);
+  });
+});
+
+describe('spent fix rounds under the automatic policy', () => {
+  it('merge anyway: nobody is asked, the findings are carried', async () => {
+    const m = newMission({ files: [SCREEN_EDIT] });
+    await tick(m);
+    finishAudit(m, { status: 'completed', review: REVIEW.unsure });
+    await tick(m);
+    m.audits[0].review = REVIEW.exhausted;
+    const t = await tick(m);
+    expect(t.state).toMatchObject({ status: 'findings', nextActor: 'none', pendingVerification: false });
+    expect(t.state.findings?.carried).toBe(true);
+    expect(t.merge.ready).toBe(true);
   });
 });
 
