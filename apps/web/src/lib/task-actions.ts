@@ -142,7 +142,7 @@ export function taskActionSet(s: TaskActionState): TaskActionId[] {
     out.push('waiting_on_failed');
     if (s.hasHistory) out.push('history');
   } else if (s.phase === 'failed' && !waiting) {
-    out.push('retry');
+    out.push('retry', 'cancel');
     if (otherBackendOf(s.backend) && s.otherBackendAvailable !== false) out.push('switch_backend');
     if (s.hasHistory) out.push('history');
   }
