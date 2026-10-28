@@ -7,8 +7,8 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getDispatchHealth } from '@/lib/dispatch-health';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * GET /api/health/dispatch — Dispatch transport health for the caller's team:
@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
     const workspaceId = searchParams.get('workspaceId');
     let scoped: string[];
     if (workspaceId) {
-      if (!UUID_RE.test(workspaceId)) {
+      if (!isUuid(workspaceId)) {
         return NextResponse.json({ error: `Invalid workspaceId: expected a UUID, got "${workspaceId}".` }, { status: 400 });
       }
       const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { id: true, teamId: true } });

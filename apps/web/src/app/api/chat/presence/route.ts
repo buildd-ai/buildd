@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { recordBeat } from '@/lib/presence';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * POST /api/chat/presence  { visible: boolean, conversationId?: string, tabId?: string }
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest) {
   if (!body || typeof body.visible !== 'boolean') {
     return NextResponse.json({ error: 'visible must be a boolean' }, { status: 400 });
   }
-  const conversationId = typeof body.conversationId === 'string' && UUID.test(body.conversationId) ? body.conversationId : null;
+  const conversationId = typeof body.conversationId === 'string' && isUuid(body.conversationId) ? body.conversationId : null;
 
   // One id per mounted chat page, so tabs and a late beacon from a replaced page cannot clear each other.
   const tabId = typeof body.tabId === 'string' && TAB_ID.test(body.tabId) ? body.tabId : null;
@@ -31,7 +32,6 @@ export async function POST(req: NextRequest) {
 }
 
 const TAB_ID = /^[A-Za-z0-9_-]{6,64}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function sessionUserId(): Promise<string | null> {
   if (process.env.NODE_ENV === 'development') {

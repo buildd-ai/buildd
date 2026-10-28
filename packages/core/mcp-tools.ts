@@ -457,7 +457,6 @@ export type ToolResult = {
 
 // ── UUID Validation ───────────────────────────────────────────────────────────
 
-const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Validates that `id` is a full UUID and returns it. Throws with an actionable
@@ -594,7 +593,7 @@ export function formatTaskEstimateLine(estimate: unknown): string | null {
 
 function requireFullUuid(id: unknown, paramName: string): string {
   if (!id || typeof id !== 'string') throw new Error(`${paramName} is required`);
-  if (!FULL_UUID_REGEX.test(id)) {
+  if (!isUuid(id)) {
     const isPrefix = /^[0-9a-f]{1,35}$/i.test(id);
     const hint = isPrefix
       ? ` "${id}" looks like an ID prefix — the web UI shows 8-character prefixes; use the full UUID from the task URL or API response.`
@@ -1675,7 +1674,6 @@ export function describeOutputChannel(taskTemplate: unknown): string | null {
 }
 
 // UUID pattern for workspace IDs
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Resolve worker ID from params, falling back to context worker ID.
@@ -2020,7 +2018,7 @@ async function resolveWorkspaceId(
 ): Promise<string | null> {
   const explicit = typeof param === 'string' ? param.trim() : '';
   const raw = explicit || ctx.workspaceId;
-  if (raw && UUID_RE.test(raw)) return raw;
+  if (raw && isUuid(raw)) return raw;
 
   // Try context fallback first
   if (!raw) return ctx.getWorkspaceId();
@@ -2172,7 +2170,7 @@ async function resolveMissionTarget(
   ctx: ActionContext,
 ): Promise<{ id: string; lookup: boolean } | { message: string }> {
   const raw = typeof params.missionId === 'string' ? params.missionId.trim() : '';
-  if (raw && (UUID_RE.test(raw) || /^[0-9a-f]{1,35}$/i.test(raw))) return { id: raw, lookup: false };
+  if (raw && (isUuid(raw) || /^[0-9a-f]{1,35}$/i.test(raw))) return { id: raw, lookup: false };
   const byTitle = raw || ((params.title ?? params.query) as string | undefined);
   if (!byTitle) throw new Error('missionId or title is required');
   const wsId = params.workspaceId ? await resolveWorkspaceId(api, params.workspaceId, ctx) : null;
@@ -6291,7 +6289,7 @@ export async function handleBuilddAction(
       // copy: the destination by UUID, or by name or repo among the workspaces
       // this token lists. Not resolveWorkspaceId: its task-token fallback (the
       // bound workspace) would quietly turn "the other workspace" into this one.
-      if (op === 'copy' && typeof params.targetWorkspaceId === 'string' && params.targetWorkspaceId.trim() && !UUID_RE.test(params.targetWorkspaceId.trim())) {
+      if (op === 'copy' && typeof params.targetWorkspaceId === 'string' && params.targetWorkspaceId.trim() && !isUuid(params.targetWorkspaceId.trim())) {
         const raw = params.targetWorkspaceId.trim().toLowerCase();
         const unreachable = errorResult(`Not copied (spec_copy_destination): workspace "${params.targetWorkspaceId}" is not visible to this token. The copy needs one caller who reads the source and writes specs in the destination: a person in both, or an API key that reaches both. A task token reaches only its own workspace.`);
         let listed: Array<{ id: string; name: string; repo?: string | null }>;
@@ -6533,7 +6531,7 @@ export async function handleBuilddAction(
       if (!params.workspace || typeof params.workspace !== 'string') throw new Error('workspace is required');
       if (!params.reason || typeof params.reason !== 'string') throw new Error('reason is required');
       let scheduleId = params.scheduleId as string | undefined;
-      let wsId = ctx.workspaceId && UUID_RE.test(ctx.workspaceId) ? ctx.workspaceId : null;
+      let wsId = ctx.workspaceId && isUuid(ctx.workspaceId) ? ctx.workspaceId : null;
       if ((!scheduleId || !wsId) && ctx.workerId) {
         const workerData = await api(`/api/workers/${ctx.workerId}`);
         const taskContext = workerData?.task?.context || workerData?.context || {};
@@ -8258,6 +8256,7 @@ import {
   renderPlanText,
   truncate,
 } from './knowledge-store/cards';
+import { isUuid } from '@buildd/shared';
 
 /**
  * Resolve the KnowledgeStore namespace for a corpus.

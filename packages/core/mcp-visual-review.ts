@@ -11,11 +11,11 @@ import type { ApiFn, ToolResult } from './mcp-tools';
 import { formatVisualReview, missionArtifacts } from './visual-review-text';
 import { runnerPinLabel } from './runner-pin';
 import { activeRunnerHold, executorDisplayName, fleetGroupKey, runnerFleetIdentity, runnerUpdateLine, runnerUpdateState, type RunnerFleetIdentity, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
+import { isUuid } from '@buildd/shared';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Resolves a workspace param (id, name or repo) to an id, or null when the caller cannot see it. */
 export type WorkspaceResolver = (param: unknown) => Promise<string | null>;
@@ -75,8 +75,8 @@ export async function runGetVisualReview(
 
   let missionId = str(params.missionId);
   // A title passed as missionId is looked up, as manage_missions does.
-  const missionTitle = str(params.missionTitle) || (missionId && !UUID_RE.test(missionId) ? missionId : '');
-  if (missionTitle && missionId && !UUID_RE.test(missionId)) missionId = '';
+  const missionTitle = str(params.missionTitle) || (missionId && !isUuid(missionId) ? missionId : '');
+  if (missionTitle && missionId && !isUuid(missionId)) missionId = '';
   if (!missionId && missionTitle) {
     const found = await missionIdFromTitle(api, missionTitle, explicitWs ? { id: explicitWs, raw: rawWs } : null);
     if ('error' in found) return found.error;
@@ -84,7 +84,7 @@ export async function runGetVisualReview(
   }
 
   if (missionId) {
-    if (!UUID_RE.test(missionId)) return errorResult(`missionId must be a full UUID; pass missionTitle to look a mission up by title.`);
+    if (!isUuid(missionId)) return errorResult(`missionId must be a full UUID; pass missionTitle to look a mission up by title.`);
     const id = encodeURIComponent(missionId);
     type MissionHead = { title?: unknown; status?: unknown; completedAt?: unknown };
     const mission = await api(`/api/missions/${id}`) as (MissionHead & { mission?: MissionHead }) | null;

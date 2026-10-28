@@ -39,6 +39,7 @@ import {
   type ModelInferenceOperation,
   type ModelInferenceProvider,
 } from './capability-model-inference';
+import { isUuid } from '@/lib/uuid';
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
@@ -81,7 +82,6 @@ const BUILDD_CAPABILITY_BY_ACCESS: Record<RequestAccess, 'tasks:create' | 'analy
 /** A capability buildd itself serves through a task delegation (no connector, no policy). */
 export const isDelegationCapability = (c: string): c is 'tasks:create' | 'analytics:read' =>
   c === TASK_FILING_CAPABILITY || c === ANALYTICS_READ_CAPABILITY;
-const WORKSPACE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * A tool's risk from its name: read verbs read, destructive or authority verbs
@@ -210,7 +210,7 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
     if (access && named && access !== accessOf) return { ok: false, error: `${named} is access ${accessOf}` };
     const cap = BUILDD_CAPABILITY_BY_ACCESS[accessOf];
     const r = val(resource);
-    if (!r || !WORKSPACE_UUID_RE.test(r)) return { ok: false, error: `${cap} needs resource: the UUID of the workspace` };
+    if (!r || !isUuid(r)) return { ok: false, error: `${cap} needs resource: the UUID of the workspace` };
     if (val(tool) || val(environment) || b.models !== undefined || b.operations !== undefined || b.budget !== undefined) {
       return { ok: false, error: `${cap} takes only resource (a workspace UUID) and reason` };
     }

@@ -19,6 +19,7 @@ import { MISSION_EVENTS, WORKSPACE_EVENTS } from '@/app/app/(protected)/missions
 import type { BuilddObjectRef } from '../chat-contract';
 import { MISSION_OBJECT_EXTRA_EVENTS, createObjectStore, type ObjectEntry, type ObjectSidecar, type ObjectSource, type ObjectStore } from './object-store';
 import type { ObjectView } from './object-views';
+import { isUuid } from '@/lib/uuid';
 
 type KitStore = KitObjectStore<BuilddObjectRef, ObjectView, unknown>;
 
@@ -32,7 +33,6 @@ export function objectChannels(ref: BuilddObjectRef, view: ObjectView | null): A
   return out;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Where a ref's live view is read. A question ref names its waiting worker and
@@ -44,7 +44,7 @@ export function objectUrl(ref: BuilddObjectRef): string {
   if (ref.kind === 'question') return `${base}/question/${encodeURIComponent(ref.taskId ?? ref.id)}`;
   if (ref.kind === 'pr') {
     if (ref.taskId) return `${base}/pr/${encodeURIComponent(ref.taskId)}`;
-    if (!UUID_RE.test(ref.id)) return `${base}/pr/ref?ref=${encodeURIComponent(ref.id)}`;
+    if (!isUuid(ref.id)) return `${base}/pr/ref?ref=${encodeURIComponent(ref.id)}`;
   }
   return `${base}/${ref.kind}/${encodeURIComponent(ref.id)}`;
 }

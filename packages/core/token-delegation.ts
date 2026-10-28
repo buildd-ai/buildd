@@ -1,3 +1,4 @@
+import { isUuid } from '@buildd/shared';
 /**
  * Schedule delegation: an explicit, auditable grant that lets the tasks one
  * schedule spawns reach a few other workspaces of the same team.
@@ -53,7 +54,6 @@ export interface ScheduleDelegation {
   grantedAt: string;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isScheduleDelegationCapability(value: unknown): value is ScheduleDelegationCapability {
   return typeof value === 'string' && (SCHEDULE_DELEGATION_CAPABILITIES as readonly string[]).includes(value);
@@ -87,7 +87,7 @@ export function parseScheduleDelegationInput(
     if (!g || typeof g !== 'object' || Array.isArray(g)) return { ok: false, error: 'each grant must be { workspaceId, capabilities }' };
     const { workspaceId, capabilities, ...rest } = g as { workspaceId?: unknown; capabilities?: unknown };
     if (Object.keys(rest).length) return { ok: false, error: `grant has unknown field(s): ${Object.keys(rest).join(', ')}` };
-    if (typeof workspaceId !== 'string' || !UUID_RE.test(workspaceId)) {
+    if (typeof workspaceId !== 'string' || !isUuid(workspaceId)) {
       return { ok: false, error: 'grant.workspaceId must be a workspace UUID' };
     }
     if (workspaceId === ownWorkspaceId) {
@@ -124,7 +124,7 @@ export function readScheduleDelegation(value: unknown): ScheduleDelegationGrant[
   for (const g of grants.slice(0, SCHEDULE_DELEGATION_MAX_GRANTS)) {
     if (!g || typeof g !== 'object') continue;
     const { workspaceId, capabilities } = g as { workspaceId?: unknown; capabilities?: unknown };
-    if (typeof workspaceId !== 'string' || !UUID_RE.test(workspaceId) || !Array.isArray(capabilities)) continue;
+    if (typeof workspaceId !== 'string' || !isUuid(workspaceId) || !Array.isArray(capabilities)) continue;
     const caps = capabilities.filter(isScheduleDelegationCapability);
     if (caps.length) out.push({ workspaceId, capabilities: caps });
   }
@@ -225,7 +225,7 @@ export function parseFilingTargets(input: unknown): { ok: true; targets: string[
     return { ok: false, error: `filingTargets may name at most ${SCHEDULE_DELEGATION_MAX_GRANTS} workspaces` };
   }
   for (const t of input) {
-    if (typeof t !== 'string' || !UUID_RE.test(t)) return { ok: false, error: 'filingTargets must be workspace UUIDs' };
+    if (typeof t !== 'string' || !isUuid(t)) return { ok: false, error: 'filingTargets must be workspace UUIDs' };
   }
   return { ok: true, targets: [...new Set(input as string[])] };
 }

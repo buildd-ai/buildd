@@ -24,6 +24,7 @@ import { and, eq, desc, gt, sql } from 'drizzle-orm';
 import { db } from './db/client';
 import { gateEvents } from './db/schema';
 import { normalizeErrorSignature } from './error-signature';
+import { isUuid } from '@buildd/shared';
 
 /** What the gate decided. */
 export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded' | 'accepted';
@@ -65,10 +66,9 @@ export interface RecordGateEventInput {
 }
 
 /** UUID columns reject anything else; a non-UUID hint belongs in `detail`. */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function uuidOrNull(value: string | null | undefined): string | null {
-  return typeof value === 'string' && UUID_RE.test(value) ? value : null;
+  return typeof value === 'string' && isUuid(value) ? value : null;
 }
 
 /** Keep a runaway payload out of the row; the reason already carries the shape. */

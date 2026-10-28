@@ -32,8 +32,8 @@ import type {
   ReviewRoundMetrics,
 } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Only the first line of an error ever reaches the normalizer; the rest is trace. */
 const MAX_LOOKUP_INPUT = 4000;
@@ -210,7 +210,7 @@ export async function GET(req: NextRequest) {
 
     let scopedWsIds: string[];
     if (workspaceId) {
-      if (!UUID_RE.test(workspaceId)) {
+      if (!isUuid(workspaceId)) {
         return NextResponse.json(
           { error: `Invalid workspaceId: expected a UUID, got "${workspaceId}". Resolve workspace names to UUIDs before calling this endpoint.` },
           { status: 400 },
