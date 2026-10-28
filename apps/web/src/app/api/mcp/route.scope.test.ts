@@ -124,7 +124,18 @@ mock.module('@/lib/interactive-worker-liveness', () => ({
   scheduleInteractiveTouch: mockTouchInteractiveWorkers,
 }));
 
-import { GET, POST } from './route';
+import { GET, HEAD, POST } from './route';
+
+describe('/api/mcp HEAD', () => {
+  // Reachability checks and some clients probe with HEAD: it gets the same
+  // challenge headers as GET, with no body.
+  it('answers an unauthenticated HEAD with the 401 challenge and no body', async () => {
+    const res = await HEAD(new Request('http://localhost/api/mcp', { method: 'HEAD' }));
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toContain('resource_metadata=');
+    expect(await res.text()).toBe('');
+  });
+});
 
 describe('/api/mcp GET', () => {
   // A connector setup check probes with a plain GET before any sign-in: it must

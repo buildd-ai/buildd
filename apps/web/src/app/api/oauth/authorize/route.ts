@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import { createAuthCode, getClient, isSafeRedirectUri } from '@/lib/oauth/storage';
+import { createAuthCode, isSafeRedirectUri, resolveClient, type ResolvedClient } from '@/lib/oauth/storage';
 import { getAccountResourceUrl, getIssuer, getJwtSecret } from '@/lib/oauth/config';
 import { levelForTeamRole } from '@/lib/oauth/session-level';
 import {
@@ -72,11 +72,13 @@ export function isRegisteredRedirectUri(registeredUris: string[], requestedUri: 
       return false;
     }
 
+    // RFC 8252 §7.3: any port on a loopback redirect. A native app (Claude
+    // Code) binds an ephemeral port per sign-in, and its metadata document
+    // declares `http://localhost/callback` with no port at all.
     return (
       isSafeRedirectUri(registeredUri) &&
       LOOPBACK_HOSTS.has(registered.hostname) &&
       registered.protocol === requested.protocol &&
-      registered.port === requested.port &&
       registered.pathname === requested.pathname &&
       registered.search === requested.search
     );
@@ -139,7 +141,7 @@ function readParams(params: URLSearchParams): AuthorizeParams {
 }
 
 type Validated = {
-  client: NonNullable<Awaited<ReturnType<typeof getClient>>>;
+  client: ResolvedClient;
   clientId: string;
   redirectUri: string;
   codeChallenge: string;
@@ -157,7 +159,9 @@ async function validateRequest(
   if (!p.clientId || !p.redirectUri) {
     return { ok: false, response: plainError('missing client_id or redirect_uri') };
   }
-  const client = await getClient(p.clientId);
+  // A URL client_id is a Client ID Metadata Document (Claude, Claude Code);
+  // its document is fetched and validated here.
+  const client = await resolveClient(p.clientId);
   if (!client) {
     return { ok: false, response: plainError('unknown client_id', 400) };
   }

@@ -51,4 +51,14 @@ describe('RFC 8414 authorization-server metadata', () => {
       }
     }
   });
+
+  // Claude (web, Desktop, mobile) and Claude Code identify themselves with a
+  // Client ID Metadata Document only when the server advertises both of these;
+  // otherwise they fall back to dynamic registration.
+  it('advertises Client ID Metadata Document support for public clients', async () => {
+    const body = await (await GET()).json();
+    expect(body.client_id_metadata_document_supported).toBe(true);
+    expect(body.token_endpoint_auth_methods_supported).toContain('none');
+    expect(body.code_challenge_methods_supported).toEqual(['S256']);
+  });
 });
