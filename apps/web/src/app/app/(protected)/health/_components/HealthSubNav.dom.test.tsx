@@ -48,3 +48,24 @@ it('R-1: Queue carries the waiting count its read published, beside the label', 
     resetQueueWaitingCount();
   }
 });
+
+it('Queue shows no count when nothing waits, and the phone tab separates label from count', async () => {
+  const { default: HealthSubNav } = await import('./HealthSubNav');
+  const { publishQueueWaitingCount, resetQueueWaitingCount } = await import('@/lib/health-queue-count');
+  Element.prototype.scrollIntoView = (() => {}) as typeof Element.prototype.scrollIntoView;
+  const el = document.createElement('div');
+  document.body.append(el);
+  const root = createRoot(el);
+  try {
+    publishQueueWaitingCount(0, null);
+    act(() => root.render(<HealthSubNav viewer={{ operator: false, teamAdmin: false }} />));
+    expect(el.querySelectorAll('[data-testid="health-queue-count"]')).toHaveLength(0);
+    act(() => publishQueueWaitingCount(3, null));
+    const tab = el.querySelector('[data-testid="health-subnav-mobile"] [data-testid="health-queue-count"]')!.parentElement!;
+    // Flex drops the literal space, so the gap must come from the class.
+    expect(tab.className).toContain('gap-1.5');
+  } finally {
+    act(() => root.unmount());
+    resetQueueWaitingCount();
+  }
+});
