@@ -78,6 +78,7 @@ import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { isFailingCheckRun } from '@/lib/ci-verdict';
 import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { SHARED_SCHEMA_HOLD_PREFIX } from '@/lib/mission-schema-overlap';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -902,6 +903,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'migration':
         if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
         if (/^could not /.test(reason)) return waiting(reason);
+        // Another open mission ships the same schema object: wait for one of the two to reach trunk.
+        if (reason.startsWith(SHARED_SCHEMA_HOLD_PREFIX)) return waiting(reason);
         // A stale snapshot parent is work, not a decision: refresh onto the base so CI runs on it.
         if (/^migration snapshot parent is no longer a leaf/.test(reason) && baseRef) {
           kernelView = await kernelStatus();
