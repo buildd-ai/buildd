@@ -1,26 +1,16 @@
 ---
-status: proposed
+status: superseded
 # Structural conformance only; passing does not certify every prose invariant.
 # `secrets.userId` itself already exists (personal inference keys, PR #2832), so
 # a check for the bare column cannot tell this design apart from that one. These
 # assertions pin the pieces only this design adds: the agent-backend resolver,
 # claim-time injection, and the runner refresh route reading the owner.
-assertions:
-  - id: "codex-resolver-user-owned"
-    type: "symbol_reachable"
-    symbol: "userId"
-    entry: "apps/web/src/lib/codex-credential.ts"
-    as: "read"
-  - id: "refresh-route-user-owned-auth"
-    type: "symbol_reachable"
-    symbol: "userId"
-    entry: "apps/web/src/app/api/runner/credential-refresh/route.ts"
-    as: "read"
-  - id: "claim-user-owned-credential"
-    type: "symbol_reachable"
-    symbol: "userId"
-    entry: "apps/web/src/app/api/workers/claim/credential-injection.ts"
-    as: "read"
+superseded_by: docs/specs/credential-refresh-lifecycle.md
+superseded_on: "2026-10-28"
+superseded_reason: >-
+  Server-side subscription-login storage and refresh was removed (seat-custody removal);
+  the code surface these assertions pinned no longer exists.
+assertions: []
 ---
 
 # user-owned-agent-credentials

@@ -19,7 +19,7 @@ import { db } from '@buildd/core/db';
 import { serialLaneEntries, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { isUniqueViolation, LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { laneOrderBy } from '@/lib/claim-order';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isOwnPrRepair, laneKeysFor, lanePosition, lanesOf, stuckSince, type LaneMember, type LaneTask, type LaneView } from '@/lib/serial-lanes';
@@ -202,9 +202,8 @@ export async function syncLanes(input: { workspaceIds: string[]; claimable?: Lan
   `);
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string }; message?: string } | null;
-  return e?.code === '23505' || e?.cause?.code === '23505' || /duplicate key|unique constraint|serial_lane_entries_holder_idx/i.test(e?.message ?? '');
+function isLaneHolderViolation(err: unknown): boolean {
+  return isUniqueViolation(err) || /serial_lane_entries_holder_idx/i.test(String((err as { message?: unknown } | null)?.message ?? ''));
 }
 
 export type TakeLanes =
@@ -230,7 +229,7 @@ export async function takeLanes(input: { workspaceId: string; taskId: string; la
         });
       taken.push(lane);
     } catch (err) {
-      if (!isUniqueViolation(err)) {
+      if (!isLaneHolderViolation(err)) {
         if (taken.length) await giveBackLanes({ workspaceId, taskId, lanes: taken, heldAt: now }).catch(() => {});
         throw err;
       }

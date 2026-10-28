@@ -43,7 +43,7 @@ const _originalFetch = (globalThis as any).fetch;
 (globalThis as any).fetch = mockFetch;
 afterAll(() => { (globalThis as any).fetch = _originalFetch; });
 
-mock.module('@/lib/codex-credential', () => ({
+mock.module('@/lib/codex-api-key', () => ({
   resolveCodexApiKey: mock(() => Promise.resolve(null)),
 }));
 

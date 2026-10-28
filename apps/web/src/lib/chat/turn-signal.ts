@@ -1,3 +1,4 @@
+import { isUuid } from '@/lib/uuid';
 /**
  * The visible-answer turn signal: what the browser saw of one user turn.
  *
@@ -22,7 +23,6 @@
 
 /** The id the client gave its user message (AI SDK ids, or a UUID). */
 export const TURN_REF_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Offsets past this are clamped out: no turn runs an hour. */
 const MAX_OFFSET_MS = 60 * 60 * 1000;
@@ -95,7 +95,7 @@ export function parseTurnSignalPost(body: unknown): TurnSignalPostResult {
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > MAX_OFFSET_MS) return { ok: false, error: `signal.${k} must be an offset in ms` };
       signal[k as typeof OFFSET_KEYS[number]] = Math.round(v);
     } else if (k === 'assistantId') {
-      if (typeof v !== 'string' || !UUID_RE.test(v)) return { ok: false, error: 'signal.assistantId must be a message id' };
+      if (typeof v !== 'string' || !isUuid(v)) return { ok: false, error: 'signal.assistantId must be a message id' };
       signal.assistantId = v.toLowerCase();
     } else if (k === 'outcome') {
       if (!(TURN_SIGNAL_OUTCOMES as readonly unknown[]).includes(v)) return { ok: false, error: 'signal.outcome must be ready or error' };

@@ -24,7 +24,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId } from '@/lib/team-access';
-import { resolveAnthropicAuth } from '@/lib/claude-credential';
+import { resolveAnthropicAuth } from '@/lib/anthropic-auth';
 import { resolveAllTiers, TIERS, type Tier, type TierEntry } from '@buildd/core/model-tier-registry';
 import { auditTierModels } from '@buildd/core/model-tier-liveness';
 import { fetchOpenRouterCatalog, vendorOf, type CatalogEntry } from '@buildd/core/model-catalog';

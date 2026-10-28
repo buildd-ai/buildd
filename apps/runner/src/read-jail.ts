@@ -39,7 +39,7 @@ export function buildReadJailDeniedPrefixes(repoPath: string): string[] {
 
 /**
  * Prefix pattern that identifies per-worker Claude config dirs in $TMPDIR.
- * Created by claude-auth.ts via mkdtempSync(tmpdir(), 'claude-cfg-').
+ * Created via mkdtempSync(tmpdir(), 'claude-cfg-'); kept so a leftover dir stays readable to its own session.
  */
 export const CLAUDE_CFG_TMP_PREFIX = 'claude-cfg-';
 

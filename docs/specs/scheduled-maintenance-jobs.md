@@ -3,18 +3,14 @@ title: Scheduled maintenance jobs
 status: draft
 owner: max
 last_verified: 2026-10-28
-summary: The fourteen background cron routes that keep derived state, alerts and hygiene current MUST each declare what they do, their cadence and what degrades when they stop, so a silently dead job is recognisable.
+summary: The thirteen background cron routes that keep derived state, alerts and hygiene current MUST each declare what they do, their cadence and what degrades when they stop, so a silently dead job is recognisable.
 domain: integrations
-surfaces: [cron-manifest.json, apps/web/src/app/api/cron/orchestration-readout/route.ts, apps/web/src/app/api/cron/lease-expiry-guard/route.ts, apps/web/src/app/api/cron/role-outcomes/route.ts, apps/web/src/app/api/cron/mission-summaries/route.ts, apps/web/src/app/api/cron/feedback-digest/route.ts, apps/web/src/app/api/cron/chat-retro/route.ts, apps/web/src/app/api/cron/page-budget-health/route.ts, apps/web/src/app/api/cron/experiment-health/route.ts, apps/web/src/app/api/cron/memory-digest-guardrail/route.ts, apps/web/src/app/api/cron/runner-update-notify/route.ts, apps/web/src/app/api/cron/visual-review-schedule/route.ts, apps/web/src/app/api/cron/post-session-quality/route.ts, apps/web/src/app/api/cron/stall-notify/route.ts, apps/web/src/app/api/cron/task-archive/route.ts]
+surfaces: [cron-manifest.json, apps/web/src/app/api/cron/orchestration-readout/route.ts, apps/web/src/app/api/cron/role-outcomes/route.ts, apps/web/src/app/api/cron/mission-summaries/route.ts, apps/web/src/app/api/cron/feedback-digest/route.ts, apps/web/src/app/api/cron/chat-retro/route.ts, apps/web/src/app/api/cron/page-budget-health/route.ts, apps/web/src/app/api/cron/experiment-health/route.ts, apps/web/src/app/api/cron/memory-digest-guardrail/route.ts, apps/web/src/app/api/cron/runner-update-notify/route.ts, apps/web/src/app/api/cron/visual-review-schedule/route.ts, apps/web/src/app/api/cron/post-session-quality/route.ts, apps/web/src/app/api/cron/stall-notify/route.ts, apps/web/src/app/api/cron/task-archive/route.ts]
 related: [external-cron-triggers, runner-liveness]
-keywords: [cron, maintenance, cron_runs, lease expiry, task archive, stall notify, role outcomes]
+keywords: [cron, maintenance, cron_runs, task archive, stall notify, role outcomes]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
-  - id: "lease-expiry-guard-route"
-    type: "route"
-    method: "GET"
-    path: "/api/cron/lease-expiry-guard"
   - id: "task-archive-route"
     type: "route"
     method: "GET"
@@ -42,7 +38,6 @@ manifest wins and this table is stale. Every route authenticates with
 
 | Route | Schedule | What it does | What breaks without it |
 |---|---|---|---|
-| `lease-expiry-guard` | hourly, 07:00-23:00 | Finds credential leases that expired without renewal (runner died or broker crashed), alerts the team, deletes the lease row so a returning runner can re-acquire. Optional control-plane refresh fallback is off unless `BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true`. | Dead leases linger, no alert fires, and a returning runner can be blocked by a stale lease. |
 | `task-archive` | weekly, Monday 10:00 | Cancels (the de-facto archive) `failed` tasks untouched for 30 days that no live task depends on. Idempotent. | Failed task rows accumulate forever and clutter lists. |
 | `stall-notify` | every 5 minutes (manifest note: staged dark, no trigger has ever existed) | Sends one Pushover reminder per stall window for escalation-inbox PRs waiting past `stallNotifyMinutes`. | Stalled PRs wait silently for a human; no reminders. |
 | `runner-update-notify` | every 5 minutes, gated (`?gate=due`) | Tells a team once that a runner update is stuck and releases that runner's paused tasks after an hour of silence. Returns without touching Postgres when nothing is due. | A stuck runner update goes unreported and its paused tasks stay paused. |
@@ -70,9 +65,6 @@ manifest wins and this table is stale. Every route authenticates with
 
 ## Acceptance criteria
 
-- AC-1: GIVEN a credential lease expired without renewal WHEN
-  `lease-expiry-guard` runs THEN the team is alerted once and the lease row is
-  deleted, so the next run does not alert again.
 - AC-2: GIVEN a `failed` task older than 30 days that a pending task depends on
   WHEN `task-archive` runs THEN it is left as it is; one with no live dependent
   becomes `cancelled`.
@@ -87,7 +79,6 @@ manifest wins and this table is stale. Every route authenticates with
 
 - `cron-manifest.json`: the schedule of each job.
 - `apps/web/src/app/api/cron/orchestration-readout/route.ts`
-- `apps/web/src/app/api/cron/lease-expiry-guard/route.ts`
 - `apps/web/src/app/api/cron/role-outcomes/route.ts`
 - `apps/web/src/app/api/cron/mission-summaries/route.ts`
 - `apps/web/src/app/api/cron/feedback-digest/route.ts`
@@ -110,6 +101,10 @@ manifest wins and this table is stale. Every route authenticates with
 - The schedules tick, core maintenance and other already-specced cron routes.
 
 ## Known gaps
+
+- `lease-expiry-guard` is gone: it watched server-held subscription-login
+  leases, and that custody path was removed. Its old AC-1 is retired rather
+  than renumbered.
 
 - `stall-notify` is declared in the manifest but its note says no trigger has
   ever existed; confirm before relying on it.

@@ -124,7 +124,33 @@ mock.module('@/lib/interactive-worker-liveness', () => ({
   scheduleInteractiveTouch: mockTouchInteractiveWorkers,
 }));
 
-import { POST } from './route';
+import { GET, HEAD, POST } from './route';
+
+describe('/api/mcp HEAD', () => {
+  // Reachability checks and some clients probe with HEAD: it gets the same
+  // challenge headers as GET, with no body.
+  it('answers an unauthenticated HEAD with the 401 challenge and no body', async () => {
+    const res = await HEAD(new Request('http://localhost/api/mcp', { method: 'HEAD' }));
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toContain('resource_metadata=');
+    expect(await res.text()).toBe('');
+  });
+});
+
+describe('/api/mcp GET', () => {
+  // A connector setup check probes with a plain GET before any sign-in: it must
+  // find the same OAuth challenge a POST gets, not a bare 405.
+  it('answers an unauthenticated GET with the 401 sign-in challenge', async () => {
+    const res = await GET(new Request('http://localhost/api/mcp'));
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toContain('resource_metadata=');
+  });
+
+  it('still refuses a signed-in GET with 405, so clients do not poll for SSE', async () => {
+    const res = await GET(new Request('http://localhost/api/mcp', { headers: { Authorization: 'Bearer bld_test' } }));
+    expect(res.status).toBe(405);
+  });
+});
 
 function recallRequest(query: string) {
   return new Request(`http://localhost/api/mcp${query}`, {

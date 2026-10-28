@@ -14,13 +14,13 @@ const meta = { schema: 1, version: 'v1.2.3', branch: 'release/v1.2.3', sourceRef
 type Check = { name: string; state: 'passing' | 'pending' | 'failing' | 'missing' };
 const passing: Check[] = [{ name: 'build', state: 'passing' }, { name: 'release candidate verified', state: 'passing' }];
 
-function harness(o: { sha: string; state?: string; candidate?: boolean; candidateConfig?: boolean; checks?: () => Check[]; verdict?: () => 'pass' | 'pending' | 'changes_requested'; linked?: boolean }) {
+function harness(o: { sha: string; state?: string; candidate?: boolean; candidateConfig?: boolean; checks?: () => Check[]; verdict?: () => 'pass' | 'pending' | 'changes_requested'; linked?: boolean; foreign?: boolean; gitConfig?: unknown }) {
   let pulls = 0;
   const statuses = new Map<string, { state: string; description: string }>();
   const writes: Array<{ sha: string; context: string; state: string }> = [];
   const live = { sha: o.sha, state: o.state ?? 'open' };
   const deps: OpenPrStatusDeps & { getPull: NonNullable<Parameters<typeof publishOpenPrHead>[1]>['getPull'] } = {
-    repos: async () => (o.linked === false ? [] : [{ workspaceId: 'ws1', installationId: 1, repoFullName: REPO, releaseConfig: (o.candidate || o.candidateConfig ? releaseConfig : null) as LinkedRepo['releaseConfig'] }]),
+    repos: async () => (o.linked === false ? [] : [{ workspaceId: 'ws1', installationId: 1, repoFullName: REPO, releaseConfig: (o.candidate || o.candidateConfig ? releaseConfig : null) as LinkedRepo['releaseConfig'], gitConfig: o.gitConfig ?? null }]),
     getPull: async () => (pulls++, {
       number: 9, state: live.state, body: o.candidate ? `<!-- release-candidate ${JSON.stringify(meta)} -->` : '', user: { login: o.candidate ? 'release-bot[bot]' : 'dev' },
       head: { sha: live.sha, ref: o.candidate ? 'release/v1.2.3' : 'feat/x', repo: { full_name: REPO } }, base: { ref: o.candidate ? 'main' : 'dev', repo: { full_name: REPO } },
@@ -28,6 +28,7 @@ function harness(o: { sha: string; state?: string; candidate?: boolean; candidat
     statusOf: async (_i, _r, sha, context) => statuses.get(`${sha}|${context}`) ?? null,
     publish: async (_i, p) => { writes.push({ sha: p.sha, context: p.context, state: p.state }); statuses.set(`${p.sha}|${p.context}`, { state: p.state, description: p.description }); },
     owned: async () => null,
+    foreign: async () => o.foreign ?? false,
     reviews: async () => ({
       isCandidate: (config, pr) => classifyReleasePr(config, pr).kind === 'candidate',
       mayBeCandidate,
@@ -41,6 +42,33 @@ const at = (n: number) => ({ installationId: 1, repoFullName: REPO, prNumber: 9,
 const stateOn = (h: ReturnType<typeof harness>, sha: string) => h.statuses.get(`${sha}|${CONTEXT}`)?.state;
 
 describe('an event publishes one open head now (AC-78)', () => {
+  test('a foreign PR (buildd has no record of it, no review asked for) with autoReviewUnowned off: the webhook path writes no status at all', async () => {
+    const h = harness({ sha: H(1), foreign: true, gitConfig: { mergePolicy: { tier: 'human' } } });
+    expect(await publishOpenPrHead(at(1), h.deps)).toBe('skipped_foreign');
+    expect(h.writes).toEqual([]);
+  });
+
+  test('a foreign PR with autoReviewUnowned on that auto-review did not take (a base outside the normal flow): no status either', async () => {
+    // feat/x onto some-feature: neither the default branch nor a mission branch, so no review was requested.
+    const h = harness({ sha: H(1), foreign: true, gitConfig: { defaultBranch: 'dev', mergePolicy: { tier: 'human', autoReviewUnowned: true } } });
+    const getPull = h.deps.getPull!;
+    h.deps.getPull = async (...a) => ({ ...(await getPull(...a))!, base: { ref: 'some-feature', repo: { full_name: REPO } } });
+    expect(await publishOpenPrHead(at(1), h.deps)).toBe('skipped_foreign');
+    expect(h.writes).toEqual([]);
+  });
+
+  test('a known PR with autoReviewUnowned off: written as today', async () => {
+    const h = harness({ sha: H(1), foreign: false, gitConfig: { mergePolicy: { tier: 'human' } } });
+    expect(await publishOpenPrHead(at(1), h.deps)).toBe('published');
+    expect(stateOn(h, H(1))).toBe('pending');
+  });
+
+  test('a release candidate with autoReviewUnowned off still gets its gate', async () => {
+    const h = harness({ sha: H(3), candidate: true, foreign: true, gitConfig: { mergePolicy: { tier: 'human' } } });
+    expect(await publishOpenPrHead(at(3), h.deps)).toBe('published');
+  });
+
+
   test('a newly opened PR gets pending at once, under the one name (never the retired buildd/landing)', async () => {
     const h = harness({ sha: H(1) });
     expect(await publishOpenPrHead(at(1), h.deps)).toBe('published');

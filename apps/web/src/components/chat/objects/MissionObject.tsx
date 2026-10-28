@@ -21,21 +21,9 @@ import { Eyebrow, OpenButton, StateChip, missionTone } from './parts';
 import { refKey } from '../chat-contract';
 import { ChatVisualDeck, MissionVisualRow, hasVisualReview } from './mission-visual';
 import TaskStrip, { type TaskStripCell } from '@/components/ui/TaskStrip';
-import type { StateKey } from '@/components/ui/states';
+import { STATES, TONE_TEXT, type StateKey } from '@/components/ui/states';
 import ContinueOnRunnerCta from '@/components/missions/ContinueOnRunnerCta';
 
-const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
-  waiting: { text: 'waiting on you', cls: 'text-status-warning' },
-  running: { text: 'running', cls: 'text-accent-text' },
-  review: { text: 'in review', cls: 'text-status-success' },
-  ci_failed: { text: 'CI failed', cls: 'text-status-error' },
-  fixing: { text: 'fixing', cls: 'text-status-error' },
-  failed: { text: 'failed', cls: 'text-status-error' },
-  ready: { text: 'queued', cls: 'text-text-muted' },
-  blocked: { text: 'queued', cls: 'text-text-muted' },
-  merged: { text: 'merged', cls: 'text-status-success' },
-  done: { text: 'done', cls: 'text-status-success' },
-};
 const ROW_ORDER: Record<BoardStatus, number> = {
   waiting: 0, ci_failed: 1, fixing: 1, failed: 1, running: 2, review: 3, ready: 4, blocked: 5, merged: 6, done: 6,
 };
@@ -44,6 +32,12 @@ const STRIP_STATE: Record<BoardStatus, StateKey> = {
   waiting: 'waiting', running: 'running', review: 'review', ci_failed: 'ci_failed', fixing: 'fixing', failed: 'failed',
   ready: 'ready', blocked: 'blocked', merged: 'landed', done: 'landed',
 };
+
+/** A row's status in the shared state table's word (lower-cased) and tone; a finished task still reads "done". */
+function statusText(status: BoardStatus): { text: string; cls: string } {
+  const def = STATES[STRIP_STATE[status]];
+  return { text: status === 'done' ? 'done' : def.word.toLowerCase(), cls: TONE_TEXT[def.tone] };
+}
 
 /** The mission's tasks in plan order as the shared strip's cells. */
 export function missionStripCells(model: MissionBoardModel): TaskStripCell[] {
@@ -70,7 +64,7 @@ export function missionCountsLine(model: MissionBoardModel): string {
 }
 
 function TaskRow({ t }: { t: BoardTask }) {
-  const st = STATUS_TEXT[t.status];
+  const st = statusText(t.status);
   const meta = t.status === 'blocked' && t.deps.find(d => !d.satisfied) ? `waits on ${t.deps.find(d => !d.satisfied)!.label}` : t.runner;
   return (
     <li data-testid="mission-card-row" data-status={t.status} className="flex min-h-9 min-w-0 items-center gap-2.5 border-t border-border-default font-mono text-[12.5px]">

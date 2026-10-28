@@ -141,7 +141,7 @@ import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
 import Notice from '@/components/ui/Notice';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { statusPill } from '@/components/ui/states';
+import { STATES, TONE_TEXT, TONE_TINT, statusPill } from '@/components/ui/states';
 import DiagnosticsDisclosure, { DiagnosticsAudienceProvider } from '@/components/ui/DiagnosticsDisclosure';
 import { canSeeDiagnostics } from '@/lib/diagnostics-audience';
 import { isPlatformOperator } from '@/lib/platform-operator';
@@ -975,16 +975,11 @@ async function TaskDetailPage({
     return `${days}d ago`;
   }
 
-  const TASK_ICONS: Record<string, { icon: string; bg: string; text: string }> = {
-    completed:              { icon: '\u2713', bg: 'bg-status-success/12', text: 'text-status-success' },
-    running:                { icon: '\u27F3', bg: 'bg-status-running/12', text: 'text-status-running' },
-    assigned:               { icon: '\u27F3', bg: 'bg-status-info/12',    text: 'text-status-info' },
-    starting:               { icon: '\u27F3', bg: 'bg-status-running/12', text: 'text-status-running' },
-    pending:                { icon: '\u25CB', bg: 'bg-status-warning/12', text: 'text-status-warning' },
-    failed:                 { icon: '\u2715', bg: 'bg-status-error/12',   text: 'text-status-error' },
-    waiting_input:          { icon: '!',      bg: 'bg-status-warning/12', text: 'text-status-warning' },
+  // Glyph and tone for a worker row come from the shared status table.
+  const workerIcon = (status: string) => {
+    const def = STATES[statusPill(status).state];
+    return { icon: def.glyph, bg: TONE_TINT[def.tone], text: TONE_TEXT[def.tone] };
   };
-  const DEFAULT_ICON = TASK_ICONS.pending;
 
   // The completed header applies (same predicate buildTaskShippedView uses);
   // known here because the fact sheet is built before the view.
@@ -1231,7 +1226,7 @@ async function TaskDetailPage({
                   );
                 }
                 const { worker, attemptLabel } = item.entry;
-                const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
+                const iconStyle = workerIcon(worker.status);
                 return (
                   // Below md the badge + PR link wrap onto their own line under the
                   // text (the text column takes the rest of the first line, and

@@ -19,8 +19,8 @@ import { parsePolicyRule, policyScopeKey, MAX_GRANT_TTL_SECONDS } from '@/lib/ca
 import { loadPolicyRules } from '@/lib/capability-grants-store';
 import { MANAGE_FORBIDDEN, resolveCapabilityAdminCaller } from '@/lib/capability-grants-auth';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DEFAULTS = {
   read: 'auto_grant where a role in the workspace already mounts the connector; otherwise ask_human',
@@ -32,7 +32,7 @@ const DEFAULTS = {
 
 function teamParam(req: NextRequest): string | null | NextResponse {
   const t = req.nextUrl.searchParams.get('teamId');
-  if (t && !UUID_RE.test(t)) return NextResponse.json({ error: 'invalid teamId' }, { status: 400 });
+  if (t && !isUuid(t)) return NextResponse.json({ error: 'invalid teamId' }, { status: 400 });
   return t;
 }
 
@@ -86,7 +86,7 @@ export async function DELETE(req: NextRequest) {
   if (caller instanceof NextResponse) return caller;
   if (!caller.canManage) return MANAGE_FORBIDDEN();
   const id = req.nextUrl.searchParams.get('id');
-  if (!id || !UUID_RE.test(id)) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+  if (!id || !isUuid(id)) return NextResponse.json({ error: 'id is required' }, { status: 400 });
   const deleted = await db.delete(capabilityPolicies)
     .where(and(eq(capabilityPolicies.id, id), eq(capabilityPolicies.teamId, caller.teamId)))
     .returning({ id: capabilityPolicies.id });

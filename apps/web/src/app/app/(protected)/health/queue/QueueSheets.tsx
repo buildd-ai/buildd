@@ -7,6 +7,7 @@ import Sheet from '@/components/ui/Sheet';
 import Chip from '@/components/ui/Chip';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import StageMeter from '@/components/ui/StageMeter';
+import { statusPill } from '@/components/ui/states';
 
 /**
  * Health › Queue's sheets (spec "Health › Queue", R-9, R-11): a declared
@@ -37,17 +38,48 @@ function Lines({ items }: { items: string[] }) {
   return <ul className="space-y-1">{items.map(i => <li key={i}>{i}</li>)}</ul>;
 }
 
+// ── Shared writes (Queue sheets and the task page's action zone) ────────────
+
+/** PATCH removeDependency with a reason. Returns an error message, or null on success. */
+export async function removeDependencyRequest(taskId: string, blockerId: string, reason: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ removeDependency: { taskId: blockerId, reason: reason.trim() } }),
+    });
+    if (res.ok) return null;
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return body.error ?? REMOVE_FAILED;
+  } catch {
+    return REMOVE_FAILED;
+  }
+}
+
+/** POST lanes/release for a stuck holder. Returns an error message, or null on success. */
+export async function releaseLaneRequest(workspaceId: string, lane: string, holderTaskId: string, reason: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/workspaces/${workspaceId}/lanes/release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lane, taskId: holderTaskId, reason }),
+    });
+    if (res.ok) return null;
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return body.error ?? RELEASE_FAILED;
+  } catch {
+    return RELEASE_FAILED;
+  }
+}
+
 // ── Declared dependency ─────────────────────────────────────────────────────
 
-const STATUS_WORD: Record<string, string> = {
-  pending: 'Waiting',
-  assigned: 'Starting',
-  in_progress: 'Running',
+// Words come from the shared status table; only the two a blocker reads differently stay local.
+const STATUS_WORD_OVERRIDE: Record<string, string> = {
   review: 'In review',
   completed: 'Done, PR not merged',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
 };
+const statusWord = (status: string): string => STATUS_WORD_OVERRIDE[status] ?? statusPill(status).label;
 
 /** The blocker's next step: what moves it, opened on its own page. */
 export function blockerNextStep(status: string | null): string {
@@ -62,6 +94,26 @@ export function blockerNextStep(status: string | null): string {
   }
 }
 
+export function RemoveDependencyForm({ reason, onReason, busy, error, onRemove }: { reason: string; onReason: (v: string) => void; busy: boolean; error: string | null; onRemove: () => void }) {
+  return (
+    <div className="space-y-2 border-t border-[var(--line-soft)] pt-4">
+      <label htmlFor="queue-remove-reason" className="field-label">Why remove it</label>
+      <textarea
+        id="queue-remove-reason"
+        value={reason}
+        onChange={e => onReason(e.target.value)}
+        rows={2}
+        className="w-full"
+        data-testid="queue-remove-reason"
+      />
+      {error && <p className="text-body text-status-error" role="alert">{error}</p>}
+      <button type="button" className="btn h-11 md:h-8" disabled={busy || !reason.trim()} onClick={onRemove} data-testid="queue-remove-dependency">
+        {busy ? 'Removing…' : 'Remove'}
+      </button>
+    </div>
+  );
+}
+
 export function DependencyBody({ row, reason, onReason, busy, error, onRemove }: { row: HealthQueueWaitingRow; reason: string; onReason: (v: string) => void; busy: boolean; error: string | null; onRemove: () => void }) {
   const blockerName = row.wait.blockerTitle ?? row.blockedBy;
   return (
@@ -69,7 +121,7 @@ export function DependencyBody({ row, reason, onReason, busy, error, onRemove }:
       <p className="text-title font-semibold text-text-primary">{row.title}</p>
       <Rows rows={[
         ['Depends on', row.blockerId ? <Link key="d" href={`/app/tasks/${row.blockerId}`} className="hover:underline">{blockerName}</Link> : blockerName],
-        ['Status', <Chip key="s" tone={row.blockerStatus === 'failed' ? 'error' : row.blockerStatus === 'in_progress' ? 'running' : 'muted'} variant="soft">{STATUS_WORD[row.blockerStatus ?? ''] ?? 'Unknown'}</Chip>],
+        ['Status', <Chip key="s" tone={row.blockerStatus === 'failed' ? 'error' : row.blockerStatus === 'in_progress' ? 'running' : 'muted'} variant="soft">{row.blockerStatus ? statusWord(row.blockerStatus) : 'Unknown'}</Chip>],
         ['Set by', row.setBy ?? 'Whoever filed it'],
         ['Why', row.why ?? <span key="w" className="text-text-muted">Not recorded</span>],
       ]} />
@@ -78,21 +130,7 @@ export function DependencyBody({ row, reason, onReason, busy, error, onRemove }:
           {blockerNextStep(row.blockerStatus)}
         </PrimaryAction>
       )}
-      <div className="space-y-2 border-t border-[var(--line-soft)] pt-4">
-        <label htmlFor="queue-remove-reason" className="field-label">Why remove it</label>
-        <textarea
-          id="queue-remove-reason"
-          value={reason}
-          onChange={e => onReason(e.target.value)}
-          rows={2}
-          className="w-full"
-          data-testid="queue-remove-reason"
-        />
-        {error && <p className="text-body text-status-error" role="alert">{error}</p>}
-        <button type="button" className="btn h-11 md:h-8" disabled={busy || !reason.trim()} onClick={onRemove} data-testid="queue-remove-dependency">
-          {busy ? 'Removing…' : 'Remove'}
-        </button>
-      </div>
+      <RemoveDependencyForm reason={reason} onReason={onReason} busy={busy} error={error} onRemove={onRemove} />
     </div>
   );
 }
@@ -107,20 +145,11 @@ export function DependencySheet({ row, onClose, onDone }: { row: HealthQueueWait
     if (!row?.blockerId || !reason.trim()) return;
     setBusy(true);
     setError(null);
-    try {
-      const res = await fetch(`/api/tasks/${row.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ removeDependency: { taskId: row.blockerId, reason: reason.trim() } }),
-      });
-      if (res.ok) { onDone(); onClose(); return; }
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(body.error ?? REMOVE_FAILED);
-    } catch {
-      setError(REMOVE_FAILED);
-    } finally {
-      setBusy(false);
-    }
+    const message = await removeDependencyRequest(row.id, row.blockerId, reason);
+    setBusy(false);
+    if (message) { setError(message); return; }
+    onDone();
+    onClose();
   }
 
   return (
@@ -131,6 +160,25 @@ export function DependencySheet({ row, onClose, onDone }: { row: HealthQueueWait
 }
 
 // ── Lane panel ──────────────────────────────────────────────────────────────
+
+export function ReleaseLaneControl({ stuckFor, confirming, busy, error, onRelease, onConfirm, onCancel }: { stuckFor: string; confirming: boolean; busy: boolean; error: string | null; onRelease: () => void; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="space-y-2 border-t border-[var(--line-soft)] pt-4">
+      <p className="text-body text-text-primary">No PR activity for {stuckFor}.</p>
+      {error && <p className="text-body text-status-error" role="alert">{error}</p>}
+      {confirming ? (
+        <div className="flex gap-2">
+          <PrimaryAction pending={busy} onClick={onConfirm} data-testid="queue-lane-release-confirm" className="flex-1 md:flex-none">
+            Release lane
+          </PrimaryAction>
+          <button type="button" className="btn btn-lg h-11 md:h-10" onClick={onCancel}>Cancel</button>
+        </div>
+      ) : (
+        <button type="button" className="btn h-11 md:h-8" onClick={onRelease} data-testid="queue-lane-release">Release</button>
+      )}
+    </div>
+  );
+}
 
 export function LaneBody({ lane, confirming, busy, error, onRelease, onConfirm, onCancel }: { lane: HealthQueueLane; confirming: boolean; busy: boolean; error: string | null; onRelease: () => void; onConfirm: () => void; onCancel: () => void }) {
   return (
@@ -154,20 +202,7 @@ export function LaneBody({ lane, confirming, busy, error, onRelease, onConfirm, 
         ))}
       </ol>
       {lane.holder && lane.stuckFor && (
-        <div className="space-y-2 border-t border-[var(--line-soft)] pt-4">
-          <p className="text-body text-text-primary">No PR activity for {lane.stuckFor}.</p>
-          {error && <p className="text-body text-status-error" role="alert">{error}</p>}
-          {confirming ? (
-            <div className="flex gap-2">
-              <PrimaryAction pending={busy} onClick={onConfirm} data-testid="queue-lane-release-confirm" className="flex-1 md:flex-none">
-                Release lane
-              </PrimaryAction>
-              <button type="button" className="btn btn-lg h-11 md:h-10" onClick={onCancel}>Cancel</button>
-            </div>
-          ) : (
-            <button type="button" className="btn h-11 md:h-8" onClick={onRelease} data-testid="queue-lane-release">Release</button>
-          )}
-        </div>
+        <ReleaseLaneControl stuckFor={lane.stuckFor} confirming={confirming} busy={busy} error={error} onRelease={onRelease} onConfirm={onConfirm} onCancel={onCancel} />
       )}
     </div>
   );
@@ -183,20 +218,11 @@ export function LaneSheet({ lane, onClose, onDone }: { lane: HealthQueueLane | n
     if (!lane?.holder) return;
     setBusy(true);
     setError(null);
-    try {
-      const res = await fetch(`/api/workspaces/${lane.workspaceId}/lanes/release`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lane: lane.lane, taskId: lane.holder.taskId, reason: `Released from Health › Queue after ${lane.stuckFor ?? 'no activity'}` }),
-      });
-      if (res.ok) { onDone(); onClose(); return; }
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(body.error ?? RELEASE_FAILED);
-    } catch {
-      setError(RELEASE_FAILED);
-    } finally {
-      setBusy(false);
-    }
+    const message = await releaseLaneRequest(lane.workspaceId, lane.lane, lane.holder.taskId, `Released from Health › Queue after ${lane.stuckFor ?? 'no activity'}`);
+    setBusy(false);
+    if (message) { setError(message); return; }
+    onDone();
+    onClose();
   }
 
   return (

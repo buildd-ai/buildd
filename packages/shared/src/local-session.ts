@@ -14,6 +14,7 @@
 // the same session's own verified `claim_task` already minted; it never creates
 // one. See docs/specs/local-agent-presence.md.
 
+import { isUuid } from './uuid';
 export const LOCAL_CLIENT_KINDS = ['claude', 'codex', 'cursor', 'other'] as const;
 export type LocalClientKind = (typeof LOCAL_CLIENT_KINDS)[number];
 
@@ -153,7 +154,6 @@ export const LOCAL_SESSION_TOUCH_THROTTLE_MS = 60_000;
 
 const MAX_ID = 200;
 const MAX_VERSION = 64;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason', 'usage', 'busy', 'prompted', 'continuesSessionId']);
 const USAGE_KEYS = new Set(['workers', 'costBasis']);
 const WORKER_USAGE_KEYS = new Set(['workerId', 'models', 'toolCalls', 'toolCounts', 'subagents', 'firstAt', 'lastAt']);
@@ -181,7 +181,7 @@ function parseUsage(v: unknown): LocalSessionUsage | string {
   const workers: LocalSessionWorkerUsage[] = [];
   for (const w of v.workers) {
     if (!isObject(w) || !onlyKeys(w, WORKER_USAGE_KEYS)) return 'usage.workers[] has an unknown field';
-    if (typeof w.workerId !== 'string' || !UUID_RE.test(w.workerId)) return 'usage.workers[].workerId must be a full UUID';
+    if (!isUuid(w.workerId)) return 'usage.workers[].workerId must be a full UUID';
     if (!Array.isArray(w.models) || w.models.length > MAX_USAGE_MODELS) return `usage.workers[].models must be an array of at most ${MAX_USAGE_MODELS}`;
     if (!isCount(w.toolCalls) || !isCount(w.subagents)) return 'usage.workers[].toolCalls and subagents must be non-negative integers';
     for (const t of [w.firstAt, w.lastAt]) {
@@ -270,7 +270,7 @@ export function parseLocalSessionEvent(body: unknown): ParsedLocalSessionEvent {
   if (b.repo !== undefined && typeof b.repo !== 'string') return { ok: false, error: 'repo must be a string' };
   if (b.interactive !== undefined && typeof b.interactive !== 'boolean') return { ok: false, error: 'interactive must be a boolean' };
   if (b.event === 'bind') {
-    if (typeof b.workerId !== 'string' || !UUID_RE.test(b.workerId)) return { ok: false, error: 'bind requires workerId (a full UUID)' };
+    if (!isUuid(b.workerId)) return { ok: false, error: 'bind requires workerId (a full UUID)' };
   } else if (b.workerId !== undefined) {
     return { ok: false, error: 'workerId is only accepted on bind' };
   }

@@ -64,8 +64,12 @@ describe('gettingStartedChecklist: one ordered list, done state from real data',
   });
 
   it('counts every agent-backend credential, and nothing chat-only', () => {
-    for (const p of ['anthropic_api_key', 'oauth_token', 'claude_credential', 'codex_credential', 'openai_api_key', 'agent_endpoint']) {
+    for (const p of ['anthropic_api_key', 'codex_credential', 'openai_api_key', 'agent_endpoint']) {
       expect(AGENT_CREDENTIAL_PURPOSES as readonly string[]).toContain(p);
+    }
+    // A stored subscription login is not a credential buildd can use.
+    for (const p of ['oauth_token', 'claude_credential']) {
+      expect(AGENT_CREDENTIAL_PURPOSES as readonly string[]).not.toContain(p);
     }
     // A chat key is counted only through its label (AGENT_INFERENCE_KEY_LABELS).
     expect(AGENT_CREDENTIAL_PURPOSES as readonly string[]).not.toContain('inference_key');

@@ -20,10 +20,16 @@ const CONTEXT = 'Buildd / Review approval';
 let w: World;
 afterEach(() => w?.dispose());
 
-/** The sweep over this world's workspace only: other worlds' repos live on fakes that are gone. */
+/**
+ * The sweep over this world's workspace only: other worlds' repos live on fakes that are gone.
+ * Every PR here is read as one buildd knows: a foreign PR (no record at all) in a workspace that
+ * does not auto-review it carries no status, which the unit tests (open-pr-status.test.ts) cover.
+ */
+const known = async () => false;
 const sweep = (w: World) => publishOpenPrStatuses({
   repos: async () => (await linkedRepos()).filter((r) => r.workspaceId === w.workspaceId),
   reviews: async () => openPrReviewReads(),
+  foreign: known,
 });
 const shown = (w: World, sha: string) => githubReader(w.installationId).statusOf!(w.repo, sha, CONTEXT);
 
@@ -90,7 +96,7 @@ describe('AC-78: an event publishes one head now', () => {
     const h1 = w.gh.push(w.repo, 'feat/hand', { 'a.txt': '1\n' }, { message: 'one' });
     const prNumber = w.gh.openPr(w.repo, { head: 'feat/hand', base: 'dev', user: 'someone' });
     const at = (sha: string) => ({ installationId: w.installationId, repoFullName: w.repo, prNumber, sha });
-    const deps = { repos: async () => (await linkedRepos()).filter((r) => r.workspaceId === w.workspaceId), reviews: async () => openPrReviewReads() };
+    const deps = { repos: async () => (await linkedRepos()).filter((r) => r.workspaceId === w.workspaceId), reviews: async () => openPrReviewReads(), foreign: known };
     const writes = () => w.gh.calls.filter((c) => c.method === 'POST' && c.path.startsWith(`/repos/${w.repo}/statuses/`)).length;
 
     expect(await publishOpenPrHead(at(h1), deps)).toBe('published');

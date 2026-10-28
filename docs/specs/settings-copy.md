@@ -1,6 +1,7 @@
 ---
 title: Settings Copy
-status: active
+status: superseded
+superseded_by: "living-spec:d4613613"
 owner: max
 last_verified: 2026-10-12
 summary: Settings index descriptions MUST be one short fragment stating what the page manages, with no team-policy conditions, trailing filler or em dashes; the voice authority stays design-system section 5 and copy-rules.

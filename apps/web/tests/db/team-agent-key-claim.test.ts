@@ -20,7 +20,7 @@ import { resolveAgentModelRoute } from '@buildd/core/agent-endpoint';
 import { attachServerManagedSecrets } from '@/app/api/workers/claim/credential-injection';
 import { resolveClaudeModelRoute } from '@/app/api/workers/claim/claude-model-route';
 import { hasOpenAiApiKey, resolveOpenAiApiKey } from '@/lib/openai-credential';
-import { resolveAnthropicAuth } from '@/lib/claude-credential';
+import { resolveAnthropicAuth } from '@/lib/anthropic-auth';
 import { assertDbConfigured, q, seedWorkspace } from './harness';
 
 if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY.length < 32) {

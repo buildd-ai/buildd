@@ -2,11 +2,8 @@
  * Unit tests for Codex credential injection at spawn time.
  *
  * Verifies:
- * - When a worker has codexCredential, CODEX_HOME is set and auth.json is
- *   written with the correct structure and permissions.
  * - The temp directory is cleaned up after the worker exits.
- * - Non-Codex workers never get a CODEX_HOME or temp dir.
- * - CodexBackend.resolveApiKey reads access_token from auth.json (OAuth flow).
+ * - CodexBackend.resolveAuth reads api_key / access_token from auth.json.
  */
 
 import { describe, test, expect, afterEach, mock } from 'bun:test';
@@ -25,7 +22,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   }),
 }));
 
-import { materializeCodexAuth, cleanupCodexAuth } from '../../src/codex-auth';
+import { cleanupCodexAuth } from '../../src/codex-auth';
 
 // These tests need a real filesystem. Sibling suites (e.g. env-scan.test.ts)
 // call mock.module('fs') process-wide, and those mocks register during the load
@@ -53,68 +50,6 @@ function fsTest(name: string, fn: () => void | Promise<void>) {
     await fn();
   });
 }
-
-// ─── materializeCodexAuth ─────────────────────────────────────────────────────
-
-describe('materializeCodexAuth', () => {
-  const dirs: string[] = [];
-  afterEach(() => {
-    for (const d of dirs) {
-      try { rmSync(d, { recursive: true, force: true }); } catch {}
-    }
-    dirs.length = 0;
-  });
-
-  const cred = {
-    credentialType: 'oauth' as const,
-    accessToken: 'tok_access_123',
-    refreshToken: 'tok_refresh_456',
-    accountId: 'acct_789',
-    idToken: 'id_tok_test',
-    expiresAt: null,
-  };
-
-  fsTest('creates a temp dir and writes auth.json', () => {
-    const { codexHome } = materializeCodexAuth('w1', cred);
-    dirs.push(codexHome);
-
-    expect(existsSync(codexHome)).toBe(true);
-    const authPath = join(codexHome, 'auth.json');
-    expect(existsSync(authPath)).toBe(true);
-  });
-
-  fsTest('auth.json uses the nested tokens shape required by codex-cli 0.144', () => {
-    const { codexHome } = materializeCodexAuth('w1', cred);
-    dirs.push(codexHome);
-
-    const authJson = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    // codex-cli 0.144 requires the nested { tokens: { access_token, refresh_token, account_id, id_token } } shape
-    expect(authJson.tokens.access_token).toBe('tok_access_123');
-    expect(authJson.tokens.refresh_token).toBe('tok_refresh_456');
-    expect(authJson.tokens.account_id).toBe('acct_789');
-    expect(authJson.tokens.id_token).toBe('id_tok_test');
-  });
-
-  fsTest('auth.json does not expose expiresAt or other runner metadata', () => {
-    const { codexHome } = materializeCodexAuth('w1', cred);
-    dirs.push(codexHome);
-
-    const authJson = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    // expiresAt is runner metadata — must not appear in auth.json
-    expect(authJson.expiresAt).toBeUndefined();
-    expect(authJson.credentialType).toBeUndefined();
-    // Top-level shape: OPENAI_API_KEY (null), tokens (nested), last_refresh
-    expect(Object.keys(authJson).sort()).toEqual(['OPENAI_API_KEY', 'last_refresh', 'tokens']);
-  });
-
-  fsTest('temp dir is prefixed with "codex-"', () => {
-    const { codexHome } = materializeCodexAuth('w1', cred);
-    dirs.push(codexHome);
-
-    expect(codexHome.startsWith(tmpdir())).toBe(true);
-    expect(codexHome.includes('codex-')).toBe(true);
-  });
-});
 
 // ─── cleanupCodexAuth ─────────────────────────────────────────────────────────
 

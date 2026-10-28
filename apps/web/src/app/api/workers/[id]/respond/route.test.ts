@@ -63,7 +63,6 @@ const mockNotesInsertValues = mock((values: any) => {
 
 const mockTriggerEvent = mock(() => Promise.resolve(true));
 
-const mockPreflight = mock(async () => ({ state: 'ok' as const }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -109,11 +108,6 @@ mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { worker: (id: string) => `worker-${id}`, task: (id: string) => `task-${id}` },
   events: { WORKER_COMMAND: 'worker:command', WORKER_PROGRESS: 'worker:progress' },
-}));
-
-mock.module('@/lib/answer-credential-preflight', () => ({
-  preflightBackendCredential: mockPreflight,
-  CREDENTIAL_PREFLIGHT_MARGIN_MS: 300000,
 }));
 
 const mockReleaseAndNotify = mock((_taskId: string, _reason: string) => Promise.resolve());
@@ -281,12 +275,10 @@ describe('POST /api/workers/[id]/respond', () => {
     mockNotesInsertValues.mockClear();
     mockTriggerEvent.mockClear();
     mockReleaseAndNotify.mockClear();
-    mockPreflight.mockClear();
     mockAnnounceTaskCreated.mockReset();
     mockAnnounceTaskCreated.mockImplementation(async () => {});
     mockWakeTask.mockReset();
     mockWakeTask.mockImplementation(async () => {});
-    mockPreflight.mockImplementation(async () => ({ state: 'ok' as const }));
     mockReopen.mockReset();
     mockReopen.mockImplementation(async () => { callOrder.push('reopen'); return { reopened: true, taskId: 'task-1', entryId: 'entry-1' }; });
     mockTasksFindFirst.mockReset();
@@ -825,52 +817,14 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
     });
 
-    // AC-23 — the answer is still recorded; the owner is warned separately.
-    it('warns the owner when the backend credential is unhealthy, without dropping the answer', async () => {
+    it('resumes without consulting any stored login', async () => {
       authorize();
-      mockPreflight.mockImplementation(async () => ({
-        state: 'unhealthy' as const,
-        detail: 'the claude credential for this workspace is expired and could not be refreshed',
-      }) as any);
-      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      const data = await res.json();
-      expect(data.reasonCode).toBe('credential_unhealthy');
-      // The human's answer survives on a new attempt of the same task (AC-23)...
-      expect(mockReopen).toHaveBeenCalledTimes(1);
-      expect(mockInsertValues).not.toHaveBeenCalled();
-      // ...but that is not progress (AC-55): blocked on the credential, said twice.
-      expect(data.blockedOn).toBe('credential');
-      expect(notesInserted).toHaveLength(1);
-      expect(notesInserted[0].type).toBe('warning');
-      expect(notesInserted[0].body).toContain('expired');
-      expect(notesInserted[0].body).toContain('cannot start until the credential is reconnected');
-    });
-
-    // AC-8 — an account supplying its own key has no managed row.
-    it('resumes when no managed credential row exists', async () => {
-      authorize();
-      mockPreflight.mockImplementation(async () => ({ state: 'unknown' as const }) as any);
       mockWorkersFindFirst.mockResolvedValue(parkedWorker());
 
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
 
       const data = await res.json();
       expect(data.path).toBe('resume');
-    });
-
-    it('preflights the codex credential for a codex-backed task', async () => {
-      authorize();
-      mockWorkersFindFirst.mockResolvedValue(
-        parkedWorker({ task: { ...baseWorker.task, backend: 'codex' } }),
-      );
-
-      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(mockPreflight.mock.calls[0][0]).toMatchObject({ backend: 'codex' });
     });
 
     it('omits the question from the delivery record for a sensitive workspace', async () => {
@@ -884,82 +838,6 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(tasksUpdated[0].context.answerDelivery.question).toBeUndefined();
       const setValues = mockWorkersUpdateSet.mock.calls[0][0] as any;
       expect(setValues.instructionHistory[0].message).toBeUndefined();
-    });
-  });
-  // ---------------------------------------------------------------------------
-  // Revoked credential: refused outright, not routed down either path (#2528).
-  //
-  // A revoked credential cannot be recovered without a human, and the claim
-  // rail already declines to inject one — so a continuation could not run
-  // either, while superseding the worker would destroy the transcript and
-  // worktree that make a later RESUME possible. Refusing keeps the question
-  // parked and costs nothing. An expired-but-refreshable credential is the
-  // different case handled by gate G5 above.
-  // ---------------------------------------------------------------------------
-  describe('revoked credential refusal', () => {
-    function authorize() {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    }
-
-    it('refuses the answer when the claude credential is revoked, leaving the question open', async () => {
-      authorize();
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-      mockPreflight.mockImplementation(async () => ({
-        state: 'unhealthy' as const,
-        revoked: true,
-        detail: 'the claude credential for this workspace has been revoked',
-        lastFailureMessage: 'invalid_grant',
-      }) as any);
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(409);
-      const data = await res.json();
-      expect(data.credentialRevoked).toBe(true);
-      expect(data.backend).toBe('claude');
-      expect(data.error).toContain('revoked');
-      expect(data.error).toContain('invalid_grant');
-      // Nothing written: the answer is not lost and no continuation is
-      // dispatched into a dead credential.
-      expect(mockWorkersUpdateSet).not.toHaveBeenCalled();
-      expect(mockInsertValues).not.toHaveBeenCalled();
-      expect(notesInserted).toHaveLength(0);
-    });
-
-    it('names the codex backend when a codex-backed task has a revoked credential', async () => {
-      authorize();
-      mockWorkersFindFirst.mockResolvedValue({
-        ...baseWorker,
-        task: { ...baseWorker.task, backend: 'codex' },
-      });
-      mockPreflight.mockImplementation(async () => ({
-        state: 'unhealthy' as const,
-        revoked: true,
-        detail: 'the codex credential for this workspace has been revoked',
-      }) as any);
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(409);
-      const data = await res.json();
-      expect(data.credentialRevoked).toBe(true);
-      expect(data.backend).toBe('codex');
-      expect(mockInsertValues).not.toHaveBeenCalled();
-      expect(mockReopen).not.toHaveBeenCalled();
-    });
-
-    it('proceeds when the credential is merely healthy or absent', async () => {
-      authorize();
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-      mockPreflight.mockImplementation(async () => ({ state: 'unknown' as const }) as any);
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      const data = await res.json();
-      expect(data.taskId).toBe('task-1');
     });
   });
 
@@ -1290,18 +1168,14 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(toTask?.[2]).toMatchObject({ status: 'running' });
     });
 
-    // The session runs on the person's own seat, not the workspace's managed
-    // credential, so that credential's state is irrelevant to it.
-    it('is not refused by a revoked managed credential, and never preflights it', async () => {
+    it('delivers to a live interactive session', async () => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
-      mockPreflight.mockImplementation(async () => ({ state: 'unhealthy' as const, revoked: true, detail: 'revoked' }) as any);
 
       const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
 
       expect(res.status).toBe(200);
       expect((await res.json()).path).toBe('interactive');
-      expect(mockPreflight).not.toHaveBeenCalled();
     });
 
     it('withholds the answer text from history in a sensitive workspace but still delivers it', async () => {
@@ -1394,8 +1268,6 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(data.taskId).toBe('task-1');
       expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
       expect(data.message).toContain('interactive session that asked');
-      // The continuation runs on a runner, so its credential is preflighted.
-      expect(mockPreflight).toHaveBeenCalled();
     });
   });
 

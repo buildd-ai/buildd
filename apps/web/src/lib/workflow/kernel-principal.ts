@@ -4,8 +4,8 @@
  */
 import { isGrantSession, type GrantScopedAccount } from '@/lib/grant-scope';
 import type { KernelPrincipal } from './command-api';
+import { isUuid } from '@/lib/uuid';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The principal an actor string names, when it names one by itself: `human:<user id>` is that
@@ -16,7 +16,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function principalOfActor(actor: string | null | undefined): KernelPrincipal | null {
   const a = actor ?? 'system:door';
   const human = /^human:(.+)$/.exec(a);
-  if (human) return UUID.test(human[1]) ? { kind: 'user', id: human[1] } : null;
+  if (human) return isUuid(human[1]) ? { kind: 'user', id: human[1] } : null;
   if (/^(system|rule|buildd):/.test(a)) return { kind: 'system', id: a.slice(0, 200) };
   return null;
 }

@@ -24,10 +24,6 @@ import { workerSpend, type RunSpend } from './run-route';
 export const WITHHELD_WORKER_FIELDS = [
   'mcpSecrets',
   'serverApiKey',
-  'serverOauthToken',
-  'claudeAccessToken',
-  'claudeTokenExpiresAt',
-  'claudeCredentialId',
   'codexCredential',
   'roleConfig', // carries a presigned download URL
   'assertionTokenCache',
@@ -140,7 +136,6 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   resultMeta: true,
   questionGate: true,
   claudeAiArtifacts: true,
-  claudeTokenScopes: true,
   questionPushbacks: true,
   lastEditedFile: true,
   toolCounts: true,
@@ -163,10 +158,6 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   // Withheld — see WITHHELD_WORKER_FIELDS.
   mcpSecrets: false,
   serverApiKey: false,
-  serverOauthToken: false,
-  claudeAccessToken: false,
-  claudeTokenExpiresAt: false,
-  claudeCredentialId: false,
   codexCredential: false,
   modelEndpoint: false,
   roleConfig: false,

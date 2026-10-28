@@ -22,12 +22,13 @@ import { prListStatus, type PrListStatus } from '@/lib/pr-presentation';
 import { getDeliveryViewsForTasks, kernelDeliveryForWorkerSql } from '@/lib/workflow/delivery-view';
 import type { DeliveryView } from '@/lib/workflow/projections';
 import { deriveLandingBlocker, type LandingBlockCause, type LandingBlocker } from '@/lib/landing-blocker';
+import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 
 export const PR_LIST_STATES = ['open', 'attention', 'conflict', 'ci_failed', 'merged'] as const satisfies readonly SharedPrListState[];
 export type PrListState = (typeof PR_LIST_STATES)[number];
 
 type Lifecycle = NonNullable<typeof workers.$inferSelect.prLifecycleStatus>;
-const TERMINAL: Lifecycle[] = ['merged', 'closed', 'unresolvable'];
+const TERMINAL: Lifecycle[] = [...TERMINAL_PR_LIFECYCLE];
 
 export const DEFAULT_MERGED_WINDOW_DAYS = 7;
 export const MAX_PR_LIST = 50;

@@ -1,6 +1,6 @@
 'use client';
 
-import type { FleetSnapshot } from '@buildd/shared';
+import { hasFreeSlot, type FleetSnapshot } from '@buildd/shared';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { deriveSandboxPosture } from '@/lib/runner-heartbeats-shared';
 import { PLATFORM_TEXT } from '@/lib/runner-isolation-health';
@@ -105,7 +105,7 @@ export function RunnerRow({
   const firstMissionId = firstWorker && !firstWorkerHidden ? firstWorker.missionId ?? null : null;
 
   const working = activeCount > 0;
-  const freeSlot = runner.maxConcurrentWorkers > activeCount;
+  const freeSlot = hasFreeSlot(runner.maxConcurrentWorkers, activeCount);
   // Another person's run is named only to those who may read the team's work (same masking as the slot list).
   const workNames = (fleetRow?.slots ?? []).flatMap(sl => {
     const w = sl.worker;

@@ -8,8 +8,8 @@ import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-
 import { taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { getOpenMoveProposal, listScheduleMoves, MOVE_REASON_MAX, recordMoveProposal, validateScheduleMove } from '@/lib/schedule-move';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
   // The target is an id, or a name or owner/repo of exactly one workspace of the schedule's team
   // (a task token's own workspace list would not show the very workspace it wants to move to).
   let targetId = target;
-  if (!UUID_RE.test(target)) {
+  if (!isUuid(target as unknown)) {
     const [home] = await db.select({ teamId: workspaces.teamId }).from(workspaces).where(eq(workspaces.id, id)).limit(1);
     const teamWorkspaces = home ? await db.select({ id: workspaces.id, name: workspaces.name, repo: workspaces.repo }).from(workspaces).where(eq(workspaces.teamId, home.teamId)) : [];
     const wanted = target.toLowerCase();

@@ -12,7 +12,7 @@ export type ProviderApiScope = 'team' | 'workspace' | 'mine';
 /** A permission a provider credential write can need (`@buildd/core/providers/manage` `writePermissions`). */
 export type ProviderWritePermission = 'manage_team_model_keys' | 'manage_team_credentials' | 'manage_inference_providers';
 export type ProviderSurfaceId = 'chat' | 'agent-claude' | 'agent-codex' | 'cloud-egress';
-export type ProviderShapeId = 'api_key' | 'setup_token' | 'oauth_managed' | 'gateway' | 'endpoint';
+export type ProviderShapeId = 'api_key' | 'gateway' | 'endpoint';
 export type CredentialPolicyValue = 'team' | 'personal_first' | 'personal_only';
 export type ProviderPrincipal = 'person' | 'key' | 'task_token';
 
@@ -36,7 +36,7 @@ export interface ProviderCredentialSummary {
   legacy: boolean;
   /** `agent_endpoint` rows: what the endpoint routes to. */
   endpointKind?: string;
-  /** Last four characters of the key; null for a seat's refresh family, '' when unreadable. */
+  /** Last four characters of the key; '' when unreadable. */
   last4: string | null;
   health: 'healthy' | 'revoked' | 'unknown' | string;
   lastVerifiedAt: string | null;
@@ -48,9 +48,6 @@ export interface ProviderCredentialSummary {
 
 export interface ProviderShapeListing {
   id: ProviderShapeId;
-  refreshes: boolean;
-  /** Connected in the browser, never pasted (subscription seats). */
-  connectInBrowser: boolean;
   /**
    * Where a write at each scope is stored, and every permission it needs (all
    * of them; empty for `mine`); null when the scope is closed to this provider.
@@ -62,7 +59,7 @@ export interface ProviderListing {
   id: string;
   label: string;
   order: number;
-  connectFlow: 'paste' | 'oauth' | 'form';
+  connectFlow: 'paste' | 'form';
   /** Per surface: served (and how), or the registry's reason it cannot be. */
   surfaces: Record<ProviderSurfaceId, ProviderSurfaceSupport>;
   /** Per scope: open, or why not. */
@@ -123,7 +120,7 @@ export interface SetProviderCredentialRequest {
   shape?: ProviderShapeId;
   scope: ProviderApiScope;
   workspaceId?: string | null;
-  /** The key or token (api_key, setup_token; the gateway/endpoint key). */
+  /** The key (api_key; the gateway/endpoint key). */
   value?: string;
   /** gateway: { baseUrl }; endpoint: { baseUrl, authHeader?, models?, appliesTo?, capabilities?, kind? }. */
   config?: Record<string, unknown>;

@@ -5,7 +5,6 @@ import {
   crossFitCalibratedTopP,
   deriveThreshold,
   fitIsotonic,
-  percentile,
   reliability,
   scoreModel,
   sweep,
@@ -194,15 +193,6 @@ describe('scoreModel', () => {
     expect(s.ruleAccuracy).toBeCloseTo(2 / 3, 6);
     // Agreement: both answered, same label, over cases where the production model answered too.
     expect(s.agreement).toBeCloseTo(1 / 2, 6);
-  });
-});
-
-describe('percentile', () => {
-  it('nearest-rank p50 and p95', () => {
-    const xs = Array.from({ length: 100 }, (_, i) => i + 1);
-    expect(percentile(xs, 0.5)).toBe(50);
-    expect(percentile(xs, 0.95)).toBe(95);
-    expect(percentile([], 0.5)).toBeNull();
   });
 });
 

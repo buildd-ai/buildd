@@ -147,13 +147,6 @@ describe('policy × requester × scopes available', () => {
       }
     }
   });
-
-  it('a seat stays team-only until personal seats ship (pendingScopes)', () => {
-    const seat = row({ purpose: 'oauth_token', userId: U });
-    const r = pick([seat], ctx({ surface: 'agent-claude', team: { credentialPolicy: 'personal_first' }, requesterUserId: U }));
-    expect(r.none).toBe(true);
-    expect(r.why.join('\n')).toContain('no personal credentials yet');
-  });
 });
 
 // ── Ranking rules ────────────────────────────────────────────────────────────
@@ -221,15 +214,12 @@ describe('ranking', () => {
     expect(pick([revokedWs, liveTeam], ctx({ surface: 'chat', providers: ['anthropic'] })).source?.secretId).toBe(revokedWs.id);
   });
 
-  it('agent: dead refresh families are dropped', () => {
-    const dead = row({ purpose: 'claude_credential', workspaceId: W, tokenExpiresAt: null });
-    const revoked = row({ purpose: 'claude_credential', workspaceId: W, tokenExpiresAt: new Date(), healthStatus: 'revoked' });
-    const live = row({ purpose: 'claude_credential', tokenExpiresAt: new Date() });
-    const r = pick([dead, revoked, live], ctx({ surface: 'agent-claude' }));
-    expect(r.source?.secretId).toBe(live.id);
-    expect(r.provider).toBe('claude-subscription');
-    expect(r.credential?.shape).toBe('oauth_managed');
-    expect(pick([dead, revoked], ctx({ surface: 'agent-claude' })).none).toBe(true);
+  it('agent: a stored subscription login is no provider\'s credential and never resolves', () => {
+    const seat = row({ purpose: 'oauth_token' });
+    const managed = row({ purpose: 'claude_credential', tokenExpiresAt: new Date() });
+    const key = anth();
+    expect(pick([seat, managed], ctx({ surface: 'agent-claude' })).none).toBe(true);
+    expect(pick([seat, managed, key], ctx({ surface: 'agent-claude' })).source?.secretId).toBe(key.id);
   });
 
   it('provider preference orders within a scope, never across scopes', () => {
@@ -461,21 +451,6 @@ describe('parity: agent (credentialPolicy unset, no requester) ≡ today’s age
       }));
       const old = pickMostSpecificCredential(rows, { accountId: A, workspaceId: W });
       const now = pick(rows, ctx({ surface: 'agent-claude', accountId: A, requesterUserId: null, providers: ['anthropic'] }));
-      expect({ i, id: now.source?.secretId ?? null }).toEqual({ i, id: old?.id ?? null });
-    }
-  });
-
-  it('claude_credential: resolveClaudeCredential’s live filter + pickMostSpecificCredential', () => {
-    for (let i = 0; i < 400; i++) {
-      const rows = Array.from({ length: 1 + Math.floor(rand() * 5) }, () => row({
-        purpose: 'claude_credential',
-        ...scopes[Math.floor(rand() * scopes.length)],
-        tokenExpiresAt: rand() < 0.2 ? null : new Date(Date.UTC(2026, 5, 1)),
-        healthStatus: rand() < 0.2 ? 'revoked' : 'healthy',
-      }));
-      const live = rows.filter(r => r.tokenExpiresAt !== null && r.healthStatus !== 'revoked');
-      const old = pickMostSpecificCredential(live, { accountId: A, workspaceId: W });
-      const now = pick(rows, ctx({ surface: 'agent-claude', accountId: A, providers: ['claude-subscription'] }));
       expect({ i, id: now.source?.secretId ?? null }).toEqual({ i, id: old?.id ?? null });
     }
   });

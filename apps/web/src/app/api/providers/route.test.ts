@@ -211,7 +211,9 @@ describe('GET /api/providers', () => {
     expect(anthropic.set.workspace).toHaveLength(1);
     expect(anthropic.set.workspace[0].last4).toBe('2222');
     expect(body.providers.find((p: any) => p.id === 'litellm').set.team[0].last4).toBe('6666');
-    expect(body.providers.find((p: any) => p.id === 'claude-subscription').set.team[0]).toMatchObject({ shape: 'setup_token', last4: '5555' });
+    // A stored subscription login is no provider's credential: it is listed nowhere.
+    expect(body.providers.map((p: any) => p.id)).not.toContain('claude-subscription');
+    expect(JSON.stringify(body)).not.toContain('oauth_token');
     expect(body.caller.can).toEqual({ manage_team_model_keys: true, manage_team_credentials: true, manage_inference_providers: true, manage_team_settings: true });
   });
 
@@ -355,12 +357,13 @@ describe('PUT /api/providers', () => {
     expect(replaceScoped).not.toHaveBeenCalled();
   });
 
-  it('an admin API key writes a workspace seat token', async () => {
-    const { status, body } = await call(await PUT(req('PUT', '/api/providers', { bearer: 'bld_admin', body: { provider: 'claude-subscription', scope: 'workspace', workspaceId: 'ws-1', value: V.newToken } })));
-    expect(status).toBe(200);
-    const [, meta] = replaceScoped.mock.calls[0] as unknown as [string, Record<string, unknown>];
-    expect(meta).toMatchObject({ purpose: 'oauth_token', workspaceId: 'ws-1' });
-    expect(body.workspaceId).toBe('ws-1');
+  it('refuses to store a subscription login: it is no provider', async () => {
+    for (const provider of ['claude-subscription', 'codex-subscription']) {
+      const { status, body } = await call(await PUT(req('PUT', '/api/providers', { bearer: 'bld_admin', body: { provider, scope: 'workspace', workspaceId: 'ws-1', value: V.newToken } })));
+      expect(status).toBe(400);
+      expect(body.error).toMatch(/registry provider/);
+    }
+    expect(replaceScoped).not.toHaveBeenCalled();
   });
 
   it('a worker-level API key cannot write team credentials', async () => {
@@ -390,14 +393,6 @@ describe('PUT /api/providers', () => {
     const { status, body } = await call(await PUT(req('PUT', '/api/providers', { body: { provider: 'litellm', scope: 'mine', value: 'k', config: { baseUrl: 'https://gw.example.com' } } })));
     expect(status).toBe(422);
     expect(body.error).toBe('provider_scope_unsupported');
-  });
-
-  it('sends a ChatGPT login to the browser instead of accepting a token', async () => {
-    asAdmin();
-    const { status, body } = await call(await PUT(req('PUT', '/api/providers', { body: { provider: 'codex-subscription', scope: 'team', value: 'x' } })));
-    expect(status).toBe(422);
-    expect(body.error).toBe('connect_in_browser');
-    expect(typeof body.url).toBe('string');
   });
 
   it('a gateway goes through the gateway function; an endpoint through the endpoint function', async () => {

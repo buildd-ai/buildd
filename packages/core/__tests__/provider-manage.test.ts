@@ -67,13 +67,10 @@ describe('writeStorage', () => {
 });
 
 describe('providerShape', () => {
-  it('defaults to a pasteable shape', () => {
-    expect(providerShape('claude-subscription')!.id).toBe('setup_token');
+  it('defaults to the provider\'s first shape', () => {
     expect(providerShape('anthropic')!.id).toBe('api_key');
     expect(providerShape('litellm')!.id).toBe('gateway');
     expect(providerShape('custom-endpoint')!.id).toBe('endpoint');
-    // Codex has only the browser flow.
-    expect(providerShape('codex-subscription')!.id).toBe('oauth_managed');
   });
 
   it('is null for a shape the provider does not have', () => {
@@ -89,14 +86,13 @@ describe('scopeRefusal', () => {
     }
   });
 
-  it('mine follows the registry scopes and pending scopes', () => {
+  it('mine follows the registry scopes', () => {
     for (const p of PROVIDER_REGISTRY) {
-      const open = p.scopes.includes('personal') && !(p.pendingScopes ?? []).includes('personal');
+      const open = p.scopes.includes('personal');
       expect(scopeRefusal(p.id, 'mine') === null).toBe(open);
     }
     expect(scopeRefusal('anthropic', 'mine')).toBeNull();
     expect(scopeRefusal('litellm', 'mine')).toMatch(/shared configuration/);
-    expect(scopeRefusal('claude-subscription', 'mine')).toMatch(/not delivered/);
   });
 });
 
@@ -134,7 +130,7 @@ describe('writePermission', () => {
   it('matches the route that has always written each storage', () => {
     expect(writePermission(shapeOf('anthropic'), { purpose: 'inference_key', label: 'anthropic', readBy: [] })).toBe('manage_team_model_keys');
     expect(writePermission(shapeOf('anthropic'), { purpose: 'anthropic_api_key', readBy: [] })).toBe('manage_team_credentials');
-    expect(writePermission(shapeOf('claude-subscription'), shapeOf('claude-subscription').storage)).toBe('manage_team_credentials');
+    expect(writePermission(shapeOf('openai'), { purpose: 'openai_api_key', readBy: [] })).toBe('manage_team_credentials');
     expect(writePermission(shapeOf('litellm'), shapeOf('litellm').storage)).toBe('manage_inference_providers');
     expect(writePermission(shapeOf('custom-endpoint'), shapeOf('custom-endpoint').storage)).toBe('manage_inference_providers');
   });
@@ -145,7 +141,9 @@ describe('rowProvider', () => {
     expect(rowProvider({ purpose: 'inference_key', label: 'Anthropic' })).toEqual({ provider: 'anthropic', shape: 'api_key', legacy: false });
     expect(rowProvider({ purpose: 'anthropic_api_key', label: null })).toEqual({ provider: 'anthropic', shape: 'api_key', legacy: true });
     expect(rowProvider({ purpose: 'decision_key', label: null })).toEqual({ provider: 'openrouter', shape: 'api_key', legacy: true });
-    expect(rowProvider({ purpose: 'oauth_token', label: null })).toEqual({ provider: 'claude-subscription', shape: 'setup_token', legacy: false });
+    // A stored subscription login belongs to no provider: buildd does not hold one.
+    expect(rowProvider({ purpose: 'oauth_token', label: null })).toBeNull();
+    expect(rowProvider({ purpose: 'claude_credential', label: null })).toBeNull();
     expect(rowProvider({ purpose: 'inference_key', label: 'litellm' })).toEqual({ provider: 'litellm', shape: 'gateway', legacy: false });
     expect(rowProvider({ purpose: 'mcp_credential', label: 'X' })).toBeNull();
     expect(rowProvider({ purpose: 'inference_key', label: 'unknown' })).toBeNull();
@@ -165,7 +163,7 @@ describe('storedWritePermissions: a raw purpose + label gets the /api/providers 
     }
   });
 
-  it('agrees with writePermissions for every API key and seat token storage in the registry', () => {
+  it('agrees with writePermissions for every API key storage in the registry', () => {
     for (const p of PROVIDER_REGISTRY) {
       for (const s of p.shapes) {
         if (s.id === 'gateway' || s.id === 'endpoint') continue;
@@ -180,7 +178,8 @@ describe('storedWritePermissions: a raw purpose + label gets the /api/providers 
     expect(storedWritePermissions({ purpose: 'inference_key', label: 'openrouter' })).toEqual(['manage_team_model_keys']);
     expect(storedWritePermissions({ purpose: 'decision_key' })).toEqual(['manage_team_model_keys']);
     expect(storedWritePermissions({ purpose: 'anthropic_api_key' })).toEqual(['manage_team_credentials']);
-    expect(storedWritePermissions({ purpose: 'oauth_token' })).toEqual(['manage_team_credentials']);
+    // A subscription login is no provider's storage, so it has no rule here.
+    expect(storedWritePermissions({ purpose: 'oauth_token' })).toBeNull();
   });
 
   it("is null for a gateway, an unknown label and a non-model secret, which keep the route's own rule", () => {
@@ -196,7 +195,6 @@ describe('requiredKeyPrefix', () => {
     expect(requiredKeyPrefix({ purpose: 'anthropic_api_key' })).toBe('sk-ant-api');
     expect(requiredKeyPrefix({ purpose: 'inference_key', label: 'openai' })).toBe('sk-');
     expect(requiredKeyPrefix({ purpose: 'openai_api_key' })).toBe('sk-');
-    expect(requiredKeyPrefix({ purpose: 'oauth_token' })).toBe('sk-ant-oat');
   });
 
   it('a chat-only key and a gateway key have none', () => {

@@ -58,11 +58,10 @@ import {
   type ManageError,
   type UserConnections,
 } from './mcp-grant-patch';
+import { isUuid } from '@/lib/uuid';
 
 export * from './mcp-grant-patch';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
 
 const UNNAMED_CLIENT = 'Unnamed app';
 

@@ -30,7 +30,7 @@ describe('getActiveClaudeSecretId', () => {
     const { sql, params } = render(findMany.mock.calls[0][0].where);
     expect(params).toContain('inference_key');
     expect(params).toContain('anthropic_api_key');
-    expect(params).toContain('oauth_token');
+    expect(params).not.toContain('oauth_token');
     expect(sql).toContain('"user_id" is null');
   });
 
@@ -39,14 +39,14 @@ describe('getActiveClaudeSecretId', () => {
     expect(await getActiveClaudeSecretId('t-1')).toBe('canon');
   });
 
-  it('prefers canonical over legacy, and a seat token over either', async () => {
+  it('prefers canonical over legacy, and never names a stored seat token', async () => {
     rows = [
       { id: 'legacy', purpose: 'anthropic_api_key' },
       { id: 'canon', purpose: 'inference_key', label: 'anthropic' },
     ];
     expect(await getActiveClaudeSecretId('t-1')).toBe('canon');
     rows = [...rows, { id: 'seat', purpose: 'oauth_token' }];
-    expect(await getActiveClaudeSecretId('t-1')).toBe('seat');
+    expect(await getActiveClaudeSecretId('t-1')).toBe('canon');
   });
 
   it('never names another provider\'s key or a personal row', async () => {

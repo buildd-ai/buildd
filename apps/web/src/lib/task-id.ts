@@ -1,5 +1,5 @@
+import { isUuid } from '@/lib/uuid';
 /** Full UUID v4 regex (36-char, dashes in right places) */
-const FULL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Zero-padded pattern — the known production regression:
@@ -16,7 +16,7 @@ const ZERO_PADDED_RE = /^[0-9a-f]{8}-0{4}-0{4}-0{4}-0{12}$/i;
  */
 export function isValidTaskId(id: string | null | undefined): id is string {
   if (!id) return false;
-  if (!FULL_UUID_RE.test(id)) return false;
+  if (!isUuid(id)) return false;
   if (ZERO_PADDED_RE.test(id)) return false;
   return true;
 }

@@ -18,11 +18,15 @@ function harness(o: {
   enqueueInserts?: boolean;
   /** What the kernel's republish writes when drained. */
   onDrain?: (deliveryId: string) => void;
+  /** PR numbers buildd has no record of at all (`isForeignPr`); every other PR is known. */
+  foreign?: number[];
+  /** The primary workspace's gitConfig (`mergePolicy.autoReviewUnowned`). */
+  gitConfig?: unknown;
 }) {
   const statuses = new Map<string, { state: string; description: string }>(Object.entries(o.shown ?? {}));
   const writes: Array<{ sha: string; context: string; state: string; description: string }> = [];
   const enqueued: Array<{ deliveryId: string; version: number }> = [];
-  const repos: LinkedRepo[] = [{ workspaceId: 'ws1', installationId: 1, repoFullName: REPO, releaseConfig: (o.releaseConfig ?? null) as LinkedRepo['releaseConfig'] }];
+  const repos: LinkedRepo[] = [{ workspaceId: 'ws1', installationId: 1, repoFullName: REPO, releaseConfig: (o.releaseConfig ?? null) as LinkedRepo['releaseConfig'], gitConfig: o.gitConfig ?? null }];
   const deps: OpenPrStatusDeps = {
     repos: async () => repos,
     listOpenPulls: async () => o.pulls.map((p) => ({
@@ -41,6 +45,7 @@ function harness(o: {
       return o.enqueueInserts ?? true;
     },
     drain: async (id) => { o.onDrain?.(id); },
+    foreign: async (_links, _repo, pr) => (o.foreign ?? []).includes(pr.number),
     reviews: async () => ({
       isCandidate: (config, pr) => classifyReleasePr(config, pr).kind === 'candidate',
       mayBeCandidate: (config, refs) => config && config.enabled && config.candidate && config.candidate.branches?.some(pattern => {
@@ -367,5 +372,55 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
       errors: 0,
       coverage: { verdict: 'covered' },
     });
+  });
+});
+
+describe('a foreign PR (buildd has no record of it) and mergePolicy.autoReviewUnowned', () => {
+  const ON = { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } };
+  const OFF = { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' }, autoReviewUnowned: false } };
+
+  test('setting off: the floor writes no Buildd / Review approval on a foreign head, a draft or a bot PR included, and coverage does not count it missing', async () => {
+    const h = harness({ gitConfig: OFF, foreign: [7, 8, 9], pulls: [{ number: 7, sha: H(7) }, { number: 8, sha: H(8), draft: true }, { number: 9, sha: H(9), author: 'renovate[bot]' }] });
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(h.writes).toEqual([]);
+    expect(s).toMatchObject({ checked: 3, published: 0, skipped: 3, skipReasons: { foreign: 3 }, errors: 0, coverage: { verdict: 'covered', missing: [] } });
+  });
+
+  test('setting off (the default for a tier other than agent-review): same', async () => {
+    const h = harness({ gitConfig: { mergePolicy: { tier: 'human' } }, foreign: [8], pulls: [{ number: 8, sha: H(8), draft: true }] });
+    await publishOpenPrStatuses(h.deps);
+    expect(h.writes).toEqual([]);
+  });
+
+  test('setting off: a known PR with no review keeps its status exactly as today', async () => {
+    const h = harness({ gitConfig: OFF, foreign: [], pulls: [{ number: 8, sha: H(8), draft: true }] });
+    await publishOpenPrStatuses(h.deps);
+    expect(h.writes.map((w) => [w.state, w.description])).toEqual([['pending', 'Review not requested: no buildd review covers 8888888 yet']]);
+  });
+
+  test('setting on: a foreign head auto-review did not take (draft, other base) gets no status either', async () => {
+    const h = harness({ gitConfig: ON, foreign: [7, 8], pulls: [{ number: 7, sha: H(7), baseRef: 'some-feature' }, { number: 8, sha: H(8), draft: true }] });
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(h.writes).toEqual([]);
+    expect(s).toMatchObject({ skipped: 2, skipReasons: { foreign: 2 }, coverage: { verdict: 'covered' } });
+  });
+
+  test('setting on: a foreign head with its review requested reads "Review in progress"', async () => {
+    const h = harness({ gitConfig: ON, foreign: [7], pulls: [{ number: 7, sha: H(7) }], review: 'in_progress' });
+    await publishOpenPrStatuses(h.deps);
+    expect(h.writes.at(-1)!.description.startsWith('Review in progress')).toBe(true);
+  });
+
+  test('a release candidate keeps its gate either way', async () => {
+    const releaseConfig = { enabled: true, prodBranch: 'main', candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['release-bot[bot]'] } };
+    const meta = { schema: 1, version: 'v1.2.3', branch: 'release/v1.2.3', sourceRef: 'dev', sourceSha: H(4), candidateSha: H(3), baseRef: 'main', baseSha: H(5), previousTag: null, amendment: 0, previousCandidateSha: null, supersedes: null, cutAt: '2026-01-01T00:00:00Z' };
+    for (const gitConfig of [ON, OFF]) {
+      const h = harness({
+        gitConfig, releaseConfig, foreign: [9],
+        pulls: [{ number: 9, sha: H(3), headRef: 'release/v1.2.3', baseRef: 'main', author: 'release-bot[bot]', body: `<!-- release-candidate ${JSON.stringify(meta)} -->` }],
+      });
+      const s = await publishOpenPrStatuses(h.deps);
+      expect(s).toMatchObject({ published: 1, candidates: 1, skipped: 0 });
+    }
   });
 });

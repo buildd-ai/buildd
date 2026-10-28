@@ -443,7 +443,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
   const SCHEDULE_MOVES = hasWs && roleHasPermission(role, 'delegate_schedule_access') ? await SCHEDULE_MOVE_NEEDS_YOU(wsIds) : null;
   const r1 = await readRound({
     ss0: statusPlan.queries[0], ss1: statusPlan.queries[1], ss2: statusPlan.queries[2], ss3: statusPlan.queries[3],
-    ss4: statusPlan.queries[4], ss5: statusPlan.queries[5], ss6: statusPlan.queries[6],
+    ss4: statusPlan.queries[4], ss5: statusPlan.queries[5],
     // A failed lookup reads as "has a key" below: never nag a working team.
     agentKey: agentCredentialProbe(teamId),
     team: db.select({ hostedRunnerHours: teamsTable.hostedRunnerHours }).from(teamsTable).where(eq(teamsTable.id, teamId)).limit(1),
@@ -761,7 +761,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
     getDeliveryViewsForTasks([...openTaskIds, ...failedTaskRows.map(t => t.id), ...upstreamIds, ...docFixTaskIds]),
     // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
     asking.length > 0 ? loadSupersededQuestionTaskIds(asking.map(r => r.taskId ?? '')) : Promise.resolve(new Set<string>()),
-    statusPlan.facts([r1.ss0!, r1.ss1!, r1.ss2!, r1.ss3!, r1.ss4!, r1.ss5!, r1.ss6!]).catch(err => {
+    statusPlan.facts([r1.ss0!, r1.ss1!, r1.ss2!, r1.ss3!, r1.ss4!, r1.ss5!]).catch(err => {
       console.error('[service-status] load failed (non-fatal):', err);
       return null;
     }),

@@ -256,7 +256,7 @@ const OPEN_MISSION_STATUSES = ['active', 'paused', 'budget_exhausted'] as const 
  * A PR opened onto a mission's integration branch is that mission's work even
  * when buildd did not open it, so its adopted task belongs on the mission.
  */
-async function integrationMissionForBase(workspaceId: string, baseRef: string): Promise<string | null> {
+export async function integrationMissionForBase(workspaceId: string, baseRef: string): Promise<string | null> {
   try {
     const rows = await db.query.missions.findMany({
       where: sqlWhere(and(

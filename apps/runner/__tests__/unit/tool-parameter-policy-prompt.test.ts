@@ -175,7 +175,12 @@ async function runTask(
     ...claimExtra,
   }] }));
   await manager.claimAndStart(task as any);
-  await new Promise(r => setTimeout(r, 250));
+  // Poll rather than sleep a fixed interval: a cold first session on a slow
+  // (Windows CI) host can take longer than any fixed wait to reach query().
+  const deadline = Date.now() + 10_000;
+  while (!lastQueryOpts?.options?.systemPrompt?.append && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
   return (lastQueryOpts?.options?.systemPrompt?.append ?? '') as string;
 }
 

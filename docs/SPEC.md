@@ -329,8 +329,8 @@ runner `availableSkills`.
 
 ### Secret (`secrets`)
 **The single, unified credential store.** One row per scoped credential; `purpose` ∈
-`anthropic_api_key | oauth_token | codex_credential | webhook_token | mcp_credential |
-vercel_token | custom | claude_credential | inference_key | decision_key | …`. Scoped
+`anthropic_api_key | codex_credential | webhook_token | mcp_credential |
+vercel_token | custom | inference_key | decision_key | …`. Scoped
 by team (always) + optional account + optional workspace (+ optional `userId`, for a
 person's own `inference_key` only); a team-wide row (account/workspace/user NULL)
 covers everything. Multi-field
@@ -555,7 +555,7 @@ the route tree is authoritative.)
   `notes/[noteId]/reply`).
 - **Workspaces:** `workspaces` (+ `by-repo`, `match-repos`, `create-repo`),
   `workspaces/[id]/{config,runners,schedules,skills,memory,projects,
-  watched-projects,webhook,codex-credential}` and nested CRUD.
+  watched-projects,webhook}` and nested CRUD.
 - **Teams:** `teams`, `teams/[id]` (+ `members`, `invitations`), `invitations/[token]/accept`.
 - **Roles/Skills:** `roles`; skill CRUD under `workspaces/[id]/skills`.
 - **Secrets:** `secrets`.
@@ -576,7 +576,7 @@ when `artifactId` + `artifactTitle` are present. This contract is tested in
 `apps/web/src/components/artifact-helpers.test.ts` (`buildCreateTaskUrl` suite).
 - **GitHub:** `github/{install,callback,installations,installations/[id]/repos,pr,webhook}`.
 - **MCP:** `mcp` (HTTP dispatch), `mcp/registry`.
-- **Cron:** `cron/{schedules,codex-token-refresh,routing-calibration,feedback-digest}`.
+- **Cron:** `cron/{schedules,connector-token-refresh,routing-calibration,feedback-digest}`.
 - **Integrations:** `integrations/{slack,discord}`, `webhooks/ingest`.
 - **Releases:** `releases/{status,trigger}`.
 - **Misc:** `version`, `feedback`, `memory/quickstart`, `admin/refresh-model-aliases`.

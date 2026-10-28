@@ -52,7 +52,7 @@ export function buildTerminalAttributionPayload(worker: LocalWorker): {
 }
 
 /** Which Claude login a run used, as the server's seat-wall decision reads it. */
-export type ClaudeLoginUsed = 'machine_login' | 'machine_token' | 'stored';
+export type ClaudeLoginUsed = 'machine_login' | 'machine_token';
 
 /**
  * The Claude login a run used, from the agent env the runner built for it.
@@ -64,11 +64,8 @@ export function claudeLoginUsed(input: {
   cloud: boolean;
   machineLoginUsed?: boolean;
   machineLogin: 'env' | 'login' | null;
-  injected: readonly string[];
-  claudeCredentialUsed: boolean;
 }): ClaudeLoginUsed | undefined {
   if (input.isCodexTask || input.cloud) return undefined;
   if (input.machineLoginUsed && input.machineLogin) return input.machineLogin === 'env' ? 'machine_token' : 'machine_login';
-  if (input.injected.includes('serverOauthToken') || input.claudeCredentialUsed) return 'stored';
   return undefined;
 }

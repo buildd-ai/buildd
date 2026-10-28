@@ -11,6 +11,7 @@
 import type { LocalDb } from '../../../packages/core/db/local-client';
 import { schema as s, sql, eq } from '../../../packages/core/db/local-client';
 import { createHash } from 'crypto';
+import { canonicalJson } from '../../../packages/shared/src/canonical-json';
 import { relTime, type Entity, type IdMap, type Story } from './story';
 
 /**
@@ -18,14 +19,6 @@ import { relTime, type Entity, type IdMap, type Story } from './story';
  * restated here so the demo tooling never imports the app's DB client; the
  * test pins the two to the same output.
  */
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
-}
 export function demoInputHash(input: unknown): string {
   return createHash('sha256').update(canonicalJson(input)).digest('hex');
 }

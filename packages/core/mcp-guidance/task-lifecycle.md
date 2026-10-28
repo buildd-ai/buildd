@@ -27,7 +27,13 @@ single `buildd` tool if that is what you have.
    If it names an artifact `key`, read it with `list_artifacts` and
    `get_artifact` before starting. If it is pinned to a Living Spec, read the
    pinned revision (topic `living-specs`).
-4. **Work** on the branch `claim_task` gave you.
+4. **Work** on the branch `claim_task` gave you. Declare the files you will
+   edit in `pathManifest`. Schema, migrations and configured hard surfaces
+   put a task in a serial lane: one at a time, first come. Everything else
+   runs in parallel. Take the edit-time file lock through `check_path_claim`
+   before editing; it stops two agents editing the same file at once.
+   Add `dependsOn` only for a real ordering need, when one task needs
+   another task's result. Overlapping manifests do not add dependencies.
 5. **Progress:** `buildd action=update_progress params={ message }` at each
    milestone. It is your heartbeat: an interactive worker that goes quiet for
    a long stretch is released and its task goes back to pending. The

@@ -499,10 +499,9 @@ makes the decision.
 | `apps/web/src/app/api/secrets/route.ts` (`permissionsFor`) | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
 | `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete a team or workspace provider credential stored as a chat-only key (`inference_key`, `decision_key`) | owner, admin, personal team | admin | `manage_team_model_keys` |
 | `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete a team or workspace Anthropic or OpenAI key (canonical storage, read by chat and agent runs) | owner, admin, personal team | admin | `manage_team_model_keys` and `manage_team_credentials` |
-| `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete a team or workspace agent credential (`anthropic_api_key`, `openai_api_key`, `oauth_token`) | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete a team or workspace agent credential (`anthropic_api_key`, `openai_api_key`) | owner, admin, personal team | admin | `manage_team_credentials` |
 | `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete the LiteLLM gateway or a custom endpoint | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/providers/route.ts` (`PATCH`) | set the team credential policy (as PATCH /api/teams/[id]) | owner, admin, personal team | — | `manage_team_settings` |
-| `apps/web/src/lib/team-credential-access.ts` (`refuseWithoutTeamCredentialAccess`) | connect, replace or delete a workspace Claude/Codex credential (refresh and verify stay open to members) | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/app/(protected)/settings/models/page.tsx` (`ModelsSettingsPage`) | UI: runner sign-ins | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/app/(protected)/settings/runners/page.tsx` (`RunnersSettingsPage`) | UI: Cloudflare token | owner, admin, personal team | — | `manage_team_model_keys` |
 | `apps/web/src/app/app/(protected)/settings/integrations/page.tsx` (`IntegrationsSettingsPage`) | UI: Vercel and other team credentials | owner, admin, personal team | — | `manage_team_credentials` |

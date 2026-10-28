@@ -12,8 +12,8 @@ import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-
 import { explainMission, explainTask, explainWorkspace, explainPr } from '@/lib/explain';
 import { dependencyViewerOf } from '@/lib/task-dependency-reach';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * GET /api/explain
@@ -181,7 +181,7 @@ export async function GET(req: NextRequest) {
 
     // ── Task ────────────────────────────────────────────────────────────────
     if (taskId) {
-      if (!UUID_RE.test(taskId)) {
+      if (!isUuid(taskId)) {
         return NextResponse.json({ error: `Invalid taskId: expected a UUID, got "${taskId}".` }, { status: 400 });
       }
       const row = await db.query.tasks.findFirst({
@@ -198,7 +198,7 @@ export async function GET(req: NextRequest) {
 
     // ── Mission ─────────────────────────────────────────────────────────────
     if (missionId) {
-      if (!UUID_RE.test(missionId)) {
+      if (!isUuid(missionId)) {
         return NextResponse.json({ error: `Invalid missionId: expected a UUID, got "${missionId}".` }, { status: 400 });
       }
       const row = await db.query.missions.findFirst({
@@ -222,7 +222,7 @@ export async function GET(req: NextRequest) {
     }
 
     // ── Workspace ───────────────────────────────────────────────────────────
-    if (!UUID_RE.test(workspaceId!)) {
+    if (!isUuid(workspaceId!)) {
       return NextResponse.json(
         { error: `Invalid workspaceId: expected a UUID, got "${workspaceId}". Resolve names to UUIDs before calling this endpoint.` },
         { status: 400 },

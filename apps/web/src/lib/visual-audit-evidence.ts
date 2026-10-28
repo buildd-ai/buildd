@@ -40,6 +40,7 @@ import {
   type QaVerdict,
 } from '@/lib/mission-visual-review';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
 // One vocabulary with the mission page's Visual review strip (pure, client-safe).
 export {
@@ -95,7 +96,6 @@ export interface VisualEvidenceVerdict {
 
 /** Rows read per check; comfortably above one run's 40-shot bound plus re-shoots. */
 const MAX_SHOTS_READ = 200;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -378,7 +378,7 @@ export async function loadVisualAuditEvidence(opts: {
   const fixIds = [...new Set(
     shots
       .map((s) => parseQaMeta(s.metadata))
-      .filter((q): q is QaMeta => q?.verdict === 'issue' && !!q.fixTaskId && UUID_RE.test(q.fixTaskId))
+      .filter((q): q is QaMeta => q?.verdict === 'issue' && !!q.fixTaskId && isUuid(q.fixTaskId))
       .map((q) => q.fixTaskId!),
   )];
   const linked = fixIds.length > 0
