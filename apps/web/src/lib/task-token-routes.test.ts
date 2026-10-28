@@ -29,6 +29,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/status/route.ts',
   // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); spend also needs a live model.inference grant.
   'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
+  // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); a read also needs a live database.query grant.
+  'apps/web/src/app/api/agent-capabilities/database-query/route.ts',
   // Governed outcomes: confined to the workspace of its task (taskScopeAllowsWorkspace); lib/specs/outcome.ts lets it read its own task and record only on its parent, never itself.
   'apps/web/src/app/api/specs/outcomes/[taskId]/route.ts',
   // Mission-level outcome-spec verdicts (Living Specs Slice 12): confined to its own task's mission (taskScopeAllowsMission); lib/specs/mission-outcome.ts lets only that mission's server-filed final verification task record, every other task token only read.

@@ -20,29 +20,22 @@ export function isRunnerExecutor(value: unknown): value is RunnerExecutor {
 }
 
 /**
- * Claimed-worker fields that carry credential material (or, for
- * `pendingCredentialRefreshes`, the secret ids a broker would lease and then
- * bootstrap into a token). None of them may reach a cloud container.
+ * Claimed-worker fields that carry credential material. None of them may
+ * reach a cloud container.
  *
- * - serverApiKey / serverOauthToken: the team's model credential
- * - claudeAccessToken / claudeTokenExpiresAt: managed Claude OAuth token
- * - codexCredential: Codex auth (OAuth tokens or API key)
+ * - serverApiKey: the team's model API key
+ * - codexCredential: a Codex API key
  * - mcpSecrets: decrypted MCP secret values
  * - mcpConnectors: resolved connectors, whose headers/env hold credentials
  * - roleEnvSecrets: decrypted role env secrets
- * - pendingCredentialRefreshes: secret ids for the credential broker
  * - modelEndpoint: the team's agent model endpoint (URL + key)
  */
 export const CLAIM_CREDENTIAL_FIELDS = [
   'serverApiKey',
-  'serverOauthToken',
-  'claudeAccessToken',
-  'claudeTokenExpiresAt',
   'codexCredential',
   'mcpSecrets',
   'mcpConnectors',
   'roleEnvSecrets',
-  'pendingCredentialRefreshes',
   'modelEndpoint',
 ] as const;
 

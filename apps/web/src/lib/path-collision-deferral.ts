@@ -27,8 +27,8 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { and, eq, ne, sql } from 'drizzle-orm';
+import { isUuid } from '@/lib/uuid';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SOURCES = new Set(['hook_flush', 'sync', 'pre_push', 'completion']);
 
 export interface PathCollisionReport {
@@ -54,7 +54,7 @@ export function parsePathCollision(raw: unknown): PathCollisionReport | null {
   const r = raw as Record<string, unknown>;
   const path = cleanPath(r.path);
   if (!path) return null;
-  if (typeof r.blockingTaskId !== 'string' || !UUID.test(r.blockingTaskId)) return null;
+  if (typeof r.blockingTaskId !== 'string' || !isUuid(r.blockingTaskId)) return null;
   const out: PathCollisionReport = {
     path,
     blockingTaskId: r.blockingTaskId,

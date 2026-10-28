@@ -4,17 +4,14 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 const mockSecretsFindFirst = mock(() => null as any);
-const mockVerifyClaudeCredential = mock(() => Promise.resolve({ ok: true }) as any);
-const mockVerifyCodexCredential = mock(() => Promise.resolve({ ok: true }) as any);
+const mockVerifyAnthropicApiKey = mock(() => Promise.resolve({ ok: true }) as any);
+const mockVerifyCodexApiKey = mock(() => Promise.resolve({ ok: true }) as any);
 const mockVerifyCloudflareCredential = mock(() => Promise.resolve({ verified: true, error: null }) as any);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
-mock.module('@/lib/claude-credential', () => ({ verifyClaudeCredential: mockVerifyClaudeCredential }));
-mock.module('@/lib/codex-credential', () => ({
-  getCodexSecretId: mock(() => Promise.resolve(null)),
-  verifyCodexCredential: mockVerifyCodexCredential,
-}));
+mock.module('@/lib/anthropic-auth', () => ({ verifyAnthropicApiKey: mockVerifyAnthropicApiKey }));
+mock.module('@/lib/codex-api-key', () => ({ verifyCodexApiKey: mockVerifyCodexApiKey }));
 mock.module('@/lib/cloudflare-credential', () => ({ verifyCloudflareCredential: mockVerifyCloudflareCredential }));
 const mockVerifyAgentEndpointSecret = mock(() => Promise.resolve({ health: 'healthy', error: null }) as any);
 mock.module('@/lib/agent-endpoint-settings', () => ({ verifyAgentEndpointSecret: mockVerifyAgentEndpointSecret }));
@@ -66,11 +63,26 @@ describe('POST /api/secrets/[id]/verify', () => {
     expect(res.status).toBe(404);
   });
 
-  it('verifies an oauth_token credential', async () => {
-    mockSecretsFindFirst.mockResolvedValue({ id: SECRET_ID, teamId: 'team-1', purpose: 'oauth_token' });
+  it('verifies an anthropic_api_key credential', async () => {
+    mockSecretsFindFirst.mockResolvedValue({ id: SECRET_ID, teamId: 'team-1', purpose: 'anthropic_api_key' });
     const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
     expect(res.status).toBe(200);
-    expect(mockVerifyClaudeCredential).toHaveBeenCalledWith(SECRET_ID);
+    expect(mockVerifyAnthropicApiKey).toHaveBeenCalledWith(SECRET_ID);
+  });
+
+  it('verifies a codex_credential row as an API key', async () => {
+    mockSecretsFindFirst.mockResolvedValue({ id: SECRET_ID, teamId: 'team-1', purpose: 'codex_credential' });
+    const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
+    expect(res.status).toBe(200);
+    expect(mockVerifyCodexApiKey).toHaveBeenCalledWith(SECRET_ID);
+  });
+
+  it('no longer verifies a stored subscription login (oauth_token)', async () => {
+    mockVerifyAnthropicApiKey.mockClear();
+    mockSecretsFindFirst.mockResolvedValue({ id: SECRET_ID, teamId: 'team-1', purpose: 'oauth_token' });
+    const res = await POST(req(SECRET_ID), ctx(SECRET_ID));
+    expect(res.status).toBe(400);
+    expect(mockVerifyAnthropicApiKey).not.toHaveBeenCalled();
   });
 
   it('verifies a cloudflare_token credential', async () => {

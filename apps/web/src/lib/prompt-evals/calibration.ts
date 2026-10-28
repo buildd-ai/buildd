@@ -23,6 +23,7 @@
  * estimate: 60 of 64 right is 94% but proves little.
  */
 import { calibrate, isCalibration, type Calibration } from '@buildd/core/decision-model-measurements';
+import { percentile } from '@buildd/shared';
 
 export const CONFIDENCE_SOURCES = ['confidence', 'top_p', 'margin', 'calibrated_top_p'] as const;
 export type ConfidenceSource = (typeof CONFIDENCE_SOURCES)[number];
@@ -68,14 +69,6 @@ export function wilsonLower(successes: number, n: number): number {
   const centre = p + z2 / (2 * n);
   const margin = Z95 * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
   return Math.max(0, (centre - margin) / denom);
-}
-
-/** Nearest-rank percentile; null for no values. */
-export function percentile(values: readonly number[], p: number): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1));
-  return sorted[idx];
 }
 
 function signalOf(c: ScoredCase, source: ConfidenceSource): number | null {
@@ -337,7 +330,7 @@ export function scoreModel(input: readonly ScoredCase[], opts: ThresholdOptions)
       }
       : null,
     derivedReason,
-    latencyP50Ms: percentile(latencies, 0.5),
-    latencyP95Ms: percentile(latencies, 0.95),
+    latencyP50Ms: percentile(latencies, 50),
+    latencyP95Ms: percentile(latencies, 95),
   };
 }

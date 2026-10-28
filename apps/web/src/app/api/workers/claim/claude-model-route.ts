@@ -19,8 +19,7 @@
  *   (`inference_key` / `anthropic`) or the legacy `anthropic_api_key`:
  *   delivered as ANTHROPIC_API_KEY, which Claude Code prefers over an OAuth
  *   token. Metered per token, not seat-bound.
- * - otherwise the OAuth seat (server `oauth_token`, `claude_credential`, or
- *   the runner's own login).
+ * - otherwise the runner's own login (an OAuth seat on that machine).
  *
  * Every doubt (a lookup error, no ENCRYPTION_KEY, no team) answers
  * `oauth_seat`: the pre-existing behaviour, where a walled seat defers or

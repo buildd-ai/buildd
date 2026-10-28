@@ -40,6 +40,7 @@ import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { verifyByContent, type DiffFile } from '@/lib/pr-supersession-verify';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 
 /**
  * Why the successor could not continue on the ancestor's branch, as the runner
@@ -160,7 +161,7 @@ export function isEarlierAttemptPr(opts: {
 }
 
 /** PR lifecycle states that mean the PR is no longer open. */
-const CLOSED_LIFECYCLE = ['merged', 'closed', 'unresolvable'] as (
+const CLOSED_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE] as (
   'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable' | null
 )[];
 

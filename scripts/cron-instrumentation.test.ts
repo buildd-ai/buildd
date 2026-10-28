@@ -74,7 +74,28 @@ export function isInstrumentedSource(src: string): boolean {
   return /from '@\/lib\/cron-run'/.test(code) && /\bwithCronRun\(/.test(code);
 }
 
-const isInstrumented = (file: string) => isInstrumentedSource(readFileSync(file, 'utf8'));
+/**
+ * A retired cron path kept alive only to forward to its replacement
+ * (`export { GET } from '../<new>/route'`, see `cron-coverage.test.ts`'s
+ * retired-alias ledger) records and reports through the route it forwards to,
+ * so it is judged by that route's source. Anything beyond the re-export and a
+ * `maxDuration` is real code and gets judged on its own.
+ */
+export function aliasTargetSource(src: string): string | null {
+  const code = stripComments(src)
+    .replace(/^\s*export const maxDuration = \d+;?\s*$/m, '')
+    .trim();
+  const m = /^export \{ GET \} from '\.\.\/([\w-]+)\/route';?$/.exec(code);
+  return m ? m[1] : null;
+}
+
+function effectiveSource(file: string): string {
+  const src = readFileSync(file, 'utf8');
+  const target = aliasTargetSource(src);
+  return target ? readFileSync(`apps/web/src/app/api/cron/${target}/route.ts`, 'utf8') : src;
+}
+
+const isInstrumented = (file: string) => isInstrumentedSource(effectiveSource(file));
 
 /**
  * Does this route actually hand a verdict back?
@@ -102,7 +123,7 @@ export function reportsAVerdictSource(src: string): boolean {
   )));
 }
 
-const reportsAVerdict = (file: string) => reportsAVerdictSource(readFileSync(file, 'utf8'));
+const reportsAVerdict = (file: string) => reportsAVerdictSource(effectiveSource(file));
 
 describe('cron run instrumentation', () => {
   test('finds the cron routes at all', () => {
@@ -158,6 +179,15 @@ describe('cron run instrumentation', () => {
 
     // The real shape passes.
     expect(isInstrumentedSource(`${IMPORT}\nreturn withCronRun('x', req, h);`)).toBe(true);
+  });
+
+  test('a retired alias is judged by its target, and only a bare re-export counts', () => {
+    expect(aliasTargetSource("// retired\nexport { GET } from '../new-cron/route';\n\nexport const maxDuration = 60;\n"))
+      .toBe('new-cron');
+    // Real code next to the re-export is not an alias.
+    expect(aliasTargetSource("export { GET } from '../new-cron/route';\nexport async function POST() {}\n"))
+      .toBeNull();
+    expect(aliasTargetSource("export { GET } from '@/lib/elsewhere';\n")).toBeNull();
   });
 
   test('every cron route reports a verdict, or is a listed exception', () => {

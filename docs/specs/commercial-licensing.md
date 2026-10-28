@@ -1,6 +1,6 @@
 ---
 title: Commercial Licensing Foundation
-status: draft
+status: active
 owner: builder
 last_verified: 2026-10-09
 summary: The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
@@ -11,14 +11,10 @@ keywords: [BUILDD_LICENSE, BUILDD_LICENSE_FILE, Ed25519, license key, self-host,
 verified_by: [packages/core/__tests__/license.test.ts]
 assertions:
   - id: offline-license-verify
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: verifyLicenseToken
     path: packages/core/license/verify.ts
   - id: scoped-capability-check
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: checkCommercialCapability
     path: packages/core/license/capability.ts

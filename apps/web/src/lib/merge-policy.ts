@@ -26,6 +26,7 @@ export const mergePolicySchema = z.object({
   stallNotifyMinutes: z.number().optional(),
   dataMigrations: z.enum(['person', 'agent-review']).optional(),
   reviewOverride: z.enum(['admins', 'off']).optional(),
+  autoReviewUnowned: z.boolean().optional(),
 }).strict();
 
 export const DEFAULT_MERGE_POLICY: MergePolicy = {

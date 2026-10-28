@@ -55,6 +55,7 @@ import {
   type NoulAnswer,
 } from '@buildd/ai-kit/decide';
 import { definePromptedDecision } from './prompted-decision';
+import { isUuid } from '@buildd/shared';
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -495,8 +496,7 @@ export interface MemoryDecisionDeps {
   timeoutMs?: number;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const uuidOrNull = (v: string | null | undefined): string | null => (typeof v === 'string' && UUID_RE.test(v) ? v : null);
+const uuidOrNull = (v: string | null | undefined): string | null => (typeof v === 'string' && isUuid(v) ? v : null);
 
 const ATTRIBUTION_HEADERS = { 'http-referer': 'https://buildd.dev', 'x-title': 'buildd' } as const;
 

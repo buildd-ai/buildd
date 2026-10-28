@@ -169,7 +169,7 @@ describe('resolveToolPath', () => {
 });
 
 describe('CLAUDE_CFG_TMP_PREFIX constant', () => {
-  test('matches the mkdtempSync prefix used by claude-auth.ts', () => {
+  test('matches the mkdtempSync prefix a per-worker Claude config dir uses', () => {
     expect(CLAUDE_CFG_TMP_PREFIX).toBe('claude-cfg-');
   });
 });

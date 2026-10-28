@@ -59,3 +59,13 @@ describe('TonePill', () => {
     expect(html).toContain('Needs a decision');
   });
 });
+
+describe('StatusPill', () => {
+  it('says the shared word for a worker status, with a trailing count', () => {
+    const html = renderToStaticMarkup(<StatusPill status="waiting_input" trailing="2" />);
+    expect(html).toContain('Has a question');
+    expect(html).toContain('data-state="needs_you"');
+    expect(html).toContain('2');
+    expect(renderToStaticMarkup(<StatusPill status="running" />)).toContain('Running');
+  });
+});

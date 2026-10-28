@@ -22,6 +22,7 @@ import { scheduleMoves, scheduleRefusals, taskSchedules, tasks, workspaces } fro
 import { and, count, desc, eq, gt } from 'drizzle-orm';
 import { readScheduleDelegation, type ScheduleDelegation, type ScheduleDelegationGrant } from '@buildd/core/token-delegation';
 import { clearCallerCache, callerDep } from './caller-cache';
+import { isUuid } from '@/lib/uuid';
 
 /** Runs refused on one workspace before the move is proposed automatically (I-29). */
 export const AUTO_PROPOSE_AFTER_REFUSALS = 2;
@@ -49,7 +50,7 @@ export async function validateScheduleMove(input: {
   canCreateIn: (workspaceId: string) => Promise<boolean>;
 }): Promise<MoveCheck> {
   const { fromWorkspaceId, targetWorkspaceId, canCreateIn } = input;
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetWorkspaceId)) {
+  if (!isUuid(targetWorkspaceId)) {
     return { ok: false, status: 400, error: 'workspace must be a workspace id' };
   }
   const [own] = await db.select({ teamId: workspaces.teamId }).from(workspaces).where(eq(workspaces.id, fromWorkspaceId)).limit(1);

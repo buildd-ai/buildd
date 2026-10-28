@@ -27,8 +27,6 @@ import {
   type Surface,
 } from '@buildd/core/providers';
 import {
-  CONNECT_IN_BROWSER,
-  PROVIDERS_SETTINGS_PATH,
   PROVIDER_API_SCOPES,
   PROVIDER_SCOPE_UNSUPPORTED,
   PROVIDER_SURFACE_UNSUPPORTED,
@@ -100,8 +98,6 @@ const ENDPOINT_KIND_PROVIDER: Record<string, ProviderId> = {
   cloudflare: 'custom-endpoint',
 };
 
-const REFRESH_FAMILIES = new Set(['claude_credential', 'codex_credential']);
-
 /** Last four characters, or '' for anything too short to be a key (as every masked key in Settings). */
 function maskKeyLast4(value: string): string {
   const v = value.trim();
@@ -161,9 +157,7 @@ function classify(row: Row): Classified | null {
   const shape = providerDescriptor(match.provider).shapes.find(s => s.id === match.shape)!;
   const storage = [shape.storage, ...shape.legacy].find(s =>
     s.purpose === row.purpose && (s.label === undefined || s.label === (row.label ?? '').toLowerCase()))!;
-  const key = REFRESH_FAMILIES.has(row.purpose)
-    ? null
-    : shape.id === 'gateway' ? jsonField(value, 'apiKey') : value;
+  const key = shape.id === 'gateway' ? jsonField(value, 'apiKey') : value;
   return { ...match, storage, key };
 }
 
@@ -190,7 +184,7 @@ function summarize(row: Row, c: Classified): ProviderCredentialSummary {
     label: row.label,
     legacy: c.legacy,
     ...(c.endpointKind ? { endpointKind: c.endpointKind } : {}),
-    last4: REFRESH_FAMILIES.has(row.purpose) ? null : maskKeyLast4(c.key ?? ''),
+    last4: maskKeyLast4(c.key ?? ''),
     health: row.healthStatus ?? 'unknown',
     lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
     lastVerificationError: row.lastVerificationError ?? null,
@@ -211,7 +205,7 @@ function summarizeAll(rows: Row[]): ProviderCredentialSummary[] {
 // ── Listing ──────────────────────────────────────────────────────────────────
 
 function shapeListing(p: ProviderDescriptor, shape: CredentialShape): ProviderShapeListing {
-  return { id: shape.id, refreshes: shape.refreshes, connectInBrowser: shape.id === 'oauth_managed', writesTo: shapeWritesTo(p.id, shape) };
+  return { id: shape.id, writesTo: shapeWritesTo(p.id, shape) };
 }
 
 export function providerListing(
@@ -368,19 +362,6 @@ export function planProviderWrite(input: {
   if (scopeNo && input.op === 'set') {
     return { ok: false, refusal: { status: 422, body: { error: PROVIDER_SCOPE_UNSUPPORTED, provider: p.id, scope: input.scope, reason: scopeNo } } };
   }
-  if (shape.id === 'oauth_managed' && input.op === 'set') {
-    return {
-      ok: false,
-      refusal: {
-        status: 422,
-        body: {
-          error: CONNECT_IN_BROWSER, provider: p.id, scope: input.scope,
-          reason: `${p.label} is connected by signing in, in the browser; a token is never pasted over the API.`,
-          url: PROVIDERS_SETTINGS_PATH,
-        },
-      },
-    };
-  }
   const storage = writeStorage(input.provider, shape, input.scope);
   const permissions = input.scope === 'mine'
     ? []
@@ -473,8 +454,7 @@ export async function setProviderCredential(input: {
 
   let requeued: number | undefined;
   switch (plan.shape.id) {
-    case 'api_key':
-    case 'setup_token': {
+    case 'api_key': {
       if (!value || !value.trim()) return { ok: false, status: 400, error: 'value is required' };
       const chat = chatProviderOf(plan.provider);
       const chatKey = chat && plan.storage.purpose === 'inference_key' && plan.storage.label === chat && !workspaceId;

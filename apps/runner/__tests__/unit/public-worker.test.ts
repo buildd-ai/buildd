@@ -20,9 +20,6 @@ const SENTINEL = 'sentinel-credential-value';
 const CREDENTIAL_KEYS = [
   'mcpSecrets',
   'serverApiKey',
-  'serverOauthToken',
-  'claudeAccessToken',
-  'claudeCredentialId',
   'codexCredential',
   'roleConfig',
   'assertionTokenCache',
@@ -57,10 +54,7 @@ function workerWithCredentials(): LocalWorker {
     phaseTools: [],
     mcpSecrets: { SOME_TOKEN: SENTINEL },
     serverApiKey: SENTINEL,
-    serverOauthToken: SENTINEL,
-    claudeAccessToken: SENTINEL,
-    claudeCredentialId: SENTINEL,
-    codexCredential: { accessToken: SENTINEL, refreshToken: SENTINEL, accountId: 'a', expiresAt: null },
+    codexCredential: { apiKey: SENTINEL, expiresAt: null },
     roleConfig: {
       slug: 'builder', configHash: 'h', configUrl: `https://example.invalid/?sig=${SENTINEL}`,
       type: 'builder', model: 'm', allowedTools: [], canDelegateTo: [], background: false, maxTurns: null,

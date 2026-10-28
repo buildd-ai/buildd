@@ -108,6 +108,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   resolve_capability: 'read',
   request_capability: 'write',
   invoke_model_inference: 'write',
+  query_database: 'read',
   probe_budget_wall: 'write',
   close_pr: 'write',
   approve_pr_override: 'write',

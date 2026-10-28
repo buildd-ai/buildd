@@ -1,6 +1,6 @@
 ---
 title: Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)
-status: draft
+status: active
 owner: max
 last_verified: 2026-10-16
 summary: A decision kind MUST act only at a threshold measured for its model on graded cases, MAY switch model when a challenger measurably wins, and MUST collect every grading signal it can.
@@ -11,14 +11,10 @@ keywords: [decision model, jev, clef, clef flash, threshold, calibration, top p,
 verified_by: [apps/web/src/lib/decision-model-optimizer/optimizer.test.ts, apps/web/src/lib/prompt-evals/calibration.test.ts, apps/web/src/app/api/teams/[id]/decision-model-switches/route.test.ts]
 assertions:
   - id: decision-model-lookup
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: decisionModelFor
     path: packages/core/decision-model.ts
   - id: decision-model-normalize
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: normalizeDecisionModel
     path: packages/core/decision-model.ts

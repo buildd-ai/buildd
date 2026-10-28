@@ -17,6 +17,7 @@ import {
 } from './vocab';
 import { VISIBLE_CAUSE_OF, VISIBLE_CAUSE_ORDER, VISIBLE_FIX_CLASS, VISIBLE_HIGH_CONF } from './visible-answer';
 import { registerValuePrompt } from '@buildd/core/prompts';
+import { isUuid } from '@/lib/uuid';
 
 export const GATES = { satisfied: 0.8, intent: 0.7, turn: 0.8, fixClass: 0.7 } as const;
 
@@ -322,7 +323,6 @@ const TEXT_FIELDS: Record<string, keyof LessonRow> = {
   signature: 'signature', version: 'version', error: 'error',
 };
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Throws when a row carries a text value outside its vocabulary, or evidence
@@ -340,7 +340,7 @@ export function assertContentFree(row: LessonRow): void {
   for (const e of row.evidence) {
     const keys = Object.keys(e);
     if (keys.some(k => !(EVIDENCE_KEYS as readonly string[]).includes(k))) throw new Error('chat_retros.evidence: unexpected key');
-    if (!UUID_RE.test(e.messageId)) throw new Error('chat_retros.evidence: messageId is not a ref');
+    if (!isUuid(e.messageId)) throw new Error('chat_retros.evidence: messageId is not a ref');
     if (!Number.isInteger(e.turn) || typeof e.tokens !== 'number') throw new Error('chat_retros.evidence: non-numeric count');
     if (!(CANDIDATE_KINDS as readonly string[]).includes(e.kind)) throw new Error('chat_retros.evidence: kind outside its vocabulary');
     if (e.label !== null && e.label !== 'needed' && !(CAUSE_LABELS as readonly string[]).includes(e.label)) throw new Error('chat_retros.evidence: label outside its vocabulary');

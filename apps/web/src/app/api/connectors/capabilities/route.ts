@@ -9,6 +9,7 @@ import { loadDiscoveryInput } from '@/lib/connector-capabilities-store';
 import { listCapabilities, resolveCapability, resolveProviderAccess } from '@/lib/connector-capabilities';
 import { MODEL_INFERENCE_CAPABILITY, resolveTeamDecisionRoute } from '@/lib/capability-model-inference';
 import { MODEL_INFERENCE_PROVIDERS } from '@/lib/capability-grants';
+import { DATABASE_QUERY_CAPABILITY, DATABASE_QUERY_PROVIDER, DATABASE_QUERY_REQUEST, DATABASE_QUERY_TABLES } from '@/lib/capability-database-query';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ROLE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -66,7 +67,8 @@ export async function GET(req: NextRequest) {
     if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(provider) || (access !== 'read' && access !== 'write')) {
       return NextResponse.json({ error: 'invalid_provider', message: 'provider is a catalog slug; access is read or write' }, { status: 400 });
     }
-    return NextResponse.json(resolveProviderAccess(input, provider, access));
+    const res = resolveProviderAccess(input, provider, access);
+    return NextResponse.json(provider === DATABASE_QUERY_PROVIDER && access === 'read' ? { ...res, brokered: brokeredDatabaseRead() } : res);
   }
 
   const capability = params.get('capability');
@@ -111,5 +113,25 @@ export async function GET(req: NextRequest) {
 
   const result = resolveCapability(input, capability);
   if ('error' in result) return NextResponse.json({ error: 'unknown_capability', message: result.error }, { status: 400 });
-  return NextResponse.json(result);
+  return NextResponse.json(result.capability === 'database:read' || result.capability === 'database:query' ? { ...result, brokered: brokeredDatabaseRead() } : result);
+}
+
+/**
+ * A database read is served by buildd's query broker, not by mounting a
+ * connector (mounting Neon exposes every native tool, writes included). Named
+ * beside the connector candidates so an agent asks for the narrow path.
+ */
+function brokeredDatabaseRead() {
+  const configured = !!process.env.BUILDD_QUERY_DATABASE_URL;
+  return {
+    capability: DATABASE_QUERY_CAPABILITY,
+    kind: 'governed_call',
+    message: configured
+      ? 'Read the production database through buildd: request_capability { provider: "neon", access: "read" }, then query_database { sql }. One SELECT over an allowlist, as a read-only role, recorded on the task. Prefer this to mounting a database connector.'
+      : 'buildd serves database reads through a read-only query role, but this deployment has none configured yet (BUILDD_QUERY_DATABASE_URL); a platform admin sets it up. Do not reach for a connection string of your own.',
+    configured,
+    requestWith: DATABASE_QUERY_REQUEST,
+    invoke: { tool: 'query_database', method: 'POST', path: '/api/agent-capabilities/database-query', body: '{ workerId, sql, params?, maxRows? }' },
+    tables: DATABASE_QUERY_TABLES,
+  };
 }

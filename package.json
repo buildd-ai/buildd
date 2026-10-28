@@ -42,7 +42,6 @@
     "demo:review": "bun run scripts/demo/review/review.ts",
     "demo:check-live": "bun run scripts/demo/check-live-refresh.ts",
     "backfill:subject-anchors": "bun run packages/core/scripts/backfill-subject-anchors.ts",
-    "backfill:seat-ids": "bun run scripts/backfill-seat-ids.ts",
     "backfill:role-routing": "bun run scripts/backfill-role-routing.ts",
     "backfill:spec-criteria": "bun run scripts/backfill-spec-criteria.ts",
     "seed:cue-connector": "cd packages/core && bun scripts/seed-cue-connector.ts",
@@ -89,7 +88,6 @@
     "@types/pg": "^8.23.1",
     "pg": "^8.23.1",
     "playwright": "1.64.1",
-    "typescript": "^6.0.0",
-    "ws": "^8.19.0"
+    "typescript": "^6.0.0"
   }
 }

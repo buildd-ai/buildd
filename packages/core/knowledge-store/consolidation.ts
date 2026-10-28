@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { Corpus } from './types';
 import { HALF_LIFE_DAYS } from './recency-authority';
+import { isUuid } from '@buildd/shared';
 
 /**
  * Phase C (C2): deterministic consolidation support queries.
@@ -128,7 +129,6 @@ export async function findNearDuplicates(
 
 // ── Decayed-unused detection ──────────────────────────────────────────────────
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * What "never used" means for one namespace in the decay test.
@@ -153,7 +153,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 export function decayedUnusedClause(namespace: string, corpus: Corpus, now: Date = new Date()): SQL {
   const teamId = namespace.split(':')[0];
-  if (corpus === 'memory' && UUID_RE.test(teamId)) {
+  if (corpus === 'memory' && isUuid(teamId)) {
     const epoch = sql`(SELECT min(mu_e.created_at) FROM memory_uses mu_e WHERE mu_e.team_id = ${teamId}::uuid)`;
     const warmupCutoff = new Date(now.getTime() - HALF_LIFE_DAYS.memory * 24 * 60 * 60 * 1000).toISOString();
     return sql`(NOT EXISTS (

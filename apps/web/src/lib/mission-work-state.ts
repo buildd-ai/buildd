@@ -6,6 +6,7 @@
  */
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
+import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 
 /** Statuses in which a task still represents unlanded deliverable work. */
 const UNFINISHED_TASK_STATUSES = OPEN_TASK_STATUSES;
@@ -32,7 +33,7 @@ export function isDeliverableMissionTask(t: { mode?: string | null; taskClass?: 
  * did not, and a single superseded retry PR or one human-closed PR pinned the
  * mission at `prs_unmerged` permanently.
  */
-export const DEAD_PR_LIFECYCLE = new Set(['closed', 'merged', 'unresolvable']);
+export const DEAD_PR_LIFECYCLE: ReadonlySet<string> = new Set(TERMINAL_PR_LIFECYCLE);
 
 export interface MissionWorkerRow {
   taskId: string | null;

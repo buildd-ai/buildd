@@ -44,7 +44,6 @@ export function facts(o: Partial<ServiceStatusFacts> = {}): ServiceStatusFacts {
     members: [{ userId: OWNER, role: 'member' }, { userId: ADMIN, role: 'admin' }, { userId: MEMBER, role: 'member' }],
     tasks: [task('t1', MEMBER), task('t2', OWNER), task('t3', ADMIN)],
     teamHasProviderKey: false,
-    teamHasSavedSignIn: false,
     recentTaskCount: 20,
     ...o,
   };

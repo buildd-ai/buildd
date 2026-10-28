@@ -234,6 +234,8 @@ export interface SnapshotMission {
   hasGoalCriteria: boolean;
   /** `goalCriteriaState.overall`, or null when nothing has ever evaluated. */
   criteriaOverallVerdict: string | null;
+  /** Some criterion of `goalCriteriaState` reads PENDING: a verification is in flight. */
+  criteriaPending?: boolean;
   updatedAt: Date;
 }
 
@@ -1081,7 +1083,12 @@ export const INVARIANTS: Invariant[] = [
         if (!m.criteriaEscalatedAt) continue;
         const terminal = m.status === 'completed' || m.status === 'archived';
         const passing = m.criteriaOverallVerdict === 'pass';
-        if (!terminal && !passing) continue;
+        // An escalation on a verdict still in flight asks the owner to decide a
+        // check that has not finished, while the escalation itself stands down
+        // the heartbeat that would read the result (df808193). Clearing it
+        // re-enables the check-ins; the re-arm no longer escalates PENDING.
+        const pending = m.criteriaPending === true;
+        if (!terminal && !passing && !pending) continue;
         const ageMs = age(now, m.criteriaEscalatedAt) ?? 0;
         out.push({
           entityId: m.id,
@@ -1089,7 +1096,9 @@ export const INVARIANTS: Invariant[] = [
           workspaceId: m.workspaceId,
           detail: terminal
             ? `criteriaEscalatedAt set while status='${m.status}'`
-            : `criteriaEscalatedAt set while goalCriteriaState.overall='pass'`,
+            : passing
+              ? `criteriaEscalatedAt set while goalCriteriaState.overall='pass'`
+              : `criteriaEscalatedAt set while a goal criterion is still PENDING (verification in flight)`,
           ageMs,
         });
       }

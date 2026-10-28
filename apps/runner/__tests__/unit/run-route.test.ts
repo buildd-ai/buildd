@@ -22,7 +22,6 @@ type Claude = {
   name: string;
   env?: Record<string, string>;
   input?: Partial<ModelEnvInput>;
-  claudeCredentialUsed?: boolean;
   scope?: 'personal' | 'team';
   want: Pick<RunRoute, 'bucket' | 'provider' | 'owner'> & { label?: string } | null;
   words?: string;
@@ -49,9 +48,6 @@ const CLAUDE_TABLE: Claude[] = [
   { name: 'Bedrock', env: { CLAUDE_CODE_USE_BEDROCK: '1' }, want: { bucket: 'cloud', provider: 'bedrock', owner: 'machine' }, words: 'Claude · Bedrock' },
   { name: 'Vertex', env: { CLAUDE_CODE_USE_VERTEX: '1' }, want: { bucket: 'cloud', provider: 'vertex', owner: 'machine' } },
   { name: 'Foundry', env: { CLAUDE_CODE_USE_FOUNDRY: '1' }, want: { bucket: 'cloud', provider: 'foundry', owner: 'machine' } },
-  { name: 'a server-delivered seat (legacy)', input: { serverOauthToken: 'seat' }, want: { bucket: 'plan', provider: 'anthropic', owner: 'team' }, words: 'Claude · plan (team)' },
-  { name: "the claim's Claude seat written into the session", claudeCredentialUsed: true, want: { bucket: 'plan', provider: 'anthropic', owner: 'team' } },
-  { name: 'a tenant token', input: { tenantOauthToken: 'tenant' }, want: { bucket: 'plan', provider: 'anthropic', owner: 'team' } },
   { name: 'nothing at all', want: null },
 ];
 
@@ -61,7 +57,6 @@ describe('claudeRunRoute: each env combination', () => {
       const modelEnv = applyModelEnv({ ...(row.env ?? {}) }, { isCodexTask: false, ...row.input });
       const route = claudeRunRoute({
         modelEnv,
-        claudeCredentialUsed: !!row.claudeCredentialUsed,
         llmProvider: row.input?.llmProvider,
         teamEndpoint: row.input?.modelEndpoint,
         credentialScope: row.scope,
@@ -74,7 +69,7 @@ describe('claudeRunRoute: each env combination', () => {
       }
       if (row.words) expect(runWords('claude', route)).toBe(row.words);
       // The bucket and the cost basis never disagree: plan is virtual, every other route is real.
-      const basis = claudeCostBasis(modelEnv, { claudeCredentialUsed: !!row.claudeCredentialUsed });
+      const basis = claudeCostBasis(modelEnv);
       expect(basis).toBe(route === null ? 'unknown' : route.bucket === 'plan' ? 'virtual' : 'real');
     });
   }
@@ -92,7 +87,6 @@ const KEY_JSON = { OPENAI_API_KEY: 'sk-openai' };
 
 const CODEX_TABLE: Codex[] = [
   { name: "the machine's ChatGPT login", input: { endpoint: 'anthropic', authJson: CHATGPT, codexLogin: 'machine' }, want: { bucket: 'plan', provider: 'openai', owner: 'machine' }, words: 'Codex · plan' },
-  { name: 'a server-delivered ChatGPT login', input: { endpoint: 'anthropic', authJson: CHATGPT, codexLogin: 'server' }, want: { bucket: 'plan', provider: 'openai', owner: 'team' } },
   { name: "the team's OpenAI key", input: { endpoint: 'anthropic', authJson: KEY_JSON, codexLogin: 'server' }, want: { bucket: 'api_key', provider: 'openai', owner: 'team' }, words: 'Codex · API key (team)' },
   { name: "the requester's own OpenAI key", input: { endpoint: 'anthropic', authJson: KEY_JSON, codexLogin: 'server', credentialScope: 'personal' }, want: { bucket: 'api_key', provider: 'openai', owner: 'personal' } },
   { name: 'OPENAI_API_KEY on the machine', input: { endpoint: 'anthropic', authJson: null, envApiKey: 'sk', codexLogin: 'none' }, want: { bucket: 'api_key', provider: 'openai', owner: 'machine' } },
@@ -250,7 +244,7 @@ describe('the header: Runs on (R-39)', () => {
     const env = { ANTHROPIC_BASE_URL: 'https://llm.corp.example.test', CLAUDE_CODE_OAUTH_TOKEN: 'seat' };
     const header = machineRoutes({ env, machineLogin: 'env' }).routes;
     // The same route a run on this machine records.
-    const run = claudeRunRoute({ modelEnv: applyModelEnv({ ...env }, { isCodexTask: false, machineLogin: 'env' }), claudeCredentialUsed: false });
+    const run = claudeRunRoute({ modelEnv: applyModelEnv({ ...env }, { isCodexTask: false, machineLogin: 'env' }) });
     expect(header).toEqual([run!]);
     expect(run).toMatchObject({ bucket: 'gateway', provider: 'custom', label: 'llm.corp.example.test' });
     expect(runsOnLine(header)).toBe('Runs on: gateway llm.corp.example.test');

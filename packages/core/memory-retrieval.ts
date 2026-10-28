@@ -48,6 +48,7 @@ import { PUSH_MEMORY_STATES, pullMemoryStates, type MemoryState } from './memory
 import { buildNamespace } from './knowledge-store/pg-vector-store';
 import { RELEVANCE_LIVE_BUDGET_MS } from './memory-decisions';
 import type { QueryMode, QueryResult } from './knowledge-store/types';
+import { isUuid } from '@buildd/shared';
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -127,9 +128,8 @@ export type MemoryLedgerWriter = (rows: MemoryUseRow[]) => void;
 
 // ── Ledger ────────────────────────────────────────────────────────────────────
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const uuidOrNull = (v: string | null | undefined): string | null =>
-  typeof v === 'string' && UUID_RE.test(v) ? v : null;
+  typeof v === 'string' && isUuid(v) ? v : null;
 
 type LedgerDb = {
   insert: (table: any) => { values: (rows: MemoryUseRow[]) => PromiseLike<unknown> };

@@ -768,7 +768,6 @@ describe('index.ts wiring', () => {
     'initUpdateCanary(',      // update canary
     'initUpdateDrain(',       // update gate / drain
     'initCurrentCommit().then', // self-updater bookkeeping
-    'credentialBroker.start(',
     'autoInstallMcp()',
   ]) {
     test(`before ${marker}`, () => {

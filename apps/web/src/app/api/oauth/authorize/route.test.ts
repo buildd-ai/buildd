@@ -14,6 +14,23 @@ const OTHER_WS = '7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f';
 const LEGACY_RESOURCE = `https://buildd.dev/api/mcp-oauth/${WS}`;
 let lastCode: Record<string, unknown> | null = null;
 let grantsCreated: Array<Record<string, unknown>> = [];
+let clientUpserts: Array<Record<string, unknown>> = [];
+
+// Client ID Metadata Documents: the network fetch is the only part stubbed.
+const CLAUDE_CIMD = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
+const CLAUDE_CODE_CIMD = 'https://claude.ai/oauth/claude-code-client-metadata';
+const cimdDocs: Record<string, { clientName: string; redirectUris: string[] }> = {
+  [CLAUDE_CIMD]: { clientName: 'Claude', redirectUris: ['https://claude.ai/api/mcp/auth_callback'] },
+  [CLAUDE_CODE_CIMD]: { clientName: 'Claude Code', redirectUris: ['http://localhost/callback', 'http://127.0.0.1/callback'] },
+};
+const realCimd = await import('@/lib/oauth/client-metadata-document');
+mock.module('@/lib/oauth/client-metadata-document', () => ({
+  ...realCimd,
+  fetchClientMetadataDocument: async (url: string) => {
+    const doc = cimdDocs[url];
+    return doc ? { ok: true, client: { clientId: url, ...doc } } : { ok: false, error: 'fetch failed' };
+  },
+}));
 
 const fakeDb = {
   // storage.getClient(): db.select().from().where().limit(1)
@@ -27,7 +44,17 @@ const fakeDb = {
     }),
   }),
   // storage.createAuthCode(): db.insert().values()
-  insert: () => ({ values: async (row: Record<string, unknown>) => { authCodeInserts++; lastCode = row; } }),
+  // storage.resolveClient() for a metadata-document client: db.insert().values().onConflictDoUpdate()
+  insert: () => ({
+    values: (row: Record<string, unknown>) => {
+      const done = (async () => {
+        if ('code' in row) { authCodeInserts++; lastCode = row; }
+      })();
+      return Object.assign(done, {
+        onConflictDoUpdate: async () => { clientUpserts.push(row); },
+      });
+    },
+  }),
   query: {
     teamMembers: { findFirst: async () => (memberRole === undefined ? undefined : { role: memberRole }) },
     workspaces: {
@@ -119,13 +146,21 @@ describe('OAuth authorize redirect URI validation', () => {
     ).toBe(true);
   });
 
-  it('rejects loopback callbacks with a different port or path', () => {
+  // RFC 8252 §7.3: a native app binds an ephemeral port at runtime, so the
+  // server MUST allow any port on a loopback redirect. Claude Code's metadata
+  // document declares `http://localhost/callback` with no port at all.
+  it('accepts a loopback callback on any port', () => {
     expect(
       isRegisteredRedirectUri(
         ['http://localhost:41776/callback/ziW6hvS99iVJ'],
         'http://127.0.0.1:14567/callback/ziW6hvS99iVJ',
       ),
-    ).toBe(false);
+    ).toBe(true);
+    expect(isRegisteredRedirectUri(['http://localhost/callback'], 'http://localhost:3118/callback')).toBe(true);
+    expect(isRegisteredRedirectUri(['http://127.0.0.1/callback'], 'http://127.0.0.1:50211/callback')).toBe(true);
+  });
+
+  it('rejects loopback callbacks with a different path', () => {
     expect(
       isRegisteredRedirectUri(
         ['http://localhost:41776/callback/ziW6hvS99iVJ'],
@@ -182,6 +217,57 @@ describe('OAuth authorize redirect URI scheme validation', () => {
     expect(
       isRegisteredRedirectUri(['com.example.app://cb'], 'com.example.app://cb'),
     ).toBe(false);
+  });
+});
+
+describe('GET /api/oauth/authorize — Client ID Metadata Document clients', () => {
+  beforeEach(() => {
+    registeredUris = [];
+    clientUpserts = [];
+    authCodeInserts = 0;
+    grantsCreated = [];
+    lastCode = null;
+    memberRole = 'admin';
+  });
+
+  it("Claude's URL client_id opens the consent page and records the client", async () => {
+    const res = await GET(authorizeRequest('https://claude.ai/api/mcp/auth_callback', { client_id: CLAUDE_CIMD, resource: 'https://buildd.dev/api/mcp' }));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('data-consent="account"');
+    expect(clientUpserts[0]).toMatchObject({ clientId: CLAUDE_CIMD, clientName: 'Claude', redirectUris: ['https://claude.ai/api/mcp/auth_callback'] });
+  });
+
+  it('approval issues a code bound to the URL client_id', async () => {
+    const page = await GET(authorizeRequest('https://claude.ai/api/mcp/auth_callback', { client_id: CLAUDE_CIMD, resource: 'https://buildd.dev/api/mcp' }));
+    const fields = consentFields(await page.text());
+    const body = new URLSearchParams({ ...fields, decision: 'approve' });
+    body.append('tmode.team-1', 'all');
+    body.append('tmode.team-2', 'none');
+    const res = await POST(new NextRequest('https://buildd.dev/api/oauth/authorize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://buildd.dev' },
+      body: body.toString(),
+    }));
+    expect(res.status).toBe(200);
+    expect(grantsCreated[0].clientId).toBe(CLAUDE_CIMD);
+    expect(lastCode?.clientId).toBe(CLAUDE_CIMD);
+  });
+
+  it("Claude Code's loopback redirect on an ephemeral port is accepted", async () => {
+    const res = await GET(authorizeRequest('http://localhost:3118/callback', { client_id: CLAUDE_CODE_CIMD, resource: 'https://buildd.dev/api/mcp' }));
+    expect(res.status).toBe(200);
+  });
+
+  it('a redirect the document does not list is refused before any page', async () => {
+    const res = await GET(authorizeRequest('https://evil.example/cb', { client_id: CLAUDE_CIMD, resource: 'https://buildd.dev/api/mcp' }));
+    expect(res.status).toBe(400);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('a document that cannot be fetched or validated is an unknown client', async () => {
+    const res = await GET(authorizeRequest('https://claude.ai/api/mcp/auth_callback', { client_id: 'https://claude.ai/oauth/missing', resource: 'https://buildd.dev/api/mcp' }));
+    expect(res.status).toBe(400);
+    expect(clientUpserts).toHaveLength(0);
   });
 });
 

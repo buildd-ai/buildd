@@ -1373,6 +1373,18 @@ describe('landPr — safety rails', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('a schema object another open mission also ships is a wait, not parked for a person', async () => {
+    gh.prFiles = ['packages/core/drizzle/20261027000000_t/migration.sql'];
+    const reason = 'shared schema hold: this PR adds table "t", which mission "B" already carries on its branch mission/b-bbbbbbbb';
+    mockInspectMigrations.mockImplementation(async () => ({
+      safe: true, operationClass: 'EXPAND',
+      hold: { missionId: 'm-b', missionTitle: 'B', branch: 'mission/b-bbbbbbbb', entities: ['table "t"'], landedBy: null, reason },
+    }));
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'waiting_ci', reason });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
   it('a stale dirty flag that merged cleanly is a branch update, not a conflict fix', async () => {
     gh.mergeableState = 'dirty';
     mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, branchUpdated: true, conflictFalsePositive: true }));
@@ -1521,6 +1533,26 @@ describe('landPr — behind base is work with an owner', () => {
     const [event] = landingEvents();
     expect(event).toMatchObject({ outcome: 'deferred', detail: { landingOutcome: 'updating_branch', prNumber: 42, headSha: 'head1' } });
     expect(outcomeOwner(out)).toEqual({ kind: 'marker', headSha: 'head2' });
+  });
+
+  // 36f5fc74: a pass that spent its control-plane budget stranded every PR after it.
+  it('a refresh the control plane did not answer is deferred to the next pass, not stranded', async () => {
+    const { ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
+    mockDispatchConflictRetry.mockImplementation(async () => {
+      throw new ControlPlaneUnavailableError('the pr-reconcile:landing pass spent its control-plane budget');
+    });
+    const out = await land();
+    expect(out.kind).toBe('waiting_ci');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    const [event] = landingEvents();
+    expect(event.outcome).toBe('deferred');
+    expect(event.reason).toContain('the control plane did not answer');
+  });
+
+  it('a refresh that fails for another reason is still a person\'s', async () => {
+    mockDispatchConflictRetry.mockImplementation(async () => { throw new Error('GitHub said 422'); });
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'merge_failed' });
   });
 
   describe('early refresh while CI is pending', () => {

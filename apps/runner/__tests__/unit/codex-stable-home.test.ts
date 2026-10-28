@@ -2,9 +2,9 @@
  * Phase 1C / R5: stable per-worker CODEX_HOME lifecycle.
  *
  * Verifies:
- * - materializeStableCodexHome / ensureStableCodexHome create a stable, worker-id
+ * - ensureStableCodexHome creates a stable, worker-id
  *   keyed dir under CODEX_HOME_ROOT.
- * - Re-seeding auth + rewriting config.toml (a "second run") does NOT delete the
+ * - Re-ensuring the home + rewriting config.toml (a "second run") does NOT delete the
  *   `sessions/` subtree — resumable rollouts survive.
  * - The path is stable across calls (same worker id → same dir).
  * - teardownStableCodexHome removes the whole dir (terminal teardown), and is
@@ -19,7 +19,6 @@ import { tmpdir } from 'os';
 const { existsSync, readFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } = fsModule;
 
 import {
-  materializeStableCodexHome,
   ensureStableCodexHome,
   stableCodexHomePath,
   writeCodexMcpConfig,
@@ -42,15 +41,6 @@ function fsTest(name: string, fn: () => void | Promise<void>) {
     await fn();
   });
 }
-
-const cred = {
-  credentialType: 'oauth' as const,
-  accessToken: 'tok_access_123',
-  refreshToken: 'tok_refresh_456',
-  accountId: 'acct_789',
-  idToken: 'id_tok_test',
-  expiresAt: null,
-};
 
 let root: string | undefined;
 let prevRoot: string | undefined;
@@ -81,21 +71,9 @@ describe('stable per-worker CODEX_HOME (Phase 1C / R5)', () => {
     expect(p).toBe(stableCodexHomePath(workerId)); // stable across calls
   });
 
-  fsTest('materializeStableCodexHome creates the dir and writes auth.json in nested tokens shape', () => {
-    const { codexHome } = materializeStableCodexHome(workerId, cred);
-    expect(existsSync(codexHome)).toBe(true);
-    const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    // codex-cli 0.144 requires the nested tokens shape with id_token
-    expect(auth.tokens.access_token).toBe('tok_access_123');
-    expect(auth.tokens.refresh_token).toBe('tok_refresh_456');
-    expect(auth.tokens.account_id).toBe('acct_789');
-    expect(auth.tokens.id_token).toBe('id_tok_test');
-    expect(auth.OPENAI_API_KEY).toBeNull();
-  });
-
-  fsTest('re-seeding auth + rewriting config does NOT delete the sessions subtree', () => {
-    // First run: materialize + write MCP config + simulate a session rollout.
-    const { codexHome } = materializeStableCodexHome(workerId, cred);
+  fsTest('re-ensuring the home + rewriting config does NOT delete the sessions subtree', () => {
+    // First run: ensure the home + write MCP config + simulate a session rollout.
+    const { codexHome } = ensureStableCodexHome(workerId);
     const rolloutDir = join(codexHome, 'sessions', '2026', '06', '20');
     mkdirSync(rolloutDir, { recursive: true });
     const rollout = join(rolloutDir, 'rollout-thread-abc.jsonl');
@@ -108,8 +86,8 @@ describe('stable per-worker CODEX_HOME (Phase 1C / R5)', () => {
     });
     expect(existsSync(rollout)).toBe(true);
 
-    // Second run: re-seed auth + rewrite config (simulating a follow-up resume).
-    const { codexHome: codexHome2 } = materializeStableCodexHome(workerId, cred);
+    // Second run: re-ensure + rewrite config (simulating a follow-up resume).
+    const { codexHome: codexHome2 } = ensureStableCodexHome(workerId);
     writeCodexMcpConfig(codexHome2, {
       builddServer: 'https://buildd.dev',
       workspaceId: 'ws1',
@@ -132,7 +110,7 @@ describe('stable per-worker CODEX_HOME (Phase 1C / R5)', () => {
   });
 
   fsTest('teardownStableCodexHome removes the dir and is idempotent', () => {
-    const { codexHome } = materializeStableCodexHome(workerId, cred);
+    const { codexHome } = ensureStableCodexHome(workerId);
     expect(existsSync(codexHome)).toBe(true);
     teardownStableCodexHome(workerId);
     expect(existsSync(codexHome)).toBe(false);

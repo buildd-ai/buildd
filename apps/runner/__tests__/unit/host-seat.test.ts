@@ -1,14 +1,14 @@
 /**
  * A Claude subscription seat on the runner's own machine (an env token or a
- * `claude login`) is given to the agent as-is and wins over a seat the server
- * delivers on the claim. Its value never reaches a log line or evidence.
+ * `claude login`) is given to the agent as-is. Its value never reaches a log
+ * line or evidence.
  */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { RUNNER_ENV_PASSTHROUGH, buildAgentBaseEnv } from '../../src/agent-env';
-import { applyModelEnv, shouldUseClaudeCredential } from '../../src/agent-model-env';
+import { applyModelEnv } from '../../src/agent-model-env';
 import {
   machineLoginStamp,
   parseKeychainMdat,
@@ -17,7 +17,6 @@ import {
 import { createSecretRedactor } from '@buildd/core/redaction';
 
 const HOST_TOKEN = 'machine-login-token-value-0123456789';
-const SERVER_OAUTH = 'server-oauth-value-abcdef';
 const SERVER_KEY = 'server-key-value-abcdef';
 
 function tmpHome(credentials?: unknown): string {
@@ -109,41 +108,25 @@ describe('detectMachineLogin', () => {
   });
 });
 
-describe('precedence: the machine login beats a server-delivered seat', () => {
-  test('host env token is used; server oauth token is not injected', () => {
+describe('precedence: the machine login is the agent\'s seat', () => {
+  test('host env token is used', () => {
     const r = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, {
-      isCodexTask: false, machineLogin: 'env', serverOauthToken: SERVER_OAUTH,
+      isCodexTask: false, machineLogin: 'env',
     });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
-    expect(r.injected).not.toContain('serverOauthToken');
     expect(r.machineLoginUsed).toBe(true);
   });
 
   test('host env token wins even when machineLogin was not passed', () => {
-    const r = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { isCodexTask: false, serverOauthToken: SERVER_OAUTH });
+    const r = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { isCodexTask: false });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
     expect(r.machineLoginUsed).toBe(true);
   });
 
-  test('a host claude login wins: no server token lands in the env', () => {
-    const r = applyModelEnv({}, { isCodexTask: false, machineLogin: 'login', serverOauthToken: SERVER_OAUTH });
+  test('a host claude login puts no token in the env', () => {
+    const r = applyModelEnv({}, { isCodexTask: false, machineLogin: 'login' });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(r.machineLoginUsed).toBe(true);
-  });
-
-  test('the claim-delivered Claude credential is not materialized under a machine login', () => {
-    const worker = { claudeAccessToken: 'claude-access-value', claudeCredentialId: 'cred-1' };
-    const host = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { isCodexTask: false, machineLogin: 'env' });
-    expect(shouldUseClaudeCredential(host, worker)).toBe(false);
-    const none = applyModelEnv({}, { isCodexTask: false, machineLogin: null });
-    expect(shouldUseClaudeCredential(none, worker)).toBe(true);
-  });
-
-  test('no machine login: the server seat still fills in (unchanged)', () => {
-    const r = applyModelEnv({}, { isCodexTask: false, machineLogin: null, serverOauthToken: SERVER_OAUTH });
-    expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(SERVER_OAUTH);
-    expect(r.injected).toContain('serverOauthToken');
-    expect(r.machineLoginUsed).toBeUndefined();
   });
 
   test('a delivered metered key still fills an unset ANTHROPIC_API_KEY', () => {

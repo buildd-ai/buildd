@@ -8,9 +8,9 @@ describe('parseProviderAssignments', () => {
     expect(parseProviderAssignments([])).toEqual({});
     expect(parseProviderAssignments({ chat: 'openrouter', bogus: 'openrouter', 'agent-claude': 'nope' }))
       .toEqual({ chat: 'openrouter' });
-    // A Claude subscription can never run cloud coding: dropped, not stored.
-    expect(providerDescriptor('claude-subscription').surfaces['cloud-egress'].ok).toBe(false);
-    expect(parseProviderAssignments({ 'cloud-egress': 'claude-subscription' })).toEqual({});
+    // OpenAI has no Anthropic-compatible route, so it can never run cloud coding: dropped, not stored.
+    expect(providerDescriptor('openai').surfaces['cloud-egress'].ok).toBe(false);
+    expect(parseProviderAssignments({ 'cloud-egress': 'openai' })).toEqual({});
   });
 });
 
@@ -20,8 +20,8 @@ describe('assignmentError', () => {
     expect(assignmentError('chat', null)).toBeNull();
     expect(assignmentError('nope', 'openrouter')).toContain('surface must be');
     expect(assignmentError('chat', 'nope')).toContain('provider must be');
-    const support = providerDescriptor('claude-subscription').surfaces['cloud-egress'];
-    expect(assignmentError('cloud-egress', 'claude-subscription')).toBe(support.ok ? null : support.reason);
+    const support = providerDescriptor('openai').surfaces['cloud-egress'];
+    expect(assignmentError('cloud-egress', 'openai')).toBe(support.ok ? null : support.reason);
   });
 });
 

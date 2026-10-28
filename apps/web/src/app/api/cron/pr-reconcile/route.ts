@@ -405,7 +405,7 @@ function logRefreshRedrive(r: RefreshRedriveResult): void {
 
 function logLanding(r: LandingSweepResult): void {
   console.log(
-    `[LandingSweep] source=${r.source} enumerated=${r.enumerated} processed=${r.processed} merged=${r.merged} updatingBranch=${r.updatingBranch} waitingCi=${r.waitingCi} needsFix=${r.needsFix} needsHuman=${r.needsHuman} headMoved=${r.headMoved} skipped=${JSON.stringify(r.skipped)} deferred=${r.deferred} truncated=${r.truncated} errors=${r.errors}`,
+    `[LandingSweep] source=${r.source} enumerated=${r.enumerated} processed=${r.processed} merged=${r.merged} updatingBranch=${r.updatingBranch} waitingCi=${r.waitingCi} needsFix=${r.needsFix} needsHuman=${r.needsHuman} headMoved=${r.headMoved} skipped=${JSON.stringify(r.skipped)} deferred=${r.deferred} controlPlaneSpent=${r.controlPlaneSpent} truncated=${r.truncated} errors=${r.errors}`,
   );
 }
 

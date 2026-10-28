@@ -10,10 +10,10 @@ grants" through "Managing connections").
 
 | Path | What it is |
 |---|---|
-| `POST /api/mcp` | The MCP endpoint. Answers 401 with a challenge when there is no valid credential. |
-| `GET /.well-known/oauth-protected-resource/api/mcp` | Protected-resource metadata (RFC 9728). `resource` is exactly `<issuer>/api/mcp`. |
-| `GET /.well-known/oauth-authorization-server` | Authorization-server metadata (RFC 8414). |
-| `POST /api/oauth/register` | Dynamic client registration (RFC 7591). Public clients only, no secret. |
+| `POST /api/mcp` | The MCP endpoint. Answers 401 with a challenge when there is no valid credential; so do an unauthenticated `GET` and `HEAD` (a connector setup check probes with them). A signed-in `GET` is 405: no SSE stream. |
+| `GET /.well-known/oauth-protected-resource/api/mcp` | Protected-resource metadata (RFC 9728). `resource` is exactly `<issuer>/api/mcp`. Also served at the root fallback `/.well-known/oauth-protected-resource`. |
+| `GET /.well-known/oauth-authorization-server` | Authorization-server metadata (RFC 8414). Advertises `client_id_metadata_document_supported`, so Claude and Claude Code sign in with their published client ID metadata documents and never call registration. |
+| `POST /api/oauth/register` | Dynamic client registration (RFC 7591). Public clients only, no secret. 10 per IP per hour; if that limiter (Redis) is down, a global 100 per hour counted in the database. |
 | `GET/POST /api/oauth/authorize` | Authorize + consent. No `resource` or `resource=<issuer>/api/mcp` gets the account consent page; an older `/api/mcp-oauth/<id>` resource gets consent for that one workspace; anything else is `invalid_target`. |
 | `POST /api/oauth/token` | Code exchange and refresh. |
 | `GET/PATCH/DELETE /api/mcp-grants[/id]` | Settings › Connected apps. Dashboard session only. |

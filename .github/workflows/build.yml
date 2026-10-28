@@ -720,29 +720,112 @@ jobs:
   # Postgres + the neon-http proxy the app's driver speaks, migrated from
   # scratch, so this also proves every migration applies to an empty database.
   #
+  # Three jobs, the same shape as `build`:
+  #   db-architecture-plan    decides whether the suite runs at all;
+  #   db-architecture-shards  four runners, each with its OWN Postgres, shim and
+  #                           migrate, each running a quarter of the files
+  #                           (`bun run test:db --shard i/4`, balanced by
+  #                           scripts/db-test-durations.json);
+  #   db-architecture         the aggregate, under the check name the suite
+  #                           always had, green only if every shard was.
+  # It took ~17 minutes as one job; a shard runs a quarter of it.
+  #
+  # When the plan says "don't run", the shards are Skipped and the aggregate
+  # reports success with the reason in its log and summary. Two cases:
+  #   * a PR whose every changed file is docs, styling or an image
+  #     (scripts/ci/db-tests-needed.ts; an allowlist, so anything else runs;
+  #     pushes always run, they are the post-merge verdict);
+  #   * a release PR already covered by the dev push run, below.
+  #
   # Why this can run twice for one release PR, and when it doesn't:
   #   push to dev   -> tests the branch HEAD (the dev commit itself)
   #   pull_request  -> tests GitHub's synthetic merge ref (head merged into base)
   # For a PR into `dev` or a hotfix those are different trees and both are kept.
   # For a release PR (head = dev) the push run already covered the same commit, so
   # when the merge ref's tree is identical to the head's tree AND that commit's push
-  # run already passed this job, the PR run records a pass without repeating the work.
-  # It never *skips* the job (a Skipped check satisfies branch protection without
-  # running); it always completes, and when the merge ref differs (main moved ahead
-  # of dev) or the push run is missing/red/in progress, it runs the full suite.
+  # run already passed this check, the PR run records a pass without repeating the work.
+  # The aggregate is never Skipped for that (a Skipped check satisfies branch
+  # protection without running); when the merge ref differs (main moved ahead
+  # of dev) or the push run is missing/red/in progress, the full suite runs.
   # The name says which ref is under test, so the two checks are not near-twins.
-  db-architecture:
-    name: DB architecture (real Postgres) · ${{ github.event_name == 'pull_request' && 'merge ref' || 'branch HEAD' }}
+  db-architecture-plan:
+    name: DB architecture · plan
     runs-on: ubuntu-latest
-    # ~12 minutes, so a newer push to dev supersedes the run still going. Scoped to
-    # this job: the other jobs keep one verdict per dev commit. Its own group, so
-    # it never contends with the workflow-level one; PR runs are cancelled there.
-    concurrency:
-      group: db-architecture-${{ github.event_name == 'push' && github.ref || github.run_id }}
-      cancel-in-progress: ${{ github.event_name == 'push' }}
     permissions:
       contents: read
       actions: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The path filter diffs the PR against its base; dedupe reads HEAD^2.
+          fetch-depth: 0
+      - name: Detect redundant run (release PR already covered by the dev push run)
+        id: dedupe
+        if: github.event_name == 'pull_request' && github.head_ref == 'dev' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # HEAD is the synthetic merge commit; HEAD^2 is the PR head.
+          merge_tree=$(git rev-parse 'HEAD^{tree}')
+          head_tree=$(git rev-parse 'HEAD^2^{tree}' 2>/dev/null || true)
+          if [ -z "$head_tree" ] || [ "$merge_tree" != "$head_tree" ]; then
+            echo "Merge ref differs from branch HEAD — running the suite."
+            exit 0
+          fi
+          runs=$(gh api "repos/$REPO/actions/workflows/build.yml/runs?head_sha=$HEAD_SHA&event=push" --jq '.workflow_runs[].id' || true)
+          for id in $runs; do
+            # The aggregate's name: green there means every shard passed.
+            ok=$(gh api "repos/$REPO/actions/runs/$id/jobs" --paginate \
+              --jq '[.jobs[] | select(.name | startswith("DB architecture (real Postgres)")) | select(.conclusion == "success")] | length' || true)
+            if [ "${ok:-0}" -gt 0 ]; then
+              echo "Merge ref tree == branch HEAD tree and push run $id already passed this suite."
+              echo "redundant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "No passing push run for $HEAD_SHA yet — running the suite."
+      - uses: oven-sh/setup-bun@v2
+        if: steps.dedupe.outputs.redundant != 'true'
+        with:
+          bun-version: "1.4.4"
+      - name: Decide whether DB tests are needed
+        id: decide
+        env:
+          REDUNDANT: ${{ steps.dedupe.outputs.redundant }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$REDUNDANT" = "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "reason=skipped: the dev push run for this release PR's head already passed on the same tree" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          bun scripts/ci/db-tests-needed.ts
+
+  # fail-fast off: a red shard must not cancel the others, or their failures
+  # go unreported and the next push finds them one shard at a time.
+  db-architecture-shards:
+    name: DB architecture shard ${{ matrix.shard }}/4
+    needs: db-architecture-plan
+    if: needs.db-architecture-plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # A newer push to dev supersedes the shard still going (per shard, so the
+    # four do not queue behind each other). Scoped to these jobs: the other
+    # jobs keep one verdict per dev commit. PR runs get a group of their own
+    # (run_id) and are cancelled only by the workflow-level group.
+    concurrency:
+      group: db-architecture-${{ github.event_name == 'push' && github.ref || github.run_id }}-${{ matrix.shard }}
+      cancel-in-progress: ${{ github.event_name == 'push' }}
+    permissions:
+      contents: read
       packages: read # pull the postgres image from our GHCR mirror
     env:
       DATABASE_URL: postgres://demo:demo@localhost:5432/buildd_test
@@ -784,49 +867,22 @@ jobs:
           docker exec postgres pg_isready -U demo -d buildd_test || { echo "::error::Postgres did not become ready"; exit 1; }
           docker exec postgres psql -U demo -d buildd_test -c 'CREATE EXTENSION IF NOT EXISTS vector' \
             || { echo "::error::pgvector did not install"; exit 1; }
-      - name: Detect redundant run (release PR already covered by the dev push run)
-        id: dedupe
-        if: github.event_name == 'pull_request' && github.head_ref == 'dev' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          # HEAD is the synthetic merge commit; HEAD^2 is the PR head.
-          merge_tree=$(git rev-parse 'HEAD^{tree}')
-          head_tree=$(git rev-parse 'HEAD^2^{tree}' 2>/dev/null || true)
-          if [ -z "$head_tree" ] || [ "$merge_tree" != "$head_tree" ]; then
-            echo "Merge ref differs from branch HEAD — running the suite."
-            exit 0
-          fi
-          runs=$(gh api "repos/$REPO/actions/workflows/build.yml/runs?head_sha=$HEAD_SHA&event=push" --jq '.workflow_runs[].id' || true)
-          for id in $runs; do
-            ok=$(gh api "repos/$REPO/actions/runs/$id/jobs" --paginate \
-              --jq '[.jobs[] | select(.name | startswith("DB architecture (real Postgres)")) | select(.conclusion == "success")] | length' || true)
-            if [ "${ok:-0}" -gt 0 ]; then
-              echo "Merge ref tree == branch HEAD tree and push run $id already passed this suite."
-              echo "redundant=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo "No passing push run for $HEAD_SHA yet — running the suite."
       # apps/web/tests/db/migration-baseline.test.ts replays the pre-squash
       # migration tree from this tag (LAST_RELEASE_BEFORE_SQUASH in
       # packages/core/db/migrate-plan.ts) to prove the baseline equivalent; a
       # shallow checkout carries no tags. migration-layout-v1.test.ts also runs
       # the previous release's migrator out of git (ROLLBACK_MIGRATOR_REF there)
       # to prove a rollback applies nothing against the upgraded tracking table.
+      # Every shard fetches them: which shard holds those files is the
+      # scheduler's choice, not this file's.
       - name: Fetch the pre-squash and rollback-migrator release tags
-        if: steps.dedupe.outputs.redundant != 'true'
         run: |
           git fetch --no-tags --depth=1 origin +refs/tags/v0.284.0:refs/tags/v0.284.0
           git fetch --no-tags --depth=1 origin +refs/tags/v0.327.1:refs/tags/v0.327.1
       - uses: oven-sh/setup-bun@v2
-        if: steps.dedupe.outputs.redundant != 'true'
         with:
           bun-version: "1.4.4"
-      - if: steps.dedupe.outputs.redundant != 'true'
-        run: bun install
+      - run: bun install
       # The app's unchanged neon-http driver talks to scripts/ci/neon-sql-shim.ts:
       # the same /sql wire protocol as the local neon-http proxy it replaced,
       # over one persistent pg pool instead of a control-plane lookup, a SCRAM
@@ -834,7 +890,6 @@ jobs:
       # go through it, so they still run the app's own driver and migrator;
       # apps/web/tests/db/neon-sql-shim.test.ts pins its fidelity on real Postgres.
       - name: Start neon-sql shim
-        if: steps.dedupe.outputs.redundant != 'true'
         run: |
           nohup bun scripts/ci/neon-sql-shim.ts > "$RUNNER_TEMP/neon-sql-shim.log" 2>&1 &
           for i in $(seq 1 30); do
@@ -847,20 +902,19 @@ jobs:
           cat "$RUNNER_TEMP/neon-sql-shim.log"
           echo "neon-sql shim never answered" && exit 1
       - name: Migrate
-        if: steps.dedupe.outputs.redundant != 'true'
         run: cd packages/core && bun db:migrate
       - name: Run DB architecture tests
-        if: steps.dedupe.outputs.redundant != 'true'
-        run: bun run test:db
+        run: bun run test:db --shard "${{ matrix.shard }}/4"
       # Mission criteria on the spec page (R-76..R-80, R-102..R-106, AC-122..AC-126,
       # AC-141..AC-143) are verified by these acceptance files, which need real
       # Postgres and live outside apps/web/tests/db/. Scoped to these four: the
       # rest of apps/web/tests/acceptance/ is not DB-backed and is not gated here.
+      # Run once, on shard 1 ("DB architecture shard 1/4"), not on every shard.
       # Advisory: some of these criteria are still red while their implementation
       # lands, so a failure here reports a verdict without blocking unrelated PRs.
       # Drop continue-on-error once all four files are green.
       - name: Run spec acceptance tests (real Postgres)
-        if: steps.dedupe.outputs.redundant != 'true'
+        if: matrix.shard == 1
         continue-on-error: true
         run: >-
           bun run scripts/run-db-tests.ts
@@ -869,8 +923,52 @@ jobs:
           apps/web/tests/acceptance/spec-replaces.test.ts
           apps/web/tests/acceptance/mcp-specs-replaces.test.ts
       - name: Shim log
-        if: failure() && steps.dedupe.outputs.redundant != 'true'
+        if: failure()
         run: cat "$RUNNER_TEMP/neon-sql-shim.log" || true
+
+  # The check the suite has always reported under. Green only when the plan
+  # ran and either every shard passed, or the plan decided not to run and the
+  # shards were Skipped for that reason (never because something upstream
+  # failed). A shard superseded by a newer dev push is `cancelled`: this job
+  # is then not run at all, so the run reads as cancelled, as the single job
+  # did, rather than as a failure that would send ci-fix after a commit
+  # nobody needs fixed. The step name marks it a summary gate, so red-check
+  # analysis names the failing shard, not this job (red-check-cause.ts R-1).
+  db-architecture:
+    name: DB architecture (real Postgres) · ${{ github.event_name == 'pull_request' && 'merge ref' || 'branch HEAD' }}
+    needs: [db-architecture-plan, db-architecture-shards]
+    if: always() && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: All DB architecture shards passed
+        env:
+          PLAN: ${{ needs.db-architecture-plan.result }}
+          RUN: ${{ needs.db-architecture-plan.outputs.run }}
+          REASON: ${{ needs.db-architecture-plan.outputs.reason }}
+          SHARDS: ${{ needs.db-architecture-shards.result }}
+        run: |
+          echo "plan=$PLAN run=${RUN:-?} shards=$SHARDS"
+          echo "reason: ${REASON:-none}"
+          if [ "$PLAN" != "success" ]; then
+            echo "::error::the DB architecture plan did not succeed ($PLAN), so nothing says whether the suite had to run."
+            exit 1
+          fi
+          if [ "$RUN" = "true" ]; then
+            if [ "$SHARDS" != "success" ]; then
+              echo "::error::a DB architecture shard did not pass ($SHARDS); see the 'DB architecture shard i/4' jobs."
+              exit 1
+            fi
+            echo "All 4 DB architecture shards passed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$RUN" = "false" ] && [ "$SHARDS" = "skipped" ]; then
+            echo "::notice::DB architecture $REASON"
+            echo "DB architecture (real Postgres): $REASON" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error::inconsistent DB architecture plan: run=${RUN:-unset}, shards=$SHARDS."
+          exit 1
 
   # Detect which areas changed to skip expensive integration/E2E when unnecessary
   changes:

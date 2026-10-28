@@ -35,11 +35,12 @@
  */
 
 import type { InsightsUsageRow } from '../../../../packages/shared/src/insights';
-import { FAILED_WORKER_STATUSES, LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { percentile, FAILED_WORKER_STATUSES, LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { basisOfRow } from './cost-basis-split';
 import { executorOf } from './executor';
 import { MAX_UNENDED_RUN_MS } from './fleet-occupancy';
 import { emptySplit, splitTime, TIME_CATEGORIES, type TimeCategory, type TimeInterval } from './insights-time-split';
+import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 
 export type FlowWindow = '7d' | '30d';
 export const FLOW_WINDOWS: readonly FlowWindow[] = ['7d', '30d'];
@@ -221,7 +222,8 @@ const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const FAILED_WORKER = new Set<string>(FAILED_WORKER_STATUSES);
 const DAY = 24 * HOUR;
 const SHIPPED_RELEASE_STATES = new Set(['healthy', 'degraded']);
-const CLOSED_PR = new Set(['closed', 'unresolvable']);
+// Terminal minus merged: this counts PRs that ended WITHOUT landing (intentional narrowing).
+const CLOSED_PR = new Set<string>(TERMINAL_PR_LIFECYCLE.filter(s => s !== 'merged'));
 // Terminal task statuses that mean the work did not land (`completed` is the other one).
 const LOST_TASK = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'completed'));
 
@@ -232,13 +234,6 @@ export { MAX_UNENDED_RUN_MS };
 
 function overlap(a0: number, a1: number, b0: number, b1: number): number {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
-}
-
-/** Nearest-rank percentile (0..1); null when empty. */
-export function percentile(values: number[], p: number): number | null {
-  if (values.length === 0) return null;
-  const s = [...values].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))];
 }
 
 function median(values: number[]): number | null {
@@ -496,7 +491,7 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       medianStartToProdMs: median(startToProd),
     },
     days,
-    time: TIME_CATEGORIES.map(category => ({ category, ms: timeTotals[category], tasks: timeTasks[category], longestMs: timeLongest[category], medianMs: median(timeEach[category]) ?? 0, p90Ms: percentile(timeEach[category], 0.9) ?? 0 })),
+    time: TIME_CATEGORIES.map(category => ({ category, ms: timeTotals[category], tasks: timeTasks[category], longestMs: timeLongest[category], medianMs: median(timeEach[category]) ?? 0, p90Ms: percentile(timeEach[category], 90) ?? 0 })),
   };
 }
 

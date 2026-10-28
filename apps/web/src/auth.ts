@@ -7,7 +7,7 @@ import { users, accounts, accountWorkspaces, workspaces, teams, teamMembers, tea
 import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan';
 import { personalTeamSlug } from '@/lib/personal-team';
 import { eq, and } from 'drizzle-orm';
-import { randomBytes } from 'crypto';
+import { generateApiKey } from '@buildd/shared/api-key';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { emit } from '@/lib/core-emit';
 import { checkSeatForNewMember } from '@/lib/billing/seats';
@@ -19,10 +19,6 @@ const isDevelopment = process.env.NODE_ENV === 'development';
 // Cookie domain for cross-subdomain auth (e.g., .buildd.dev)
 // This allows cookies to be shared between app.buildd.dev and buildd.dev
 const cookieDomain = process.env.AUTH_COOKIE_DOMAIN;
-
-function generateApiKey(): string {
-  return `bld_${randomBytes(32).toString('hex')}`;
-}
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   trustHost: true,

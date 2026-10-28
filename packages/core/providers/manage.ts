@@ -35,7 +35,7 @@
  * | storage                                        | permission                   |
  * |------------------------------------------------|------------------------------|
  * | `inference_key`, `decision_key` (API keys)     | `manage_team_model_keys`     |
- * | `anthropic_api_key`, `openai_api_key`, `oauth_token` | `manage_team_credentials` |
+ * | `anthropic_api_key`, `openai_api_key`                    | `manage_team_credentials`    |
  * | `inference_key` that agent runs read (Anthropic, OpenAI) | both of the above |
  *
  * The last row is `writePermissions`: an Anthropic or OpenAI key in canonical
@@ -63,18 +63,12 @@ export const PROVIDER_API_SCOPES = ['team', 'workspace', 'mine'] as const;
 export type ProviderApiScope = (typeof PROVIDER_API_SCOPES)[number];
 
 export type ShapeId = CredentialShape['id'];
-export const SHAPE_IDS: readonly ShapeId[] = ['api_key', 'setup_token', 'oauth_managed', 'gateway', 'endpoint'];
+export const SHAPE_IDS: readonly ShapeId[] = ['api_key', 'gateway', 'endpoint'];
 
 /** The error code for a provider that cannot serve the surface asked for (HTTP 422). */
 export const PROVIDER_SURFACE_UNSUPPORTED = 'provider_surface_unsupported' as const;
 /** The error code for a scope the provider cannot be stored at (HTTP 422). */
 export const PROVIDER_SCOPE_UNSUPPORTED = 'provider_scope_unsupported' as const;
-/** A refresh-family seat is connected in the browser, never pasted (HTTP 422). */
-export const CONNECT_IN_BROWSER = 'connect_in_browser' as const;
-
-/** Where a person connects a subscription seat today. */
-export const PROVIDERS_SETTINGS_PATH = '/app/settings?section=agent-backends';
-
 export type WritePermission =
   | 'manage_team_model_keys'
   | 'manage_team_credentials'
@@ -108,13 +102,12 @@ export function storageServes(p: ProviderDescriptor, storage: CredentialStorage)
 
 /**
  * The shape a set/delete addresses: the one asked for, else the provider's
- * pasteable shape (a setup token for a Claude seat, never the browser flow),
- * else its only shape.
+ * first shape.
  */
 export function providerShape(provider: ProviderId, shape?: ShapeId): CredentialShape | null {
   const p = providerDescriptor(provider);
   if (shape) return p.shapes.find(s => s.id === shape) ?? null;
-  return p.shapes.find(s => s.id !== 'oauth_managed') ?? p.shapes[0] ?? null;
+  return p.shapes[0] ?? null;
 }
 
 /** See the module comment. */
@@ -139,9 +132,6 @@ export function scopeRefusal(provider: ProviderId, scope: ProviderApiScope): str
   if (scope !== 'mine') return null;
   if (!p.scopes.includes('personal')) {
     return `${p.label} is a team's shared configuration, so it is set at team or workspace scope, never as a personal credential.`;
-  }
-  if ((p.pendingScopes ?? []).includes('personal')) {
-    return `A personal ${p.label} is not delivered to runs yet. Set it at team or workspace scope, or use your own API key.`;
   }
   return null;
 }
@@ -225,7 +215,6 @@ export function storedWritePermissions(row: { purpose: string; label?: string | 
 
 /** Prefixes the legacy agent purposes have always required. */
 const LEGACY_PREFIX: Record<string, string> = {
-  oauth_token: 'sk-ant-oat',
   anthropic_api_key: 'sk-ant-api',
   // Loose on purpose: OpenAI keys come in several live shapes (sk-, sk-proj-, sk-svcacct-).
   openai_api_key: 'sk-',

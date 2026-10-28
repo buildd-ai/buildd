@@ -16,6 +16,7 @@ import { presenceTokens } from '@buildd/core/db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { isPresenceToken, listPresenceTokens, revokePresenceToken } from '@/lib/presence-token';
+import { isUuid } from '@/lib/uuid';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,7 +34,7 @@ export async function DELETE(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const id = req.nextUrl.searchParams.get('id');
-  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  if (!id || !isUuid(id)) {
     return NextResponse.json({ error: 'id required' }, { status: 400 });
   }
   const rows = await db.update(presenceTokens).set({ revokedAt: new Date() })

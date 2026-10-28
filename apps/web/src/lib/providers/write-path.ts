@@ -65,7 +65,7 @@ export function sanitizeKey(raw: string): string {
 }
 
 /** Model-credential purposes whose (re)store should put auth-failed tasks back in the queue. */
-export const AGENT_AUTH_PURPOSES: ReadonlySet<string> = new Set(['oauth_token', 'anthropic_api_key', 'claude_credential', 'openai_api_key']);
+export const AGENT_AUTH_PURPOSES: ReadonlySet<string> = new Set(['anthropic_api_key', 'openai_api_key']);
 
 /**
  * Is this storage an agent credential? The legacy agent purposes, and the

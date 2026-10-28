@@ -37,7 +37,8 @@ import {
   type UseRefusal,
 } from './capability-grants';
 import { MODEL_INFERENCE_CAPABILITY, type ModelInferenceGrantSource } from './capability-model-inference';
-import { TASK_FILING_PROVIDER, isDelegationCapability, isWriteRisk } from './capability-grants';
+import { DATABASE_QUERY_CAPABILITY, DATABASE_QUERY_PROVIDER } from './capability-database-query';
+import { TASK_FILING_PROVIDER, isBrokeredRequest, isDelegationCapability, isWriteRisk } from './capability-grants';
 import { loadRawTaskGrants } from './task-delegation';
 import { addTaskDelegationGrant, removeTaskDelegationGrant } from './task-delegation-checks';
 import { verifyWorkspaceAccess } from './team-access';
@@ -169,12 +170,13 @@ export async function requestCapability(principal: AgentPrincipal, req: Capabili
 
   await expireLapsed(eq(capabilityGrants.workerId, principal.workerId), now);
   if (isDelegationCapability(req.capability)) return requestTaskFiling(principal, rp, req, now);
+  const brokered = isBrokeredRequest(req);
   const [input, rules, rows] = await Promise.all([
-    req.modelInference ? Promise.resolve(null) : loadDiscoveryInput(principal.workspaceId, run.roleSlug, now),
+    brokered ? Promise.resolve(null) : loadDiscoveryInput(principal.workspaceId, run.roleSlug, now),
     loadPolicyRules(principal.teamId),
     db.query.capabilityGrants.findMany({ where: sqlWhere(eq(capabilityGrants.workerId, principal.workerId)) }),
   ]);
-  if (!req.modelInference && !input) return { ok: false, status: 409, code: 'workspace_not_found', error: 'Workspace not found.' };
+  if (!brokered && !input) return { ok: false, status: 409, code: 'workspace_not_found', error: 'Workspace not found.' };
   const discovery = input && req.provider ? resolveProviderAccess(input, req.provider, req.access) : null;
   const grants = rows.map(toGrantRecord);
 
@@ -546,6 +548,30 @@ export const capabilityGrantSource: ModelInferenceGrantSource = {
     return null;
   },
 };
+
+/**
+ * The database.query grant source for the query broker: this worker's live
+ * grant, re-checked on every query with the same live facts as any use (task,
+ * worker, role, policy). The broker writes the audit row; this does not.
+ */
+export async function findDatabaseQueryGrant(principal: Pick<AgentPrincipal, 'teamId' | 'workspaceId' | 'taskId' | 'workerId'>, now: Date = new Date()): Promise<{ ok: true; grantId: string; expiresAt: Date } | { ok: false; reasonCode: UseRefusal | 'no_grant' }> {
+  const rows = await db.query.capabilityGrants.findMany({
+    where: sqlWhere(and(eq(capabilityGrants.workerId, principal.workerId), eq(capabilityGrants.status, 'granted'), eq(capabilityGrants.capability, DATABASE_QUERY_CAPABILITY))),
+    orderBy: sqlOrderBy([desc(capabilityGrants.decidedAt)]),
+  });
+  if (rows.length === 0 || !principal.teamId) return { ok: false, reasonCode: 'no_grant' };
+  const run = await loadRunState(principal.taskId, principal.workerId);
+  const rules = await loadPolicyRules(principal.teamId);
+  const rp: RequestPrincipal = { teamId: principal.teamId, workspaceId: principal.workspaceId, taskId: principal.taskId, workerId: principal.workerId, roleSlug: run.roleSlug };
+  const use: CapabilityUse = { capability: DATABASE_QUERY_CAPABILITY, provider: DATABASE_QUERY_PROVIDER, connectorId: null, tool: null, resource: null, environment: null, risk: 'read' };
+  let last: UseRefusal | 'no_grant' = 'no_grant';
+  for (const g of rows.map(toGrantRecord)) {
+    const refusal = checkGrantUse(g, use, { principal: rp, taskStatus: run.taskStatus, workerStatus: run.workerStatus, rules, candidate: null, now });
+    if (!refusal) return { ok: true, grantId: g.id, expiresAt: g.expiresAt! };
+    last = refusal;
+  }
+  return { ok: false, reasonCode: last };
+}
 
 // ── Listing (people) ─────────────────────────────────────────────────────────
 

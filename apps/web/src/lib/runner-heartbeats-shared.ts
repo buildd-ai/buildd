@@ -15,6 +15,7 @@ import type { RunnerClass } from './runner-ownership';
 import {
   RUNNER_LIVE_WINDOW_MS,
   RUNNER_ONLINE_THRESHOLD_MS,
+  beatWithin,
   isIsolationRecordCurrent,
   isolationVerdict,
   type RunnerCodexAuthSource,
@@ -227,7 +228,7 @@ export const RUNNER_ONLINE_WINDOW_MS = RUNNER_LIVE_WINDOW_MS;
  * button-click handler) should pass a fresh `Date.now()`.
  */
 export function isRunnerOnline(lastHeartbeatAt: string | Date, now: number): boolean {
-  return now - new Date(lastHeartbeatAt).getTime() < RUNNER_ONLINE_WINDOW_MS;
+  return beatWithin(lastHeartbeatAt, now, RUNNER_ONLINE_WINDOW_MS);
 }
 
 /**
@@ -238,7 +239,7 @@ export function isRunnerOnline(lastHeartbeatAt: string | Date, now: number): boo
  * what is listed, never whether a runner is online (`isRunnerOnline`).
  */
 export function isRunnerRecentlySeen(lastHeartbeatAt: string | Date, now: number): boolean {
-  return now - new Date(lastHeartbeatAt).getTime() < RUNNER_ONLINE_THRESHOLD_MS;
+  return beatWithin(lastHeartbeatAt, now, RUNNER_ONLINE_THRESHOLD_MS);
 }
 
 /**

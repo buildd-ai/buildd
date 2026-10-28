@@ -133,12 +133,6 @@ describe('one row per provider, in registry order', () => {
     expect(buttons(cardOf('litellm')).filter((b) => b !== 'LiteLLM gateway')).toEqual(['Set up']);
   });
 
-  it('a stored subscription login shows nowhere', async () => {
-    await mount({ rows: [{ provider: 'claude-subscription', scope: 'team', shape: 'setup_token', last4: 'bAAA' }] });
-    expect(cardOf('claude').getAttribute('data-set')).toBe('false');
-    expect(host.textContent).not.toContain('bAAA');
-  });
-
   it('a row is name, status word, masked key and one action; detail opens on tap', async () => {
     await mount({ rows: [{ provider: 'anthropic', scope: 'team', last4: 'a1b2' }] });
     const c = cardOf('claude');

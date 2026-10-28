@@ -147,9 +147,8 @@ export function tryRestrictToOwnerAcl(
  * Write a credential-bearing JSON file so only the owner can read it.
  *
  * `~/.buildd/config.json` holds a plaintext `bld_*` API key but was written with
- * the process umask (commonly 0644 — world-readable), while the two sibling
- * credential writers, codex-auth.ts and claude-auth.ts, both chmod their
- * auth.json / .credentials.json to 0600. This closes that gap.
+ * the process umask (commonly 0644 — world-readable), while the sibling
+ * credential writer, codex-auth.ts, chmods its auth.json to 0600. This closes that gap.
  *
  * Two details matter and are easy to get wrong:
  *

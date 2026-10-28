@@ -1,8 +1,7 @@
 /**
  * `~/.buildd/config.json` stores a plaintext bld_* API key. It was written with
  * the process umask (commonly 0644 — readable by every account on the host),
- * unlike the runner's two other credential writers, codex-auth.ts and
- * claude-auth.ts, which both chmod to 0600.
+ * unlike the runner's other credential writer, codex-auth.ts, which chmods to 0600.
  *
  * The pre-existing-file case is the one worth pinning: writeFileSync keeps the
  * mode of a file that already exists, so a config.json left behind by an older

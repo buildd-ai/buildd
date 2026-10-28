@@ -1,3 +1,4 @@
+import { isUuid } from '@buildd/shared';
 /**
  * Turn-boundary acknowledgement of human messages (knowledge-base:
  * run-progress-steering-audit §2.2–2.3).
@@ -21,7 +22,6 @@
  * stays Delivered, and the task page shows it Not delivered once the run ends.
  */
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The SDK uuid for one injection. A single served message's id is itself a
@@ -29,7 +29,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * directly). Several messages served as one payload share a fresh uuid.
  */
 export function injectionUuid(ids: readonly string[]): string {
-  if (ids.length === 1 && UUID_RE.test(ids[0])) return ids[0];
+  if (ids.length === 1 && isUuid(ids[0])) return ids[0];
   return globalThis.crypto.randomUUID();
 }
 

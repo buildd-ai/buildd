@@ -3,10 +3,9 @@
  * claim response so the runner never needs DB access.
  *
  * A claim carries no subscription (OAuth) login (model credentials spec R-2 /
- * AC-3): no `oauth_token`, `claude_credential` or ChatGPT `codex_credential`
- * value. The runner uses its own machine login (`claude login`, `codex login`)
- * first, then an API key delivered here, then refuses the task. Stored login
- * rows are ignored, not yet deleted (R-8).
+ * AC-3): no stored login value of any kind. The runner uses its own machine
+ * login (`claude login`, `codex login`) first, then an API key delivered here,
+ * then refuses the task.
  *
  * Every function here is a no-op without ENCRYPTION_KEY, and every failure is
  * non-fatal: a claim must still succeed with no credentials attached (the
@@ -21,10 +20,10 @@
  */
 import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, isNull, lt, not, or, sql } from 'drizzle-orm';
-import type { ClaimTasksResponse, PendingCredentialRefresh } from '@buildd/shared';
+import { eq, isNull, or } from 'drizzle-orm';
+import type { ClaimTasksResponse } from '@buildd/shared';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import { resolveCodexApiKey } from '@/lib/codex-credential';
+import { resolveCodexApiKey } from '@/lib/codex-api-key';
 import { resolveOpenAiApiKey } from '@/lib/openai-credential';
 import { pickMostSpecificCredential, pickTeamAgentApiKey, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { agentKeyPurposes } from '@buildd/core/providers/agent-keys';
@@ -35,8 +34,8 @@ type ClaimedTask = { id: string; workspaceId: string };
 
 /**
  * Attach inline decrypted server-managed credentials: the Anthropic API key
- * and flat mcp_credential values. A stored `oauth_token` (a subscription
- * setup token) is never read or delivered.
+ * and flat mcp_credential values. A subscription login is never read or
+ * delivered.
  *
  * The Anthropic key is read from its canonical storage (`inference_key` /
  * `anthropic`, the key chat uses) and its legacy alias (`anthropic_api_key`);
@@ -177,63 +176,5 @@ export async function attachCodexCredentials(
     } catch (err) {
       console.warn(`[claim] Failed to fetch Codex credential for workspace ${wsId}:`, err);
     }
-  }
-}
-
-/**
- * Resolve the pre-refresh list for the AUTHENTICATED ACCOUNT alone — no claimed
- * task, no workspace — for the top-level `pendingCredentialRefreshes` the claim
- * route returns on every poll.
- *
- * Why this exists: the claim call is the runner's heartbeat, so announcing here
- * is how an idle runner's credential broker discovers the stored logins it
- * keeps fresh for server-side readers. No claimed worker is wired to one any
- * more (a claim carries no subscription login), so a task never causes a
- * refresh (model credentials spec AC-6). The broker and this list go with the
- * refresh machinery.
- *
- * SCOPE: the account's OWN team — `accounts.teamId`, the team the presented API
- * key belongs to. Never wider than one team, and narrowed further to team-wide
- * rows plus this account's own: another account's personal credential in the
- * same team is not this runner's to manage.
- *
- * The payload is metadata only (`secretId`, `purpose`, `expiresAt`) — no token
- * material ever crosses this boundary; the runner exchanges a secretId for a
- * token through /api/runner/credential-refresh, which authenticates separately.
- *
- * Non-fatal like every other block here: a failure returns nothing so the claim
- * still succeeds.
- */
-export async function resolveAccountCredentialRefreshes(
-  account: { id: string; teamId?: string | null },
-): Promise<PendingCredentialRefresh[] | undefined> {
-  if (!process.env.ENCRYPTION_KEY) return undefined;
-  // No team means no scope. Fail closed rather than announce across teams.
-  if (!account.teamId) return undefined;
-
-  try {
-    const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
-    const pendingRows = await db.query.secrets.findMany({
-      where: sqlWhere(and(
-        eq(secrets.teamId, account.teamId),
-        inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
-        not(eq(secrets.healthStatus, 'revoked')),
-        isNotNull(secrets.tokenExpiresAt),
-        lt(secrets.tokenExpiresAt, twoHoursFromNow),
-        or(isNull(secrets.accountId), eq(secrets.accountId, account.id)),
-      )),
-      columns: { id: true, purpose: true, tokenExpiresAt: true },
-    });
-
-    if (pendingRows.length === 0) return undefined;
-
-    return pendingRows.map(row => ({
-      secretId: row.id,
-      purpose: row.purpose as 'claude_credential' | 'codex_credential',
-      expiresAt: row.tokenExpiresAt ? (row.tokenExpiresAt as Date).toISOString() : null,
-    }));
-  } catch (err) {
-    console.warn('[claim] Failed to query account-scoped pending credential refreshes:', err);
-    return undefined;
   }
 }

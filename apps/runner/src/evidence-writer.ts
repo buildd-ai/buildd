@@ -94,11 +94,6 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   branch: 'not_secret',
   task: 'not_secret',
   serverApiKey: 'secret',
-  serverOauthToken: 'secret',
-  claudeAccessToken: 'secret',
-  claudeTokenExpiresAt: 'not_secret',
-  // Scope names (e.g. user:inference), not a credential.
-  claudeTokenScopes: 'not_secret',
   claudeAiArtifacts: 'not_secret',
   mcpSecrets: 'secret',
   // A directly mounted oauth/header connector carries its provider token in
@@ -129,12 +124,7 @@ export interface WorkerSecretChannels {
   mcpSecrets?: Record<string, string>;
   roleEnvSecrets?: Record<string, string>;
   serverApiKey?: string;
-  serverOauthToken?: string;
-  claudeAccessToken?: string;
   codexCredential?: {
-    accessToken?: string;
-    refreshToken?: string;
-    idToken?: string;
     apiKey?: string;
     [k: string]: unknown;
   };
@@ -194,11 +184,6 @@ export function buildWorkerSecretValues(
     ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
     ...Object.entries(worker.roleEnvSecrets ?? {}).map(([label, value]) => ({ label, value })),
     { label: 'serverApiKey', value: worker.serverApiKey },
-    { label: 'serverOauthToken', value: worker.serverOauthToken },
-    { label: 'claudeAccessToken', value: worker.claudeAccessToken },
-    { label: 'codexAccessToken', value: cx?.accessToken },
-    { label: 'codexRefreshToken', value: cx?.refreshToken },
-    { label: 'codexIdToken', value: cx?.idToken },
     { label: 'codexApiKey', value: cx?.apiKey },
     { label: 'modelEndpointAuthToken', value: worker.modelEndpoint?.authToken },
     // Header values (an AI Gateway token), whole and without their `Bearer ` scheme.

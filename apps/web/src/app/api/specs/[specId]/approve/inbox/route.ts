@@ -24,5 +24,5 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     revision: body?.revision, expectedVersion: body?.expectedVersion, contentHash: body?.contentHash, overrideReason: body?.overrideReason, retire: body?.retire, presence: body?.presence,
   });
   if (r.ok) return NextResponse.json({ spec: r.spec, revision: r.revision, already: r.already, retirements: r.retirements });
-  return NextResponse.json({ error: r.error, ...(r.code ? { code: r.code } : {}), ...(r.gate ? { gate: r.gate } : {}), ...(r.currentVersion !== undefined ? { currentVersion: r.currentVersion } : {}), ...(r.presence ? { presence: r.presence } : {}) }, { status: r.status });
+  return NextResponse.json({ error: r.error, ...(r.code ? { code: r.code } : {}), ...(r.gate ? { gate: r.gate } : {}), ...(r.currentVersion !== undefined ? { currentVersion: r.currentVersion } : {}), ...(r.headRevision !== undefined ? { headRevision: r.headRevision } : {}), ...(r.presence ? { presence: r.presence } : {}) }, { status: r.status });
 }

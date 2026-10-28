@@ -14,6 +14,7 @@ import { isTaskToken } from './task-token';
 import { isPresenceToken } from './presence-token';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { noteBearerTenant } from './request-tenant';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * Negative cache: hashed bld_ keys that matched no account, and JWTs whose
@@ -262,7 +263,7 @@ function boundWorkspaceOf(request: { url: string; method: string } | undefined):
   const headers = (request as { headers?: unknown } | undefined)?.headers;
   if (!headers || typeof (headers as Headers).get !== 'function') return null;
   const v = (headers as Headers).get(GRANT_WORKSPACE_HEADER);
-  return v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v.trim()) ? v.trim().toLowerCase() : v ? 'invalid' : null;
+  return v && isUuid(v.trim()) ? v.trim().toLowerCase() : v ? 'invalid' : null;
 }
 
 /**
