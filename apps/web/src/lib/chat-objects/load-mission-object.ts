@@ -7,10 +7,11 @@
  * (`refreshWorkerMergeStateIfStale`) is deliberately not repeated here — a
  * chat pane refetches on every structural event and must not write.
  */
+import { isBuildComplete } from '@/lib/mission-checks';
 import { db } from '@buildd/core/db';
 import { missions, workspaceSkills, missionNotes } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
-import { deriveCriteriaGatePresentation, deriveMissionProgressMetric, hasPendingDeliverableWork as computeHasPendingDeliverableWork } from '@buildd/core/mission-helpers';
+import { deriveCriteriaGatePresentation, computeMissionProgress, deriveMissionProgressMetric, hasPendingDeliverableWork as computeHasPendingDeliverableWork } from '@buildd/core/mission-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
 import { deriveTaskHealthSignal, foreignDependencyIds } from '@/lib/mission-helpers';
 import { loadDependencyRows } from '@/lib/dependency-rows';
@@ -113,6 +114,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
   // reads — completion, wait classification — and asks the accessor directly).
   const live = new Set<string>(LIVE_WORKER_STATUSES);
   const activeAgents = (mission.tasks ?? []).flatMap(t => t.workers || []).filter(w => live.has(w.status)).length;
+  const builtCounts = computeMissionProgress(mission.tasks || []);
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
   const schedule = m.schedule as { lastDeferralReason?: string | null; nextRunAt?: Date | string | null } | null | undefined;
@@ -125,7 +127,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
         overall: (goalCriteriaState?.overall as any) ?? null,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         items: (goalCriteriaState?.criteria ?? []) as any,
-        completionAttempted: progress !== undefined && progress >= 100,
+        completionAttempted: isBuildComplete({ done: builtCounts.completedTasks, total: builtCounts.totalTasks }),
       });
   const dependencies = await loadDependencyRows(foreignDependencyIds(mission.tasks || []));
   const strand = deriveLocalStrand({
