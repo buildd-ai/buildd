@@ -284,7 +284,7 @@ export async function evaluateSurfaceAuditGate(
     for (const f of files) if (isRenderedSurfaceChange(f.path)) diffFiles.push(f);
     read.add(prNumber);
   };
-  if (opts.render) {
+  if (opts.render === true) {
     const byWorkspace = new Map<string, number[]>();
     for (const [prNumber, { workspaceId, merged }] of [...prs].slice(0, MAX_PRS_CHECKED)) {
       if (!merged) { unreadable = true; continue; }
@@ -301,7 +301,7 @@ export async function evaluateSurfaceAuditGate(
       }
     }));
   }
-  if (!opts.render) await forEachBounded([...prs].slice(0, MAX_PRS_CHECKED), PR_READ_CONCURRENCY, async ([prNumber, { workspaceId, merged }]) => {
+  if (opts.render !== true) await forEachBounded([...prs].slice(0, MAX_PRS_CHECKED), PR_READ_CONCURRENCY, async ([prNumber, { workspaceId, merged }]) => {
     try {
       const repo = await repoOf(workspaceId);
       if (!repo) { unreadable = true; return; }

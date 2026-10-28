@@ -1980,7 +1980,7 @@ async function TaskDetailPage({
             ].filter(Boolean).join(' · ')}
           />
         )}
-        {!shippedView && <details open={!!initialOpenArtifactId} className="border-y border-border-default mb-6"><summary className="min-h-11 flex items-center cursor-pointer text-body">Run</summary>
+        {!shippedView && <details open={!!initialOpenArtifactId} className="group border-y border-border-default mb-6"><summary className="min-h-11 flex items-center cursor-pointer text-body select-none list-none [&::-webkit-details-marker]:hidden group-open:font-medium"><span className="group-open:rotate-90 transition-transform mr-1" aria-hidden="true">▶</span>Run</summary>
           {liveEvidence && <div className="pb-3"><RunEvidenceRail evidence={liveEvidence} nowMs={Date.now()} /></div>}
           <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-3 pb-4 text-body">{runDetails.map(row => <div className="contents" key={row.label}><dt className="text-text-muted">{row.label}</dt><dd className="min-w-0 break-words">{row.value}</dd></div>)}</dl>
           {archivedWorkerSection}

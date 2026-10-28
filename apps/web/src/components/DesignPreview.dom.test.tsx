@@ -142,6 +142,42 @@ describe('DesignPreview loading state', () => {
   });
 });
 
+describe('DesignPreview when the frame never loads', () => {
+  // The slow and failed covers wait 8s and 15s; hold those timers and fire them by hand.
+  const realSetTimeout = globalThis.setTimeout;
+  let held: { cb: () => void; ms: number }[] = [];
+  beforeEach(() => {
+    held = [];
+    globalThis.setTimeout = ((cb: () => void, ms?: number, ...rest: unknown[]) => {
+      if ((ms ?? 0) >= 8000) {
+        held.push({ cb, ms: ms ?? 0 });
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return realSetTimeout(cb, ms, ...rest);
+    }) as typeof setTimeout;
+  });
+  afterEach(() => {
+    globalThis.setTimeout = realSetTimeout;
+  });
+  const fire = (ms: number) => act(() => held.filter((t) => t.ms === ms).forEach((t) => t.cb()));
+
+  it('says it is still loading, then offers Retry, and Retry reloads the frame', () => {
+    mount('desktop-mission');
+    const first = frame();
+    fire(8000);
+    expect(q('design-frame-loading')!.textContent).toContain('Still loading');
+    fire(15000);
+    expect(q('design-frame-loading')!.textContent).toContain('Design not loaded');
+    held = [];
+    act(() => q('design-retry')!.click());
+    expect(frame()).not.toBe(first);
+    expect(q('design-retry')).toBeNull();
+    expect(q('design-frame-loading')!.textContent).toContain('Loading design');
+    // The timers restart for the new frame.
+    expect(held.map((t) => t.ms).sort()).toEqual([15000, 8000].sort());
+  });
+});
+
 describe('DesignPreview when storage cannot serve the file', () => {
   it('centres the fallback across the whole column, not a viewport-sized box', () => {
     act(() => {
