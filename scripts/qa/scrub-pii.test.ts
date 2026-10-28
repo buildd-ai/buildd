@@ -281,7 +281,6 @@ const SAFE: Record<string, string[]> = {
   // error text, and the scrub guard caught identifying text surviving there.
   worker_terminal_records: ['summary_provenance'],
   migration_log: ['phase'], // multi-line literal-union $type
-  credential_leases: ['held_by_runner_id'], // wiped via secrets cascade too
   user_feedback: ['entity_id'],
   // Root causes hold no text by design (apps/web/src/lib/root-cause-record.ts):
   // fixed vocabularies, a backend id, a failure-pattern rule id, and a key
