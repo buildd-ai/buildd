@@ -13,7 +13,7 @@
  *                       named state after running that state's steps (open a
  *                       dialog, a menu, a gated sub-state). docs/specs/qa-capture-steps.md.
  *   3. otherwise      → capture every route in the manifest. Dynamic routes
- *                       (`:id`) are resolved from QA_TASK_ID / QA_MISSION_ID when
+ *                       (`:id`) are resolved from QA_TASK_ID / QA_MISSION_ID / QA_SPEC_ID when
  *                       provided, and skipped otherwise.
  *
  * Auth (in priority order):
@@ -45,6 +45,7 @@
  *                                     scripts/qa/capture-failure.ts), which the auditor reports.
  *   QA_TASK_ID                      — resolves `/app/tasks/:id` in the manifest
  *   QA_MISSION_ID                   — resolves `/app/missions/:id` in the manifest
+ *   QA_SPEC_ID                      — resolves `/app/specs/:id` in the manifest
  *   VISUAL_QA_STORAGE_STATE_PATH    — Playwright storageState JSON for remote auth
  *   VISUAL_QA_STORAGE_STATE         — the same storageState as JSON text (a workspace secret mapped
  *                                     through gitConfig.envMapping). Written to a 0600 temp file,
@@ -206,6 +207,7 @@ const BYPASS_SECRET = process.env.VERCEL_AUTOMATION_BYPASS_SECRET ?? '';
 const DYNAMIC_PARAMS: Record<string, string | undefined> = {
   '/app/tasks/:id': process.env.QA_TASK_ID,
   '/app/missions/:id': process.env.QA_MISSION_ID,
+  '/app/specs/:id': process.env.QA_SPEC_ID,
 };
 
 mkdirSync(join(OUTPUT_DIR, 'screenshots'), { recursive: true });
@@ -235,7 +237,7 @@ function resolveManifestPath(rawPath: string): { path: string; skipReason?: stri
   if (id) return { path: pattern.replace(/:[^/]+/, id) + rest };
   return {
     path: rawPath,
-    skipReason: 'dynamic route — no ID provided (set QA_TASK_ID / QA_MISSION_ID or use QA_ROUTES)',
+    skipReason: 'dynamic route — no ID provided (set QA_TASK_ID / QA_MISSION_ID / QA_SPEC_ID or use QA_ROUTES)',
   };
 }
 

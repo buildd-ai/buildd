@@ -252,7 +252,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     ? <Link href={view.task.href} className="underline-offset-4 hover:underline">{view.task.title}</Link>
     : view.mission && view.mission.id !== pageMissionId
       ? <Link href={view.mission.href} className="underline-offset-4 hover:underline">{view.mission.title}</Link>
-      : view.label ?? null;
+      : view.label ?? (view.mission ? 'This mission' : null);
   const age = askedAgo(view.askedAt, now);
   const waitsParts = view.waits ? waitsSummary(view.waits) : [];
   const footer = view.waits ? waitsFooter(view.waits, now) : null;
@@ -313,6 +313,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
         {subject}
         {age && <span className="text-text-muted">· {age}</span>}
       </p>
+      <h3 data-testid="decision-question" className="text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{view.question}</h3>
       {(view.summary || waitsParts.length > 0) && (
         <p data-testid="decision-summary" className="min-w-0 text-body text-text-secondary [overflow-wrap:anywhere]">
           <span className={more ? '' : 'line-clamp-2 md:line-clamp-none'}>
@@ -327,7 +328,6 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
           )}
         </p>
       )}
-      <h3 data-testid="decision-question" className="text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{view.question}</h3>
       {view.options.length > 0 && (
         <div data-testid="decision-options" className="flex flex-wrap gap-2.5">
           {view.options.map((o, i) => (

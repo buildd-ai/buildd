@@ -21,7 +21,7 @@ describe('spec index fixture', () => {
 
   it('says its counts in one line with one area and with none', () => {
     expect(specIndexView(SPEC_INDEX_ONE_AREA_FIXTURE).areaCount).toBe(1);
-    expect(specIndexView(SPEC_INDEX_NO_AREA_FIXTURE).line.text).toBe('12 specs, none filed yet');
+    expect(specIndexView(SPEC_INDEX_NO_AREA_FIXTURE).line.text).toBe('12 specs, not grouped yet');
   });
 
   it('graph fixture caps neighbours at 8', () => {

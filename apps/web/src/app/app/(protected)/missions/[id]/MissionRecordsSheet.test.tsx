@@ -28,7 +28,8 @@ const count = (html: string, needle: string) => html.split(needle).length - 1;
 describe('MissionRecordsSheet', () => {
   it('labels its row with the records count, not the artifact count', () => {
     const html = renderToStaticMarkup(<MissionRecordsSheet missionId="m" baseUrl="https://example.test" records={records} allArtifacts={all} />);
-    expect(html).toContain('Records · 2');
+    expect(html).toContain('Records</span>');
+    expect(html).toContain('2 ›');
     expect(html).not.toContain('data-testid="mission-records-sheet"');
   });
 

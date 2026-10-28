@@ -348,6 +348,8 @@ DELETE FROM conversations;
 DELETE FROM chat_directives;
 DELETE FROM local_sessions;         -- presence of people's local coding sessions (repo, client)
 DELETE FROM presence_tokens;        -- people's machine names; a clone's tokens can't verify anyway
+DELETE FROM passkey_challenges;     -- live WebAuthn challenges; a clone's origin can't redeem them
+DELETE FROM user_passkeys;          -- people's passkey public keys and device names
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;

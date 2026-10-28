@@ -90,6 +90,7 @@ import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import { loadMissionEvidence } from '@/lib/specs/mission-evidence';
 import { missionVerifyView } from '@/lib/mission-verify-view';
+import { readReverifyState } from '@/lib/specs/mission-reverify-state';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection, missionReleaseRow } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionReleaseStatus, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -266,7 +267,7 @@ async function MissionDetailBody({
     // R-6, R-16): the open organizer questions, bounded (spec 3ef37387).
     openQuestionNotes: layout === 'board' ? db.query.missionNotes.findMany({
       where: sqlWhere(and(onMissionOrItsTasks, eq(missionNotes.type, 'question' as any), eq(missionNotes.status, 'open'))),
-      columns: { id: true, type: true, status: true, title: true, body: true, taskId: true, workerId: true, defaultChoice: true, createdAt: true },
+      columns: { id: true, type: true, status: true, title: true, body: true, taskId: true, workerId: true, defaultChoice: true, options: true, subjectTaskId: true, createdAt: true },
       orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
       limit: 20,
     }) : null,
@@ -1262,7 +1263,7 @@ async function MissionDetailBody({
   // R-6, R-16), over the board and the open organizer questions read above.
   const openQuestionNotes: OpenQuestionNote[] = (r1.openQuestionNotes ?? []).map(n => ({
     id: n.id, type: n.type as string, status: n.status as string, title: n.title, body: n.body ?? null,
-    workerId: n.workerId ?? null, taskId: n.taskId ?? null, defaultChoice: n.defaultChoice ?? null,
+    workerId: n.workerId ?? null, taskId: n.taskId ?? null, defaultChoice: n.defaultChoice ?? null, options: n.options ?? null,
     subjectTaskId: (n as { subjectTaskId?: string | null }).subjectTaskId ?? null,
     createdAt: new Date(n.createdAt).getTime(),
   }));
@@ -1272,7 +1273,7 @@ async function MissionDetailBody({
     : [];
   // Verify's evidence (R-17) loads in the same wait: a failed read costs the links, never the counts.
   const specEntries = (goalCriteriaStateFull?.criteria ?? []).flatMap(e => (e.spec ? [{ standings: e.spec.standings }] : []));
-  const [waitsByTask, verifyEvidence] = await Promise.all([
+  const [waitsByTask, verifyEvidence, reverifyState] = await Promise.all([
     decisionTaskIds.length > 0
       ? loadQuestionWaitsFor(decisionTaskIds, { kind: 'person', userId: user.id }).catch(() => new Map())
       : Promise.resolve(new Map()),
@@ -1282,6 +1283,9 @@ async function MissionDetailBody({
           return null;
         })
       : Promise.resolve(null),
+    layout === 'board' && !['completed', 'archived'].includes(mission.status)
+      ? readReverifyState(id).catch(() => 'idle' as const)
+      : Promise.resolve('idle' as const),
   ]);
   const criteriaFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
   const criteriaFailingCriterion = criteriaFailingState ? goalCriteria[criteriaFailingState.index] ?? null : null;
@@ -1321,6 +1325,8 @@ async function MissionDetailBody({
   const verifyView = layout === 'board'
     ? missionVerifyView({ missionId: id, criteria: goalCriteria, state: goalCriteriaStateFull, titles: outcomeSpecTitles, evidence: verifyEvidence, now: renderedAt })
     : null;
+  // Re-verify: offered on a live mission with a selected spec, reading whether its batched check run is queued or running.
+  if (verifyView && !isTerminal && verifyView.groups.length > 0) verifyView.reverify = { missionId: id, state: reverifyState };
   // Ask is the docked panel, not a header link (Navigation R-3, R-21).
   // The mission's visual review as a mission command (never the task composer),
   // started from ⋯ on any open mission with a workspace to run it in; its screens

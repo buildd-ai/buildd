@@ -649,7 +649,7 @@ export interface MissionStateInput {
    * caller read it: the header follows it rather than the audit task row, so a
    * waiver or a blocked review reads the same here as on the check row.
    */
-  visualReview?: { status: string; blockedDetail?: string | null; blocksMerge?: boolean; label?: string; needsOwner?: boolean } | null;
+  visualReview?: { status: string; blockedDetail?: string | null; blocksMerge?: boolean; label?: string; needsOwner?: boolean; recaptureComing?: boolean } | null;
   /**
    * Required goal criteria the Checks rail shows as not yet passed, the
    * selected outcome spec included (`openCriteriaChecks`). Names what is left
@@ -1380,7 +1380,9 @@ function missionPrHoldFact(input: MissionStateInput, prNumbers: number[], prUrls
         count: 1,
         cause: 'visual_review',
         owner: person ? 'person' : 'platform',
-        nextAction: person ? 'Open the visual review and decide, or skip it.' : 'It merges once the visual review passes.',
+        nextAction: person ? 'Open the visual review and decide, or skip it.'
+          : vr.recaptureComing ? 'A new screenshot is on its way. Nothing for you to do yet.'
+          : 'It merges once the visual review passes.',
         prNumbers, prUrls, taskIds,
       },
       displayState: person ? 'blocked' : 'active',
@@ -2190,7 +2192,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       return d.missionPr
         ? `mission PR${ref} ready to merge`
         : d.count === 1
-          ? `1 PR${ref} ready to merge`
+          ? (ref ? `PR${ref} is ready to merge` : '1 PR ready to merge')
           : `${d.count} PRs ready to merge`;
     }
     case 'ci_red':
