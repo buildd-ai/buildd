@@ -1471,15 +1471,66 @@ function gitHubOverGit() {
     },
     branch(name: string, from: string) { if (!cas(name, head(from)!, null)) throw new Error(`${name} exists`); },
     /** `POST /merges`: 201 with a merge commit, 204 (null) when already contained, 409 on a conflict. */
-    mergesApi(base: string, from: string): { sha: string; parents: Array<{ sha: string }> } | null {
+    mergesApi(base: string, from: string): { sha: string; parents: Array<{ sha: string }>; commit: { tree: { sha: string } } } | null {
       const b = head(base)!; const h = head(from)!;
       if (isAncestor(h, b)) return null;
       let t: string;
       try { t = git(['merge-tree', '--write-tree', b, h]).split('\n')[0]; } catch { throw githubError(409, { message: 'Merge conflict' }); }
       const sha = commitTree(t, [b, h], `Merge ${from} into ${base}`);
       if (!cas(base, sha, b)) throw githubError(409, { message: 'Base moved' });
-      return { sha, parents: [{ sha: b }, { sha: h }] };
+      return { sha, parents: [{ sha: b }, { sha: h }], commit: { tree: { sha: t } } };
     },
+    // ── Git Data API: what the refresh uses to regenerate a forked migration inside its merge ──
+    /** `POST /git/refs`: create-only. */
+    createRef(name: string, sha: string) {
+      if (!cas(name, sha, null)) throw githubError(422, { message: 'Reference already exists' });
+      return { ref: `refs/heads/${name}`, object: { sha } };
+    },
+    /** `DELETE /git/refs/heads/<name>`. */
+    deleteRef(name: string) {
+      if (!ok(['update-ref', '-d', `refs/heads/${name}`])) throw githubError(422, { message: 'Reference does not exist' });
+      return null;
+    },
+    /** `PATCH /git/refs/heads/<name>`: with `force: false`, a fast-forward from the live head or a 422. */
+    updateRef(name: string, sha: string, force: boolean) {
+      const cur = head(name);
+      if (!cur) throw githubError(422, { message: 'Reference does not exist' });
+      if (!force && !isAncestor(cur, sha)) throw githubError(422, { message: 'Update is not a fast forward' });
+      if (!cas(name, sha, cur)) throw githubError(422, { message: 'Reference moved' });
+      return { ref: `refs/heads/${name}`, object: { sha } };
+    },
+    /** `GET /git/blobs/<sha>`. */
+    blob(sha: string) {
+      let content: string;
+      try { content = git(['cat-file', 'blob', sha]); } catch { throw githubError(404, 'Not Found'); }
+      return { sha, encoding: 'base64', content: Buffer.from(content).toString('base64') };
+    },
+    /** `POST /git/blobs`. */
+    createBlob(content: string) { return { sha: git(['hash-object', '-w', '--stdin'], {}, content) }; },
+    /** `POST /git/trees` with `base_tree`: a `sha: null` entry deletes the path. */
+    createTree(baseTree: string | undefined, entries: Array<{ path: string; sha: string | null; mode?: string }>) {
+      const index = join(dir, `index-${Math.random().toString(36).slice(2)}`);
+      const e = { GIT_INDEX_FILE: index };
+      if (baseTree) git(['read-tree', baseTree], e); else git(['read-tree', '--empty'], e);
+      for (const entry of entries) {
+        if (entry.sha === null) { git(['update-index', '--index-info'], e, `0 ${'0'.repeat(40)}\t${entry.path}\n`); continue; }
+        git(['update-index', '--add', '--cacheinfo', `${entry.mode ?? '100644'},${entry.sha},${entry.path}`], e);
+      }
+      const t = git(['write-tree'], e);
+      rmSync(index, { force: true });
+      return { sha: t };
+    },
+    /** `POST /git/commits`. */
+    createCommit(tree: string, parents: string[], message: string) { return { sha: commitTree(tree, parents, message) }; },
+    /** `GET /git/commits/<sha>`. */
+    getCommit(sha: string) {
+      return { sha, tree: { sha: git(['rev-parse', `${sha}^{tree}`]) }, parents: git(['log', '-1', '--format=%P', sha]).split(' ').filter(Boolean).map((p) => ({ sha: p })) };
+    },
+    parents: (sha: string): string[] => git(['log', '-1', '--format=%P', sha]).split(' ').filter(Boolean),
+    /** The blob sha a path has at a ref: two paths with one sha hold the same bytes. */
+    entrySha: (ref: string, path: string): string | null => { try { return git(['rev-parse', `${ref}:${path}`]); } catch { return null; } },
+    /** Branches under a prefix (the scratch refs a refresh must not leave behind). */
+    refs: (prefix: string): string[] => git(['for-each-ref', '--format=%(refname:short)', `refs/heads/${prefix}`]).split('\n').filter(Boolean),
     /** `PUT /pulls/:n/merge` pinned to `expectedHeadSha`, with the method the door chose. */
     landPr(p: { base: string; headBranch: string; expectedHeadSha: string; method: 'merge' | 'squash' }): { merged: boolean; status?: number; sha?: string } {
       const h = head(p.headBranch);
@@ -1515,7 +1566,7 @@ function gitHubOverGit() {
       try { out = git(['ls-tree', `${ref}:${dir}`]); } catch { throw githubError(404, 'Not Found'); }
       return out.split('\n').filter(Boolean).map((l) => {
         const [meta, name] = l.split('\t');
-        return { name, type: meta.split(' ')[1] === 'tree' ? 'dir' : 'file' };
+        return { name, type: meta.split(' ')[1] === 'tree' ? 'dir' : 'file', sha: meta.split(' ')[2] };
       });
     },
     dispose: () => rmSync(dir, { recursive: true, force: true }),
@@ -1565,6 +1616,24 @@ describe('real Git: refresh, task landings, the repair and the mission PR interl
       if (pr) return prs[Number(pr[1])] ?? null;
       const contents = /\/contents\/(.+)\?ref=(.+)$/.exec(path);
       if (contents) return gh.list(decodeURIComponent(contents[2]), contents[1].split('/').map(decodeURIComponent).join('/'));
+      // Git Data API, one atomic git operation each (see gitHubOverGit).
+      if (path.endsWith('/git/refs') && opts?.method === 'POST') {
+        const b = JSON.parse(opts.body);
+        return gh.createRef(String(b.ref).replace(/^refs\/heads\//, ''), b.sha);
+      }
+      const refs = /\/git\/refs\/heads\/(.+)$/.exec(path);
+      if (refs) {
+        const name = refs[1].split('/').map(decodeURIComponent).join('/');
+        if (opts?.method === 'DELETE') return gh.deleteRef(name);
+        if (opts?.method === 'PATCH') { const b = JSON.parse(opts.body); return gh.updateRef(name, b.sha, b.force === true); }
+      }
+      if (path.endsWith('/git/blobs') && opts?.method === 'POST') return gh.createBlob(JSON.parse(opts.body).content);
+      const blob = /\/git\/blobs\/([0-9a-f]+)$/.exec(path);
+      if (blob) return gh.blob(blob[1]);
+      if (path.endsWith('/git/trees') && opts?.method === 'POST') { const b = JSON.parse(opts.body); return gh.createTree(b.base_tree, b.tree); }
+      if (path.endsWith('/git/commits') && opts?.method === 'POST') { const b = JSON.parse(opts.body); return gh.createCommit(b.tree, b.parents, b.message); }
+      const commit = /\/git\/commits\/([0-9a-f]+)$/.exec(path);
+      if (commit) return gh.getCommit(commit[1]);
       return null;
     }) as any);
 
@@ -1728,47 +1797,129 @@ describe('real Git: refresh, task landings, the repair and the mission PR interl
 
   describe('a clean merge that forks the Drizzle migration chain', () => {
     const DIR = 'packages/core/drizzle';
-    const migration = (folder: string, id: string, prevId: string): Record<string, string | null> => ({
-      [`${DIR}/${folder}/migration.sql`]: `-- ${folder}\n`,
-      [`${DIR}/${folder}/snapshot.json`]: JSON.stringify({ version: '8', dialect: 'postgres', id, prevIds: [prevId] }) + '\n',
+    // Snapshots as drizzle v1 (format v8) writes them: a flat `ddl[]` of entities.
+    const table = (name: string) => ({ isRlsEnabled: false, name, entityType: 'tables', schema: 'public' });
+    const column = (table: string, name: string, extra: Record<string, unknown> = {}) => ({
+      type: 'text', typeSchema: null, notNull: false, dimensions: 0, default: null, generated: null, identity: null, name, entityType: 'columns', schema: 'public', table, ...extra,
     });
+    const BASE_DDL = [table('t0'), column('t0', 'id')];
+    const A_DDL = [...BASE_DDL, table('a'), column('a', 'id')];
+    const B_DDL = [...BASE_DDL, table('b'), column('b', 'id')];
+    const A_SQL = 'CREATE TABLE "a" ("id" text PRIMARY KEY);\n';
+    const migration = (folder: string, id: string, prevId: string, ddl: unknown[], sql = `-- ${folder}\n`): Record<string, string | null> => ({
+      [`${DIR}/${folder}/migration.sql`]: sql,
+      [`${DIR}/${folder}/snapshot.json`]: JSON.stringify({ version: '8', dialect: 'postgres', id, prevIds: [prevId], ddl, renames: [] }, null, 2),
+    });
+    const foldersAt = (ref: string): string[] => gh.list(ref, DIR).filter((e) => e.type === 'dir').map((e) => e.name).sort();
+    const snapshotAt = (ref: string, folder: string) => JSON.parse(gh.read(ref, `${DIR}/${folder}/snapshot.json`)!) as { id: string; prevIds: string[]; ddl: Array<Record<string, unknown>>; renames: unknown[] };
+    const keysOf = (ddl: Array<Record<string, unknown>>) => new Set(ddl.map((e) => `${e.entityType}:${e.table ?? ''}:${e.name}`));
     /** Snapshots no other snapshot names as its parent: one for a linear chain. */
     const chainHeads = (ref: string): string[] => {
-      const snaps = gh.list(ref, DIR).filter((e) => e.type === 'dir')
-        .map((e) => JSON.parse(gh.read(ref, `${DIR}/${e.name}/snapshot.json`)!) as { id: string; prevIds: string[] });
+      const snaps = foldersAt(ref).map((f) => snapshotAt(ref, f));
       const parents = new Set(snaps.flatMap((s) => s.prevIds));
       return snaps.filter((s) => !parents.has(s.id)).map((s) => s.id).sort();
     };
+    const regeneratedOf = (o: unknown) => (o as { migrationsRegenerated?: { folders: Array<{ from: string; to: string }> } }).migrationsRegenerated;
 
     beforeEach(() => {
       gh.dispose();
       gh = gitHubOverGit();
-      gh.commit('dev', { 'shared.ts': 'v0\n', ...migration('20261001000000_base', 's0', '00000000-0000-0000-0000-000000000000') }, 'base');
+      gh.commit('dev', { 'shared.ts': 'v0\n', ...migration('20261001000000_base', 's0', '00000000-0000-0000-0000-000000000000', BASE_DDL) }, 'base');
       gh.branch(BRANCH, 'dev');
     });
 
-    it('mission adds A, dev adds B: the clean merge files one regenerate task, and its landing leaves a linear chain', async () => {
-      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0'));
-      gh.commit('dev', migration('20261003000000_trunk_b', 'sb', 's0'));
+    it('mission adds A, dev adds B: the refresh lands one merge commit with A regenerated on B, no task, and the chain is linear', async () => {
+      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0', A_DDL, A_SQL));
+      const missionHead = gh.head(BRANCH)!;
+      gh.commit('dev', migration('20261003000000_trunk_b', 'sb', 's0', B_DDL));
       const devAtMerge = gh.head('dev')!;
 
-      // 1. GitHub merges it cleanly (folders never conflict as text), and the chain forks.
+      // 1. The merge would fork the chain (folders never conflict as text). It lands already regenerated.
+      const first = await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+      const moved = regeneratedOf(first)?.folders[0]?.to ?? '';
+      expect(moved).toMatch(/^\d{14}_mission_a$/);
+      expect(first).toEqual({
+        kind: 'merged',
+        headSha: devAtMerge,
+        migrationsRegenerated: { drizzleDir: DIR, trunkLeaf: '20261003000000_trunk_b', folders: [{ from: '20261002000000_mission_a', to: moved }] },
+      });
+      // One merge commit of trunk into the branch, on the heads the refresh read.
+      expect(gh.parents(gh.head(BRANCH)!)).toEqual([missionHead, devAtMerge]);
+      expect(gh.isAncestor(devAtMerge, gh.head(BRANCH)!)).toBe(true);
+      // The mission's folder moved past trunk's; nothing else in the dir changed.
+      expect(foldersAt(BRANCH)).toEqual(['20261001000000_base', '20261003000000_trunk_b', moved]);
+      expect(moved > '20261003000000_trunk_b').toBe(true);
+      // Its snapshot is parented on trunk's leaf and holds both sides' entities, each once.
+      const snap = snapshotAt(BRANCH, moved);
+      expect(snap.prevIds).toEqual(['sb']);
+      expect(snap.id).not.toBe('sa');
+      expect(snap.renames).toEqual([]);
+      expect(keysOf(snap.ddl)).toEqual(keysOf([...A_DDL, ...B_DDL] as Array<Record<string, unknown>>));
+      expect(snap.ddl).toHaveLength(keysOf(snap.ddl).size);
+      // Its SQL is the mission's, byte for byte: the same blob under the new name.
+      expect(gh.entrySha(BRANCH, `${DIR}/${moved}/migration.sql`)).toBe(gh.entrySha(missionHead, `${DIR}/20261002000000_mission_a/migration.sql`));
+      expect(gh.read(BRANCH, `${DIR}/${moved}/migration.sql`)).toBe(A_SQL.trim());
+      expect(chainHeads(BRANCH)).toEqual([snap.id]);
+      // Nothing filed, the refresh is confirmed, and the scratch ref is gone.
+      expect(insertedTasks).toHaveLength(0);
+      expect(missionRow.branchRefreshConflictTaskId).toBeNull();
+      expect(missionRow.branchRefreshHeadSha).toBe(devAtMerge);
+      expect(gh.refs('buildd-refresh/')).toEqual([]);
+      expect(gateEvents.some((e) => e.outcome === 'accepted' && e.detail?.invariant === 'migration_chain' && e.detail?.regenerated?.folders?.[0]?.to === moved)).toBe(true);
+      expect(gateEvents.some((e) => e.outcome === 'stranded')).toBe(false);
+      expect(insertedNotes.some((n) => n.title === 'Integration branch refreshed' && String(n.body).includes(moved))).toBe(true);
+      contains(BRANCH, { 'shared.ts': 'v0' });
+
+      // 2. Trunk moves without a migration: the repaired branch does not read as forked, a plain merge.
+      gh.commit('dev', { 'dev2.ts': 'more trunk\n' });
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' })).toEqual({ kind: 'merged', headSha: gh.head('dev')! });
+      expect(chainHeads(BRANCH)).toEqual([snap.id]);
+      expect(foldersAt(BRANCH)).toHaveLength(3);
+
+      // 3. Trunk adds another migration, chained on B: the regenerated folder is regenerated again, past it.
+      gh.commit('dev', migration('20261005000000_trunk_c', 'sc', 'sb', [...B_DDL, column('b', 'c')]));
+      const again = await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' });
+      const movedAgain = regeneratedOf(again)?.folders[0]?.to ?? '';
+      expect(movedAgain).toMatch(/^\d{14}_mission_a$/);
+      expect(again).toMatchObject({ kind: 'merged', migrationsRegenerated: { trunkLeaf: '20261005000000_trunk_c', folders: [{ from: moved, to: movedAgain }] } });
+      expect(movedAgain > '20261005000000_trunk_c').toBe(true);
+      expect(foldersAt(BRANCH)).toEqual(['20261001000000_base', '20261003000000_trunk_b', '20261005000000_trunk_c', movedAgain]);
+      expect(snapshotAt(BRANCH, movedAgain).prevIds).toEqual(['sc']);
+      expect(keysOf(snapshotAt(BRANCH, movedAgain).ddl).has('columns:b:c')).toBe(true);
+      expect(chainHeads(BRANCH)).toHaveLength(1);
+      expect(insertedTasks).toHaveLength(0);
+      expect(gh.refs('buildd-refresh/')).toEqual([]);
+    });
+
+    it('both sides changed one column: the plain merge lands and one regenerate task is filed, saying why; its landing leaves a linear chain', async () => {
+      // The mission makes t0.id NOT NULL; trunk changes its type. Not a pure re-parent: the kit must re-diff.
+      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0', [table('t0'), column('t0', 'id', { notNull: true })]));
+      gh.commit('dev', migration('20261003000000_trunk_b', 'sb', 's0', [table('t0'), column('t0', 'id', { type: 'uuid' })]));
+      const devAtMerge = gh.head('dev')!;
+
+      // 1. GitHub merges it cleanly, the chain forks, and the repair is a task.
       const first = await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
       expect(first).toMatchObject({ kind: 'merged', headSha: devAtMerge });
+      expect(regeneratedOf(first)).toBeUndefined();
       expect(chainHeads(BRANCH)).toEqual(['sa', 'sb']);
+      expect(foldersAt(BRANCH)).toEqual(['20261001000000_base', '20261002000000_mission_a', '20261003000000_trunk_b']);
+      expect(gh.refs('buildd-refresh/')).toEqual([]);
       expect(insertedTasks).toHaveLength(1);
       const repair = insertedTasks[0];
       expect((first as any).migrationRepairTaskId).toBe(repair.id);
       expect(missionRow.branchRefreshConflictTaskId).toBe(repair.id);
       expect(repair.title).toContain('regenerate migrations');
       expect(repair.description).toContain('bun run migrations:regenerate --base=origin/dev');
+      expect(repair.description).toContain('overlap');
       expect(repair.context).toMatchObject({
         baseBranch: BRANCH,
         requireMergeCommit: true,
         refreshTrunkSha: devAtMerge,
         migrationFork: { drizzleDir: DIR, missionOnly: ['20261002000000_mission_a'], trunkOnly: ['20261003000000_trunk_b'] },
+        regenerateRefusal: { reason: 'overlap' },
       });
-      expect(gateEvents.some((e) => e.outcome === 'stranded' && e.detail?.invariant === 'migration_chain')).toBe(true);
+      expect(repair.context.regenerateRefusal.detail).toContain('columns|public|t0|id');
+      expect(gateEvents.some((e) => e.outcome === 'stranded' && e.detail?.invariant === 'migration_chain' && e.detail?.regenerateRefusal?.reason === 'overlap')).toBe(true);
       expect(insertedNotes.some((n) => n.title === 'Integration branch migrations need regenerating')).toBe(true);
 
       // 2. Until the repair lands, trunk moves coalesce into it: no further merge into a forked branch.
@@ -1780,7 +1931,7 @@ describe('real Git: refresh, task landings, the repair and the mission PR interl
       const regen = gh.commit('buildd/regen', {
         [`${DIR}/20261002000000_mission_a/migration.sql`]: null,
         [`${DIR}/20261002000000_mission_a/snapshot.json`]: null,
-        ...migration('20261004000000_mission_a', 'sc', 'sb'),
+        ...migration('20261004000000_mission_a', 'sc', 'sb', [table('t0'), column('t0', 'id', { type: 'uuid', notNull: true })]),
       });
       expect(gh.landPr({ base: BRANCH, headBranch: 'buildd/regen', expectedHeadSha: regen, method: resolveMergeMethod(repair.context) as 'merge' }).merged).toBe(true);
       tasksById[repair.id].status = 'completed';
@@ -1796,18 +1947,66 @@ describe('real Git: refresh, task landings, the repair and the mission PR interl
       expect(chainHeads(BRANCH)).toEqual(['sc']);
     });
 
-    it('only one side added a migration: no fork, nothing filed', async () => {
-      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0'));
+    it('the branch moves while the regenerated merge is computed: nothing is written, nothing filed, the next refresh does it on the new head', async () => {
+      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0', A_DDL, A_SQL));
+      gh.commit('dev', migration('20261003000000_trunk_b', 'sb', 's0', B_DDL));
+      // A task PR lands on the branch between the merge computation and the ref update.
+      let landed: string | null = null;
+      const real = mockGithubApi.getMockImplementation()!;
+      mockGithubApi.mockImplementation((async (i: number, path: string, opts?: any) => {
+        if (path.endsWith('/merges') && opts?.method === 'POST' && !landed) landed = gh.commit(BRANCH, { 'late.ts': 'landed meanwhile\n' });
+        return real(i, path, opts);
+      }) as any);
+      const first = await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+      expect(first).toMatchObject({ kind: 'skipped', reason: 'in_flight' });
+      expect((first as any).detail).toMatch(/moved/);
+      expect(gh.head(BRANCH)).toBe(landed);
+      expect(gh.parents(landed!)).toHaveLength(1);
+      expect(insertedTasks).toHaveLength(0);
+      expect(missionRow.branchRefreshHeadSha).toBeNull();
+      expect(missionRow.branchRefreshLeaseUntil).toBeNull();
+      expect(gh.refs('buildd-refresh/')).toEqual([]);
+
+      // The next refresh computes the merge on the new head and lands it regenerated.
+      const next = await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' });
+      expect(next).toMatchObject({ kind: 'merged', headSha: gh.head('dev')!, migrationsRegenerated: { folders: [{ from: '20261002000000_mission_a' }] } });
+      expect(gh.parents(gh.head(BRANCH)!)).toEqual([landed!, gh.head('dev')!]);
+      expect(chainHeads(BRANCH)).toHaveLength(1);
+      expect(insertedTasks).toHaveLength(0);
+      contains(BRANCH, { 'late.ts': 'landed meanwhile' });
+    });
+
+    it('a snapshot that cannot be read while planning: the plain merge lands and the regenerate task is filed, naming the read', async () => {
+      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0', A_DDL, A_SQL));
+      gh.commit('dev', migration('20261003000000_trunk_b', 'sb', 's0', B_DDL));
+      const real = mockGithubApi.getMockImplementation()!;
+      mockGithubApi.mockImplementation((async (i: number, path: string, opts?: any) => {
+        if (/\/git\/blobs\/[0-9a-f]+$/.test(path)) throw githubError(502, 'Bad Gateway');
+        return real(i, path, opts);
+      }) as any);
+      const first = await refreshMissionIntegrationBranch('m-1', { trigger: 'start' });
+      expect(first).toMatchObject({ kind: 'merged', headSha: gh.head('dev')! });
+      expect(regeneratedOf(first)).toBeUndefined();
+      expect(chainHeads(BRANCH)).toEqual(['sa', 'sb']);
+      expect(insertedTasks).toHaveLength(1);
+      expect((first as any).migrationRepairTaskId).toBe(insertedTasks[0].id);
+      expect(insertedTasks[0].context.regenerateRefusal).toMatchObject({ reason: 'read' });
+      expect(gh.refs('buildd-refresh/')).toEqual([]);
+    });
+
+    it('only one side added a migration: no fork, nothing regenerated, nothing filed', async () => {
+      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0', A_DDL));
       gh.commit('dev', { 'trunk.ts': 'trunk work\n' });
       expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toEqual({ kind: 'merged', headSha: gh.head('dev')! });
       expect(insertedTasks).toHaveLength(0);
       expect(missionRow.branchRefreshConflictTaskId).toBeNull();
       expect(chainHeads(BRANCH)).toEqual(['sa']);
+      expect(foldersAt(BRANCH)).toEqual(['20261001000000_base', '20261002000000_mission_a']);
     });
 
     it('a failed read while checking files nothing: the merge stands and the next PR\'s commute check is the backstop', async () => {
-      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0'));
-      gh.commit('dev', migration('20261003000000_trunk_b', 'sb', 's0'));
+      gh.commit(BRANCH, migration('20261002000000_mission_a', 'sa', 's0', A_DDL));
+      gh.commit('dev', migration('20261003000000_trunk_b', 'sb', 's0', B_DDL));
       const real = mockGithubApi.getMockImplementation()!;
       mockGithubApi.mockImplementation((async (i: number, path: string, opts?: any) => {
         if (path.includes('/contents/')) throw githubError(502, 'Bad Gateway');
@@ -1816,6 +2015,7 @@ describe('real Git: refresh, task landings, the repair and the mission PR interl
       expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toEqual({ kind: 'merged', headSha: gh.head('dev')! });
       expect(insertedTasks).toHaveLength(0);
       expect(missionRow.branchRefreshLeaseUntil).toBeNull();
+      expect(gh.refs('buildd-refresh/')).toEqual([]);
     });
   });
 });
