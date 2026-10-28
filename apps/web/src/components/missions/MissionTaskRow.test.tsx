@@ -152,6 +152,16 @@ describe('buildTaskRowMeta', () => {
     expect(buildTaskRowMeta(rowFor(tasks, 'm'), { now: NOW, recordsCount: 2 })).toBe('BUILD · running 4m · 2 rec');
   });
 
+  it('stalled run (30+ min no progress): shows stall label with amber tone flag in spec AC-15', () => {
+    const MIN = 60_000;
+    const start = NOW - 72 * MIN;
+    const lastProgress = start + 24 * MIN;
+    const stalledWorker = { status: 'running', startedAt: new Date(start), milestones: [{ ts: lastProgress, label: 'milestone' }] };
+    const tasks = [t('s', { ...BUILD, status: 'in_progress', worker: stalledWorker })];
+    const meta = buildTaskRowMeta(rowFor(tasks, 's'), { now: NOW });
+    expect(meta).toContain('Running 1h 12m · no progress for 48m');
+  });
+
   it('queued behind an unfinished dependency reads "after <title>"', () => {
     const tasks = [t('a', { ...BUILD, title: 'Schema v2' }), t('b', { ...BUILD, dependsOn: ['a'] })];
     expect(buildTaskRowMeta(rowFor(tasks, 'b'), { now: NOW, blockedByTitle: 'Schema v2' })).toBe('BUILD · after Schema v2');

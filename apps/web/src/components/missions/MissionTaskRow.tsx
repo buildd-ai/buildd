@@ -26,6 +26,7 @@ import type { FeedRow } from '@/lib/mission-feed-groups';
 import { PR_STATE_TOKEN, PULSE_STATE_GLYPH, PULSE_STATE_TOKEN, type MissionFeedTaskInput } from '@/lib/mission-pulse';
 import { missionTaskAnchorId, missionTaskHref, taskPageHref, type MissionOrigin } from '@/lib/mission-task-href';
 import { deriveWorkKind } from '@/lib/task-presentation';
+import { runStall } from '@/lib/run-stall';
 import { PULSE_STATE_LABEL, PULSE_TOKEN_TEXT } from './MissionPulse';
 import { useMissionFocusSnapshot, useMissionFocusStore } from './mission-focus-context';
 import { statusPill } from '@/components/ui/states';
@@ -83,7 +84,19 @@ export function buildTaskRowMeta<T extends MissionFeedTaskInput>(row: FeedRow<T>
       }
       case 'moving': {
         if (row.task.status === 'completed' && row.pr?.state === 'checks_running') return 'checks running';
-        const elapsed = age(ms(row.task.worker?.startedAt), now);
+        const startMs = ms(row.task.worker?.startedAt);
+        const milestones = row.task.worker?.milestones ?? null;
+        const progressMs = milestones && milestones.length > 0
+          ? Math.max(...milestones.map(m => m.ts))
+          : null;
+        const stall = runStall({
+          status: row.task.worker?.status ?? 'unknown',
+          startMs,
+          progressMs,
+          nowMs: now,
+        });
+        if (stall) return stall.label;
+        const elapsed = age(startMs, now);
         if (opts.liveLine) return elapsed ? `${elapsed} · ${opts.liveLine}` : opts.liveLine;
         return elapsed ? `running ${elapsed}` : 'starting';
       }
