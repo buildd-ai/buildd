@@ -4,11 +4,10 @@
  * screen that fixes it; members are told who can, or to add their own key when
  * the team's policy asks for one. The mission form is untouched either way.
  *
- * The card is the kit's (`ChatSetupCard` from @buildd/ai-kit/chat/react);
- * the copy and the settings link are buildd's.
+ * Drawn with the app's own Card and buttons, like every other page.
  */
 import Link from 'next/link';
-import { ChatSetupCard as KitChatSetupCard } from '@buildd/ai-kit/chat/react';
+import Card from '@/components/ui/Card';
 
 export type ChatSetupReason = 'no_key';
 
@@ -49,25 +48,19 @@ export function chatSetupCopy(_reason: ChatSetupReason, canManage: boolean, poli
 export default function ChatSetupCard({ reason, canManage, policy }: { reason: ChatSetupReason; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own' }) {
   const copy = chatSetupCopy(reason, canManage, policy);
   return (
-    <div data-testid="chat-setup-card" data-reason={reason}>
-      <KitChatSetupCard
-        reason={reason}
-        className="buildd-setup"
-        title={copy.title}
-        message={copy.body}
-        action={(copy.cta || copy.secondary) ? (
-          <>
-            {copy.cta && (
-              <Link href={copy.cta.href} data-testid="chat-setup-cta" className="inline-flex min-h-10 items-center border-2 border-[var(--on-accent)] bg-accent px-4 font-mono text-[13px] font-semibold text-[var(--on-accent)] hover:bg-primary-hover">
-                {copy.cta.label}
-              </Link>
-            )}
-            {copy.secondary && (
-              <Link href={copy.secondary.href} className="font-mono text-[12.5px] text-text-secondary underline hover:text-text-primary">{copy.secondary.label}</Link>
-            )}
-          </>
-        ) : undefined}
-      />
-    </div>
+    <Card data-testid="chat-setup-card" data-reason={reason} className="flex flex-col gap-1.5">
+      <h3 data-testid="chat-setup-title" className="text-title font-semibold text-text-primary">{copy.title}</h3>
+      <p className="text-body text-text-secondary">{copy.body}</p>
+      {(copy.cta || copy.secondary) && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-3">
+          {copy.cta && (
+            <Link href={copy.cta.href} data-testid="chat-setup-cta" className="btn btn-primary btn-lg no-underline">{copy.cta.label}</Link>
+          )}
+          {copy.secondary && (
+            <Link href={copy.secondary.href} className="text-meta text-text-secondary underline hover:text-text-primary">{copy.secondary.label}</Link>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }

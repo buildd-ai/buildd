@@ -229,7 +229,9 @@ export default function MissionSituationBlock({ missionId, situation, because, c
   // A raw task id is not a reason a reader can act on (spec 8e137fdb I-14, I-16):
   // a "why" whose only ref is a task id restates the headline, so it is dropped.
   const rawDetail = situationDetail(situation, because);
-  const detail = rawDetail?.kind === 'why' && !hasReadableRef(rawDetail.link.refs) ? null : rawDetail;
+  // A ready-to-merge headline already names the PR; its "why" would say it again, so only the button follows.
+  const restatesMerge = rawDetail?.kind === 'why' && situation.focus?.kind === 'merge';
+  const detail = restatesMerge || (rawDetail?.kind === 'why' && !hasReadableRef(rawDetail.link.refs)) ? null : rawDetail;
 
   return (
     <div

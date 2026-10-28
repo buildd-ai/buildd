@@ -22,6 +22,7 @@ export function OverviewHeadline({ tone, text }: { tone: 'ok' | 'attention'; tex
 
 /** Runners, credentials and budget as short rows; each opens Runners & capacity. */
 export function OverviewStatusRows({ rows }: { rows: OverviewStatusRow[] }) {
+  if (rows.length === 0) return null;
   return (
     <section data-testid="health-overview-status" className="mb-6" aria-labelledby="health-overview-status-h">
       <h2 id="health-overview-status-h" className="section-label mb-3">At a glance</h2>

@@ -853,7 +853,7 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
 <div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Team or repo" aria-label="Search teams, workspaces and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
 ${account.carriedModes.join('\n')}
 ${workspaceList}
-<p class="meta">With All current and future workspaces, a workspace created in the team or moved into it later is included straight away, with the same permissions. A workspace moved out of the team, or a team you leave, is no longer reachable. You can change this in Settings, Connected apps.</p>
+<p class="meta">With All current and future workspaces, a workspace created in the team or moved into it later is included straight away, with the same permissions. A workspace moved out of the team, or a team you leave, is no longer reachable. You can change this in Settings, Apps signed in as you.</p>
 </fieldset>`
     : `<fieldset>
 <legend>Workspaces</legend>

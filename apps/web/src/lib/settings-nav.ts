@@ -6,7 +6,7 @@
  *
  * Every item is its own route so a section is linkable. Groups are labels
  * only; they have no page of their own. A group is one scope: your own
- * settings, or the team's. Connected apps (You) lists the apps you signed in
+ * settings, or the team's. Apps signed in as you (You) lists the apps you signed in
  * to buildd; Apps (Team) holds the team's MCP connectors and agent access,
  * and follows manage_connectors.
  */
@@ -87,9 +87,9 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
       },
       {
         id: 'connections',
-        label: 'Connected apps',
+        label: 'Apps signed in as you',
         href: '/app/settings/connections',
-        description: 'Manage apps connected to your account and the workspaces they can access.',
+        description: 'Apps you signed in to buildd with, and the workspaces each can reach.',
       },
     ],
   },
@@ -149,16 +149,16 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
       },
       {
         id: 'integrations',
-        label: 'Integrations',
+        label: 'Repos and storage',
         href: '/app/settings/integrations',
         description: 'Connect GitHub, Vercel and evidence storage.',
         manage: ['manage_github_installation', 'manage_team_credentials', 'manage_evidence_backends'],
       },
       {
         id: 'apps',
-        label: 'Apps',
+        label: 'Agent tools',
         href: '/app/settings/apps',
-        description: 'Manage the apps team agents can use and their access requests.',
+        description: 'The outside tools your team\'s agents can use, and their access requests.',
         manage: ['manage_connectors'],
       },
     ],

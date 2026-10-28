@@ -98,6 +98,8 @@ export default function DesignPreview({
   // `load` fires before a sandboxed, scaled frame has necessarily painted: hold the
   // status overlay two more frames so a not-yet-painted frame reads as loading, never blank.
   const [painted, setPainted] = useState<string | null>(null);
+  const [frameError, setFrameError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   useEffect(() => {
     if (loadedSrc !== artifactId) return;
     const id = requestAnimationFrame(() => requestAnimationFrame(() => setPainted(artifactId)));
@@ -106,10 +108,26 @@ export default function DesignPreview({
   const loaded = !!src && loadedSrc === artifactId && painted === artifactId;
   useEffect(() => {
     setSlow(false);
+    setFrameError(false);
     if (!src || loaded) return;
     const t = setTimeout(() => setSlow(true), 8000);
-    return () => clearTimeout(t);
-  }, [src, loaded]);
+    const et = setTimeout(() => {
+      // If still not loaded after 15 seconds, assume the frame failed to load
+      setFrameError(true);
+    }, 15000);
+    return () => {
+      clearTimeout(t);
+      clearTimeout(et);
+    };
+  }, [src, loaded, loadedSrc, artifactId, retryCount]);
+
+  const handleRetry = useCallback(() => {
+    setLoadedSrc(null);
+    setFrameError(false);
+    setSlow(false);
+    setPainted(null);
+    setRetryCount((c) => c + 1);
+  }, []);
 
   const pick = useCallback((id: string) => {
     chosen.current = true;
@@ -143,37 +161,39 @@ export default function DesignPreview({
             ) : null}
           </div>
         ) : null}
-        {viewport ? (
-          <div className="flex items-center rounded-md border border-border-default overflow-hidden" role="group" aria-label="Zoom">
-            <button
-              type="button"
-              data-testid="design-zoom-fit"
-              aria-pressed={zoom === 'fit'}
-              onClick={() => setZoom('fit')}
-              className={`min-h-[44px] sm:min-h-0 px-2.5 py-1.5 text-meta transition-colors ${zoom === 'fit' ? 'bg-surface-4 text-text-primary' : 'bg-surface-3 text-text-secondary hover:text-text-primary'}`}
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap basis-full sm:basis-auto justify-end sm:justify-start">
+          {viewport ? (
+            <div className="flex items-center rounded-md border border-border-default overflow-hidden" role="group" aria-label="Zoom">
+              <button
+                type="button"
+                data-testid="design-zoom-fit"
+                aria-pressed={zoom === 'fit'}
+                onClick={() => setZoom('fit')}
+                className={`min-h-[44px] sm:min-h-0 px-2.5 py-1.5 text-meta transition-colors ${zoom === 'fit' ? 'bg-surface-4 text-text-primary' : 'bg-surface-3 text-text-secondary hover:text-text-primary'}`}
+              >
+                Fit
+              </button>
+              <button
+                type="button"
+                data-testid="design-zoom-full"
+                aria-pressed={zoom === 'full'}
+                onClick={() => setZoom('full')}
+                className={`min-h-[44px] sm:min-h-0 px-2.5 py-1.5 text-meta border-l border-border-default transition-colors ${zoom === 'full' ? 'bg-surface-4 text-text-primary' : 'bg-surface-3 text-text-secondary hover:text-text-primary'}`}
+              >
+                100%
+              </button>
+            </div>
+          ) : null}
+          {downloadUrl ? (
+            <a
+              href={downloadUrl}
+              data-testid="design-download"
+              className="min-h-[44px] sm:min-h-0 inline-flex items-center px-3 py-1.5 text-meta bg-surface-3 border border-border-default text-text-secondary hover:bg-surface-4 hover:text-text-primary transition-colors"
             >
-              Fit
-            </button>
-            <button
-              type="button"
-              data-testid="design-zoom-full"
-              aria-pressed={zoom === 'full'}
-              onClick={() => setZoom('full')}
-              className={`min-h-[44px] sm:min-h-0 px-2.5 py-1.5 text-meta border-l border-border-default transition-colors ${zoom === 'full' ? 'bg-surface-4 text-text-primary' : 'bg-surface-3 text-text-secondary hover:text-text-primary'}`}
-            >
-              100%
-            </button>
-          </div>
-        ) : null}
-        {downloadUrl ? (
-          <a
-            href={downloadUrl}
-            data-testid="design-download"
-            className="ml-auto min-h-[44px] sm:min-h-0 inline-flex items-center px-3 py-1.5 text-meta bg-surface-3 border border-border-default text-text-secondary hover:bg-surface-4 hover:text-text-primary transition-colors"
-          >
-            Download
-          </a>
-        ) : null}
+              Download
+            </a>
+          ) : null}
+        </div>
       </div>
 
       {/* The frame column: scrolls when the screen is shown at 100% and is wider than the column. */}
@@ -193,7 +213,7 @@ export default function DesignPreview({
         >
           {src ? (
             <iframe
-              key={artifactId}
+              key={`${artifactId}-${retryCount}`}
               src={src}
               title={label}
               aria-label={label}
@@ -213,9 +233,24 @@ export default function DesignPreview({
             <div
               data-testid="design-frame-loading"
               role="status"
-              className="absolute inset-0 flex items-center justify-center p-4 text-center text-body text-text-muted bg-surface-2"
+              className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center text-body text-text-muted bg-surface-2 gap-3"
             >
-              {slow ? 'Still loading the design. If it stays blank, download the file to open it.' : 'Loading design…'}
+              {frameError ? (
+                <>
+                  <div>Design not loaded. Retry or download the file.</div>
+                  <button
+                    onClick={handleRetry}
+                    data-testid="design-retry"
+                    className="px-3 py-1.5 text-meta bg-surface-3 border border-border-default text-text-secondary hover:bg-surface-4 hover:text-text-primary transition-colors"
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : slow ? (
+                'Still loading the design. If it stays blank, download the file to open it.'
+              ) : (
+                'Loading design…'
+              )}
             </div>
           ) : null}
           {!src ? (
