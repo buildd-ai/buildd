@@ -16,6 +16,7 @@ import { builddPolicy } from '../../src/lib/workflow/kernel-policy';
 import type { Exec } from '../../src/lib/workflow/kernel';
 import { applyEpochOpsSql, epochsForMissions } from '../../src/lib/workflow/delivery-epochs';
 import { assertDbConfigured, q, seedMission, seedTask, seedWorkspace } from './harness';
+import { isUniqueViolation } from '@buildd/shared';
 
 beforeAll(() => {
   assertDbConfigured();
@@ -78,14 +79,6 @@ function postgresHost(): ConformanceHost {
       },
     },
   };
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  for (let e: unknown = err, i = 0; e && i < 4; e = (e as { cause?: unknown }).cause, i++) {
-    if ((e as { code?: unknown }).code === '23505') return true;
-    if (/duplicate key value violates unique constraint/i.test(String((e as { message?: unknown }).message ?? ''))) return true;
-  }
-  return false;
 }
 
 // The scenarios leave effects owed (most never drain). Other files drain the whole

@@ -20,7 +20,7 @@
  * `planShotReviewEffect` (visual-review-outcome.ts) and `planDecision` are pure; `applyDecision` and
  * `undoDecision` do the writes. Authorization is the caller's (the route).
  */
-import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { isUniqueViolation, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { artifacts, missionNotes, tasks, visualShotReviews, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
@@ -260,11 +260,6 @@ export interface DecisionReviewer {
 
 type ErrorBody = VisualReviewDecisionError | { error: string; message?: string };
 export type DecisionOutcome<T> = { status: 200; body: T } | { status: 404 | 409 | 422; body: ErrorBody };
-
-function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string }; message?: string } | null;
-  return e?.code === '23505' || e?.cause?.code === '23505' || /duplicate key|unique constraint/i.test(e?.message ?? '');
-}
 
 const VIEWPORT_WORD = { mobile: 'phone', desktop: 'desktop' } as const;
 

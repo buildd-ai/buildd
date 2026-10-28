@@ -28,6 +28,7 @@
  */
 
 import { newcombeInterval, wilsonInterval, type Interval, type ReadoutVerdict } from './experiment-readout';
+import { percentile } from '@buildd/shared';
 
 export interface ReadoutDecisionRow {
   id: string;
@@ -177,12 +178,12 @@ export interface DecisionReadout {
   causal: CausalReadout;
 }
 
-/** Nearest-rank percentiles. */
+/** Nearest-rank percentiles (see `percentile` in @buildd/shared). */
 export function percentiles(values: Array<number | null | undefined>): Percentiles {
   const v = values.filter((x): x is number => typeof x === 'number' && Number.isFinite(x)).sort((a, b) => a - b);
   if (!v.length) return { p50: null, p90: null, max: null };
-  const at = (p: number) => v[Math.min(v.length - 1, Math.max(0, Math.ceil(p * v.length) - 1))];
-  return { p50: at(0.5), p90: at(0.9), max: v[v.length - 1] };
+  const at = (p: number) => percentile(v, p);
+  return { p50: at(50), p90: at(90), max: v[v.length - 1] };
 }
 
 const sum = (xs: Array<number | null | undefined>) => xs.reduce<number>((s, x) => s + (typeof x === 'number' && Number.isFinite(x) ? x : 0), 0);

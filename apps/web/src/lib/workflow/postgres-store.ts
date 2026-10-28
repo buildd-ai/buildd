@@ -24,22 +24,12 @@ import {
 import { releaseSql } from './authority';
 import { acquireLaneSql, laneHolderSql, releaseSettledLanesSql, wakeNextWaiterSql } from './landing-lane';
 import { insertFactSql } from './facts';
+import { isUniqueViolation } from '@buildd/shared';
 
 type Row = Record<string, unknown>;
 
 async function rows(exec: Exec, q: SQL): Promise<Row[]> {
   return ((await exec(q)).rows ?? []) as Row[];
-}
-
-/** A unique index aborted the statement (a replayed key, a racing single-flight insert): nothing was written. */
-export function isUniqueViolation(err: unknown): boolean {
-  let e: unknown = err;
-  for (let i = 0; i < 4 && e; i++) {
-    const code = (e as { code?: string }).code;
-    if (code === '23505') return true;
-    e = (e as { cause?: unknown }).cause;
-  }
-  return /duplicate key value violates unique constraint/.test(String((err as Error)?.message ?? ''));
 }
 
 /** The row's own authority (the kill switch is the drain's `Policy`); no delivery row reads as `kernel`. */

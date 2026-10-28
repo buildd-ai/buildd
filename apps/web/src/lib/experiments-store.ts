@@ -10,6 +10,7 @@ import { db } from '@buildd/core/db';
 import { experiments } from '@buildd/core/db/schema';
 import { invalidateModelRoutingExperimentCache } from '@buildd/core/model-routing-experiment-source';
 import type { NewExperimentValues } from './experiments';
+import { isUniqueViolation } from '@buildd/shared';
 
 export type ExperimentRow = typeof experiments.$inferSelect;
 
@@ -99,11 +100,6 @@ export async function findOtherRunning(teamId: string, kind: string, excludeId: 
     .where(otherRunningScope(teamId, kind, excludeId))
     .limit(1);
   return rows[0] ?? null;
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string }; message?: string } | null;
-  return e?.code === '23505' || e?.cause?.code === '23505' || /duplicate key|unique constraint/i.test(e?.message ?? '');
 }
 
 export async function insertExperiment(
