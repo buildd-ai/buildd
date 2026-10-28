@@ -5955,8 +5955,8 @@ async function handleReviewerOutcomeIfNeeded(
       // unreadable covers nothing. A legacy reviewer has no delivery, so nothing is read for it.
       try {
         if (reviewerTask.deliveryId && ctx.workflowRoundId && currentFiles) {
-          const { loadView } = await import('@/lib/workflow/kernel');
-          const d = (await loadView({ deliveryId: reviewerTask.deliveryId })).delivery;
+          const { deliveryApproval } = await import('@/lib/workflow/seam');
+          const d = await deliveryApproval(reviewerTask.deliveryId);
           const from = d?.approvalBasis === 'human' ? d.approvedHeads.at(-1) : undefined;
           const baseRef = gatedWorker?.prBaseRef ?? d?.baseRef ?? null;
           const delta = from && from !== headSha && baseRef
