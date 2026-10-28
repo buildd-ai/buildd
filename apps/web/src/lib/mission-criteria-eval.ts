@@ -334,6 +334,10 @@ export async function evaluateCriteriaNow(
       // Attempt lineage: a closed PR followed by a merged retry PR in the same
       // chain is superseded without a manual record (pr-shipped.ts).
       parentTaskId: true,
+      // deliverableRole reads context to distinguish build from repair/verification/maintenance.
+      context: true,
+      // deriveFeedTaskState reads roleSlug for visual-auditor role detection.
+      roleSlug: true,
     },
   });
 
@@ -511,7 +515,7 @@ export async function evaluateCriteriaNow(
       );
       cs.verdict = standing.verdict;
       cs.evidence = standing.evidence;
-      const buildDone = isBuildComplete(missionDeliverableCounts(missionTasks as any));
+      const buildDone = isBuildComplete(missionDeliverableCounts(missionTasks));
       cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings, buildDone };
       if (standing.verdict !== 'pass' && standing.verdict !== 'fail' && standing.target.kind !== 'unknown' && buildDone && canDispatch && mission.status !== 'completed' && mission.status !== 'archived') {
         const fv = await ensureFinalVerification(missionId, criterion, standing);

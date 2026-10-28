@@ -1478,6 +1478,34 @@ describe('living_spec criterion (mission-selected outcome spec)', () => {
     expect(state!.criteria[1].evidence).toContain('once the build work is done');
   });
 
+  it('build complete dispatch does not count failed repair tasks — only build tasks', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    taskRows = [
+      // Build task completed
+      { id: 't1', status: 'completed', title: 'Build feature', taskClass: 'work', mode: 'execution', result: null, context: undefined, roleSlug: null },
+      // Repair task failed — must not prevent final verification dispatch
+      { id: 't2', status: 'failed', title: 'Fix issue', taskClass: 'work', mode: 'execution', result: null, context: { specRepair: { specId: 's1', revision: 1 } }, roleSlug: null },
+    ];
+    specStanding = standing('UNVERIFIED');
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockEnsureFinalVerification).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[1].verdict).toBe('PENDING');
+  });
+
+  it('build incomplete — pending build task blocks final verification dispatch', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    taskRows = [
+      // Build task pending
+      { id: 't1', status: 'pending', title: 'Build feature', taskClass: 'work', mode: 'execution', result: null, context: undefined, roleSlug: null },
+      // Completed repair task does not count toward build
+      { id: 't2', status: 'completed', title: 'Fix issue', taskClass: 'work', mode: 'execution', result: null, context: { specRepair: { specId: 's1', revision: 1 } }, roleSlug: null },
+    ];
+    specStanding = standing('UNVERIFIED');
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockEnsureFinalVerification).not.toHaveBeenCalled();
+    expect(state!.criteria[1].evidence).toContain('once the build work is done');
+  });
+
   it('a mission with no selected spec never reads mission-level verdicts (behaviour unchanged)', async () => {
     mission({ goalCriteria: [{ type: 'no_open_tasks' }] });
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });

@@ -35,6 +35,14 @@ describe('recheckReason: verification runs by itself (Navigation R-19)', () => {
     expect(recheckReason('aud', [build('b1'), audit])).toBeNull();
     expect(recheckReason('nope', [build('b1')])).toBeNull();
   });
+
+  it('zero build tasks does not trigger a recheck on repair merge', () => {
+    expect(recheckReason('r1', [repair('r1'), missionPr])).toBeNull();
+  });
+
+  it('a reopened build task blocks the recheck', () => {
+    expect(recheckReason('b1', [build('b1', 'pending'), build('b2'), build('b3')])).toBeNull();
+  });
 });
 
 describe('recheckMissionAfterMerge', () => {
