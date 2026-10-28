@@ -69,7 +69,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### missions (6)
 
-- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-24
+- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-28
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-17
   Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
