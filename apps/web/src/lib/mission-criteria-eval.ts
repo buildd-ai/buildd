@@ -2,7 +2,9 @@ import { db } from '@buildd/core/db';
 import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
 import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { evaluateGoalCriteria, recalculateOverall, isDeliverableTask, hasPendingDeliverableWork } from '@buildd/core/mission-helpers';
+import { evaluateGoalCriteria, recalculateOverall, isDeliverableTask } from '@buildd/core/mission-helpers';
+import { isBuildComplete } from './mission-checks';
+import { missionDeliverableCounts } from './mission-pulse';
 import { readMissionSpecStanding } from './specs/mission-outcome';
 import { ensureFinalVerification } from './specs/mission-verification';
 import { resolveCriteriaEscalation } from '@/lib/criteria-escalation';
@@ -332,6 +334,10 @@ export async function evaluateCriteriaNow(
       // Attempt lineage: a closed PR followed by a merged retry PR in the same
       // chain is superseded without a manual record (pr-shipped.ts).
       parentTaskId: true,
+      // deliverableRole reads context to distinguish build from repair/verification/maintenance.
+      context: true,
+      // deriveFeedTaskState reads roleSlug for visual-auditor role detection.
+      roleSlug: true,
     },
   });
 
@@ -509,7 +515,7 @@ export async function evaluateCriteriaNow(
       );
       cs.verdict = standing.verdict;
       cs.evidence = standing.evidence;
-      const buildDone = !hasPendingDeliverableWork(missionTasks);
+      const buildDone = isBuildComplete(missionDeliverableCounts(missionTasks));
       cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings, buildDone };
       if (standing.verdict !== 'pass' && standing.verdict !== 'fail' && standing.target.kind !== 'unknown' && buildDone && canDispatch && mission.status !== 'completed' && mission.status !== 'archived') {
         const fv = await ensureFinalVerification(missionId, criterion, standing);
