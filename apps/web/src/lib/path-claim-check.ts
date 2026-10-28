@@ -33,6 +33,8 @@ import { GATE_SLUGS, fireGateEvent, type GateCallerOrigin } from '@/lib/gate-led
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { deliverPathReleased } from '@/lib/path-claim-release';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { giveBackLanes, laneAtEdit, type EditLaneOutcome, type LaneTask } from '@/lib/serial-lanes-store';
+import { laneKeysFor, laneName } from '@/lib/serial-lanes';
 
 export const PATH_CLAIM_WILDCARD_ERROR =
   'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.';
@@ -93,7 +95,7 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
 
   const task = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, taskId)),
-    columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, context: true, dependsOn: true },
+    columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, context: true, dependsOn: true, taskClass: true, conflictRetryPrNumber: true, ciRetryPrNumber: true, reviewerRetryPrNumber: true },
   });
 
   // '**' is advisory-only and must never become a held lock that blocks the
@@ -140,9 +142,25 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
     };
   }
 
+  // Serial lane (I-5): a lane path joins the task to its lane at this edit. A
+  // lane another task holds is a 409 naming the holder and this task's
+  // position; a free lane is taken. A failed lane read leaves the lease
+  // check below as the only guard, as before lanes existed.
+  let laneEdit: EditLaneOutcome | null = null;
+  try {
+    laneEdit = await laneAtEdit({ task: task as LaneTask, paths, now: new Date() });
+  } catch (err) {
+    console.warn('[path-claim] serial lane check failed (lease check still applies):', (err as Error)?.message ?? err);
+  }
+  if (laneEdit?.kind === 'held') return laneConflict(task, laneEdit, paths, surface, callerOrigin);
+
   // Held locks live in path_claims (workspace-scoped), not inferred from
   // tasks.pathManifest — so a path already in the manifest is acquired too.
   const acquired = await acquirePathClaims({ workspaceId: task.workspaceId, taskId, paths, declare: true });
+  if (acquired.kind !== 'acquired' && laneEdit?.kind === 'ok' && laneEdit.took.length > 0) {
+    // All or nothing: the lease was refused, so the lane taken for it goes back.
+    await giveBackLanes({ workspaceId: task.workspaceId, taskId, lanes: laneEdit.took, heldAt: laneEdit.heldAt }).catch(() => {});
+  }
 
   // The task closed between the read above and the locked write (a cancel
   // racing this call). Nothing was leased.
@@ -189,6 +207,9 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
       blockedPaths: acquired.blocked.map(b => ({ path: b.path, blockingTaskId: b.blockingTaskId, blockingPath: b.blockingPath })),
       message,
     };
+    // A held lane path: say so, with this task's place when the lane read it.
+    const heldLanes = laneKeysFor([conflict.blockingPath], null);
+    if (heldLanes.length > 0) body.lane = { lane: heldLanes[0], holderTaskId: conflict.blockingTaskId, position: null };
 
     if (hasDeadlock) {
       body.deadlock = true;
@@ -343,4 +364,49 @@ export async function narrowPathClaim(input: PathClaimNarrowInput): Promise<Path
     notifiedWaiters: [...new Set(result.notifiedWaiters)],
     revision: result.revision,
   };
+}
+
+/** The 409 for a lane path another task holds (I-5, AC-4): holder, position, and a waiter on the holder. */
+async function laneConflict(
+  task: { id: string; workspaceId: string; missionId: string | null },
+  held: Extract<EditLaneOutcome, { kind: 'held' }>,
+  paths: string[],
+  surface: string,
+  callerOrigin: GateCallerOrigin,
+): Promise<PathClaimCheckOutcome> {
+  const blocker = await db.query.tasks.findFirst({
+    where: sqlWhere(eq(tasks.id, held.holderTaskId)),
+    columns: { id: true, title: true, missionId: true },
+  }).catch(() => undefined);
+  const lanePaths = paths.filter(p => laneKeysFor([p], null).includes(held.lane));
+  const blockingPath = lanePaths[0] ?? paths[0];
+  await registerWaiter(held.holderTaskId, task.id, blockingPath, task.workspaceId).catch(() => {});
+  const pr = held.prNumber != null ? ` (PR #${held.prNumber})` : '';
+  const body: Record<string, unknown> = {
+    claimed: false,
+    blockingTaskId: held.holderTaskId,
+    blockingTaskTitle: blocker?.title ?? null,
+    blockingMissionId: blocker?.missionId ?? null,
+    blockingPath,
+    blockedPaths: lanePaths.map(path => ({ path, blockingTaskId: held.holderTaskId, blockingPath: path })),
+    lane: { lane: held.lane, holderTaskId: held.holderTaskId, position: held.position, prNumber: held.prNumber },
+    message: `${blockingPath} is in ${laneName(held.lane)}, which task "${blocker?.title ?? held.holderTaskId.slice(0, 8)}" (${held.holderTaskId.slice(0, 8)})${pr} holds until its PR merges or closes. You joined the lane at position ${held.position} and are registered as a waiter: a path_released message reaches you at your next turn boundary when it frees. Report blocked if you cannot go on without it.`,
+  };
+  fireGateEvent({
+    gate: GATE_SLUGS.PATH_CLAIM,
+    surface,
+    outcome: 'deferred',
+    reason: PATH_SIGNAL_REASONS.claim_blocked,
+    workspaceId: task.workspaceId,
+    missionId: task.missionId,
+    taskId: task.id,
+    callerOrigin,
+    detail: { signal: 'claim_blocked', blockingTaskId: held.holderTaskId, blockingPath, lane: held.lane, position: held.position },
+  });
+  recordPathDeclaration({
+    result: 'denied', provenance: 'check_path_claim', surface, workspaceId: task.workspaceId,
+    missionId: task.missionId, taskId: task.id, callerOrigin, pathCount: paths.length,
+    detail: { blockedCount: lanePaths.length, lane: held.lane },
+  });
+  return { kind: 'conflict', body };
 }

@@ -3,6 +3,17 @@ export function isLoopbackHost(host: string): boolean {
   return ['localhost', '127.0.0.1', '[::1]'].includes(host);
 }
 
+/** HTTPS redirects and RFC 8252 loopback HTTP, also checked on authorization. */
+export function isSafeRedirectUri(uri: string): boolean {
+  try {
+    const url = new URL(uri);
+    return !url.hash && !url.username && !url.password &&
+      (url.protocol === 'https:' || (url.protocol === 'http:' && isLoopbackHost(url.hostname)));
+  } catch {
+    return false;
+  }
+}
+
 // NFKD covers fullwidth/mathematical letters; this skeleton also folds common
 // Greek/Cyrillic homoglyphs, invisible separators and ASCII digit lookalikes.
 function nameSkeleton(name: string): string {

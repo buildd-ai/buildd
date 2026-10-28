@@ -106,7 +106,11 @@ describe('accountWorkerSlotLimit', () => {
     expect(accountWorkerSlotLimit(3, [])).toBe(3);
   });
   it('ignores a malformed report', () => {
-    expect(accountWorkerSlotLimit(3, [0, Number.NaN])).toBe(3);
+    expect(accountWorkerSlotLimit(3, [-1, Number.NaN, 2.5])).toBe(3);
+    expect(accountWorkerSlotLimit(3, [4, Number.NaN])).toBe(4);
+  });
+  it('a runner set to 0 adds nothing and is not the account default (spec 97b1bd0b R-18)', () => {
+    expect(accountWorkerSlotLimit(3, [0])).toBe(0);
     expect(accountWorkerSlotLimit(3, [4, 0])).toBe(4);
   });
 });

@@ -145,10 +145,8 @@ const shortId = (id: string) => id.slice(0, 8);
 /**
  * The deps_blocked sentence: which dependencies hold the task and why.
  *
- * POST /api/tasks adds a dependsOn edge to every in-flight task whose concrete
- * pathManifest shares a file, a migration path or a serialized surface with
- * the new one (path-overlap serialization; prefix-only overlap is soft and
- * never an edge, see `partitionOverlapEdges`). The filer
+ * Older rows carry dependsOn edges POST /api/tasks inferred from an overlap
+ * with an in-flight task's concrete pathManifest (it no longer does). The filer
  * never declared those edges, so "a dependency is not satisfied" on a task
  * they believe is dependency-free reads as a platform bug. When both manifests
  * overlap the sentence says the edge came from that rule.

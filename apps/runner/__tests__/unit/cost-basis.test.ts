@@ -11,9 +11,9 @@ import { applyModelEnv } from '../../src/agent-model-env';
 // docs/specs/real-and-virtual-cost.md, "Reporters": the basis comes from the
 // credential the runner actually gave the agent, never from accounts.authType.
 describe('claudeCostBasis', () => {
-  const run = (env: Record<string, string>, input: Partial<Parameters<typeof applyModelEnv>[1]> = {}, extra = {}) => {
+  const run = (env: Record<string, string>, input: Partial<Parameters<typeof applyModelEnv>[1]> = {}) => {
     const modelEnv = applyModelEnv(env, { isCodexTask: false, ...input });
-    return claudeCostBasis(modelEnv, { claudeCredentialUsed: false, ...extra });
+    return claudeCostBasis(modelEnv);
   };
 
   it('a server-delivered API key is real', () => {
@@ -44,18 +44,9 @@ describe('claudeCostBasis', () => {
     expect(run({ CLAUDE_CODE_USE_VERTEX: '1' })).toBe('real');
   });
 
-  it('a server-delivered or tenant subscription token is virtual', () => {
-    expect(run({}, { serverOauthToken: 'seat' })).toBe('virtual');
-    expect(run({}, { tenantOauthToken: 'tenant-seat' })).toBe('virtual');
-  });
-
   it("the machine's own login is virtual", () => {
     expect(run({}, { machineLogin: 'login' })).toBe('virtual');
     expect(run({ CLAUDE_CODE_OAUTH_TOKEN: 'mine' })).toBe('virtual');
-  });
-
-  it('a claim-delivered Claude credential is virtual', () => {
-    expect(run({}, {}, { claudeCredentialUsed: true })).toBe('virtual');
   });
 
   it('nothing that determines it is unknown, never a guess', () => {

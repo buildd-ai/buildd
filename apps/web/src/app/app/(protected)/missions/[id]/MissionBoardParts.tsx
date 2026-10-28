@@ -11,6 +11,7 @@ import { BOARD_LANDED, type BoardCriterion, type BoardStatus, type BoardTask, ty
 import {
   stripKeyTarget, stripTick, stripTone, type StripMark, type StripSlot, type StripState, type StripTone,
 } from '@/lib/mission-task-strip';
+import { STATES } from '@/components/ui/states';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 
 // ── Time ─────────────────────────────────────────────────────────────────────
@@ -200,10 +201,8 @@ export const TONE_TEXT: Record<StripTone, string> = {
   held: 'text-text-muted',
 };
 
-const STATUS_WORDS: Record<StripState, string> = {
-  landed: 'merged', review: 'in review', running: 'running', waiting: 'has a question',
-  ci_failed: 'CI failed', fixing: 'fixing', failed: 'failed', ready: 'ready', blocked: 'blocked', queued: 'queued behind',
-};
+// Lower-cased word from the shared state table (acronyms like CI keep their case).
+const statusWord = (state: StripState): string => STATES[state].word.replace(/^(?!CI)./, c => c.toLowerCase());
 
 /** Selecting a cell of the band (the mission page's Landed strip). */
 export interface LandedMeterSelection {
@@ -324,7 +323,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
               state={s.state}
               selected={i === sel}
               tall={!compact}
-              label={`Cell ${i + 1} of ${n}${level}, ${t.delivery && s.state !== 'landed' ? t.delivery.label.toLowerCase() : STATUS_WORDS[s.state]}: ${t.title}`}
+              label={`Cell ${i + 1} of ${n}${level}, ${t.delivery && s.state !== 'landed' ? t.delivery.label.toLowerCase() : statusWord(s.state)}: ${t.title}`}
               onOpen={onOpen}
             />
           );

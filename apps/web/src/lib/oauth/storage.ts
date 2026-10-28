@@ -1,6 +1,7 @@
-import { isLoopbackHost } from './client-policy';
+import { isSafeRedirectUri } from './client-policy';
+import { fetchClientMetadataDocument, isClientIdMetadataUrl } from './client-metadata-document';
 import { randomBytes, randomUUID, createHash } from 'crypto';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, gte, isNull, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { oauthClients, oauthCodes, oauthRefreshTokens, teamMembers, workspaces } from '@buildd/core/db/schema';
 import {
@@ -16,16 +17,7 @@ function randomToken(bytes: number): string {
   return randomBytes(bytes).toString('base64url');
 }
 
-/** HTTPS redirects and RFC 8252 loopback HTTP, also checked on authorization. */
-export function isSafeRedirectUri(uri: string): boolean {
-  try {
-    const url = new URL(uri);
-    return !url.hash && !url.username && !url.password &&
-      (url.protocol === 'https:' || (url.protocol === 'http:' && isLoopbackHost(url.hostname)));
-  } catch {
-    return false;
-  }
-}
+export { isSafeRedirectUri };
 
 export async function createClient(args: {
   clientName?: string;
@@ -45,6 +37,37 @@ export async function createClient(args: {
 export async function getClient(clientId: string) {
   const rows = await db.select().from(oauthClients).where(eq(oauthClients.clientId, clientId)).limit(1);
   return rows[0] ?? null;
+}
+
+/** Clients registered since `since`: the fallback registration cap when the per-IP limiter is down. */
+export async function countClientsCreatedSince(since: Date): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(oauthClients)
+    .where(gte(oauthClients.createdAt, since));
+  return Number(rows[0]?.count ?? 0);
+}
+
+export type ResolvedClient = { clientId: string; clientName: string | null; redirectUris: string[] };
+
+/**
+ * The client an authorize request names. A URL `client_id` is a Client ID
+ * Metadata Document (client-metadata-document.ts): its document is fetched and
+ * validated, and the client is recorded (or refreshed) under that URL so codes,
+ * grants and refresh tokens reference it like any registered client. Anything
+ * else is a dynamically registered id. Returns null for an unknown or unusable
+ * client.
+ */
+export async function resolveClient(clientId: string): Promise<ResolvedClient | null> {
+  if (!isClientIdMetadataUrl(clientId)) return getClient(clientId);
+  const result = await fetchClientMetadataDocument(clientId);
+  if (!result.ok) return null;
+  const { clientName, redirectUris } = result.client;
+  await db
+    .insert(oauthClients)
+    .values({ clientId, clientName, redirectUris, grantTypes: ['authorization_code', 'refresh_token'], tokenEndpointAuthMethod: 'none' })
+    .onConflictDoUpdate({ target: oauthClients.clientId, set: { clientName, redirectUris } });
+  return { clientId, clientName, redirectUris };
 }
 
 /**

@@ -44,6 +44,7 @@ import {
   type IncidentCandidate,
   type PathOverlapObservation,
   type SentinelFacts,
+  type StuckLaneFact,
   type WorkerInfraFact,
 } from './failure-pattern-sentinel';
 import {
@@ -1044,7 +1045,22 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     failureRate: { recent: recent.counts, baseline: baseline.counts, recentFailures: recent.failures },
     workerInfra,
     captureFailures,
+    stuckLanes: await collectStuckLanes(workspaceId, now),
   };
+}
+
+/** Stuck serial lanes (I-7), from the claim route's own lane read. A failed read reports none. */
+async function collectStuckLanes(workspaceId: string, now: string): Promise<StuckLaneFact[]> {
+  try {
+    const { loadLanes, stuckLanesOf } = await import('./serial-lanes-store');
+    const at = new Date(now);
+    return stuckLanesOf(await loadLanes([workspaceId], at), at).map(l => ({
+      lane: l.lane, holderTaskId: l.holderTaskId, prNumber: l.prNumber, quietSince: l.quietSince.toISOString(), nextTaskId: l.nextTaskId,
+    }));
+  } catch (err) {
+    console.warn(`[failure-pattern-sweep] stuck lane read failed for workspace ${workspaceId}:`, (err as Error)?.message ?? err);
+    return [];
+  }
 }
 
 /**
@@ -1197,7 +1213,8 @@ export async function dbSelectActiveWorkspaces(
   const out: ActiveWorkspaces = { facts: new Set(), recovery: new Set() };
   if (workspaceIds.length === 0) return out;
   const { db } = await import('@buildd/core/db');
-  const { workers, tasks, gateEvents, failureIncidents, workspaces } = await import('@buildd/core/db/schema');
+  const { workers, tasks, gateEvents, failureIncidents, workspaces, serialLaneEntries } = await import('@buildd/core/db/schema');
+  const { STUCK_LANE_MS } = await import('./serial-lanes');
   const { and, eq, exists, gte, inArray, isNotNull, like, ne, or, sql } = await import('drizzle-orm');
   const { GATE_SLUGS } = await import('@buildd/core/gate-slugs');
   const { VISUAL_AUDITOR_ROLE_SLUG } = await import('@buildd/shared');
@@ -1241,6 +1258,11 @@ export async function dbSelectActiveWorkspaces(
     ))),
     exists(db.select({ one }).from(workers).innerJoin(tasks, eq(workers.taskId, tasks.id)).where(and(
       eq(tasks.workspaceId, workspaces.id), eq(workers.status, 'waiting_input'), isAudit,
+    ))),
+    // A lane holder held for 24h or more: a stuck lane needs that (its last activity is never before it took the lane).
+    exists(db.select({ one }).from(serialLaneEntries).where(and(
+      eq(serialLaneEntries.workspaceId, workspaces.id), sql`${serialLaneEntries.leftAt} IS NULL`,
+      sql`${serialLaneEntries.heldAt} <= ${new Date(new Date(_now).getTime() - STUCK_LANE_MS)}`,
     ))),
   );
   const recovery = rules.length === 0 ? sql`false` : exists(db.select({ one }).from(failureIncidents).where(and(

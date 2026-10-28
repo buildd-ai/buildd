@@ -3,7 +3,7 @@
  *
  * A periodic sweep that looks N minutes ahead but runs every M minutes misses
  * everything falling in (N, M]. That is not hypothetical: the credential sweep
- * in /api/cron/codex-token-refresh looked 10 minutes ahead while its cron ran
+ * in /api/cron/connector-token-refresh looked 10 minutes ahead while its cron ran
  * every 4 hours, so a token was only ever picked up *after* it had already
  * expired — and because the route sat on a Vercel-native cron that does not fire
  * in this project, in practice it was not picked up at all.
@@ -18,7 +18,7 @@
 
 /** Mirrors cron-manifest.json. Pinned by cron-cadence.test.ts. */
 export const CRON_SCHEDULES = {
-  'codex-token-refresh': '0 */4 * * *',
+  'connector-token-refresh': '0 */4 * * *',
   'release-health-check': '5 * * * *',
 } as const;
 
@@ -86,7 +86,7 @@ export function cronIntervalMinutes(expr: string): number {
  * collapsing this window is the original bug.
  */
 export function sweepLookaheadMinutes(
-  schedule: string = CRON_SCHEDULES['codex-token-refresh'],
+  schedule: string = CRON_SCHEDULES['connector-token-refresh'],
 ): number {
   const override = Number(process.env[LOOKAHEAD_ENV]);
   if (Number.isFinite(override) && override > 0) return override;

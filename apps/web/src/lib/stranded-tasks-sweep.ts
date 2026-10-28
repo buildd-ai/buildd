@@ -49,7 +49,7 @@ function formatDuration(ms: number): string {
   return `${Math.max(1, Math.round(ms / 60000))}m`;
 }
 
-interface StrandedCandidateRow {
+export interface StrandedCandidateRow {
   id: string;
   title: string;
   workspaceId: string;
@@ -83,8 +83,11 @@ function runnerCapabilityDetail(detail: Record<string, unknown>): { sentence: st
  * import comment above for why a literal threshold here is untestable by
  * construction.
  */
-function isStrandedCandidate(c: StrandedCandidateRow, now: number): boolean {
+export function isStrandedCandidate(c: StrandedCandidateRow, now: number): boolean {
   if (c.startAt && now - new Date(c.startAt).getTime() >= STRAND_MS) return true;
+  // A dependency wait (claim/deps-blocked-ledger.ts) is the dependency's own
+  // pace: the task is not stuck behind a claim gate, so it is never stranded.
+  if (c.reason === 'deps_blocked') return false;
   const detail = c.detail;
   const consecutiveDeferrals = typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : null;
   const firstDeferredAt = detail && typeof detail.firstDeferredAt === 'string' ? detail.firstDeferredAt : null;

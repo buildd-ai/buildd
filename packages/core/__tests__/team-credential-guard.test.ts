@@ -31,7 +31,7 @@ const CALL_SITES = [
   'apps/web/src/app/api/connectors/[id]/transfer/route.ts',
   'apps/web/src/app/api/connectors/callback/route.ts',
   'apps/web/src/app/api/connectors/route.ts',
-  'apps/web/src/app/api/cron/codex-token-refresh/route.ts',
+  'apps/web/src/app/api/cron/connector-token-refresh/route.ts',
   'apps/web/src/app/api/cron/connector-block-notify/route.ts',
   'apps/web/src/app/api/webhooks/linear/[workspaceId]/route.ts',
   'apps/web/src/app/api/workers/[id]/route.ts',

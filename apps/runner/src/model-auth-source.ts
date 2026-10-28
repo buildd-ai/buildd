@@ -101,10 +101,6 @@ export function stripInheritedApiKeys(env: Record<string, string>): void {
 
 export interface ClaimCredentials {
   serverApiKey?: string;
-  serverOauthToken?: string;
-  tenantOauthToken?: string;
-  claudeAccessToken?: string | null;
-  claudeCredentialId?: string | null;
 }
 
 export interface ModelAuthSourceClaim {
@@ -122,8 +118,6 @@ export interface ResolvedModelAuthSource {
   decision: ModelAuthSourceDecision;
   /** The credentials the rest of the launch may consume: empty when server credentials are dropped. */
   credentials: ClaimCredentials;
-  /** Whether a server-delivered Claude seat is present in `credentials`. */
-  serverSeatDelivered: boolean;
 }
 
 /**
@@ -146,10 +140,8 @@ export function resolveModelAuthSource(
   });
   if (decision.blocked) throw new Error(NO_CODING_AUTH_MESSAGE);
   const credentials: ClaimCredentials = decision.dropServerCredentials ? {} : { ...claim.credentials };
-  const c = credentials;
   return {
     decision,
     credentials,
-    serverSeatDelivered: !!(c.serverOauthToken || c.claudeAccessToken || c.claudeCredentialId),
   };
 }

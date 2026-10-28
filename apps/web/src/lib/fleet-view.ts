@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, runnerUpdateState, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { beatWithin, INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, runnerUpdateState, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -160,7 +160,7 @@ export function fleetSlotCounts(
   for (const hb of heartbeats) {
     const n = advertisedSlots(hb);
     configured += n;
-    if (now - ms(hb.lastHeartbeatAt) > windowMs) continue;
+    if (!beatWithin(ms(hb.lastHeartbeatAt), now, windowMs + 1)) continue;
     online += n;
     // Held, or updating (it claims nothing until it continues its paused agents): no free slots.
     if (!activeRunnerHold(hb.environment, now) && !runnerUpdateState({ updateDrain: hb.updateDrain, lastHeartbeatAt: hb.lastHeartbeatAt }, now)) schedulable += n;
@@ -303,7 +303,7 @@ export function buildFleetSnapshot(
       runners.push({
         id: gid, name, machine, maxSlots: slots.length,
         // A live run is the proof the group is up; a fresh beat from any run confirms it.
-        online: hbs.length === 0 ? false : hbs.some(hb => now - ms(hb.lastHeartbeatAt) <= onlineMs),
+        online: hbs.length === 0 ? false : hbs.some(hb => beatWithin(ms(hb.lastHeartbeatAt), now, onlineMs + 1)),
         slots,
         elastic: { executor: identity.executor, group: identity.group, running: running.length },
       });
@@ -312,7 +312,7 @@ export function buildFleetSnapshot(
     const liveHere = g.workers.filter(runsNow);
     // A runner we have no heartbeat for is shown only while it holds live work.
     if (!g.hb && liveHere.length === 0) continue;
-    const online = !!g.hb && now - ms(g.hb.lastHeartbeatAt) <= onlineMs;
+    const online = !!g.hb && beatWithin(ms(g.hb.lastHeartbeatAt), now, onlineMs + 1);
     const identity = g.hb ? runnerIdentity(g.hb) : { name: runnerNameFromUrl(g.key), machine: null };
     const intervals = g.workers
       .filter(w => Number.isFinite(ms(w.startedAt)))
@@ -326,7 +326,8 @@ export function buildFleetSnapshot(
     // advertises. Mixing the two read "6 of 7 busy" on one page and "6/6" on
     // another for the same 5-slot runner.
     const cap = Math.max(g.hb?.maxConcurrentWorkers ?? 0, assigned.slots, 1);
-    const advertised = g.hb ? Math.max(g.hb.maxConcurrentWorkers ?? 0, 1) : Math.max(liveHere.length, 1);
+    // A runner set to 0 advertises 0 (spec 97b1bd0b R-18): "0/0", never a slot it does not have.
+    const advertised = g.hb ? Math.max(g.hb.maxConcurrentWorkers ?? 0, 0) : Math.max(liveHere.length, 1);
     const laneOf = assigned.slotOf;
     const slots: FleetSlot[] = Array.from({ length: cap }, (_, index) => ({
       index, worker: null, last: null, lane: { id: `${gid}:${index}`, bars: [] },

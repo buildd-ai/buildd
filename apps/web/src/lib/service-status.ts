@@ -55,10 +55,9 @@ export type ActionHolder = { kind: 'person'; userId: string } | { kind: 'team_ad
 
 /**
  * What the holder does: sign in on the runner machine, replace the team's
- * provider key in Settings, replace the key set on the machine, or remove a
- * sign-in still saved in buildd and sign in on the runner instead.
+ * provider key in Settings, or replace the key set on the machine.
  */
-export type Remedy = 'sign_in' | 'replace_team_key' | 'replace_machine_key' | 'remove_saved_sign_in';
+export type Remedy = 'sign_in' | 'replace_team_key' | 'replace_machine_key';
 
 export interface RootCause {
   key: string;
@@ -177,8 +176,6 @@ function holderCopy(remedy: Remedy, label: string, provider: string, href: strin
       return { title: 'Runner key needs replacing', condition: `${label} could not use the team's ${provider} key`, action: href ? { kind: 'replace_key', label: 'Replace the key in Settings', href } : null };
     case 'replace_machine_key':
       return { title: 'Runner key needs replacing', condition: `${label} could not use its ${provider} key`, action: href ? { kind: 'replace_key', label: `Replace the key on ${label}`, href } : null };
-    case 'remove_saved_sign_in':
-      return { title: 'Runner needs sign-in', condition: `${label} (${provider}) uses a sign-in saved in buildd that no longer works`, action: href ? { kind: 'reconnect', label: 'Remove the saved sign-in', href } : null };
     default:
       return { title: 'Runner needs sign-in', condition: `${label} (${provider}) needs sign-in`, action: href ? { kind: 'reconnect', label: `Sign in on ${label}`, href } : null };
   }
@@ -214,7 +211,7 @@ export function projectServiceStatus(records: readonly RootCause[], viewer: Serv
     if (isRunnerCause(r.classification)) {
       state = 'waiting_on_person';
       const remedy: Remedy = cap.remedy ?? (r.classification === 'api_key_rejected' ? 'replace_team_key' : 'sign_in');
-      const signIn = remedy === 'sign_in' || remedy === 'remove_saved_sign_in';
+      const signIn = remedy === 'sign_in';
       if (isHolder) {
         ({ title, condition, action } = holderCopy(remedy, cap.label, cap.provider ?? 'provider', cap.reconnectHref ?? null));
         if (action) attention = 'needs_you';

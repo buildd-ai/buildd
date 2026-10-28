@@ -9,12 +9,11 @@ import { resolveBuilddHome } from './buildd-home';
 import { headlessRunnerKey, runnerHostName, wslIdentityNotice } from './runner-host';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
-import { DEFAULT_LOGIN_MODE, parseLoginMode } from '@buildd/shared';
+import { DEFAULT_LOGIN_MODE, freeSlots, parseLoginMode } from '@buildd/shared';
 import { sandboxPosture } from './isolation-check';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
-import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemoteAsync } from './workspace';
 import { gitShellAsync } from './git-async';
 import { toTopWorkerSummaries } from './top-worker-summary';
@@ -29,7 +28,7 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain, planDrain, resumingSnapshot } from './update-drain';
-import { initRunnerHold, currentRunnerHold } from './runner-hold';
+import { initRunnerHold, currentRunnerHold, holdOriginLine } from './runner-hold';
 import { installRunnerShutdown, NO_LAUNCHER_WARNING, restartLauncherKnown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
@@ -555,8 +554,8 @@ function saveConfig(data: Partial<SavedConfig>) {
     const merged = { ...existing, ...data };
     // Clean up: remove empty/null values
     if (!merged.apiKey) delete merged.apiKey;
-    // config.json holds a plaintext bld_* API key -- 0600, like codex-auth.ts and
-    // claude-auth.ts do for their own credential files.
+    // config.json holds a plaintext bld_* API key -- 0600, like codex-auth.ts does
+    // for its auth.json.
     writeSecretJsonFile(CONFIG_FILE, merged);
     console.log(`Config saved to ${CONFIG_FILE}`);
   } catch (err) {
@@ -729,14 +728,17 @@ function buildProviderConfig(): ProviderConfig | undefined {
   };
 }
 
+// Slots saved in config.json; 0 is a real setting (claims nothing, spec 97b1bd0b R-18), so not `||`.
+const savedSlots = typeof savedConfig.maxConcurrent === 'number' && Number.isInteger(savedConfig.maxConcurrent) && savedConfig.maxConcurrent >= 0 ? savedConfig.maxConcurrent : null;
+
 // Build runtime config
 const config: LocalUIConfig = {
   projectRoots, // All roots
   builddServer: resolveBuilddServer({ env: process.env, saved: savedConfig.builddServer }),
   apiKey: resolvedApiKey,
-  maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
+  maxConcurrent: savedSlots ?? parseInt(process.env.MAX_CONCURRENT || '3'),
   // Who set it and when, so the heartbeat can say and the later change wins (spec 34a48877 R-21).
-  slotsChangedAt: savedConfig.maxConcurrent && typeof savedConfig.slotsSetAt === 'number' ? savedConfig.slotsSetAt : undefined,
+  slotsChangedAt: savedSlots !== null && typeof savedConfig.slotsSetAt === 'number' ? savedConfig.slotsSetAt : undefined,
   slotsOrigin: savedConfig.slotsOrigin === 'dashboard' ? 'dashboard' : savedConfig.slotsSetAt ? 'machine' : undefined,
   slotsSetBy: savedConfig.slotsSetBy ?? null,
   slotsConfigFile: CONFIG_FILE,
@@ -1438,9 +1440,6 @@ const manualUpdateDeps: ManualUpdateDeps = {
   isNoProgressUpdate,
 };
 
-// Whether this process started the credential broker (its shutdown removes the broker socket).
-let brokerStarted = false;
-
 // Subscribe to worker events (if configured)
 if (workerManager) {
   workerManager.onEvent(broadcast);
@@ -1450,20 +1449,6 @@ if (workerManager) {
       setLatestCommit(event.latestCommit);
     }
   });
-  // Start the credential broker daemon — acquires Postgres leases and proactively
-  // refreshes credentials on behalf of all workers on this runner.
-  //
-  // The resolved config is passed explicitly: the broker singleton is constructed
-  // at import time and can only see the environment, but a stock install keeps
-  // its API key in config.json (BUILDD_API_KEY is a CI/Docker override we
-  // document as "NOT recommended"). Left to the env alone the broker sent no
-  // Authorization header, 401'd on every lease acquire, and silently never
-  // refreshed a single credential.
-  //
-  // Without its own signal handlers: the runner's stop handler below owns the
-  // exit, and releases the broker's leases after pausing the agents (R-37).
-  credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer }, { signalHandlers: false });
-  brokerStarted = true;
   // R-37: agents the last stop paused (or a crash left with their worktree and
   // session intact) continue in their own sessions, unless the runner is on hold.
   void workerManager.continueRestoredAgents().catch((err) => console.warn('[restart] continuing paused agents failed:', err));
@@ -1479,7 +1464,6 @@ if (workerManager) {
 // SIGTERM/SIGINT listener in this process. A second signal exits at once.
 installRunnerShutdown({
   pauseAgents: async () => { await workerManager?.pauseAllForShutdown(); },
-  releaseBroker: async () => { if (brokerStarted) await credentialBroker.shutdown(); },
   exit: (code) => process.exit(code),
 });
 
@@ -1633,7 +1617,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         alive: true,
         activeWorkers: activeCount,
         maxConcurrent: config.maxConcurrent,
-        capacity: Math.max(0, config.maxConcurrent - activeCount),
+        capacity: freeSlots(config.maxConcurrent, activeCount),
       }, { headers: corsHeaders });
     }
 
@@ -2220,7 +2204,10 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // `buildd hold` / `buildd resume` / `h` in top (runner-hold.ts, R-32/R-33).
     if (path === '/api/hold' && req.method === 'GET') {
-      return Response.json({ hold: currentRunnerHold(), running: liveAgentCount() }, { headers: corsHeaders });
+      const hold = currentRunnerHold();
+      // Who last paused or resumed it: "paused on buildd.dev by Max, 10:44" (spec 97b1bd0b R-18).
+      const origin = runnerHold ? holdOriginLine(runnerHold.changeMeta(), hold !== null, Date.now()) : null;
+      return Response.json({ hold, running: liveAgentCount(), origin }, { headers: corsHeaders });
     }
     if (path === '/api/hold' && req.method === 'POST') {
       if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });

@@ -500,6 +500,18 @@ export interface MergePolicy {
    * on GitHub. 'off': nobody; the findings have to be fixed, waived or deferred.
    */
   reviewOverride?: ReviewOverridePolicy;
+
+  /**
+   * Ask for buildd's own review of an open PR buildd did not open (a person's,
+   * or an agent's `gh pr create`), on the PR webhook, so it goes through the same
+   * review, verdict and merge-policy path as a buildd PR instead of reading
+   * "Review not requested" until someone asks. Drafts, bots' PRs and release
+   * candidates are never auto-reviewed. Each review is a reviewer agent run, so
+   * it spends model budget per PR. Unset: on under tier 'agent-review' (the team
+   * already chose agent review for its PRs), off otherwise
+   * (`autoReviewUnownedEnabled`).
+   */
+  autoReviewUnowned?: boolean;
 }
 
 export type DataMigrationsPolicy = 'person' | 'agent-review';
@@ -516,6 +528,19 @@ export function agentReviewsDataMigrations(mergePolicy: unknown): boolean {
   if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return false;
   const mp = mergePolicy as Record<string, unknown>;
   return mp.tier === 'agent-review' && mp.dataMigrations === 'agent-review';
+}
+
+/**
+ * Whether a PR buildd did not open asks for buildd's review on its own
+ * (`mergePolicy.autoReviewUnowned`). An explicit boolean wins; unset, it follows
+ * the tier: on under 'agent-review', off otherwise. Tolerates any stored shape
+ * (a missing or malformed policy is the default policy, which is off).
+ */
+export function autoReviewUnownedEnabled(mergePolicy: unknown): boolean {
+  if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return false;
+  const mp = mergePolicy as Record<string, unknown>;
+  if (typeof mp.autoReviewUnowned === 'boolean') return mp.autoReviewUnowned;
+  return mp.tier === 'agent-review';
 }
 
 /**
@@ -599,7 +624,7 @@ export function visualReviewPolicyOf(gitConfig: unknown): VisualReviewPolicyMode
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride', 'autoReviewUnowned']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -701,6 +726,10 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       error: `mergePolicy.reviewOverride must be one of: ${VALID_REVIEW_OVERRIDE.join(', ')}`,
       field: 'reviewOverride',
     };
+  }
+
+  if (obj.autoReviewUnowned !== undefined && typeof obj.autoReviewUnowned !== 'boolean') {
+    return { ok: false, error: 'mergePolicy.autoReviewUnowned must be a boolean', field: 'autoReviewUnowned' };
   }
 
   if (obj.threshold !== undefined) {
@@ -1877,6 +1906,12 @@ export interface ClaimDeferredTask {
   until?: string;
 }
 
+/**
+ * The deferral counters a claim response fills in: every declared key except
+ * the retired undeclared-scope one, which nothing counts any more.
+ */
+export type ClaimDeferralCounters = Required<Omit<NonNullable<ClaimDiagnostics['deferrals']>, 'advisory_manifest'>>;
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
@@ -2054,18 +2089,6 @@ export interface DegradedConnector {
 }
 
 /**
- * A credential the runner's broker should pre-refresh (expiring within 2 hours).
- *
- * Metadata only — never token material. `secretId` names the row; the runner
- * exchanges it for a fresh token via POST /api/runner/credential-refresh.
- */
-export interface PendingCredentialRefresh {
-  secretId: string;
-  purpose: 'claude_credential' | 'codex_credential';
-  expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
-}
-
-/**
  * GET /api/workers/[id]/prompt-bundles — the claim response's role and skill
  * payload, resolved again for a session resumed by a runner that no longer
  * holds it (restart, park → reattach). Each field is absent when the task has
@@ -2122,17 +2145,6 @@ export interface ClaimTasksResponse {
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
     /**
-     * @deprecated Never sent: a claim carries no subscription login (model
-     * credentials spec R-2). Kept until runners stop reading it.
-     */
-    serverOauthToken?: string;
-    /** @deprecated Never sent (spec R-2): was a stored claude_credential access token. */
-    claudeAccessToken?: string;
-    /** @deprecated Never sent (spec R-2). */
-    claudeTokenExpiresAt?: string | null;
-    /** @deprecated Never sent (spec R-2). */
-    claudeTokenScopes?: string[];
-    /**
      * The team's agent model endpoint, when it won the §2 ranking for this task
      * (docs/design/agent-model-endpoint.md). When set, serverApiKey and
      * codexCredential are absent for this worker: it is the only model
@@ -2166,12 +2178,6 @@ export interface ClaimTasksResponse {
      * runner that declares the `scoped_github_token` feature, never on a cloud claim.
      */
     githubCredentials?: { mode: 'scoped' | 'runner' };
-    /**
-     * @deprecated Never sent: no claimed worker is wired to a stored login, so
-     * a task causes no refresh (model credentials spec AC-6). Kept until
-     * runners stop reading it.
-     */
-    pendingCredentialRefreshes?: PendingCredentialRefresh[];
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
     /** Active MCP connector configs resolved at claim time (URL + optional auth headers, or assertion-mode exchange metadata) */
@@ -2180,17 +2186,11 @@ export interface ClaimTasksResponse {
       | AssertionConnectorEntry
     >;
     /**
-     * A decrypted Codex API key (only present for backend=codex tasks). Always
-     * `credentialType: 'api_key'`: a stored ChatGPT/OAuth login is never sent
-     * (model credentials spec R-2); the OAuth fields remain for older runners.
+     * A decrypted Codex API key (only present for backend=codex tasks). A
+     * stored ChatGPT/OAuth login is never sent: the runner uses its own.
      */
     codexCredential?: {
-      credentialType: 'oauth' | 'api_key';
-      /** @deprecated Never sent (spec R-2). */
-      accessToken?: string;
-      refreshToken?: string;
-      accountId?: string;
-      /** API key — present when credentialType === 'api_key' */
+      credentialType: 'api_key';
       apiKey?: string;
       expiresAt: Date | null;
     };
@@ -2215,16 +2215,6 @@ export interface ClaimTasksResponse {
   diagnostics?: ClaimDiagnostics;
   /** ISO timestamp when the account's OAuth budget resets (present when budget is exhausted but tenant tasks were still served) */
   budgetResetsAt?: string | null;
-  /**
-   * Credentials of the AUTHENTICATED ACCOUNT'S OWN TEAM that expire within 2 hours.
-   *
-   * Announced on every claim poll — including polls that claim nothing — because
-   * the claim call is the runner's heartbeat: the discovery channel for an idle
-   * runner's credential broker. No claimed worker is wired to these.
-   *
-   * Scope is a single team (the account's), never wider. Metadata only.
-   */
-  pendingCredentialRefreshes?: PendingCredentialRefresh[];
 }
 
 /** @deprecated Use Memory service types instead. Kept for backward compat. */
@@ -3668,6 +3658,8 @@ export type RunnerQueueHold =
   | 'task_held'
   | 'workspace_paused'
   | 'runner_cooldown'
+  /** It is in a serial lane (schema, migrations, a hard surface) that another task holds, or someone came first: see `lane`. */
+  | 'serial_lane'
   /** Its mission already runs a task that, like it, declares no files: the claim starts one such task per mission at a time. */
   | 'advisory_manifest';
 
@@ -3713,6 +3705,19 @@ export interface RunnerQueueTask {
   holderTaskId?: string | null;
   /** Its mission's cap on tasks at once (spec 0dc7c6de R-7); absent or null = no mission limit. */
   missionCap?: number | null;
+  /**
+   * With the `serial_lane` hold: which lane, the task holding it (null when the
+   * lane is free and `aheadTaskId` came first), and how many go first. The same
+   * stored order the claim route serves (spec: Overlap scheduling, I-3).
+   */
+  lane?: { lane: string; position: number; holderTaskId: string | null; aheadTaskId?: string | null; stuckSince?: string | null } | null;
+  /**
+   * The one reason it waits, from the claim route's own query and gates
+   * (spec: Overlap scheduling, AC-10): the same reason explain, the task page
+   * and the web Queue give. `slot` = the claim query would return it now.
+   * Absent from an older server, or when the read failed.
+   */
+  wait?: import('./queue-wait').QueueWait | null;
   /**
    * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
    * its mission's, else its schedule's) against the person behind the runner's

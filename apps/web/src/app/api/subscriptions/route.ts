@@ -3,11 +3,11 @@ import { requireSessionUser } from '@/lib/auth-helpers';
 import { createSubscription, listSubscriptions, type SubscriptionSubject } from '@/lib/subscriptions';
 import { prSubject, taskSubject, TERMINAL_TASK_STATUSES, watchLabels } from '@/lib/watch-subjects';
 import { watchEventTypes } from '@/lib/watch-notice';
+import { isUuid } from '@/lib/uuid';
 
 /** Live watches per person (knowledge-base: buildd/design/subscriptions-and-notifications.md → Limits). */
 export const MAX_ACTIVE_WATCHES = 25;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const bad = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
 /**
@@ -51,11 +51,11 @@ export async function POST(req: NextRequest) {
   const hasPr = body.prNumber !== undefined && body.prNumber !== null;
   if (hasTask === hasPr) return bad('Name one thing to watch: taskId, or workspaceId with prNumber.');
 
-  const conversationId = typeof body.conversationId === 'string' && UUID_RE.test(body.conversationId) ? body.conversationId : null;
+  const conversationId = typeof body.conversationId === 'string' && isUuid(body.conversationId) ? body.conversationId : null;
   let subject: SubscriptionSubject;
 
   if (hasTask) {
-    if (typeof body.taskId !== 'string' || !UUID_RE.test(body.taskId)) return bad('taskId must be a task id');
+    if (typeof body.taskId !== 'string' || !isUuid(body.taskId)) return bad('taskId must be a task id');
     const task = await taskSubject(body.taskId, s.user.id);
     if (!task) return bad('Task not found', 404);
     if ((TERMINAL_TASK_STATUSES as readonly string[]).includes(task.status)) {
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
   } else {
     const n = typeof body.prNumber === 'number' ? body.prNumber : Number(body.prNumber);
     if (!Number.isInteger(n) || n <= 0) return bad('prNumber must be a positive whole number');
-    if (typeof body.workspaceId !== 'string' || !UUID_RE.test(body.workspaceId)) return bad('workspaceId is required to watch a PR');
+    if (typeof body.workspaceId !== 'string' || !isUuid(body.workspaceId)) return bad('workspaceId is required to watch a PR');
     const pr = await prSubject(body.workspaceId, n, s.user.id);
     if (!pr.ok) {
       return pr.reason === 'no_repo'

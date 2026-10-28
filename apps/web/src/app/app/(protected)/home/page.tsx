@@ -31,7 +31,7 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, kernelDecidesInbox, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { resolveCiGate } from '@/lib/ci-gate';
@@ -59,6 +59,7 @@ import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveRev
 import type { ReviewerGateResult, ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
+import PageColumn from '@/components/ui/PageColumn';
 import HomeLive, { type HomeRegion } from './HomeLive';
 import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
@@ -267,19 +268,19 @@ async function HomePage({
         </Suspense>
       )}
       {view.hostedRunnerBanner && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <HostedRunnerBanner level={view.hostedRunnerBanner.level} text={view.hostedRunnerBanner.text} />
-        </div>
+        </PageColumn>
       )}
       {view.serviceStatus.banner && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <ServiceStatusBanner status={view.serviceStatus.banner} href="/app/health" />
-        </div>
+        </PageColumn>
       )}
       {view.modelUpgradeTeamId && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <ModelUpgradeNotice teamId={view.modelUpgradeTeamId} />
-        </div>
+        </PageColumn>
       )}
       <HomeLive
           region={region}
@@ -442,7 +443,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
   const SCHEDULE_MOVES = hasWs && roleHasPermission(role, 'delegate_schedule_access') ? await SCHEDULE_MOVE_NEEDS_YOU(wsIds) : null;
   const r1 = await readRound({
     ss0: statusPlan.queries[0], ss1: statusPlan.queries[1], ss2: statusPlan.queries[2], ss3: statusPlan.queries[3],
-    ss4: statusPlan.queries[4], ss5: statusPlan.queries[5], ss6: statusPlan.queries[6],
+    ss4: statusPlan.queries[4], ss5: statusPlan.queries[5],
     // A failed lookup reads as "has a key" below: never nag a working team.
     agentKey: agentCredentialProbe(teamId),
     team: db.select({ hostedRunnerHours: teamsTable.hostedRunnerHours }).from(teamsTable).where(eq(teamsTable.id, teamId)).limit(1),
@@ -760,7 +761,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
     getDeliveryViewsForTasks([...openTaskIds, ...failedTaskRows.map(t => t.id), ...upstreamIds, ...docFixTaskIds]),
     // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
     asking.length > 0 ? loadSupersededQuestionTaskIds(asking.map(r => r.taskId ?? '')) : Promise.resolve(new Set<string>()),
-    statusPlan.facts([r1.ss0!, r1.ss1!, r1.ss2!, r1.ss3!, r1.ss4!, r1.ss5!, r1.ss6!]).catch(err => {
+    statusPlan.facts([r1.ss0!, r1.ss1!, r1.ss2!, r1.ss3!, r1.ss4!, r1.ss5!]).catch(err => {
       console.error('[service-status] load failed (non-fatal):', err);
       return null;
     }),
@@ -1514,7 +1515,7 @@ async function buildEscalationInbox(input: {
       if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
       // Kernel-owned deliveries decide membership themselves (S36).
       const kernelView = w.taskId ? inboxDeliveryViews.get(w.taskId) : undefined;
-      if (kernelView && kernelView.owner !== 'landing') return kernelInboxMembership(kernelView, false);
+      if (kernelDecidesInbox(kernelView)) return kernelView.needsYou;
       // Include if a conflict retry is live (renders as RESOLVING)
       if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
       // Dead zone exhausted — all retries failed, PR needs human action (BLOCKED)

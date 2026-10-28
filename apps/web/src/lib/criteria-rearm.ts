@@ -6,6 +6,9 @@ import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criter
 import { systemActor } from '@/lib/mission-feed';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/escalation-note-title';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { criteriaFingerprint, hasPendingCriteria } from '@/lib/criteria-fingerprint';
+
+export { criteriaFingerprint, hasPendingCriteria } from '@/lib/criteria-fingerprint';
 
 /**
  * The consumer of a non-pass goal-criteria verdict.
@@ -60,23 +63,6 @@ export interface CriteriaRearmDecision {
   nextCycles: number;
 }
 
-/**
- * Verdict shape, independent of when it was produced or how it was worded.
- *
- * Keyed on each criterion's own fingerprint where one exists — array index alone
- * is not identity, since deleting a criterion renumbers the rest. Evidence text
- * is excluded on purpose: an LLM re-grading the same failure phrases it
- * differently every run, and treating rewording as new information would defeat
- * the loop guard entirely.
- */
-export function criteriaFingerprint(state: GoalCriteriaState | null | undefined): string {
-  if (!state) return 'none';
-  const parts = (state.criteria ?? [])
-    .map(c => `${c.fingerprint ?? `i${c.index}`}=${c.verdict}`)
-    .sort();
-  return `${state.overall}|${parts.join(',')}`;
-}
-
 /** The non-passing criteria, rendered for injection into an organizer prompt. */
 export function formatVerdictLines(state: GoalCriteriaState | null | undefined): string {
   if (!state) return '';
@@ -126,7 +112,17 @@ export function decideCriteriaRearm(input: {
   cycles: number;
   tasksCreatedSinceRearm: number;
   alreadyEscalated: boolean;
+  /** `hasPendingCriteria(state)`: a verification or check run is still producing this verdict. */
+  pending?: boolean;
 }): CriteriaRearmDecision {
+  // A verdict in flight is not information: nothing in it is for the organizer
+  // to file work against, and escalating it asks the owner to decide a check
+  // that has not finished. Wait for it, counting no cycle (df808193 was
+  // escalated on two ticks of PENDING and could never move again).
+  if (input.pending) {
+    return { action: 'wait', reason: 'Goal-criteria verification is in flight: nothing to file or decide yet', nextCycles: input.cycles };
+  }
+
   const changed = input.previousFingerprint !== input.fingerprint;
 
   // New verdict shape — genuinely new information, whatever happened before.
@@ -239,6 +235,7 @@ export async function applyCriteriaRearm(input: {
     cycles: mission.criteriaRearmCycles,
     tasksCreatedSinceRearm,
     alreadyEscalated: mission.criteriaEscalatedAt != null,
+    pending: hasPendingCriteria(state),
   });
 
   const now = new Date();

@@ -284,11 +284,6 @@ export const NO_LAUNCHER_WARNING =
 
 // ── the signal ──────────────────────────────────────────────────────────────
 
-/** How long a stop waits for the credential broker to release its leases (they expire by TTL anyway). */
-export const BROKER_RELEASE_MS = 3_000;
-/** Kept free of the deadline after the broker release, so the exit is the runner's own. */
-export const BROKER_RELEASE_MARGIN_MS = 500;
-
 export interface ShutdownSignalDeps {
   /** Pause the agents; resolves when done (or it gave up). */
   pause: (signal: NodeJS.Signals) => Promise<void>;
@@ -339,45 +334,21 @@ export function installShutdownSignals(deps: ShutdownSignalDeps): (signal: NodeJ
 export interface RunnerShutdownDeps {
   /** WorkerManager.pauseAllForShutdown, or nothing when no manager runs. */
   pauseAgents: () => Promise<unknown>;
-  /** CredentialBroker.shutdown: releases its leases. Runs after the pause. */
-  releaseBroker: () => Promise<void>;
   exit: (code: number) => void;
   log?: (line: string) => void;
   deadlineMs?: number;
-  brokerReleaseMs?: number;
   on?: ShutdownSignalDeps['on'];
   setTimer?: ShutdownSignalDeps['setTimer'];
 }
 
 /**
  * The runner's one stop handler: the only SIGTERM/SIGINT listener in the
- * long-running process (the broker is started without its own, see
- * broker.ts start). Pauses the agents, then lets the broker release its
- * leases, then exits, all inside the one deadline.
+ * long-running process. Pauses the agents, then exits, all inside the one
+ * deadline.
  */
 export function installRunnerShutdown(deps: RunnerShutdownDeps): (signal: NodeJS.Signals) => void {
-  const log = deps.log ?? ((l: string) => console.log(l));
-  const releaseMs = deps.brokerReleaseMs ?? BROKER_RELEASE_MS;
   return installShutdownSignals({
-    pause: async () => {
-      const startedAt = Date.now();
-      try {
-        await deps.pauseAgents();
-      } finally {
-        // The release gets what the deadline has left, never more than
-        // brokerReleaseMs: the pause steps alone can use most of the deadline.
-        const left = (deps.deadlineMs ?? SHUTDOWN_DEADLINE_MS) - (Date.now() - startedAt) - BROKER_RELEASE_MARGIN_MS;
-        const budget = Math.min(releaseMs, left);
-        if (budget > 0) {
-          await Promise.race([
-            deps.releaseBroker().catch((err) => log(`[shutdown] broker release failed: ${err instanceof Error ? err.message : String(err)}`)),
-            new Promise(r => setTimeout(r, budget)),
-          ]);
-        } else {
-          log('[shutdown] no time left to release broker leases (they expire by TTL)');
-        }
-      }
-    },
+    pause: async () => { await deps.pauseAgents(); },
     exit: deps.exit,
     log: deps.log,
     deadlineMs: deps.deadlineMs,
@@ -385,4 +356,3 @@ export function installRunnerShutdown(deps: RunnerShutdownDeps): (signal: NodeJS
     setTimer: deps.setTimer,
   });
 }
-

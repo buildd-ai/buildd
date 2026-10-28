@@ -49,8 +49,8 @@ describe('RunnerSlotsControl', () => {
     await click('runner-slots-save');
     expect(calls).toEqual([{ url: '/api/runners/rid-1/slots', body: { slots: 8 } }]);
     // Online: saved and taken on the next check-in; the draft no longer differs, so no save button.
-    expect(q('runner-slots-waiting')!.textContent).toContain('Saved: 8 slots');
-    expect(q('runner-slots-waiting')!.textContent).not.toContain('Waiting for this runner');
+    expect(q('runner-slots-waiting')!.textContent).toContain('Saving 8 slots. The runner applies it within seconds.');
+    expect(q('runner-slots-waiting')!.textContent).not.toContain('Applies when it checks in');
     expect(q('runner-slots-save')).toBeNull();
   });
 
@@ -58,15 +58,25 @@ describe('RunnerSlotsControl', () => {
     await mount({ online: false });
     await click('runner-slots-minus'); await click('runner-slots-minus'); await click('runner-slots-minus'); await click('runner-slots-minus');
     await click('runner-slots-save');
-    expect(q('runner-slots-waiting')!.textContent).toBe('Saved: 8 slots. Waiting for this runner to check in.');
+    expect(q('runner-slots-waiting')!.textContent).toBe('Saved: 8 slots. Applies when it checks in.');
   });
 
-  it('stays within 1 to 50', async () => {
-    await mount({ reported: 1, active: 0 });
+  it('stays within 0 to 50', async () => {
+    await mount({ reported: 0, active: 0 });
     expect((q('runner-slots-minus') as HTMLButtonElement).disabled).toBe(true);
     act(() => root.unmount()); host.remove();
     await mount({ reported: 50, active: 0 });
     expect((q('runner-slots-plus') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('steps down to 0 and saves it: the runner claims nothing (spec 97b1bd0b AC-12)', async () => {
+    reply = { ok: true, desiredSlots: { slots: 0, origin: 'dashboard', setBy: 'Max', setAt: new Date().toISOString() } };
+    await mount({ reported: 1, active: 0 });
+    await click('runner-slots-minus');
+    expect(q('runner-slots-draft')!.textContent).toBe('0');
+    await click('runner-slots-save');
+    expect(calls).toEqual([{ url: '/api/runners/rid-1/slots', body: { slots: 0 } }]);
+    expect(q('runner-slots-waiting')!.textContent).toBe('Saving 0 slots. The runner applies it within seconds.');
   });
 
   it('a member sees the number and where it came from, and no control', async () => {

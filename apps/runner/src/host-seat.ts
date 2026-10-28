@@ -24,6 +24,7 @@ import { join } from 'path';
 import * as childProcess from 'child_process';
 import { createHash } from 'crypto';
 import { codexAuthJsonKind } from './cost-basis';
+import { isUuid } from '@buildd/shared';
 
 export type MachineLogin = 'env' | 'login';
 
@@ -141,7 +142,6 @@ export function detectMachineLogin(probe: MachineLoginProbe = {}): MachineLogin 
   return null;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let identityCache: { path: string; mtimeMs: number; value: string | null } | undefined;
 
 /**
@@ -172,7 +172,7 @@ export function claudeLoginIdentity(probe: MachineLoginProbe = {}): string | nul
   let value: string | null = null;
   try {
     const id = JSON.parse(readFileSync(path, 'utf-8'))?.oauthAccount?.accountUuid;
-    if (typeof id === 'string' && UUID_RE.test(id)) {
+    if (typeof id === 'string' && isUuid(id)) {
       value = createHash('sha256').update(`buildd-claude-login:v1:${id.toLowerCase()}`).digest('hex').slice(0, 32);
     }
   } catch {
@@ -270,14 +270,12 @@ export function claudeModelAuthMissing(input: {
   modelEnv: { endpoint: string; machineLoginUsed?: boolean };
   /** The agent env, after applyModelEnv. */
   env: Record<string, string | undefined>;
-  /** shouldUseClaudeCredential for this run. */
-  claudeCredentialUsed: boolean;
   /** Login probe; `home` defaults to the agent env's HOME. Injected in tests. */
   probe?: Omit<MachineLoginProbe, 'env'>;
 }): string | null {
   if (input.isCodexTask) return null;
   if (input.modelEnv.endpoint !== 'anthropic') return null;
-  if (input.modelEnv.machineLoginUsed || input.claudeCredentialUsed) return null;
+  if (input.modelEnv.machineLoginUsed) return null;
   if (MODEL_AUTH_VARS.some((k) => (input.env[k] ?? '').trim().length > 0)) return null;
   const home = input.probe?.home ?? input.env.HOME;
   if (detectMachineLogin({ ...input.probe, ...(home ? { home } : {}), env: {} }) === 'login') return null;
@@ -338,7 +336,7 @@ export type CodexLoginChoice = 'machine' | 'server' | 'none';
 
 /** Use the machine's Codex login first; personal_only forbids local credentials. */
 export function decideCodexLogin(opts: {
-  serverCredentialType?: 'oauth' | 'api_key' | null;
+  serverCredentialType?: 'api_key' | null;
   localAuthPath: string | null;
   runnerLocalAllowed?: boolean;
 }): CodexLoginChoice {

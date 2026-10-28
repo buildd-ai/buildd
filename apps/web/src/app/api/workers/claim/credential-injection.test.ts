@@ -41,7 +41,7 @@ mock.module('@buildd/core/db/schema', () => ({
 mock.module('@buildd/core/db', () => ({
   db: { query: { secrets: { findMany: mockSecretsFindMany } } },
 }));
-mock.module('@/lib/codex-credential', () => ({
+mock.module('@/lib/codex-api-key', () => ({
   resolveCodexApiKey: mockResolveCodex,
 }));
 mock.module('@/lib/openai-credential', () => ({
@@ -54,7 +54,6 @@ mock.module('@buildd/core/secrets', () => ({
 const {
   attachServerManagedSecrets,
   attachCodexCredentials,
-  resolveAccountCredentialRefreshes,
 } = await import('./credential-injection');
 
 const ORIGINAL_KEY = process.env.ENCRYPTION_KEY;
@@ -510,77 +509,6 @@ describe('attachCodexCredentials', () => {
         workspaceId: 'ws-t1',
       });
     });
-  });
-});
-
-/**
- * The idle broker's list, resolved from the authenticated account alone — no
- * task, no workspace — for the top-level `pendingCredentialRefreshes` the
- * claim route returns on every poll. No claimed worker carries one.
- */
-describe('resolveAccountCredentialRefreshes', () => {
-  const account = (extra: Record<string, unknown> = {}) =>
-    ({ id: 'acct-1', teamId: 'team-1', ...extra }) as any;
-
-  it('resolves expiring credentials with no claimed task at all', async () => {
-    mockSecretsFindMany.mockResolvedValue([
-      { id: 'sec-1', purpose: 'claude_credential', tokenExpiresAt: new Date('2026-09-03T10:00:00.000Z') },
-      { id: 'sec-2', purpose: 'codex_credential', tokenExpiresAt: new Date('2026-09-03T11:00:00.000Z') },
-    ]);
-
-    expect(await resolveAccountCredentialRefreshes(account())).toEqual([
-      { secretId: 'sec-1', purpose: 'claude_credential', expiresAt: '2026-09-03T10:00:00.000Z' },
-      { secretId: 'sec-2', purpose: 'codex_credential', expiresAt: '2026-09-03T11:00:00.000Z' },
-    ]);
-  });
-
-  it('returns undefined when nothing is near expiry', async () => {
-    mockSecretsFindMany.mockResolvedValue([]);
-    expect(await resolveAccountCredentialRefreshes(account())).toBeUndefined();
-  });
-
-  // Scope is the crux: with no claimed task there is no workspace team to key
-  // off, so the authenticated account's OWN team is the boundary. Every filter
-  // below is invisible with a mocked `db` unless asserted.
-  it('scopes the lookup to the account team, live rows and near expiry', async () => {
-    await resolveAccountCredentialRefreshes(account({ teamId: 'team-9' }));
-
-    const args = mockSecretsFindMany.mock.calls[0]?.[0] as any;
-    expect(predicate(args, 'eq', 'teamId')).toEqual({ field: 'teamId', value: 'team-9', type: 'eq' });
-    expect(predicate(args, 'inArray', 'purpose').values).toEqual(['claude_credential', 'codex_credential']);
-    const notNode = (args.where.args as any[]).find(n => n?.type === 'not');
-    expect(notNode.value).toEqual({ field: 'healthStatus', value: 'revoked', type: 'eq' });
-    expect(predicate(args, 'isNotNull', 'tokenExpiresAt')).toBeDefined();
-    const ltNode = predicate(args, 'lt', 'tokenExpiresAt');
-    expect(ltNode.value.strings.join('')).toContain("NOW() + INTERVAL '2 hours'");
-  });
-
-  // Another account's personal credential in the same team is not this
-  // runner's to manage — only team-wide rows and its own.
-  it('excludes credentials scoped to a different account in the same team', async () => {
-    await resolveAccountCredentialRefreshes(account());
-
-    const args = mockSecretsFindMany.mock.calls[0]?.[0] as any;
-    expect(orBranches(args, 'accountId')).toEqual([
-      { field: 'accountId', type: 'isNull' },
-      { field: 'accountId', value: 'acct-1', type: 'eq' },
-    ]);
-  });
-
-  it('never widens past one team — an account with no team gets nothing', async () => {
-    expect(await resolveAccountCredentialRefreshes(account({ teamId: null }))).toBeUndefined();
-    expect(mockSecretsFindMany).not.toHaveBeenCalled();
-  });
-
-  it('swallows a query failure so the claim still succeeds', async () => {
-    mockSecretsFindMany.mockRejectedValue(new Error('db down'));
-    expect(await resolveAccountCredentialRefreshes(account())).toBeUndefined();
-  });
-
-  it('is a no-op without ENCRYPTION_KEY', async () => {
-    delete process.env.ENCRYPTION_KEY;
-    expect(await resolveAccountCredentialRefreshes(account())).toBeUndefined();
-    expect(mockSecretsFindMany).not.toHaveBeenCalled();
   });
 });
 

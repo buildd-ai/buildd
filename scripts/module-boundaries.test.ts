@@ -198,6 +198,9 @@ describe('the guard sees the files it polices', () => {
     // Ops paging is core infrastructure every layer uses, not the health module.
     expect(moduleOf('packages/core/report-ops.ts')).toBe('core');
     expect(moduleOf('apps/web/src/app/api/cron/maintenance/route.ts')).toBe('core');
+    // The retired connector-refresh path forwards to the connectors cron and belongs with it.
+    expect(moduleOf('apps/web/src/app/api/cron/codex-token-refresh/route.ts')).toBe('connectors');
+    expect(moduleOf('apps/web/src/app/api/cron/connector-token-refresh/route.ts')).toBe('connectors');
     // The hosted-runner allowance gates the claim, so its store is core; usage analytics is not.
     expect(moduleOf('apps/web/src/lib/hosted-runner-usage-store.ts')).toBe('core');
     expect(moduleOf('apps/web/src/lib/usage-stats.ts')).toBe('health-quality');

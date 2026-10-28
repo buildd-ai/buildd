@@ -18,9 +18,9 @@ describe('CredentialCache', () => {
   test('returns a fresh credential set from a claim payload', () => {
     const cache = new CredentialCache();
     const now = 1_000_000;
-    cache.set('team_a', { oauthToken: 'oauth-1' }, now);
+    cache.set('team_a', { apiKey: 'key-1' }, now);
     const got = cache.get('team_a', now + 1000);
-    expect(got?.oauthToken).toBe('oauth-1');
+    expect(got?.apiKey).toBe('key-1');
     expect(cache.has('team_a', now + 1000)).toBe(true);
   });
 
@@ -28,47 +28,47 @@ describe('CredentialCache', () => {
     const cache = new CredentialCache();
     const now = 1_000_000;
     cache.set('team_a', { apiKey: 'key-a' }, now);
-    cache.set('team_b', { oauthToken: 'oauth-b' }, now);
+    cache.set('team_b', { apiKey: 'key-b' }, now);
     expect(cache.get('team_a', now)?.apiKey).toBe('key-a');
-    expect(cache.get('team_a', now)?.oauthToken).toBeUndefined();
-    expect(cache.get('team_b', now)?.oauthToken).toBe('oauth-b');
+    expect(cache.get('team_c', now)).toBeUndefined();
+    expect(cache.get('team_b', now)?.apiKey).toBe('key-b');
   });
 
   test('treats an entry older than the TTL as stale (refresh on next claim)', () => {
     const cache = new CredentialCache(1000); // 1s TTL
     const now = 5_000_000;
-    cache.set('team_a', { oauthToken: 'oauth-1' }, now);
-    expect(cache.get('team_a', now + 999)?.oauthToken).toBe('oauth-1');
+    cache.set('team_a', { apiKey: 'key-1' }, now);
+    expect(cache.get('team_a', now + 999)?.apiKey).toBe('key-1');
     // At/after TTL it is stale and dropped.
     expect(cache.get('team_a', now + 1000)).toBeUndefined();
     expect(cache.has('team_a', now + 1000)).toBe(false);
     // A later claim repopulates it.
-    cache.set('team_a', { oauthToken: 'oauth-2' }, now + 2000);
-    expect(cache.get('team_a', now + 2000)?.oauthToken).toBe('oauth-2');
+    cache.set('team_a', { apiKey: 'key-2' }, now + 2000);
+    expect(cache.get('team_a', now + 2000)?.apiKey).toBe('key-2');
   });
 
   test('invalidate drops the entry on a 401 so a rotated cred is re-fetched', () => {
     const cache = new CredentialCache();
     const now = 1_000_000;
-    cache.set('team_a', { oauthToken: 'bad-token' }, now);
-    expect(cache.get('team_a', now)?.oauthToken).toBe('bad-token');
+    cache.set('team_a', { apiKey: 'bad-key' }, now);
+    expect(cache.get('team_a', now)?.apiKey).toBe('bad-key');
     cache.invalidate('team_a');
     expect(cache.get('team_a', now)).toBeUndefined();
     // Next claim delivers the fixed credential.
-    cache.set('team_a', { oauthToken: 'good-token' }, now + 10);
-    expect(cache.get('team_a', now + 10)?.oauthToken).toBe('good-token');
+    cache.set('team_a', { apiKey: 'good-key' }, now + 10);
+    expect(cache.get('team_a', now + 10)?.apiKey).toBe('good-key');
   });
 
   test('ignores empty credentials and empty team ids', () => {
     const cache = new CredentialCache();
     cache.set('team_a', {});
     expect(cache.has('team_a')).toBe(false);
-    cache.set('', { oauthToken: 'x' });
+    cache.set('', { apiKey: 'x' });
     expect(cache.has('')).toBe(false);
     expect(cache.get('')).toBeUndefined();
   });
 
-  test('default TTL is 50min (below 1h OAuth access-token lifetime)', () => {
+  test('default TTL is 50min ', () => {
     const cache = new CredentialCache();
     expect(cache.ttl).toBe(DEFAULT_SERVER_CRED_TTL_MS);
     expect(DEFAULT_SERVER_CRED_TTL_MS).toBe(50 * 60 * 1000);

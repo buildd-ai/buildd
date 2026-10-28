@@ -8,8 +8,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { resolveSessionTeamIds } from '@/lib/session-team-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * GET /api/health/budget
@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
 
     let scopedWsIds: string[];
     if (workspaceId) {
-      if (!UUID_RE.test(workspaceId)) {
+      if (!isUuid(workspaceId)) {
         return NextResponse.json(
           { error: `Invalid workspaceId: expected a UUID, got "${workspaceId}". Resolve workspace names to UUIDs before calling this endpoint.` },
           { status: 400 },
@@ -104,7 +104,7 @@ async function sessionForecast(req: NextRequest, userId: string) {
   }
 
   if (workspaceId) {
-    if (!UUID_RE.test(workspaceId)) {
+    if (!isUuid(workspaceId)) {
       return NextResponse.json(
         { error: `Invalid workspaceId: expected a UUID, got "${workspaceId}". Resolve workspace names to UUIDs before calling this endpoint.` },
         { status: 400 },

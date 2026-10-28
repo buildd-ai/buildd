@@ -8,8 +8,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { attachPrToTask, parsePrReference, resolveWorkspaceGithubRepo } from '@/lib/task-pr-attach';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
-const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * POST /api/tasks/[id]/attach-pr
@@ -37,7 +37,7 @@ export async function POST(
     return NextResponse.json({ error: 'Attaching a PR to a task requires an admin-level token' }, { status: 403 });
   }
 
-  if (!FULL_UUID_REGEX.test(id)) {
+  if (!isUuid(id)) {
     return NextResponse.json({ error: `taskId must be a full UUID — received "${id}"` }, { status: 400 });
   }
 

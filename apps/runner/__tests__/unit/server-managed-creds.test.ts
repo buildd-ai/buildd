@@ -180,7 +180,7 @@ describe('burn-loop guard: auth failure pauses + backs off + resumes', () => {
 
     const teamKey = 'team_burn';
     // Seed a cached (now-known-bad) credential + worker bookkeeping.
-    mgr.credCache.set(teamKey, { oauthToken: 'bad-token' });
+    mgr.credCache.set(teamKey, { apiKey: 'bad-key' });
     mgr.workerTeamKeys.set('w-1', teamKey);
     mgr.workerAuthContexts.set('w-1', 'account');
     expect(mgr.credCache.has(teamKey)).toBe(true);

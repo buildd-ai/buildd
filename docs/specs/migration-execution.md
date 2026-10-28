@@ -363,7 +363,7 @@ instructions call it any more.
 | `reconcileAppliedCount` | `packages/core/db/migrate-drift.ts` |
 | `Schema Drift / check-prod` job (step-level gate) | `.github/workflows/build.yml`: job `schema-drift` |
 | "migrations are up to date" PR check (asserts on exit code AND output), layout and commute checks | `.github/workflows/build.yml`: job `build-checks`, steps "Check migrations are up to date", "Check migration layout", "Check migrations commute" |
-| migrate against a real Postgres in CI | `.github/workflows/build.yml`: job `db-architecture`, step "Migrate" |
+| migrate against a real Postgres in CI | `.github/workflows/build.yml`: job `db-architecture-shards` (each of its four shards), step "Migrate" |
 | deploy ordering (`db:migrate && ... next build`) | `apps/web/package.json` (`build`), pinned by `packages/core/__tests__/prod-build-runs-migrations.test.ts` |
 | `migrations:lint` (prod build runs migrations), `migrations:layout-check`, `migrations:commute`, `migrations:regenerate` | `package.json` |
 | migration change → full unit suite | `scripts/affected-tests.ts` |

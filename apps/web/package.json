@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.386.0",
+  "version": "0.387.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -43,7 +43,7 @@
     "@upstash/redis": "^1.36.2",
     "@vercel/otel": "^2.1.1",
     "ai": "^7.0.116",
-    "croner": "^10.0.1",
+    "croner": "^11.0.0",
     "drizzle-orm": "1.0.0-rc.4",
     "jose": "^6.2.0",
     "mermaid": "12.2.0",

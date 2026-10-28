@@ -74,6 +74,7 @@ import type { ToolResult, WorkspaceListing } from "@buildd/core/mcp-tools";
 import { callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
+import { isUuid } from '@/lib/uuid';
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -1190,7 +1191,7 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   // A `?worker=` must be in a granted workspace; its workspace is the default.
   const workerParam = url.searchParams.get("worker");
   if (workerParam) {
-    const w = isUuidLike(workerParam) ? await workerIdentity(workerParam) : null;
+    const w = isUuid(workerParam) ? await workerIdentity(workerParam) : null;
     const ws = w?.workspaceId ? choices.find((c) => c.workspaceId === w.workspaceId) : undefined;
     if (!ws || (connectionDefault && connectionDefault.workspaceId !== ws.workspaceId)) {
       return grantJsonError(403, { error: "Worker not found for this account" });
@@ -1297,15 +1298,25 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   }
 }
 
-const isUuidLike = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
 // ── Next.js Route Handlers ───────────────────────────────────────────────────
 
-export async function GET(_req: Request): Promise<Response> {
+export async function GET(req: Request): Promise<Response> {
+  // A connector setup check (claude.ai's "Add custom connector") probes with a
+  // plain GET before signing in; it needs the same OAuth challenge a POST gets
+  // to find out how this server signs in. A bare 405 reads as "couldn't check".
+  if (!extractBearerToken(req)) return unauthorizedResponse("Missing Authorization header");
   // Stateless server — no SSE notifications to push.
   // Returning 405 stops MCP clients from polling the SSE endpoint
   // (which otherwise reconnects every ~1s on serverless, burning invocations).
   return new Response("SSE not supported on stateless server", { status: 405 });
+}
+
+// Next would derive HEAD from GET anyway; it is explicit so the challenge a
+// reachability probe sees is pinned by a test, not by framework behaviour.
+export async function HEAD(req: Request): Promise<Response> {
+  const res = await GET(req);
+  return new Response(null, { status: res.status, headers: res.headers });
 }
 
 export async function POST(req: Request): Promise<Response> {

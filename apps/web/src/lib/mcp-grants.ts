@@ -47,6 +47,7 @@ import { normalizedRepoSql } from './repo-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { displayTeamName, isSystemWorkspace } from '@buildd/shared';
 import { clearCallerCache, callerDep } from './caller-cache';
+import { isUuid } from '@/lib/uuid';
 
 export type { McpGrantActsAs, McpGrantScope };
 
@@ -95,8 +96,6 @@ export interface GrantPrincipal {
   actor: `human:${string}` | `agent:oauth:${string}`;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
 
 function isActsAs(v: unknown): v is McpGrantActsAs {
   return typeof v === 'string' && (GRANT_ACTS_AS as readonly string[]).includes(v);
@@ -486,7 +485,7 @@ export function resolveGrantWorkspaceRef(choices: GrantWorkspaceChoice[], ref: s
   if (!raw) {
     return choices.length === 1 ? { kind: 'ok', workspace: choices[0] } : { kind: 'required', choices };
   }
-  if (UUID_RE.test(raw)) {
+  if (isUuid(raw as unknown)) {
     const hit = choices.find((c) => c.workspaceId.toLowerCase() === raw.toLowerCase());
     return hit ? { kind: 'ok', workspace: hit } : { kind: 'not_granted', ref: raw, choices };
   }

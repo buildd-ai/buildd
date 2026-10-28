@@ -44,7 +44,6 @@ const FACTS: ServiceStatusFacts = {
     { id: 't7', title: 'Merge the docs refresh', workspaceId: 'ws', status: 'failed', createdByUserId: ADMIN, hasLiveRun: false },
   ],
   teamHasProviderKey: false,
-  teamHasSavedSignIn: false,
   recentTaskCount: 30,
 };
 

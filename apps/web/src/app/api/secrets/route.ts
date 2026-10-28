@@ -28,17 +28,12 @@ const MODEL_PURPOSES = new Set(modelCredentialPurposes());
  * for these are frequently wrapped in quotes (e.g. `"sk-ant-oat01-…"`), which makes a
  * valid 108-char token 110 chars and gets it rejected by Anthropic with a
  * `401 Invalid bearer token` hours later. We strip a single wrapping quote pair before
- * encrypting. JSON-blob credentials (e.g. `claude_credential`, written via the
- * connected-account route) must NOT be quote-stripped.
+ * encrypting. JSON-blob credentials must NOT be quote-stripped.
  */
 const RAW_STRING_PURPOSES = new Set([
   'anthropic_api_key',
-  'oauth_token',
-  // A plain OpenAI API key for Codex agent tasks (distinct from `codex_credential`,
-  // the ChatGPT OAuth/multi-field connect flow). Mirrors `anthropic_api_key`: a
-  // single raw string, stored the same way, for teams/workspaces that just want
-  // to paste a key rather than connect an account. See
-  // docs/credentials-architecture.md.
+  // A plain OpenAI API key for Codex agent tasks. Mirrors `anthropic_api_key`: a
+  // single raw string, stored the same way. See docs/credentials-architecture.md.
   'openai_api_key',
   'webhook_token',
   'custom',
@@ -212,7 +207,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
-  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'openai_api_key', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'role_env_secret', CLOUDFLARE_PURPOSE];
+  const validPurposes = ['anthropic_api_key', 'openai_api_key', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'role_env_secret', CLOUDFLARE_PURPOSE];
   if (!validPurposes.includes(purpose)) {
     return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
   }

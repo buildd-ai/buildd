@@ -30,7 +30,12 @@ export async function GET() {
     // `mcp` for the per-workspace connection; read/write for the account-level
     // one. `buildd:act-as-person` is accepted but not advertised (account-consent.ts).
     scopes_supported: [...new Set<string>([...OAUTH_SCOPES, ...ACCOUNT_SCOPES_SUPPORTED])],
-  });
+    // Client ID Metadata Documents (MCP authorization 2025-11-25): a client
+    // may send an HTTPS URL as its client_id instead of registering. Claude
+    // and Claude Code use this only when it is advertised together with
+    // `none` above (lib/oauth/client-metadata-document.ts).
+    client_id_metadata_document_supported: true,
+  }, { headers: { 'Access-Control-Allow-Origin': '*' } });
 }
 
 export async function OPTIONS() {

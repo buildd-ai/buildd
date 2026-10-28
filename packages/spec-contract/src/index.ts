@@ -18,3 +18,4 @@ export * from './source';
 export * from './confluence-markdown';
 export * from './confluence';
 export * from './design';
+export * from './no-criteria-change';

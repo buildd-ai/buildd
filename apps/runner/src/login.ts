@@ -81,8 +81,8 @@ function saveConfig(data: Record<string, unknown>) {
     }
   } catch { /* ignore */ }
   const merged = { ...existing, ...data };
-  // config.json holds a plaintext bld_* API key -- 0600, like codex-auth.ts and
-  // claude-auth.ts do for their own credential files.
+  // config.json holds a plaintext bld_* API key -- 0600, like codex-auth.ts does
+  // for its auth.json.
   writeSecretJsonFile(CONFIG_FILE, merged);
 }
 

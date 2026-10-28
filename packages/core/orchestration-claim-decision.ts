@@ -23,7 +23,8 @@
  *  - `soft_overlap`: the candidate's declared scope overlaps an in-flight
  *    task's by directory prefix or on the same file (or through an inferred
  *    edge minted before the hard/soft split, reclassified at claim). Never a
- *    stored dependsOn edge: see `partitionOverlapEdges` in ./path-overlap.ts.
+ *    stored dependsOn edge. No longer asked: the claim route retired
+ *    hold/start (spec: Overlap scheduling, R-3); kept to read recorded rows.
  *    The model sees the overlap kind, each shared file's historical conflict
  *    rate (merged PRs that touched it, and how many needed a conflict retry),
  *    the holder's stage (queued, just started, working, in review, approved)
@@ -140,8 +141,8 @@ export type ClaimHoldRail =
 export const LIVE_HOLDER_STATUSES: ReadonlySet<string> = new Set<string>(LIVE_WORKER_STATUSES);
 
 /**
- * Migration namespaces and the schema source. One definition, shared with the
- * authoring-time hard/soft overlap split (`partitionOverlapEdges`).
+ * Migration namespaces and the schema source. One definition, shared with
+ * ./path-overlap.ts.
  */
 export { isMigrationPath };
 

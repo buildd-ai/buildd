@@ -23,6 +23,7 @@ import SpecAttachmentsFixture from './SpecAttachmentsFixture';
 import SpecImportReviewFixture from './SpecImportReviewFixture';
 import SpecDeliveryFixture from './SpecDeliveryFixture';
 import SpecPageFixture from './SpecPageFixture';
+import SpecReviewAllFixture from './SpecReviewAllFixture';
 import MissionDeliveriesFixture from './MissionDeliveriesFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
@@ -43,8 +44,10 @@ import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import CoordinationHoldFixture from './CoordinationHoldFixture';
 import StartAnywayFixture from './StartAnywayFixture';
+import QueueComponentsFixture from './QueueComponentsFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import RunnerIsolationFixture from './RunnerIsolationFixture';
+import RunnerRowFixture from './RunnerRowFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
@@ -64,10 +67,12 @@ import ServiceStatusFixture from './ServiceStatusFixture';
 import ClosedPrFixture from './ClosedPrFixture';
 import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import DesignPreviewFixture from './DesignPreviewFixture';
+import CapacityAndIdleAlertFixture, { CAPACITY_FIXTURE_STATE } from './CapacityAndIdleAlertFixture';
 import StageMeterFixture from './StageMeterFixture';
 import DeliveryRowFixture from './DeliveryRowFixture';
 import YouStripPipelineFixture from './YouStripPipelineFixture';
 import DeliveryBarFixture from './DeliveryBarFixture';
+import HealthQueueFixture from './HealthQueueFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -99,6 +104,7 @@ import {
     SPEC_DELIVERY_FIXTURE_STATE,
     SPEC_IMPORT_REVIEW_FIXTURE_STATE,
     SPEC_PAGE_FIXTURE_STATE,
+    SPEC_REVIEW_ALL_FIXTURE_STATE,
     RUNNER_KEYS_FIXTURE_STATE,
     MISSION_DELIVERIES_FIXTURE_STATE,
     DESIGN_PREVIEW_FIXTURE_STATE,
@@ -107,6 +113,7 @@ import {
     YOU_STRIP_PIPELINE_FIXTURE_STATE,
     CHECK_ROW_FIXTURE_STATE,
     DELIVERY_BAR_FIXTURE_STATE,
+    HEALTH_QUEUE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -115,6 +122,7 @@ import {
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     COORDINATION_HOLD_FIXTURE_STATE,
     START_ANYWAY_FIXTURE_STATE,
+    QUEUE_COMPONENTS_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
@@ -220,6 +228,10 @@ export default function DevFixturesPage() {
         return <SpecPageFixture />;
     }
 
+    if (state === SPEC_REVIEW_ALL_FIXTURE_STATE) {
+        return <SpecReviewAllFixture />;
+    }
+
     if (state === SPEC_DELIVERY_FIXTURE_STATE) {
         return <SpecDeliveryFixture />;
     }
@@ -280,6 +292,9 @@ export default function DevFixturesPage() {
     if (state === START_ANYWAY_FIXTURE_STATE) {
         return <StartAnywayFixture />;
     }
+    if (state === QUEUE_COMPONENTS_FIXTURE_STATE) {
+        return <QueueComponentsFixture />;
+    }
 
     if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {
         return <ToolBreakdownFixture />;
@@ -299,6 +314,9 @@ export default function DevFixturesPage() {
     if (state === YOU_STRIP_PIPELINE_FIXTURE_STATE) {
         return <YouStripPipelineFixture />;
     }
+    if (state === HEALTH_QUEUE_FIXTURE_STATE) {
+        return <HealthQueueFixture />;
+    }
     if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
         return <DesignPreviewFixture />;
     }
@@ -314,6 +332,9 @@ export default function DevFixturesPage() {
 
     if (state === RUNNER_SIZE_FIXTURE_STATE) {
         return <RunnerSizeFixture />;
+    }
+    if (state === 'runner-row') {
+        return <RunnerRowFixture />;
     }
     if (state === RUNNER_ISOLATION_FIXTURE_STATE) {
         return <RunnerIsolationFixture />;
@@ -371,6 +392,10 @@ export default function DevFixturesPage() {
 
     if (state === CLOSED_PR_FIXTURE_STATE) {
         return <ClosedPrFixture />;
+    }
+
+    if (state === CAPACITY_FIXTURE_STATE) {
+        return <CapacityAndIdleAlertFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {

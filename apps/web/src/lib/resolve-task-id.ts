@@ -21,8 +21,8 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { sql, type SQL } from 'drizzle-orm';
+import { isUuid } from '@/lib/uuid';
 
-const FULL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** 8+ hex chars, optionally continuing into the dashed UUID form (dash positions checked separately). */
 const PREFIX_RE = /^[0-9a-f]{8}[0-9a-f-]{0,27}$/i;
 /**
@@ -68,7 +68,7 @@ export async function resolveTaskIdForCaller(
   raw: string,
   canAccessWorkspace: (workspaceId: string) => Promise<boolean>,
 ): Promise<TaskIdResolution> {
-  if (FULL_UUID_RE.test(raw)) return { ok: true, id: raw };
+  if (isUuid(raw as unknown)) return { ok: true, id: raw };
 
   if (!PREFIX_RE.test(raw) || !isCanonicalUuidPrefix(raw)) {
     return {

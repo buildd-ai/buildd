@@ -142,7 +142,7 @@ export function taskActionSet(s: TaskActionState): TaskActionId[] {
     out.push('waiting_on_failed');
     if (s.hasHistory) out.push('history');
   } else if (s.phase === 'failed' && !waiting) {
-    out.push('retry');
+    out.push('retry', 'cancel');
     if (otherBackendOf(s.backend) && s.otherBackendAvailable !== false) out.push('switch_backend');
     if (s.hasHistory) out.push('history');
   }
@@ -314,6 +314,8 @@ export interface GateCopyContext {
  */
 export interface TaskWaiting {
   waitingReasons: WaitingReason[];
+  /** The one reason it waits, the same explain and both queues give (lib/queue-wait-load.ts). */
+  queueWait?: import('@buildd/shared').QueueWait;
   reasonsDigest?: string;
   canForce?: boolean;
   force?: ForceOffer | null;

@@ -19,10 +19,9 @@ import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { lazyRequester } from '@buildd/core/role-visibility';
 import { checkStatedRole } from '@/lib/stated-role';
 
-const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function validateTaskId(id: string): NextResponse | null {
-  if (FULL_UUID_REGEX.test(id)) return null;
+  if (isUuid(id)) return null;
   const isPrefix = /^[0-9a-f]{1,35}$/i.test(id);
   const error = isPrefix
     ? `taskId must be a full UUID — "${id}" looks like an ID prefix. The web UI shows 8-character prefixes; use the full UUID from the task URL or API response.`
@@ -59,6 +58,7 @@ import { bumpChangeVersions, scopesOfDeletedTasks } from '@/lib/change-version';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { isOwnScopeHold } from '@buildd/workflow-kernel/scope-hold';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -437,6 +437,40 @@ export async function PATCH(
       const out = await saveStartAnywayAssessment({ taskId: id, raw: body.assessment, workerId });
       if (!out.ok) return NextResponse.json({ error: out.error, code: out.code }, { status: out.status });
       return NextResponse.json({ id, assessment: out.assessment });
+    }
+
+    // removeDependency: a person drops one declared dependency, saying why
+    // (spec "Health › Queue", R-11). Its own request: the edge goes, and who
+    // removed it, when and why is kept on the task (context.dependencyRemovals).
+    if (body?.removeDependency !== undefined) {
+      if (Object.keys(body).some(k => k !== 'removeDependency')) {
+        return NextResponse.json({ error: 'removeDependency is sent on its own, with no other fields' }, { status: 400 });
+      }
+      const person = requestingPerson(user, apiAccount);
+      if (!person) {
+        return NextResponse.json({ error: 'Only a person can remove a dependency.' }, { status: 403 });
+      }
+      const raw = (body.removeDependency ?? {}) as { taskId?: unknown; reason?: unknown };
+      const dependencyId = typeof raw.taskId === 'string' ? raw.taskId.trim() : '';
+      const reason = typeof raw.reason === 'string' ? raw.reason.trim().slice(0, 500) : '';
+      if (!dependencyId) return NextResponse.json({ error: 'removeDependency.taskId is required' }, { status: 400 });
+      if (!reason) return NextResponse.json({ error: 'Say why the dependency is removed.' }, { status: 400 });
+      const current = (task.dependsOn as string[] | null) ?? [];
+      if (!current.includes(dependencyId)) {
+        return NextResponse.json({ error: 'That task is not a dependency of this one.' }, { status: 404 });
+      }
+      const ctx = (task.context ?? {}) as Record<string, unknown>;
+      const prior = Array.isArray(ctx.dependencyRemovals) ? ctx.dependencyRemovals : [];
+      const record = { dependencyId, reason, userId: person, at: new Date().toISOString() };
+      const next = current.filter(d => d !== dependencyId);
+      const [updated] = await db.update(tasks)
+        .set({ dependsOn: next, context: { ...ctx, dependencyRemovals: [...prior, record].slice(-20) }, updatedAt: new Date() })
+        .where(eq(tasks.id, id))
+        .returning();
+      if (updated?.status === 'pending') await wakeIfDependenciesSatisfied(updated).catch(() => {});
+      noteWorkChanged({ missionIds: [task.missionId] });
+      await emitTaskUpdated({ id, workspaceId: task.workspaceId, missionId: task.missionId ?? null, status: task.status });
+      return NextResponse.json({ id, dependsOn: next, removed: record });
     }
 
     // pause: true pauses the agent working on this task instead of cancelling

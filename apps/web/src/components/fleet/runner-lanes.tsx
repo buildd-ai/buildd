@@ -10,6 +10,7 @@
  * tap. The time every slot sat idle while work waited is tinted flat behind
  * the bars, and said in words underneath.
  */
+import { statusPill } from '@/components/ui/states';
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import type { FleetSnapshot, LaneBar } from '@buildd/shared';
@@ -34,10 +35,10 @@ const TONE: Record<LaneBar['state'], SlotLaneBar['tone']> = {
 };
 
 const STATE_WORD: Record<LaneBar['state'], string> = {
-  running: 'Working',
-  waiting: 'Has a question',
-  done: 'Done',
-  failed: 'Failed',
+  running: statusPill('running').label,
+  waiting: statusPill('waiting_input').label,
+  done: statusPill('completed').label,
+  failed: statusPill('failed').label,
 };
 
 /** How the run stands or ended, in words: the stated reason, else the state. */

@@ -7,8 +7,8 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { conversationMessages, conversations } from '@buildd/core/db/schema';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** WHERE clause: this assistant message, in a conversation this user owns. */
 export function ownAssistantMessageScope(messageId: string, userId: string) {
@@ -21,7 +21,7 @@ export function ownAssistantMessageScope(messageId: string, userId: string) {
 
 /** The team of an assistant turn the user may rate, or null. */
 export async function rateableTurnTeam(messageId: string, userId: string): Promise<string | null> {
-  if (!UUID_RE.test(messageId)) return null;
+  if (!isUuid(messageId)) return null;
   const [row] = await db
     .select({ teamId: conversations.teamId })
     .from(conversationMessages)

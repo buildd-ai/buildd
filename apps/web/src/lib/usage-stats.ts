@@ -13,7 +13,7 @@
 
 import type { ResultMeta } from '@buildd/core/db/schema';
 import { addToSplit, basisOfRow, emptySplit, type BasisSplit } from './cost-basis-split';
-import { canonicalToolName } from '@buildd/shared';
+import { canonicalToolName, percentile } from '@buildd/shared';
 import { derivedValue, derivedUnavailable, type DerivedMetric } from '@buildd/core/derived-metric';
 import { compareAssignedActual, primaryModelFromUsage } from '@buildd/core/model-display';
 import {
@@ -338,14 +338,6 @@ function num(v: string | number | null | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Nearest-rank percentile on an unsorted copy. `p` is 0–1. */
-export function percentile(values: number[], p: number): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const rank = Math.ceil(p * sorted.length);
-  return sorted[Math.min(Math.max(rank, 1) - 1, sorted.length - 1)];
-}
-
 /**
  * Distribution over the nonzero values only, or `unavailable` when nothing
  * recorded the metric.
@@ -376,8 +368,8 @@ export function distribution(values: number[]): Distribution {
   const sum = values.reduce((a, b) => a + b, 0);
   return {
     mean: sum / values.length,
-    median: percentile(values, 0.5),
-    p90: percentile(values, 0.9),
+    median: (percentile(values, 50) ?? 0),
+    p90: (percentile(values, 90) ?? 0),
     max: Math.max(...values),
   };
 }

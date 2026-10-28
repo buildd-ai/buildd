@@ -120,9 +120,10 @@ export function accountLimitRefusal(opts: { code: ClaimAccountLimitCode; limit: 
  * runner claims only into a free slot of its own. With no live runner
  * reporting, the account's own limit applies, as before. `maxConcurrentWorkers`
  * on the account used to be the only number, so a runner set to 9 slots was
- * refused at the account default of 3.
+ * refused at the account default of 3. A runner set to 0 reports 0: it
+ * adds nothing, and is not "not reporting" (spec 97b1bd0b R-18).
  */
 export function accountWorkerSlotLimit(accountMax: number, liveRunnerSlots: readonly number[]): number {
-  const reported = liveRunnerSlots.filter(n => Number.isInteger(n) && n >= 1);
+  const reported = liveRunnerSlots.filter(n => Number.isInteger(n) && n >= 0);
   return reported.length > 0 ? reported.reduce((a, b) => a + b, 0) : accountMax;
 }

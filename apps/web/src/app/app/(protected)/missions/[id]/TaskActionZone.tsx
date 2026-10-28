@@ -386,6 +386,11 @@ export default function TaskActionZone({
             >
               {retrying === 'same' ? 'Retrying…' : `Retry${backend ? ` on ${backendDisplayName(backend)}` : ''}`}
             </button>
+            {has('cancel') && (
+              <button type="button" data-action="cancel" onClick={() => act('cancel')} disabled={starting || acting !== null} className={QUIET_BTN}>
+                {acting === 'cancel' ? 'Cancelling…' : 'Cancel'}
+              </button>
+            )}
             {has('switch_backend') && otherBackend && (
               <button
                 type="button"
@@ -404,7 +409,7 @@ export default function TaskActionZone({
               </Link>
             )}
           </div>
-          {retryError && <p className="font-mono text-meta text-status-error">{retryError}</p>}
+          {(retryError || actError) && <p className="font-mono text-meta text-status-error">{retryError || actError}</p>}
         </div>
       )}
 
@@ -672,7 +677,7 @@ function startsAnyway(refusal: GateRefusal | null | undefined): boolean {
 }
 
 /** The declared blockers the person saw: a prerequisite that clears meanwhile is not a reason to confirm again. */
-function seenDeclared(refusal: GateRefusal): { seenBlockers?: string[] } {
+export function seenDeclared(refusal: GateRefusal): { seenBlockers?: string[] } {
   const ids = (refusal.waitingReasons ?? []).filter(r => r.kind === 'dep_declared' && r.blocker).map(r => r.blocker!.id);
   return ids.length > 0 ? { seenBlockers: ids } : {};
 }

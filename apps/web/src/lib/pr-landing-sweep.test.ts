@@ -336,6 +336,36 @@ describe('runLandingSweep — bounded', () => {
     expect(dueStore.has(dueMember(ref(3)))).toBe(true);
   });
 
+  // 36f5fc74: with the control-plane budget spent, every PR after it was refused its
+  // refresh and recorded as stranded, several times an hour. Stop there instead.
+  it('stops once the pass has spent its control-plane budget and leaves the rest due', async () => {
+    addPr(1);
+    addPr(2);
+    addPr(3);
+    let left = 30_000;
+    const deps = makeDeps({
+      land: async (input) => {
+        calls.land.push(input);
+        left = 0;
+        return { kind: 'waiting_ci', headSha: 'head1' };
+      },
+      controlPlaneBudgetLeft: () => left,
+    });
+    const res = await runLandingSweep({ source: 'floor' }, deps);
+    expect(calls.land).toHaveLength(1);
+    expect(res.deferred).toBe(2);
+    expect(res.controlPlaneSpent).toBe(true);
+    for (const n of [2, 3]) expect(dueStore.get(dueMember(ref(n)))).toBeLessThanOrEqual(clock);
+  });
+
+  it('outside a pass (no budget) the control plane never stops it', async () => {
+    addPr(1);
+    addPr(2);
+    const res = await runLandingSweep({ source: 'floor' }, makeDeps({ controlPlaneBudgetLeft: () => null }));
+    expect(calls.land).toHaveLength(2);
+    expect(res.controlPlaneSpent).toBe(false);
+  });
+
   it('enumerates the floor with a hard cap and reports truncation', async () => {
     for (let i = 1; i <= LANDING_FLOOR_ENUMERATION_CAP + 1; i++) floorRefs.push(ref(i));
     for (const r of floorRefs) prs.set(r.prNumber, { ...open(), outcome: { kind: 'needs_human', cause: 'size_cap', reason: 'x' } });

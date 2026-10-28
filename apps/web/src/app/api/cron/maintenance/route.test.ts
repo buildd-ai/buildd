@@ -42,6 +42,10 @@ const mockStaleWorkers = mock(async (_now: Date) => { calls.push('stale-workers'
 const mockPathClaims = mock(async () => { calls.push('path-claims'); return 0; });
 mock.module('./stale-workers', () => ({ runStaleWorkerCleanup: mockStaleWorkers }));
 mock.module('./path-claims', () => ({ sweepAbandonedPathClaims: mockPathClaims }));
+const mockGuessedEdges = mock(async () => { calls.push('guessed-edges'); return 0; });
+mock.module('./guessed-edges', () => ({ sweepGuessedEdges: mockGuessedEdges }));
+const mockLanes = mock(async (_now: Date) => { calls.push('lanes'); return 0; });
+mock.module('./lanes', () => ({ sweepSerialLanes: mockLanes }));
 const mockDetach = mock(async (_opts: unknown) => { calls.push('interactive-detach'); return 0; });
 mock.module('@/lib/interactive-detach', () => ({ detachInteractiveWorkersOfEndedTasks: mockDetach }));
 const mockUploads = mock(async () => ({ finalized: 2, removed: 1, waiting: 0 }));
@@ -51,6 +55,8 @@ const mockChatAttachments = mock(async (_opts: unknown) => ({ removed: 4, object
 mock.module('@/lib/artifact-attachment-cleanup', () => ({ removeOrphanChatAttachments: mockChatAttachments }));
 const mockTeamFiles = mock(async (_opts: unknown) => ({ removed: 5, objectsRemoved: 5 }));
 mock.module('@/lib/artifact-team-files', () => ({ removeDetachedTeamFiles: mockTeamFiles }));
+const mockSpecSweep = mock(async (_opts?: unknown) => ({ checked: 3, approved: 1, failed: 0 }));
+mock.module('@/lib/specs/auto-approve', () => ({ sweepNoCriteriaChange: mockSpecSweep }));
 
 const { GET } = await import('./route');
 
@@ -85,10 +91,10 @@ describe('maintenance cron — auth', () => {
 });
 
 describe('maintenance cron — the core sweeps', () => {
-  it('runs stale-worker cleanup, abandoned path-claim release, then the ended-task interactive detach', async () => {
+  it('runs stale-worker cleanup, abandoned path-claim release, the ended-task interactive detach, then the guessed-edge strip', async () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
-    expect(calls).toEqual(['stale-workers', 'path-claims', 'interactive-detach']);
+    expect(calls).toEqual(['stale-workers', 'path-claims', 'interactive-detach', 'guessed-edges', 'lanes']);
     expect(mockStaleWorkers.mock.calls[0]![0]).toBeInstanceOf(Date);
   });
 
@@ -96,13 +102,15 @@ describe('maintenance cron — the core sweeps', () => {
     mockStaleWorkers.mockResolvedValueOnce(2);
     mockPathClaims.mockResolvedValueOnce(3);
     mockDetach.mockResolvedValueOnce(1);
+    mockGuessedEdges.mockResolvedValueOnce(4);
+    mockLanes.mockResolvedValueOnce(6);
     const res = await GET(makeRequest());
     const uploads = { finalized: 2, removed: 1, waiting: 0 };
     const chatAttachments = { removed: 4, objectsRemoved: 2 };
     const teamFiles = { removed: 5, objectsRemoved: 5 };
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 });
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 } });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 20, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 } });
+    expect(row).toMatchObject({ ok: true, changed: 25, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 } } });
   });
 
   it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {
@@ -110,6 +118,13 @@ describe('maintenance cron — the core sweeps', () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
     expect((await res.json()).chatAttachments).toEqual({ removed: 0, objectsRemoved: 0 });
+  });
+
+  it('a failing no-criteria-change spec sweep is logged and reads as nothing approved', async () => {
+    mockSpecSweep.mockRejectedValueOnce(new Error('boom'));
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    expect((await res.json()).specsAutoApproved).toEqual({ checked: 0, approved: 0, failed: 0 });
   });
 
   it('a failing deleted-team file sweep is logged and reads as nothing removed', async () => {

@@ -47,8 +47,6 @@ export async function serviceStatusReads(teamId: string, now: number = Date.now(
     db.select({ userId: teamMembers.userId, role: teamMembers.role }).from(teamMembers).where(eq(teamMembers.teamId, teamId)),
     db.select({ id: secrets.id }).from(secrets)
       .where(teamCredentialWhere({ teamId, purpose: AGENT_CREDENTIAL_PURPOSES.filter(p => p.endsWith('_api_key')) }, ne(secrets.healthStatus, 'revoked'))).limit(1),
-    db.select({ id: secrets.id }).from(secrets)
-      .where(teamCredentialWhere({ teamId, purpose: ['oauth_token', 'claude_credential', 'codex_credential'] })).limit(1),
     db.select({ n: sql<number>`count(*)::int` }).from(tasks).innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
       .where(and(eq(workspaces.teamId, teamId), gte(tasks.createdAt, since))),
   ] as const;
@@ -56,8 +54,8 @@ export async function serviceStatusReads(teamId: string, now: number = Date.now(
   type Q = typeof queries;
   /** `results`: the first round's results, in `queries` order. */
   async function facts(results: readonly unknown[]): Promise<ServiceStatusFacts> {
-    const [recordRows, runnerRows, claimRows, memberRows, keyRows, savedRows, recentRows] = results as [
-      Awaited<Q[0]>, Awaited<Q[1]>, Awaited<Q[2]>, Awaited<Q[3]>, Awaited<Q[4]>, Awaited<Q[5]>, Awaited<Q[6]>,
+    const [recordRows, runnerRows, claimRows, memberRows, keyRows, recentRows] = results as [
+      Awaited<Q[0]>, Awaited<Q[1]>, Awaited<Q[2]>, Awaited<Q[3]>, Awaited<Q[4]>, Awaited<Q[5]>,
     ];
     const recent = recentRows[0];
     const records = recordRows.map(toRootCauseRecord);
@@ -82,7 +80,6 @@ export async function serviceStatusReads(teamId: string, now: number = Date.now(
       members: memberRows,
       tasks: taskRows.map(t => ({ ...t, hasLiveRun: t.hasLiveRun === true })),
       teamHasProviderKey: keyRows.length > 0,
-      teamHasSavedSignIn: savedRows.length > 0,
       recentTaskCount: recent?.n ?? 0,
     };
   }

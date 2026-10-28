@@ -485,6 +485,50 @@ export async function handleCriterionCheckOutcome(
   return { recorded: true, verdict };
 }
 
+/** Finished runs settled per call: the work is a few GitHub reads per run, and what records drops out of the next call. */
+const MAX_SETTLE = 25;
+
+/**
+ * Record the verdicts of a mission's check runs that finished without one.
+ *
+ * A run's verdict is recorded from the runner's report when the report event
+ * lands (`spec-check-subscribers.ts`). That is one delivery: a report that
+ * arrives before the loop history is written, a recorder refused while the
+ * target could not be read, or an event lost in a burst leaves a finished run
+ * with runner evidence and no verdict row, and nothing read it again. Mission
+ * df808193 had twenty of twenty-one runs at its integrated target end that way
+ * and stayed unverified at a target nothing re-checked.
+ *
+ * Idempotent: a run is attempted only while no verdict names it, and
+ * `handleCriterionCheckOutcome` re-validates everything it did the first time
+ * (the run is what dispatch filed, the evidence is the runner's, the commit is
+ * current). A single run carries its evidence in its loop history; a batch run
+ * only has what its worker stored, so one with no stored report is left alone
+ * rather than re-reported as a checker fault on every pass.
+ */
+export async function settleFinishedCheckRuns(missionId: string): Promise<{ settled: number; attempted: number }> {
+  if (!isUuid(missionId)) return { settled: 0, attempted: 0 };
+  const terminal = sql.join(TERMINAL_TASK_STATUSES.map((st) => sql`${st}`), sql`, `);
+  const rows = await db.select({ id: tasks.id }).from(tasks)
+    .where(and(
+      eq(tasks.missionId, missionId),
+      sql`${tasks.status} IN (${terminal})`,
+      sql`(${tasks.context}->'specCriterionCheck' IS NOT NULL OR (${tasks.context}->'specCriterionBatch' IS NOT NULL AND EXISTS (SELECT 1 FROM ${workers} w WHERE w.task_id = ${tasks.id} AND w.verification_evidence IS NOT NULL)))`,
+      sql`NOT EXISTS (SELECT 1 FROM ${specOutcomeVerdicts} v WHERE v.mission_id = ${missionId}::uuid AND v.evidence->>'verificationTaskId' = ${tasks.id}::text)`,
+    ))
+    .orderBy(desc(tasks.createdAt))
+    .limit(MAX_SETTLE);
+  let settled = 0;
+  for (const r of rows) {
+    const outcome = await handleCriterionCheckOutcome(r.id).catch((err) => {
+      console.error(`[spec-checks] settling run ${r.id} failed:`, err instanceof Error ? err.message : err);
+      return { recorded: false as const };
+    });
+    if (outcome.recorded) settled++;
+  }
+  return { settled, attempted: rows.length };
+}
+
 type BatchOutcome = { recorded: boolean; verdicts?: Record<string, string>; checkerFault?: CheckerFaultKind; reason?: string };
 
 /** The runner's report stored on the run's newest worker, for a call that did not pass it. */

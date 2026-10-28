@@ -84,8 +84,10 @@ import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
 import MissionBranchPanel from './MissionBranchPanel';
 import { branchPanelHasAction } from '@/lib/mission-branch-panel';
-import { waiverActorEmails, waiverActorName } from '@/lib/mission-checks';
+import { waiverActorEmails, waiverActorName, isBuildComplete } from '@/lib/mission-checks';
 import MissionVisualRecord from './MissionVisualRecord';
+import MissionFinalScreens from './MissionFinalScreens';
+import { finalScreens } from '@/lib/visual-review-final-screens';
 import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import { loadMissionEvidence } from '@/lib/specs/mission-evidence';
@@ -399,7 +401,7 @@ async function MissionDetailBody({
   const allTasksCount = (mission.tasks || []).filter(t => t.taskClass !== 'attempt').length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
-  const { totalTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
+  const { totalTasks, completedTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
   // Option A′: the mission integration PR is a different object from the task
   // PRs, and no progress counter sees it — `computeMissionProgress` counts
   // deliverable tasks only, and `awaitingMerge` counts task PRs, which for an
@@ -502,7 +504,7 @@ async function MissionDetailBody({
         criteriaCount: Array.isArray(missionCriteria) ? missionCriteria.length : 0,
         overall: (missionCriteriaOverall as any) ?? null,
         items: criteriaStateItems as any,
-        completionAttempted: progress !== undefined && progress >= 100,
+        completionAttempted: isBuildComplete({ done: completedTasks, total: totalTasks }),
       })
     : null;
 
@@ -1409,6 +1411,7 @@ async function MissionDetailBody({
     >
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
+      {missionMergedAt.length > 0 && <MissionFinalScreens missionId={id} screens={finalScreens(boardVisual)} />}
       {content}
       {layout !== 'board' && <div className="mt-6"><LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed /></div>}
       <div data-testid="mission-board-footer" className="mt-10">

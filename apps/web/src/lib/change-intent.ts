@@ -18,9 +18,7 @@ import { fireGateEvent, GATE_SLUGS } from './gate-ledger';
 // ── Surface matching ─────────────────────────────────────────────────────────
 
 export { matchesSurface } from './surface-ordering-config';
-import { matchesSurface, resolveSerializedSurfaces } from './surface-ordering-config';
-import { overlapIsHard } from './hard-overlap-surfaces';
-import type { ManifestOverlapKind } from '@buildd/core/path-overlap';
+import { matchesSurface } from './surface-ordering-config';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -47,17 +45,6 @@ export function resolveMatchedSurfaces(
 }
 
 // ── Sequence-namespace anchor injection ──────────────────────────────────────
-
-/**
- * Is this overlap a hard edge for the workspace? Used by the creation-time
- * hard/soft overlap split (`partitionOverlapEdges`): a serialized surface makes
- * even a prefix-only overlap a hard edge; a generated file or explicit hotspot
- * makes a same-file overlap hard (lib/hard-overlap-surfaces.ts). A malformed
- * config reads as hard (fail toward the edge).
- */
-export function overlapTouchesSerializedSurface(paths: string[], gitConfig: WorkspaceGitConfig | null | undefined, kind: ManifestOverlapKind = 'prefix'): boolean {
-  return overlapIsHard(paths, kind, gitConfig, resolveSerializedSurfaces);
-}
 
 // The anchor rule lives in core (the creation-manifest apply path needs it
 // too); re-exported here so existing callers keep their import.

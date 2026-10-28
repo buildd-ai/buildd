@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { specCaller } from '@/lib/specs/caller';
 import { reach } from '@/lib/specs/store';
 import { criteriaForEvidence, evidenceForCriterion, type EvidenceKind } from '@/lib/specs/verdict-provenance';
+import { isUuid } from '@/lib/uuid';
 
 const KINDS: readonly EvidenceKind[] = ['test', 'task', 'pr', 'commit'];
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * GET /api/evidence/verdicts?workspaceId=&specRevisionId=&criterionId=: the evidence behind a criterion (forward).
@@ -24,13 +24,13 @@ export async function GET(req: NextRequest) {
   const forward = !!(specRevisionId || criterionId);
   const backward = !!(kind || ref);
   if (forward === backward) return NextResponse.json({ error: 'give either specRevisionId and criterionId, or kind and ref' }, { status: 400 });
-  if (forward && (!specRevisionId || !UUID_RE.test(specRevisionId) || !criterionId)) {
+  if (forward && (!specRevisionId || !isUuid(specRevisionId) || !criterionId)) {
     return NextResponse.json({ error: 'specRevisionId (a uuid) and criterionId are required' }, { status: 400 });
   }
   if (backward && (!kind || !KINDS.includes(kind as EvidenceKind) || !ref)) {
     return NextResponse.json({ error: `kind (${KINDS.join(', ')}) and ref are required` }, { status: 400 });
   }
-  if (!UUID_RE.test(workspaceId) || !(await reach(caller, workspaceId, false))) {
+  if (!isUuid(workspaceId) || !(await reach(caller, workspaceId, false))) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
   if (forward) return NextResponse.json({ evidence: await evidenceForCriterion(workspaceId, specRevisionId!, criterionId!) });

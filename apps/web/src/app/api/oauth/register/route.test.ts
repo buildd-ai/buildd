@@ -2,8 +2,13 @@ import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // storage.createClient(): db.insert().values() — no real DB in unit tests.
+// storage.countClientsCreatedSince(): db.select().from().where()
+let recentClients = 0;
 mock.module('@buildd/core/db', () => ({
-  db: { insert: () => ({ values: async () => undefined }) },
+  db: {
+    insert: () => ({ values: async () => undefined }),
+    select: () => ({ from: () => ({ where: async () => [{ count: recentClients }] }) }),
+  },
 }));
 
 let hits = 0;
@@ -92,8 +97,19 @@ describe('registration hardening', () => {
     expect(counterKeys[0]).not.toBe(counterKeys[1]);
     expect(counterKeys[0]).not.toContain('192.0.2.1');
   });
-  it('returns a retryable 503 if the shared limiter is unavailable', async () => {
+  // With the per-IP limiter down (e.g. its Redis quota spent), registration
+  // must not stop for everyone: a connector setup cannot finish without it.
+  // It falls back to a global cap counted in the clients table, so an outage
+  // still never lifts the limit.
+  it('keeps registering under a global cap when the per-IP limiter is unavailable', async () => {
     limiterUnavailable = true;
+    recentClients = 0;
+    const res = await POST(registerRequest({ redirect_uris: ['https://example.com/cb'] }));
+    expect(res.status).toBe(201);
+  });
+  it('returns a retryable 503 once the global fallback cap is reached', async () => {
+    limiterUnavailable = true;
+    recentClients = 1_000_000;
     const res = await POST(registerRequest({ redirect_uris: ['https://example.com/cb'] }));
     expect(res.status).toBe(503);
     expect(res.headers.get('retry-after')).toBe('60');

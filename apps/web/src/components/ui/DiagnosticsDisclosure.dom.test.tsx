@@ -47,15 +47,15 @@ function openAll() {
 }
 
 const REASON: WaitingReason = {
-  kind: 'pr_overlap_live',
-  class: 'coordination',
+  kind: 'mission_concurrent',
+  class: 'capacity',
   strength: 'hard',
   intent: 'intentional',
-  blocker: { type: 'pr', id: 'pr-1', label: 'PR #12', href: 'https://github.com/o/r/pull/12' },
+  blocker: { type: 'mission', id: 'm-1', label: 'the mission limit', href: '/app/missions/m-1' },
   provenance: { source: 'ledger', derivedFrom: 'claim_loop_deferral', firstSeenAt: '2026-10-17T10:00:00Z' },
-  because: 'both edit packages/core/db/schema.ts',
-  releasesWhen: { event: 'path_claim.released', text: 'that PR merges, closes or narrows its files' },
-  action: { owner: 'agent', force: { scope: 'member', lifts: 'pr_overlap_live', railsRemaining: [], mechanism: 'start_context' } },
+  because: 'the mission runs at most 2 tasks at once and 2 are running',
+  releasesWhen: { event: 'slot.freed', text: 'another task in the mission finishes' },
+  action: { owner: 'system', force: { scope: 'member', lifts: 'mission_concurrent', railsRemaining: [], mechanism: 'start_context' } },
 } as WaitingReason;
 
 describe('canSeeDiagnostics', () => {
@@ -98,10 +98,10 @@ describe('WaitingLine adopts it', () => {
     render(h(DiagnosticsAudienceProvider, { visible: false }, h(WaitingLine, { reasons: [REASON] })));
     openAll();
     const text = container.textContent ?? '';
-    expect(text).toContain('both edit packages/core/db/schema.ts');
-    expect(text).toContain('starts when that PR merges');
+    expect(text).toContain('the mission runs at most 2 tasks at once and 2 are running');
+    expect(text).toContain('starts when another task in the mission finishes');
     expect(container.querySelector('[data-testid="task-waiting-diagnostics"]')).toBeNull();
-    for (const internal of ['pr_overlap_live', 'override', 'claim log', 'claim_loop_deferral', 'Diagnostics', 'forced']) {
+    for (const internal of ['mission_concurrent', 'override', 'claim log', 'claim_loop_deferral', 'Diagnostics', 'forced']) {
       expect(text).not.toContain(internal);
     }
   });
@@ -110,10 +110,10 @@ describe('WaitingLine adopts it', () => {
     render(h(DiagnosticsAudienceProvider, { visible: true }, h(WaitingLine, { reasons: [REASON] })));
     openAll();
     const diag = container.querySelector('[data-testid="task-waiting-diagnostics"]')?.textContent ?? '';
-    expect(diag).toContain('pr_overlap_live');
+    expect(diag).toContain('mission_concurrent');
     expect(diag).toContain('override: member');
     expect(diag).toContain('Source: claim log');
     expect(diag).toContain('first seen 2026-10-17T10:00:00Z');
-    expect(container.textContent).toContain('both edit packages/core/db/schema.ts');
+    expect(container.textContent).toContain('the mission runs at most 2 tasks at once and 2 are running');
   });
 });

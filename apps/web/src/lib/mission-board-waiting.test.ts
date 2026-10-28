@@ -60,9 +60,9 @@ describe('waitingKindFor', () => {
     expect(waitingKindFor(task({ openDeclared: 1 }), { ...MISSION_FREE, budgetExhausted: true })).toBe('mission_budget');
   });
 
-  it('declared dependencies before inferred ordering', () => {
+  it('an edge stored as inferred still holds as a declared dependency until the repair strips it', () => {
     expect(waitingKindFor(task({ openDeclared: 1, openInferred: 1 }), MISSION_FREE)).toBe('dep_declared');
-    expect(waitingKindFor(task({ openInferred: 2 }), MISSION_FREE)).toBe('dep_inferred');
+    expect(waitingKindFor(task({ openInferred: 2 }), MISSION_FREE)).toBe('dep_declared');
   });
 
   it('a ready task in a local mission waits for a local session, not a dependency', () => {
@@ -73,7 +73,9 @@ describe('waitingKindFor', () => {
   it('otherwise the claim loop\'s last deferral, and nothing when there is none', () => {
     expect(waitingKindFor(task({ deferralReason: 'mission_budget' }), MISSION_FREE)).toBe('mission_budget');
     expect(waitingKindFor(task({ deferralReason: 'mission_concurrent' }), MISSION_FREE)).toBe('mission_concurrent');
-    expect(waitingKindFor(task({ deferralReason: 'path_overlap' }), MISSION_FREE)).toBe('pr_overlap_live');
+    // Only a lane holds on overlap at claim (spec: Overlap scheduling, R-2).
+    expect(waitingKindFor(task({ deferralReason: 'path_overlap' }), MISSION_FREE)).toBe('lane');
+    expect(waitingKindFor(task({ deferralReason: 'soft_overlap' }), MISSION_FREE)).toBeNull();
     expect(waitingKindFor(task({ deferralReason: 'something_new' }), MISSION_FREE)).toBeNull();
     expect(waitingKindFor(task(), MISSION_FREE)).toBeNull();
   });
@@ -93,7 +95,23 @@ describe('combineGateFacts', () => {
       mission: MISSION_FREE,
     });
     expect(facts.releasedEdges).toEqual([{ dependentId: 'b', dependencyId: 'a', arm: 'early_release' }]);
-    expect(facts.waitingKinds).toEqual({ c: 'dep_declared', d: 'dep_inferred', e: 'mission_concurrent' });
+    expect(facts.waitingKinds).toEqual({ c: 'dep_declared', d: 'dep_declared', e: 'mission_concurrent' });
+  });
+
+  // Spec: Overlap scheduling, AC-10: the live wait from the claim route's own query decides over the ledger.
+  it('a task\'s live queue wait decides its kind; a slot wait has none', () => {
+    const facts = combineGateFacts({
+      edges: [edge({ dependent_id: 'c', dependency_id: 'a' })],
+      pending: [{ id: 'c', deferred: false, held: false }, { id: 'l', deferred: false, held: false }, { id: 's', deferred: false, held: false }],
+      deferrals: [{ taskId: 's', reason: 'path_overlap' }],
+      mission: MISSION_FREE,
+      queueWaits: new Map([
+        ['c', { kind: 'slot' as const, noRunnerReason: null }],
+        ['l', { kind: 'lane' as const, lane: 'migration', position: 2, holderTaskId: 'h' }],
+        ['s', { kind: 'slot' as const, noRunnerReason: null }],
+      ]),
+    });
+    expect(facts.waitingKinds).toEqual({ l: 'lane' });
   });
 
   it('a held task reads held even when every edge is released', () => {

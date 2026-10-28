@@ -12,7 +12,7 @@ import {
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
-import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord } from '@buildd/shared';
+import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord, activeRunnerHold } from '@buildd/shared';
 import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from './runner-beats';
 import { classifyRunnerOwnership, isViewersPersonalRunner } from './runner-ownership';
 import { liveLinkCondition } from './granted-links';
@@ -49,7 +49,7 @@ export async function getRunnerHeartbeats(
   // Relevance (selectRelevantRunnerAccounts) is decided in the query itself
   // (spec 3ef37387 R-23): the account is this team's, holds a live claim link
   // to a scoped workspace, or has worked in one. Only the columns the page
-  // shows come back; of the environment, only the two keys it reads.
+  // shows come back; of the environment, only the keys it reads.
   const cutoff = new Date(Date.now() - RUNNER_STALE_CUTOFF_MS);
   const wsList = sql.join(workspaceIds.map(id => sql`${id}::uuid`), sql`, `);
   const rows = await db
@@ -68,6 +68,10 @@ export async function getRunnerHeartbeats(
       desiredSlotsOrigin: workerHeartbeats.desiredSlotsOrigin,
       desiredSlotsSetBy: workerHeartbeats.desiredSlotsSetBy,
       desiredSlotsSetAt: workerHeartbeats.desiredSlotsSetAt,
+      desiredPaused: workerHeartbeats.desiredPaused,
+      desiredPauseOrigin: workerHeartbeats.desiredPauseOrigin,
+      desiredPauseSetBy: workerHeartbeats.desiredPauseSetBy,
+      desiredPauseSetAt: workerHeartbeats.desiredPauseSetAt,
       // Owners and admins of a runner's team may change its slots (R-23); in the
       // same query so the Health budget does not pay another round trip.
       viewerCanEditSlots: viewerUserId
@@ -76,7 +80,7 @@ export async function getRunnerHeartbeats(
       // isSharedRunner in SQL: more than one person across the runner's own
       // team and the team it serves here.
       shared: sql<boolean>`(select count(distinct ${teamMembers.userId}) from ${teamMembers} where ${teamMembers.teamId} in (${accounts.teamId}, ${teamId}::uuid)) > 1`,
-      environment: sql<{ envKeys?: string[]; isolation?: unknown } | null>`jsonb_build_object('envKeys', ${workerHeartbeats.environment}->'envKeys', 'isolation', ${workerHeartbeats.environment}->'isolation')`,
+      environment: sql<{ envKeys?: string[]; isolation?: unknown; hold?: unknown } | null>`jsonb_build_object('envKeys', ${workerHeartbeats.environment}->'envKeys', 'isolation', ${workerHeartbeats.environment}->'isolation', 'hold', ${workerHeartbeats.environment}->'hold')`,
       account: {
         name: accounts.name,
         teamId: accounts.teamId,
@@ -130,6 +134,13 @@ export async function getRunnerHeartbeats(
         setBy: hb.desiredSlotsSetBy ?? null,
         setAt: hb.desiredSlotsSetAt ? new Date(hb.desiredSlotsSetAt).toISOString() : null,
         canEdit: !!hb.viewerCanEditSlots,
+      },
+      pause: {
+        held: activeRunnerHold(hb.environment) !== null,
+        desired: hb.desiredPaused ?? null,
+        origin: hb.desiredPauseOrigin ?? null,
+        setBy: hb.desiredPauseSetBy ?? null,
+        setAt: hb.desiredPauseSetAt ? new Date(hb.desiredPauseSetAt).toISOString() : null,
       },
     }));
 }

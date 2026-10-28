@@ -1,6 +1,6 @@
 import { TERMINAL_TASK_STATUSES as SHARED_TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, missionNotes, workers } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, missionNotes, workers, workspaces } from '@buildd/core/db/schema';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
@@ -17,7 +17,9 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { isSurfaceAuditTask, surfaceAuditMissingReason, surfaceAuditPendingReason } from '@buildd/core/surface-audit';
-import { evaluateSurfaceAuditGate, surfaceAuditWaived } from '@/lib/mission-surface-audit-gate';
+import { evaluateSurfaceAuditGate, surfaceAuditWaived, visualReviewModeOf } from '@/lib/mission-surface-audit-gate';
+import { openFindingsOf, reviewExhausted, type OpenVisualFinding } from '@/lib/visual-review-model';
+import { carriedFindingsLines, fileCarriedSurfaceFixes } from '@/lib/visual-review-carry';
 import type { VisualImpactAssessment } from '@/lib/workflow/visual-review-impact';
 import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
 import { after } from 'next/server';
@@ -175,6 +177,12 @@ export interface MissionCompletionDecision {
    */
   visualReviewHold?: VisualReviewHold | null;
   /**
+   * Policy `automatic`: the review ran out of automatic rounds, so the open
+   * screens no longer hold the mission. They ship with it and are filed as
+   * `[surface fix]` tasks on trunk (`completeMission`). Strict keeps the hold.
+   */
+  carriedFindings?: OpenVisualFinding[];
+  /**
    * The mission's standards (Living Specs D-43) that do not pass, set whenever
    * the goal criteria passed and a standard did not, in shadow too.
    * `enforced` is true only under STANDARDS_GATE=enforce, where the refusal
@@ -220,9 +228,16 @@ export function visualReviewGateEnforced(): boolean {
 async function visualReviewHoldFor(
   mission: { id: string; workspaceId?: string | null },
   loadModel: () => Promise<VisualReviewModel>,
+  carry?: (findings: OpenVisualFinding[]) => void,
+  mode?: string | null,
 ): Promise<VisualReviewHold | null> {
   try {
     const model = await loadModel();
+    // `automatic` stops asking once the rounds are spent: the leftovers ship and are filed on trunk.
+    if (mode === 'automatic' && reviewExhausted(model)) {
+      carry?.(openFindingsOf(model));
+      return null;
+    }
     const cells = model.summary.awaitingHuman;
     if (cells === 0 && !model.roundCapOpen) return null;
     return { cells, roundCapOpen: model.roundCapOpen, enforced: visualReviewGateEnforced() };
@@ -463,6 +478,7 @@ export async function canCompleteMission(
     visualReviewHold: null as VisualReviewHold | null,
     standardsHold: null as StandardsHold | null,
     surfaceAuditAssessment: null as VisualImpactAssessment | null,
+    carriedFindings: undefined as OpenVisualFinding[] | undefined,
   };
 
   if (!mission) {
@@ -873,7 +889,8 @@ export async function canCompleteMission(
   // A person's standing Skip holds until they withdraw it (spec 072de598 I-18):
   // findings a later round raised are information under it, never a hold.
   if (hasAudit && !(await surfaceAuditWaived(mission as { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null }))) {
-    const hold = await visualReviewHoldFor(mission, loadModel);
+    const mode = await visualReviewModeOf(mission as { autoSurfaceAudit?: boolean | null; workspaceId?: string | null });
+    const hold = await visualReviewHoldFor(mission, loadModel, findings => { base.carriedFindings = findings; }, mode);
     if (hold) {
       base.visualReviewHold = hold;
       const what = [
@@ -1159,6 +1176,23 @@ export async function completeMissionIfVerified(
     }
   }
 
+  // Policy `automatic`: what the review left open ships with the mission, filed as fixes on trunk and listed below.
+  let carriedLines: string[] = [];
+  if (finalDecision.carriedFindings && finalDecision.carriedFindings.length > 0) {
+    try {
+      const row = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { workspaceId: true } });
+      const workspace = row?.workspaceId
+        ? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, row.workspaceId)) })
+        : null;
+      const fixes = workspace
+        ? await fileCarriedSurfaceFixes({ missionId, workspace: workspace as { id: string }, findings: finalDecision.carriedFindings })
+        : [];
+      carriedLines = carriedFindingsLines(fixes);
+    } catch (e) {
+      console.error(`[mission-completion] carried findings failed for ${missionId}:`, e);
+    }
+  }
+
   const statusSummary = Object.entries(finalDecision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
   await postMissionFeedEvent({
     missionId,
@@ -1168,6 +1202,7 @@ export async function completeMissionIfVerified(
       `Deliverables: ${statusSummary || 'none'}\n` +
       `Goal criteria: ${finalDecision.criteriaVerdict.kind === 'value' ? finalDecision.criteriaVerdict.value : `unavailable (${finalDecision.criteriaVerdict.reason})`}` +
       (finalDecision.criteriaEvaluatedAt ? ` (evaluated ${finalDecision.criteriaEvaluatedAt})` : '') +
+      (carriedLines.length > 0 ? `\n${carriedLines.join('\n')}` : '') +
       (opts.predicate ? `\nSignal: ${opts.predicate}` : ''),
     // System is only ever right here because nothing external claimed this —
     // the label names the exact predicate that fired, not just "the engine did it".

@@ -5,7 +5,6 @@ import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { depsGate } from '@/app/api/workers/claim/deps-gate';
-import { evaluateSoftOverlaps } from '@/app/api/workers/claim/soft-overlap-gate';
 import { assertDbConfigured, legacyMigrationSql, q, seedTask, seedWorkspace } from './harness';
 
 // Read the shipped SQL, rather than mirroring the conversion in TypeScript.
@@ -33,7 +32,6 @@ describe('legacy conflict and migration-collision overlap repair', () => {
     const r = await row(id);
     expect(r.depends_on).toEqual([]);
     expect(r.path_declaration).toMatchObject({ overlapPolicy: 'v2', softOverlaps: [{ taskId: holder, paths: [], kind: 'legacy_inferred' }] });
-    expect(evaluateSoftOverlaps({ id, pathManifest: ['packages/core/drizzle'], pathDeclaration: r.path_declaration }, new Map([[holder, { id: holder, status: 'pending', pathManifest: ['packages/core/drizzle/0400_x.sql'], workerStatus: null, title: null }]]), { isHardSurface: () => false, repairSubjectPrs: [{ prNumber: 42, pathManifest: ['packages/core/drizzle'] }] })).toEqual([]);
     const once = await row(id);
     await run();
     expect(await row(id)).toEqual(once);

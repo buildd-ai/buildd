@@ -780,14 +780,24 @@ export function chipForDelivery(v: DeliveryView, legacyChip: ActionChip): Action
 /**
  * S36: Needs You membership for a task whose delivery the kernel owns is the
  * kernel's `needsYou`, never the legacy reviewer gate / note / tier predicate
- * (that only restyles rows the kernel already admits). Landing keeps the
- * legacy predicate because the merge rails stay legacy until Slice C. A task
- * with no view keeps today's predicate untouched.
+ * (that only restyles rows the kernel already admits). The merge door
+ * (APPROVED / LANDING) keeps the legacy predicate because the merge rails stay
+ * legacy until Slice C. A task with no view keeps today's predicate untouched.
  */
 export function kernelInboxMembership(view: DeliveryView | undefined, legacyIncluded: boolean): boolean {
-  if (!view) return legacyIncluded;
-  if (view.owner === 'landing') return legacyIncluded;
-  return view.needsYou;
+  return kernelDecidesInbox(view) ? view.needsYou : legacyIncluded;
+}
+
+const MERGE_DOOR: ReadonlySet<DeliveryView['state']> = new Set(['APPROVED', 'LANDING']);
+
+/**
+ * Whether the kernel's view, not the legacy predicate, decides Needs You. A
+ * delivery parked in the landing lane is owned by `landing` too, but it is
+ * REPAIRING: buildd lands it once the PR ahead of it has merged, so the legacy
+ * "approved, merge is yours" must not page for it (36f5fc74).
+ */
+export function kernelDecidesInbox(view: DeliveryView | undefined): view is DeliveryView {
+  return !!view && !(view.owner === 'landing' && MERGE_DOOR.has(view.state));
 }
 
 /** ESCALATED because a reviewer decided (escalate, or rounds spent without an approval). */

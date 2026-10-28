@@ -94,7 +94,7 @@ mock.module('@/lib/account-workspace-cache', () => ({
 // The team's Codex API key (codex_credential `{api_key}` row). A stored
 // ChatGPT/OAuth login never resolves here: the claim delivers none.
 const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
-mock.module('@/lib/codex-credential', () => ({
+mock.module('@/lib/codex-api-key', () => ({
   resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 
@@ -474,62 +474,20 @@ mock.module('@buildd/core/model-tier-registry', () => ({
   },
 }));
 
-// Hold/start-at-claim shadow (§5b). The real module runs; only its
-// dependencies are swapped per test through `holdStartTest.deps`, and the
-// after-response work is captured so a test can await it. Default: a team
-// that has not opted in, so no other test in this file sees any change.
-const realHoldStart = { ...(await import('./hold-start-shadow')) };
-const holdStartOff = () => ({
-  hasRecent: async () => false,
-  loadHolder: async () => null,
-  // Live gated START (task 7eb191b9): no applied START is on the ledger unless a test says so.
-  findAppliedStart: async () => false,
-  decisionDeps: {
-    resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled', message: 'off' } }) as any,
-    record: async () => {},
-  },
-});
-const holdStartTest = {
-  deps: holdStartOff() as Record<string, any>,
-  scheduled: [] as Promise<void>[],
-};
-mock.module('./hold-start-shadow', () => ({
-  ...realHoldStart,
-  scheduleClaimHoldShadow: (c: any) => realHoldStart.scheduleClaimHoldShadow(c, {
-    ...holdStartTest.deps,
-    schedule: (fn: () => Promise<void>) => { holdStartTest.scheduled.push(fn()); },
-  }),
-  gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
-  openPrStartVerdict: (n: any, g: boolean) => realHoldStart.openPrStartVerdict(n, g, holdStartTest.deps),
-  acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),
-  releaseGatedStartPaths: (i: any) => realHoldStart.releaseGatedStartPaths(i, holdStartTest.deps),
+// Lane paths leased at claim (./start-lease). The real module runs; only its
+// lease primitive is swapped per test through `startLeaseTest.deps`.
+const realStartLease = { ...(await import('./start-lease')) };
+const startLeaseTest = { deps: {} as Record<string, any> };
+mock.module('./start-lease', () => ({
+  ...realStartLease,
+  acquireStartPaths: (i: any) => realStartLease.acquireStartPaths(i, startLeaseTest.deps),
+  releaseStartPaths: (i: any) => realStartLease.releaseStartPaths(i, startLeaseTest.deps),
 }));
 
-// The holders' PR diffs at head and the pair probe are read before the
-// synchronous collector runs. Default: nothing known, so no other test here
-// sees any change.
-const riskEvidenceTest = { prScopes: new Map<number, any>(), probe: null as any, scopeCalls: [] as number[][] };
-mock.module('@/lib/claim-pr-diff-scope', () => ({
-  defaultPrDiffScopeDeps: async () => ({}),
-  prefetchPrDiffScopes: async (input: { prNumbers: number[] }) => {
-    riskEvidenceTest.scopeCalls.push(input.prNumbers);
-    return new Map(input.prNumbers.flatMap(n => (riskEvidenceTest.prScopes.has(n) ? [[n, riskEvidenceTest.prScopes.get(n)] as const] : [])));
-  },
-}));
-mock.module('@/lib/sibling-pair-probe', () => ({ loadPairProbeEvidence: async () => riskEvidenceTest.probe }));
-
-// Soft-overlap holders (./soft-overlap-store): read only when a candidate
-// carries pathDeclaration.softOverlaps. Default: none known.
-const softHoldersTest = { rows: new Map<string, any>() as Map<string, any> | Error, calls: 0 };
 // Open-PR and lease holders that cannot start themselves (./overlap-policy).
 // Default: none; an Error makes the read fail.
 const idleHoldersTest = { ids: new Set<string>() as Set<string> | Error, asked: [] as string[][] };
 mock.module('./soft-overlap-store', () => ({
-  loadSoftOverlapHolders: async (_ids: string[]) => {
-    softHoldersTest.calls++;
-    if (softHoldersTest.rows instanceof Error) throw softHoldersTest.rows;
-    return softHoldersTest.rows;
-  },
   loadIdleHolderIds: async (ids: string[]) => {
     idleHoldersTest.asked.push(ids);
     if (idleHoldersTest.ids instanceof Error) throw idleHoldersTest.ids;
@@ -575,7 +533,6 @@ mock.module('@/lib/hosted-runner-usage-store', () => ({
 }));
 import { POST } from './route';
 import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan';
-import { choice as choiceQ, defineDecision as defineD } from '@buildd/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
 import { claudeLoginSeatKey, runnerSeatKey } from '@/lib/runner-seat-wall';
@@ -9255,14 +9212,11 @@ describe('claim insert — atomic duplicate-worker guard', () => {
 });
 
 /**
- * Idle-runner credential discovery.
- *
- * The claim call is the runner's heartbeat: it polls on a loop whether or not
- * work exists, so the top-level `pendingCredentialRefreshes` is announced on
- * every poll, zero-worker polls included. No claimed worker carries its own
- * list any more (model credentials spec AC-6).
+ * buildd keeps no subscription login, so a claim poll announces none to
+ * refresh: not on a zero-worker poll, not on a claim, even when an old login
+ * row is still sitting in the secrets table.
  */
-describe('claim response — top-level pendingCredentialRefreshes', () => {
+describe('claim response — never announces stored logins', () => {
   const ORIGINAL_KEY = process.env.ENCRYPTION_KEY;
 
   const expiringRow = {
@@ -9331,11 +9285,10 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
       body: { runner: 'idle-runner', ...body },
     }));
 
-  // THE case this change exists for.
-  it('announces credentials on a poll that claims zero workers', async () => {
+  it('announces nothing on a poll that claims zero workers', async () => {
     mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'restricted', teamId: 'team-1' }]);
-    mockTasksFindMany.mockResolvedValue([]); // nothing pending — the idle runner's normal state
+    mockTasksFindMany.mockResolvedValue([]);
 
     const res = await poll();
     const data = await res.json();
@@ -9343,31 +9296,22 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
     expect(res.status).toBe(200);
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics?.reason).toBe('no_pending_tasks');
-    expect(data.pendingCredentialRefreshes).toEqual([
-      { secretId: 'sec-1', purpose: 'claude_credential', expiresAt: '2026-09-03T10:00:00.000Z' },
-    ]);
+    expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 
-  it('announces on the no-slots early return', async () => {
-    const res = await poll({ maxTasks: 0 });
-    const data = await res.json();
-
+  it('announces nothing on the no-slots early return', async () => {
+    const data = await (await poll({ maxTasks: 0 })).json();
     expect(data.diagnostics?.reason).toBe('no_slots');
-    expect(data.pendingCredentialRefreshes).toHaveLength(1);
+    expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 
-  it('announces on the no-workspaces early return', async () => {
-    const res = await poll();
-    const data = await res.json();
-
+  it('announces nothing on the no-workspaces early return', async () => {
+    const data = await (await poll()).json();
     expect(data.diagnostics?.reason).toBe('no_workspaces');
-    expect(data.pendingCredentialRefreshes).toHaveLength(1);
+    expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 
-  // Model credentials spec AC-6: a claimed task is never wired to a stored
-  // login, so it carries no per-worker refresh list. Only the idle broker's
-  // account list remains.
-  it('a claimed task gets no per-worker refresh list; the account list still announces', async () => {
+  it('a claimed task carries no refresh list, per worker or top-level', async () => {
     mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'restricted', teamId: 'team-1' }]);
     mockTasksFindMany.mockResolvedValue([{
@@ -9383,23 +9327,10 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
       set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
     });
 
-    const res = await poll();
-    const data = await res.json();
+    const data = await (await poll()).json();
 
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].pendingCredentialRefreshes).toBeUndefined();
-    expect(data.pendingCredentialRefreshes).toHaveLength(1);
-  });
-
-  it('announces nothing for an account with no team — the scope would be unbounded', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({
-      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api', teamId: null,
-    });
-
-    const res = await poll();
-    const data = await res.json();
-
-    expect(data.diagnostics?.reason).toBe('no_workspaces');
     expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 });
@@ -10548,29 +10479,6 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(event.detail.bypassed.sort()).toEqual(['deps_blocked', 'path_overlap']);
   });
 
-  it('force past a soft overlap: claimed, and the human START is recorded with the holder and paths as calibration data', async () => {
-    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
-    softHoldersTest.rows = new Map([['holder-1', { id: 'holder-1', status: 'in_progress', pathManifest: ['apps/web/src/lib/bun.lock'], workerStatus: 'running', title: 'Holder' }]]);
-    mockTasksFindMany
-      .mockResolvedValueOnce(forceTarget())
-      .mockResolvedValueOnce([task({
-        pathManifest: ['apps/web/src/lib/'],
-        pathDeclaration: { declared: ['apps/web/src/lib/'], source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: [{ taskId: 'holder-1', paths: [], kind: 'prefix' }] },
-      })]);
-    const ctx = claimedContext();
-
-    try {
-      const data = await (await claim({ runner: 'mcp', forceOverride: true }, interactiveHeaders('user-9'))).json();
-      expect(data.workers).toHaveLength(1);
-      expect(ctx().forceClaim.bypassed).toContain('soft_overlap');
-      const forced = bypassEvents().find((e: any) => e.reason === 'force_soft_overlap');
-      expect(forced).toMatchObject({ taskId: 'task-1', workerId: 'worker-1', detail: { holderTaskId: 'holder-1', calibration: 'human_force', verdict: 'deterministic_hold', overlapKind: 'hard_surface' } });
-      expect(forced.detail.paths).toContain('apps/web/src/lib/bun.lock');
-    } finally {
-      softHoldersTest.rows = new Map();
-    }
-  });
-
   it('an ordinary claim drops a previous claim\'s force audit', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
     mockTasksFindMany.mockResolvedValueOnce([task({ context: { forceClaim: { at: 'x', accountId: 'a', userId: null, bypassed: ['deps_blocked'] } } })]);
@@ -10823,57 +10731,10 @@ describe('claim route: interactive session marker', () => {
   });
 });
 
-describe('hold/start at claim (§5b): decided after the response, applied on the next claim', () => {
-  const JEV = 'typesafe/jev-1.13-20260917';
-  const GATED = defineD({
-    id: 'buildd.orchestration_claim_hold',
-    promptVersion: 'test-gated',
-    questions: { action: choiceQ({ question: 'q' }, { HOLD: 'h', START: 's' }) },
-    mode: 'gated',
-    minConfidence: 0.8,
-  });
-
-  const SHADOW = defineD({
-    id: 'buildd.orchestration_claim_hold',
-    promptVersion: 'test-shadow',
-    questions: { action: choiceQ({ question: 'q' }, { HOLD: 'h', START: 's' }) },
-    mode: 'shadow',
-  });
-
-  const rows: any[] = [];
-  function holdStartOn(over: Record<string, any> = {}) {
-    return {
-      hasRecent: async () => false,
-      // This harness routes every db.select() to its in-flight task rows.
-      // Supply the independent policy read so task rows cannot stand in for policy state.
-      loadLearningPolicy: async () => ({
-        delta: .05,
-        minSamplePerArm: 20,
-        minConfidence: .85,
-        fraction: 1,
-        dial: 5,
-        record: { state: 'shifted', since: '2026-01-01', alternateArmId: 'jev_start' },
-      }),
-      // The decision runs after the response; nothing is on the ledger yet.
-      findAppliedStart: async () => false,
-      loadHolder: async () => ({ title: 'Holder', workerStatus: 'completed', lastActivityAt: null, prLifecycle: 'ci_green', baseStale: false }),
-      loadEvidence: async () => ({ conflictHistory: { summary: 'no_history', maxRate: null, files: [] }, predictedChange: null }),
-      decisionDeps: {
-        resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }) as any,
-        call: (async () => ({
-          ok: true,
-          answers: { action: { choice: 'START', confidence: 0.99, distribution: {} } },
-          model: JEV,
-          usage: { inputTokens: 10, outputTokens: 1, costUsd: 0 },
-          latencyMs: 1,
-          attempts: 1,
-        })) as any,
-        record: async (row: any) => { rows.push(row); },
-      },
-      ...over,
-    };
-  }
-
+// Spec: Overlap scheduling: serial lanes and file locks. At claim time only
+// lane paths (migration or schema, the unmergeable list, a workspace hard
+// surface) hold a task; nothing is guessed and no model is asked (R-2, R-3).
+describe('overlap at claim: only lane paths hold', () => {
   function apiAccount() {
     return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
   }
@@ -10934,539 +10795,193 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
   }
 
-  async function claimWith(deps: Record<string, any>, setup: () => void) {
+  const acquired: any[] = [];
+  const acquireOk = async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; };
+  async function claimWith(setup: () => void, deps: Record<string, any> = { acquire: acquireOk }) {
     setup();
-    holdStartTest.deps = deps;
-    holdStartTest.scheduled = [];
-    rows.length = 0;
-    // Per-instance memos (a disabled team is not re-checked for a minute) would
-    // carry the "off" run into the "on" one; each claim here is a fresh instance.
-    realHoldStart.resetClaimHoldMemos();
+    startLeaseTest.deps = deps;
     const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
-    const body = await res.json();
-    await Promise.all(holdStartTest.scheduled);
-    return { status: res.status, body, rows: [...rows], scheduled: holdStartTest.scheduled.length };
+    return { status: res.status, body: await res.json() };
   }
+  const openPr = (status = 'completed', prLifecycleStatus = 'ci_green') => [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status, prLifecycleStatus }];
+  const deferred = (reason: string) => (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).filter((e: any) => e.reason === reason);
+  beforeEach(() => { acquired.length = 0; mockFireDeferralEvent.mockClear(); mockFireGateEvent.mockClear(); });
+  afterEach(() => { startLeaseTest.deps = {}; idleHoldersTest.ids = new Set(); idleHoldersTest.asked = []; });
 
-  /** A scope-undeclared task beside a running scope-undeclared peer of its mission. */
-  const undeclaredBesidePeer = () => arm({
-    tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
-    missions: mission,
-    inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
+  it('a stored soft overlap (older rows) holds nothing: claimed, no soft_overlap deferral, no decision', async () => {
+    const on = await claimWith(() => arm({
+      tasks: [task({
+        pathManifest: ['packages/core/drizzle/0300_x.sql'],
+        pathDeclaration: { declared: ['packages/core/drizzle/0300_x.sql'], source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: [{ taskId: 'holder-1', paths: [], kind: 'same_file' }] },
+      })],
+      inFlight: [{ id: 'holder-1', status: 'in_progress', pathManifest: ['packages/core/drizzle/0300_x.sql'], workerStatus: 'running', title: 'Holder' }],
+    }));
+    expect(on.body.workers).toHaveLength(1);
+    expect(on.body.diagnostics?.deferrals?.soft_overlap ?? 0).toBe(0);
+    expect(deferred('soft_overlap')).toHaveLength(0);
   });
 
-  it('undeclared scope beside an undeclared peer: claimed, nothing asked, nothing recorded, with the capability on or off', async () => {
-    for (const deps of [holdStartOff(), holdStartOn()]) {
-      const r = await claimWith(deps, undeclaredBesidePeer);
-      expect(r.body.workers).toHaveLength(1);
-      expect(r.scheduled).toBe(0);
-      expect(r.rows).toHaveLength(0);
+  it('an open PR sharing a non-lane file does not hold: the task starts alongside it, nothing leased', async () => {
+    const on = await claimWith(() => arm({
+      tasks: [task({ pathManifest: ['apps/web/src/lib/widget.ts'] })],
+      openPrs: openPr(),
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }));
+    expect(on.body.workers).toHaveLength(1);
+    expect(acquired).toHaveLength(0);
+  });
+
+  it.each([
+    ['a lockfile (unmergeable list)', 'bun.lock'],
+    ['the schema', 'packages/core/db/schema.ts'],
+    ['a migration', 'packages/core/drizzle/0300_x.sql'],
+  ])('an open PR on a lane path (%s) holds as path_overlap; nothing is leased', async (_name, path) => {
+    for (const [status, lifecycle] of [['completed', 'ci_green'], ['running', 'pr_open']]) {
+      const on = await claimWith(() => arm({
+        tasks: [task({ pathManifest: [path] })],
+        openPrs: openPr(status, lifecycle),
+        prManifests: [{ id: 'pr-task', pathManifest: [path] }],
+      }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+      expect(acquired).toHaveLength(0);
     }
   });
 
-  const scenarios: Record<string, () => void> = {
-    openPrAfterWorkerEnded: () => arm({
-      tasks: [task()],
-      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
-    }),
-  };
-
-  afterEach(() => { holdStartTest.deps = holdStartOff(); });
-
-  for (const [name, setup] of Object.entries(scenarios)) {
-    it(`${name}: the claim response is identical with the capability on and off, and only "on" records a decision row`, async () => {
-      const off = await claimWith(holdStartOff(), setup);
-      const on = await claimWith(holdStartOn(), setup);
-      expect(on.status).toBe(off.status);
-      expect(on.body).toEqual(off.body);
-      expect(off.body.workers).toHaveLength(0);
-      expect(off.rows).toHaveLength(0);
-      expect(on.rows).toHaveLength(1);
-      expect(on.rows[0]).toMatchObject({
-        capability: 'orchestration_claim',
-        ruleVerdict: 'HOLD',
-        suggested: 'START',
-        // Live: a confident Jev START is applied on the ledger. It only lets
-        // the NEXT claim for the same state through; this response held.
-        effective: 'START',
-        applied: true,
-        mode: 'gated',
-        taskId: 'task-1',
-        workspaceId: 'ws-1',
-        teamId: 'team-1',
-        prNumber: null,
-        experimentArm: 'apply',
-        propensity: 1,
-        candidatePolicyVersion: 'ch1.open_pr_overlap',
-      });
+  it('starting alongside a non-lane PR leases only the task\'s own lane paths first; a refused lease holds', async () => {
+    const setup = () => arm({
+      tasks: [task({ pathManifest: ['apps/web/src/lib/widget.ts', 'bun.lock'] })],
+      openPrs: openPr(),
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
     });
-  }
+    const ok = await claimWith(setup);
+    expect(ok.body.workers).toHaveLength(1);
+    expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['bun.lock'], declare: true }]);
+    const refused = await claimWith(setup, { acquire: async () => ({ kind: 'acquired', inserted: [], insertedIds: [], blocked: ['bun.lock'], pathManifest: null, revision: 1 }) });
+    expect(refused.body.workers).toHaveLength(0);
+    expect(refused.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
+
+  // I-10: the edit-time lock applies at edit time only.
+  it.each([
+    ['advisory leases', { claimPlanner: 'record' }],
+    ['pathClaimEnforcement enforce', { claimPlanner: 'record', pathClaimEnforcement: 'enforce' }],
+  ])('a live lease on a non-lane file does not hold the claim (%s)', async (_name, gitConfig) => {
+    const on = await claimWith(() => arm({
+      tasks: [task({ pathManifest: ['apps/web/src/lib/widget.ts'], workspace: { id: 'ws-1', teamId: 'team-1', gitConfig } })],
+      leases: new Map([['holder-1', ['apps/web/src/lib/widget.ts']]]),
+    }));
+    expect(on.body.workers).toHaveLength(1);
+    expect(on.body.diagnostics?.deferrals?.path_overlap ?? 0).toBe(0);
+  });
+
+  it('a live lease on a lane path holds as path_overlap', async () => {
+    const on = await claimWith(() => arm({
+      tasks: [task({ pathManifest: ['apps/web/bun.lock'] })],
+      leases: new Map([['holder-1', ['apps/web/bun.lock']]]),
+    }));
+    expect(on.body.workers).toHaveLength(0);
+    expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+  });
+
+  // A holder that cannot start itself (pending with a future startAt, or in
+  // a held mission) holds nobody, through an open PR or a lease.
+  describe('a holder that cannot start never holds', () => {
+    const schemaPr = () => arm({
+      tasks: [task({ pathManifest: ['packages/core/db/schema.ts'] })],
+      openPrs: openPr(),
+      prManifests: [{ id: 'pr-task', pathManifest: ['packages/core/db/schema.ts'] }],
+    });
+    const lockLease = () => arm({
+      tasks: [task({ pathManifest: ['apps/web/bun.lock'] })],
+      leases: new Map([['holder-1', ['apps/web/bun.lock']]]),
+    });
+
+    it('an open PR on a lane path holds while its task can start, and not once it cannot', async () => {
+      const live = await claimWith(schemaPr);
+      expect(live.body.workers).toHaveLength(0);
+      expect(live.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+
+      idleHoldersTest.ids = new Set(['pr-task']);
+      const idle = await claimWith(schemaPr);
+      expect(idle.body.workers).toHaveLength(1);
+      expect(idleHoldersTest.asked.at(-1)).toContain('pr-task');
+    });
+
+    it('a live lease on a lane path held by a task that cannot start does not hold', async () => {
+      idleHoldersTest.ids = new Set(['holder-1']);
+      const on = await claimWith(lockLease);
+      expect(on.body.workers).toHaveLength(1);
+      expect(on.body.diagnostics?.deferrals?.path_overlap ?? 0).toBe(0);
+    });
+
+    it('an unreadable holder state fails closed: the lane hold stands', async () => {
+      idleHoldersTest.ids = new Error('db down');
+      const pr = await claimWith(schemaPr);
+      expect(pr.body.workers).toHaveLength(0);
+      const lease = await claimWith(lockLease);
+      expect(lease.body.workers).toHaveLength(0);
+      expect(lease.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+  });
+
+  it.each([
+    ['conflictRetryPrNumber'],
+    ['reviewerRetryPrNumber'],
+    ['ciRetryPrNumber'],
+  ])('preserves the %s own-PR exemption on a lane path: claims', async (column) => {
+    const on = await claimWith(() => arm({
+      tasks: [task({ [column]: 41 })],
+      openPrs: openPr(),
+      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
+    }));
+    expect(on.body.workers).toHaveLength(1);
+  });
+
+  it('preserves the subject-PR exemption on a lane path: claims', async () => {
+    const on = await claimWith(() => arm({
+      tasks: [task({ subjectKind: 'pull_request', subjectPrNumber: 41 })],
+      openPrs: openPr(),
+      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
+    }));
+    expect(on.body.workers).toHaveLength(1);
+  });
 
   it.each([
     ['conflictSurfaces is an object', { conflictSurfaces: { label: 'x', pattern: 'apps', serialize: true } }],
     ['a conflictSurfaces pattern is not a string', { conflictSurfaces: [{ label: 'x', pattern: 42, serialize: true }] }],
     ['sequenceNamespaces is an object', { sequenceNamespaces: { label: 'm', dir: 'db', serialize: true } }],
   ])('a malformed workspace gitConfig (%s) leaves the claim response unchanged: same deferral, no 500', async (_name, gitConfig) => {
-    const openPrs = [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }];
     const prManifests = [{ id: 'pr-task', pathManifest: ['bun.lock'] }];
-    const baseline = await claimWith(holdStartOn(), () => arm({ tasks: [task()], openPrs, prManifests }));
-    const malformed = await claimWith(holdStartOn(), () => arm({
-      tasks: [task({ workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record', ...gitConfig } } })], openPrs, prManifests,
+    const baseline = await claimWith(() => arm({ tasks: [task()], openPrs: openPr(), prManifests }));
+    const malformed = await claimWith(() => arm({
+      tasks: [task({ workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record', ...gitConfig } } })], openPrs: openPr(), prManifests,
     }));
     expect(malformed.status).toBe(200);
     expect(malformed.body).toEqual(baseline.body);
     expect(malformed.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-    expect(malformed.scheduled).toBe(0);
   });
 
-  it('the response never waits on the decision (a model call that never answers)', async () => {
-    let called = false;
-    const hanging = holdStartOn();
-    hanging.decisionDeps.call = (() => { called = true; return new Promise(() => {}); }) as any;
-    scenarios.openPrAfterWorkerEnded();
-    holdStartTest.deps = hanging;
-    holdStartTest.scheduled = [];
-    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
-    expect(res.status).toBe(200);
-    expect((await res.json()).workers).toHaveLength(0);
-    expect(holdStartTest.scheduled).toHaveLength(1);
-    // The call may or may not have started by now; either way the response is out.
-    void called;
-  });
-
-  const noCandidate: Record<string, () => void> = {
-    'a live PR holder (worker running)': () => arm({
-      tasks: [task()],
-      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'running', prLifecycleStatus: 'pr_open' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
-    }),
-    'an exclusive live lease (layer 2)': () => arm({
-      tasks: [task()],
-      leases: new Map([['task-9', ['bun.lock']]]),
-    }),
-    'a migration path': () => arm({
-      tasks: [task({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })],
-      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['packages/core/drizzle/0300_x.sql'] }],
-    }),
-    'a mission concurrency deferral (not advisory)': () => arm({
-      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+  it('a later gate (mission concurrency cap) still applies after an open-PR overlap on non-lane files starts', async () => {
+    const capped = await claimWith(() => arm({
+      tasks: [task({ missionId: 'mission-A', pathManifest: ['apps/web/src/lib/widget.ts'] })],
       missions: [{ ...mission[0], maxConcurrentTasks: 1 }],
       inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['apps/web/src/lib/other.ts'] }],
-    }),
-  };
+      openPrs: openPr(),
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }));
+    expect(capped.body.workers).toHaveLength(0);
+    expect(capped.body.diagnostics?.deferrals?.mission_concurrent).toBe(1);
+  });
 
-  for (const [name, setup] of Object.entries(noCandidate)) {
-    it(`never consults the decision for ${name}`, async () => {
-      const on = await claimWith(holdStartOn(), setup);
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.scheduled).toBe(0);
-      expect(on.rows).toHaveLength(0);
-    });
-  }
-
-  it.each([
-    ['conflictRetryPrNumber'],
-    ['reviewerRetryPrNumber'],
-    ['ciRetryPrNumber'],
-  ])('preserves the %s own-PR exemption: claims, nothing asked', async (column) => {
-    const on = await claimWith(holdStartOn(), () => arm({
-      tasks: [task({ [column]: 41 })],
-      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
+  it('a scope-undeclared task beside an undeclared peer of its mission starts and leases nothing', async () => {
+    const on = await claimWith(() => arm({
+      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+      missions: mission,
+      inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
     }));
     expect(on.body.workers).toHaveLength(1);
-    expect(on.scheduled).toBe(0);
-  });
-
-  it('preserves the subject-PR exemption: claims, nothing asked', async () => {
-    const on = await claimWith(holdStartOn(), () => arm({
-      tasks: [task({ subjectKind: 'pull_request', subjectPrNumber: 41 })],
-      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
-    }));
-    expect(on.body.workers).toHaveLength(1);
-    expect(on.scheduled).toBe(0);
-  });
-
-  it('rolled back (zero applying fraction), the gated START lookup is never made', async () => {
-    let lookups = 0;
-    const on = await claimWith(holdStartOn({ applyingFraction: 0, findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
-    expect(on.body.workers).toHaveLength(0);
-    expect(lookups).toBe(0);
-  });
-
-  describe('gated START (live)', () => {
-    const acquired: any[] = [];
-    const gated = (over: Record<string, any> = {}) => holdStartOn({
-      decision: GATED,
-      applyingFraction: 1,
-      findAppliedStart: async () => true,
-      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; },
-      ...over,
-    });
-    beforeEach(() => { acquired.length = 0; });
-
-    // The model's verdict is recorded, never applied: an open-PR overlap on an
-    // unmergeable surface holds whatever the ledger says.
-    it('an applied Jev START does not lift an unmergeable open-PR overlap: the hold stands, nothing acquired', async () => {
-      let lookups = 0;
-      const on = await claimWith(gated({ findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-      expect(lookups).toBe(0);
-      expect(acquired).toHaveLength(0);
-      // Still asked, so the verdict can be graded.
-      expect(on.rows).toHaveLength(1);
-    });
-
-    it('as shipped (default definition and fraction) an applied START on the ledger still does not let it through', async () => {
-      const on = await claimWith(gated({ decision: undefined, applyingFraction: undefined }), scenarios.openPrAfterWorkerEnded);
-      expect(on.body.workers).toHaveLength(0);
-    });
-
-    // The stale mission-refresh shape: the holder's task manifest was inherited
-    // (older or broader than what its PR changes), so layer 1 lists a file the
-    // PR's diff at head does not touch.
-    describe('open PR whose current diff is disjoint (pr_diff_at_head)', () => {
-      const NOW = new Date().toISOString();
-      const diff = (paths: string[], headSha = 'head-1', currentHeadSha = headSha) => ({ paths, headSha, currentHeadSha, observedAt: NOW });
-      beforeEach(() => { riskEvidenceTest.prScopes = new Map(); riskEvidenceTest.probe = null; riskEvidenceTest.scopeCalls = []; });
-      afterEach(() => { riskEvidenceTest.prScopes = new Map(); riskEvidenceTest.probe = null; });
-
-      it('starts in code: no ledger lookup, no model call, paths acquired exclusively first', async () => {
-        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
-        let lookups = 0;
-        const on = await claimWith(gated({ findAppliedStart: async () => { lookups++; return false; } }), scenarios.openPrAfterWorkerEnded);
-        expect(on.body.workers).toHaveLength(1);
-        expect(lookups).toBe(0);
-        expect(on.rows).toHaveLength(0);
-        expect(riskEvidenceTest.scopeCalls).toEqual([[41]]);
-        expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['bun.lock'], declare: true }]);
-      });
-
-      it('goes back to Jev once the head moves: the diff read at the old head no longer counts', async () => {
-        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts'], 'head-1', 'head-2'));
-        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
-        expect(on.body.workers).toHaveLength(0);
-        expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-        expect(on.rows).toHaveLength(1);
-        expect(acquired).toHaveLength(0);
-      });
-
-      it('holds for Jev when the diff is unknown (nothing cached, read failed)', async () => {
-        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
-        expect(on.body.workers).toHaveLength(0);
-        expect(on.rows).toHaveLength(1);
-      });
-
-      it('holds when the current diff still touches the candidate\'s file', async () => {
-        riskEvidenceTest.prScopes.set(41, diff(['bun.lock']));
-        const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
-        expect(on.body.workers).toHaveLength(0);
-        expect(on.rows).toHaveLength(1);
-      });
-
-      it('a failed exclusive acquisition keeps the hold, like the soft path', async () => {
-        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
-        const on = await claimWith(gated({ acquire: async () => ({ kind: 'conflict', conflict: {}, blocked: [] }) }), scenarios.openPrAfterWorkerEnded);
-        expect(on.body.workers).toHaveLength(0);
-        expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-      });
-
-      it('a live lease on the actual files still wins over a disjoint diff', async () => {
-        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/unrelated.ts']));
-        const on = await claimWith(gated(), () => arm({
-          tasks: [task()],
-          openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-          prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
-          leases: new Map([['task-9', ['bun.lock']]]),
-        }));
-        expect(on.body.workers).toHaveLength(0);
-        expect(acquired).toHaveLength(0);
-      });
-
-      it('a real conflict probe of the pair holds in code, naming the files, even with a disjoint-looking record', async () => {
-        riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['bun.lock'], probedAt: NOW, headsCurrent: true };
-        const on = await claimWith(gated({ findAppliedStart: async () => true }), () => arm({
-          tasks: [task({ conflictRetryPrNumber: 99 })],
-          openPrs: [
-            { workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', branch: 'holder', status: 'completed', prLifecycleStatus: 'ci_green' },
-            { workspaceId: 'ws-1', taskId: 'task-1', prNumber: 99, prUrl: 'https://example.test/pull/99', branch: 'own', status: 'completed', prLifecycleStatus: 'ci_green' },
-          ],
-          prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }, { id: 'task-1', pathManifest: ['bun.lock'] }],
-        }));
-        expect(on.body.workers).toHaveLength(0);
-        expect(on.rows).toHaveLength(0);
-      });
-    });
-
-    it('a shadow definition never applies: no lookup, the hold stands', async () => {
-      let lookups = 0;
-      const on = await claimWith(gated({ decision: SHADOW, findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
-      expect(on.body.workers).toHaveLength(0);
-      expect(lookups).toBe(0);
-      expect(acquired).toHaveLength(0);
-    });
-
-    it('a failed exclusive acquisition keeps the hold', async () => {
-      const on = await claimWith(gated({ acquire: async () => ({ kind: 'conflict', conflict: {}, blocked: [] }) }), scenarios.openPrAfterWorkerEnded);
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-    });
-
-    it('no applied START for this state: the hold stands', async () => {
-      const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
-      expect(on.body.workers).toHaveLength(0);
-    });
-
-    it('still never relaxes a live lease, even with an applied START on record', async () => {
-      const on = await claimWith(gated(), () => arm({
-        tasks: [task()],
-        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-        prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
-        leases: new Map([['task-9', ['bun.lock']]]),
-      }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(acquired).toHaveLength(0);
-    });
-
-    it('a scope-undeclared task starts with no applied START and acquires nothing up front', async () => {
-      let lookups = 0;
-      const on = await claimWith(gated({ findAppliedStart: async () => { lookups++; return false; } }), undeclaredBesidePeer);
-      expect(on.body.workers).toHaveLength(1);
-      expect(lookups).toBe(0);
-      expect(acquired).toHaveLength(0);
-    });
-
-    it('a later gate (mission concurrency cap) still applies after an open-PR overlap on mergeable files starts', async () => {
-      const on = await claimWith(gated(), () => arm({
-        tasks: [task({ pathManifest: ['apps/web/src/lib/widget.ts'] })],
-        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
-      }));
-      expect(on.body.workers).toHaveLength(1);
-      const capped = await claimWith(gated(), () => arm({
-        tasks: [task({ missionId: 'mission-A', pathManifest: ['apps/web/src/lib/widget.ts'] })],
-        missions: [{ ...mission[0], maxConcurrentTasks: 1 }],
-        inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['apps/web/src/lib/other.ts'] }],
-        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
-      }));
-      expect(capped.body.workers).toHaveLength(0);
-      expect(capped.body.diagnostics?.deferrals?.mission_concurrent).toBe(1);
-      expect(acquired).toHaveLength(0);
-    });
-  });
-
-  // Overlap policy (./overlap-policy): a soft overlap on mergeable files starts
-  // in code and the model's answer is recorded, never applied; only an
-  // unmergeable surface holds.
-  describe('soft overlap (same-file or prefix declared overlap, never a dependsOn edge)', () => {
-    const acquired: any[] = [];
-    const soft = (entries: any[], pathManifest: string[] = ['apps/web/src/lib/']) => task({
-      pathManifest,
-      pathDeclaration: { declared: pathManifest, source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: entries },
-    });
-    const holderRow = (over: Record<string, unknown> = {}) => ({ id: 'holder-1', status: 'in_progress', pathManifest: ['apps/web/src/lib/widget.ts'], workerStatus: 'running', title: 'Holder', ...over });
-    const withStart = (applied: boolean, over: Record<string, any> = {}) => holdStartOn({
-      findAppliedStart: async () => applied,
-      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; },
-      ...over,
-    });
-    const answering = (choice: 'HOLD' | 'START') => ({
-      decisionDeps: { ...holdStartOn().decisionDeps, call: (async () => ({ ok: true, answers: { action: { choice, confidence: 0.99, distribution: {} } }, model: JEV, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 })) as any },
-    });
-    const started = () => (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).filter((e: any) => e.reason === 'soft_overlap_start');
-    const softDeferral = () => (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
-    beforeEach(() => {
-      acquired.length = 0; softHoldersTest.rows = new Map([['holder-1', holderRow()]]); softHoldersTest.calls = 0;
-      mockFireGateEvent.mockClear(); mockFireDeferralEvent.mockClear();
-    });
-    afterEach(() => { softHoldersTest.rows = new Map(); });
-
-    it('a same-file overlap on a mergeable file starts though the model answers HOLD: the answer is recorded, it does not decide', async () => {
-      let lookups = 0;
-      const on = await claimWith(withStart(false, { ...answering('HOLD'), findAppliedStart: async () => { lookups++; return false; } }),
-        () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
-      expect(on.body.workers).toHaveLength(1);
-      expect(lookups).toBe(0);
-      // Asked after the response, so the verdict can be graded.
-      expect(on.rows).toHaveLength(1);
-      expect(on.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap', taskId: 'task-1' });
-      // A mergeable file is never leased up front.
-      expect(acquired).toHaveLength(0);
-      expect(softDeferral()).toBeUndefined();
-      const [s] = started();
-      expect(s).toMatchObject({ outcome: 'accepted', taskId: 'task-1', detail: { gate: 'soft_overlap', holderTaskId: 'holder-1', decidedBy: 'rule', overlapKind: 'same_file', areaClass: 'other' } });
-      expect(s.detail.paths).toContain('apps/web/src/lib/widget.ts');
-    });
-
-    it('a directory-only overlap starts in code: no ledger lookup, no model call, nothing leased', async () => {
-      let lookups = 0;
-      const on = await claimWith(withStart(false, { findAppliedStart: async () => { lookups++; return false; } }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
-      expect(on.body.workers).toHaveLength(1);
-      expect(lookups).toBe(0);
-      expect(on.rows).toHaveLength(0);
-      expect(acquired).toHaveLength(0);
-      expect(started()[0]).toMatchObject({ outcome: 'accepted', detail: { decidedBy: 'rule', riskTier: 'low' } });
-    });
-
-    it('a retry whose branch conflicts with the live holder in a pair probe still starts on mergeable files, recorded as high risk', async () => {
-      riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['apps/web/src/lib/widget.ts'], probedAt: new Date().toISOString(), headsCurrent: true };
-      try {
-        const on = await claimWith(withStart(false), () => arm({
-          tasks: [{ ...soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts']), conflictRetryPrNumber: 99 }],
-          openPrs: [{ workspaceId: 'ws-1', taskId: 'task-1', prNumber: 99, prUrl: 'https://example.test/pull/99', branch: 'own-branch', status: 'completed', prLifecycleStatus: 'ci_green' }],
-          prManifests: [{ id: 'task-1', pathManifest: ['apps/web/src/lib/widget.ts'] }],
-        }));
-        expect(on.body.workers).toHaveLength(1);
-        expect(started()[0]).toMatchObject({ detail: { riskTier: 'high', decidedBy: 'rule' } });
-      } finally { riskEvidenceTest.probe = null; }
-    });
-
-    it('a START leases only its unmergeable paths, and a refused lease holds: no ghost START', async () => {
-      const refused = await claimWith(withStart(false, { acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: [], insertedIds: [], blocked: ['bun.lock'], pathManifest: null, revision: 1 }; } }),
-        () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }], ['apps/web/src/lib/', 'bun.lock'])] }));
-      expect(refused.body.workers).toHaveLength(0);
-      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['bun.lock'], declare: true }]);
-    });
-
-    it('a live lease on a mergeable file does not hold; one on an unmergeable file does', async () => {
-      const mergeable = await claimWith(withStart(false), () => arm({
-        tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])],
-        leases: new Map([['holder-1', ['apps/web/src/lib/widget.ts']]]),
-      }));
-      expect(mergeable.body.workers).toHaveLength(1);
-      const lease = started().find((e: any) => e.detail.gate === 'lease_overlap');
-      expect(lease).toMatchObject({ detail: { holderTaskId: 'holder-1', decidedBy: 'rule', paths: ['apps/web/src/lib'] } });
-      const unmergeable = await claimWith(withStart(false), () => arm({
-        tasks: [task({ pathManifest: ['apps/web/bun.lock'] })],
-        leases: new Map([['holder-1', ['apps/web/bun.lock']]]),
-      }));
-      expect(unmergeable.body.workers).toHaveLength(0);
-      expect(unmergeable.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-    });
-
-    // A holder that cannot start itself (pending with a future startAt, or in
-    // a held mission) holds nobody, through an open PR or a lease too.
-    describe('a holder that cannot start never holds', () => {
-      afterEach(() => { idleHoldersTest.ids = new Set(); idleHoldersTest.asked = []; });
-      const schemaPr = () => arm({
-        tasks: [task({ pathManifest: ['packages/core/db/schema.ts'] })],
-        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-        prManifests: [{ id: 'pr-task', pathManifest: ['packages/core/db/schema.ts'] }],
-      });
-      const lockLease = () => arm({
-        tasks: [task({ pathManifest: ['apps/web/bun.lock'] })],
-        leases: new Map([['holder-1', ['apps/web/bun.lock']]]),
-      });
-
-      it('an open PR on an unmergeable file holds while its task can start, and not once it cannot', async () => {
-        const live = await claimWith(withStart(false), schemaPr);
-        expect(live.body.workers).toHaveLength(0);
-        expect(live.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-
-        idleHoldersTest.ids = new Set(['pr-task']);
-        const idle = await claimWith(withStart(false), schemaPr);
-        expect(idle.body.workers).toHaveLength(1);
-        expect(idleHoldersTest.asked.at(-1)).toContain('pr-task');
-        expect(started().find((e: any) => e.detail.gate === 'open_pr_overlap')).toMatchObject({ detail: { holderTaskId: 'pr-task', prNumber: 41 } });
-      });
-
-      it('a live lease on an unmergeable file held by a task that cannot start does not hold', async () => {
-        idleHoldersTest.ids = new Set(['holder-1']);
-        const on = await claimWith(withStart(false), lockLease);
-        expect(on.body.workers).toHaveLength(1);
-        expect(on.body.diagnostics?.deferrals?.path_overlap ?? 0).toBe(0);
-        expect(started().find((e: any) => e.detail.gate === 'lease_overlap')).toMatchObject({ detail: { holderTaskId: 'holder-1' } });
-      });
-
-      it('an unreadable holder state fails closed: the unmergeable hold stands', async () => {
-        idleHoldersTest.ids = new Error('db down');
-        const pr = await claimWith(withStart(false), schemaPr);
-        expect(pr.body.workers).toHaveLength(0);
-        const lease = await claimWith(withStart(false), lockLease);
-        expect(lease.body.workers).toHaveLength(0);
-        expect(lease.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-      });
-    });
-
-    it('under pathClaimEnforcement enforce, every live lease overlap still holds', async () => {
-      const on = await claimWith(withStart(false), () => arm({
-        tasks: [task({ pathManifest: ['apps/web/src/lib/widget.ts'], workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record', pathClaimEnforcement: 'enforce' } } })],
-        leases: new Map([['holder-1', ['apps/web/src/lib/widget.ts']]]),
-      }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
-    });
-
-    it('a ledger read error cannot hold a mergeable overlap: the ledger is not read', async () => {
-      const on = await claimWith(withStart(false, { findAppliedStart: async () => { throw new Error('ledger down'); } }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
-      expect(on.body.workers).toHaveLength(1);
-    });
-
-    it('an unreadable holder set fails closed to a deterministic hold', async () => {
-      softHoldersTest.rows = new Error('db down');
-      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1' }])] }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.body.diagnostics?.deferrals?.soft_overlap).toBe(1);
-      expect(on.rows).toHaveLength(0);
-    });
-
-    it('a legacy inferred edge onto a holder that never started starts, nothing leased', async () => {
-      softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'pending', workerStatus: null })]]);
-      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'legacy_inferred' }], ['apps/web/src/lib/widget.ts'])] }));
-      expect(on.body.workers).toHaveLength(1);
-      expect(acquired).toHaveLength(0);
-    });
-
-    it('two tasks sharing packages/core/drizzle/** serialize: deterministic hold, the model is never asked', async () => {
-      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['packages/core/drizzle/meta/_journal.json'] })]]);
-      const on = await claimWith(withStart(true, answering('START')), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }], ['packages/core/drizzle/'])] }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.rows).toHaveLength(0);
-      expect(acquired).toHaveLength(0);
-      expect(softDeferral()).toMatchObject({ outcome: 'deferred', detail: { holderTaskId: 'holder-1', verdict: 'deterministic_hold', overlapKind: 'migration' } });
-    });
-
-    it('a shared lockfile holds deterministically as an unmergeable surface', async () => {
-      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['bun.lock'] })]]);
-      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['bun.lock'])] }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(softDeferral()).toMatchObject({ detail: { verdict: 'deterministic_hold', overlapKind: 'hard_surface' } });
-    });
-
-    it('a same-file overlap on a migration path holds deterministically: the model is never asked', async () => {
-      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })]]);
-      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['packages/core/drizzle/0300_x.sql'])] }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.rows).toHaveLength(0);
-      expect(acquired).toHaveLength(0);
-    });
-
-    it.each([
-      ['a future startAt', { status: 'pending', workerStatus: null, startAt: new Date(Date.now() + 86_400_000).toISOString() }],
-      ['a held mission', { status: 'pending', workerStatus: null, missionHeld: true }],
-    ])('a holder that cannot start itself (%s) never holds, even on an unmergeable surface', async (_name, over) => {
-      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['packages/core/db/schema.ts'], ...over })]]);
-      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['packages/core/db/schema.ts'])] }));
-      expect(on.body.workers).toHaveLength(1);
-      expect(softDeferral()).toBeUndefined();
-    });
-
-    it('a finished holder releases the soft overlap: the task runs with nothing asked', async () => {
-      softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'completed', workerStatus: 'completed' })]]);
-      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1' }])] }));
-      expect(on.body.workers).toHaveLength(1);
-      expect(on.rows).toHaveLength(0);
-    });
-
-    it('a task with no soft overlaps never reads holders', async () => {
-      await claimWith(withStart(false), () => arm({ tasks: [task()] }));
-      expect(softHoldersTest.calls).toBe(0);
-    });
+    expect(acquired).toHaveLength(0);
   });
 });
 
@@ -11562,22 +11077,19 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   /** The response echoes each task's workspace.gitConfig; drop it so only behaviour is compared. */
   const withoutGitConfig = (r: { status: number; data: any }) => JSON.parse(JSON.stringify(r), (k, v) => (k === 'gitConfig' ? undefined : v));
 
-  // Overlap policy: the planner keeps two tasks apart only on an unmergeable
-  // surface. Two tasks sharing a mergeable file are both claimed, the second
-  // carrying a soft overlap onto the first.
-  it('apply: two tasks sharing apps/web/src/lib/x.ts are both claimed in one poll', async () => {
-    softHoldersTest.rows = new Map([['a', { id: 'a', status: 'pending', pathManifest: ['apps/web/src/lib/x.ts'], workerStatus: null, title: 'A' }]]);
-    try {
-      const { data } = await claim([
-        plannedTask('a', { priority: 5, pathManifest: ['apps/web/src/lib/x.ts'] }),
-        plannedTask('b', {
-          priority: 4, pathManifest: ['apps/web/src/lib/x.ts'],
-          pathDeclaration: { declared: ['apps/web/src/lib/x.ts'], source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: [{ taskId: 'a', paths: ['apps/web/src/lib/x.ts'], kind: 'same_file' }] },
-        }),
-      ]);
-      expect(pickedIds(data)).toEqual(['a', 'b']);
-      expect(mockFireOrderedBehind).not.toHaveBeenCalled();
-    } finally { softHoldersTest.rows = new Map(); }
+  // AC-1 (spec: Overlap scheduling): two pending tasks whose manifests share
+  // a non-lane file are both claimed by a runner with two free slots, even
+  // when one carries soft overlap evidence onto the other from an older row.
+  it('AC-1 apply: two tasks sharing apps/web/src/lib/x.ts are both claimed in one poll', async () => {
+    const { data } = await claim([
+      plannedTask('a', { priority: 5, pathManifest: ['apps/web/src/lib/x.ts'] }),
+      plannedTask('b', {
+        priority: 4, pathManifest: ['apps/web/src/lib/x.ts'],
+        pathDeclaration: { declared: ['apps/web/src/lib/x.ts'], source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: [{ taskId: 'a', paths: ['apps/web/src/lib/x.ts'], kind: 'same_file' }] },
+      }),
+    ]);
+    expect(pickedIds(data)).toEqual(['a', 'b']);
+    expect(mockFireOrderedBehind).not.toHaveBeenCalled();
   });
 
   it('off: an explicit \'off\' touches no planner I/O', async () => {

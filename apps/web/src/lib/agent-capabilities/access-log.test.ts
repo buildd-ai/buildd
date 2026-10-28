@@ -130,3 +130,22 @@ describe('summarizeAccess source', () => {
     });
   });
 });
+
+describe('summarizeAccess database.query', () => {
+  it('every query is its own item with its SQL, row count and duration; refusals too', () => {
+    const q = (min: number, o: Partial<CapabilityRow>) => row(min, { capability: 'database.query', resource: 'grant:g-1', ...o });
+    const items = summarizeAccess([
+      q(0, { sideEffect: { sql: 'select id from tasks', sqlTruncated: false, rowCount: 3, durationMs: 12, truncated: false } }),
+      q(1, { sideEffect: { sql: 'select id from missions', sqlTruncated: false, rowCount: 200, durationMs: 40, truncated: true } }),
+      q(2, { decision: 'refused', reasonCode: 'table_not_allowed', sideEffect: { sql: 'select * from secrets', sqlTruncated: false, rowCount: null, durationMs: null } }),
+    ]);
+    expect(items).toHaveLength(3);
+    expect(items[0]).toMatchObject({ label: 'Database query', source: 'grant', target: 'production database (read-only)', query: { sql: 'select id from tasks', rowCount: 3, durationMs: 12, truncated: false } });
+    expect(items[1]!.query).toMatchObject({ sql: 'select id from missions', truncated: true });
+    expect(items[2]).toMatchObject({ decision: 'refused', reason: 'a table outside the read allowlist', query: { sql: 'select * from secrets', rowCount: null } });
+  });
+
+  it('other rows carry no query field', () => {
+    expect(summarizeAccess([row(0, {})])[0]).not.toHaveProperty('query');
+  });
+});

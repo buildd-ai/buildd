@@ -77,8 +77,7 @@ export async function recordCredentialAuthFailure(
 
 /**
  * Find the active Claude credential for a team, optionally scoped to a
- * workspace: a seat token (oauth_token) first, else the team's Anthropic API
- * key in either storage agent runs read, canonical (`inference_key` + label
+ * workspace: the team's Anthropic API key in either storage agent runs read, canonical (`inference_key` + label
  * `anthropic`) before the legacy `anthropic_api_key`. Team rows only (a
  * personal key is never named). Returns the secretId or null.
  */
@@ -94,7 +93,7 @@ export async function getActiveClaudeSecretId(
     where: sqlWhere(teamCredentialWhere({ teamId, purpose: [...CLAUDE_CREDENTIAL_PURPOSES] }, scopeFilter)),
     columns: { id: true, purpose: true, label: true, userId: true },
   });
-  // Seat token first (more likely to be the active cred), then canonical, then legacy.
+  // Canonical first, then legacy.
   const best = rows
     .map((r) => ({ r, rank: claudeCredentialRank(r) }))
     .filter((x) => x.rank >= 0)

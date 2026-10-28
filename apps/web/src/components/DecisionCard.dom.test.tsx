@@ -86,11 +86,11 @@ afterEach(() => {
 
 const q = (sel: string) => container.querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[];
-const flush = async () => { await act(async () => { await new Promise(r => setTimeout(r, 0)); }); };
+const flush = async () => { await act(async () => { await new Promise(r => setTimeout(r, 20)); }); };
 
 describe('DecisionCard', () => {
   it('reads top to bottom: the task and its age, the why and who waits, the question, two options with effects, then the text buttons', () => {
-    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
     const subject = q('[data-testid="question-subject"]')!;
     expect(subject.textContent).toBe('●Mirror the runner image to Docker Hub· asked 4m ago');
     expect(subject.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/t1');
@@ -118,7 +118,7 @@ describe('DecisionCard', () => {
 
   // Living Spec 1b257609 r2 R-6 to R-9: the projection fills the existing lines, adds no block.
   it('names the waiting work in the summary as links, each fact once, and the expiry in the footer', () => {
-    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
     const links = [...q('[data-testid="decision-waits"]')!.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')]);
     expect(links).toEqual([['The release publishes an image digest', '/app/tasks/d1'], ['A runner bundle on every release', '/app/tasks/d2']]);
     expect(q('[data-testid="decision-expiry"]')!.textContent).toBe('Expires in 3h 30m. Goes with Provide a token.');
@@ -128,14 +128,14 @@ describe('DecisionCard', () => {
   });
 
   it('with no projection the card shows only the agent\'s why and no footer', () => {
-    act(() => root.render(<DecisionCard view={{ ...decision(), waits: null, options: decision().options.map(o => ({ ...o, downstream: null })) }} now={T0} />));
+    act(() => root.render(<DecisionCard view={{ ...decision(), waits: null, options: decision().options.map(o => ({ ...o, downstream: null })) }} now={T0} undoMs={0} />));
     expect(q('[data-testid="decision-waits"]')).toBeNull();
     expect(q('[data-testid="decision-expiry"]')).toBeNull();
     expect(q('[data-testid="decision-option-downstream"]')).toBeNull();
   });
 
   it('a long effect keeps its first clause on the button and the whole as a tip above it', () => {
-    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
     const tip = q('[data-testid="decision-option-tip"]')!;
     expect(tip.getAttribute('role')).toBe('tooltip');
     expect(tip.textContent).toContain('buildd stores it as a team secret scoped to this repo');
@@ -144,8 +144,8 @@ describe('DecisionCard', () => {
     expect(qa('[data-testid="decision-option"]')[0].getAttribute('aria-describedby')).toBe(tip.id);
   });
 
-  it('tapping an option answers the worker and the card collapses to You chose', async () => {
-    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+  it('tapping an option answers the worker and the card collapses to You chose · Undo', async () => {
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
     await act(async () => { qa('[data-testid="decision-option"]')[1].click(); });
     await flush();
     expect(calls[0].url).toContain('/api/workers/w1/respond');
@@ -153,14 +153,72 @@ describe('DecisionCard', () => {
     const card = q('[data-testid="decision-card"]')!;
     expect(card.getAttribute('data-answered')).toBe('true');
     expect(card.textContent).toContain("You chose I'll set them myself");
+    expect(q('[data-testid="decision-undo"]')).toBeNull();
     expect(refreshed).toBe(1);
+  });
+
+  const heldView = (kind: 'worker' | 'note' | 'criteria') => {
+    if (kind === 'worker') return decision();
+    if (kind === 'note') return decisionFromQuestion({
+      key: 'note:n1',
+      question: { headline: 'Keep?', body: null, noteId: 'n1', options: [{ label: 'Keep', description: 'x', recommended: true }, { label: 'Drop', description: 'y', recommended: false }] },
+      task: null, mission: { id: 'm1', title: 'Billing', href: '/app/missions/m1' }, askedAt: T0,
+      answer: { kind: 'note', missionId: 'm1', noteId: 'n1' },
+    });
+    return null;
+  };
+
+  for (const kind of ['worker', 'note'] as const) {
+    it(`${kind}: Undo inside the window cancels the send, so nothing is committed and re-answering sends once`, async () => {
+      act(() => root.render(<DecisionCard view={heldView(kind)!} now={T0} undoMs={150} />));
+      await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
+      expect(q('[data-testid="decision-card"]')!.getAttribute('data-answered')).toBe('true');
+      expect(calls).toHaveLength(0);
+      await act(async () => { q('[data-testid="decision-undo"]')!.click(); });
+      await act(async () => { await new Promise(r => setTimeout(r, 250)); });
+      expect(calls).toHaveLength(0);
+      expect(q('[data-testid="decision-card"]')!.getAttribute('data-answered')).toBeNull();
+      await act(async () => { qa('[data-testid="decision-option"]')[1].click(); });
+      await act(async () => { await new Promise(r => setTimeout(r, 250)); });
+      expect(calls).toHaveLength(1);
+      expect(q('[data-testid="decision-undo"]')).toBeNull();
+    });
+  }
+
+  it('leaving the page inside the window still sends the answer once', async () => {
+    // The held send is kind-agnostic (pick wraps every commit), so the worker and note runs above cover the hold;
+    // here: leaving inside the window still sends exactly once.
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={10_000} />));
+    await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
+    expect(calls).toHaveLength(0);
+    act(() => root.unmount());
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(calls).toHaveLength(1);
+    root = createRoot(container);
+  });
+
+  it('after the window the answer is committed: one send, no Undo, a second tap is not possible', async () => {
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
+    await act(async () => { qa('[data-testid="decision-option"]')[1].click(); });
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(q('[data-testid="decision-undo"]')).toBeNull();
+    expect(q('[data-testid="decision-option"]')).toBeNull();
+  });
+
+  it('already answered: the card shows no Undo', async () => {
+    globalThis.fetch = (async () => ({ ok: false, status: 409, json: async () => ({ error: 'already_answered', recordedAnswer: 'Provide a token' }) }) as Response) as unknown as typeof fetch;
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
+    await act(async () => { qa('[data-testid="decision-option"]')[1].click(); });
+    await flush();
+    expect(q('[data-testid="decision-undo"]')).toBeNull();
   });
 
   it('after an answer, focus moves into the next open card, whatever its testId', async () => {
     act(() => root.render(
       <>
-        <DecisionCard view={decision()} now={T0} testId="needs-you-card" />
-        <DecisionCard view={{ ...decision(), key: 'q:t2' }} now={T0} testId="needs-you-card" />
+        <DecisionCard view={decision()} now={T0} undoMs={0} testId="needs-you-card" />
+        <DecisionCard view={{ ...decision(), key: 'q:t2' }} now={T0} undoMs={0} testId="needs-you-card" />
       </>,
     ));
     const cards = qa('[data-testid="needs-you-card"]');
@@ -173,9 +231,9 @@ describe('DecisionCard', () => {
   it('focus goes to the next card after this one, not the first open card on the page', async () => {
     act(() => root.render(
       <>
-        <DecisionCard view={{ ...decision(), key: 'q:a' }} now={T0} />
-        <DecisionCard view={{ ...decision(), key: 'q:b' }} now={T0} />
-        <DecisionCard view={{ ...decision(), key: 'q:c' }} now={T0} />
+        <DecisionCard view={{ ...decision(), key: 'q:a' }} now={T0} undoMs={0} />
+        <DecisionCard view={{ ...decision(), key: 'q:b' }} now={T0} undoMs={0} />
+        <DecisionCard view={{ ...decision(), key: 'q:c' }} now={T0} undoMs={0} />
       </>,
     ));
     const cards = qa('[data-testid="decision-card"]');
@@ -185,14 +243,15 @@ describe('DecisionCard', () => {
   });
 
   it('answering the only card does not throw and moves focus nowhere', async () => {
-    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
     await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
     await flush();
     expect(q('[data-testid="decision-card"]')!.getAttribute('data-answered')).toBe('true');
+    expect(q('[data-testid="decision-undo"]')).toBeNull();
   });
 
   it('⌘⏎ picks the primary of the focused card only', async () => {
-    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
     const second = qa('[data-testid="decision-option"]')[1] as HTMLButtonElement;
     await act(async () => {
       second.focus();
@@ -204,7 +263,7 @@ describe('DecisionCard', () => {
   });
 
   it('Answer differently opens a free-text answer; Not now folds the card', async () => {
-    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
     expect(q('[data-testid="decision-answer-form"]')).toBeNull();
     await act(async () => { q('[data-testid="decision-answer-differently"]')!.click(); });
     const input = q('[data-testid="decision-answer-form"] input') as HTMLInputElement;
@@ -217,7 +276,7 @@ describe('DecisionCard', () => {
   });
 
   it('an option label wraps inside the card instead of running past it (no sideways scroll at 320)', () => {
-    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
     for (const o of qa('[data-testid="decision-option"]')) {
       expect(o.className).toContain('whitespace-normal');
       expect(o.className).toContain('h-auto');
@@ -234,7 +293,7 @@ describe('DecisionCard', () => {
       task: null, mission: { id: 'm1', title: 'Billing exports', href: '/app/missions/m1' }, askedAt: T0,
       answer: { kind: 'note', missionId: 'm1', noteId: 'n2' },
     });
-    act(() => root.render(<DecisionCard view={view} now={T0} />));
+    act(() => root.render(<DecisionCard view={view} now={T0} undoMs={0} />));
     expect(qa('[data-testid="decision-option"]')).toHaveLength(0);
     expect(container.querySelector('.btn-ink')).toBeNull();
     expect(q('[data-testid="decision-question"]')!.textContent).toBe('Keep the legacy export?');
@@ -249,7 +308,7 @@ describe('DecisionCard', () => {
       reason: 'Workspace policy needs a person',
       diffHref: 'https://example.test/pull/5/files', approveHref: 'https://example.test/pull/5', changesHref: 'https://example.test/pull/5/files',
     });
-    act(() => root.render(<DecisionCard view={view} now={T0} />));
+    act(() => root.render(<DecisionCard view={view} now={T0} undoMs={0} />));
     const options = qa('[data-testid="decision-option"]');
     expect(options.map(o => o.tagName)).toEqual(['A', 'A']);
     expect(options.map(o => o.textContent)).toEqual(['ApproveMerges when green', 'Request changesBuilder revises it']);
@@ -269,13 +328,14 @@ describe('DecisionCard', () => {
       task: null, mission: { id: 'm1', title: 'Billing exports', href: '/app/missions/m1' }, askedAt: T0,
       answer: { kind: 'note', missionId: 'm1', noteId: 'n1' },
     });
-    act(() => root.render(<DecisionCard view={view} now={T0} />));
+    act(() => root.render(<DecisionCard view={view} now={T0} undoMs={0} />));
     expect(q('[data-testid="question-subject"]')!.textContent).toContain('Billing exports');
     await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
     await flush();
     expect(calls[0].url).toBe('/api/missions/m1/notes/n1/reply');
     expect(calls[0].body).toEqual({ type: 'reply', title: 'Keep' });
     expect(q('[data-testid="decision-card"]')!.textContent).toContain('You chose Keep');
+    expect(q('[data-testid="decision-undo"]')).toBeNull();
   });
 
   it('visual review: fixes merged, awaiting a person: the real options, no stale note, Mark all fixed is handed to the host', async () => {
@@ -290,7 +350,7 @@ describe('DecisionCard', () => {
       answer: { kind: 'visual', missionId: 'm1', reviewHref: '/app/missions/m1', markFixed: [{ artifactIds: ['a1', 'a2'], expected: { a1: 'issue', a2: 'issue' } }], startKey: null, skips: ['The review is wrong or stuck', 'Ship it anyway'] },
     };
     const acted: string[] = [];
-    act(() => root.render(<DecisionCard view={view} now={T0} pageMissionId="m1" visualAct={async l => { acted.push(l); }} />));
+    act(() => root.render(<DecisionCard view={view} now={T0} undoMs={0} pageMissionId="m1" visualAct={async l => { acted.push(l); }} />));
     expect(q('[data-testid="question-subject"]')!.textContent).toBe('●Visual review· asked 1m ago');
     expect(q('[data-testid="question-subject"] a')).toBeNull();
     expect(qa('[data-testid="decision-option"]').map(o => o.textContent?.split('Clears')[0].split('Look')[0].split('Merge')[0])).toEqual(['Mark all fixed', 'Review screens']);
@@ -303,6 +363,7 @@ describe('DecisionCard', () => {
     await flush();
     expect(acted).toEqual(['Mark all fixed']);
     expect(q('[data-answered="true"]')!.textContent).toContain('You chose Mark all fixed');
+    expect(q('[data-testid="decision-undo"]')).toBeNull();
   });
   it('criteria escalation: the asking task and its age, the requirements in words, a short question, Answer differently files the answer as mission work', async () => {
     const { criteriaEscalationDecision } = await import('@/lib/mission-decisions');
@@ -314,7 +375,7 @@ describe('DecisionCard', () => {
       askedAt: T0 - 2 * 60 * 60_000,
       unmet: { count: 4, state: 'not checked', names: ['WSL2 install step', 'Runner starts on boot', 'Setup reports progress', 'Errors say what to change'] },
     });
-    act(() => root.render(<DecisionCard view={view} now={T0} pageMissionId="m1" />));
+    act(() => root.render(<DecisionCard view={view} now={T0} undoMs={0} pageMissionId="m1" />));
     expect(q('[data-testid="question-subject"]')!.textContent).toBe('●Verify WSL2 guided setup· asked 2h ago');
     expect(q('[data-testid="decision-summary"]')!.textContent).toContain('4 requirements not checked: WSL2 install step, Runner starts on boot, Setup reports progress and 1 more.');
     expect(q('[data-testid="decision-question"]')!.textContent).toBe('Ship without these 4 checks?');
@@ -334,5 +395,6 @@ describe('DecisionCard', () => {
     expect(calls[0].url).toBe('/api/tasks');
     expect(calls[0].body).toMatchObject({ workspaceId: 'w1', missionId: 'm1', title: 'Check the install step by hand on a clean machine' });
     expect(q('[data-answered="true"]')!.textContent).toContain('You chose Check the install step by hand on a clean machine');
+    expect(q('[data-testid="decision-undo"]')).toBeNull();
   });
 });

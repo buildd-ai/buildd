@@ -57,7 +57,7 @@ const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockSecretsFindFirst = mock(() => Promise.resolve(null as any));
 const mockWorkerErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
 // Direct mock for resolveCodexApiKey — Bun 1.4.0+ uses per-file module registries
-// so transitive @buildd/core/db mocks may not reach codex-credential.ts.
+// so transitive @buildd/core/db mocks may not reach codex-api-key.ts.
 const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
 const mockDecrypt = mock((value: string) => value);
 const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
@@ -336,7 +336,7 @@ mock.module('@/lib/task-dependencies', () => ({
   checkDependsOnResolved: mock(() => Promise.resolve()),
 }));
 
-mock.module('@/lib/codex-credential', () => ({
+mock.module('@/lib/codex-api-key', () => ({
   resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 
@@ -2395,7 +2395,7 @@ describe('PATCH /api/workers/[id]', () => {
         workspaceId: 'ws-1',
         workspace: { teamId: 'team-1' },
       });
-      mockSecretsFindMany.mockResolvedValue([{ id: 'secret-1', purpose: 'oauth_token' }]);
+      mockSecretsFindMany.mockResolvedValue([{ id: 'secret-1', purpose: 'anthropic_api_key' }]);
       mockSecretsFindFirst.mockResolvedValue({ healthStatus: 'healthy', consecutiveAuthFailures: 0 });
       const secretsSets: any[] = [];
       mockSecretsUpdate.mockReturnValue({

@@ -6,7 +6,7 @@ import { countOf } from '@/lib/plural';
 import Card from '@/components/ui/Card';
 import Section from '@/components/ui/Section';
 import PrimaryAction from '@/components/ui/PrimaryAction';
-import StatePill, { TonePill } from '@/components/ui/StatePill';
+import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import { personalRoleEditorPath } from '@/lib/personal-roles-shared';
 import { displayTaskTitle } from '@/lib/task-title';
 
@@ -43,9 +43,7 @@ function RoleAvatar({ name, size = 32 }: { name: string; size?: number }) {
 /** A live worker's state: waiting on a person, or building. */
 function WorkerStatePill({ status, count }: { status: string; count: number }) {
   const trailing = count > 1 ? <span className="font-mono">{count}</span> : undefined;
-  return status === 'waiting_input'
-    ? <StatePill state="waiting" label="Has a question" trailing={trailing} />
-    : <StatePill state="running" label="Working" trailing={trailing} />;
+  return <StatusPill status={status === 'waiting_input' ? 'waiting_input' : 'running'} trailing={trailing} />;
 }
 
 /** "All workspaces" for a team default, the workspace name for a workspace-only role. */

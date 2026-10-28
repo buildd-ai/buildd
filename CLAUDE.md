@@ -214,6 +214,12 @@ timeout.** Running either without an explicit extended timeout gets it killed mi
 (SIGTERM / exit 143) before any result, which looks like a hang but isn't — set a timeout
 that covers the full run instead.
 
+In a buildd runner session the Bash tool's default timeout is raised to 10 minutes (max 30),
+and the runner refuses a `bun run test`, `type-check` or build call capped below 10 minutes by a
+`timeout N` wrapper or a short `timeout` parameter, and refuses `complete_task` while the last
+test or typecheck run failed (or was killed, exit 143) with no later pass — see
+`apps/runner/src/verify-guard.ts`. Run a targeted file instead of capping the whole suite.
+
 **On failure:** `bun run test` ends with a digest of every failing file and test name, and writes full per-file output to `.test-report.log` (gitignored). Grep that log instead of re-running the suite:
 ```bash
 grep -A30 -F 'apps/web/src/lib/foo.test.ts' .test-report.log
@@ -312,7 +318,7 @@ locally does not fail the suite for everyone else.
 - **Visual review**: `.claude/skills/visual-review/` — Phone- and desktop-width screenshots before calling UI work done: `scripts/qa/shoot.sh` locally (needs a DATABASE_URL), or dispatch `visual-qa.yml` from trunk with `capture_ref=<your branch>` and download the `qa-screenshots` artifact (workers, no DB). Also the preview recipe for workspaces with Vercel previews, and its two auth-wall failure modes.
 - **Workspace onboarding**: `.claude/skills/workspace-onboarding/` — Make any repo buildd-ready: readiness report, owner-approved scaffold PR, guided first spec, first mission. One-time and owner-facing; also served as the `buildd://workspace/onboarding` MCP resource. Never commits to the default branch, never requires Vercel.
 - **Buildd MCP consumer**: `.claude/skills/buildd-mcp-consumer/` — The consumer-facing counterpart to `buildd-workflow`, for any workspace's workers (not buildd's own contributor loop): task lifecycle, blocked-vs-question, friction dedupe, artifact/knowledge discipline, and the `direct`/`mission-branch` PR-base distinction. This is what the MCP server's trimmed `instructions` block and the `buildd://workspace/skills` resource both point to — see `apps/web/src/app/api/mcp/route.ts`.
-- **Delivery forensics**: `.claude/skills/delivery-forensics/` — Measure the delivery loop itself from raw sources: prod DB over the neon HTTP driver (direct `psql` to Neon times out), GitHub Actions job logs (`gh run view --log-failed` returns empty — go via `actions/jobs/<id>/logs`), the Coder runner and KB. Use for "why do PRs conflict / fail CI / get abandoned" questions, and for the base-drift metric neither source stores.
+- **Delivery forensics**: `.claude/skills/delivery-forensics/` — Measure the delivery loop itself from raw sources: prod DB through the capability broker for agents (`request_capability { provider: "neon", access: "read" }` then `query_database`; a person's own session may use the neon HTTP driver — direct `psql` to Neon times out), GitHub Actions job logs (`gh run view --log-failed` returns empty — go via `actions/jobs/<id>/logs`), the Coder runner and KB. Use for "why do PRs conflict / fail CI / get abandoned" questions, and for the base-drift metric neither source stores.
 
 ## Specs & Docs Layout
 

@@ -73,7 +73,6 @@ describe('with applyModelEnv', () => {
     const m = applyModelEnv(env, {
       isCodexTask: false, machineLogin: seat.machineLogin,
       serverApiKey: d.dropServerCredentials ? undefined : 'sk-team-0123456789',
-      serverOauthToken: d.dropServerCredentials ? undefined : 'server-oauth',
     });
     expect(m.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(m.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
@@ -98,16 +97,14 @@ describe('withheld team endpoint is not a selected paid route', () => {
 describe('resolveModelAuthSource (launch glue)', () => {
   const env = { BUILDD_MODEL_AUTH_SOURCE: 'runner' };
   const creds = {
-    serverApiKey: 'sk-team-0123456789', serverOauthToken: 'srv-tok', tenantOauthToken: 'ten-tok',
-    claudeAccessToken: 'acc-tok', claudeCredentialId: 'cred-1',
+    serverApiKey: 'sk-team-0123456789',
   };
   const claim = { isCodexTask: false, runnerLocalAllowed: true, credentials: creds };
 
-  test('withheld endpoint (modelEndpoint absent) is runner-managed; no server or tenant credential survives', () => {
+  test('withheld endpoint (modelEndpoint absent) is runner-managed; no server credential survives', () => {
     const r = resolveModelAuthSource(env, { ...claim, modelEndpoint: undefined, probe: probe(homeWithLogin(), env) });
     expect(r.decision.label).toBe('runner-managed');
     expect(r.credentials).toEqual({});
-    expect(r.serverSeatDelivered).toBe(false);
     const m = applyModelEnv({}, { isCodexTask: false, ...r.credentials });
     expect(m.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(m.injected).toEqual([]);
@@ -126,6 +123,5 @@ describe('resolveModelAuthSource (launch glue)', () => {
   test('auto mode passes credentials through', () => {
     const r = resolveModelAuthSource({}, claim);
     expect(r.credentials).toEqual(creds);
-    expect(r.serverSeatDelivered).toBe(true);
   });
 });

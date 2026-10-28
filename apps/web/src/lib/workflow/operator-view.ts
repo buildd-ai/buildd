@@ -23,12 +23,12 @@ import { liveDeadEffects, type LiveDeadEffects } from './dead-effect-sweep';
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
 type J = Record<string, unknown>;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 import { KERNEL_WINDOWS, type KernelWindow } from '@/lib/kernel-windows';
 export { KERNEL_WINDOWS, KERNEL_WINDOW_LABEL, TRANSITION_LIMIT, type KernelWindow } from '@/lib/kernel-windows';
 
 import { TRANSITION_LIMIT } from '@/lib/kernel-windows';
+import { isUuid } from '@/lib/uuid';
 export const WEB_RECENT_LIMIT = 5;
 export const FLOOR_RUN_LIMIT = 8;
 const TIMELINE_LIMIT = 200;
@@ -163,8 +163,8 @@ export async function resolveScope(q: Pick<KernelQuery, 'workspace' | 'team'>, e
   const team = q.team?.trim();
   if (!workspace && !team) return { ids: null, missing: null };
   const where: SQL[] = [];
-  if (workspace) where.push(UUID.test(workspace) ? sql`w.id = ${workspace}::uuid` : sql`w.name = ${workspace}`);
-  if (team) where.push(UUID.test(team) ? sql`w.team_id = ${team}::uuid` : sql`w.team_id = (SELECT t.id FROM teams t WHERE t.slug = ${team})`);
+  if (workspace) where.push(isUuid(workspace) ? sql`w.id = ${workspace}::uuid` : sql`w.name = ${workspace}`);
+  if (team) where.push(isUuid(team) ? sql`w.team_id = ${team}::uuid` : sql`w.team_id = (SELECT t.id FROM teams t WHERE t.slug = ${team})`);
   const res = await exec(sql`SELECT w.id FROM workspaces w WHERE ${sql.join(where, sql` AND `)} LIMIT 200`);
   const ids = rows(res).map((r) => String(r.id));
   return { ids, missing: ids.length === 0 ? (workspace ? `workspace "${workspace}"` : `team "${team}"`) : null };
