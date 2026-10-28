@@ -91,6 +91,7 @@ export type TermKey =
   | 'wait.scheduled'
   | 'wait.usage_limit'
   | 'wait.budget'
+  | 'wait.lane'
   | 'wait.files'
   | 'wait.slot'
   | 'wait.runner'
@@ -99,6 +100,14 @@ export type TermKey =
   | 'wait.agent'
   | 'wait.checks'
   | 'wait.review'
+  // Queue (Health › Queue): tabs, reasons and the row words around them
+  | 'queue.blocked'
+  | 'queue.lane'
+  | 'queue.limit'
+  | 'queue.dependency'
+  | 'queue.needs_review'
+  | 'queue.retrying'
+  | 'queue.retried'
   // Runner, release, totals
   | 'runner.paused'
   | 'release.releasing'
@@ -153,7 +162,7 @@ const TERM_LIST: Term[] = [
     from: [ts('pending'), ws('idle'), sk('ready'), ...wk('eligible_no_runner')] },
   { key: 'work.blocked', word: 'Waiting on a task', short: 'waiting on a task', tone: 'q', glyph: '▦',
     means: 'It waits on another task and starts by itself when that one finishes.',
-    from: [sk('blocked'), sk('queued'), ...wk('dep_declared', 'dep_inferred', 'ordered_behind')] },
+    from: [sk('blocked'), sk('queued'), ...wk('dep_declared', 'ordered_behind')] },
   { key: 'work.working', word: 'Running', short: 'running', tone: 'act', glyph: '▶',
     means: 'An agent is working on it.',
     from: [k('WORKING'), ts('assigned'), ts('in_progress'), ws('starting'), ws('running'), sk('running')] },
@@ -219,16 +228,19 @@ const TERM_LIST: Term[] = [
 
   // ── Why it has not started ────────────────────────────────────────────────
   { key: 'wait.scheduled', word: 'Scheduled', short: 'scheduled', tone: 'q',
-    means: 'Starts by itself at its start time.', liftedBy: 'starts at its start time', from: wk('start_deferred') },
+    means: 'Starts by itself at its start time.', liftedBy: 'starts at its start time', from: wk('start_deferred', 'workspace_paused') },
   { key: 'wait.usage_limit', word: 'Usage limit', short: 'usage limit', tone: 'q',
     means: 'The provider’s usage limit is reached; it starts when the limit resets.', liftedBy: 'the limit resets',
     from: [...wk('budget_paused', 'managed_entitlement'), { kind: 'runner', value: 'budget_exhausted' }] },
   { key: 'wait.budget', word: 'Budget reached', short: 'budget reached', tone: 'q',
     means: 'The mission spent its budget; it starts when someone raises it.', liftedBy: 'Raise the mission budget',
     from: wk('mission_budget') },
+  { key: 'wait.lane', word: 'Waiting in line', short: 'in line', tone: 'q',
+    means: 'Schema, migration and other one-at-a-time work runs one task at a time, first come; it starts when the task holding the line lands and the tasks ahead of it have gone.',
+    from: wk('lane', 'lease_stale', 'serialized_surface') },
   { key: 'wait.files', word: 'Waiting for files', short: 'same files', tone: 'q',
     means: 'Another task is changing the same files; it starts when that task finishes.',
-    from: wk('pr_overlap_live', 'pr_overlap_ended', 'lease_overlap', 'lease_stale', 'soft_overlap', 'scope_undeclared_mutex', 'serialized_surface') },
+    from: [] },
   { key: 'wait.slot', word: 'Waiting for a free slot', short: 'no free slot', tone: 'q',
     means: 'Every slot it may use is in use; it starts when one frees.',
     from: wk('mission_concurrent', 'account_slots', 'codex_single_flight', 'dispatch_undelivered', 'runner_cooldown') },
@@ -245,6 +257,23 @@ const TERM_LIST: Term[] = [
     means: 'Nothing is running here; the PR waits on its required checks.', from: [] },
   { key: 'wait.review', word: 'Waiting for review', short: 'waiting for review', tone: 'q',
     means: 'The PR waits for a reviewer to pick it up.', from: [] },
+
+  // ── Queue (Health › Queue). Tabs: Queued, Blocked, Scheduled, Paused. Reasons: Lane, Limit, Dependency.
+  // Display words only: the internal values stay mapped by the terms above.
+  { key: 'queue.blocked', word: 'Blocked', short: 'blocked', tone: 'q',
+    means: 'The task cannot start yet; its reason (Lane, Limit or Dependency) says why.', from: [] },
+  { key: 'queue.lane', word: 'Lane', short: 'lane', tone: 'q',
+    means: 'Another task holds the lane it needs: the same files or the same runner.', from: [] },
+  { key: 'queue.limit', word: 'Limit', short: 'limit', tone: 'q',
+    means: 'A cap is reached: slots, budget or the provider’s usage limit.', from: [] },
+  { key: 'queue.dependency', word: 'Dependency', short: 'dependency', tone: 'q',
+    means: 'It waits on another task and starts by itself when that one finishes.', from: [] },
+  { key: 'queue.needs_review', word: 'Needs review', short: 'needs review', tone: 'act',
+    means: 'The PR is open and waits for a reviewer.', from: [] },
+  { key: 'queue.retrying', word: 'Retrying', short: 'retrying', tone: 'run',
+    means: 'A new attempt at this work is running.', from: [] },
+  { key: 'queue.retried', word: 'Retried', short: 'retried', tone: 'q',
+    means: 'A later attempt took over this work.', from: [] },
 
   // ── Runners, releases, totals ─────────────────────────────────────────────
   { key: 'runner.paused', word: 'Paused', short: 'paused', tone: 'q', glyph: '‖',
@@ -292,8 +321,16 @@ export const termWord = (key: TermKey): string => TERMS[key].word;
 export const termShort = (key: TermKey): string => TERMS[key].short;
 
 /**
- * Runner capacity: "2 of 3 slots in use". Never busy, running or working,
- * which are state words (§2.4). `short` is the terminal header form.
+ * Runner capacity is a stat row, not a sentence: `Running 3/9`, `Runners 2/3`,
+ * `Sessions 2`, Peak, Avg. `short` is the terminal header form.
+ */
+export function runningOfCap(running: number, cap: number, form: 'long' | 'short' = 'long'): string {
+  return form === 'short' ? `${running}/${cap}` : `Running ${running}/${cap}`;
+}
+
+/**
+ * @deprecated "N of M slots in use" is retired wording; read `runningOfCap`.
+ * Kept only until the surfaces that still call it move over.
  */
 export function slotsInUse(used: number, total: number, form: 'long' | 'short' = 'long'): string {
   return form === 'short' ? `${used}/${total} in use` : `${used} of ${total} ${total === 1 ? 'slot' : 'slots'} in use`;
@@ -340,9 +377,12 @@ export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: strin
     why: 'Review was Auditing, In audit or In review, and a fix was Repairing on the web and Fixing everywhere else.' },
   { word: /^(?:Pending|Never started|Assigned|Starting|Running now)$/, use: 'Queued, Waiting on <task>, Running, Not started',
     why: 'Pending and Queued named one row; Assigned, Starting and Running now all meant an agent is on it. The task words are Navigation R-14\'s.' },
+  // Retired Queue words (Health › Queue r9). Bare Ready and Waiting are retired too, but surfaces still render them; they join this list as each moves to the new words.
+  { word: /^(?:Parked|Declared)$/, use: 'Queued, Blocked, Scheduled, Paused · Lane, Limit, Dependency',
+    why: 'Parked and Declared named queue states the Queue tabs (Queued, Blocked, Scheduled, Paused) and reasons (Lane, Limit, Dependency) now say.' },
   { word: /\bwaiting for a worker\b/i, use: 'Waiting for an agent',
     why: '"Worker" is the platform’s internal noun for one agent session.' },
-  { word: /\b(?:of|\/)\s*\S+\s+busy\b|\bslots? (?:is |are )?busy\b|\bevery slot is busy\b/i, use: '2 of 3 slots in use',
+  { word: /\b(?:of|\/)\s*\S+\s+busy\b|\bslots? (?:is |are )?busy\b|\bevery slot is busy\b/i, use: 'Running 3/9',
     why: 'Capacity read busy, running or working; those are state words.' },
   { word: /^completed$|\bcompleted this week\b/i, use: 'Done, Merged',
     why: 'A task marked Completed drew the merged glyph even when it had no PR.' },

@@ -17,13 +17,62 @@
  * every overlap hard.
  *
  * The serialized-surface resolver is passed in (`SerializedResolver`, in
- * practice `resolveSerializedSurfaces` from surface-ordering-config): that file
- * belongs to the missions module, and this one is core
- * (scripts/module-boundaries.ts).
+ * practice `resolveSerializedSurfaces` below). It and its pattern rules live
+ * here, in core, because they define serial lanes; surface-ordering-config
+ * (missions module) re-exports them (scripts/module-boundaries.ts).
  */
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { findRegenerable, stripTrailingSep, type ManifestOverlapKind } from '@buildd/core/path-overlap';
 import { normalizeDerivedFiles } from '@buildd/shared';
+
+/**
+ * Returns true if `path` is matched by a conflictSurface pattern.
+ * Rules (evaluated in order):
+ *  1. Exact match.
+ *  2. Prefix directory match: pattern "a/b" matches path "a/b/c.ts".
+ *  3. Trailing-glob match: pattern "a/b/**" matches any path under "a/b/".
+ */
+export function matchesSurface(path: string, pattern: string): boolean {
+  const globSuffix = '/**';
+  const prefix = pattern.endsWith(globSuffix) ? pattern.slice(0, -globSuffix.length) : null;
+  if (prefix !== null) return path === prefix || path.startsWith(prefix + '/');
+  return path === pattern || path.startsWith(pattern + '/');
+}
+
+export interface SerializedSurfaceDef {
+  label: string;
+  patterns: string[];
+}
+
+const trimDir = (p: string) => p.replace(/\/+$/, '');
+
+/** Every surface opted into ordering. A namespace covers its dir, its anchor and its schema triggers. */
+export function serializedSurfaceDefs(gitConfig: WorkspaceGitConfig | null | undefined): SerializedSurfaceDef[] {
+  const defs = new Map<string, string[]>();
+  const add = (label: string, patterns: string[]) => defs.set(label, [...(defs.get(label) ?? []), ...patterns]);
+  for (const s of gitConfig?.conflictSurfaces ?? []) {
+    if (s?.serialize === true && s.pattern && s.label) add(s.label, [s.pattern]);
+  }
+  for (const ns of gitConfig?.sequenceNamespaces ?? []) {
+    if (ns?.serialize === true && ns.dir && ns.label) {
+      add(ns.label, [trimDir(ns.dir), ns.anchorFile, ...(ns.triggers ?? [])].filter(Boolean));
+    }
+  }
+  return [...defs].map(([label, patterns]) => ({ label, patterns }));
+}
+
+/**
+ * Serialized surfaces a set of RAW paths touches. Deliberately no regenerable
+ * exemption: the drizzle journal and snapshots are exempt from edit leases, but
+ * they are exactly what two same-index migrations collide on.
+ */
+export function resolveSerializedSurfaces(paths: string[], gitConfig: WorkspaceGitConfig | null | undefined): string[] {
+  const out: string[] = [];
+  for (const def of serializedSurfaceDefs(gitConfig)) {
+    if (paths.some((p) => def.patterns.some((pat) => matchesSurface(p, pat)))) out.push(def.label);
+  }
+  return out;
+}
 
 /** Labels of the workspace serialized surfaces these paths touch; may throw on a malformed config. */
 export type SerializedResolver = (paths: string[], gitConfig: WorkspaceGitConfig | null | undefined) => string[];

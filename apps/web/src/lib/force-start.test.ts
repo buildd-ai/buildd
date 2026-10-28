@@ -17,10 +17,10 @@ mock.module('@/lib/core-emit', () => ({
 import { buildForceStartIntent, consumeForceStart, recordForceStartClaim, recordForceStartRequest, HUMAN_FORCE_START_DECISION_ID } from './force-start';
 import { makeWaitingReason, FORCE_START_TTL_MS } from '@buildd/core/waiting-reason';
 
-const prReason = makeWaitingReason('pr_overlap_ended', {
-  because: 'both edit packages/core/db/schema.ts',
-  blocker: { type: 'pr', id: '1234', label: 'PR #1234', live: false },
-  overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared' },
+// Force start lifts a limit only (Health › Queue R-10): the mission limit here.
+const prReason = makeWaitingReason('mission_concurrent', {
+  because: 'the mission runs at most 2 tasks at once and 2 are running',
+  blocker: { type: 'mission', id: 'm1', label: 'the mission limit', live: false },
   provenance: { source: 'probe', derivedFrom: 't' },
 });
 const now = new Date('2026-10-07T12:00:00Z');
@@ -30,29 +30,22 @@ describe('force-start', () => {
 
   it('builds a single-use, expiring intent naming exactly the confirmed gates and their evidence', () => {
     const intent = buildForceStartIntent({ reasons: [prReason], userId: 'u1', accountId: null, now });
-    expect(intent.kinds).toEqual(['pr_overlap_ended']);
-    expect(intent.loopKeys).toEqual(['path_overlap']);
+    expect(intent.kinds).toEqual(['mission_concurrent']);
+    expect(intent.loopKeys).toEqual(['mission_concurrent']);
     expect(Date.parse(intent.expiresAt) - now.getTime()).toBe(FORCE_START_TTL_MS);
-    expect(intent.blockers).toEqual([{
-      kind: 'pr_overlap_ended', type: 'pr', id: '1234', label: 'PR #1234', live: false,
-      pathCount: 1, areas: [{ area: 'core/db', count: 1 }], basis: 'declared', sharedPaths: ['packages/core/db/schema.ts'],
-    }]);
+    expect(intent.blockers).toEqual([{ kind: 'mission_concurrent', type: 'mission', id: 'm1', label: 'the mission limit', live: false }]);
+    // No guessed edge is ever lifted by id: none exists (spec: Overlap scheduling, R-1).
     expect(intent.liftDependsOn).toBeUndefined();
   });
 
-  it('an inferred edge is lifted by id; a local mission by its prefilter; the digest covers what was shown', () => {
-    const edge = makeWaitingReason('dep_inferred', {
-      because: 'both change migrations in core/db',
-      blocker: { type: 'task', id: 'holder-a', label: 'holder' },
-      overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
-      provenance: { source: 'task_context', derivedFrom: 't' },
-    });
+  it('a local mission is lifted by its prefilter; the digest covers what was shown', () => {
+    const cap = makeWaitingReason('mission_concurrent', { because: 'cap', blocker: { type: 'mission', id: 'm', label: 'm' }, provenance: { source: 'probe', derivedFrom: 't' } });
     const local = makeWaitingReason('mission_local', { because: 'local', blocker: { type: 'mission', id: 'm', label: 'm' }, provenance: { source: 'probe', derivedFrom: 't' } });
-    const shown = [edge, local, prReason];
-    const intent = buildForceStartIntent({ reasons: [edge, local], digestOf: shown, userId: 'u1', accountId: null, now });
-    expect(intent.liftDependsOn).toEqual(['holder-a']);
-    expect(intent.prefilterLifts?.sort()).toEqual(['inferred_deps', 'local_mission']);
-    expect(intent.loopKeys).toEqual([]);
+    const shown = [cap, local, prReason];
+    const intent = buildForceStartIntent({ reasons: [cap, local], digestOf: shown, userId: 'u1', accountId: null, now });
+    expect(intent.liftDependsOn).toBeUndefined();
+    expect(intent.prefilterLifts).toEqual(['local_mission']);
+    expect(intent.loopKeys).toEqual(['mission_concurrent']);
     expect(intent.reasonsDigest).toBe(buildForceStartIntent({ reasons: shown, userId: null, accountId: null, now }).reasonsDigest);
   });
 
@@ -77,7 +70,7 @@ describe('force-start', () => {
     const row = mockRecordDecision.mock.calls[0][0];
     expect(row).toMatchObject({
       decisionId: HUMAN_FORCE_START_DECISION_ID, capability: 'orchestration_claim', ruleVerdict: 'HOLD', effective: 'START',
-      applied: true, status: 'applied', mode: 'live', candidatePolicyVersion: 'hf1.pr_overlap_ended', taskId: '11111111-1111-1111-1111-111111111111',
+      applied: true, status: 'applied', mode: 'live', candidatePolicyVersion: 'hf1.mission_concurrent', taskId: '11111111-1111-1111-1111-111111111111',
       experimentArm: 'human',
     });
     expect(row.receipt).toMatchObject({ actor: 'human_force', bypassed: ['path_overlap'], waitedMs: 30_000, userId: 'u1' });

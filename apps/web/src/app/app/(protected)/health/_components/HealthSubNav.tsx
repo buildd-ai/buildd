@@ -3,13 +3,15 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { healthItemFor, healthNavFor, type HealthViewer } from '@/lib/health-nav';
+import { healthItemFor, healthNavFor, type HealthNavItem, type HealthViewer } from '@/lib/health-nav';
+import { useQueueWaitingCount } from '@/lib/health-queue-count';
 
 /**
  * Health's second column, the same shape as Settings: a labelled list beside
  * the icon rail on desktop. Phones get a scrolling row of the same links
  * above the page, because Overview is a page in its own right (Settings has
  * a list page instead). The `?workspace=` filter rides along between pages.
+ * Queue carries its waiting count (spec 4bc3e70e R-1).
  */
 export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
   const pathname = usePathname();
@@ -26,6 +28,13 @@ export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
   }, [active?.id]);
 
   const href = (base: string) => (workspace ? `${base}?workspace=${encodeURIComponent(workspace)}` : base);
+  // The Queue tab publishes its own count; any other tab reads it once.
+  const waiting = useQueueWaitingCount(workspace, active?.id !== 'queue');
+  const label = (item: HealthNavItem) => (
+    item.id === 'queue' && waiting != null
+      ? <>{item.label} <span data-testid="health-queue-count" className="font-mono text-text-muted">{waiting}</span></>
+      : item.label
+  );
 
   return (
     <>
@@ -47,7 +56,7 @@ export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
                         : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3'
                     }`}
                   >
-                    {item.label}
+                    {label(item)}
                   </Link>
                 </li>
               );
@@ -72,7 +81,7 @@ export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
                 isActive ? 'border-text-primary text-text-primary font-semibold' : 'border-transparent text-text-secondary'
               }`}
             >
-              {item.label}
+              {label(item)}
             </Link>
           );
         })}

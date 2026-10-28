@@ -205,9 +205,8 @@ export function intersectPaths(a: string[], b: string[]): string[] {
  * runtime rule (asserted by a cross-check test in
  * packages/core/__tests__/path-overlap.test.ts).
  *
- * Callers: the auto-dependsOn pass in POST /api/tasks and the same pass in
- * apps/web/src/lib/conflict-retry.ts. Explicit caller-supplied `dependsOn` is
- * never affected — only inferred edges.
+ * Neither task creation nor conflict retry mints an edge from it any more;
+ * kept for the readers that still ask whether two manifests would collide.
  */
 export function shouldSerializeByManifest(
   a: string[] | null | undefined,
@@ -218,21 +217,13 @@ export function shouldSerializeByManifest(
   return pathsOverlap(a, b);
 }
 
-// ── Hard vs soft overlap ─────────────────────────────────────────────────────
+// ── Overlap kinds ────────────────────────────────────────────────────────────
 //
-// A stored `dependsOn` edge is a hard rail: the dependent waits until the
-// upstream task is completed AND its PR merged, and nothing re-checks it. That
-// is right for anything in a migration namespace, and for a workspace's hard
-// surfaces (serialized namespaces, generated files, the explicit hotspot list:
-// the caller's `isSerialized`). It is wrong for a directory-prefix overlap
-// (`scripts/` against `scripts/x.ts`): honest broad scope queued behind every
-// task under it, which rewarded declaring less. It is also wrong for most
-// same-file overlaps: of task pairs whose merged PRs touched the same files,
-// only a small minority actually conflicted, so a hard hold wasted most of the
-// wait. Both are SOFT: recorded as scheduling evidence
-// (`PathDeclaration.softOverlaps`, kind `prefix` or `same_file`), decided at
-// claim time by the HOLD/START decision, with live path leases still
-// preventing simultaneous edits.
+// Nothing is guessed from overlapping manifests any more (spec: Overlap
+// scheduling, R-1/R-2): no `dependsOn` edge and no `softOverlaps` evidence is
+// minted at creation, and a claim is held only by a serial lane (a migration
+// path, or a workspace hard surface). `PathDeclaration.softOverlaps` survives
+// only on older rows; `readSoftOverlaps` keeps them readable.
 
 /**
  * Migration namespaces and the schema source, matched without workspace config
@@ -301,7 +292,7 @@ export function classifyManifestOverlap(
   return { kind: 'prefix', paths };
 }
 
-/** Soft overlap evidence for one pair, persisted on the newer task's path declaration. */
+/** Soft overlap evidence for one pair, as older rows persisted it on the newer task's path declaration. */
 export interface SoftOverlapEdge {
   taskId: string;
   paths: string[];
@@ -328,54 +319,6 @@ export function readSoftOverlaps(pathDeclaration: unknown): SoftOverlapEdge[] {
     out.push({ taskId, paths: softStrings((e as { paths?: unknown }).paths), kind });
   }
   return out;
-}
-
-/** At most this many soft pairs are stored per task. */
-export const MAX_SOFT_OVERLAPS_PER_TASK = 20;
-const MAX_SOFT_OVERLAP_PATHS = 10;
-
-/**
- * Authoring-time split of a new task's manifest overlaps with in-flight tasks:
- * `hard` ids become `dependsOn` edges (a migration path, or a workspace hard
- * surface per `isSerialized`: serialized namespace, generated file, hotspot);
- * `soft` pairs (prefix-only or same-file) are scheduling evidence only. Replaces the
- * old "any overlap is an edge" rule (`shouldSerializeByManifest`) in the
- * creation pass and the conflict-retry pass, which must not drift.
- */
-export function partitionOverlapEdges(
-  manifest: string[] | null | undefined,
-  others: ReadonlyArray<{ id: string; pathManifest: string[] | null | undefined }>,
-  opts: {
-    /** Workspace hard surface for these overlapping paths; `kind` lets same-file-only surfaces (generated, hotspot) apply only to a same-file overlap. */
-    isSerialized?: (paths: string[], kind: ManifestOverlapKind) => boolean;
-    skip?: (id: string) => boolean;
-    maxSoft?: number;
-  } = {},
-): { hard: string[]; soft: SoftOverlapEdge[] } {
-  const hard: string[] = [];
-  const soft: SoftOverlapEdge[] = [];
-  if (!manifest?.length || isAdvisoryManifest(manifest)) return { hard, soft };
-  const maxSoft = opts.maxSoft ?? MAX_SOFT_OVERLAPS_PER_TASK;
-  const candidates: SoftOverlapEdge[] = [];
-  for (const o of others) {
-    if (opts.skip?.(o.id)) continue;
-    const overlap = classifyManifestOverlap(manifest, o.pathManifest ?? null);
-    if (overlap.kind === 'none') continue;
-    if (isHardOverlapKind(overlap.kind) || opts.isSerialized?.(overlap.paths, overlap.kind)) {
-      if (!hard.includes(o.id)) hard.push(o.id);
-    } else if (!candidates.some(s => s.taskId === o.id)) {
-      candidates.push({ taskId: o.id, paths: overlap.paths.slice(0, MAX_SOFT_OVERLAP_PATHS), kind: overlap.kind === 'exact_file' ? 'same_file' : 'prefix' });
-    }
-  }
-  // Same-file pairs take the soft budget first (they are the riskier evidence),
-  // then prefix pairs, each in input order. Anything past the budget is HARD:
-  // a pair with no stored evidence would otherwise run unheld (fail closed).
-  const ordered = [...candidates.filter(c => c.kind === 'same_file'), ...candidates.filter(c => c.kind !== 'same_file')];
-  for (const c of ordered) {
-    if (soft.length < maxSoft) soft.push(c);
-    else if (!hard.includes(c.taskId)) hard.push(c.taskId);
-  }
-  return { hard, soft };
 }
 
 /**

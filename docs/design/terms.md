@@ -17,7 +17,7 @@ shorten the word, never re-word it.
 | `mission.done` | ■ Done | `done` | Every task is finished and the mission’s checks passed. |  | `mission.stage:delivered` |
 | `mission.your_session` | Run from your session | `your session` | Its tasks start from a person’s own Claude Code session, not a runner. | Claim a task from your session | `waiting:mission_local`, `mission.executor:local` |
 | `work.ready` | □ Queued | `queued` | Nothing stops it; it starts when a slot frees. |  | `task.status:pending`, `worker.status:idle`, `strip:ready`, `waiting:eligible_no_runner` |
-| `work.blocked` | ▦ Waiting on a task | `waiting on a task` | It waits on another task and starts by itself when that one finishes. |  | `strip:blocked`, `strip:queued`, `waiting:dep_declared`, `waiting:dep_inferred`, `waiting:ordered_behind` |
+| `work.blocked` | ▦ Waiting on a task | `waiting on a task` | It waits on another task and starts by itself when that one finishes. |  | `strip:blocked`, `strip:queued`, `waiting:dep_declared`, `waiting:ordered_behind` |
 | `work.working` | ▶ Running | `running` | An agent is working on it. |  | `kernel:WORKING`, `task.status:assigned`, `task.status:in_progress`, `worker.status:starting`, `worker.status:running`, `strip:running` |
 | `work.has_question` | ◇ Has a question | `question` | The agent stopped to ask something; it continues when someone answers. | Answer the question | `worker.status:waiting_input`, `strip:waiting` |
 | `work.paused` | ‖ Paused | `paused` | A person paused this task; Resume continues it. | Resume the task | `worker.status:paused`, `waiting:task_held` |
@@ -42,10 +42,11 @@ shorten the word, never re-word it.
 | `decision.approval_required` | ! Approval required | `approval required` | A policy gate only a person can clear: a migration, a human merge or an escalation. | Approve or decline it |  |
 | `decision.waiting_on_you` | ! Waiting on you | `waiting on you` | A decision only a person can make. | Answer the decision | `kernel:ESCALATED`, `strip:needs_you` |
 | `decision.your_decision` | ! Your decision | `your decision` | An agent asked a question only a person can answer; the work waits for the answer. | Answer the question |  |
-| `wait.scheduled` | Scheduled | `scheduled` | Starts by itself at its start time. | starts at its start time | `waiting:start_deferred` |
+| `wait.scheduled` | Scheduled | `scheduled` | Starts by itself at its start time. | starts at its start time | `waiting:start_deferred`, `waiting:workspace_paused` |
 | `wait.usage_limit` | Usage limit | `usage limit` | The provider’s usage limit is reached; it starts when the limit resets. | the limit resets | `waiting:budget_paused`, `waiting:managed_entitlement`, `runner:budget_exhausted` |
 | `wait.budget` | Budget reached | `budget reached` | The mission spent its budget; it starts when someone raises it. | Raise the mission budget | `waiting:mission_budget` |
-| `wait.files` | Waiting for files | `same files` | Another task is changing the same files; it starts when that task finishes. |  | `waiting:pr_overlap_live`, `waiting:pr_overlap_ended`, `waiting:lease_overlap`, `waiting:lease_stale`, `waiting:soft_overlap`, `waiting:scope_undeclared_mutex`, `waiting:serialized_surface` |
+| `wait.lane` | Waiting in line | `in line` | Schema, migration and other one-at-a-time work runs one task at a time, first come; it starts when the task holding the line lands and the tasks ahead of it have gone. |  | `waiting:lane`, `waiting:lease_stale`, `waiting:serialized_surface` |
+| `wait.files` | Waiting for files | `same files` | Another task is changing the same files; it starts when that task finishes. |  |  |
 | `wait.slot` | Waiting for a free slot | `no free slot` | Every slot it may use is in use; it starts when one frees. |  | `waiting:mission_concurrent`, `waiting:account_slots`, `waiting:codex_single_flight`, `waiting:dispatch_undelivered`, `waiting:runner_cooldown` |
 | `wait.runner` | Waiting for its runner | `waiting for its runner` | It asked for one runner; it starts when that runner is online. |  | `waiting:runner_preference` |
 | `wait.no_runner` | No runner can run it | `no runner can run it` | No online runner has the role, provider or setup it needs. | Fix the runner or the task setup | `waiting:provider_unavailable`, `waiting:role_unavailable`, `waiting:capability_mismatch` |
@@ -53,6 +54,13 @@ shorten the word, never re-word it.
 | `wait.agent` | Waiting for an agent | `waiting for an agent` | The work is filed; it starts when an agent picks it up. |  |  |
 | `wait.checks` | Waiting for checks | `waiting for checks` | Nothing is running here; the PR waits on its required checks. |  |  |
 | `wait.review` | Waiting for review | `waiting for review` | The PR waits for a reviewer to pick it up. |  |  |
+| `queue.blocked` | Blocked | `blocked` | The task cannot start yet; its reason (Lane, Limit or Dependency) says why. |  |  |
+| `queue.lane` | Lane | `lane` | Another task holds the lane it needs: the same files or the same runner. |  |  |
+| `queue.limit` | Limit | `limit` | A cap is reached: slots, budget or the provider’s usage limit. |  |  |
+| `queue.dependency` | Dependency | `dependency` | It waits on another task and starts by itself when that one finishes. |  |  |
+| `queue.needs_review` | Needs review | `needs review` | The PR is open and waits for a reviewer. |  |  |
+| `queue.retrying` | Retrying | `retrying` | A new attempt at this work is running. |  |  |
+| `queue.retried` | Retried | `retried` | A later attempt took over this work. |  |  |
 | `runner.paused` | ‖ Paused | `paused` | This runner starts nothing new; running agents finish. | buildd resume | `runner:hold` |
 | `release.releasing` | Releasing | `releasing` | The release is deploying to production. |  | `release:deploying` |
 | `release.released` | Released | `released` | The change is live in production. |  | `release:deployed` |
@@ -81,8 +89,9 @@ One noun each. "Worker" is the internal row behind an agent and "seat" an old bi
 | `\bdeliver(?:ed\|ing)\b` | Done, Merging, Done this week | "Delivery" is the kernel’s internal noun for a PR’s journey. |
 | `\bauditing\b\|\bin audit\b\|\brepairing\b` | In review, Checking, Fixing | Review was Auditing, In audit or In review, and a fix was Repairing on the web and Fixing everywhere else. |
 | `^(?:Pending\|Never started\|Assigned\|Starting\|Running now)$` | Queued, Waiting on <task>, Running, Not started | Pending and Queued named one row; Assigned, Starting and Running now all meant an agent is on it. The task words are Navigation R-14's. |
+| `^(?:Parked\|Declared)$` | Queued, Blocked, Scheduled, Paused · Lane, Limit, Dependency | Parked and Declared named queue states the Queue tabs (Queued, Blocked, Scheduled, Paused) and reasons (Lane, Limit, Dependency) now say. |
 | `\bwaiting for a worker\b` | Waiting for an agent | "Worker" is the platform’s internal noun for one agent session. |
-| `\b(?:of\|\/)\s*\S+\s+busy\b\|\bslots? (?:is \|are )?busy\b\|\bevery slot is busy\b` | 2 of 3 slots in use | Capacity read busy, running or working; those are state words. |
+| `\b(?:of\|\/)\s*\S+\s+busy\b\|\bslots? (?:is \|are )?busy\b\|\bevery slot is busy\b` | Running 3/9 | Capacity read busy, running or working; those are state words. |
 | `^completed$\|\bcompleted this week\b` | Done, Merged | A task marked Completed drew the merged glyph even when it had no PR. |
 | `\blocal[- ]sessions?\b\|\[LOCAL\b\|^LOCAL$\|\bbuilding locally\b` | Your session, Run from your session, Running in your session | One claim read LOCAL, local session, Your sessions and claimed. It is the person’s own session; say so. |
 | `(?<![/.])\bworkers?\b(?!\.)\|^\[?Workers?\b(?! (?:URL\|upload\|AI\|Scripts)\b)` | runner, slot, agent (agents may) | "Worker" is the internal row behind an agent. A person sees runners, their slots and the agents in them. |

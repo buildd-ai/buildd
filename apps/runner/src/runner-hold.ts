@@ -12,6 +12,11 @@
  *   - lifted only by `buildd resume`, `h` in `buildd top`, or its own `until`
  *     (a timer here clears it and tells the runner to claim again, AC-19).
  *
+ * It is also Pause on buildd.dev (spec 97b1bd0b R-18): a team owner or admin
+ * pauses or resumes the runner there, the heartbeat reply carries it, and the
+ * later change wins against `buildd hold` / `buildd resume` here (HoldMeta,
+ * serverPauseToApply), the same rule as slots (runner-slots.ts).
+ *
  * It stops the runner CHOOSING work: the broad claim poll, background ingest/scout/probe polls and broadcast
  * assignments. A claim a person makes (`c` in top, POST /api/claim on the
  * socket, Start on the dashboard aimed at this runner) still runs (R-34).
@@ -50,12 +55,23 @@ export function readHoldFromConfig(configFile: string): RunnerHold | null {
   return parseRunnerHold(readConfigObject(configFile)?.hold);
 }
 
+/** Who last held or resumed this runner, and when: kept in config.json beside `hold`. */
+export interface HoldMeta { changedAt: number; origin: 'dashboard' | 'machine'; setBy: string | null }
+
+/** The last hold or resume, from config.json; null when never recorded. */
+export function readHoldMetaFromConfig(configFile: string): HoldMeta | null {
+  const cfg = readConfigObject(configFile);
+  const at = cfg?.holdChangedAt;
+  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) return null;
+  return { changedAt: at, origin: cfg?.holdOrigin === 'dashboard' ? 'dashboard' : 'machine', setBy: typeof cfg?.holdSetBy === 'string' ? cfg.holdSetBy : null };
+}
+
 /**
  * Write `hold` into config.json (null removes it), keeping every other field.
  * Throws UnreadableConfigError, writing nothing, when the file exists but is
  * not a JSON object: it holds the API key, and overwriting it would lose that.
  */
-export function saveHoldToConfig(configFile: string, hold: RunnerHold | null): void {
+export function saveHoldToConfig(configFile: string, hold: RunnerHold | null, meta?: HoldMeta): void {
   let cfg: Record<string, unknown> = {};
   if (existsSync(configFile)) {
     const existing = readConfigObject(configFile);
@@ -64,6 +80,11 @@ export function saveHoldToConfig(configFile: string, hold: RunnerHold | null): v
   }
   if (hold === null) delete cfg.hold;
   else cfg.hold = hold;
+  if (meta) {
+    cfg.holdChangedAt = meta.changedAt;
+    cfg.holdOrigin = meta.origin;
+    cfg.holdSetBy = meta.setBy;
+  }
   writeSecretJsonFile(configFile, cfg);
 }
 
@@ -71,7 +92,9 @@ export function saveHoldToConfig(configFile: string, hold: RunnerHold | null): v
 
 export interface HoldIO {
   read(): RunnerHold | null;
-  write(hold: RunnerHold | null): void;
+  write(hold: RunnerHold | null, meta?: HoldMeta): void;
+  /** The last change's who and when; absent in an io that does not keep it. */
+  readMeta?(): HoldMeta | null;
 }
 
 type Timer = ReturnType<typeof setTimeout>;
@@ -92,6 +115,7 @@ const MAX_TIMER_MS = 2_147_483_647;
 
 export class RunnerHoldStore {
   private hold_: RunnerHold | null;
+  private meta_: HoldMeta | null = null;
   private timer: Timer | null = null;
   private readonly listeners = new Set<(hold: RunnerHold | null) => void>();
   private readonly io: HoldIO;
@@ -104,7 +128,8 @@ export class RunnerHoldStore {
     const file = opts.configFile;
     this.io = opts.io ?? {
       read: () => (file ? readHoldFromConfig(file) : null),
-      write: (h) => { if (file) saveHoldToConfig(file, h); },
+      write: (h, meta) => { if (file) saveHoldToConfig(file, h, meta); },
+      readMeta: () => (file ? readHoldMetaFromConfig(file) : null),
     };
     this.now = opts.now ?? Date.now;
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
@@ -113,9 +138,11 @@ export class RunnerHoldStore {
     let read: RunnerHold | null = null;
     try { read = this.io.read(); } catch { /* unreadable: not held */ }
     this.hold_ = read;
+    try { this.meta_ = this.io.readMeta?.() ?? null; } catch { /* unreadable: never recorded */ }
     if (read && !isRunnerHoldActive(read, this.now())) {
       // It lapsed while the runner was down: lift it now rather than obey it.
       this.hold_ = null;
+      this.meta_ = { changedAt: read.until ? Date.parse(read.until) : this.now(), origin: 'machine', setBy: null };
       this.persist(null);
     }
     this.arm();
@@ -131,25 +158,36 @@ export class RunnerHoldStore {
     return this.current() !== null;
   }
 
-  /** Hold, for `forMs` or until resumed. Holding again keeps the first `since`. */
-  hold(forMs: number | null): RunnerHold {
+  /**
+   * Hold, for `forMs` or until resumed. Holding again keeps the first `since`.
+   * `meta` says who: this machine, now, unless it came from buildd.dev.
+   */
+  hold(forMs: number | null, meta?: HoldMeta): RunnerHold {
     const now = this.now();
     const since = this.current()?.since ?? new Date(now).toISOString();
     const hold: RunnerHold = { since, until: forMs && forMs > 0 ? new Date(now + forMs).toISOString() : null };
     this.hold_ = hold;
+    this.meta_ = meta ?? { changedAt: now, origin: 'machine', setBy: null };
     this.persist(hold);
     this.arm();
-    this.logger.log(`[runner-hold] on hold${hold.until ? ` until ${hold.until}` : ''}: nothing new starts, running work finishes`);
+    const by = this.meta_.origin === 'dashboard' ? ` (paused on buildd.dev${this.meta_.setBy ? ` by ${this.meta_.setBy}` : ''})` : '';
+    this.logger.log(`[runner-hold] on hold${hold.until ? ` until ${hold.until}` : ''}${by}: nothing new starts, running work finishes`);
     this.notify();
     return hold;
   }
 
   /** Lift the hold. Returns the hold that was lifted, or null when there was none. */
-  resume(): RunnerHold | null {
+  resume(meta?: HoldMeta): RunnerHold | null {
     const was = this.current();
     if (!was) return null;
-    this.lift('resumed');
+    this.lift(meta?.origin === 'dashboard' ? `resumed on buildd.dev${meta.setBy ? ` by ${meta.setBy}` : ''}` : 'resumed', meta);
     return was;
+  }
+
+  /** Who last held or resumed this runner, and when; null when never recorded. */
+  changeMeta(): HoldMeta | null {
+    this.current(); // a hold past its `until` lifts first, which records that change
+    return this.meta_;
   }
 
   onChange(fn: (hold: RunnerHold | null) => void): () => void {
@@ -163,8 +201,9 @@ export class RunnerHoldStore {
     this.listeners.clear();
   }
 
-  private lift(why: string): void {
+  private lift(why: string, meta?: HoldMeta): void {
     this.hold_ = null;
+    this.meta_ = meta ?? { changedAt: this.now(), origin: 'machine', setBy: null };
     this.persist(null);
     this.arm();
     this.logger.log(`[runner-hold] hold lifted (${why}): claiming again`);
@@ -173,7 +212,7 @@ export class RunnerHoldStore {
 
   private persist(hold: RunnerHold | null): void {
     try {
-      this.io.write(hold);
+      this.io.write(hold, this.meta_ ?? undefined);
     } catch (err) {
       // Held in memory either way; only a restart would lose it.
       this.logger.warn(`[runner-hold] could not save the hold (${(err as Error)?.message ?? err}); it lasts until this runner restarts`);
@@ -223,6 +262,31 @@ export function claimsHeldByPerson(now?: number): boolean {
   if (!instance) return false;
   const h = instance.current();
   return !!h && isRunnerHoldActive(h, now ?? Date.now());
+}
+
+/** A Pause or Resume set on buildd.dev, as the heartbeat reply carries it. */
+export interface ServerPause { paused: boolean; setBy: string | null; setAt: number }
+
+/**
+ * The Pause or Resume the runner should take from a heartbeat reply, or null.
+ * The server only sends one newer than the runner's own change; this checks
+ * it again, so a `buildd hold` / `buildd resume` made since wins and is
+ * reported back, never overwritten (spec 97b1bd0b R-18, 34a48877 R-21).
+ */
+export function serverPauseToApply(reply: unknown, current: { held: boolean; changedAt: number | null }): ServerPause | null {
+  const r = reply as Partial<ServerPause> | null | undefined;
+  if (typeof r?.paused !== 'boolean' || typeof r.setAt !== 'number' || !Number.isFinite(r.setAt)) return null;
+  if (r.paused === current.held) return null;
+  if (current.changedAt !== null && current.changedAt > r.setAt) return null;
+  return { paused: r.paused, setBy: typeof r.setBy === 'string' ? r.setBy : null, setAt: r.setAt };
+}
+
+/** "paused on buildd.dev by Max, 10:44" / "resumed on this machine, Thu 09:12"; null when never recorded. */
+export function holdOriginLine(meta: HoldMeta | null, held: boolean, now: number): string | null {
+  if (!meta) return null;
+  const verb = held ? 'paused' : 'resumed';
+  const at = holdClock(new Date(meta.changedAt).toISOString(), now);
+  return meta.origin === 'dashboard' ? `${verb} on buildd.dev${meta.setBy ? ` by ${meta.setBy}` : ''}, ${at}` : `${verb} on this machine, ${at}`;
 }
 
 /** The hold in force, for the heartbeat and the socket; null when none. */
@@ -352,7 +416,7 @@ export async function runHoldCommand(cmd: HoldCommand, deps: HoldCommandDeps): P
       ? { since: new Date(t).toISOString(), until: forMs ? new Date(t + forMs).toISOString() : null }
       : null;
     try {
-      saveHoldToConfig(deps.configFile, hold);
+      saveHoldToConfig(deps.configFile, hold, { changedAt: t, origin: 'machine', setBy: null });
     } catch (err) {
       if (err instanceof UnreadableConfigError) return { code: 1, stdout: '', stderr: err.message };
       throw err;

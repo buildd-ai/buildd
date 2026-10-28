@@ -174,6 +174,8 @@ const SAFE: Record<string, string[]> = {
     'model_tier_ceilings', // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
     'coding_policy'], // { allowedBackends, allowedSources } from fixed sets (packages/core/coding-policy.ts)
   users: ['timezone'],
+  serial_lane_entries: ['joined_via', 'left_reason', // fixed vocabularies (lib/serial-lanes-store.ts)
+    'activity_signature'], // a commit sha and a PR lifecycle word, joined by '|'
   workspaces: ['model_upgrade_policy', // same shape as teams.model_upgrade_policy
     'new_starts_paused_by'], // a users.id (who paused new starts), never free text (lib/workspace-pause.ts)
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
@@ -237,8 +239,9 @@ const SAFE: Record<string, string[]> = {
   worker_heartbeats: [
     'workspace_ids', 'runner_commit', 'runner_version', 'current_commit', 'disk_commit',
     'tracked_branch',
-    // desired_slots_origin: dashboard | machine.
+    // desired_slots_origin, desired_pause_origin: dashboard | machine.
     'desired_slots_origin',
+    'desired_pause_origin',
     // update_drain: two timestamps and a busy-worker count, no free text.
     'update_drain',
   ],
