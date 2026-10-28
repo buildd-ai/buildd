@@ -160,7 +160,7 @@ export function fleetSlotCounts(
   for (const hb of heartbeats) {
     const n = advertisedSlots(hb);
     configured += n;
-    if (!beatWithin(ms(hb.lastHeartbeatAt), now, windowMs)) continue;
+    if (!beatWithin(ms(hb.lastHeartbeatAt), now, windowMs + 1)) continue;
     online += n;
     // Held, or updating (it claims nothing until it continues its paused agents): no free slots.
     if (!activeRunnerHold(hb.environment, now) && !runnerUpdateState({ updateDrain: hb.updateDrain, lastHeartbeatAt: hb.lastHeartbeatAt }, now)) schedulable += n;
@@ -303,7 +303,7 @@ export function buildFleetSnapshot(
       runners.push({
         id: gid, name, machine, maxSlots: slots.length,
         // A live run is the proof the group is up; a fresh beat from any run confirms it.
-        online: hbs.length === 0 ? false : hbs.some(hb => beatWithin(ms(hb.lastHeartbeatAt), now, onlineMs)),
+        online: hbs.length === 0 ? false : hbs.some(hb => beatWithin(ms(hb.lastHeartbeatAt), now, onlineMs + 1)),
         slots,
         elastic: { executor: identity.executor, group: identity.group, running: running.length },
       });
@@ -312,7 +312,7 @@ export function buildFleetSnapshot(
     const liveHere = g.workers.filter(runsNow);
     // A runner we have no heartbeat for is shown only while it holds live work.
     if (!g.hb && liveHere.length === 0) continue;
-    const online = !!g.hb && beatWithin(ms(g.hb.lastHeartbeatAt), now, onlineMs);
+    const online = !!g.hb && beatWithin(ms(g.hb.lastHeartbeatAt), now, onlineMs + 1);
     const identity = g.hb ? runnerIdentity(g.hb) : { name: runnerNameFromUrl(g.key), machine: null };
     const intervals = g.workers
       .filter(w => Number.isFinite(ms(w.startedAt)))
