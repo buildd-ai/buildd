@@ -4,7 +4,7 @@
  * worker/reviewer/task columns. A task with no kernel view keeps today's chip.
  */
 import { describe, expect, it } from 'bun:test';
-import { buildActionQueue, isActionableChip, kernelInboxMembership, type EscalationRawItem, type WaitingOnYouRawItem } from './action-queue';
+import { buildActionQueue, isActionableChip, kernelDecidesInbox, kernelInboxMembership, type EscalationRawItem, type WaitingOnYouRawItem } from './action-queue';
 import { deriveDeliveryView } from './workflow/projections';
 import type { DeliverySnapshot, DeliveryState } from './workflow/types';
 
@@ -141,6 +141,25 @@ describe('S36 — Needs You membership follows DeliveryView.needsYou', () => {
     expect(kernelInboxMembership(v, true)).toBe(false);
     const [card] = build([esc({ hasEscalationNote: true })], [['t-1', v]]);
     expect(isActionableChip(card.chip)).toBe(false);
+  });
+
+  // 36f5fc74: parked in the landing lane the owner is `landing`, but it is a
+  // REPAIRING delivery buildd is already landing, never "approved, merge is yours".
+  it('an approved delivery queued in the landing lane is not admitted, whatever the legacy approval says', () => {
+    const v = viewOf({ state: 'REPAIRING', stateReason: 'behind', approvedHeads: ['H1'] }, { laneWait: { behindPr: 5810, position: 2 } });
+    expect(v.owner).toBe('landing');
+    expect(v.needsYou).toBe(false);
+    expect(kernelDecidesInbox(v)).toBe(true);
+    expect(kernelInboxMembership(v, true)).toBe(false);
+  });
+
+  it('APPROVED and LANDING at the merge door keep the legacy predicate', () => {
+    for (const state of ['APPROVED', 'LANDING'] as const) {
+      const v = viewOf({ state, approvedHeads: ['H1'] });
+      expect(v.owner).toBe('landing');
+      expect(kernelDecidesInbox(v)).toBe(false);
+      expect(kernelInboxMembership(v, true)).toBe(true);
+    }
   });
 
   it('a task without a view keeps the legacy predicate', () => {

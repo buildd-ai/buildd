@@ -31,7 +31,7 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, kernelDecidesInbox, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { resolveCiGate } from '@/lib/ci-gate';
@@ -1515,7 +1515,7 @@ async function buildEscalationInbox(input: {
       if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
       // Kernel-owned deliveries decide membership themselves (S36).
       const kernelView = w.taskId ? inboxDeliveryViews.get(w.taskId) : undefined;
-      if (kernelView && kernelView.owner !== 'landing') return kernelInboxMembership(kernelView, false);
+      if (kernelDecidesInbox(kernelView)) return kernelView.needsYou;
       // Include if a conflict retry is live (renders as RESOLVING)
       if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
       // Dead zone exhausted — all retries failed, PR needs human action (BLOCKED)

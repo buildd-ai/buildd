@@ -21,6 +21,7 @@ import { loadPrAttention } from '@/lib/pr-attention';
 import { prListStatus, type PrListStatus } from '@/lib/pr-presentation';
 import { getDeliveryViewsForTasks, kernelDeliveryForWorkerSql } from '@/lib/workflow/delivery-view';
 import type { DeliveryView } from '@/lib/workflow/projections';
+import { deriveLandingBlocker, type LandingBlockCause, type LandingBlocker } from '@/lib/landing-blocker';
 
 export const PR_LIST_STATES = ['open', 'attention', 'conflict', 'ci_failed', 'merged'] as const satisfies readonly SharedPrListState[];
 export type PrListState = (typeof PR_LIST_STATES)[number];
@@ -196,6 +197,8 @@ export interface PrAttentionIndex {
   builddOwns?: Map<string, string>;
   /** workerIds under a live agent-review lease. */
   reviewing: Set<string>;
+  /** taskId → its kernel delivery: a PR buildd is already landing is never "waiting on you". */
+  deliveries?: ReadonlyMap<string, DeliveryView>;
   /** `${workspaceId}:${prNumber}` with a live conflict-fix task. */
   conflictFix: Set<string>;
   /** `${workspaceId}:${prNumber}` with a live CI-fix task. */
@@ -206,9 +209,22 @@ export interface PrAttentionIndex {
 
 const STALE_MS = 60 * 60 * 1000;
 
+/** Landing-lane causes: the platform is landing the PR, whatever an approval says. */
+const LANDING_LANE = new Set<LandingBlockCause>(['lane_queued', 'branch_updating']);
+
+/** The landing blocker explain derives for this PR's delivery, when the lane owns it. */
+function laneBlocker(pr: ShapedPr, deliveries: ReadonlyMap<string, DeliveryView> | undefined): LandingBlocker | null {
+  const view = pr.taskId ? deliveries?.get(pr.taskId) : undefined;
+  if (!view || view.prNumber !== pr.prNumber || view.needsYou) return null;
+  const b = deriveLandingBlocker({ taskId: pr.taskId!, prNumber: pr.prNumber, prUrl: pr.prUrl, delivery: view });
+  return b && b.owner === 'platform' && LANDING_LANE.has(b.cause) ? b : null;
+}
+
 export function prSignals(pr: ShapedPr, a: PrAttentionIndex, now: Date = new Date()): PrSignals {
   const out: PrSignals = {};
-  const waiting = pr.workerIds.map(id => a.inbox.get(id)).find(Boolean);
+  const lane = laneBlocker(pr, a.deliveries);
+  // 36f5fc74: explain's delivery read outranks a legacy inbox entry for a PR buildd is landing.
+  const waiting = lane ? undefined : pr.workerIds.map(id => a.inbox.get(id)).find(Boolean);
   const key = `${pr.workspaceId}:${pr.prNumber}`;
   const resolving = a.conflictFix.has(key) ? 'conflict'
     : a.ciFix.has(key) ? 'ci'
@@ -217,7 +233,9 @@ export function prSignals(pr: ShapedPr, a: PrAttentionIndex, now: Date = new Dat
   // An agent resolving it outranks the inbox's "resolving" card: it isn't yours yet.
   if (resolving) out.resolving = resolving;
   else if (waiting) out.waitingOnYou = waiting;
-  const owned = !out.resolving && !out.waitingOnYou ? pr.workerIds.map(id => a.builddOwns?.get(id)).find(Boolean) : undefined;
+  const owned = out.resolving || out.waitingOnYou ? undefined
+    : lane ? lane.label
+    : pr.workerIds.map(id => a.builddOwns?.get(id)).find(Boolean);
   if (owned) out.builddOwns = owned;
   // Not workers.prCheckFailureCount: that counts failed GitHub lookups and resets on success.
   const attempts = a.ciFixAttempts.get(key) ?? 0;
@@ -265,9 +283,9 @@ export function waitingReason(i: {
 }
 
 /** The attention index for these PRs: the inbox decision, plus live fix and review tasks. */
-async function loadAttentionIndex(prs: ShapedPr[], workspaceIds: string[]): Promise<PrAttentionIndex> {
+async function loadAttentionIndex(prs: ShapedPr[], workspaceIds: string[], deliveries: ReadonlyMap<string, DeliveryView>): Promise<PrAttentionIndex> {
   const builddOwns = new Map<string, string>();
-  const idx: PrAttentionIndex = { inbox: new Map(), builddOwns, reviewing: new Set(), conflictFix: new Set(), ciFix: new Set(), ciFixAttempts: new Map() };
+  const idx: PrAttentionIndex = { inbox: new Map(), builddOwns, deliveries, reviewing: new Set(), conflictFix: new Set(), ciFix: new Set(), ciFixAttempts: new Map() };
   if (prs.length === 0) return idx;
   const attention = await loadPrAttention(workspaceIds, { workerIds: prs.flatMap(p => p.workerIds) });
   // Every worker of a PR speaks with the PR's collapsed state, not its own row.
@@ -344,11 +362,12 @@ export async function listPrsQuery(opts: { workspaceIds: string[]; state: PrList
     .where(and(inArray(workers.workspaceId, opts.workspaceIds), inArray(workers.prUrl, candidates)))
     .orderBy(desc(workers.startedAt))
     .limit(MAX_PR_ROWS);
-  const kernel = kernelPrStatuses(await getDeliveryViewsForTasks(rows.flatMap(r => (r.taskId ? [r.taskId] : []))));
+  const views = await getDeliveryViewsForTasks(rows.flatMap(r => (r.taskId ? [r.taskId] : [])));
+  const kernel = kernelPrStatuses(views);
   const shaped = shapePrRows(rows as PrListRow[], opts.state, kernel);
   // attention filters on the signals, so it reads them for every open PR first.
   const prs = opts.state === 'attention' ? shaped : shaped.slice(0, limit);
-  const attention = opts.state === 'merged' ? null : await loadAttentionIndex(prs, opts.workspaceIds);
+  const attention = opts.state === 'merged' ? null : await loadAttentionIndex(prs, opts.workspaceIds, views);
   const now = new Date();
   const out: PrListItemRow[] = prs.map(({ workerIds, missionWorkingBranch, missionIntegration, ...pr }) => ({
     ...pr,
