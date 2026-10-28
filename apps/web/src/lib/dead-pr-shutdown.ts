@@ -62,6 +62,7 @@ import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 
 const GATE_SURFACE = 'dead-pr-shutdown';
 
@@ -360,11 +361,11 @@ export async function shutdownDeadBuilddPrs(
     where: sqlWhere(and(
       inArray(workers.taskId, loserTaskIds),
       isNotNull(workers.prNumber),
-      // Include workers whose prLifecycleStatus is null OR not 'closed'/'merged'.
+      // Include workers whose prLifecycleStatus is null OR not terminal (merged/closed/unresolvable).
       // SQL NOT IN excludes NULLs, so we guard with an OR IS NULL.
       or(
         isNull(workers.prLifecycleStatus),
-        not(inArray(workers.prLifecycleStatus as any, ['closed', 'merged'])),
+        not(inArray(workers.prLifecycleStatus as any, [...TERMINAL_PR_LIFECYCLE])),
       ),
     )),
     columns: {

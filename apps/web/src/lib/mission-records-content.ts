@@ -1,3 +1,4 @@
+import { isUuid } from '@/lib/uuid';
 /**
  * Lazy artifact bodies for the mission Records sheet
  * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, slice S7, AC-18). The mission
@@ -10,7 +11,6 @@
 /** Most ids one request may name — five artifacts per worker, a page of records. */
 export const RECORDS_CONTENT_MAX_IDS = 50;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** `?ids=a,b` → the distinct well-formed ids, capped. A malformed id would fail the uuid cast. */
 export function parseContentIds(raw: string | null | undefined): string[] {
@@ -18,7 +18,7 @@ export function parseContentIds(raw: string | null | undefined): string[] {
   const out: string[] = [];
   for (const part of raw.split(',')) {
     const id = part.trim();
-    if (!UUID_RE.test(id) || out.includes(id)) continue;
+    if (!isUuid(id) || out.includes(id)) continue;
     out.push(id);
     if (out.length === RECORDS_CONTENT_MAX_IDS) break;
   }

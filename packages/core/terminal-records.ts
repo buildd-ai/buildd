@@ -23,6 +23,7 @@
 import { db } from './db/client';
 import { workerTerminalRecords } from './db/schema';
 import { normalizeErrorSignature } from './error-signature';
+import { isUuid } from '@buildd/shared';
 
 /** What kind of session end this row records. Not a worker status — see the schema comment. */
 export type TerminalOutcome = 'completed' | 'failed' | 'refused' | 'crashed';
@@ -46,10 +47,9 @@ export interface RecordSessionTerminalInput {
   detail?: Record<string, unknown> | null;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function uuidOrNull(value: string | null | undefined): string | null {
-  return typeof value === 'string' && UUID_RE.test(value) ? value : null;
+  return typeof value === 'string' && isUuid(value) ? value : null;
 }
 
 function positiveIntOrNull(value: number | null | undefined): number | null {

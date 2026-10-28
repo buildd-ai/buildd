@@ -6,15 +6,13 @@
  *
  * The plaintext key is returned once and never stored.
  */
-import { randomBytes } from 'crypto';
+import { generateApiKey } from '@buildd/shared/api-key';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { clearTeamCache } from '@/lib/team-cache';
 
-export function generateApiKey(): string {
-  return `bld_${randomBytes(32).toString('hex')}`;
-}
+export { generateApiKey };
 
 export type MintAccountValues = Omit<typeof accounts.$inferInsert, 'apiKey' | 'apiKeyPrefix'>;
 

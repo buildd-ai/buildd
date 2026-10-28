@@ -7,7 +7,7 @@
  * route (the runner consent page, the picks endpoint, Settings). An API key or
  * an agent run has no path to write a pick (R-8).
  */
-import { randomBytes } from 'crypto';
+import { generateApiKey } from '@buildd/shared/api-key';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -52,10 +52,6 @@ export async function editConsentTeams(userId: string, accountId: string): Promi
 /** What the runner consent page offers this person now. */
 export async function runnerConsentTeams(userId: string): Promise<ConsentTeam[]> {
   return runnerPickerTeams(await consentTeamsForUser(userId));
-}
-
-function generateApiKey(): string {
-  return `bld_${randomBytes(32).toString('hex')}`;
 }
 
 function pickRows(accountId: string, userId: string, workspaceIds: string[]) {

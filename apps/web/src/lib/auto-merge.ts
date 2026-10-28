@@ -16,6 +16,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
 import { agentReviewsDataMigrations, isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { SHARED_SCHEMA_HOLD_PREFIX } from '@/lib/mission-schema-overlap';
 import { predecessorPrNumbers } from '@/lib/pr-predecessors';
 import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
@@ -76,7 +77,7 @@ export function classifyAutoMergeRefusal(reason: string): AutoMergeRefusalClass 
   if (isBehindBaseRefusal(reason)) return 'base_freshness';
   if (/^CI checks |could not verify CI status/.test(reason)) return 'ci';
   if (/^touches protected path/.test(reason)) return 'deny_path';
-  if (/migration/i.test(reason)) return 'migration';
+  if (/migration/i.test(reason) || reason.startsWith(SHARED_SCHEMA_HOLD_PREFIX)) return 'migration';
   if (/diff size \d+/.test(reason)) return 'size';
   if (/mergeable_state: dirty/.test(reason)) return 'conflict';
   if (/mergeable_state: blocked/.test(reason)) return 'blocked';
@@ -397,6 +398,8 @@ export async function evaluateAutoMergeSafety(
     if (!migrationSafety.safe && !(migrationSafety.kind === 'data' && agentReviewsDataMigrations(policy))) {
       return { ok: false, reason: migrationSafety.reason };
     }
+    // Safe SQL for an object another open mission also ships: wait, don't escalate.
+    if (migrationSafety.safe && migrationSafety.hold) return { ok: false, reason: migrationSafety.hold.reason };
   }
 
   // Read the PR once. Hoisted above the size check (it also feeds the

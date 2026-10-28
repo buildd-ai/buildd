@@ -24,6 +24,7 @@ import { join } from 'path';
 import * as childProcess from 'child_process';
 import { createHash } from 'crypto';
 import { codexAuthJsonKind } from './cost-basis';
+import { isUuid } from '@buildd/shared';
 
 export type MachineLogin = 'env' | 'login';
 
@@ -141,7 +142,6 @@ export function detectMachineLogin(probe: MachineLoginProbe = {}): MachineLogin 
   return null;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let identityCache: { path: string; mtimeMs: number; value: string | null } | undefined;
 
 /**
@@ -172,7 +172,7 @@ export function claudeLoginIdentity(probe: MachineLoginProbe = {}): string | nul
   let value: string | null = null;
   try {
     const id = JSON.parse(readFileSync(path, 'utf-8'))?.oauthAccount?.accountUuid;
-    if (typeof id === 'string' && UUID_RE.test(id)) {
+    if (typeof id === 'string' && isUuid(id)) {
       value = createHash('sha256').update(`buildd-claude-login:v1:${id.toLowerCase()}`).digest('hex').slice(0, 32);
     }
   } catch {

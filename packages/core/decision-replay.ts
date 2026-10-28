@@ -1,3 +1,4 @@
+import { isUuid } from '@buildd/shared';
 /**
  * Replayable copies of decision inputs (mission "Decision model evals", step 1).
  *
@@ -231,7 +232,6 @@ export interface ReplayReadDeps {
 }
 
 export const MAX_REPLAY_LIST = 5000;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The stored inputs for these ledger ids, in the caller's team only. An id
@@ -244,7 +244,7 @@ export async function loadDecisionReplay(
 ): Promise<Map<string, DecisionReplayInput>> {
   const out = new Map<string, DecisionReplayInput>();
   const target = deps.store === undefined ? getDecisionReplayStore() : deps.store;
-  const ids = [...new Set(opts.decisionIds.filter(id => UUID_RE.test(id)))].slice(0, MAX_REPLAY_LIST);
+  const ids = [...new Set(opts.decisionIds.filter(id => isUuid(id)))].slice(0, MAX_REPLAY_LIST);
   if (!target || ids.length === 0) return out;
   const rows = await (deps.lookupLedger ?? dbLookupLedger)(ids);
   const own = rows.filter(r => r.teamId === opts.teamId);

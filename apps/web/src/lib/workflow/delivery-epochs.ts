@@ -30,6 +30,7 @@ import {
 } from '@buildd/workflow-kernel/delivery-epochs';
 import type { Exec } from './kernel';
 import type { EpochEffectHandlers } from './epoch-effects';
+import { isUniqueViolation } from '@buildd/shared';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -242,14 +243,6 @@ export function applyEpochOpsSql(ops: EpochOp[]): SQL {
   return sql`-- workflow:mission_epoch_transition
 WITH ${sql.join(ctes, sql`,\n`)}
 SELECT ${applied} AS applied`;
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  for (let e: unknown = err, i = 0; e && i < 4; e = (e as { cause?: unknown }).cause, i++) {
-    if ((e as { code?: unknown }).code === '23505') return true;
-    if (/duplicate key value violates unique constraint/i.test(String((e as { message?: unknown }).message ?? ''))) return true;
-  }
-  return false;
 }
 
 // ── The command runner ──────────────────────────────────────────────────────

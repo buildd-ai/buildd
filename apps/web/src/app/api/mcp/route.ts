@@ -74,6 +74,7 @@ import type { ToolResult, WorkspaceListing } from "@buildd/core/mcp-tools";
 import { callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
+import { isUuid } from '@/lib/uuid';
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -1190,7 +1191,7 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   // A `?worker=` must be in a granted workspace; its workspace is the default.
   const workerParam = url.searchParams.get("worker");
   if (workerParam) {
-    const w = isUuidLike(workerParam) ? await workerIdentity(workerParam) : null;
+    const w = isUuid(workerParam) ? await workerIdentity(workerParam) : null;
     const ws = w?.workspaceId ? choices.find((c) => c.workspaceId === w.workspaceId) : undefined;
     if (!ws || (connectionDefault && connectionDefault.workspaceId !== ws.workspaceId)) {
       return grantJsonError(403, { error: "Worker not found for this account" });
@@ -1297,7 +1298,6 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   }
 }
 
-const isUuidLike = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
 // ── Next.js Route Handlers ───────────────────────────────────────────────────
 

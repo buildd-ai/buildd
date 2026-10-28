@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import type { AttemptStrip as AttemptStripData } from '@/lib/attempt-strip';
-import { statusPill } from '@/components/ui/states';
+import { STATES, TONE_TEXT, statusPill } from '@/components/ui/states';
 
 /**
  * The attempt strip (U8): `●●○ 3 attempts · CI ×2 · reviewer ×1`, expanding in
@@ -19,16 +19,13 @@ import { statusPill } from '@/components/ui/states';
  * regression the no-empty-chrome invariant exists to prevent.
  */
 
-const STATUS_CLS: Record<string, string> = {
-  completed: 'text-status-success',
-  failed: 'text-status-error',
-  cancelled: 'text-text-muted',
+// Tone from the shared status table; only a status it does not carry stays local.
+const STATUS_CLS_OVERRIDE: Record<string, string> = {
   budget_exhausted: 'text-status-warning',
-  waiting_input: 'text-status-warning',
 };
 
 function statusClass(status: string): string {
-  return STATUS_CLS[status] ?? 'text-status-info';
+  return STATUS_CLS_OVERRIDE[status] ?? TONE_TEXT[STATES[statusPill(status).state].tone];
 }
 
 export default function AttemptStrip({

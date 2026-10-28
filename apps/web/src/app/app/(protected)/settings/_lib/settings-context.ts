@@ -7,6 +7,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
 import {
+  beatWithin,
   isSystemWorkspace,
   isRunnerModelAuthSource,
   isRunnerCodexAuthSource,
@@ -286,7 +287,7 @@ export async function loadAccountRunnerSlots(accountIds: string[], now: number =
     (out[r.accountId] ??= []).push({
       id: r.id,
       name: r.name || host,
-      online: now - new Date(r.lastHeartbeatAt).getTime() <= RUNNER_ONLINE_WINDOW_MS,
+      online: beatWithin(r.lastHeartbeatAt, now, RUNNER_ONLINE_WINDOW_MS + 1), // inclusive: a beat exactly one window old is online
       active: r.active,
       reported: r.reported,
       desired: r.desired ?? null,

@@ -1,3 +1,4 @@
+import { isUuid } from '@/lib/uuid';
 export interface CreateWatchedProjectInput {
   repo: string;
   enabled: boolean;
@@ -11,11 +12,10 @@ export interface CreateWatchedProjectInput {
   notes: string | null;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function ensureNullableUuid(field: string, value: unknown): string | null {
   if (value == null || value === '') return null;
-  if (typeof value !== 'string' || !UUID_RE.test(value)) {
+  if (typeof value !== 'string' || !isUuid(value)) {
     throw new Error(`${field} must be a UUID string or null`);
   }
   return value;

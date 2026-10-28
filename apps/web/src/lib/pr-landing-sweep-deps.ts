@@ -16,6 +16,7 @@ import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { readLandingMarker } from '@/lib/pr-landing-marker';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { kernelLandingView, listApprovedKernelPrs, notKernelOwnedPr } from '@/lib/workflow/seam';
+import { controlPlaneBudgetLeft } from '@/lib/workflow/kernel-client';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
@@ -243,6 +244,7 @@ export function createLandingSweepDeps(): LandingSweepDeps {
     reseedDue: (entries) => reseedDue(PR_LANDING_DUE_QUEUE, entries),
     sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),
+    controlPlaneBudgetLeft,
   };
 }
 

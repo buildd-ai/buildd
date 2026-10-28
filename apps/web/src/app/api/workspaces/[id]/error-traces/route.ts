@@ -4,8 +4,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getWorkspaceErrorTraceRollup, parseRollupParams } from '@/lib/workspace-error-traces';
 import type { WorkspaceErrorTracesResponse } from '@buildd/shared';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // GET /api/workspaces/[id]/error-traces?since=<ISO>&limit=<n>
 //
@@ -34,7 +34,7 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (!UUID_RE.test(id)) {
+  if (!isUuid(id)) {
     return NextResponse.json({ error: 'workspace id must be a UUID' }, { status: 400 });
   }
 

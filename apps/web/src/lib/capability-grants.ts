@@ -39,6 +39,8 @@ import {
   type ModelInferenceOperation,
   type ModelInferenceProvider,
 } from './capability-model-inference';
+import { isUuid } from '@/lib/uuid';
+import { DATABASE_QUERY_CAPABILITY, DATABASE_QUERY_PROVIDER } from './capability-database-query';
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
@@ -81,7 +83,14 @@ const BUILDD_CAPABILITY_BY_ACCESS: Record<RequestAccess, 'tasks:create' | 'analy
 /** A capability buildd itself serves through a task delegation (no connector, no policy). */
 export const isDelegationCapability = (c: string): c is 'tasks:create' | 'analytics:read' =>
   c === TASK_FILING_CAPABILITY || c === ANALYTICS_READ_CAPABILITY;
-const WORKSPACE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Served by buildd's own broker rather than a mounted connector: a model call
+ * (`model.inference`) or a brokered database read (`database.query`). No
+ * connector is mounted; team policy alone decides, and with no rule a person
+ * does (no role mounts a broker).
+ */
+export const isBrokeredRequest = (r: Pick<CapabilityRequest, 'capability' | 'modelInference'>) =>
+  !!r.modelInference || r.capability === DATABASE_QUERY_CAPABILITY;
 
 /**
  * A tool's risk from its name: read verbs read, destructive or authority verbs
@@ -200,8 +209,27 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
     };
   }
 
-  // buildd's own capabilities: provider `buildd` + access, or the capability's own name.
   const p = val(provider);
+  // A database read goes through buildd's query broker (capability-database-query.ts):
+  // one SELECT over an allowlist, as a read-only role. Mounting the Neon
+  // connector instead would expose every native tool, writes included. A write,
+  // or an exact Neon tool, still asks for the connector below.
+  if (capability === DATABASE_QUERY_CAPABILITY || (!capability && p === DATABASE_QUERY_PROVIDER && access === 'read' && !val(tool))) {
+    if (p && p !== DATABASE_QUERY_PROVIDER) return { ok: false, error: `${DATABASE_QUERY_CAPABILITY} is served for provider "${DATABASE_QUERY_PROVIDER}" only` };
+    if (access && access !== 'read') return { ok: false, error: `${DATABASE_QUERY_CAPABILITY} is access read; a database write asks for { provider: "${DATABASE_QUERY_PROVIDER}", access: "write" } and a person decides` };
+    if (val(tool) || val(resource) || val(environment) || b.models !== undefined || b.operations !== undefined || b.budget !== undefined) {
+      return { ok: false, error: `${DATABASE_QUERY_CAPABILITY} takes only reason and ttlSeconds: the tables it reads are buildd's allowlist` };
+    }
+    return {
+      ok: true,
+      request: {
+        capability: DATABASE_QUERY_CAPABILITY, access: 'read', provider: DATABASE_QUERY_PROVIDER, tool: null, resource: null, environment: null,
+        risk: 'read', ttlSeconds, reason, modelInference: null,
+      },
+    };
+  }
+
+  // buildd's own capabilities: provider `buildd` + access, or the capability's own name.
   const named = isDelegationCapability(capability) ? capability : null;
   if (p === TASK_FILING_PROVIDER || named) {
     if (p && p !== TASK_FILING_PROVIDER) return { ok: false, error: `${capability} is served by buildd itself: use provider "${TASK_FILING_PROVIDER}"` };
@@ -210,7 +238,7 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
     if (access && named && access !== accessOf) return { ok: false, error: `${named} is access ${accessOf}` };
     const cap = BUILDD_CAPABILITY_BY_ACCESS[accessOf];
     const r = val(resource);
-    if (!r || !WORKSPACE_UUID_RE.test(r)) return { ok: false, error: `${cap} needs resource: the UUID of the workspace` };
+    if (!r || !isUuid(r)) return { ok: false, error: `${cap} needs resource: the UUID of the workspace` };
     if (val(tool) || val(environment) || b.models !== undefined || b.operations !== undefined || b.budget !== undefined) {
       return { ok: false, error: `${cap} takes only resource (a workspace UUID) and reason` };
     }
@@ -512,8 +540,9 @@ export function resolveCapabilityRequest(ctx: ResolveContext): Resolution {
   const { request: req, principal } = ctx;
 
   let decisions: CandidateDecision[];
-  if (req.modelInference) {
-    // No connector: the provider is the team's decision route. Policy alone decides.
+  if (isBrokeredRequest(req)) {
+    // No connector: buildd's broker serves it (the team's decision route, or the
+    // read-only query role). Policy alone decides.
     const target: GrantTarget = { provider: req.provider!, connectorId: null, connectorName: null };
     const policy = effectivePolicy(ctx.rules, {
       provider: target.provider, risk: req.risk, workspaceId: principal.workspaceId,

@@ -5,9 +5,9 @@
  * import the types.
  */
 import type { McpGrantActsAs } from '@buildd/core/db/schema';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const isGrantUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
+export const isGrantUuid = (v: unknown): v is string => typeof v === 'string' && isUuid(v);
 
 /** Upper bound on ids in one change, so a request cannot ask for an unbounded IN list. */
 export const MAX_WORKSPACES_PER_CHANGE = 500;

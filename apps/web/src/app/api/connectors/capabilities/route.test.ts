@@ -97,6 +97,29 @@ describe('GET /api/connectors/capabilities', () => {
     expect((await res.json()).message).toMatch(/observability/);
   });
 
+  it('database:query names the brokered read beside the connector candidates', async () => {
+    const prev = process.env.BUILDD_QUERY_DATABASE_URL;
+    delete process.env.BUILDD_QUERY_DATABASE_URL;
+    try {
+      const body = await (await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'database:query' }))).json();
+      expect(body.capability).toBe('database:query');
+      expect(body.brokered).toMatchObject({
+        capability: 'database.query', configured: false,
+        requestWith: { tool: 'request_capability', params: { provider: 'neon', access: 'read' } },
+        invoke: { tool: 'query_database' },
+      });
+      expect(body.brokered.tables).toContain('gate_events');
+      process.env.BUILDD_QUERY_DATABASE_URL = 'postgres://ro@db/x';
+      const neon = await (await GET(makeRequest({ workspaceId: WORKSPACE_ID, provider: 'neon', access: 'read' }))).json();
+      expect(neon.brokered).toMatchObject({ configured: true });
+      expect(JSON.stringify(neon)).not.toContain('postgres://');
+      const other = await (await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'observability:query' }))).json();
+      expect(other.brokered).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.BUILDD_QUERY_DATABASE_URL; else process.env.BUILDD_QUERY_DATABASE_URL = prev;
+    }
+  });
+
   it('answers model.inference with the request_capability shape and whether a route is configured', async () => {
     mockResolveTeamDecisionRoute.mockResolvedValue({ provider: 'openrouter', model: 'm-1', apiKey: 'k' });
     const res = await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'model.inference' }));

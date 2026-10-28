@@ -22,6 +22,7 @@ import type { RecoveryRepairAction } from './failure-incident-recovery';
 import type { RepairKind } from './failure-incident-recovery-events';
 import type { StoredIncident } from './failure-incident-store';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
 export const RUNBOOK_VERSION = 'orq-runbook-v1';
 
@@ -329,7 +330,6 @@ export function runbookFor(i: Pick<StoredIncident, 'rule' | 'signature' | 'reaso
 
 // ── DB ──────────────────────────────────────────────────────────────────────
 
-const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
 type IncidentRow = typeof import('@buildd/core/db/schema').failureIncidents.$inferSelect;
 

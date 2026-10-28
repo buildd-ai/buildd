@@ -6,7 +6,7 @@ import { auth } from '@/auth';
 import { readInstallState, INSTALL_STATE_TTL_MS } from '@/lib/github-install-state';
 import { syncInstallationRepos } from '@/lib/github-repo-link';
 import { resumeAfterInstallationChange } from '@/lib/github-repo-access-store';
-import { createSign, createPrivateKey } from 'crypto';
+import { signGitHubAppJwt } from '@buildd/shared/github-app-jwt';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(req: NextRequest) {
@@ -152,33 +152,5 @@ function generateAppJWT(): string {
     throw new Error('GitHub App not configured');
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const payload = {
-    iat: now - 60,
-    exp: now + 600,
-    iss: GITHUB_APP_ID,
-  };
-
-  const encodedHeader = base64UrlEncode(JSON.stringify(header));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const signatureInput = `${encodedHeader}.${encodedPayload}`;
-
-  // Use Node's crypto - handles both PKCS#1 and PKCS#8 key formats
-  const privateKey = createPrivateKey(GITHUB_APP_PRIVATE_KEY);
-  const sign = createSign('RSA-SHA256');
-  sign.update(signatureInput);
-  const signature = sign.sign(privateKey);
-
-  return `${signatureInput}.${base64UrlEncode(signature)}`;
-}
-
-function base64UrlEncode(data: string | Buffer): string {
-  let base64: string;
-  if (typeof data === 'string') {
-    base64 = Buffer.from(data).toString('base64');
-  } else {
-    base64 = data.toString('base64');
-  }
-  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return signGitHubAppJwt(GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY);
 }

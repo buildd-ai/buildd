@@ -68,4 +68,17 @@ describe('TaskAccessSection', () => {
     expect(html).toContain('data-decision="closed"');
     expect(text(html)).toContain('closed · the task ended');
   });
+
+  it('a database query shows its SQL, row count and duration to the owner', () => {
+    const q = { capability: 'database.query', label: 'Database query', source: 'grant' as const, target: 'production database (read-only)' };
+    const html = render([
+      item({ ...q, query: { sql: 'select id from tasks', sqlTruncated: false, rowCount: 200, durationMs: 31, truncated: true } }),
+      item({ ...q, decision: 'refused', reason: 'a table outside the read allowlist', query: { sql: 'select * from secrets', sqlTruncated: false, rowCount: null, durationMs: null, truncated: false } }),
+    ]);
+    expect(html).toContain('task-access-query');
+    expect(text(html)).toContain('select id from tasks');
+    expect(text(html)).toContain('200 rows (capped) · 31 ms');
+    expect(text(html)).toContain('select * from secrets');
+    expect(text(html)).toContain('refused · a table outside the read allowlist');
+  });
 });
