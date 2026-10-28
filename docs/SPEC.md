@@ -7,8 +7,8 @@
 > and a drift task should be filed against them.
 >
 > **Derived from:** `packages/core/db/schema.ts`, `apps/web/src/app/api/**`,
-> `apps/runner/**`, and the implemented specs in `docs/` (codex, credentials,
-> knowledge-store), as of **2026-06-24** (§3a: **2026-09-26**).
+> `apps/runner/**`, `apps/*` and `packages/*`, and the implemented specs in `docs/` (codex, credentials,
+> knowledge-store), as of **2026-10-28** (§3a: **2026-09-26**; §8 workspace map: **2026-10-28**).
 > **Maintenance:** see `docs/SPEC.md` §10 and the `spec-sync` skill.
 
 ---
@@ -725,7 +725,25 @@ Full rule: `docs/specs/team-permissions.md` "Platform operator".
 
 ## 8. What is live vs. retired
 
-**Live & maintained:** `apps/web`, `apps/runner`, `packages/{core,shared}`.
+**Live & maintained:** `apps/web`, `apps/runner`, `packages/{core,shared}`, and
+the workspaces below.
+
+| Workspace | What it is |
+|---|---|
+| `apps/web` | Dashboard, coordination API and MCP server (Next.js). |
+| `apps/runner` | Bun worker runner that claims and executes tasks. |
+| `apps/cloud-runner` | Cloudflare Worker running one container per task (`buildd --once`). |
+| `apps/control-plane` | Execution control plane Worker: claims, heartbeats, worker results, GitHub webhooks and Dispatch callbacks via the same handlers as `apps/web`, so execution survives a web outage. |
+| `apps/dispatch` | Cloudflare Dispatch transport Worker: durable per-scope queue, timers, retry and delivery. Transport only; the producer stays the authority. |
+| `apps/model-policy` | Standalone Worker: surface + tier in, provider + model + effort out. |
+| `apps/responder` | Observe-only incident responder that watches the platform from outside it and pages. |
+| `packages/core` | DB schema, shared server logic, migrations. |
+| `packages/shared` | Shared types and runner-liveness thresholds. |
+| `packages/ai-kit` | Chat contract, tool permissions, model plans and Jev decisions (`@buildd/ai-kit`). |
+| `packages/dispatch-contract` | Wire contract between a producer and Dispatch; no runtime dependencies. |
+| `packages/spec-contract` | Living Specs' portable shapes and pure rules; no buildd tables. |
+| `packages/workflow-kernel` | The workflow kernel's pure core: delivery states, commands, reducer, read model. |
+
 Shipped subsystems: dual backends, unified `secrets`, server-managed creds, hybrid
 knowledge store, smart routing + calibration, workspace-scoped MCP OAuth, missions
 with shared working branch, schedules with conditional triggers, watchers,

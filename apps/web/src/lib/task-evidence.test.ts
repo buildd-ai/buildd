@@ -221,6 +221,14 @@ describe('detectMismatches', () => {
   it('flags a last test command that exited non-zero', () => {
     const m = detectMismatches({ ...base, traces: [bashTrace('bun run test', 1, '(fail) x', 1)] });
     expect(m.map(x => x.kind)).toEqual(['last_command_failed']);
+    expect(m[0].detail).not.toMatch(/killed/i);
+  });
+
+  it('says when the last typecheck was killed by its timeout rather than failing on its own', () => {
+    const m = detectMismatches({ ...base, traces: [bashTrace('timeout 120 bun run type-check 2>&1 | tail -40', 143, 'Command timed out after 2m 0s', 1)] });
+    expect(m.map(x => x.kind)).toEqual(['last_command_failed']);
+    expect(m[0].detail).toMatch(/exited 143/);
+    expect(m[0].detail).toMatch(/killed by its timeout before it finished/i);
   });
 
   it('does not flag when the same kind of command passed afterwards', () => {

@@ -28,7 +28,7 @@ mock.module('./outcome', () => ({ recordCheckVerdict: async (...args: unknown[])
 let faults: any[] = [];
 mock.module('./checker-fault', () => ({ reportCheckerFault: async (f: unknown) => { faults.push(f); return { signature: 's', taskId: null, appended: false }; } }));
 
-const { dispatchCriterionChecks, handleCriterionCheckOutcome, registerMissionVerdictRecorder, shouldFileMissionRun } = await import('./criterion-checks');
+const { dispatchCriterionChecks, handleCriterionCheckOutcome, registerMissionVerdictRecorder, settleFinishedCheckRuns, shouldFileMissionRun } = await import('./criterion-checks');
 registerMissionVerdictRecorder(async (...args: unknown[]) => { missionWrites.push(args); return serverOk ? { ok: true } : { ok: false, error: 'stale integrated target' }; });
 const batchCtx = (b: any) => JSON.parse((b[1].queryChunks as unknown[]).find((c): c is string => typeof c === 'string' && c.includes('"checks"'))!);
 const subject = () => ({ workspaceId: 'ws', missionId: 'mission', creationSource: 'orchestrator', context: { finalVerification: { missionId: 'mission', specRevisionId: 'revision' } } });
@@ -96,6 +96,23 @@ describe('runner checks on the merged mission result', () => {
     reads = [[run()], [subject()], []];
     expect(await handleCriterionCheckOutcome(ID, { reportedVia: 'runner', outcome: 'ok' })).toMatchObject({ recorded: false, reason: 'stale integrated target' });
   });
+  // df808193: the runner ran every check at the integrated target (exit 0, runner-reported, kept in the
+  // task's loop history) but the report event never became a verdict row for 20 of 21. A finished run is
+  // settled from what it stored, so one lost event cannot leave a mission unverified for good.
+  it('settles a finished mission run whose runner evidence never became a verdict, from its loop history', async () => {
+    const MISSION = '00000000-0000-4000-8000-00000000000a';
+    const finished = { ...run(), result: { loopHistory: [{ evidence: { reportedVia: 'runner', outcome: 'ok', exitCode: 0, command: checkCommandAt(COMMAND, SHA) } }] } };
+    reads = [[{ id: ID }], [finished], [subject()], []];
+    expect(await settleFinishedCheckRuns(MISSION)).toEqual({ settled: 1, attempted: 1 });
+    expect(missionWrites).toHaveLength(1);
+    expect(missionWrites[0]).toEqual(['mission', expect.objectContaining({ criterionId: 'AC-1', verdict: 'pass', headSha: SHA, recordedBy: `check:${ID}` })]);
+  });
+  it('settling finds nothing to do when every finished run is recorded', async () => {
+    reads = [[]];
+    expect(await settleFinishedCheckRuns('00000000-0000-4000-8000-00000000000a')).toEqual({ settled: 0, attempted: 0 });
+    expect(missionWrites).toHaveLength(0);
+  });
+
   it('rejects agent evidence, changed commands and withdrawn selections', async () => {
     reads = [[run()], [subject()]];
     expect((await handleCriterionCheckOutcome(ID, { reportedVia: 'task_token', outcome: 'ok', exitCode: 0 })).recorded).toBe(false);

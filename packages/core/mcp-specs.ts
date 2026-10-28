@@ -138,6 +138,18 @@ const attachText = (a: AttachmentRow, upload: { uploadUrl: string } | null | und
   return lines.join('\n');
 };
 
+/**
+ * What check:no-criteria-change did with the new head (spec b7fc9316 R-21):
+ * approved, because no criterion or design binding changed, or why it waits
+ * on a person. Silent when the check did not run (nothing approved yet).
+ */
+function autoApprovalText(a: unknown): string {
+  const r = a as { approved?: boolean; revision?: number; reason?: string } | null | undefined;
+  if (!r || typeof r !== 'object') return '';
+  if (r.approved) return `\nApproved automatically by check:no-criteria-change: no criterion line and no design binding changed since the approved revision. No person approved it, and it is recorded that way.`;
+  return r.reason && !/^nothing is approved yet/.test(r.reason) ? `\nWaits for a person's approval (check:no-criteria-change: ${r.reason}).` : '';
+}
+
 /** The server's formatHints (R-48) as one gentle line; advisory, the write already happened. */
 const tipText = (hints: unknown): string => {
   const msgs = Array.isArray(hints) ? hints.map((h) => (h as { message?: unknown })?.message).filter((m): m is string => typeof m === 'string' && !!m) : [];
@@ -463,7 +475,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         const what = patch ? ' (find/replace applied, the rest kept)' : target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
-        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${reviseDuplicateText(r.duplicateCheck)}${tipText(r.formatHints)}`);
+        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${autoApprovalText(r.autoApproval)}${reviseDuplicateText(r.duplicateCheck)}${tipText(r.formatHints)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));

@@ -47,6 +47,7 @@ function mission(over: Partial<SnapshotMission> = {}): SnapshotMission {
     criteriaEscalatedAt: null,
     hasGoalCriteria: false,
     criteriaOverallVerdict: null,
+    criteriaPending: false,
     updatedAt: ago(10 * HOUR),
     ...over,
   };
@@ -1092,6 +1093,18 @@ describe('stale_criteria_escalation', () => {
       })],
     });
     expect(reported(key, s)).toEqual(['m-pass']);
+  });
+
+  // df808193: escalated on a verdict that read PENDING. Nobody can decide a verification that is
+  // in flight, and the escalation stood the heartbeat down, so nothing could ever move it.
+  it('reports an escalated mission whose verdict is still in flight: that is no decision for a person', () => {
+    const s = snapshot({
+      missions: [mission({
+        id: 'm-pending', status: 'active', criteriaEscalatedAt: ago(2 * HOUR), criteriaOverallVerdict: 'UNVERIFIED', criteriaPending: true,
+      })],
+    });
+    expect(reported(key, s)).toEqual(['m-pending']);
+    expect(evaluateInvariants(s, NOW).find(r => r.key === key)!.violations[0].detail).toMatch(/in flight/i);
   });
 
   it('does not report an active mission with a genuinely failing verdict — the live case', () => {
