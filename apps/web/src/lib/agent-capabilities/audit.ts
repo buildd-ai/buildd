@@ -21,6 +21,8 @@ export type CapabilityName =
   | 'github.scout_capture_grant'
   | 'model.endpoint'
   | 'model.inference'
+  // A brokered production read (capability-database-query.ts): sideEffect carries the SQL, row count and duration.
+  | 'database.query'
   | 'capability.request'
   | 'capability.approve'
   | 'capability.deny'

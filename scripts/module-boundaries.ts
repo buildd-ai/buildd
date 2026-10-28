@@ -35,7 +35,7 @@ export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   ['workspace-migration', /\/migrate\/|migration-slot|workspace-migration|migrate-access|migration-(inspector|outcomes|safety)/],
   ['intake-integrations', /linear|\/webhooks\/ingest|subject-intake/],
   // settings/connections is Connected apps; settings/apps holds the team's MCP connectors.
-  ['connectors', /\/connectors|settings\/connections\/|settings\/apps\/|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|team-apps-view|\/api\/mcp\/c\/|\/agent-capabilities\/(requests|policy)\//],
+  ['connectors', /\/connectors|settings\/connections\/|settings\/apps\/|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|capability-database-query|team-apps-view|\/api\/mcp\/c\/|\/agent-capabilities\/(requests|policy|database-query)\//],
   ['spec-conformance', /spec-(conformance|discrepancy|doc-fix|recheck)|discrepanc|doc-fix/],
   // registered-verification-store admits [surface audit] captures as evidence for the core coordinator.
   ['visual-qa', /visual-(qa|review|audit|fix)|surface-audit|mcp-visual-review|page-source|registered-verification-store/],
