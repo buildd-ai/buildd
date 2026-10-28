@@ -24,11 +24,18 @@ describe('RunnerSlotDetail', () => {
     expect(html()).toContain('>Per slot<');
   });
 
-  it('lists slots with their work and last run', () => {
+  it('lists running tasks only, never idle slots', () => {
     const h = html();
     expect(h).toContain('Working · Fix the thing');
     expect(h).toContain('Fix the thing · 2h');
-    expect(h).toContain('Idle · last older (failed), 1h ago');
+    expect(h).not.toContain('Idle');
+    expect(h).not.toContain('older');
+  });
+
+  it('renders one row per running task and none for idle slots', () => {
+    const h = html();
+    expect(h.match(/health-runner-slot/g)?.length).toBe(1);
+    expect(html({ fleetRow: { ...fleetRow, slots: [fleetRow.slots[1]] } as never })).toContain('No tasks running.');
   });
 
   it('shows Owner, and the Claude/Codex login, as separate facts', () => {

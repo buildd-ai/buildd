@@ -280,6 +280,48 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(rec.toState).toBe('ESCALATED');
     expect(rec.rounds).toEqual([]);
   });
+  // 52a0de67: a mission integration PR's head moves on every dev sync. A push that brought only
+  // base commits (the PR's own diff is the one the reviewer escalated) is not new work for a
+  // reviewer: the escalation stands for the person, and no round is opened for it.
+  test('ESCALATED(review_escalated): a sync-only commit keeps the verdict; no round, the person still decides', () => {
+    for (const baseOnly of ['own_refresh', 'compare'] as const) {
+      const kept = applied(h(V(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentRound: 2 })), 'H2', { baseOnly }));
+      expect({ to: kept.toState, patch: kept.patch, rounds: kept.rounds, review: effectKinds(kept).includes('dispatch_review') })
+        .toEqual({ to: 'ESCALATED', patch: { currentHeadSha: 'H2' }, rounds: [], review: false });
+      expect(kept.evidence).toMatchObject({ verdictKept: true, baseOnly });
+    }
+    // A reviewer that never answered (review_unavailable) owes the head a review whatever the push was.
+    expect(applied(h(V(D({ state: 'ESCALATED', stateReason: 'review_unavailable' })), 'H2', { baseOnly: 'compare' })).toState).toBe('AWAITING_REVIEW');
+  });
+  test('a sync-only push that does start a round records it as base_refresh, which spends no budget unless it asks for changes', () => {
+    // A review in flight is superseded by the push, as before, but the round that replaces it is a
+    // base refresh, not "new commits": the same change against a new base.
+    const reviewing = V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R({ status: 'reviewing' })]);
+    const dec = applied(h(reviewing, 'H2', { baseOnly: 'compare' }));
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', trigger: 'base_refresh' }));
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'update', roundId: 'r1', set: { status: 'superseded', endReason: 'superseded_by_push' } }));
+    // Without the fact the push is what it always was.
+    expect(applied(h(reviewing, 'H2')).rounds).toContainEqual(expect.objectContaining({ op: 'insert', trigger: 'superseded_by_push' }));
+    // A dev merge pushed while a CI fix holds the delivery is a base refresh too, not the fix's round.
+    const ci = A({ id: 'c1', family: 'ci', status: 'running', triggerReason: 'sig', taskId: 'c1', reportedShas: [] });
+    const repairing = V(D({ state: 'REPAIRING', boundAttemptId: 'c1', currentRound: 1 }), [R({ status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate' })], [ci]);
+    const fix = applied(h(repairing, 'H2', { attribution: { descendsFromBound: true }, proof: { liveContainsLocal: true }, baseOnly: 'compare' }));
+    expect(fix.rounds).toContainEqual(expect.objectContaining({ op: 'insert', trigger: 'base_refresh' }));
+    // The budget: an escalation on a base_refresh round spends nothing; the same verdict on new_commits does.
+    const rounds = (t2: 'base_refresh' | 'new_commits') => [
+      R({ id: 'r1', round: 1, status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate', trigger: 'first_pass' }),
+      R({ id: 'r2', round: 2, headSha: 'H2', status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate', trigger: t2 }),
+    ];
+    expect(spentReviewRounds(V(D({ currentRound: 2 }), rounds('base_refresh')))).toBe(1);
+    expect(spentReviewRounds(V(D({ currentRound: 2 }), rounds('new_commits')))).toBe(2);
+  });
+  test('APPROVED by a person: a sync-only commit keeps the approval (carry-forward), whatever the basis', () => {
+    const v = V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'human' }));
+    const dec = applied(h(v, 'H2', { carryForward: 'content_equivalent' }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1', 'H2'], currentHeadSha: 'H2' });
+    expect(headCoverage({ ...D(), approvedHeads: ['H1', 'H2'], approvalBasis: 'human' }, 'H2')).toBe('human');
+  });
   test('BLOCKED_ON_TRUNK / CLOSED_UNMERGED record the head only', () => {
     expect(applied(h(V(D({ state: 'BLOCKED_ON_TRUNK' })))).toState).toBe('BLOCKED_ON_TRUNK');
     expect(applied(h(V(D({ state: 'CLOSED_UNMERGED' })))).toState).toBe('CLOSED_UNMERGED');
@@ -619,6 +661,19 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(dec.effects.find((e) => e.kind === 'push_recovery')).toMatchObject({ payload: { localHeadSha: 'L9', try: 1 }, delayMs: 120_000 });
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { live: null })).toState).toBe('AWAITING_PUSH');
   });
+  test('#5764: an owner attempt that ends with zero commits of its own hands on at the live head, whatever worktree head it reported', () => {
+    // The owner task of an adopted PR ran in a worktree parked on the base: its HEAD is the trunk
+    // commit, not the PR head, and nothing local exists to recover (§6.5 row: `commitCount>0`).
+    const appr = applied(end(V(D({ currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]), { localHeadSha: 'TRUNK9', commitCount: 0 }));
+    expect(appr.toState).toBe('APPROVED');
+    expect(appr.evidence).toMatchObject({ nothingLocal: true });
+    expect(effectKinds(appr)).not.toContain('push_recovery');
+    expect(applied(end(V(D()), { localHeadSha: 'TRUNK9', commitCount: 0 })).toState).toBe('AWAITING_REVIEW');
+    // Commits of its own that GitHub does not hold are still recovered (§9).
+    expect(applied(end(V(D()), { localHeadSha: 'L9', commitCount: 1 })).toState).toBe('AWAITING_PUSH');
+    // An unproven end is not the same claim: the attempt may have more local than it reported.
+    expect(applied(end(V(D()), { outcome: 'unproven', localHeadSha: 'TRUNK9', commitCount: 0 })).toState).toBe('AWAITING_REVIEW');
+  });
   test('WORKING failed: retry budget left → WORKING; spent → FAILED (no PR) / ESCALATED (unpushed) / review', () => {
     expect(applied(end(V(D()), { outcome: 'failed', taskRetryBudgetLeft: true })).toState).toBe('WORKING');
     expect(applied(end(V(D({ prNumber: null, repoFullName: null })), { outcome: 'lost', live: null })).toState).toBe('FAILED');
@@ -784,6 +839,27 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
   });
   const repairing =(o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
     V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', ...d }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o })]);
+  test('#5796: a CI repair that ends with nothing to push (its head is the bound, unmoved PR head) is a no-change end at that head, never AWAITING_PUSH', () => {
+    const approved = repairing({}, { approvedHeads: ['H1'], approvalBasis: 'verdict', ci: 'red', ciHeadSha: 'H1' });
+    // The fixer re-ran a flaky job and committed nothing: the runner reports HEAD = H1, one commit
+    // ahead of the base (the PR's own commit). Push recovery would have nothing to deliver.
+    const dec = applied(end(approved, { attemptId: 'c1', outcome: 'success', localHeadSha: 'H1', commitCount: 1, live: live('H1') }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.attempts[0]).toMatchObject({ attemptId: 'c1', set: { status: 'ended', outcome: 'noop' } });
+    expect(dec.evidence).toMatchObject({ noChange: true, nothingToPush: true });
+    expect(dec.patch.boundAttemptId).toBeNull();
+    expect(effectKinds(dec)).not.toContain('push_recovery');
+    // No approval to resume: the unmoved head is owed its review, as a cancelled-unstarted repair's end is.
+    expect(applied(end(repairing(), { attemptId: 'c1', outcome: 'success', localHeadSha: 'H1', commitCount: 1, live: live('H1') })).toState).toBe('AWAITING_REVIEW');
+    // Nothing reported and no commits: the same.
+    expect(applied(end(repairing(), { attemptId: 'c1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H1') })).toState).toBe('AWAITING_REVIEW');
+    // An unproven end with nothing local is a failed repair's end (the ledger's next row), not a push to recover.
+    const unproven = applied(end(repairing(), { attemptId: 'c1', outcome: 'unproven', localHeadSha: 'H1', commitCount: 1, live: live('H1') }));
+    expect(unproven.toState).toBe('REPAIRING');
+    expect(effectKinds(unproven)).not.toContain('push_recovery');
+    // A local commit GitHub does not hold is still recovered (§9).
+    expect(applied(end(repairing(), { attemptId: 'c1', outcome: 'success', localHeadSha: 'L2', commitCount: 2, live: live('H1') })).toState).toBe('AWAITING_PUSH');
+  });
   test('REPAIRING: CI fix delivered → round; carry-forward → APPROVED; failed → next ledger row; exhausted', () => {
     expect(applied(end(repairing(), { attemptId: 'c1', localHeadSha: 'H2', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
     const cf = applied(end(repairing({}, { approvedHeads: ['H1'], approvalBasis: 'composition', compositionHeads: ['H1'] }), { attemptId: 'c1', localHeadSha: 'H2', live: live('H2'), carryForward: 'content_equivalent' }));
