@@ -4,8 +4,8 @@ import { eq, and, or, ilike, inArray, sql, type SQL } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { liveLinkCondition } from '@/lib/granted-links';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The set of workspaces a caller can reach: every workspace owned by one of
@@ -59,7 +59,7 @@ export async function resolveWorkspace(raw: string, caller: WorkspaceCaller) {
   if (!inScope) return null;
 
   // UUID → direct lookup
-  if (UUID_RE.test(raw)) {
+  if (isUuid(raw)) {
     return (await db.query.workspaces.findFirst({ where: sqlWhere(and(eq(workspaces.id, raw), inScope)) })) ?? null;
   }
 

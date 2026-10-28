@@ -19,10 +19,9 @@ import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { lazyRequester } from '@buildd/core/role-visibility';
 import { checkStatedRole } from '@/lib/stated-role';
 
-const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function validateTaskId(id: string): NextResponse | null {
-  if (FULL_UUID_REGEX.test(id)) return null;
+  if (isUuid(id)) return null;
   const isPrefix = /^[0-9a-f]{1,35}$/i.test(id);
   const error = isPrefix
     ? `taskId must be a full UUID — "${id}" looks like an ID prefix. The web UI shows 8-character prefixes; use the full UUID from the task URL or API response.`
@@ -59,6 +58,7 @@ import { bumpChangeVersions, scopesOfDeletedTasks } from '@/lib/change-version';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { isOwnScopeHold } from '@buildd/workflow-kernel/scope-hold';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it

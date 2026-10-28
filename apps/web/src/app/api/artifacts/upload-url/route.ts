@@ -15,6 +15,7 @@ import { ARTIFACT_TYPES, ArtifactType, isArtifactType, VISUAL_AUDITOR_ROLE_SLUG 
 import { appBaseUrl } from '@/lib/app-url';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * Ceiling for a single artifact upload, enforced in the signature.
@@ -28,7 +29,6 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  */
 export const MAX_ARTIFACT_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Links an upload may ask for in the same call (`attach`); the links table's own rules apply. */
 export const MAX_ATTACH = 10;
@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
   const attachList = (attach ?? []).map(a => ({ ...a, relation: a.relation ?? 'design_reference' }));
 
   for (const [name, v] of [['missionId', missionId], ['initiativeId', initiativeId], ['specId', specId], ['artifactId', artifactId]] as const) {
-    if (v !== undefined && v !== null && (typeof v !== 'string' || !UUID_RE.test(v))) {
+    if (v !== undefined && v !== null && (typeof v !== 'string' || !isUuid(v))) {
       return NextResponse.json({ error: `${name} must be a uuid` }, { status: 400 });
     }
   }

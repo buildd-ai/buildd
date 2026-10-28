@@ -20,9 +20,9 @@ import { isTaskToken } from '@/lib/task-token';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { canViewExperiment, isExperimentOperator, planExperimentPatch, toExperimentDTO } from '@/lib/experiments';
 import { applyExperimentUpdate, findOtherRunning, getTeamExperiment } from '@/lib/experiments-store';
+import { isUuid } from '@/lib/uuid';
 
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const notFound = () => NextResponse.json({ error: 'Experiment not found' }, { status: 404 });
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -41,7 +41,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     who = await resolveExperimentViewer(req, workspaceParam);
   }
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
-  if (!UUID_RE.test(id)) return notFound();
+  if (!isUuid(id)) return notFound();
 
   const row = await getTeamExperiment(who.viewer.teamId, id);
   if (!row || !canViewExperiment(row.visibility, who.viewer)) return notFound();
@@ -56,7 +56,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;
-  if (!UUID_RE.test(id)) return notFound();
+  if (!isUuid(id)) return notFound();
 
   const row = await getTeamExperiment(viewer.teamId, id);
   // Existence before role: a non-operator probing an operator-only id must

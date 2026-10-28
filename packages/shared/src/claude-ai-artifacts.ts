@@ -1,3 +1,4 @@
+import { isUuid } from './uuid';
 /**
  * Opt-in access to claude.ai artifacts (Design canvases, pages) from a worker.
  *
@@ -205,7 +206,6 @@ export interface DesignSource {
 }
 
 const CLAUDE_AI_ARTIFACT_URL = /^https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]+\/?$/;
-const ARTIFACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A screen id goes into a URL fragment and a CSS selector in the prompt, so only plain ids pass.
 const SCREEN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
 const VIEWPORT = /^[1-9]\d{1,4}x[1-9]\d{1,4}$/;
@@ -227,7 +227,7 @@ export function designSourceFromContext(context: Record<string, unknown> | null 
     const keys = ds.artifactKeys.filter((k): k is string => typeof k === 'string' && k.trim().length > 0);
     if (keys.length > 0) out.artifactKeys = keys;
   }
-  if (typeof ds.artifactId === 'string' && ARTIFACT_ID.test(ds.artifactId)) {
+  if (isUuid(ds.artifactId)) {
     out.artifactId = ds.artifactId;
     if (typeof ds.revision === 'number' && Number.isInteger(ds.revision) && ds.revision > 0) out.revision = ds.revision;
     const screens = screenIds(ds.screens);

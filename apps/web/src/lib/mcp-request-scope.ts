@@ -10,12 +10,12 @@ import { getLinkedWorkspaceIds } from '@/lib/workspace-resolver';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { readReachLink } from '@/lib/granted-links';
 import { cachedCaller, callerDep } from '@/lib/caller-cache';
+import { isUuid } from '@/lib/uuid';
 
 type McpAccount = { id: string; teamId: string; workspaceIds?: string[] | null; taskScope?: { taskId: string; workspaceId: string } };
 
 // Ids are compared against uuid columns; a malformed one would make Postgres
 // throw instead of simply matching nothing, so it is out of scope up front.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * A `?workspace=` id pins the workspace this MCP session acts in. It must
@@ -24,7 +24,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * per-task token's only workspace is its task's.
  */
 export async function isWorkspaceInCallerScope(workspaceId: string, account: McpAccount): Promise<boolean> {
-  if (!UUID_RE.test(workspaceId)) return false;
+  if (!isUuid(workspaceId)) return false;
   if (account.taskScope) return workspaceId === account.taskScope.workspaceId;
   if (account.workspaceIds != null && !account.workspaceIds.includes(workspaceId)) return false;
   // Only an own-team workspace with no link at all is cached (lib/caller-cache.ts):
@@ -61,7 +61,7 @@ async function workspaceInScopeUncached(workspaceId: string, account: McpAccount
  * run by its account, on its task.
  */
 export async function isWorkerInCallerScope(workerId: string, account: McpAccount): Promise<boolean> {
-  if (!UUID_RE.test(workerId)) return false;
+  if (!isUuid(workerId)) return false;
   const worker = await workerIdentity(workerId);
   if (!worker) return false;
   if (account.taskScope) {
@@ -78,7 +78,7 @@ export async function isWorkerInCallerScope(workerId: string, account: McpAccoun
  * until the workspace changes; a missing worker is not cached.
  */
 export async function workerIdentity(workerId: string): Promise<{ accountId: string | null; taskId: string | null; workspaceId: string; workspace?: { teamId?: string } | null } | null> {
-  if (!UUID_RE.test(workerId)) return null;
+  if (!isUuid(workerId)) return null;
   return cachedCaller(`worker-identity:${workerId}`, () => db.query.workers.findFirst({
     where: sqlWhere(eq(workers.id, workerId)),
     columns: { accountId: true, taskId: true, workspaceId: true },
@@ -98,7 +98,7 @@ export async function workerIdentity(workerId: string): Promise<{ accountId: str
  * LEGACY: remove with the legacy MCP surface.
  */
 export async function workerRunnerSupportsGroupTools(workerId: string): Promise<boolean> {
-  if (!UUID_RE.test(workerId)) return false;
+  if (!isUuid(workerId)) return false;
   // Not an access decision: a runner that upgrades is seen within the TTL.
   // Only a definite answer is kept; an error reads as false this call only.
   try {

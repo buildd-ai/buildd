@@ -24,6 +24,7 @@ import { START_ANYWAY_PARK_KEY, parkAllowed, parseAssessment, planPark, type Ass
 import { wakeTask } from '@/lib/dispatch-authority';
 import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { lastStartAnyway, START_ANYWAY_PARKS_KEY } from '@/lib/start-anyway';
+import { isUuid } from '@/lib/uuid';
 
 /** The task context key the exit records: who waits on what, and why. */
 export const WAIT_EXIT_CONTEXT_KEY = 'waitExit';
@@ -69,7 +70,7 @@ export function parseWaitOn(raw: unknown): { ok: true; blockerTaskId: string; re
   const bad = (error: string): WaitExitRefusal => ({ ok: false, status: 400, code: 'invalid_wait', error });
   if (!raw || typeof raw !== 'object') return bad('waitOn must be { taskId, reason }');
   const { taskId, reason } = raw as { taskId?: unknown; reason?: unknown };
-  if (typeof taskId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {
+  if (typeof taskId !== 'string' || !isUuid(taskId)) {
     return bad('waitOn.taskId must be the full UUID of the task you are waiting on');
   }
   if (typeof reason !== 'string' || !reason.trim()) {

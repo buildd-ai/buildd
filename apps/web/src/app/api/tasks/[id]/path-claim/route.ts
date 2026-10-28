@@ -4,8 +4,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { gateCallerOrigin } from '@/lib/gate-ledger';
 import { checkPathClaim, narrowPathClaim, type PathClaimTask } from '@/lib/path-claim-check';
+import { isUuid } from '@/lib/uuid';
 
-const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * POST /api/tasks/[id]/path-claim
@@ -68,7 +68,7 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  if (!FULL_UUID_REGEX.test(id)) {
+  if (!isUuid(id)) {
     return NextResponse.json({ error: 'taskId must be a full UUID' }, { status: 400 });
   }
 
@@ -130,7 +130,7 @@ export async function DELETE(
 ) {
   const { id } = await params;
 
-  if (!FULL_UUID_REGEX.test(id)) {
+  if (!isUuid(id)) {
     return NextResponse.json({ error: 'taskId must be a full UUID' }, { status: 400 });
   }
 
