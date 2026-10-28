@@ -53,6 +53,8 @@ export interface TaskRowMetaOptions {
   now: number;
   /** The live current action (`MissionLiveStore`, S7), e.g. "editing lease.ts". */
   liveLine?: string | null;
+  /** Newest milestone ts from the live store; the load-time milestones go stale. */
+  liveProgressMs?: number | null;
   /** Review-worthy records this task produced. */
   recordsCount?: number;
   /** Title of `row.blockedByTaskId`, for "after <title>". */
@@ -86,9 +88,11 @@ export function buildTaskRowMeta<T extends MissionFeedTaskInput>(row: FeedRow<T>
         if (row.task.status === 'completed' && row.pr?.state === 'checks_running') return 'checks running';
         const startMs = ms(row.task.worker?.startedAt);
         const milestones = row.task.worker?.milestones ?? null;
-        const progressMs = milestones && milestones.length > 0
+        const loadedMs = milestones && milestones.length > 0
           ? Math.max(...milestones.map(m => m.ts))
           : null;
+        const liveMs = opts.liveProgressMs != null && Number.isFinite(opts.liveProgressMs) ? opts.liveProgressMs : null;
+        const progressMs = loadedMs != null && liveMs != null ? Math.max(loadedMs, liveMs) : (loadedMs ?? liveMs);
         const stall = runStall({
           status: row.task.worker?.status ?? 'unknown',
           startMs,
@@ -123,6 +127,7 @@ export interface MissionTaskRowProps<T extends MissionFeedTaskInput = MissionFee
    */
   now: number;
   liveLine?: string | null;
+  liveProgressMs?: number | null;
   recordsCount?: number;
   blockedByTitle?: string | null;
   /** Outline override. Inside a provider the shared selection decides. */
@@ -137,6 +142,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
   initiativeId,
   now,
   liveLine,
+  liveProgressMs,
   recordsCount,
   blockedByTitle,
   focused: focusedProp,
@@ -158,7 +164,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
 
   const token = PULSE_STATE_TOKEN[row.state];
   const kind = deriveWorkKind({ kind: task.kind, roleSlug: task.roleSlug });
-  const meta = buildTaskRowMeta(row, { now, liveLine, recordsCount, blockedByTitle });
+  const meta = buildTaskRowMeta(row, { now, liveLine, liveProgressMs, recordsCount, blockedByTitle });
   const href = missionTaskHref({ missionId, taskId, from, initiativeId });
   const attempts = row.attempts;
   const [attemptsOpen, setAttemptsOpen] = useState(false);
