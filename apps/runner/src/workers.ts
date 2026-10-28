@@ -91,6 +91,7 @@ import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
+import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5049,6 +5050,10 @@ export class WorkerManager {
       // Nothing re-invokes a session after its turn ends, so background work
       // and scheduled wakeups can only strand it. See headless-session.ts.
       applyHeadlessSessionEnv(cleanEnv);
+      // The Bash tool's own 2-minute default killed every full test suite and
+      // project typecheck (exit 143), and the agent then reported success over
+      // the partial output. Raise it to what those runs need. See verify-guard.ts.
+      applyBashTimeoutEnv(cleanEnv);
 
       // Resolve role env vars (secret labels → actual values). Not gated on
       // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
@@ -5728,6 +5733,13 @@ export class WorkerManager {
             ? [{ hooks: [this.hookFactory.createClaudeAiArtifactHook(worker, worker.claudeAiArtifacts ?? 'off')] }]
             : []),
           { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
+          // Verify guard (verify-guard.ts): a whole-project test, typecheck or
+          // build may not be capped below the time it needs, and complete_task
+          // is refused while the last test / typecheck / lint failed with no
+          // later pass. Claude only: Codex has no PreToolUse seam.
+          ...(!isCodexTask
+            ? [{ hooks: [createVerifyGuardHook({ worker, isReviewer: Boolean(task.context?.reviewerFor) })] }]
+            : []),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
           // so a command it refuses never waits. See deps-gate.ts.

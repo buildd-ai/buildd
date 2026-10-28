@@ -216,9 +216,13 @@ export function detectMismatches(input: {
     }
     const last = unrecoveredVerifyFailure(input.traces);
     if (last) {
+      // 143 is SIGTERM: the Bash tool's timeout (2 minutes unless raised) or a
+      // shell `timeout N` wrapper killed the run. Said plainly, because that
+      // reads as "the suite is too slow to finish", not "the suite is red".
+      const killed = last.exitCode === 143 || /\bCommand timed out\b/i.test(last.output);
       out.push({
         kind: 'last_command_failed',
-        detail: `Reported success, but the last ${verifyFamilyOf(last.command)} command exited ${last.exitCode ?? 'non-zero'} and never passed afterwards: ${sanitizeEvidenceText(last.command).slice(0, 120)}`,
+        detail: `Reported success, but the last ${verifyFamilyOf(last.command)} command exited ${last.exitCode ?? 'non-zero'}${killed ? ' (killed by its timeout before it finished)' : ''} and never passed afterwards: ${sanitizeEvidenceText(last.command).slice(0, 120)}`,
       });
     }
   }

@@ -27,8 +27,12 @@ export interface SpecApprovalRequest {
   contentHash: string;
   /** The person whose session asked. */
   requestedBy: string;
-  /** The surface the request came from; a token minted before this existed reads as 'mcp'. */
-  via?: 'mcp' | 'chat';
+  /**
+   * The surface the request came from; a token minted before this existed
+   * reads as 'mcp'. 'dashboard': minted by the Review all page for its own
+   * Approve all (b7fc9316 R-25), one per listed revision.
+   */
+  via?: 'mcp' | 'chat' | 'dashboard';
   /**
    * The replaced specs to supersede with the approval (R-77), each at the
    * version read when the link was made. Absent on a link made before it.
@@ -59,14 +63,13 @@ function isPayload(v: unknown): v is SpecApprovalRequest {
   if (!v || typeof v !== 'object') return false;
   const p = v as Record<string, unknown>;
   return (
-    
     typeof p.specId === 'string' &&
     typeof p.workspaceId === 'string' &&
     Number.isSafeInteger(p.revision) &&
     Number.isSafeInteger(p.expectedVersion) &&
     typeof p.contentHash === 'string' &&
     typeof p.requestedBy === 'string' &&
-    (p.via === undefined || p.via === 'mcp' || p.via === 'chat') &&
+    (p.via === undefined || p.via === 'mcp' || p.via === 'chat' || p.via === 'dashboard') &&
     typeof p.exp === 'number' &&
     typeof p.nonce === 'string' &&
     p.nonce.length > 0 &&

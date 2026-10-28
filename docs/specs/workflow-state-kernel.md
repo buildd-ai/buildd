@@ -1744,8 +1744,9 @@ recorded as an external merge with a trunk fix filed once (AC-15) and is what
 `buildd/landing` exists to stop once trunk requires it; D13 is unchanged (deny lists).
 The inventory is held to the code by `apps/web/src/lib/workflow/merge-door-inventory.test.ts`.
 
-Branch-to-branch merges that do not go through a PR (`mission-branch-refresh.ts`,
-`scripts/sync-dev.sh`, `release-refresh.yml`) are not landing doors. They move a base,
+Branch-to-branch merges that do not go through a PR (`mission-branch-refresh.ts` and its
+migration-regenerating merge in `refresh-migration-reparent.ts`, `scripts/sync-dev.sh`,
+`release-refresh.yml`) are not landing doors. They move a base,
 and §5.9 refresh composition reviews what that merge decided. The release executor used
 to be on this list with a `POST /merges` of a worker branch that had no PR straight into
 the prod branch. That merge moved production, not a base, so §5.9 never reviewed it, and

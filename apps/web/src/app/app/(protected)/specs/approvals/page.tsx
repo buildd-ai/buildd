@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { approvalInboxView, type InboxRow } from '@/lib/specs/approval-inbox-view';
-import { SPEC_APPROVAL_INBOX_PATH } from '@/lib/specs/approval-inbox';
+import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
 import Card from '@/components/ui/Card';
 import Chip from '@/components/ui/Chip';
@@ -15,8 +15,9 @@ export const dynamic = 'force-dynamic';
  * Awaiting your approval (Living Spec b7fc9316 R-1 to R-6): every spec
  * revision waiting on the signed-in person, one row each. A row opens onto
  * what the confirm page shows and carries its own Approve, pinned to the
- * revision, version and content hash rendered here. There is no control that
- * approves several rows at once.
+ * revision, version and content hash rendered here. Approving several at once
+ * is the Review all page (R-24), linked from here, where each still goes
+ * under its own request.
  */
 export default async function SpecApprovalsPage() {
   const user = await getCurrentUser();
@@ -32,6 +33,12 @@ export default async function SpecApprovalsPage() {
             {n === 0
               ? 'Nothing waits for your approval.'
               : `${n} spec ${n === 1 ? 'revision waits' : 'revisions wait'} for you. Read each one and approve it on its own.`}
+            {n > 1 ? (
+              <>
+                {' '}
+                <Link href={SPEC_REVIEW_ALL_PATH} className="text-accent-text underline-offset-2 hover:underline" data-testid="spec-approvals-review-all">Review all {n} on one page</Link>
+              </>
+            ) : null}
           </span>
         </Lede>
         {n > 0 ? (

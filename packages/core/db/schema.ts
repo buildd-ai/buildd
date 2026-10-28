@@ -3115,11 +3115,28 @@ export const specs = pgTable('specs', {
 export interface SpecGateFinding { code: string; message: string; ids?: string[] }
 /** What the approval gate said about a revision: refusals block, warnings do not. */
 export interface SpecGateResult { passed: boolean; refusals: SpecGateFinding[]; warnings: SpecGateFinding[] }
-/** How a revision was approved. `gate` is null where the gate did not run (a person approving in the dashboard). */
+/**
+ * What `check:no-criteria-change` compared when it approved a revision
+ * (spec b7fc9316 R-23): both revisions and their body hashes, the hash of the
+ * criterion lines and of the design binding on each side (equal), and how
+ * many lines changed outside them.
+ */
+export interface SpecAutoApprovalEvidence {
+  from: { revision: number; contentHash: string; criteriaHash: string; designHash: string };
+  to: { revision: number; contentHash: string; criteriaHash: string; designHash: string };
+  criteria: number;
+  otherChangedLines: number;
+}
+/**
+ * How a revision was approved. `gate` is null where the gate did not run (a
+ * person approving in the dashboard). `via: 'check'`: no person approved it;
+ * `check:no-criteria-change` did, with its evidence in `check`.
+ */
 export interface SpecApprovalRecord {
-  via: 'mcp' | 'chat' | 'dashboard';
+  via: 'mcp' | 'chat' | 'dashboard' | 'check';
   gate: SpecGateResult | null;
   overrideReason?: string;
+  check?: { name: 'check:no-criteria-change'; evidence: SpecAutoApprovalEvidence };
 }
 
 export const specRevisions = pgTable('spec_revisions', {
