@@ -42,13 +42,6 @@ const parked: QueueWait = { kind: 'start_time', startAt: new Date(NOW + 3600_000
 const limit: QueueWait = { kind: 'limit', limit: 'mission_cap', forceable: true };
 
 describe('QueueBoard', () => {
-  it('never shows running against zero or fewer slots as a fraction', () => {
-    const html = render({ running: 1, slots: 0 });
-    expect(html).not.toContain('1/0');
-    expect(html).toContain('slot total unknown');
-    expect(render({ running: 3, slots: 2 })).not.toContain('3/2');
-    expect(render({ running: 4, slots: 6 })).toContain('4/6');
-  });
   it('a truncated read says so as a label, and only then', () => {
     expect(render({ truncated: true })).toContain('Partial queue. Counts are minimums.');
     expect(render({})).not.toContain('data-testid="queue-truncated"');

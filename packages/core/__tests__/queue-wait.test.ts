@@ -140,6 +140,7 @@ describe('queueWaitOf: one reason per pending task, the same words everywhere', 
     expect(queueWaitOf([lane(1), declared('d'), reason('task_held')])).toMatchObject({ kind: 'limit', limit: 'task_paused' });
     expect(queueWaitOf([reason('mission_concurrent'), lane(1), declared('d')]).kind).toBe('declared');
     expect(queueWaitOf([reason('mission_concurrent'), lane(1)]).kind).toBe('lane');
+    expect(queueWaitOf([reason('mission_concurrent'), reason('account_slots')])).toMatchObject({ limit: 'mission_cap' });
     expect(queueWaitOf([reason('mission_concurrent'), reason('mission_budget')])).toMatchObject({ limit: 'mission_budget' });
     expect(queueWaitOf([declared('a'), declared('b'), declared('c')])).toMatchObject({ kind: 'declared', blockerId: 'a', count: 3 });
     expect(queueWaitHeadline(queueWaitOf([declared('a'), declared('b')]), NOW)).toBe('Waiting on “Task a” and 1 more');

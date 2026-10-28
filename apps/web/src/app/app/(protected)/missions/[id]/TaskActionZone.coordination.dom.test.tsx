@@ -222,12 +222,12 @@ describe('TaskActionZone: coordination holds', () => {
     provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
   });
 
-  it('a declared dependency beside a lane stays: blocked panel says so and offers neither Start anyway nor Force start', async () => {
+  it('a declared dependency stays: blocked panel says so and offers Start anyway, not Force start', async () => {
     hold = [declaredHold()];
     await render({ isBlocked: true, blockedByCount: 1 });
     expect(q('[data-testid="task-blocked-waiting"]')!.textContent).toContain('Waiting on “design first”');
     // A person may start it anyway: the agent assesses first (spec 36df686b).
-    expect(q('[data-action="force_start_offer"]')).toBeNull();
+    expect(q('[data-action="force_start_offer"]')!.textContent).toBe('Start anyway…');
   });
 
   it('a declared dependency beside a lane: counted apart, and no start is offered while the lane holds', async () => {
