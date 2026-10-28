@@ -723,7 +723,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs, 
         overall: (criteriaState?.overall as any) ?? null,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         items: criteriaItems as any,
-        completionAttempted: progress !== undefined && progress >= 100,
+        completionAttempted: isBuildComplete(counted),
       });
 
   // evaluateCriteria: false — a read must never dispatch a verification task or
