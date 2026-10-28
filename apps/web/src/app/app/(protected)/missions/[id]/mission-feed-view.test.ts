@@ -109,7 +109,7 @@ describe('toMissionFeedTaskInput', () => {
       creationSource: null, dependsOn: ['z'], missionPhaseIndex: 1, missionPhaseLabel: 'BUILD',
       worker: {
         status: 'running', startedAt: '2026-01-01T00:01:00Z', updatedAt: null, prNumber: 7,
-        prUrl: 'https://example.invalid/pr/7', prLifecycleStatus: null, mergedAt: null,
+        prUrl: 'https://example.invalid/pr/7', prLifecycleStatus: null, mergedAt: null, milestones: null,
       },
     });
   });
