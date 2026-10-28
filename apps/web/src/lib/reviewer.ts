@@ -515,8 +515,18 @@ export function enforceServerSideEscalation(params: {
   policy: MergePolicy;
   policyConfig?: WorkspacePolicyConfig;
   migrationSafety?: MigrationSafety;
+  /**
+   * 52a0de67: a person approved this PR at `headSha`, and `unchangedPaths` are the PR's files
+   * whose content is the same at the head being judged (`personApprovedScope`). The person
+   * decided on exactly those bytes, so the file-list gates judge only what changed since; a
+   * migration byte-identical to the approved one is not sent back to the same person. The
+   * inspector's own verdict (`migrationSafety`) is the caller's to scope the same way.
+   */
+  personApproved?: { headSha: string; unchangedPaths: string[] } | null;
 }): { verdict: ReviewerTaskOutput['verdict']; overrideReason: string | null } {
-  const { verdict, prFiles, policy, policyConfig, migrationSafety } = params;
+  const { verdict, policy, policyConfig, migrationSafety, personApproved } = params;
+  const decided = new Set(personApproved?.unchangedPaths ?? []);
+  const prFiles = params.prFiles && decided.size ? params.prFiles.filter((f) => !decided.has(f.filename)) : params.prFiles;
 
   if (verdict !== 'approve') return { verdict, overrideReason: null };
 
@@ -537,6 +547,33 @@ export function enforceServerSideEscalation(params: {
   }
 
   return { verdict: 'approve', overrideReason: null };
+}
+
+/**
+ * 52a0de67: the part of a PR's file list a person's earlier approval already covers. A delivery
+ * whose approval is a person's (`approvalBasis: 'human'`) at head A, judged now at head B: the
+ * files the delta A..B (bounded against the base, read by `GithubFactReader.reviewedDelta`) did
+ * not touch are unchanged since the person approved them. An unread delta (null) covers nothing:
+ * the gates then run on the whole list, as before. A delta that renamed a file counts both names
+ * as changed. Pure; the caller reads the view and the delta.
+ */
+export function personApprovedScope(
+  delivery: { approvalBasis: string | null; approvedHeads: string[] } | null | undefined,
+  headSha: string,
+  prFiles: Array<{ filename: string }> | null,
+  delta: { fromHeadSha: string; toHeadSha: string; files: Array<{ path: string; previousPath?: string | null }> } | null | undefined,
+): { headSha: string; unchangedPaths: string[] } | null {
+  if (!delivery || delivery.approvalBasis !== 'human' || !prFiles?.length) return null;
+  const approved = delivery.approvedHeads.at(-1);
+  if (!approved) return null;
+  if (approved === headSha) return { headSha: approved, unchangedPaths: prFiles.map((f) => f.filename) };
+  if (!delta || delta.fromHeadSha !== approved || delta.toHeadSha !== headSha) return null;
+  const changed = new Set<string>();
+  for (const f of delta.files) {
+    changed.add(f.path);
+    if (f.previousPath) changed.add(f.previousPath);
+  }
+  return { headSha: approved, unchangedPaths: prFiles.map((f) => f.filename).filter((p) => !changed.has(p)) };
 }
 
 /**
