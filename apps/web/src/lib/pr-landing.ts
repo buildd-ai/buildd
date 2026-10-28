@@ -1412,6 +1412,12 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         workerId: owner.workerId, taskId: owner.taskId, prNumber, headSha: liveHead, repoFullName, workspaceId, behindOnly: true,
       });
     } catch (err) {
+      // Retryable, nothing for a person: an outage, or the pass spent its control-plane
+      // budget. The next pass refreshes it (36f5fc74).
+      const cp = err as { code?: unknown; why?: unknown } | null;
+      if (cp?.code === 'control_plane_unavailable') {
+        return waiting(`the branch refresh waits for the next pass: the control plane did not answer (${String(cp.why)})`, { refresh: 'deferred' });
+      }
       return human('merge_failed', `could not refresh the branch: ${errMessage(err)}`);
     }
     if (res.behindTolerated) return 'tolerated';

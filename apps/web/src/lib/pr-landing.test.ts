@@ -1523,6 +1523,26 @@ describe('landPr — behind base is work with an owner', () => {
     expect(outcomeOwner(out)).toEqual({ kind: 'marker', headSha: 'head2' });
   });
 
+  // 36f5fc74: a pass that spent its control-plane budget stranded every PR after it.
+  it('a refresh the control plane did not answer is deferred to the next pass, not stranded', async () => {
+    const { ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
+    mockDispatchConflictRetry.mockImplementation(async () => {
+      throw new ControlPlaneUnavailableError('the pr-reconcile:landing pass spent its control-plane budget');
+    });
+    const out = await land();
+    expect(out.kind).toBe('waiting_ci');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    const [event] = landingEvents();
+    expect(event.outcome).toBe('deferred');
+    expect(event.reason).toContain('the control plane did not answer');
+  });
+
+  it('a refresh that fails for another reason is still a person\'s', async () => {
+    mockDispatchConflictRetry.mockImplementation(async () => { throw new Error('GitHub said 422'); });
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'merge_failed' });
+  });
+
   describe('early refresh while CI is pending', () => {
     const running = () => { gh.checkRuns = [{ name: 'build', status: 'in_progress', conclusion: null }]; };
     const approvedAt = (head: string) => { reviewStatus = { state: 'approved', verdict: 'approve', confidence: 0.9, merged: false, reviewHeadSha: head }; };
