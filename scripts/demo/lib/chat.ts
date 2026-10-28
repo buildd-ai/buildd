@@ -11,7 +11,7 @@
 import type { LocalDb } from '../../../packages/core/db/local-client';
 import { schema as s, sql, eq } from '../../../packages/core/db/local-client';
 import { createHash } from 'crypto';
-import { canonicalJson } from '@buildd/shared';
+import { canonicalJson } from '../../../packages/shared/src/canonical-json';
 import { relTime, type Entity, type IdMap, type Story } from './story';
 
 /**
