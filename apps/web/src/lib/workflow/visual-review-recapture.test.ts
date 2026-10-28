@@ -86,7 +86,14 @@ describe('the recapture is queued (I-15)', () => {
 });
 
 describe('no capture is coming: a person decides (I-15, AC-14)', () => {
-  const c = chain('recapture-decide');
+  const strict = resolveVisualReviewPolicy({ workspace: 'ask' });
+  const c = chain('recapture-decide', { policy: strict });
+
+  it('under automatic the merge goes ahead and the leftovers are carried', () => {
+    const a = chain('recapture-decide');
+    expect(a.state).toMatchObject({ status: 'findings', nextActor: 'none', pendingVerification: false });
+    expect(a.merge.ready).toBe(true);
+  });
 
   it('reads owner decision, Fixed or Still broken, and the merge refusal says so', () => {
     expect(c.state).toMatchObject({ status: 'findings', nextActor: 'owner' });
@@ -94,7 +101,7 @@ describe('no capture is coming: a person decides (I-15, AC-14)', () => {
     expect(c.p.detail).toContain('Fixed or Still broken');
     expect(c.row).toMatchObject({ status: 'owner', state: 'Check 3 fixed screens', waivable: true });
     expect(readyToMergeReason(c.merge)).toContain('decide Fixed or Still broken, or skip the review');
-    expect(c.plan).toMatchObject({ action: 'none', why: 'findings_open' });
+    expect(c.plan).toMatchObject({ action: 'none', why: 'ask_policy' });
   });
 
   it('every count of open findings agrees: deck, row, owner button, text', () => {

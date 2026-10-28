@@ -196,6 +196,15 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
   if (state.status === 'findings' && state.findings) {
     const f = state.findings;
     const findings = { issues: f.issues, fixesOpen: f.fixesOpen };
+    if (f.carried) {
+      // Policy `automatic`: the rounds are spent, nobody is asked, and the merge goes ahead.
+      const n = Math.max(f.issues, state.recapture?.screens.length ?? 0, 1);
+      return {
+        ...quiet, ...common, stage: 'verifying', tone: 'info', label: n === 1 ? '1 screen is still open' : `${n} screens are still open`,
+        detail: 'Automatic fixes did not settle these. The mission can merge. Each one is queued as a fix on the main branch.',
+        showPanel: true, problem: 'product', findings,
+      };
+    }
     if (f.exhausted && state.recapture?.next === 'decide' && !state.findings.undecided) {
       // A merged fix no new screenshot will be taken of (spec 072de598 I-15).
       const n = state.recapture.screens.length;
