@@ -17,6 +17,7 @@
  *   full width and segments sit edge to edge, so the target is the strip.
  * - `context`: 8px with the current task ringed (sheet header, task page).
  */
+import { statusPill } from '@/components/ui/states';
 import { useMemo, useRef, useState } from 'react';
 import { PULSE_STATE_TOKEN, pulseDoneCounts, type PulseSegment, type PulseState } from '@/lib/mission-pulse';
 import { useMissionFocusSnapshot, useMissionFocusStore } from './mission-focus-context';
@@ -53,13 +54,16 @@ export const PULSE_TOKEN_TEXT: Record<Token, string> = {
   error: 'text-status-error',
 };
 
+const pulseWord = (status: string) => statusPill(status).label.toLowerCase();
+
+// Spoken in lower case, the words come from the shared status table.
 export const PULSE_STATE_LABEL: Record<PulseState, string> = {
-  needs_you: 'waiting on you',
-  moving: 'running',
-  queued: 'queued',
-  done: 'done',
-  failed: 'failed',
-  skipped: 'cancelled',
+  needs_you: pulseWord('waiting_on_you'),
+  moving: pulseWord('running'),
+  queued: pulseWord('pending'),
+  done: pulseWord('completed'),
+  failed: pulseWord('failed'),
+  skipped: pulseWord('cancelled'),
 };
 
 // Pure, so it lives in the plain model module: a server component may call it,
