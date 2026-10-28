@@ -86,8 +86,7 @@ import MissionBranchPanel from './MissionBranchPanel';
 import { branchPanelHasAction } from '@/lib/mission-branch-panel';
 import { waiverActorEmails, waiverActorName } from '@/lib/mission-checks';
 import MissionVisualRecord from './MissionVisualRecord';
-import MissionFinalScreens from './MissionFinalScreens';
-import { listExhaustedFollowUps, type ExhaustedFollowUp } from '@/lib/visual-review-exhausted';
+import MissionFinalScreensLoader from './MissionFinalScreensLoader';
 import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import { loadMissionEvidence } from '@/lib/specs/mission-evidence';
@@ -731,10 +730,6 @@ async function MissionDetailBody({
 
   // Fetch team's active/paused initiatives for the initiative selector
   const isTerminal = ['completed', 'archived'].includes(mission.status);
-  // Findings the automatic fix rounds left open at the merge: the follow-ups filed for them.
-  const exhaustedFollowUps = isTerminal && visualModel && (visualModel.exhaustedFindings?.length ?? 0) > 0
-    ? await listExhaustedFollowUps(id).catch((): ExhaustedFollowUp[] => [])
-    : [];
 
   // Release section (§8.5): reads the same workspace-scoped loader as the
   // mission-card footer (lib/release-footer.ts) so the two surfaces cannot
@@ -1415,7 +1410,7 @@ async function MissionDetailBody({
     >
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
-      {isTerminal && visualModel && visualModel.phase !== 'off' && <MissionFinalScreens model={visualModel} followUps={exhaustedFollowUps} />}
+      {isTerminal && visualModel && visualModel.phase !== 'off' && <MissionFinalScreensLoader missionId={id} model={visualModel} />}
       {content}
       {layout !== 'board' && <div className="mt-6"><LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed /></div>}
       <div data-testid="mission-board-footer" className="mt-10">
