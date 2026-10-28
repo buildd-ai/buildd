@@ -223,7 +223,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-15
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 - [Scheduled maintenance jobs](./scheduled-maintenance-jobs.md) · @max — verified 2026-10-28
-  The fourteen background cron routes that keep derived state, alerts and hygiene current MUST each declare what they do, their cadence and what degrades when they stop, so a silently dead job is recognisable.
+  The thirteen background cron routes that keep derived state, alerts and hygiene current MUST each declare what they do, their cadence and what degrades when they stop, so a silently dead job is recognisable.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-10-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-26

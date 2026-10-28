@@ -343,7 +343,13 @@ describe('WorkerManager — lifecycle', () => {
       ];
 
       await manager.retry('w-lc-1');
-      for (let i = 0; i < 100 && !(manager.getWorker('w-lc-1')?.completedAt && !manager.getWorker('w-lc-1')?.error); i++) {
+      // Wait for the retry's own query too: on a slow CI host the first
+      // session can finish late and set completedAt before the retry starts.
+      const retryDone = () => {
+        const w = manager.getWorker('w-lc-1');
+        return queryCallCount > queryCountBefore && !!w?.completedAt && !w?.error;
+      };
+      for (let i = 0; i < 100 && !retryDone(); i++) {
         await new Promise(r => setTimeout(r, 50));
       }
 

@@ -491,5 +491,5 @@ today.
 - Codex API-key helper (resolve + verify, no refresh): `apps/web/src/lib/codex-api-key.ts`
 - OpenAI API key helper (plain key, no refresh): `apps/web/src/lib/openai-credential.ts`
 - Claim-time resolution: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/workers/claim/credential-injection.ts`
-- Connector refresh cron (historical path and slug): `apps/web/src/app/api/cron/codex-token-refresh/route.ts`
+- Refresh cron: `apps/web/src/app/api/cron/connector-token-refresh/route.ts`
 - Settings UI: `apps/web/src/app/app/(protected)/settings/` (Agent Backends section)

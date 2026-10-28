@@ -73,19 +73,20 @@ mock.module('@/lib/anthropic-auth', () => ({ verifyAnthropicApiKey: mockVerifyKe
 mock.module('@/lib/mcp-connector-refresh', () => ({ refreshMcpConnectorCredential: mockRefreshMcp }));
 
 import { GET } from './route';
+import { GET as GET_RETIRED_PATH } from '../codex-token-refresh/route';
 
 function makeRequest(token?: string, vercelCron = false) {
   const headers: Record<string, string> = {};
   if (token) headers['authorization'] = `Bearer ${token}`;
   if (vercelCron) headers['x-vercel-cron'] = '1';
-  return new NextRequest('http://localhost/api/cron/codex-token-refresh', { headers });
+  return new NextRequest('http://localhost/api/cron/connector-token-refresh', { headers });
 }
 
 function authedRequest() { return makeRequest('test-secret'); }
 
 const originalEnv = { ...process.env };
 
-describe('GET /api/cron/codex-token-refresh', () => {
+describe('GET /api/cron/connector-token-refresh', () => {
   beforeEach(() => {
     mockSecretsFindMany.mockReset();
     mockVerifyKey.mockReset();
@@ -139,6 +140,24 @@ describe('GET /api/cron/codex-token-refresh', () => {
 
     expect(mockRefreshMcp.mock.calls.map((c) => c[0])).toEqual(['mcp-1', 'mcp-2']);
     expect(body.mcp).toMatchObject({ checked: 2, refreshed: 1, errors: 1 });
+  });
+
+  it('still refreshes connector credentials when the live job calls the retired path', async () => {
+    // cron-job.org is re-synced by hand, so after a deploy it keeps calling
+    // /api/cron/codex-token-refresh until someone runs cron:sync --prune.
+    // Short-lived gateway tokens die inside that gap if the old path 404s.
+    mockSecretsFindMany.mockReturnValueOnce([{ id: 'mcp-1' }] as any).mockReturnValue([]);
+
+    const res = await GET_RETIRED_PATH(authedRequest());
+
+    expect(res.status).toBe(200);
+    expect(mockRefreshMcp.mock.calls.map((c) => c[0])).toEqual(['mcp-1']);
+    expect((await res.json()).mcp).toMatchObject({ checked: 1, refreshed: 1 });
+  });
+
+  it('authenticates the retired path like the new one', async () => {
+    expect((await GET_RETIRED_PATH(makeRequest('wrong-token'))).status).toBe(401);
+    expect(mockRefreshMcp).not.toHaveBeenCalled();
   });
 
   it('sweeps a window that covers its own cron cadence, not 10 minutes', async () => {
