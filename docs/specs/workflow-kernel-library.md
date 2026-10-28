@@ -12,20 +12,20 @@ verified_by: [apps/web/src/lib/workflow/trunk-recheck.test.ts, apps/web/tests/db
 supersedes: []
 assertions:
   - id: "kernel-command-api"
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-16"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): ATTEMPT_SITES/ATTEMPT_SITE_CEILING are unbuilt; re-review by 2027-03-16."
     type: "symbol"
     name: "COMMAND_PATH"
     path: "apps/web/src/lib/workflow/command-api.ts"
   - id: "kernel-control-plane-url"
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-16"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): ATTEMPT_SITES/ATTEMPT_SITE_CEILING are unbuilt; re-review by 2027-03-16."
     type: "symbol"
     name: "CONTROL_PLANE_URL"
     path: "apps/web/src/lib/workflow/kernel-client.ts"
   - id: "kernel-conformance-suite"
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-16"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): ATTEMPT_SITES/ATTEMPT_SITE_CEILING are unbuilt; re-review by 2027-03-16."
     type: "test_file"
     path: "packages/workflow-kernel/src/conformance/conformance.test.ts"
 ---
@@ -997,6 +997,17 @@ recorded as such, never as an approval.
   "Review in progress", and never `success`: only a delivery's gate says a
   head may merge. A success given to one head never carries over to another
   (AC-77).
+- A *foreign* PR (one buildd has no record of: no delivery, worker, adoption,
+  reviewer task, buildd task branch or mission branch) follows the workspace's
+  `mergePolicy.autoReviewUnowned` (unset: on under tier `agent-review`). On, the
+  PR webhook requests buildd's review of it through the same door as
+  `request_pr_review` (adopting it), unless it is a draft, a bot's PR or a
+  (possible) release candidate or onto a base outside the normal flow, so its
+  head reads "Review in progress". A foreign PR with no review asked for (the
+  setting off, or one auto-review did not take) carries no
+  `Buildd / Review approval` at all, from the webhook or the floor; coverage
+  counts that skip as answered.
+  Kernel-owned PRs and release candidates are unaffected.
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against

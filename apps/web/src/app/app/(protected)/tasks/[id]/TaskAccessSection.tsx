@@ -11,6 +11,9 @@
  * (the same request as its Needs You card). A request whose run ended was
  * never decided and can no longer be: it reads as closed, with no link.
  *
+ * A database query shows the SQL it ran, the row count and the time taken;
+ * the rows themselves are never recorded.
+ *
  * Collapsed by default; opens on its own when anything was refused or waits on
  * a person, since that is what someone opens it for. Renders nothing for a task with no
  * recorded decisions.
@@ -66,6 +69,17 @@ function Governed({ item }: { item: AccessItem }) {
       <span className="text-body text-text-primary flex-1 min-w-0">
         {item.label}
         {item.target && <span className="text-text-secondary"> · {item.target}</span>}
+        {item.query && (
+          <span className="block mt-1" data-testid="task-access-query">
+            <code className="block whitespace-pre-wrap break-words text-meta text-text-secondary">{item.query.sql}{item.query.sqlTruncated ? ' …' : ''}</code>
+            {item.query.rowCount !== null && (
+              <span className="text-meta text-text-muted">
+                {item.query.rowCount} {item.query.rowCount === 1 ? 'row' : 'rows'}{item.query.truncated ? ' (capped)' : ''}
+                {item.query.durationMs !== null && <> · {item.query.durationMs} ms</>}
+              </span>
+            )}
+          </span>
+        )}
       </span>
       <span className="text-meta basis-full md:basis-auto md:text-right">
         {item.pending ? (

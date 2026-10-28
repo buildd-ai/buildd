@@ -6,14 +6,13 @@ import { isTaskToken } from './task-token';
  *
  * Invariant: a runner key cannot read team credentials it was not handed at
  * claim time. The routes that hand out or enumerate stored credentials
- * outside a claim (credential lease, credential refresh, the secrets list)
- * accept only a key an owner/admin has explicitly flagged as a long-lived host
- * runner (`accounts.hostRunner`). A per-task token (lib/task-token.ts) is
+ * outside a claim (the secrets list) accept only a key an owner/admin has
+ * explicitly flagged as a long-lived host runner (`accounts.hostRunner`). A per-task token (lib/task-token.ts) is
  * refused whatever its account is flagged as.
  *
  * `allowPersonSession`: the secrets list also serves a person's OAuth session
  * (MCP from claude.ai), which is a team member acting as themself, not a
- * runner key. The credential lease / refresh routes never do.
+ * runner key.
  */
 
 export const TASK_TOKEN_REFUSED = 'A per-task token cannot use team credential routes.';

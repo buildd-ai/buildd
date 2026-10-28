@@ -32,7 +32,6 @@ import {
   recordedAnswerOf,
   type AnswerPathDecision,
 } from '@/lib/answer-resume';
-import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
 import { reopenTaskForAnsweredAttempt, type ReopenForAnswerResult } from '@/lib/answer-attempt';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { clearTeamCache } from '@/lib/team-cache';
@@ -164,11 +163,8 @@ async function respond(
 
   // ── The decision ──────────────────────────────────────────────────────────
   //
-  // An interactive session is decided first, before the credential preflight:
-  // it runs on the person's own seat, never on the workspace's managed agent
-  // credential, so that credential's health says nothing about it and a
-  // revoked one must not bounce the answer. A GONE interactive session falls
-  // through: its cold continuation runs on a runner, which the preflight is for.
+  // An interactive session is decided first: it runs on the person's own
+  // login. A GONE interactive session falls through to the runner paths.
   const [liveUpdatedAt, liveSessionSeenAt] = await Promise.all([
     workerHeartbeatAt(id, worker.updatedAt),
     parkedWorkerSeenAt(id, waitingFor.sessionSeenAt ?? null),
@@ -196,46 +192,13 @@ async function respond(
       }),
     });
   }
-  //
-  // Credential health is checked BEFORE choosing a path, not after resuming
-  // into an auth failure: a parked question can sit for hours, and the runner
-  // released this worker's credential file when it parked.
-  const backend = task?.backend === 'codex' ? 'codex' : 'claude';
-  const preflight = await preflightBackendCredential({
-    // Both `workspaces` and `accounts` carry the owning teamId and they agree;
-    // read whichever relation the row actually loaded.
-    teamId: (worker as any).workspace?.teamId ?? (worker as any).account?.teamId ?? null,
-    workspaceId: worker.workspaceId,
-    backend,
-  });
-
-  // A REVOKED credential is refused outright rather than routed down either
-  // path — the behaviour #2528 shipped, and it is the right one for this case
-  // for a reason that sharpens under resume: the continuation could not run
-  // either (the claim rail declines to inject a revoked credential), while
-  // superseding the worker would destroy the transcript and the worktree that
-  // make a resume possible at all. Refusing keeps the question parked, so the
-  // re-answer after reconnecting can still take the RESUME path. `waitingFor`
-  // is untouched and nothing is written.
-  //
-  // An EXPIRED-and-unrefreshable credential is different and falls through to
-  // gate G5 below: it is recoverable without human action, so the answer is
-  // recorded durably on a new attempt of the task instead of being bounced.
-  if (preflight.revoked) {
-    return NextResponse.json({
-      error: `Backend credential (${backend}) is revoked. Reconnect it under Settings, Runners before continuing.`
-        + (preflight.lastFailureMessage ? ` Last error: ${preflight.lastFailureMessage.slice(0, 200)}` : ''),
-      credentialRevoked: true,
-      backend,
-    }, { status: 409 });
-  }
-
   const decision = evaluateAnswerPath({
     workerStatus: worker.status,
     workerUpdatedAt: liveUpdatedAt,
     workerTurns: worker.turns,
     supportsInstructionAck: (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true,
-    credentialPreflight: preflight.state,
+    // No stored subscription login exists to check: the runner's own login is its business.
+    credentialPreflight: 'unknown',
     waitingForType: waitingFor.type ?? null,
     parkedUntil: (worker as { parkedUntil?: Date | null }).parkedUntil ?? null,
     workerRunner: (worker as { runner?: string | null }).runner ?? null,
@@ -269,7 +232,6 @@ async function respond(
     milestones,
     decision,
     deliveryRecord,
-    credentialDetail: preflight.state === 'unhealthy' ? preflight.detail : undefined,
   });
 }
 

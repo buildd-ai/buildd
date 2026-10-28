@@ -7,6 +7,7 @@ import Sheet from '@/components/ui/Sheet';
 import Chip from '@/components/ui/Chip';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import StageMeter from '@/components/ui/StageMeter';
+import { statusPill } from '@/components/ui/states';
 
 /**
  * Health › Queue's sheets (spec "Health › Queue", R-9, R-11): a declared
@@ -73,15 +74,12 @@ export async function releaseLaneRequest(workspaceId: string, lane: string, hold
 
 // ── Declared dependency ─────────────────────────────────────────────────────
 
-const STATUS_WORD: Record<string, string> = {
-  pending: 'Waiting',
-  assigned: 'Starting',
-  in_progress: 'Running',
+// Words come from the shared status table; only the two a blocker reads differently stay local.
+const STATUS_WORD_OVERRIDE: Record<string, string> = {
   review: 'In review',
   completed: 'Done, PR not merged',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
 };
+const statusWord = (status: string): string => STATUS_WORD_OVERRIDE[status] ?? statusPill(status).label;
 
 /** The blocker's next step: what moves it, opened on its own page. */
 export function blockerNextStep(status: string | null): string {
@@ -123,7 +121,7 @@ export function DependencyBody({ row, reason, onReason, busy, error, onRemove }:
       <p className="text-title font-semibold text-text-primary">{row.title}</p>
       <Rows rows={[
         ['Depends on', row.blockerId ? <Link key="d" href={`/app/tasks/${row.blockerId}`} className="hover:underline">{blockerName}</Link> : blockerName],
-        ['Status', <Chip key="s" tone={row.blockerStatus === 'failed' ? 'error' : row.blockerStatus === 'in_progress' ? 'running' : 'muted'} variant="soft">{STATUS_WORD[row.blockerStatus ?? ''] ?? 'Unknown'}</Chip>],
+        ['Status', <Chip key="s" tone={row.blockerStatus === 'failed' ? 'error' : row.blockerStatus === 'in_progress' ? 'running' : 'muted'} variant="soft">{row.blockerStatus ? statusWord(row.blockerStatus) : 'Unknown'}</Chip>],
         ['Set by', row.setBy ?? 'Whoever filed it'],
         ['Why', row.why ?? <span key="w" className="text-text-muted">Not recorded</span>],
       ]} />

@@ -26,9 +26,9 @@ import { resolveCapabilityAdminCaller } from '@/lib/capability-grants-auth';
 import { notifyAccessRequest } from '@/lib/capability-grants-needs-you';
 import { withRequestContext } from '@/lib/capability-grants-context';
 import type { AccessRequestView } from '@/lib/capability-grants-view';
+import { isUuid } from '@/lib/uuid';
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NO_STORE = { 'Cache-Control': 'no-store' };
 const MAX_BODY_BYTES = 16 * 1024;
 
@@ -104,14 +104,14 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const teamId = params.get('teamId');
-  if (teamId && !UUID_RE.test(teamId)) return fail(400, 'invalid teamId');
+  if (teamId && !isUuid(teamId)) return fail(400, 'invalid teamId');
   const caller = await resolveCapabilityAdminCaller(req, teamId);
   if (caller instanceof NextResponse) return caller;
 
   const status = (params.get('status') ?? '').split(',').map(s => s.trim()).filter(Boolean);
   if (status.some(s => !(GRANT_STATUSES as readonly string[]).includes(s))) return fail(400, `status must be from ${GRANT_STATUSES.join(', ')}`);
   const workspaceId = params.get('workspaceId');
-  if (workspaceId && !UUID_RE.test(workspaceId)) return fail(400, 'invalid workspaceId');
+  if (workspaceId && !isUuid(workspaceId)) return fail(400, 'invalid workspaceId');
   const limit = Number(params.get('limit') ?? '50');
 
   const requests = await withRequestContext(await listTeamRequests(caller.teamId, { status, workspaceId, limit: Number.isFinite(limit) ? limit : 50 }));

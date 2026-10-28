@@ -8,10 +8,10 @@ import { DIRECTIVE_TEXT_MAX, normalizeDirectiveText } from '@buildd/core/chat-di
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { getOwnConversation } from '@/lib/chat/store';
 import type { ChatCaller } from '@/lib/chat/session';
+import { isUuid } from '@/lib/uuid';
+export { isUuid };
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
 
 const bad = (error: string, status = 400) => ({ response: Response.json({ error }, { status }) });
 

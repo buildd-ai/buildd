@@ -23,6 +23,7 @@
  */
 import Link from 'next/link';
 import { TERMS } from '@buildd/shared';
+import { STATES } from '@/components/ui/states';
 import { useCallback, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import type { BoardTask, MissionBoardModel } from '@/lib/mission-board';
@@ -49,10 +50,8 @@ export interface LandedStripProps {
   count: ReactNode;
 }
 
-const STATUS_PILL: Record<StripState, string> = {
-  landed: TERMS['pr.merged'].word, review: 'In review', running: TERMS['work.working'].word, waiting: 'Has a question',
-  ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: TERMS['work.blocked'].word,
-};
+// The strip state's own word comes from the shared state table.
+const STATUS_PILL = (state: StripState): string => STATES[state].word;
 
 /**
  * The drawer's status pill: a kernel-owned delivery's canonical label (the
@@ -60,7 +59,7 @@ const STATUS_PILL: Record<StripState, string> = {
  */
 export function stripDrawerPill(t: Pick<BoardTask, 'delivery'>, state: StripState, executor: MissionExecutor | null): string {
   if (t.delivery) return t.delivery.label;
-  return state === 'ready' && executor === 'local' ? 'Needs claim' : STATUS_PILL[state];
+  return state === 'ready' && executor === 'local' ? 'Needs claim' : STATUS_PILL(state);
 }
 
 export function LandedStrip({ model, compact, link, focus, count }: LandedStripProps) {

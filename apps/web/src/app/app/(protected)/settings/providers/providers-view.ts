@@ -39,8 +39,6 @@ const SURFACE_PHRASE: Record<ProviderSurfaceId, string> = {
 
 export const SHAPE_NOUN: Record<ProviderShapeId, string> = {
   api_key: 'API key',
-  setup_token: 'Setup token',
-  oauth_managed: 'Subscription login',
   gateway: 'Gateway',
   endpoint: 'Endpoint',
 };
@@ -206,15 +204,6 @@ export function keyRuleLine(policy: Pick<ProviderPolicySummary, 'credentialPolic
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
 
-/**
- * The providers Models and Keys list: what buildd stores (a key, a gateway,
- * an endpoint). A subscription signs a runner in on its own machine, so it
- * has no row.
- */
-export function listedProviders(providers: readonly ProviderListing[]): ProviderListing[] {
-  return providers.filter((p) => p.connectFlow !== 'oauth');
-}
-
 /** An Anthropic key is "Claude" to the reader; the row keeps the `claude` id (#agent-key, test ids). */
 const ROW_NAME: Record<string, { id: string; label: string }> = {
   anthropic: { id: 'claude', label: 'Claude' },
@@ -224,7 +213,7 @@ export interface ProviderRowItem { id: string; label: string; provider: Provider
 
 /** One row per listed provider, in registry order. */
 export function providerRows(providers: readonly ProviderListing[]): ProviderRowItem[] {
-  return listedProviders(providers).map((p) => ({ id: ROW_NAME[p.id]?.id ?? p.id, label: rowLabel(p), provider: p }));
+  return providers.map((p) => ({ id: ROW_NAME[p.id]?.id ?? p.id, label: rowLabel(p), provider: p }));
 }
 
 function rowLabel(p: Pick<ProviderListing, 'id' | 'label'>): string {
@@ -235,7 +224,7 @@ function rowLabel(p: Pick<ProviderListing, 'id' | 'label'>): string {
 
 /** Providers the team has connected (a team row exists), in registry order. */
 export function connectedProviders(res: Pick<ListProvidersResponse, 'providers'>): ProviderListing[] {
-  return listedProviders(res.providers).filter((p) => (p.set.team ?? []).length > 0);
+  return res.providers.filter((p) => (p.set.team ?? []).length > 0);
 }
 
 export interface UsedForOption { value: string; label: string; disabled: boolean; description?: string }
@@ -266,7 +255,7 @@ export function usedForView(
           : { value: p.id, label: rowLabel(p), disabled: false };
       }
       // The limit as a fact where someone acts ("Needs OpenAI or OpenRouter"), not a list of what it can't do.
-      const instead = listedProviders(res.providers).filter((q) => support?.instead?.includes(q.id)).map(rowLabel);
+      const instead = res.providers.filter((q) => support?.instead?.includes(q.id)).map(rowLabel);
       return { value: p.id, label: rowLabel(p), disabled: true, description: instead.length ? `Needs ${orList(instead)}` : support?.reason };
     });
     const picked = assignments[surface];

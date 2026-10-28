@@ -68,7 +68,7 @@ const REASON_MAX = 400;
 const VERIFY_TASK_TITLE_PREFIX = 'Verify goal criterion:';
 
 /** Backend credentials a runner can actually grade with. */
-const AGENT_BACKEND_PURPOSES = ['oauth_token', 'anthropic_api_key', 'claude_credential', 'codex_credential'] as const;
+const AGENT_BACKEND_PURPOSES = ['anthropic_api_key', 'codex_credential'] as const;
 
 /** JSON Schema handed to the SDK's outputFormat. */
 export const PROSE_EVAL_OUTPUT_SCHEMA = {

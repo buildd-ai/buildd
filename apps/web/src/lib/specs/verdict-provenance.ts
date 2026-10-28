@@ -1,11 +1,11 @@
 import { db } from '@buildd/core/db';
 import { specOutcomeVerdicts, specRevisions, specs, verdictEvidence, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { isUuid } from '@/lib/uuid';
 
 export type EvidenceKind = 'test' | 'task' | 'pr' | 'commit';
 export interface EvidenceItem { kind: EvidenceKind; ref: string }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_REF = 500;
 
 /**
@@ -23,7 +23,7 @@ export function evidenceItemsOf(evidence: unknown, ctx: { headSha?: string | nul
   if (typeof e.command === 'string') add('test', e.command.trim().slice(0, MAX_REF));
   for (const key of ['verificationTaskId', 'auditTaskId']) {
     const v = e[key];
-    if (typeof v === 'string' && UUID_RE.test(v)) add('task', v);
+    if (typeof v === 'string' && isUuid(v)) add('task', v);
   }
   if (ctx.headSha) add('commit', ctx.headSha.toLowerCase());
   if (typeof ctx.prNumber === 'number' && Number.isInteger(ctx.prNumber) && ctx.prNumber > 0) add('pr', String(ctx.prNumber));

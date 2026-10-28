@@ -8,6 +8,7 @@
  *
  * Pure.
  */
+import { isUuid } from '@/lib/uuid';
 
 export type CancellationSupersededBy = { taskId: string } | { prNumber: number };
 
@@ -21,7 +22,6 @@ export interface TaskCancellation {
 
 export const DASHBOARD_CANCEL_REASON = 'Cancelled by a person from the dashboard';
 const MAX_REASON = 500;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type CancellationParse =
   | { ok: true; cancellation: TaskCancellation }
@@ -31,7 +31,7 @@ function parseSupersededBy(raw: unknown): CancellationSupersededBy | null | 'inv
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== 'object') return 'invalid';
   const r = raw as Record<string, unknown>;
-  if (typeof r.taskId === 'string' && UUID.test(r.taskId)) return { taskId: r.taskId.toLowerCase() };
+  if (typeof r.taskId === 'string' && isUuid(r.taskId)) return { taskId: r.taskId.toLowerCase() };
   if (typeof r.prNumber === 'number' && Number.isInteger(r.prNumber) && r.prNumber > 0) return { prNumber: r.prNumber };
   return 'invalid';
 }

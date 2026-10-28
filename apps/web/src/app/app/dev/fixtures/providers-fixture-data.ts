@@ -30,7 +30,7 @@ export interface FixtureRow {
 
 export function fixtureRow(r: FixtureRow): ProviderCredentialSummary {
   const p = PROVIDER_REGISTRY.find((d) => d.id === r.provider)!;
-  const shape = p.shapes.find((s) => s.id === (r.shape ?? p.shapes.find((x) => x.id !== 'oauth_managed')?.id ?? p.shapes[0].id))!;
+  const shape = p.shapes.find((s) => s.id === (r.shape ?? p.shapes[0].id))!;
   const storage = writeStorage(p.id, shape, r.scope);
   return {
     id: `${r.provider}-${r.scope}-${shape.id}`,
@@ -42,7 +42,7 @@ export function fixtureRow(r: FixtureRow): ProviderCredentialSummary {
     purpose: storage.purpose,
     label: storage.label ?? null,
     legacy: storage !== shape.storage,
-    last4: r.last4 === undefined ? (shape.refreshes ? null : 'a1b2') : r.last4,
+    last4: r.last4 === undefined ? 'a1b2' : r.last4,
     health: r.health ?? 'healthy',
     lastVerifiedAt: r.lastVerifiedAt ?? null,
     lastVerificationError: r.lastVerificationError ?? null,
@@ -74,7 +74,7 @@ export function fixtureListings(rows: readonly FixtureRow[], o: { workspace: boo
         surfaces,
         scopes,
         shapes: p.shapes.map((shape) => ({
-          id: shape.id, refreshes: shape.refreshes, connectInBrowser: shape.id === 'oauth_managed', writesTo: shapeWritesTo(p.id, shape),
+          id: shape.id, writesTo: shapeWritesTo(p.id, shape),
         })),
         set: {
           team: mine.filter((s) => s.scope === 'team'),

@@ -62,8 +62,6 @@ export interface ServiceStatusFacts {
   tasks: readonly StatusTask[];
   /** The team saved an agent provider key in Settings. */
   teamHasProviderKey: boolean;
-  /** The team still has a subscription sign-in saved in buildd. */
-  teamHasSavedSignIn: boolean;
   /** Team tasks created in the last day: the denominator for a platform cause's reach. */
   recentTaskCount: number;
 }
@@ -97,7 +95,7 @@ const isWaitingDone = (status: string) => status === 'completed' || status === '
 export function resolveHolder(
   record: Pick<RootCauseRecord, 'classification'>,
   runner: Pick<StatusRunner, 'authType' | 'managedRunner' | 'hostRunner' | 'createdByUserId'> | null,
-  ctx: { memberIds: ReadonlySet<string>; teamHasProviderKey: boolean; teamHasSavedSignIn: boolean },
+  ctx: { memberIds: ReadonlySet<string>; teamHasProviderKey: boolean },
 ): { holder: ActionHolder; remedy: Remedy; href: string } {
   const admins: ActionHolder = { kind: 'team_admins' };
   if (!runner) return { holder: admins, remedy: record.classification === 'credential_expired' ? 'sign_in' : 'replace_team_key', href: record.classification === 'credential_expired' ? RUNNERS_HREF : SIGN_INS_HREF };
@@ -106,7 +104,6 @@ export function resolveHolder(
     ? { kind: 'person', userId: runner.createdByUserId }
     : null;
   if (record.classification === 'credential_expired') {
-    if (ctx.teamHasSavedSignIn) return { holder: admins, remedy: 'remove_saved_sign_in', href: SIGN_INS_HREF };
     return { holder: owner ?? admins, remedy: 'sign_in', href: RUNNERS_HREF };
   }
   if (ctx.teamHasProviderKey) return { holder: admins, remedy: 'replace_team_key', href: SIGN_INS_HREF };
@@ -143,7 +140,7 @@ export function buildRootCauses(f: ServiceStatusFacts): RootCause[] {
   const out: RootCause[] = [];
   for (const r of runnerCauses) {
     const runner = r.capability.runnerId ? runners.get(r.capability.runnerId) ?? null : null;
-    const { holder, remedy, href } = resolveHolder(r, runner, { memberIds, teamHasProviderKey: f.teamHasProviderKey, teamHasSavedSignIn: f.teamHasSavedSignIn });
+    const { holder, remedy, href } = resolveHolder(r, runner, { memberIds, teamHasProviderKey: f.teamHasProviderKey });
     out.push({
       ...base, key: r.key, classification: r.classification, widespread: runnersWidespread,
       capability: {

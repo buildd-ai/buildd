@@ -326,8 +326,7 @@ others exist and cover the neighbouring behaviour.
   check fails THEN the status stays, and GIVEN the check passes THEN it clears
   and interrupted work resumes only through the existing workflow authority,
   with no duplicate run and no paid-provider fallback.
-  Test: `team-service-status.recovery.test.ts` *(new)*; the existing refresh
-  invariants are asserted in `credential-refresh/route.test.ts`.
+  Test: `team-service-status.recovery.test.ts` *(new)*.
 - AC-6: GIVEN many tasks failing from one root cause WHEN the projection is
   read THEN there is one status per scope with all work linked; GIVEN an
   unclassified cause THEN the status is generic; GIVEN a cleared cause that

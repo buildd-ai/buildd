@@ -51,6 +51,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
  * expectedVersion is a 409 with currentVersion: re-read, merge, revise on top. Agents and people may revise; approving is a separate,
  * person-only act. formatHints (R-48) suggests a diagram or table for the text sent; it never refuses.
  * duplicateCheck (R-105): the criteria the revise added or changed, checked against the other specs; warnings only.
+ * autoApproval (b7fc9316 R-21): whether check:no-criteria-change approved the new head, or why not; null when it did not run.
  */
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   const { specId } = await params;
@@ -60,5 +61,5 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'a JSON body is required' }, { status: 400 });
   const r = 'section' in body || 'heading' in body || 'find' in body ? await reviseSpecSection(caller, specId, body) : await reviseSpecDraft(caller, specId, body);
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.currentVersion !== undefined ? { code: 'version_conflict', currentVersion: r.currentVersion } : r.code ? { code: r.code } : {}) }, { status: r.status });
-  return NextResponse.json({ spec: r.spec, revision: r.revision, unchanged: r.unchanged, duplicateCheck: r.duplicateCheck ?? null, formatHints: formatHints(String((body as Record<string, unknown>).body ?? '')) });
+  return NextResponse.json({ spec: r.spec, revision: r.revision, unchanged: r.unchanged, duplicateCheck: r.duplicateCheck ?? null, autoApproval: ('autoApproval' in r ? r.autoApproval : null) ?? null, formatHints: formatHints(String((body as Record<string, unknown>).body ?? '')) });
 }

@@ -6,6 +6,7 @@ import {
   findRemovedPathFieldInMergePolicy,
   removedPolicyPathFieldError,
   agentReviewsDataMigrations,
+  autoReviewUnownedEnabled,
 } from '@buildd/shared';
 
 describe('DEFAULT_MERGE_POLICY', () => {
@@ -457,5 +458,30 @@ describe('mergePolicy.dataMigrations', () => {
     expect(agentReviewsDataMigrations({ tier: 'human', dataMigrations: 'agent-review' })).toBe(false);
     expect(agentReviewsDataMigrations(null)).toBe(false);
     expect(agentReviewsDataMigrations('agent-review')).toBe(false);
+  });
+});
+
+describe('mergePolicy.autoReviewUnowned (a PR buildd did not open asks for its review)', () => {
+  it('defaults on under agent-review and off under every other tier', () => {
+    expect(autoReviewUnownedEnabled({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } })).toBe(true);
+    expect(autoReviewUnownedEnabled({ tier: 'auto-threshold' })).toBe(false);
+    expect(autoReviewUnownedEnabled({ tier: 'human' })).toBe(false);
+    // No policy, or a malformed one, is the default policy: auto-threshold, off.
+    expect(autoReviewUnownedEnabled(null)).toBe(false);
+    expect(autoReviewUnownedEnabled('agent-review')).toBe(false);
+  });
+
+  it('an explicit value wins over the tier default', () => {
+    expect(autoReviewUnownedEnabled({ tier: 'agent-review', autoReviewUnowned: false })).toBe(false);
+    expect(autoReviewUnownedEnabled({ tier: 'human', autoReviewUnowned: true })).toBe(true);
+  });
+
+  it('the write schema and the shared validator accept a boolean and refuse anything else', () => {
+    expect(mergePolicySchema.safeParse({ tier: 'human', autoReviewUnowned: true }).success).toBe(true);
+    expect(mergePolicySchema.safeParse({ tier: 'human', autoReviewUnowned: 'yes' }).success).toBe(false);
+    expect(parseMergePolicy({ tier: 'human', autoReviewUnowned: false }).ok).toBe(true);
+    const bad = parseMergePolicy({ tier: 'human', autoReviewUnowned: 'yes' });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.field).toBe('autoReviewUnowned');
   });
 });

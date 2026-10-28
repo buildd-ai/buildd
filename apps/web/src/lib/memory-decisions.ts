@@ -44,6 +44,7 @@ import {
 import type { DecisionReceipt } from '@buildd/ai-kit/decide';
 import { isStandardWorkspace } from './workspace-data-class';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
 type Schedule = (task: () => Promise<unknown>) => void;
 
@@ -294,7 +295,6 @@ export function installMemoryRelevanceShadow(): void {
 
 // ── Use labels on completion ─────────────────────────────────────────────────
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Should a worker PATCH label its task's memory uses? Only on the transition
@@ -339,7 +339,7 @@ function dbUseLabelDeps(decider: MemoryDecider): UseLabelDeps {
         .limit(100);
     },
     async loadMemories(teamId, ids) {
-      const valid = ids.filter(id => UUID_RE.test(id));
+      const valid = ids.filter(id => isUuid(id));
       if (valid.length === 0) return [];
       const { db } = await import('@buildd/core/db');
       const { memories } = await import('@buildd/core/db/schema');
@@ -377,7 +377,7 @@ export function scheduleMemoryUseLabels(
   opts: { schedule?: Schedule; deps?: UseLabelDeps } = {},
 ): void {
   const summary = typeof input.summary === 'string' ? input.summary : '';
-  if (!summary.trim() || !UUID_RE.test(input.taskId)) return;
+  if (!summary.trim() || !isUuid(input.taskId)) return;
   if (!opts.deps && inert()) return;
   scheduleAfter(async () => {
     const pending: Promise<unknown>[] = [];

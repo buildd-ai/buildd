@@ -1,10 +1,7 @@
 /**
- * Tests for Codex auth lifecycle:
- * - resolveAuth returns type=oauth for OAuth credentials
- * - API key credential injects OPENAI_API_KEY rather than writing auth.json
- * - seedCodexAuthIfMissing only writes auth.json when it is absent (seed-if-missing)
- * - readCodexAuthJson reads back the current auth.json from the stable home
- * - Preflight rejects an expired credential with a clear error message
+ * Tests for Codex auth files:
+ * - resolveAuth returns type=oauth for a machine login's auth.json
+ * - an API key credential is written as api_key into auth.json
  */
 
 import { describe, test, expect, afterEach, beforeEach } from 'bun:test';
@@ -25,12 +22,8 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 import {
-  materializeStableCodexHome,
-  seedCodexAuthIfMissing,
-  readCodexAuthJson,
   stableCodexHomePath,
   teardownStableCodexHome,
-  writeCodexAuthJson,
 } from '../../src/codex-auth';
 
 // Probe so tests skip when fs is mocked by a sibling suite
@@ -50,22 +43,6 @@ function fsTest(name: string, fn: () => void | Promise<void>) {
     await fn();
   });
 }
-
-const oauthCred = {
-  credentialType: 'oauth' as const,
-  accessToken: 'at_fresh',
-  refreshToken: 'rt_fresh',
-  accountId: 'acct_123',
-  idToken: 'id_fresh',
-  expiresAt: new Date(Date.now() + 3600_000), // 1h from now
-};
-
-const expiredCred = {
-  accessToken: 'at_expired',
-  refreshToken: 'rt_expired',
-  accountId: 'acct_expired',
-  expiresAt: new Date(Date.now() - 60_000), // 1 min ago
-};
 
 let root: string | undefined;
 let prevRoot: string | undefined;
@@ -126,149 +103,6 @@ describe('CodexBackend.resolveAuth — OAuth credentials', () => {
   });
 });
 
-// ─── seedCodexAuthIfMissing ───────────────────────────────────────────────────
-
-describe('seedCodexAuthIfMissing', () => {
-  fsTest('writes auth.json when the stable home has none', () => {
-    const workerId = 'seed-test-worker-1';
-    seedCodexAuthIfMissing(workerId, oauthCred);
-    const codexHome = stableCodexHomePath(workerId);
-    expect(existsSync(codexHome)).toBe(true);
-    const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    // Nested shape required by codex-cli 0.144 (tokens.{...} + id_token).
-    expect(auth.tokens.access_token).toBe('at_fresh');
-    expect(auth.tokens.refresh_token).toBe('rt_fresh');
-    expect(auth.tokens.account_id).toBe('acct_123');
-    expect(auth.tokens.id_token).toBe('id_fresh');
-  });
-
-  fsTest('does NOT overwrite auth.json when one already exists (seed-if-missing)', () => {
-    const workerId = 'seed-test-worker-2';
-    // First: write a "CLI-refreshed" auth.json manually
-    const { codexHome } = materializeStableCodexHome(workerId, oauthCred);
-    const freshContent = JSON.stringify({ access_token: 'at_cli_refreshed', refresh_token: 'rt_cli_refreshed', account_id: 'acct_123' });
-    writeFileSync(join(codexHome, 'auth.json'), freshContent);
-
-    // Now call seedCodexAuthIfMissing with DIFFERENT tokens — must not overwrite
-    const staleCredential = { ...oauthCred, accessToken: 'at_stale', refreshToken: 'rt_stale' };
-    seedCodexAuthIfMissing(workerId, staleCredential);
-
-    const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(auth.access_token).toBe('at_cli_refreshed'); // original preserved
-  });
-
-  fsTest('is idempotent when called twice with the same credentials', () => {
-    const workerId = 'seed-test-worker-3';
-    seedCodexAuthIfMissing(workerId, oauthCred);
-    seedCodexAuthIfMissing(workerId, oauthCred); // second call — no-op
-    const codexHome = stableCodexHomePath(workerId);
-    const auth = JSON.parse(readFileSync(join(codexHome, 'auth.json'), 'utf-8'));
-    expect(auth.tokens.access_token).toBe('at_fresh');
-  });
-});
-
-// ─── readCodexAuthJson ────────────────────────────────────────────────────────
-
-describe('readCodexAuthJson', () => {
-  fsTest('returns null when no auth.json exists yet', () => {
-    const workerId = 'read-test-worker-none';
-    // stable home doesn't exist yet
-    const result = readCodexAuthJson(workerId);
-    expect(result).toBeNull();
-  });
-
-  fsTest('returns the current auth.json content after seeding', () => {
-    const workerId = 'read-test-worker-1';
-    const { codexHome } = materializeStableCodexHome(workerId, oauthCred);
-    // Simulate CLI refreshing the tokens
-    const refreshed = { access_token: 'at_refreshed', refresh_token: 'rt_refreshed', account_id: 'acct_123' };
-    writeFileSync(join(codexHome, 'auth.json'), JSON.stringify(refreshed));
-
-    const result = readCodexAuthJson(workerId);
-    expect(result).not.toBeNull();
-    expect(result!.access_token).toBe('at_refreshed');
-    expect(result!.refresh_token).toBe('rt_refreshed');
-    expect(result!.account_id).toBe('acct_123');
-  });
-
-  fsTest('returns null when auth.json exists but is not valid JSON', () => {
-    const workerId = 'read-test-worker-corrupt';
-    const codexHome = stableCodexHomePath(workerId);
-    mkdirSync(codexHome, { recursive: true });
-    writeFileSync(join(codexHome, 'auth.json'), '{not: json}');
-    const result = readCodexAuthJson(workerId);
-    expect(result).toBeNull();
-  });
-});
-
-// ─── Preflight expiry check ───────────────────────────────────────────────────
-
-describe('checkCodexCredentialExpiry', () => {
-  test('returns null (no error) for a fresh credential with expiresAt in the future', () => {
-    const { checkCodexCredentialExpiry } = require('../../src/codex-auth');
-    const cred = { ...oauthCred, expiresAt: new Date(Date.now() + 3600_000) };
-    expect(checkCodexCredentialExpiry(cred)).toBeNull();
-  });
-
-  test('returns an error string when expiresAt is in the past', () => {
-    const { checkCodexCredentialExpiry } = require('../../src/codex-auth');
-    const cred = { ...expiredCred };
-    const msg = checkCodexCredentialExpiry(cred);
-    expect(msg).not.toBeNull();
-    expect(msg).toContain('acct_expired');
-    expect(msg).toContain('expired');
-    expect(msg).toContain('Settings');
-  });
-
-  test('returns null when expiresAt is null (no expiry metadata)', () => {
-    const { checkCodexCredentialExpiry } = require('../../src/codex-auth');
-    const cred = { ...oauthCred, expiresAt: null };
-    expect(checkCodexCredentialExpiry(cred)).toBeNull();
-  });
-
-  test('returns null for API key credential even if expiresAt is null', () => {
-    const { checkCodexCredentialExpiry } = require('../../src/codex-auth');
-    const cred = { credentialType: 'api_key', apiKey: 'sk-test', expiresAt: null };
-    expect(checkCodexCredentialExpiry(cred)).toBeNull();
-  });
-});
-
-// ─── writeCodexAuthJson: preflight for missing id_token ──────────────────────
-
-describe('writeCodexAuthJson — id_token preflight', () => {
-  fsTest('throws a clear preflight error for an OAuth credential missing id_token', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'codex-preflight-test-'));
-    try {
-      const cred = {
-        credentialType: 'oauth' as const,
-        accessToken: 'at',
-        refreshToken: 'rt',
-        accountId: 'acc',
-        // idToken deliberately absent
-        expiresAt: null,
-      };
-      expect(() => writeCodexAuthJson(dir, cred)).toThrow(/id_token/);
-      expect(() => writeCodexAuthJson(dir, cred)).toThrow(/Reconnect ChatGPT/);
-    } finally {
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
-    }
-  });
-
-  fsTest('does NOT throw for an API key credential even when idToken is absent', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'codex-preflight-apikey-'));
-    try {
-      const cred = {
-        credentialType: 'api_key' as const,
-        apiKey: 'sk-test',
-        expiresAt: null,
-      };
-      expect(() => writeCodexAuthJson(dir, cred)).not.toThrow();
-    } finally {
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
-    }
-  });
-});
-
 // ─── API key: writeCodexApiKey ────────────────────────────────────────────────
 
 describe('writeCodexApiKeyToHome', () => {
@@ -312,31 +146,13 @@ describe.skipIf(process.platform !== 'win32')('codex auth files on Windows', () 
     rmSync(root, { recursive: true, force: true });
   });
 
-  fsTest('stable home under a root every user may write: home and auth.json grant only the owner, a CLI rewrite too', async () => {
+  fsTest('writeCodexApiKeyToHome writes an owner-only auth.json', async () => {
     const { expectOwnerOnly, openToAllUsers } = await import('../windows-acl');
-    const { renameSync } = await import('fs');
-    openToAllUsers(root);
-    const { codexHome } = materializeStableCodexHome('acl-worker', oauthCred);
-    expectOwnerOnly(codexHome);
-    expectOwnerOnly(join(codexHome, 'auth.json'));
-    writeFileSync(join(codexHome, 'auth.json.tmp'), '{}');
-    renameSync(join(codexHome, 'auth.json.tmp'), join(codexHome, 'auth.json'));
-    expectOwnerOnly(join(codexHome, 'auth.json'), { inherited: true });
-  });
-
-  fsTest('writeCodexApiKeyToHome and the temp-dir form write an owner-only auth.json', async () => {
-    const { expectOwnerOnly, openToAllUsers } = await import('../windows-acl');
-    const { writeCodexApiKeyToHome, materializeCodexAuth } = await import('../../src/codex-auth');
+    const { writeCodexApiKeyToHome } = await import('../../src/codex-auth');
     openToAllUsers(root);
     const home = join(root, 'apikey');
     mkdirSync(home);
     writeCodexApiKeyToHome(home, 'sk-test-key-123');
     expectOwnerOnly(join(home, 'auth.json'));
-    const { codexHome } = materializeCodexAuth('acl-temp', oauthCred);
-    try {
-      expectOwnerOnly(join(codexHome, 'auth.json'));
-    } finally {
-      rmSync(codexHome, { recursive: true, force: true });
-    }
   });
 });

@@ -55,6 +55,8 @@ export interface AccessItem {
    * run ended, or the request closed. Plain words for why; null otherwise.
    */
   closed: string | null;
+  /** A database.query row: the SQL as sent, rows returned and time taken. Never the rows themselves. */
+  query?: { sql: string; sqlTruncated: boolean; rowCount: number | null; durationMs: number | null; truncated: boolean } | null;
 }
 
 /** Where each request this task made stands now, read from its grant row and run. */
@@ -76,6 +78,7 @@ const LABEL: Record<string, string> = {
   'github.repo_grant': 'GitHub repo access',
   'model.endpoint': 'Model endpoint',
   'model.inference': 'Model call',
+  'database.query': 'Database query',
   'capability.request': 'Capability request',
   'capability.approve': 'Capability approved',
   'capability.deny': 'Capability denied',
@@ -110,6 +113,12 @@ const REASON: Record<string, string> = {
   admin_not_orchestration: 'admin level is only for organizer, planning and check-in tasks',
   admin_no_repo_workspace: 'admin level needs a workspace with a repo',
   admin_level: 'admin level',
+  no_grant: 'no live grant for this run',
+  table_not_allowed: 'a table outside the read allowlist',
+  write_keyword: 'not a read: one SELECT only',
+  not_select: 'not a read: one SELECT only',
+  query_role_unconfigured: 'no read-only query role is set up',
+  statement_timeout: 'the query ran past its time limit',
 };
 
 /** Plain words for a reason code; an unknown code is shown with its underscores as spaces. */
@@ -127,7 +136,16 @@ function targetText(row: CapabilityRow, repoNames: ReadonlyMap<string, string>):
   if (row.capability === 'task_token.mint') return row.reasonCode === 'admin_level' ? 'admin level' : 'worker level';
   if (r === 'anthropic_api_key') return "the team's Anthropic key";
   if (r.startsWith('agent_endpoint:')) return `${r.slice('agent_endpoint:'.length)} endpoint`;
+  if (row.capability === 'database.query') return 'production database (read-only)';
   return null;
+}
+
+function queryDetail(row: CapabilityRow): AccessItem['query'] {
+  if (row.capability !== 'database.query') return undefined;
+  const s = row.sideEffect ?? {};
+  if (typeof s.sql !== 'string') return null;
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return { sql: s.sql, sqlTruncated: s.sqlTruncated === true, rowCount: num(s.rowCount), durationMs: num(s.durationMs), truncated: s.truncated === true };
 }
 
 /**
@@ -142,7 +160,8 @@ export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: Reado
     const target = targetText(row, repoNames);
     const reason = decision === 'refused' || row.reasonCode === 'admin_level' ? reasonText(row.reasonCode) : null;
     const prev = out[out.length - 1];
-    if (prev && decision === 'allowed' && prev.decision === 'allowed' && prev.capability === row.capability && prev.target === target && prev.workerId === row.workerId) {
+    // Each query is its own item: its SQL is the point of reading the trail.
+    if (prev && decision === 'allowed' && prev.decision === 'allowed' && row.capability !== 'database.query' && prev.capability === row.capability && prev.target === target && prev.workerId === row.workerId) {
       prev.count += 1;
       prev.lastAt = row.occurredAt.toISOString();
       prev.expiresAt = row.expiresAt?.toISOString() ?? prev.expiresAt;
@@ -163,6 +182,7 @@ export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: Reado
       grantId: row.capability.startsWith('capability.') && r0(row).startsWith('grant:') ? r0(row).slice(6) : null,
       pending: row.capability === 'capability.request' && (row.reasonCode ?? '').startsWith('pending_approval:'),
       closed: null,
+      ...(row.capability === 'database.query' ? { query: queryDetail(row) } : {}),
     });
   }
   // A request stops waiting once a later row decides the same grant.

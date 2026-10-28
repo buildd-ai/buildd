@@ -1,8 +1,7 @@
 /**
  * The two claim entry points — the Pusher nudge (claimAndStart) and the poll
  * (claimPendingTasks → startClaimedWorker) — used to prepare a claimed worker
- * with two hand-copied blocks that drifted: the Pusher path never announced the
- * per-worker credentials to the broker, and the poll path never marked an
+ * with two hand-copied blocks that drifted: the poll path never marked an
  * unresolvable task, so a later Pusher nudge re-claimed it.
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/prepare-claimed-worker.test.ts
@@ -34,22 +33,6 @@ mock.module('pusher-js', () => ({
     subscribe = () => ({ bind: () => {}, unbind_all: () => {}, unbind: () => {} });
     unsubscribe = () => {};
     disconnect = () => {};
-  },
-}));
-
-/** The subject: what the runner tells its credential broker. */
-const mockNotifyBrokerCredentials = mock((_entries: any[]) => {});
-
-mock.module('../../src/broker', () => ({
-  notifyBrokerCredentials: mockNotifyBrokerCredentials,
-  fetchTokenFromBroker: mock(async () => null),
-  getBrokerSocketPath: () => '/tmp/buildd-broker-test.sock',
-  credentialBroker: {
-    start: mock(() => {}),
-    stop: mock(() => {}),
-    notifyCredentials: mockNotifyBrokerCredentials,
-    refreshExpiring: mock(async () => {}),
-    managedSecretIds: () => [],
   },
 }));
 
@@ -168,7 +151,6 @@ describe('prepareClaimedWorker: Pusher and poll claims prepare a worker the same
 
     initTestWorkspace();
     mockResolve = () => getTestWorkspace();
-    mockNotifyBrokerCredentials.mockClear();
     mockClaimTask.mockReset();
     mockUpdateWorker.mockReset();
     mockUpdateWorker.mockImplementation(async () => ({}));
@@ -183,14 +165,13 @@ describe('prepareClaimedWorker: Pusher and poll claims prepare a worker the same
     manager?.destroy();
   });
 
-  test('Pusher claim (claimAndStart) announces the per-worker credentials to the broker', async () => {
+  test('Pusher claim (claimAndStart) starts the claimed worker', async () => {
     mockClaimTask.mockImplementation(async () => ({ workers: [claimed('w-push')] }));
     const task = { id: 'task-w-push', title: 'T', workspaceId: 'ws-1' } as any;
 
     const worker = await manager.claimAndStart(task);
 
     expect(worker).not.toBeNull();
-    expect(mockNotifyBrokerCredentials).toHaveBeenCalledWith(announcement);
     expect(startFromClaim).toHaveBeenCalledTimes(1);
   });
 
@@ -208,13 +189,12 @@ describe('prepareClaimedWorker: Pusher and poll claims prepare a worker the same
     expect(startFromClaim).not.toHaveBeenCalled();
   });
 
-  test('poll claim still announces per-worker credentials and starts', async () => {
+  test('poll claim starts the claimed worker', async () => {
     mockClaimTask.mockImplementation(async () => ({ workers: [claimed('w-ok')] }));
 
     const started = await manager.claimPendingTasks();
 
     expect(started).toHaveLength(1);
-    expect(mockNotifyBrokerCredentials).toHaveBeenCalledWith(announcement);
   });
 
   test('Pusher claim with an unresolvable workspace still throws workspace_not_found', async () => {

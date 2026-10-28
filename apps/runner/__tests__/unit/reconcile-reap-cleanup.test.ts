@@ -1,9 +1,7 @@
 /**
  * Reconcile and purge must stop a live session WITHOUT skipping its cleanup.
  *
- * startSession's finally only runs its per-worker cleanup — the per-worker
- * CLAUDE_CONFIG_DIR holding the materialized access token, the Codex auth dir,
- * the broker registration — while the session's map entry is
+ * startSession's finally only runs its per-worker cleanup — the Codex auth dir and the like — while the session's map entry is
  * still present, and deletes the entry itself. Aborting a session AND deleting
  * its entry (teardownSession) therefore leaked every one of those, and sent the
  * abort down the catch path's failure arm. reapSession is the right tool.
@@ -42,15 +40,6 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
       },
     };
   },
-}));
-
-const mockCleanupClaudeConfigDir = mock((_id: string, _dir: string) => {});
-mock.module('../../src/claude-auth', () => ({
-  materializeClaudeConfigDir: () => ({ claudeConfigDir: '/tmp/fake-claude-config' }),
-  cleanupClaudeConfigDir: mockCleanupClaudeConfigDir,
-  staleResumeCredentialError: () => null,
-  buildClaudeCredentialsFile: () => ({}),
-  isolatedClaudeConfigDirPath: () => '/tmp/fake-claude-config',
 }));
 
 const mockUpdateWorker = mock(async (_id: string, _payload: any) => ({}));
@@ -178,7 +167,7 @@ async function startLiveSession(manager: any, workerId: string): Promise<void> {
     id: workerId,
     branch: `buildd/${workerId}`,
     task,
-    claudeAccessToken: 'fixture-token',
+    serverApiKey: 'fixture-key',
   }] }));
   await manager.claimAndStart(task as any);
   await waitFor(() => manager.sessions.has(workerId) && manager.getWorker(workerId)?.sessionId === 'sess-reap');
@@ -204,7 +193,6 @@ describe('stopping a live session runs its own cleanup', () => {
 
 
     initTestWorkspace();
-    mockCleanupClaudeConfigDir.mockClear();
     mockUpdateWorker.mockClear();
     mockGetWorkerRemote.mockReset();
     manager = new WorkerManager(makeConfig());
@@ -214,33 +202,31 @@ describe('stopping a live session runs its own cleanup', () => {
     manager?.destroy?.();
   });
 
-  test('reconcile on a confirmed 404 removes the per-worker Claude config dir', async () => {
+  test('reconcile on a confirmed 404 reaps the session without a failure report', async () => {
     await startLiveSession(manager, 'w-reap-404');
     mockGetWorkerRemote.mockResolvedValue(null);
 
     await manager.reconcileLocalWorkers();
     await waitFor(() => !manager.sessions.has('w-reap-404'));
 
-    expect(mockCleanupClaudeConfigDir).toHaveBeenCalledWith('w-reap-404', '/tmp/fake-claude-config');
     // The abort is cleanup, not an outcome: no `failed` PATCH for a worker
     // the server already said does not exist.
     expect(failedPatches('w-reap-404')).toHaveLength(0);
     expect(manager.getWorker('w-reap-404')?.status).toBe('error');
   });
 
-  test('reconcile on a remote-terminal worker removes the per-worker Claude config dir', async () => {
+  test('reconcile on a remote-terminal worker reaps the session without a failure report', async () => {
     await startLiveSession(manager, 'w-reap-term');
     mockGetWorkerRemote.mockResolvedValue({ status: 'completed', task: { status: 'completed' } });
 
     await manager.reconcileLocalWorkers();
     await waitFor(() => !manager.sessions.has('w-reap-term'));
 
-    expect(mockCleanupClaudeConfigDir).toHaveBeenCalledWith('w-reap-term', '/tmp/fake-claude-config');
     expect(failedPatches('w-reap-term')).toHaveLength(0);
     expect(manager.getWorker('w-reap-term')?.status).toBe('done');
   });
 
-  test('purgeCompleted removes the per-worker Claude config dir of a purged live session', async () => {
+  test('purgeCompleted reaps the session without a failure report of a purged live session', async () => {
     await startLiveSession(manager, 'w-reap-purge');
     // Terminal locally, session still running (e.g. hung after complete_task).
     manager.getWorker('w-reap-purge').status = 'done';
@@ -248,7 +234,6 @@ describe('stopping a live session runs its own cleanup', () => {
     manager.purgeCompleted();
     await waitFor(() => !manager.sessions.has('w-reap-purge'));
 
-    expect(mockCleanupClaudeConfigDir).toHaveBeenCalledWith('w-reap-purge', '/tmp/fake-claude-config');
     expect(failedPatches('w-reap-purge')).toHaveLength(0);
   });
 });

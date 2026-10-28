@@ -17,14 +17,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { decideCapabilityRequest, loadGrant, type Decision } from '@/lib/capability-grants-store';
 import { MANAGE_FORBIDDEN, resolveCapabilityAdminCaller } from '@/lib/capability-grants-auth';
 import { MAX_GRANT_TTL_SECONDS, MIN_GRANT_TTL_SECONDS, decisionClosesRequest } from '@/lib/capability-grants';
+import { isUuid } from '@/lib/uuid';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DECISIONS: readonly Decision[] = ['approve', 'deny', 'revoke'];
 const NOT_FOUND = () => NextResponse.json({ error: 'Request not found', closed: true }, { status: 404 });
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  if (!UUID_RE.test(id)) return NOT_FOUND();
+  if (!isUuid(id)) return NOT_FOUND();
 
   let body: { decision?: unknown; ttlSeconds?: unknown; reason?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }

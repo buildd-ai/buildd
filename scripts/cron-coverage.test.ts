@@ -23,10 +23,21 @@ const vercel = JSON.parse(readFileSync(resolve(ROOT, 'vercel.json'), 'utf8')) as
   crons?: { path: string; schedule: string }[];
 };
 
-/** Route directories that actually export a handler. */
+/**
+ * Retired paths kept as aliases of a renamed route, so the live external job
+ * keeps working until `bun run cron:sync --prune` moves it. Each has no
+ * manifest entry of its own (that would fire twice) and re-exports its
+ * successor's handler. Remove an entry with its route file.
+ */
+const RETIRED_ALIASES: Record<string, string> = {
+  '/api/cron/codex-token-refresh': '/api/cron/connector-token-refresh',
+};
+
+/** Route directories that actually export a handler, aliases excluded. */
 const routes = readdirSync(CRON_DIR, { withFileTypes: true })
   .filter(d => d.isDirectory() && existsSync(resolve(CRON_DIR, d.name, 'route.ts')))
-  .map(d => `/api/cron/${d.name}`);
+  .map(d => `/api/cron/${d.name}`)
+  .filter(r => !(r in RETIRED_ALIASES));
 
 const manifestPaths = new Set(manifest.jobs.map(j => j.path.split('?')[0]));
 const vercelPaths = new Set((vercel.crons ?? []).map(c => c.path));
@@ -53,6 +64,15 @@ describe('cron trigger coverage', () => {
     // Everything is driven by the external scheduler (cron-job.org) via
     // cron-manifest.json. Adding a Vercel cron here would silently never run.
     expect(vercel.crons ?? []).toEqual([]);
+  });
+
+  it('keeps each retired alias untriggered and pointing at a triggered successor', () => {
+    for (const [alias, successor] of Object.entries(RETIRED_ALIASES)) {
+      expect(manifestPaths.has(alias), `${alias} would fire alongside ${successor}`).toBe(false);
+      expect(manifestPaths.has(successor), `${successor} has no trigger`).toBe(true);
+      const src = readFileSync(resolve(CRON_DIR, alias.replace('/api/cron/', ''), 'route.ts'), 'utf8');
+      expect(src).toContain(`export { GET } from '../${successor.replace('/api/cron/', '')}/route'`);
+    }
   });
 
   it('gives every manifest job a method the syncer can encode', () => {

@@ -12,21 +12,21 @@ verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-de
 supersedes: []
 assertions:
   - id: approve-spec-revision
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): readingLine is named but unbuilt, so the spec cannot be active; re-review by 2027-01-12."
     type: symbol
     name: approveSpecRevision
     path: apps/web/src/lib/specs/approval.ts
   - id: spec-patch-route
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): readingLine is named but unbuilt, so the spec cannot be active; re-review by 2027-01-12."
     type: route
     method: PATCH
     path: "/api/specs/[specId]"
     file: apps/web/src/app/api/specs/[specId]/route.ts
   - id: spec-read-route
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): readingLine is named but unbuilt, so the spec cannot be active; re-review by 2027-01-12."
     type: route
     method: GET
     path: "/api/specs/[specId]"

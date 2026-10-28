@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { findFactRecordSql, isUniqueViolation, linkAttemptTaskSql, linkRoundReviewerSql, postgresStore, toClaimedEffect } from './postgres-store';
+import { findFactRecordSql, linkAttemptTaskSql, linkRoundReviewerSql, postgresStore, toClaimedEffect } from './postgres-store';
 import type { Exec } from './kernel';
 
 const render = (q: SQL) => new PgDialect().sqlToQuery(q);
@@ -67,7 +67,5 @@ describe('row mapping', () => {
     expect(await postgresStore(answer(async () => { throw Object.assign(new Error('x'), { code: '23505' }); })).applyTransition(fake, { deliveryId: null }))
       .toEqual({ status: 'conflict', cause: 'unique' });
     await expect(postgresStore(answer(async () => { throw new Error('connection reset'); })).applyTransition(fake, { deliveryId: null })).rejects.toThrow('connection reset');
-    expect(isUniqueViolation({ cause: { code: '23505' } })).toBe(true);
-    expect(isUniqueViolation(new Error('duplicate key value violates unique constraint "x"'))).toBe(true);
   });
 });

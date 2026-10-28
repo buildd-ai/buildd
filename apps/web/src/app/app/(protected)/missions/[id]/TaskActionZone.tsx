@@ -387,6 +387,11 @@ export default function TaskActionZone({
             >
               {retrying === 'same' ? 'Retrying…' : `Retry${backend ? ` on ${backendDisplayName(backend)}` : ''}`}
             </button>
+            {has('cancel') && (
+              <button type="button" data-action="cancel" onClick={() => act('cancel')} disabled={starting || acting !== null} className={QUIET_BTN}>
+                {acting === 'cancel' ? 'Cancelling…' : 'Cancel'}
+              </button>
+            )}
             {has('switch_backend') && otherBackend && (
               <button
                 type="button"
@@ -405,7 +410,7 @@ export default function TaskActionZone({
               </Link>
             )}
           </div>
-          {retryError && <p className="font-mono text-meta text-status-error">{retryError}</p>}
+          {(retryError || actError) && <p className="font-mono text-meta text-status-error">{retryError || actError}</p>}
         </div>
       )}
 

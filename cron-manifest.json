@@ -115,10 +115,10 @@
       "enabled": false
     },
     {
-      "$comment": "Refreshes expiring Codex/Claude/MCP-connector OAuth credentials and verifies Claude liveness. Moved off Vercel-native cron: it never fired there, so an MCP connector credential holding a valid refresh token stayed dead for 15 days until a manual reconnect. Cadence is load-bearing \u2014 apps/web/src/lib/cron-cadence.ts derives the credential sweep's lookahead window from this expression, so changing it here changes the window. Deliberately NOT restricted to daytime: OAuth tokens expire overnight too, and the sweep window is derived from an EVEN interval \u2014 an hour-restricted schedule leaves an 8h night gap the 5h window cannot cover, which is the exact bug this whole change fixed. 6 runs/day is a negligible share of Neon wake time next to the */30 schedules tick.",
-      "title": "Buildd: Credential Refresh",
+      "$comment": "Refreshes expiring MCP-connector OAuth credentials and pings the team Anthropic API key for liveness. Was /api/cron/codex-token-refresh until it stopped refreshing subscription logins, which buildd no longer stores; that path stays as an alias until `bun run cron:sync --prune` moves the live job here. Cadence is load-bearing \u2014 apps/web/src/lib/cron-cadence.ts derives the connector sweep's lookahead window from this expression, so changing it here changes the window. Deliberately NOT restricted to daytime: OAuth tokens expire overnight too, and the sweep window is derived from an EVEN interval \u2014 an hour-restricted schedule leaves an 8h night gap the 5h window cannot cover. 6 runs/day is a negligible share of Neon wake time next to the */30 schedules tick.",
+      "title": "Buildd: Connector Token Refresh",
       "profile": "core",
-      "path": "/api/cron/codex-token-refresh",
+      "path": "/api/cron/connector-token-refresh",
       "schedule": "0 */4 * * *",
       "method": "GET"
     },
@@ -176,22 +176,6 @@
       "profile": "module:missions",
       "path": "/api/cron/mission-summaries",
       "schedule": "0 * * * *",
-      "method": "GET"
-    },
-    {
-      "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Cadence */10 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day. Daytime only (EST): a stale lease overnight costs nothing but a delayed release. (was 0 * * * *)",
-      "title": "Buildd: Lease Expiry Guard",
-      "profile": "core",
-      "path": "/api/cron/lease-expiry-guard",
-      "schedule": "0 7-23 * * *",
-      "method": "GET"
-    },
-    {
-      "$comment": "Redis-gated fast tick for the SAME route as the hourly guard above, which stays the unconditional floor. Reads one sorted set (buildd:due:lease-expiry, written by /api/runner/credential-lease on acquire/heartbeat/release) and returns without querying Postgres unless a lease has actually lapsed \u2014 so */5 costs 288 Redis reads a day and zero extra Neon wake time. Why it needs to be this fast: the lease TTL is 5 minutes and the broker renews every 60s, so hourly detection was 12x coarser than the state it watches. Fail-open by design: if Redis is unconfigured or erroring the gate proceeds to the DB, because 'I could not ask' must never read as 'nothing to do'. See apps/web/src/lib/cron-due-queue.ts and docs/design/cron-wake-windows.md.",
-      "title": "Buildd: Lease Expiry Guard (gated)",
-      "profile": "core",
-      "path": "/api/cron/lease-expiry-guard?gate=due",
-      "schedule": "*/5 * * * *",
       "method": "GET"
     },
     {

@@ -26,7 +26,7 @@ import { workerOwnsPr, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { handleReleasePrCiSuccess, settleHeldReleasesOnClose } from '@/lib/held-pr-tasks';
-import { PR_OPENED_POLICY, republishPrHeads } from '@/modules';
+import { PR_OPENED_POLICY, maybeAutoReviewUnownedPr, republishPrHeads } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
 import { completeTaskOnBranchMatchMerge, legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
@@ -766,6 +766,7 @@ async function handlePullRequestEvent(event: {
     merged_at?: string | null;
     draft?: boolean;
     merge_commit_sha?: string | null;
+    user?: { login?: string | null; type?: string | null } | null;
     head: { ref: string; sha: string; repo?: { full_name: string } | null };
     base?: { ref: string; sha?: string };
     html_url: string;
@@ -783,7 +784,24 @@ async function handlePullRequestEvent(event: {
   // Home caches GitHub's approval state per PR (lib/github-approval.ts); any
   // PR action may move its head or base, so the cached answer goes first.
   if (pr?.number && repository?.full_name) await invalidateGithubApproval(repository.full_name, pr.number);
+  // True when this event just asked for buildd's review of a foreign PR (adopting it): the adoption
+  // is that review's, so the PR-opened policy and the no-CI auto-merge below leave the PR to it.
+  let autoReviewAdopted = false;
   if ((action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') && event.installation?.id) {
+    // A PR buildd has no record of (a person's, or an agent's `gh pr create`) asks for buildd's own
+    // review when the workspace opts in (mergePolicy.autoReviewUnowned), before its status is
+    // published, so the status reads "Review in progress", never "Review not requested". Never
+    // fails the webhook: an unrequested review leaves the PR as it was before this existed.
+    try {
+      const outcome = await maybeAutoReviewUnownedPr({
+        action, installationId: event.installation.id, repoFullName: repository.full_name,
+        defaultBranch: repository.default_branch ?? null, pr,
+      });
+      autoReviewAdopted = outcome === 'requested' || outcome === 'already_requested';
+      if (outcome === 'requested' || outcome === 'refused') console.log(`[auto-review] ${repository.full_name}#${pr.number} (${action}): ${outcome}`);
+    } catch (err) {
+      console.error(`[auto-review] ${repository.full_name}#${pr.number} failed:`, err);
+    }
     await republishPrHeads(event.installation.id, repository.full_name, [{ number: pr.number, sha: pr.head.sha }]);
   }
   if ((action === 'opened' || action === 'reopened' || action === 'synchronize') && event.installation?.id) {
@@ -1024,7 +1042,7 @@ async function handlePullRequestEvent(event: {
     // On PR open (not synchronize/reopen): the PR-opened policy slot (reviews)
     // may take the PR (a reviewer dispatched, a human escalation, a mechanical
     // fix), and a PR it holds skips core's no-CI auto-merge below.
-    if (!pr.draft && event.installation && action === 'opened' && openWorker?.taskId) {
+    if (!pr.draft && event.installation && action === 'opened' && openWorker?.taskId && !autoReviewAdopted) {
       const { held } = await PR_OPENED_POLICY({
         installationId: event.installation.id,
         repoFullName: repository.full_name,
@@ -1057,7 +1075,7 @@ async function handlePullRequestEvent(event: {
     // because no check_suite event will ever fire to trigger the CI-gated path —
     // otherwise the PR would sit open forever. Repos WITH CI are left to the
     // check_suite handler, which waits for green.
-    if (!pr.draft && event.installation && action !== 'synchronize') {
+    if (!pr.draft && event.installation && action !== 'synchronize' && !autoReviewAdopted) {
       await maybeAutoMergeNoCiPr(event.installation.id, repository.full_name, pr);
     }
 

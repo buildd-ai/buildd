@@ -13,13 +13,14 @@
 import Chip, { type ChipTone } from '@/components/ui/Chip';
 import type { TaskVerdict, VerdictState } from '@/lib/task-verdict';
 import { TERMS } from '@buildd/shared';
+import { statusPill } from '@/components/ui/states';
 
 const STATE: Record<VerdictState, { label: string; tone: ChipTone }> = {
   shipped: { label: TERMS['pr.merged'].word, tone: 'success' },
-  done: { label: 'Done', tone: 'success' },
+  done: { label: statusPill('completed').label, tone: 'success' },
   blocked: { label: 'Blocked', tone: 'error' },
-  failed: { label: 'Failed', tone: 'error' },
-  needs_you: { label: 'Waiting on you', tone: 'warning' },
+  failed: { label: statusPill('failed').label, tone: 'error' },
+  needs_you: { label: statusPill('waiting_on_you').label, tone: 'warning' },
   in_progress: { label: 'In progress', tone: 'running' },
 };
 

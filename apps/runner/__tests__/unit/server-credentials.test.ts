@@ -31,36 +31,23 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 import { selectServerCredentials } from '../../src/workers';
 
 describe('selectServerCredentials', () => {
-  test('captures the server-managed OAuth token when delivered', () => {
-    const result = selectServerCredentials({ serverOauthToken: 'oauth-tok' });
-    expect(result.serverOauthToken).toBe('oauth-tok');
-    expect(result.serverApiKey).toBeUndefined();
-  });
-
   test('captures the server-managed API key when delivered', () => {
     const result = selectServerCredentials({ serverApiKey: 'sk-ant-xyz' });
     expect(result.serverApiKey).toBe('sk-ant-xyz');
-    expect(result.serverOauthToken).toBeUndefined();
   });
 
-  test('captures both when both are delivered', () => {
-    const result = selectServerCredentials({
-      serverApiKey: 'sk-ant-xyz',
-      serverOauthToken: 'oauth-tok',
-    });
-    expect(result.serverApiKey).toBe('sk-ant-xyz');
-    expect(result.serverOauthToken).toBe('oauth-tok');
+  test('never carries a server-delivered subscription login, even if one arrives', () => {
+    const result = selectServerCredentials({ serverApiKey: 'sk-ant-xyz', serverOauthToken: 'oauth-tok' } as any);
+    expect(result).toEqual({ serverApiKey: 'sk-ant-xyz' });
   });
 
   test('returns undefined fields when the claim response carries nothing', () => {
     const result = selectServerCredentials({});
     expect(result.serverApiKey).toBeUndefined();
-    expect(result.serverOauthToken).toBeUndefined();
   });
 
   test('normalizes empty strings to undefined', () => {
     const result = selectServerCredentials({ serverApiKey: '', serverOauthToken: '' });
     expect(result.serverApiKey).toBeUndefined();
-    expect(result.serverOauthToken).toBeUndefined();
   });
 });

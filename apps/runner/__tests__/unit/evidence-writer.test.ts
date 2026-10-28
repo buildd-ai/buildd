@@ -485,14 +485,11 @@ describe('secret channel coverage', () => {
       mcpSecrets: { A: 'v-mcp' },
       roleEnvSecrets: { B: 'v-role' },
       serverApiKey: 'v-server-api',
-      serverOauthToken: 'v-server-oauth',
-      claudeAccessToken: 'v-claude-access',
-      codexCredential: { accessToken: 'v-cx-access', refreshToken: 'v-cx-refresh', idToken: 'v-cx-id', apiKey: 'v-cx-api', accountId: 'acct', expiresAt: null },
+      codexCredential: { apiKey: 'v-cx-api', expiresAt: null },
     });
     const got = values.map(v => v.value).sort();
     expect(got).toEqual([
-      'k-runner', 'v-claude-access', 'v-cx-access', 'v-cx-api', 'v-cx-id', 'v-cx-refresh',
-      'v-mcp', 'v-role', 'v-server-api', 'v-server-oauth',
+      'k-runner', 'v-cx-api', 'v-mcp', 'v-role', 'v-server-api',
     ].sort());
     // Empty/absent values are dropped, never an empty-string matcher.
     expect(buildWorkerSecretValues(undefined, { mcpSecrets: { A: '' } })).toEqual([]);
@@ -563,7 +560,7 @@ describe('secret channel coverage', () => {
       const seeded: Record<string, unknown> = {
         mcpSecrets: { X: `seed-${field}` },
         roleEnvSecrets: { X: `seed-${field}` },
-        codexCredential: { accessToken: `seed-${field}`, expiresAt: null },
+        codexCredential: { apiKey: `seed-${field}`, expiresAt: null },
         modelEndpoint: { kind: 'gateway', baseUrl: 'https://proxy.example', authToken: `seed-${field}`, authHeader: 'authorization', models: {} },
         roleInstructions: { slug: 'builder', name: 'Builder', content: `seed-${field}` },
         skillBundles: [{ slug: 'demo', name: 'Demo', content: `seed-${field}` }],

@@ -6,21 +6,6 @@ import { restrictToOwnerAcl, tryRestrictToOwnerAcl } from './secure-file';
 
 export { stableCodexHomeIsolatedPath } from './isolation-paths.js';
 
-export interface CodexCredential {
-  credentialType: 'oauth' | 'api_key';
-  // OAuth fields (present when credentialType === 'oauth')
-  accessToken?: string;
-  refreshToken?: string;
-  accountId?: string;
-  // id_token is REQUIRED by codex-cli 0.144's auth.json parser — without it the CLI
-  // errors "missing field `id_token`" (verified live). It also carries the account
-  // claim the CLI uses for the `chatgpt-account-id` backend header.
-  idToken?: string;
-  // API key (present when credentialType === 'api_key')
-  apiKey?: string;
-  expiresAt: Date | null;
-}
-
 /**
  * Root for STABLE per-worker CODEX_HOME directories (Phase 1C / R5).
  *
@@ -42,31 +27,8 @@ export function stableCodexHomePath(workerId: string): string {
 }
 
 /**
- * Ensure a STABLE per-worker CODEX_HOME exists and (re)seed auth.json into it,
- * WITHOUT touching the `sessions/` subtree (so resumable rollouts survive a
- * re-run/restart). Idempotent: safe to call on every start.
- *
- * Returns the codexHome path so the caller can set cleanEnv.CODEX_HOME before
- * spawning the backend. The dir is created 0o700; auth.json is written 0o600.
- */
-export function materializeStableCodexHome(
-  workerId: string,
-  credential: CodexCredential,
-): { codexHome: string } {
-  const codexHome = stableCodexHomePath(workerId);
-  // recursive mkdir is a no-op if it already exists — sessions/ is untouched.
-  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-  // Re-chmod in case it pre-existed with a looser mode.
-  try { fs.chmodSync(codexHome, 0o700); } catch {}
-  tryRestrictToOwnerAcl(codexHome, { directory: true }); // Windows: the 0700
-  writeCodexAuthJson(codexHome, credential);
-  console.log(`[Worker ${workerId}] Stable Codex home ready at ${codexHome} (sessions preserved)`);
-  return { codexHome };
-}
-
-/**
  * Ensure a STABLE per-worker CODEX_HOME exists for runs that only need transient
- * Codex config (no OAuth credential — e.g. API-key auth via OPENAI_API_KEY).
+ * Codex config (API-key auth via OPENAI_API_KEY, or the machine's own login linked in).
  * Idempotent; preserves `sessions/`.
  */
 export function ensureStableCodexHome(workerId: string, explicitPath?: string): { codexHome: string } {
@@ -112,46 +74,6 @@ function detachMachineCodexAuth(codexHome: string): void {
 }
 
 /**
- * (Re)write auth.json into an existing CODEX_HOME. Idempotent.
- *
- * OAuth credentials MUST use codex-cli's NESTED shape
- * (`{ tokens: { access_token, refresh_token, account_id, id_token }, last_refresh }`).
- * codex-cli 0.144 rejects a flat `{access_token,…}` blob's account and 401s the
- * backend (the CLI derives the `chatgpt-account-id` header from `tokens.account_id`),
- * and it hard-errors "missing field `id_token`/`refresh_token`" if either is absent.
- * Verified live against codex-cli 0.144.1. API-key creds are unaffected — resolveAuth
- * reads `api_key` and passes it to the SDK directly, bypassing auth.json parsing.
- */
-export function writeCodexAuthJson(codexHome: string, credential: CodexCredential): void {
-  // codex-cli 0.144 hard-errors "missing field `id_token`" when id_token is absent from
-  // auth.json. Fail preflight (<1s) with a clear message instead of burning turns on a
-  // spawn crash that looks like an unrelated error.
-  if (credential.credentialType !== 'api_key' && !credential.idToken) {
-    throw new Error(
-      'Reconnect ChatGPT — stored credential is incomplete (missing id_token). ' +
-      'Go to Settings → Credentials → Reconnect ChatGPT to fix this.',
-    );
-  }
-  const authJson = credential.credentialType === 'api_key'
-    ? { api_key: credential.apiKey }
-    : {
-        OPENAI_API_KEY: null,
-        tokens: {
-          access_token: credential.accessToken,
-          refresh_token: credential.refreshToken,
-          account_id: credential.accountId,
-          id_token: credential.idToken,
-        },
-        last_refresh: new Date().toISOString(),
-      };
-  detachMachineCodexAuth(codexHome);
-  const authPath = join(codexHome, 'auth.json');
-  fs.writeFileSync(authPath, JSON.stringify(authJson));
-  fs.chmodSync(authPath, 0o600);
-  restrictToOwnerAcl(authPath); // Windows: the 0600
-}
-
-/**
  * Write an API key into a CODEX_HOME/auth.json as `{api_key: "..."}`.
  * resolveAuth in codex-backend.ts reads this field and authenticates via OPENAI_API_KEY.
  */
@@ -162,76 +84,6 @@ export function writeCodexApiKeyToHome(codexHome: string, apiKey: string): void 
   fs.writeFileSync(authPath, JSON.stringify({ api_key: apiKey }));
   fs.chmodSync(authPath, 0o600);
   restrictToOwnerAcl(authPath); // Windows: the 0600
-}
-
-/**
- * Seed auth.json into a stable CODEX_HOME ONLY IF it is absent. Unlike
- * materializeStableCodexHome (which always rewrites), this preserves any
- * tokens that the Codex CLI refreshed during a previous run — mirroring
- * OpenAI's "seed only if missing" CI/CD guidance. Idempotent and non-throwing.
- */
-export function seedCodexAuthIfMissing(workerId: string, credential: CodexCredential, explicitPath?: string): { codexHome: string } {
-  const codexHome = explicitPath ?? stableCodexHomePath(workerId);
-  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(codexHome, 0o700); } catch {}
-  tryRestrictToOwnerAcl(codexHome, { directory: true }); // Windows: the 0700
-  // A link left by a machine-login run is not a CLI-refreshed copy of this
-  // credential: drop it so the server credential is seeded.
-  detachMachineCodexAuth(codexHome);
-  const authPath = join(codexHome, 'auth.json');
-  if (!fs.existsSync(authPath)) {
-    writeCodexAuthJson(codexHome, credential);
-    console.log(`[Worker ${workerId}] Seeded Codex auth.json (was missing)`);
-  } else {
-    console.log(`[Worker ${workerId}] Codex auth.json already present — not overwriting (preserving CLI-refreshed tokens)`);
-  }
-  return { codexHome };
-}
-
-/**
- * Read the current auth.json from the stable per-worker CODEX_HOME.
- * Returns null when auth.json is absent or cannot be parsed.
- * Used for write-back after a session: the Codex CLI may have refreshed
- * the tokens during the run and written them back to auth.json.
- */
-export function readCodexAuthJson(workerId: string): { access_token?: string; refresh_token?: string; account_id?: string; id_token?: string; expires_in?: number } | null {
-  const authPath = join(stableCodexHomePath(workerId), 'auth.json');
-  if (!fs.existsSync(authPath)) return null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(authPath, 'utf-8')) as Record<string, unknown>;
-    // Normalize: Codex CLI nests under `tokens`
-    const src = (raw.tokens && typeof raw.tokens === 'object' ? raw.tokens : raw) as Record<string, unknown>;
-    return {
-      ...(typeof src.access_token === 'string' ? { access_token: src.access_token } : {}),
-      ...(typeof src.refresh_token === 'string' ? { refresh_token: src.refresh_token } : {}),
-      ...(typeof src.account_id === 'string' ? { account_id: src.account_id } : {}),
-      ...(typeof src.id_token === 'string' ? { id_token: src.id_token } : {}),
-      ...(typeof src.expires_in === 'number' ? { expires_in: src.expires_in } : {}),
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Preflight check for an expired Codex credential. Returns a human-readable
- * error string if the credential is definitely expired, or null if it looks usable.
- *
- * "Definitely expired" means: expiresAt is set AND in the past AND the credential
- * is not an API key (API keys don't carry short-lived JWTs in the same way).
- * When expiresAt is null (no expiry metadata) we allow it through — the token may
- * still work, and the CLI will surface a real error if it doesn't.
- */
-export function checkCodexCredentialExpiry(credential: Pick<CodexCredential, 'credentialType' | 'accountId' | 'expiresAt'>): string | null {
-  if (credential.credentialType === 'api_key') return null;
-  if (!credential.expiresAt) return null;
-  if (new Date(credential.expiresAt) > new Date()) return null;
-  const ts = new Date(credential.expiresAt).toISOString();
-  const accountHint = credential.accountId ? ` for accountId=${credential.accountId}` : '';
-  return (
-    `Codex credential${accountHint} expired at ${ts}. ` +
-    `Re-connect your ChatGPT account in Settings → Credentials, or configure a Codex API key instead.`
-  );
 }
 
 /**
@@ -252,27 +104,6 @@ export function teardownStableCodexHome(workerId: string, isolationRoot?: string
       console.warn(`[Worker ${workerId}] Failed to tear down stable Codex home at ${codexHome}:`, err);
     }
   }
-}
-
-/**
- * Write a temporary CODEX_HOME directory containing auth.json for the given
- * credential. Returns the path to the temp dir so the caller can set
- * cleanEnv.CODEX_HOME = codexHome before spawning the backend.
- *
- * Directory is created at 0o700 (mkdtempSync guarantees this on POSIX).
- * auth.json is written then explicitly chmod'd to 0o600.
- * Call cleanupCodexAuth() in the finally block to remove the temp dir.
- */
-export function materializeCodexAuth(workerId: string, credential: CodexCredential): { codexHome: string } {
-  // mkdtempSync guarantees 0o700 on POSIX — no need to re-chmod the dir.
-  const codexHome = fs.mkdtempSync(join(tmpdir(), 'codex-'));
-  // Windows has no mkdtemp 0700: give the dir an inheritable owner-only DACL.
-  tryRestrictToOwnerAcl(codexHome, { directory: true });
-  // Write first (no mode option — avoids a Bun 1.3.x bug where writeFileSync
-  // with { mode } silently fails to create the file), then chmod explicitly.
-  writeCodexAuthJson(codexHome, credential);
-  console.log(`[Worker ${workerId}] Materialized Codex auth.json at ${codexHome}`);
-  return { codexHome };
 }
 
 export interface CodexMcpConfig {

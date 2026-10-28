@@ -34,7 +34,7 @@ mock.module('@/lib/team-access', () => ({
   resolveActiveTeamId: mockResolveActiveTeamId,
 }));
 
-mock.module('@/lib/claude-credential', () => ({
+mock.module('@/lib/anthropic-auth', () => ({
   resolveAnthropicAuth: mockResolveAnthropicAuth,
 }));
 

@@ -22,16 +22,14 @@ const repo = join(import.meta.dir, '..', '..', '..');
 
 /** Every `secrets.purpose` that holds a model credential (hand-written on purpose). */
 const MODEL_CREDENTIAL_PURPOSES: ModelCredentialPurpose[] = [
-  'inference_key', 'anthropic_api_key', 'decision_key', 'oauth_token',
-  'claude_credential', 'openai_api_key', 'codex_credential', 'agent_endpoint',
+  'inference_key', 'anthropic_api_key', 'decision_key', 'openai_api_key', 'agent_endpoint',
 ];
 
 describe('provider registry: shape', () => {
   it('has one entry per provider, in a stable id order', () => {
     expect(PROVIDER_REGISTRY.map(p => p.id)).toEqual([...PROVIDER_IDS]);
     expect([...PROVIDER_IDS].sort()).toEqual([
-      'anthropic', 'claude-subscription', 'codex-subscription', 'custom-endpoint',
-      'litellm', 'openai', 'openrouter',
+      'anthropic', 'custom-endpoint', 'litellm', 'openai', 'openrouter',
     ]);
   });
 
@@ -55,9 +53,7 @@ describe('provider registry: shape', () => {
   it('encodes the design matrix (served surfaces per provider)', () => {
     const served = Object.fromEntries(PROVIDER_REGISTRY.map(p => [p.id, SURFACES.filter(s => p.surfaces[s].ok)]));
     expect(served).toEqual({
-      'claude-subscription': ['agent-claude'],
       anthropic: ['chat', 'agent-claude', 'cloud-egress'],
-      'codex-subscription': ['agent-codex'],
       openai: ['chat', 'agent-codex'],
       openrouter: ['chat', 'agent-claude', 'agent-codex', 'cloud-egress'],
       litellm: ['chat', 'agent-claude', 'agent-codex', 'cloud-egress'],
@@ -129,7 +125,7 @@ describe('derived lists equal what they were before', () => {
   // key's canonical storage, so `inference_key` makes the backend configured.
   // It is listed before its legacy alias, canonical first.
   it('BACKEND_REGISTRY.claude.credentialPurposes gains the canonical key storage', () => {
-    expect(BACKEND_REGISTRY.claude.credentialPurposes).toEqual(['claude_credential', 'oauth_token', 'inference_key', 'anthropic_api_key']);
+    expect(BACKEND_REGISTRY.claude.credentialPurposes).toEqual(['inference_key', 'anthropic_api_key']);
   });
 
   it('TIER_PROVIDER_OPTIONS ids, order and labels are unchanged', () => {
@@ -154,7 +150,7 @@ describe('derived lists equal what they were before', () => {
 
 describe('documented fixes', () => {
   it('fix: Codex counts an OpenAI API key as configured (it runs on one), in either storage', () => {
-    expect(BACKEND_REGISTRY.codex.credentialPurposes).toEqual(['codex_credential', 'inference_key', 'openai_api_key']);
+    expect(BACKEND_REGISTRY.codex.credentialPurposes).toEqual(['inference_key', 'openai_api_key']);
   });
 
   it('fix: one stored Anthropic or OpenAI key serves chat and agent runs alike (canonical storage is read by agents)', () => {

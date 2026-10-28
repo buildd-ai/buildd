@@ -233,12 +233,11 @@ describe('POST /api/secrets', () => {
   it('accepts all valid purpose values', async () => {
     const valueFor: Record<string, string> = {
       anthropic_api_key: 'sk-ant-api03-xxx',
-      oauth_token: 'sk-ant-oat01-xxx',
       openai_api_key: 'sk-proj-xxx',
       webhook_token: 'val',
       custom: 'val',
     };
-    for (const purpose of ['anthropic_api_key', 'oauth_token', 'openai_api_key', 'webhook_token', 'custom']) {
+    for (const purpose of ['anthropic_api_key', 'openai_api_key', 'webhook_token', 'custom']) {
       mockSecretsReplaceScoped.mockResolvedValue('secret-1');
       const res = await POST(createPostRequest({ value: valueFor[purpose], purpose }));
       expect(res.status).toBe(200);
@@ -247,12 +246,12 @@ describe('POST /api/secrets', () => {
 
   it('strips a single pair of wrapping double quotes before storing (the bug fix)', async () => {
     const res = await POST(createPostRequest({
-      value: '"sk-ant-oat01-abc123"',
-      purpose: 'oauth_token',
+      value: '"sk-ant-api03-abc123"',
+      purpose: 'anthropic_api_key',
     }));
     expect(res.status).toBe(200);
     // Stored value must NOT contain the wrapping quotes.
-    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-oat01-abc123', expect.anything());
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-api03-abc123', expect.anything());
   });
 
   it('strips wrapping single quotes too', async () => {
@@ -266,30 +265,31 @@ describe('POST /api/secrets', () => {
 
   it('trims surrounding whitespace before storing', async () => {
     const res = await POST(createPostRequest({
-      value: '   sk-ant-oat01-abc123  \n',
-      purpose: 'oauth_token',
+      value: '   sk-ant-api03-abc123  \n',
+      purpose: 'anthropic_api_key',
     }));
     expect(res.status).toBe(200);
-    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-oat01-abc123', expect.anything());
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-api03-abc123', expect.anything());
   });
 
   it('trims and strips quotes together (whitespace outside quotes)', async () => {
     const res = await POST(createPostRequest({
-      value: '  "sk-ant-oat01-abc123"  ',
-      purpose: 'oauth_token',
+      value: '  "sk-ant-api03-abc123"  ',
+      purpose: 'anthropic_api_key',
     }));
     expect(res.status).toBe(200);
-    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-oat01-abc123', expect.anything());
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-ant-api03-abc123', expect.anything());
   });
 
-  it('rejects oauth_token with the wrong prefix (400)', async () => {
-    const res = await POST(createPostRequest({
-      value: 'sk-ant-api03-wrongkind',
-      purpose: 'oauth_token',
-    }));
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error).toContain('sk-ant-oat');
+  it('refuses to store a subscription login, whatever its shape (400)', async () => {
+    for (const [purpose, value] of [
+      ['oauth_token', 'sk-ant-oat01-xxx'],
+      ['claude_credential', '{"access_token":"a","refresh_token":"b"}'],
+    ]) {
+      const res = await POST(createPostRequest({ value, purpose }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('Invalid purpose');
+    }
     expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
   });
 
@@ -304,24 +304,13 @@ describe('POST /api/secrets', () => {
     expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
   });
 
-  it('rejects a quoted oauth_token whose real prefix is wrong (quotes stripped first)', async () => {
+  it('rejects a quoted anthropic_api_key whose real prefix is wrong (quotes stripped first)', async () => {
     const res = await POST(createPostRequest({
       value: '"not-a-real-token"',
-      purpose: 'oauth_token',
+      purpose: 'anthropic_api_key',
     }));
     expect(res.status).toBe(400);
     expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
-  });
-
-  it('does NOT strip quotes from JSON-blob purposes like claude_credential', async () => {
-    const json = '{"access_token":"a","refresh_token":"b"}';
-    const res = await POST(createPostRequest({
-      value: json,
-      purpose: 'claude_credential',
-    }));
-    expect(res.status).toBe(200);
-    // JSON blob stored verbatim (only trimmed) — not quote-stripped.
-    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith(json, expect.anything());
   });
 });
 
@@ -482,8 +471,6 @@ describe('shared credentials need manage_team_credentials', () => {
 
   const SHARED: Array<[string, string, string | undefined]> = [
     ['anthropic_api_key', 'sk-ant-api03-xxx', undefined],
-    ['oauth_token', 'sk-ant-oat01-xxx', undefined],
-    ['claude_credential', '{"access_token":"a","refresh_token":"b"}', undefined],
     ['openai_api_key', 'sk-proj-xxx', undefined],
     ['mcp_credential', 'v', 'GITHUB_TOKEN'],
     ['vercel_token', 'v', undefined],
@@ -631,9 +618,9 @@ describe('POST /api/secrets never creates a personal row', () => {
     mockSecretsReplaceScoped.mockResolvedValue('secret-1');
   });
 
-  for (const purpose of ['mcp_credential', 'role_env_secret', 'anthropic_api_key', 'oauth_token', 'custom', 'decision_key']) {
+  for (const purpose of ['mcp_credential', 'role_env_secret', 'anthropic_api_key', 'custom', 'decision_key']) {
     it(`refuses a userId-scoped ${purpose}`, async () => {
-      const value = purpose === 'anthropic_api_key' ? 'sk-ant-api-x' : purpose === 'oauth_token' ? 'sk-ant-oat-x' : 'v';
+      const value = purpose === 'anthropic_api_key' ? 'sk-ant-api-x' : 'v';
       const res = await POST(createPostRequest({ value, purpose, label: 'GITHUB_TOKEN', userId: 'user-1' }));
       expect(res.status).toBe(400);
       expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
@@ -683,7 +670,7 @@ describe('GET /api/secrets — credential custody', () => {
     mockGetUserTeamIds.mockReset();
     mockAccountsFindFirst.mockReset();
     mockSecretsList.mockReset();
-    mockSecretsList.mockResolvedValue([{ id: 'secret-1', purpose: 'claude_credential' }]);
+    mockSecretsList.mockResolvedValue([{ id: 'secret-1', purpose: 'anthropic_api_key' }]);
   });
 
   it('lists for a signed-in team member', async () => {

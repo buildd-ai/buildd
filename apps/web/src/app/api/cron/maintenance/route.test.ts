@@ -55,6 +55,8 @@ const mockChatAttachments = mock(async (_opts: unknown) => ({ removed: 4, object
 mock.module('@/lib/artifact-attachment-cleanup', () => ({ removeOrphanChatAttachments: mockChatAttachments }));
 const mockTeamFiles = mock(async (_opts: unknown) => ({ removed: 5, objectsRemoved: 5 }));
 mock.module('@/lib/artifact-team-files', () => ({ removeDetachedTeamFiles: mockTeamFiles }));
+const mockSpecSweep = mock(async (_opts?: unknown) => ({ checked: 3, approved: 1, failed: 0 }));
+mock.module('@/lib/specs/auto-approve', () => ({ sweepNoCriteriaChange: mockSpecSweep }));
 
 const { GET } = await import('./route');
 
@@ -106,9 +108,9 @@ describe('maintenance cron — the core sweeps', () => {
     const uploads = { finalized: 2, removed: 1, waiting: 0 };
     const chatAttachments = { removed: 4, objectsRemoved: 2 };
     const teamFiles = { removed: 5, objectsRemoved: 5 };
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 });
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 } });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 24, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 } });
+    expect(row).toMatchObject({ ok: true, changed: 25, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 } } });
   });
 
   it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {
@@ -116,6 +118,13 @@ describe('maintenance cron — the core sweeps', () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
     expect((await res.json()).chatAttachments).toEqual({ removed: 0, objectsRemoved: 0 });
+  });
+
+  it('a failing no-criteria-change spec sweep is logged and reads as nothing approved', async () => {
+    mockSpecSweep.mockRejectedValueOnce(new Error('boom'));
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    expect((await res.json()).specsAutoApproved).toEqual({ checked: 0, approved: 0, failed: 0 });
   });
 
   it('a failing deleted-team file sweep is logged and reads as nothing removed', async () => {

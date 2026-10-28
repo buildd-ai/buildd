@@ -762,6 +762,11 @@ beforeEach(() => {
 });
 const factsOfKind = (kind: string) => recordedFacts.filter((r) => r.fact.kind === kind);
 
+// A PR buildd did not open asks for buildd's review when the workspace opts in (lib/auto-review-unowned.ts).
+const mockMaybeAutoReviewUnownedPr = mock(async (_input: any) => 'skipped_off' as string);
+mock.module('@/lib/auto-review-unowned', () => ({ maybeAutoReviewUnownedPr: mockMaybeAutoReviewUnownedPr }));
+beforeEach(() => { mockMaybeAutoReviewUnownedPr.mockClear(); });
+
 // Import handler AFTER mocks
 import { POST } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -2869,6 +2874,39 @@ describe('POST /api/github/webhook', () => {
       await POST(createWebhookRequest('pull_request', payload));
 
       expect(mockWorkspaceRepoMatches).toHaveBeenCalledWith('maxjacu/sibling-app');
+    });
+
+    it("asks for buildd's own review of a PR on opened/reopened/ready_for_review/synchronize, never on close", async () => {
+      for (const action of ['opened', 'reopened', 'ready_for_review', 'synchronize']) {
+        mockMaybeAutoReviewUnownedPr.mockClear();
+        await POST(createWebhookRequest('pull_request', makePullRequestPayload({
+          top: { action }, repository: { default_branch: 'dev' },
+          pull_request: { user: { login: 'someone', type: 'User' }, base: { ref: 'dev' } },
+        })));
+        expect(mockMaybeAutoReviewUnownedPr).toHaveBeenCalledTimes(1);
+        const input = (mockMaybeAutoReviewUnownedPr.mock.calls[0] as any[])[0];
+        expect(input).toMatchObject({ action, installationId: 5000, repoFullName: 'test-org/test-repo', defaultBranch: 'dev' });
+        expect(input.pr.number).toBe(7);
+        expect(input.pr.user.login).toBe('someone');
+      }
+      mockMaybeAutoReviewUnownedPr.mockClear();
+      await POST(createWebhookRequest('pull_request', makePullRequestPayload({ top: { action: 'closed' } })));
+      expect(mockMaybeAutoReviewUnownedPr).not.toHaveBeenCalled();
+    });
+
+    it('a PR this event just auto-review-adopted is not also taken by the PR-opened policy or the no-CI auto-merge', async () => {
+      withAutoMergeWorkspaceAndWorker();
+      mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+      mockMaybeAutoReviewUnownedPr.mockImplementationOnce(async () => 'requested');
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('a failed auto-review request never fails the webhook', async () => {
+      mockMaybeAutoReviewUnownedPr.mockImplementationOnce(async () => { throw new Error('boom'); });
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+      expect(res.status).toBe(200);
     });
 
     it('auto-merges a newly-opened PR when the repo has no CI', async () => {

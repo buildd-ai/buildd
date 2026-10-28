@@ -31,7 +31,6 @@ const { CredentialCache } = await import('../../src/credential-cache');
 const TEAM = 'team-shared';
 const PERSONAL_KEY = 'sk-ant-personal-requester-key';
 const TEAM_KEY = 'sk-ant-team-key';
-const TEAM_OAUTH = 'team-oauth-token';
 
 const personalMarker = (surface: 'agent-claude' | 'agent-codex' = 'agent-claude') => ({
   surface, policy: 'personal_only', scope: 'personal', provider: surface === 'agent-codex' ? 'openai' : 'anthropic', runnerLocalAllowed: false,
@@ -70,7 +69,6 @@ describe('personal credential reaches exactly one worker', () => {
 
     const second = await start({});
     expect(second.serverApiKey).toBeUndefined();
-    expect(second.serverOauthToken).toBeUndefined();
     expect(JSON.stringify(second)).not.toContain(PERSONAL_KEY);
   });
 
@@ -85,21 +83,19 @@ describe('personal credential reaches exactly one worker', () => {
 
   test('team-only then personal: the personal worker gets only the requester\'s key', async () => {
     const { start } = harness();
-    await start({ serverOauthToken: TEAM_OAUTH });
+    await start({ serverApiKey: TEAM_KEY });
     const personal = await start({ serverApiKey: PERSONAL_KEY, credentialDecision: personalMarker() });
     expect(personal.serverApiKey).toBe(PERSONAL_KEY);
-    expect(personal.serverOauthToken).toBeUndefined();
   });
 
   test('team-only then personal Codex: the team\'s cached Claude credential is not attached', async () => {
     const { start } = harness();
-    await start({ serverOauthToken: TEAM_OAUTH, serverApiKey: TEAM_KEY });
+    await start({ serverApiKey: TEAM_KEY });
     const personal = await start({
       codexCredential: { credentialType: 'api_key', apiKey: 'sk-openai-personal', expiresAt: null },
       credentialDecision: personalMarker('agent-codex'),
     }, 'codex');
     expect(personal.serverApiKey).toBeUndefined();
-    expect(personal.serverOauthToken).toBeUndefined();
     expect(personal.codexCredential.apiKey).toBe('sk-openai-personal');
   });
 
@@ -108,7 +104,6 @@ describe('personal credential reaches exactly one worker', () => {
     await start({ serverApiKey: TEAM_KEY });
     const withheld = await start({ credentialDecision: { surface: 'agent-claude', policy: 'personal_only', scope: 'none', runnerLocalAllowed: true } });
     expect(withheld.serverApiKey).toBeUndefined();
-    expect(withheld.serverOauthToken).toBeUndefined();
   });
 
   test('a team-scope marker keeps today\'s cache behaviour', async () => {

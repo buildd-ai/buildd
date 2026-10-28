@@ -19,7 +19,7 @@ export async function GET(
     authorization_servers: [getIssuer()],
     scopes_supported: OAUTH_SCOPES,
     bearer_methods_supported: ['header'],
-  });
+  }, { headers: { 'Access-Control-Allow-Origin': '*' } });
 }
 
 export async function OPTIONS() {

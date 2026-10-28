@@ -453,7 +453,7 @@ Two consequences, both of which have cost real debugging time:
    `SyntaxError: Export named 'baz' not found in module ...` — in a file whose
    author never touched that stub.
 2. **A module cannot be both globally stubbed and unit-tested in one process.**
-   If nine files stub `@/lib/codex-credential` and `codex-credential.test.ts`
+   If nine files stub `@/lib/codex-api-key` and `codex-api-key.test.ts`
    tests the real thing, one of them loses. Completing the stubs does not fix
    this; it only converts import errors into assertion failures.
 
@@ -547,7 +547,10 @@ it('works correctly', ...)
 6. **PRs without tests for behavioral changes will be sent back** - Docs/config-only changes are exempt
 
 **Spec acceptance files that need Postgres run in the same job.** The DB
-architecture job (`build.yml`) follows `bun run test:db` with a second step that
+architecture suite (`build.yml`) runs as four shards (`bun run test:db --shard i/4`,
+each on its own runner and database, balanced by `scripts/db-test-durations.json`),
+aggregated under the `DB architecture (real Postgres)` check. Shard 1
+(`DB architecture shard 1/4`) follows its `bun run test:db` with a second step that
 passes four files from `apps/web/tests/acceptance/` (`spec-corpus-duplicates`,
 `spec-similarity-from-corpus`, `spec-replaces`, `mcp-specs-replaces`) to
 `scripts/run-db-tests.ts`. Other acceptance files are not run by that job; add

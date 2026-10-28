@@ -84,6 +84,12 @@ const REVIEW_OVERRIDE_LABEL: Record<'admins' | 'off', string> = {
   off: 'Nobody',
 };
 
+const AUTO_REVIEW_UNOWNED_LABEL: Record<'default' | 'on' | 'off', string> = {
+  default: 'Default (on with agent review)',
+  on: 'Review them',
+  off: 'Leave them alone',
+};
+
 const DATA_MIGRATIONS_LABEL: Record<'person' | 'agent-review', string> = {
   person: 'A person decides',
   'agent-review': 'Reviewer agent decides',
@@ -123,6 +129,11 @@ export default function MergePolicyEditor({
   // Who may approve past open review findings
   const [reviewOverride, setReviewOverride] = useState<'admins' | 'off'>(policy.reviewOverride ?? 'admins');
 
+  // Review PRs buildd did not open (unset follows the tier: on under agent review)
+  const [autoReviewUnowned, setAutoReviewUnowned] = useState<'default' | 'on' | 'off'>(
+    policy.autoReviewUnowned === true ? 'on' : policy.autoReviewUnowned === false ? 'off' : 'default',
+  );
+
   // Stall notify
   const [stallMinutes, setStallMinutes] = useState(String(policy.stallNotifyMinutes ?? ''));
 
@@ -150,6 +161,7 @@ export default function MergePolicyEditor({
     }
 
     if (reviewOverride === 'off') p.reviewOverride = 'off';
+    if (autoReviewUnowned !== 'default') p.autoReviewUnowned = autoReviewUnowned === 'on';
 
     const stall = parseInt(stallMinutes);
     if (!isNaN(stall) && stall > 0) p.stallNotifyMinutes = stall;
@@ -231,6 +243,7 @@ export default function MergePolicyEditor({
                   ]
                 : []),
               { label: 'Approve past open findings', value: REVIEW_OVERRIDE_LABEL[reviewOverride] },
+              { label: 'Review PRs opened outside buildd', value: AUTO_REVIEW_UNOWNED_LABEL[autoReviewUnowned] },
               { label: 'Stall notification', value: stallMinutes ? `${stallMinutes} minutes` : 'Default' },
             ]}
           />
@@ -377,6 +390,24 @@ export default function MergePolicyEditor({
           ]}
         />
         <p className="text-xs text-text-muted">Who can approve a PR that still has open review findings.</p>
+      </div>
+
+      {/* Review PRs buildd did not open */}
+      <div className="space-y-1">
+        <label className="text-sm text-text-primary">Review PRs opened outside buildd</label>
+        <Select
+          aria-label="Review PRs opened outside buildd"
+          value={autoReviewUnowned}
+          onChange={v => setAutoReviewUnowned(v as 'default' | 'on' | 'off')}
+          options={[
+            { value: 'default', label: AUTO_REVIEW_UNOWNED_LABEL.default },
+            { value: 'on', label: AUTO_REVIEW_UNOWNED_LABEL.on },
+            { value: 'off', label: AUTO_REVIEW_UNOWNED_LABEL.off, description: 'Such PRs get no Buildd / Review approval status' },
+          ]}
+        />
+        <p className="text-xs text-text-muted">
+          A PR opened by a person or another tool gets a buildd review automatically. Each review uses model budget.
+        </p>
       </div>
 
       {/* Stall notify */}
