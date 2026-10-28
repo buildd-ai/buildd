@@ -170,6 +170,15 @@ describe('planVisualReviewSchedule', () => {
     expect(plan({ state: s, audits: done })).toMatchObject({ action: 'blocked', cause: 'rereview_cap', nextActor: 'owner' });
   });
 
+  it("past the ceiling, the mission's own UI moving after a pass still files the next review (task 09a797b4)", () => {
+    // Round 5 passed on old00000; the mission then merged its own UI work, so the pass was voided by named files.
+    const done = Array.from({ length: 5 }, (_, i) => au({ id: `d${i}`, status: 'completed', round: 5 - i, headSha: `old0000${i}` }));
+    const carry = { headSha: HEAD, from: 'old00000', state: 'changed' as const, files: ['apps/web/src/app/x/Row.tsx'] };
+    const s = stateOf({ audit: auditRow, review: passedReview, auditedSha: 'old00000', carry });
+    expect(s).toMatchObject({ status: 'needed', staleEvidence: true, uiDelta: ['apps/web/src/app/x/Row.tsx'] });
+    expect(plan({ state: s, audits: done })).toMatchObject({ action: 'enqueue', headSha: HEAD, round: 6, reason: 'new_head' });
+  });
+
   it('an integration PR that already merged runs as a post-merge audit, labelled as such', () => {
     const merged = stateOf({ branch: { headSha: HEAD, base: 'dev', integrationPr: { number: 9, state: 'merged', ready: true, blocked: false }, workLanded: true } });
     expect(merged.branch.postMergeRecovery).toBe(true);
