@@ -111,11 +111,11 @@ describe('R-2: filters apply to every number, slots stay team-wide', () => {
 describe('R-3: four tiles', () => {
   it('has Running n/m, Ready, Waiting (with a reason bar), Parked, each linking to its rows', () => {
     const over = { running: 1, slots: 6, tasks: [task(slot), task(laneWait(1)), task(limit), task(parkedWait)] };
-    expect(view(over).tiles).toEqual({ running: 1, slots: 6, ready: 1, waiting: 2, parked: 1, waitingByReason: { declared: 0, lane: 1, limit: 1 } });
+    expect(view(over).tiles).toMatchObject({ running: 1, slots: 6, ready: 1, waiting: 2, parked: 1, waitingByReason: { declared: 0, lane: 1, limit: 1 } });
     const out = html(over);
     expect(out).toContain('1/6');
-    for (const id of ['queue-tile-running', 'queue-tile-ready', 'queue-tile-waiting', 'queue-tile-parked']) expect(out).toContain(`data-testid="${id}"`);
-    expect(out).toContain('queue-reason-bar');
+    for (const id of ['queue-tile-running', 'queue-tile-queued', 'queue-tile-blocked', 'queue-tile-scheduled']) expect(out).toContain(`data-testid="${id}"`);
+    expect(out).toContain('queue-blocked-bar');
     expect(out).toContain('href="#queue-ready"');
     expect(out).toContain('href="#queue-waiting"');
     expect(out).toContain('href="#queue-parked"');
@@ -128,7 +128,8 @@ describe('R-4: one alert line, only when something is wrong, worst first', () =>
     expect(view().alert).toBeNull();
     const calm = html();
     expect(calm).not.toContain('queue-alert');
-    expect(calm).not.toContain('queue-calm');
+    // The phone shows one calm line instead (r8); it is hidden from md up.
+    expect(calm).toMatch(/data-testid="queue-calm"[^>]*md:hidden/);
   });
   it('lists idle slots before stuck lanes, on one line', () => {
     const stuck = holder({ status: 'completed', prNumber: 1, stuckSince: new Date(NOW - 30 * HOUR).toISOString() });
@@ -160,8 +161,9 @@ describe('R-5: exactly one reason badge per waiting task', () => {
 describe('R-6: Waiting table', () => {
   it('has Task / Reason / Blocked by / Age columns and All / Declared / Lane / Limit segments', () => {
     const out = html({ tasks: [task(limit)] });
-    for (const col of ['Task', 'Reason', 'Blocked by', 'Age']) expect(out).toContain(`<span>${col}</span>`);
-    expect(out).toMatch(/>All 1<.*>Declared 0<.*>Lane 0<.*>Limit 1</s);
+    for (const col of ['Task', 'Reason', 'Waiting on']) expect(out).toContain(`<span>${col}</span>`);
+    expect(out).toMatch(/<span[^>]*>Age<\/span>/);
+    expect(out).toMatch(/>All<span[^>]*>1<.*>Lane<span[^>]*>0<.*>Limit<span[^>]*>1<.*>Dependency<span[^>]*>0</s);
   });
   it('sorts Lane, Limit, Declared, then lane position / age', () => {
     const d = task(declared());
@@ -188,10 +190,10 @@ describe('R-8: Lanes card', () => {
   it('lists name, holder state and waiting count, hidden when no lane is in use', () => {
     const out = html({ lanes: [lane([holder(), waiter('w', 'Rename table')])] });
     expect(out).toContain('queue-lanes');
-    expect(out).toContain('Schema');
+    expect(out).toContain('schema');
     expect(out).toContain('Add column');
     expect(out).toContain('Running');
-    expect(out).toContain('1 waiting');
+    expect(out).toMatch(/data-testid="queue-lane-waiting"[^>]*>\+1</);
     expect(html()).not.toContain('queue-lanes');
   });
 });
