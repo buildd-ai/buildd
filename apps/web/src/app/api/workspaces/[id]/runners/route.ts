@@ -4,7 +4,7 @@ import { workerHeartbeats, accountWorkspaces, workspaces } from '@buildd/core/db
 import { and, eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { freeSlots, RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { beatWithin, freeSlots, RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -64,8 +64,7 @@ export async function GET(
         if (!hasAccess) return null;
 
         const now = Date.now();
-        const lastBeat = new Date(hb.lastHeartbeatAt).getTime();
-        const isOnline = now - lastBeat < RUNNER_ONLINE_THRESHOLD_MS;
+        const isOnline = beatWithin(hb.lastHeartbeatAt, now, RUNNER_ONLINE_THRESHOLD_MS);
 
         return {
           id: hb.id,
