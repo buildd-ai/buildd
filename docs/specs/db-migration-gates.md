@@ -110,7 +110,7 @@ assertions:
 EXPAND migrations do not require human review, but CI MUST prove they are safe before auto-merge fires:
 
 1. **Operation-class classifier**: `classifyMigrationSql` must return `{ safe: true, operationClass: 'EXPAND' }`. This is enforced in `evaluateAutoMergeSafety` before any merge attempt.
-2. **Migrate test**: `bun db:migrate` against a test database MUST succeed. Verifies the migration applies cleanly. The `db-architecture` job in `.github/workflows/build.yml` runs it against a real Postgres on every PR and push (step "Migrate"), then the DB architecture tests (`bun run test:db`). It is a fresh database, not a clone of production; a shadow-DB apply against production's shape is a planned enhancement.
+2. **Migrate test**: `bun db:migrate` against a test database MUST succeed. Verifies the migration applies cleanly. The `db-architecture-shards` jobs in `.github/workflows/build.yml` run it against a real Postgres on every push and on every PR that changes anything but docs, styling or images, migrations included (step "Migrate", once per shard, each shard its own database), then their quarter of the DB architecture tests (`bun run test:db --shard i/4`); the `DB architecture (real Postgres)` check is green only when all four are. It is a fresh database, not a clone of production; a shadow-DB apply against production's shape is a planned enhancement.
 3. **Lock contention** (future): wrap migrations in `SET lock_timeout = '3s'` and fail if ACCESS EXCLUSIVE is held longer than the threshold.
 
 CONTRACT migrations always escalate to human review. The human confirms the timing (low-traffic window, PITR verified) before merging.
