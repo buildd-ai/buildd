@@ -48,10 +48,10 @@ describe('words', () => {
     expect(slotsChangeLine(2, 3, 'abort', 1)).toContain('ended the newest agent');
   });
 
-  test('a slot count is a whole number from 1 to 50', () => {
+  test('a slot count is a whole number from 0 to 50', () => {
     expect(parseSlots('4')).toBe(4);
     expect(parseSlots(50)).toBe(50);
-    for (const bad of ['0', '-1', '2.5', 'four', '51', '', 0, 3.5]) expect(parseSlots(bad)).toBeNull();
+    for (const bad of ['-1', '2.5', 'four', '51', '', -1, 3.5]) expect(parseSlots(bad)).toBeNull();
   });
 });
 
@@ -245,7 +245,7 @@ describe('/api/slots on the runner (R-44..R-46, AC-28, AC-29)', () => {
 
   test('a bad value is refused and N is not touched', async () => {
     const s = setup();
-    expect((await applySlots({ slots: 0 }, s.deps)).status).toBe(400);
+    expect((await applySlots({ slots: -1 }, s.deps)).status).toBe(400);
     expect((await applySlots({}, s.deps)).status).toBe(400);
     expect(s.set).toEqual([]);
   });
@@ -278,7 +278,7 @@ describe('slots set on buildd.dev (spec 34a48877 R-20..R-22, AC-15, AC-17)', () 
   });
 
   test('junk in the reply is ignored', () => {
-    for (const bad of [null, undefined, {}, { slots: 0, setAt: 1 }, { slots: 51, setAt: 1 }, { slots: 'x', setAt: 1 }, { slots: 8 }, { slots: 8, setAt: 'now' }]) {
+    for (const bad of [null, undefined, {}, { slots: -1, setAt: 1 }, { slots: 51, setAt: 1 }, { slots: 'x', setAt: 1 }, { slots: 8 }, { slots: 8, setAt: 'now' }]) {
       expect(serverSlotsToApply(bad, { slots: 5, changedAt: 0 })).toBeNull();
     }
   });
@@ -378,5 +378,50 @@ describe('the runner applies a dashboard value (R-20, R-21, AC-15, AC-17)', () =
     expect(m.applyServerSlots({ slots: 12, setBy: null, setAt: 2000 })).toBe(true);
     expect(m.config.maxConcurrent).toBe(12);
     expect(readFileSync(file, 'utf8')).toBe('{not json');
+  });
+});
+
+describe('concurrency 0 (spec 97b1bd0b R-18)', () => {
+  test('0 is a real setting everywhere a number of slots is read', () => {
+    expect(parseSlots(0)).toBe(0);
+    expect(parseSlots('0')).toBe(0);
+    expect(parseSlots(-1)).toBeNull();
+    expect(slotsSource({ maxConcurrent: 0 }, {})).toBe('config');
+    const file = join(home(), 'config.json');
+    saveSlotsToConfig(file, 0, { changedAt: 2000, origin: 'dashboard', setBy: 'Max' });
+    expect(readSlotsFromConfig(file)).toBe(0);
+  });
+
+  test('a dashboard 0 is taken from the reply', () => {
+    expect(serverSlotsToApply({ slots: 0, setBy: 'Max', setAt: 2000 }, { slots: 5, changedAt: 1000 })).toEqual({ slots: 0, setBy: 'Max', setAt: 2000 });
+  });
+
+  test('the words for 0', () => {
+    expect(slotsChangeLine(0, 2)).toBe('2 running, slots now 0: they finish, nothing new starts.');
+    expect(slotsChangeLine(0, 0)).toBe('Slots now 0: 0 running, 0 free.');
+    expect(slotsStatusLine(0, 0, 'config')).toBe('0 slots (set in ~/.buildd/config.json): 0 running, 0 free.');
+  });
+
+  test('buildd slots 0 is accepted', async () => {
+    const dir = home();
+    const file = join(dir, 'config.json');
+    const r = await runSlotsCommand({ kind: 'set', raw: '0', mode: 'finish', yes: false }, { configFile: file, socketPath: join(dir, 's'), probe: absent });
+    expect(r.code).toBe(0);
+    expect(readSlotsFromConfig(file)).toBe(0);
+  });
+
+  test('the heartbeat sends 0, not nothing', async () => {
+    const client = new BuilddClient({ builddServer: 'http://x', apiKey: 'k' } as LocalUIConfig);
+    const bodies: any[] = [];
+    (client as any).fetch = async (_p: string, init: any) => { bodies.push(JSON.parse(init.body)); return {}; };
+    await client.sendHeartbeat('http://localhost:8766', 1, undefined, undefined, null, null, [], null, null, null, undefined, undefined, 0, 1000);
+    expect(bodies[0].maxConcurrent).toBe(0);
+  });
+
+  test('/api/slots on the runner accepts 0', async () => {
+    const set: number[] = [];
+    const r = await applySlots({ slots: 0 }, { setSlots: n => set.push(n), agents: () => AGENTS, act: async () => ({ ok: true }), pauses: new SlotPauseQueue() });
+    expect(r.status).toBe(200);
+    expect(set).toEqual([0]);
   });
 });

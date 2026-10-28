@@ -72,7 +72,7 @@ export const MOBILE_TAB_LIMIT = 5;
  * work, so only people holding view_team_usage see it; Operator is buildd's
  * own tooling, for platform operators only (lib/platform-operator.ts).
  */
-export type HealthSectionId = 'overview' | 'failures' | 'runners' | 'estimates' | 'usage' | 'insights' | 'operator';
+export type HealthSectionId = 'overview' | 'failures' | 'runners' | 'queue' | 'estimates' | 'usage' | 'insights' | 'operator';
 
 export interface HealthNavItem {
   id: HealthSectionId;
@@ -92,6 +92,7 @@ export const HEALTH_NAV: readonly HealthNavItem[] = [
   { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF, core: true },
   { id: 'failures', label: 'Failures', href: '/app/health/failures' },
   { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners', core: true },
+  { id: 'queue', label: 'Queue', href: '/app/health/queue' },
   { id: 'estimates', label: 'Estimates', href: '/app/health/estimates' },
   { id: 'usage', label: 'Usage', href: '/app/health/usage' },
   { id: 'insights', label: 'Insights', href: '/app/health/insights', teamAdminOnly: true },

@@ -45,7 +45,7 @@ import {
 import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
 import { strandHeadline, STRAND_FIX } from '@/lib/strand-headline';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
-import RunnerSlotsControl from '@/components/RunnerSlotsControl';
+import RunnerSlotDetail from './_components/RunnerSlotDetail';
 import { describeRunnerRoute } from '@/lib/runner-route';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
@@ -66,11 +66,18 @@ import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
 import { RunnerIsolation } from './_components/RunnerIsolation';
 import { RunnerRoute } from './_components/RunnerRoute';
+import { RunnerRow } from './_components/RunnerRow';
+import { RunnersCapacity } from './_components/RunnersCapacity';
 import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 import { backendCredentialLabel } from '@/lib/claude-credential-rows';
+
+/** The fleet with only its interactive sessions: the runner rows below say the rest. Null with none running. */
+function sessionsOnly(fleet: FleetSnapshot | undefined): FleetSnapshot | null {
+  return fleet?.sessions && fleet.sessions.slots.some(s => s.worker) ? { ...fleet, runners: [] } : null;
+}
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 
@@ -825,33 +832,33 @@ export function HealthClient({
           runner slots in use (with the number in use now) and interactive
           sessions, readable at first glance. Only the per-slot timeline, the
           long diagnostic, is one tap away. */}
-      {show('capacity') && hasLanes && (
-        <div data-testid="health-section-running-now" className="mb-4">
-          <RunningNow fleet={runnerLanes!.fleet} now={now} missions={runnerLanes!.missions ?? {}} />
-        </div>
-      )}
-
-      {show('capacity') && (
-        <div data-testid="health-section-slot-history">
-          <OccupancyChart
-            // From the fleet when it loaded, so "in use now" and "slots online" match Running now above.
-            capacityNow={runnerLanes ? runnerLanes.fleet.capacity : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
-            busyNow={runnerLanes ? runnerLanes.fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0) : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
-            slots={runnerLanes?.fleet.slots ?? null}
+      {show('capacity') && (() => {
+        const fleet = runnerLanes?.fleet ?? null;
+        const onlineHbs = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
+        const total = fleet ? fleet.capacity : onlineHbs.reduce((n, r) => n + r.maxConcurrentWorkers, 0);
+        const running = fleet
+          ? fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0)
+          : onlineHbs.reduce((n, r) => n + r.activeWorkerCount, 0);
+        const sessionCount = fleet?.sessions?.slots.filter(s => s.worker).length ?? 0;
+        // An idle stretch still open now: every slot free while work waits.
+        const openIdle = runnerLanes?.idle.length ? runnerLanes.idle[runnerLanes.idle.length - 1] : null;
+        const stalled = openIdle && now - openIdle.to < 5 * 60_000 ? openIdle : null;
+        const free = Math.max(0, (fleet?.slots?.schedulable ?? total) - running);
+        return (
+          <RunnersCapacity
+            running={running}
+            total={total}
+            runnersOnline={fleet ? fleet.runners.filter(r => r.online).length : onlineHbs.length}
+            totalRunners={fleet ? fleet.runners.length : runners.length}
+            sessions={sessionCount}
             workspaceId={wsFilter}
+            idleSlots={stalled ? free : 0}
+            queuedTasks={stalled ? stalled.waited : 0}
           />
-        </div>
-      )}
+        );
+      })()}
 
       {show('capacity') && <ClaimabilitySection health={claimPlans} now={now} />}
-
-      {show('capacity') && hasLanes && (
-        <div data-testid="health-section-lanes" className="mb-6">
-          <Disclosure summary="Timeline: each slot over the last hours">
-            <RunnerLanes fleet={runnerLanes!.fleet} idle={runnerLanes!.idle} now={now} missions={runnerLanes!.missions ?? {}} />
-          </Disclosure>
-        </div>
-      )}
 
       {show('capacity') && (
       <div data-testid="health-section-runners">
@@ -885,163 +892,22 @@ export function HealthClient({
             })()}
           </span>
         </div>
-        <div className="border-y border-border-default">
-          {(
-            <div className="divide-y divide-border-default">
-              {g.list.map((hb) => {
-                // The fleet row for this heartbeat (same id): its name, online
-                // state and count are the ones Running now and Settings print.
-                const fleetRow = fleetById.get(hb.id) ?? null;
-                const online = fleetRow ? fleetRow.online : isRunnerOnline(hb.lastHeartbeatAt, now);
-                const name = fleetRow?.name ?? hb.accountName ?? 'Runner';
-                const tokenName = fleetRow && hb.accountName && hb.accountName !== fleetRow.name ? hb.accountName : null;
-                const busyLine = fleetRow
-                  ? runnerBusyLine({ ...fleetRow, online: true })
-                  : `${hb.activeWorkerCount} of ${hb.maxConcurrentWorkers} busy`;
-                const health = runnerHealth.get(hb.id);
-                // Green means ENFORCED (namespace + mount allowlist), never merely
-                // "bwrap is installed here" — see deriveSandboxPosture.
-                const posture = deriveSandboxPosture(hb);
-                // Plain words, and only for a checked sandbox: every other state
-                // has its own line under the row (RunnerIsolation), said once.
-                const sandboxLabel = runnerIsolationDetail(hb).state === 'verified' ? SANDBOX_PLAIN_LABEL[posture.label] ?? null : null;
-                const sandboxClass = posture.tier === 'success'
-                  ? 'text-status-success'
-                  : posture.tier === 'warning'
-                    ? 'text-status-warning'
-                    : 'text-text-muted';
-                return (
-                  <div key={hb.id} data-testid="health-runner-row">
-                    <div className="flex items-center gap-3 px-4 py-3">
-                      <span
-                        className={`glow-dot ${online ? 'glow-dot-success' : ''}`}
-                        style={!online ? { background: 'var(--text-muted)' } : undefined}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p data-testid="health-runner-name" className="text-sm text-text-primary truncate">{name}</p>
-                          {tokenName && (
-                            <span className="text-meta text-text-muted truncate" title="The runner token it signs in with">{tokenName}</span>
-                          )}
-                          {hb.runnerClass && hb.runnerClass !== 'unknown' && (
-                            <span data-testid="health-runner-class" className="text-chip font-mono text-text-muted">
-                              {hb.runnerClass === 'managed' ? 'managed' : hb.runnerClass === 'team' ? 'team host' : hb.mine ? 'personal' : 'teammate\'s'}
-                            </span>
-                          )}
-                          {/* The dot and the busy line already say working or idle; only offline needs words. */}
-                          {!online && <span className="text-[11px] md:text-[10px] font-mono text-text-muted">offline</span>}
-                          {sandboxLabel && (
-                            <span
-                              className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
-                            >
-                              {sandboxLabel}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-text-muted">
-                          {hb.isolation && hb.isolation.platform !== 'other' ? `${PLATFORM_TEXT[hb.isolation.platform] ?? hb.isolation.platform} · ` : ''}{busyLine} ·{' '}
-                          {online ? `seen ${observedAgo(hb.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(hb.lastHeartbeatAt, now) ?? 'never'}`}
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => checkRunnerHealth(hb.id)}
-                        disabled={health?.loading}
-                        className="text-[11px] px-2.5 h-7 border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong disabled:opacity-50 transition-colors shrink-0"
-                      >
-                        {health?.loading ? '…' : health?.expanded ? 'Hide' : 'Details'}
-                      </button>
-                    </div>
-                    <RunnerIsolation runner={hb} now={now} expanded={!!health?.expanded} />
-                    {health?.expanded && <RunnerRoute runner={{ ...hb, recentRoutes: fleetRow?.routes }} />}
-                    {health?.expanded && (
-                      <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
-                        <RunnerSlotDetail
-                          fleetRow={fleetRow}
-                          runner={hb}
-                          online={online}
-                          lastHeartbeatAt={hb.lastHeartbeatAt}
-                          now={now}
-                          seesTeamWork={seesTeamWork}
-                          ownerLabel={hb.runnerClass === 'managed' ? 'managed' : hb.runnerClass === 'team' ? 'team host' : hb.runnerClass === 'unknown' || !hb.runnerClass ? 'unknown' : hb.mine ? 'personal' : 'teammate\'s'}
-                          route={describeRunnerRoute(hb)}
-                        />
-                        {health.pushOnlyResult && (
-                          <p className={`pt-3 text-xs ${health.pushOnlyResult.online ? 'text-status-success' : 'text-status-warning'}`}>
-                            Push-only runner · {health.pushOnlyResult.message}
-                          </p>
-                        )}
-                        {health.error && (
-                          <p className="pt-3 text-xs text-status-error">{health.error}</p>
-                        )}
-                        {health.doctor && (
-                          <div className="pt-3">
-                            <p className="text-[11px] font-medium text-text-secondary mb-2 uppercase tracking-wide">
-                              Doctor checks
-                              <span className="ml-2 font-normal normal-case text-text-muted">
-                                {health.doctor.summary.ok} ok
-                                {health.doctor.summary.warn > 0 && ` · ${health.doctor.summary.warn} warn`}
-                                {health.doctor.summary.error > 0 && ` · ${health.doctor.summary.error} error`}
-                              </span>
-                            </p>
-                            <div className="space-y-1">
-                              {health.doctor.checks.map((c) => (
-                                <div key={c.name} className="flex items-start gap-2">
-                                  <span className={`text-[11px] font-mono shrink-0 mt-0.5 ${STATUS_CLASS[c.status]}`}>
-                                    {STATUS_ICON[c.status]}
-                                  </span>
-                                  <div className="min-w-0">
-                                    <span className="text-xs text-text-primary font-mono">{c.name}</span>
-                                    {c.message && (
-                                      <span className="text-xs text-text-muted ml-1.5">{c.message}</span>
-                                    )}
-                                    {c.detail && (
-                                      <p className="text-[11px] text-text-tertiary mt-0.5 break-words">{c.detail}</p>
-                                    )}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {hb.mine && health.historyStats && (
-                          <div className={health.doctor ? 'border-t border-border-default pt-3' : 'pt-3'}>
-                            {/* LIFETIME, and runner-local: this comes from the
-                                runner's own SQLite, which has no team or
-                                workspace predicate at all. It cannot obey the
-                                page window and must not look like it does. */}
-                            <p className="text-[11px] font-medium text-text-secondary mb-2 uppercase tracking-wide">
-                              Session history
-                              <span className="ml-2 font-normal normal-case text-text-muted">
-                                {RUNNER_LIFETIME_LABEL}
-                              </span>
-                            </p>
-                            <div className="flex gap-4 flex-wrap">
-                              <div>
-                                <span className="text-xs text-text-muted">Sessions</span>
-                                <p className="text-sm font-medium text-text-primary tabular-nums">{health.historyStats.totalSessions}</p>
-                              </div>
-                              {health.historyStats.totalCost > 0 && (
-                                <div>
-                                  <span className="text-xs text-text-muted">Total cost</span>
-                                  <p className="text-sm font-medium text-text-primary tabular-nums">{formatCost(health.historyStats.totalCost)}</p>
-                                </div>
-                              )}
-                              {health.historyStats.avgDurationMs > 0 && (
-                                <div>
-                                  <span className="text-xs text-text-muted">Avg duration</span>
-                                  <p className="text-sm font-medium text-text-primary tabular-nums">{formatDuration(health.historyStats.avgDurationMs)}</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+        <div className="border-y border-border-default divide-y divide-border-default">
+          {g.list.map((hb) => {
+            const fleetRow = fleetById.get(hb.id) ?? null;
+            return (
+              <RunnerRow
+                key={hb.id}
+                runner={hb}
+                fleetRow={fleetRow}
+                online={fleetRow ? fleetRow.online : isRunnerOnline(hb.lastHeartbeatAt, now)}
+                health={runnerHealth.get(hb.id)}
+                onToggleExpanded={checkRunnerHealth}
+                now={now}
+                seesTeamWork={seesTeamWork}
+              />
+            );
+          })}
         </div>
         </div>
         ))}
@@ -1062,6 +928,32 @@ export function HealthClient({
         })()}
       </div>
 
+      )}
+
+      {show('capacity') && hasLanes && (
+        <div data-testid="health-section-lanes" className="mb-6">
+          <Disclosure summary="Timeline by slot">
+            <RunnerLanes fleet={runnerLanes!.fleet} idle={runnerLanes!.idle} now={now} missions={runnerLanes!.missions ?? {}} />
+          </Disclosure>
+        </div>
+      )}
+
+      {show('capacity') && (
+        <>
+          {hasLanes && sessionsOnly(runnerLanes!.fleet) && (
+            <div data-testid="health-section-running-now" className="mb-4">
+              <RunningNow fleet={sessionsOnly(runnerLanes!.fleet)!} now={now} missions={runnerLanes!.missions ?? {}} />
+            </div>
+          )}
+          <Disclosure summary="Usage by owner">
+            <OccupancyChart
+              capacityNow={runnerLanes ? runnerLanes.fleet.capacity : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+              busyNow={runnerLanes ? runnerLanes.fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0) : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+              slots={runnerLanes?.fleet.slots ?? null}
+              workspaceId={wsFilter}
+            />
+          </Disclosure>
+        </>
       )}
 
       {show('budget') && budgetForecast && <BudgetForecastSection forecast={budgetForecast} now={now} />}
@@ -1135,82 +1027,6 @@ export function HealthClient({
       </section>
       )}
 
-    </div>
-  );
-}
-
-/**
- * Expanded runner row: its slots, what each is doing, the last run on each
- * (recent usage), connectivity, and runs that ended in failure. Read from the
- * same fleet row the collapsed line uses, so the counts cannot disagree. A
- * working claim that holds no slot is not shown here as a slot.
- */
-function RunnerSlotDetail({ fleetRow, runner, online, lastHeartbeatAt, now, seesTeamWork, ownerLabel, route }: {
-  fleetRow: FleetSnapshot['runners'][number] | null;
-  runner: RunnerHeartbeat;
-  online: boolean;
-  lastHeartbeatAt: string | null;
-  now: number;
-  seesTeamWork: boolean;
-  ownerLabel: string;
-  route: { claude: string; codex: string };
-}) {
-  // Another person's run (or one with no known owner) is named only to those
-  // who may read the team's work; everyone else sees that the slot is busy.
-  const hidden = (mine: boolean | null | undefined) => !seesTeamWork && mine !== true && mine !== undefined;
-  const slots = fleetRow?.slots ?? [];
-  const failed = slots.filter(s => !s.worker && s.last?.failed);
-  return (
-    <div data-testid="health-runner-detail" className="pt-3 space-y-2">
-      {/* Three independent facts: who owns the runner, whose work a slot runs
-          (the principal, per slot below), and which credential the runner uses.
-          None implies another. */}
-      <dl data-testid="health-runner-dimensions" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
-        <dt className="text-text-muted">Runner</dt>
-        <dd data-testid="health-runner-owner" className="text-text-primary">{ownerLabel}</dd>
-        <dt className="text-text-muted">Work</dt>
-        <dd className="text-text-primary">per slot: yours, a teammate&apos;s, or unattributed</dd>
-        <dt className="text-text-muted">Route</dt>
-        <dd data-testid="health-runner-route" className="text-text-primary">Claude: {route.claude} · Codex: {route.codex}</dd>
-      </dl>
-      <p className="text-meta font-medium text-text-secondary">Slots</p>
-      {/* The busy count, where the number came from and, for an owner or admin, the stepper (spec 34a48877 R-5, R-22, R-23). */}
-      <RunnerSlotsControl
-        runnerId={runner.id}
-        active={fleetRow ? fleetRow.slots.filter(s => s.worker).length : runner.activeWorkerCount}
-        reported={fleetRow?.maxSlots ?? runner.maxConcurrentWorkers}
-        online={online}
-        info={runner.slots ? { desired: runner.slots.desired, origin: runner.slots.origin, setBy: runner.slots.setBy, setAt: runner.slots.setAt } : null}
-        canEdit={runner.slots?.canEdit ?? false}
-      />
-      {slots.length === 0 ? (
-        <p className="text-xs text-text-muted">No slot detail reported for this runner.</p>
-      ) : (
-        <ul className="space-y-1">
-          {slots.map(s => (
-            <li key={s.index} data-testid="health-runner-slot" className="flex items-baseline gap-2 text-xs min-w-0">
-              <span className="font-mono text-text-muted shrink-0">#{s.index + 1}</span>
-              {s.worker ? (
-                <span className="text-text-primary truncate">
-                  {s.worker.question ? 'Waiting · ' : 'Working · '}{hidden(s.worker.mine) ? (s.worker.mine === null ? 'Unattributed work' : 'A teammate\'s work') : (s.worker.name ?? s.worker.title ?? s.worker.label)}
-                </span>
-              ) : (
-                <span className="text-text-muted truncate">
-                  Idle{s.last ? ` · last ${hidden(s.last.mine) ? 'run' : (s.last.label ?? 'run')}${s.last.failed ? ' (failed)' : ''}${s.last.at ? `, ${timeAgo(new Date(s.last.at).toISOString(), now)}` : ''}` : ''}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      <p data-testid="health-runner-connectivity" className="text-xs text-text-muted">
-        {online ? 'Connected' : 'Offline'} · {online ? 'seen' : 'last seen'} {observedAgo(lastHeartbeatAt, now) ?? (online ? 'just now' : 'never')}
-      </p>
-      <p data-testid="health-runner-failures" className={`text-xs ${failed.length > 0 ? 'text-status-warning' : 'text-text-muted'}`}>
-        {failed.length > 0
-          ? `${countOf(failed.length, 'slot')} last ended in failure`
-          : 'No failed last runs on these slots'}
-      </p>
     </div>
   );
 }

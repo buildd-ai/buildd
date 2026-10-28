@@ -19,7 +19,8 @@ import { repoFor, loadSurfaceAuditGateTasksByMission, loadSurfaceAuditWaivers, t
 import { loadBrowserRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadVisualReviews } from '@/lib/visual-review-load';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
-import { assessMissionVisualImpact } from './visual-review-impact-load';
+import { assessMissionVisualImpact, loadBranchDiff } from './visual-review-impact-load';
+import { judgeReviewCarry, type ReviewCarry } from './visual-review-carry';
 import { uiChangeFromImpact, type VisualImpactAssessment } from './visual-review-impact';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
 import { planVisualReviewSchedule, type ScheduleAction, type ScheduleAudit } from './visual-review-schedule';
@@ -226,6 +227,16 @@ async function scheduleFromFacts(prepared: Prepared, facts: ScheduleFacts, now: 
   }
   if (!state) return null;
 
+  // The branch moved since the reviewed commit: does the mission's own UI differ? A path diff, no new audit.
+  if (state.staleEvidence && state.status === 'needed' && !state.uiDelta && head && ws) {
+    const latest = ledger.find(a => a.headSha) ?? null;
+    const judged = latest?.carry?.headSha === head.toLowerCase();
+    const carry = latest && !judged && latest.headSha !== head
+      ? await recordReviewCarry(mission.workspaceId, latest, head, d?.baseRef ?? (gitConfig as { defaultBranch?: string } | null)?.defaultBranch ?? null, impactFacts.repoOf)
+      : null;
+    if (carry) state = (await getMissionVisualReviewState(missionId, base)) ?? state;
+  }
+
   const planWith = (online: boolean | null) => planVisualReviewSchedule({
     state,
     impact: impact ? { verdict: impact.verdict, headSha: impact.headSha } : null,
@@ -312,4 +323,32 @@ export async function sweepVisualReviewSchedule(
     }
   }
   return { outcomes, cursor: rows.length === limit ? rows[rows.length - 1].id : null };
+}
+
+/**
+ * Judge the newest stamped audit against `head` by the mission's own rendered-UI
+ * delta and store the answer on that audit, where the page and every merge door
+ * read it without touching GitHub. Null when a diff cannot be read: nothing is
+ * recorded and the review stays owed.
+ */
+async function recordReviewCarry(
+  workspaceId: string,
+  audit: ScheduleAudit,
+  head: string,
+  base: string | null,
+  repoOf: (workspaceId: string) => Promise<{ installationId: number; fullName: string } | null>,
+): Promise<ReviewCarry | null> {
+  if (!base || !audit.headSha) return null;
+  const [auditedDiff, headDiff] = await Promise.all([
+    loadBranchDiff(workspaceId, base, audit.headSha, repoOf),
+    loadBranchDiff(workspaceId, base, head, repoOf),
+  ]);
+  if (!auditedDiff || !headDiff) return null;
+  const carry: ReviewCarry = { headSha: head.toLowerCase(), from: audit.headSha.toLowerCase(), ...judgeReviewCarry(auditedDiff, headDiff) };
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, audit.id)), columns: { context: true } });
+  const ctx = row?.context && typeof row.context === 'object' && !Array.isArray(row.context) ? row.context as Record<string, unknown> : {};
+  const vr = ctx.visualReview && typeof ctx.visualReview === 'object' ? ctx.visualReview as Record<string, unknown> : {};
+  await db.update(tasks).set({ context: { ...ctx, visualReview: { ...vr, carry } }, updatedAt: new Date() }).where(eq(tasks.id, audit.id));
+  audit.carry = carry;
+  return carry;
 }

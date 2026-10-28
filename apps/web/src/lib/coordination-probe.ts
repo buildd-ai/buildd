@@ -6,27 +6,22 @@
  * refuse with the real blocker instead of accepting a start no runner will
  * take.
  *
- * Dependency and soft-overlap holds are fed from what `explain` already
- * reports (`loadTaskCoordinationHolds`, lib/coordination-holds.ts): an
- * inferred (creation-time overlap) edge is a coordination hold a person may
- * force past, a declared edge is a dependency no force lifts. Whether an edge
- * still holds is the claim's own SQL predicate (`dependencySatisfied`), and a
- * soft overlap is the claim's own `evaluateSoftOverlaps`.
+ * Every dependency edge still in `dependsOn` is a declared dependency no
+ * force lifts: guessed edges are gone (spec: Overlap scheduling, R-1, R-4),
+ * and nothing here re-guesses one. Whether an edge still holds is the claim's
+ * own SQL predicate (`dependencySatisfied`). A stored soft overlap holds
+ * nothing at claim any more (R-2), so it is not a reason here either.
  *
  * Never throws: a probe failure returns `null` (unknown) and the caller falls
  * back to today's behaviour rather than blocking a start on a read error.
  */
+import { lanesOf, loadLanes } from '@/lib/serial-lanes-store';
 import { db } from '@buildd/core/db';
 import { gateEvents, tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
-import { makeWaitingReason, orderWaitingReasons, overlapAreas, type WaitingReason } from '@buildd/core/waiting-reason';
-import { loadTaskCoordinationHolds } from '@/lib/coordination-holds';
-import type { CoordinationHold } from '@/lib/explain-coordination';
+import { makeWaitingReason, orderWaitingReasons, type WaitingReason } from '@buildd/core/waiting-reason';
 import { dependencySatisfied } from '@/app/api/workers/claim/deps-gate';
-import { evaluateSoftOverlaps, readSoftOverlaps } from '@/app/api/workers/claim/soft-overlap-gate';
-import { loadSoftOverlapHolders } from '@/app/api/workers/claim/soft-overlap-store';
-import { overlapHolds, workspaceHardSurface } from '@/app/api/workers/claim/overlap-policy';
 import { checkMissionLocal } from '@/app/api/workers/claim/held-gate';
 import { BYPASS_HELD_GATE_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { evaluateCoordinationGates } from '@/app/api/workers/claim/coordination-gates';
@@ -61,7 +56,7 @@ export interface ProbeOptions {
 export async function probeCoordination(task: ProbeTask, now: Date = new Date(), opts: ProbeOptions = {}): Promise<WaitingReason[] | null> {
   try {
     const missionId = (task.missionId as string | null) ?? null;
-    const [openPrByWs, activeClaims, missionData, orderedRow] = await Promise.all([
+    const [openPrByWs, activeClaims, missionData, orderedRow, laneRead] = await Promise.all([
       loadOpenPrTasksByWorkspace([task.workspaceId]),
       getActiveClaimsByWorkspace(task.workspaceId).catch(() => null),
       missionId ? loadMissionCoordination([missionId]) : Promise.resolve(null),
@@ -77,6 +72,8 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
         .limit(1)
         .then(rows => rows[0] ?? null)
         .catch(() => null),
+      // The claim route's own lane read and order (a failed read: no lane position, the open-PR check still speaks).
+      lanesOf(task as never).length > 0 ? loadLanes([task.workspaceId], now).catch(() => null) : Promise.resolve(null),
     ]);
 
     const orderedDetail = (orderedRow?.detail ?? null) as Record<string, unknown> | null;
@@ -107,16 +104,15 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
       orderedBehind,
       liveTaskIds: new Set(liveRows.map(r => r.taskId).filter((id): id is string => !!id)),
       now,
+      lanes: laneRead ? { views: laneRead.lanes.get(task.workspaceId) ?? new Map(), releasedTaskIds: laneRead.releasedTaskIds } : null,
     });
-    const [depReasons, softReasons, localReason] = await Promise.all([
+    const [depReasons, localReason] = await Promise.all([
       dependencyReasons(task),
-      softOverlapReasons(task),
       opts.skipMissionLocal ? Promise.resolve(null) : missionLocalReason(task),
     ]);
     return await withTaskLabels(orderWaitingReasons([
       ...(localReason ? [localReason] : []),
       ...depReasons,
-      ...softReasons,
       ...reasons,
     ]));
   } catch (err) {
@@ -143,62 +139,30 @@ async function withTaskLabels(reasons: WaitingReason[]): Promise<WaitingReason[]
 const DEP_CAP = 25;
 const LIVE_TASK_STATUSES = new Set(['assigned', 'in_progress']);
 
-function holdOverlap(paths: string[], overlapKind: string | null) {
-  return {
-    areas: overlapAreas(paths),
-    pathCount: paths.length,
-    paths: paths.slice(0, 50),
-    basis: 'declared' as const,
-    ...(overlapKind ? { overlapKind } : {}),
-  };
-}
-
 /**
- * Dependency edges that still hold: declared → `dep_declared` (never
- * forceable), inferred → `dep_inferred` (coordination; forceable for claim
- * order). "Still holds" is the claim route's own per-edge SQL predicate.
+ * Dependency edges that still hold, each a `dep_declared` reason (never
+ * forceable) naming the dependency and its status. "Still holds" is the
+ * claim route's own per-edge SQL predicate.
  */
 async function dependencyReasons(task: ProbeTask): Promise<WaitingReason[]> {
   const deps = ((task.dependsOn as string[] | null) ?? []).filter(id => id !== task.id).slice(0, DEP_CAP);
   if (deps.length === 0) return [];
-  const [holds, satisfied] = await Promise.all([
-    loadTaskCoordinationHolds({ ...(task as any), status: 'pending' }).catch(() => [] as CoordinationHold[]),
-    unsatisfiedDeps(task.id, deps),
-  ]);
-  const byId = new Map(holds.filter(h => h.holderTaskId).map(h => [h.holderTaskId!, h]));
-  const inferred = new Set(((task.pathDeclaration as { inferredDependsOn?: unknown } | null)?.inferredDependsOn as string[] | undefined) ?? []);
-  const out: WaitingReason[] = [];
-  for (const id of deps) {
-    if (!satisfied.has(id)) continue;
-    const h = byId.get(id);
-    const isInferred = h ? h.edge === 'inferred_dependency' : inferred.has(id);
-    const blocker = {
-      type: 'task' as const,
+  const unmet = await unsatisfiedDeps(task.id, deps);
+  if (unmet.size === 0) return [];
+  const rows = await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, [...unmet])), columns: { id: true, status: true } }).catch(() => []);
+  const statusOf = new Map(rows.map(r => [r.id, r.status as string]));
+  return deps.filter(id => unmet.has(id)).map(id => makeWaitingReason('dep_declared', {
+    because: 'it was declared as a dependency',
+    blocker: {
+      type: 'task',
       id,
       label: `task ${id.slice(0, 8)}`,
       href: `/app/tasks/${id}`,
-      live: LIVE_TASK_STATUSES.has(h?.holderStatus ?? ''),
-    };
-    if (isInferred) {
-      const paths = h?.paths ?? [];
-      const kind = h?.overlapKind ?? null;
-      out.push(makeWaitingReason('dep_inferred', {
-        because: paths.length === 0
-          ? 'it was ordered after this task when both declared overlapping files'
-          : `${kind === 'migration' ? 'both change migrations in' : `both edit ${paths.length} file${paths.length === 1 ? '' : 's'} in`} ${overlapAreas(paths).slice(0, 2).map(a => a.area).join(', ')}`,
-        blocker,
-        overlap: holdOverlap(paths, kind),
-        provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
-      }));
-    } else {
-      out.push(makeWaitingReason('dep_declared', {
-        because: 'it was declared as a dependency',
-        blocker,
-        provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
-      }));
-    }
-  }
-  return out;
+      live: LIVE_TASK_STATUSES.has(statusOf.get(id) ?? ''),
+      ...(statusOf.has(id) ? { status: statusOf.get(id)! } : {}),
+    },
+    provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+  }));
 }
 
 /** The dependency ids the claim's dependency gate would still hold this task on. */
@@ -208,37 +172,6 @@ async function unsatisfiedDeps(taskId: string, deps: string[]): Promise<Set<stri
   const row = (rows[0] ?? {}) as Record<string, unknown>;
   return new Set(deps.filter((_, i) => row[`d${i}`] !== true && row[`d${i}`] !== 't'));
 }
-
-/**
- * Soft overlaps (pathDeclaration.softOverlaps) the claim would hold on: the
- * claim's own `evaluateSoftOverlaps` under the claim's overlap policy
- * (claim/overlap-policy). Only a deterministic hold (migration, unmergeable
- * or workspace hard surface) holds, as `serialized_surface`; an overlap on
- * mergeable files starts at claim and is not a waiting reason.
- */
-async function softOverlapReasons(task: ProbeTask): Promise<WaitingReason[]> {
-  const entries = readSoftOverlaps(task.pathDeclaration);
-  if (entries.length === 0) return [];
-  const holders = await loadSoftOverlapHolders([...new Set(entries.map(e => e.taskId))]).catch(() => null);
-  const gitConfig = (task as { workspace?: { gitConfig?: unknown } }).workspace?.gitConfig ?? null;
-  const verdicts = evaluateSoftOverlaps(task as any, holders, {
-    isHardSurface: (paths, kind) => overlapHolds(paths, kind, workspaceHardSurface(gitConfig as any)),
-  });
-  return verdicts.flatMap(v => {
-    if (v.kind !== 'deterministic') return [];
-    const blocker = { type: 'task' as const, id: v.holderTaskId, label: `task ${v.holderTaskId.slice(0, 8)}`, href: `/app/tasks/${v.holderTaskId}`, live: true };
-    const areas = overlapAreas(v.paths).slice(0, 2).map(a => a.area).join(', ');
-    const because = v.overlapKind === 'migration'
-      ? `both change migrations in ${areas}`
-      : `both edit ${v.paths.length} file${v.paths.length === 1 ? '' : 's'} in ${areas}`;
-    return [makeWaitingReason('serialized_surface', {
-      because, blocker,
-      overlap: holdOverlap(v.paths, v.overlapKind),
-      provenance: { source: 'probe', derivedFrom: 'tasks.pathDeclaration.softOverlaps (claim soft_overlap, deterministic)' },
-    })];
-  });
-}
-
 
 /** A local mission's task: runners never claim it unless a person hands it over. */
 async function missionLocalReason(task: ProbeTask): Promise<WaitingReason | null> {

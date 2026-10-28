@@ -19,8 +19,14 @@
  * server's `alongside`) also says it "starts alongside #n (same files, merges
  * at the end)". A task held on its own (a start time ahead, a person's hold) is
  * listed after the queue, not in it, Blocked with its reason.
+ *
+ * The server's `wait` (spec "Overlap scheduling", AC-10) is the one reason
+ * explain, the task page and the web Queue give: read from the claim route's
+ * own query and gates. When it says the task waits (a declared dependency, its
+ * lane place, a limit), the row says that; when it says only a free slot, an
+ * older refusal on overlap or a dependency no longer holds and is not repeated.
  */
-import { TERMS, titleWithAttempt, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
+import { TERMS, queueWaitShort, titleWithAttempt, type QueueWait, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
 import { taskIdInSentence } from '../claim-outcomes';
 import {
   DEFERRAL_WORDS, EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, PROVIDER_NAME, providerHolds, providerHoldLine, roleLabel, wallFor, workspaceList,
@@ -254,17 +260,34 @@ function holderWords(holder: string | null | undefined, positions: Map<string, n
   return title ? `after "${clip(title, 18)}"` : 'after work on the same files';
 }
 
+/** The kind of the server's wait, for the Next line's counts. */
+const SERVER_WAIT_KIND: Record<QueueWait['kind'], WaitKind | null> = { declared: 'dependency', lane: 'same_files', limit: 'limit', start_time: 'time', slot: null };
+
 /** Why the row waits, in words and kind, or null when nothing holds it (it starts on a free slot). */
 function waitWords(t: RunnerQueueTask, positions: Map<string, number>, state: TopState, holds: ProviderHold[], now: number): { text: string; kind: WaitKind } | null {
   if (t.holds.includes('workspace_paused') && future(t.holdUntil, now)) return { text: `until ${localLiftTime(t.holdUntil!, now)}`, kind: 'time' };
+  // The server's one reason, the same every surface gives.
+  const server = t.wait ?? null;
+  if (server && server.kind !== 'slot') {
+    const text = queueWaitShort(server, now);
+    if (text) return { text, kind: SERVER_WAIT_KIND[server.kind]! };
+  }
   const own = runnerHoldTime(t, state, holds, now);
   if (own) return { text: `until ${own}`, kind: 'time' };
   if (t.holds.includes('runner_cooldown')) return { text: `until ${localLiftTime(new Date(now + RUNNER_COOLDOWN_MS).toISOString(), now)}`, kind: 'time' };
   const o = liveTaskOutcome({ id: t.id, title: t.title, status: 'pending', backend: t.backend }, state, now);
-  const refused = o && o.reason !== 'claimed' ? refusalWords(o, positions, state) : null;
+  // With the server's slot wait, an older overlap or dependency refusal no longer holds it.
+  const stale = server?.kind === 'slot' && !!o?.exclusion && (OVERLAP_CODES.has(o.exclusion) || o.exclusion === 'deps_blocked');
+  const refused = o && o.reason !== 'claimed' && !stale ? refusalWords(o, positions, state) : null;
   if (refused) return { text: refused, kind: refusalKind(o!) };
+  if (server?.kind === 'slot') return null;
   // The claim starts one task per mission that declares no files (the server's read of its serialization).
   if (t.holds.includes('advisory_manifest')) return { text: holderWords(t.holderTaskId, positions, state), kind: 'same_files' };
+  // Serial lane: one task at a time, first come (the server's stored order).
+  if (t.holds.includes('serial_lane') && t.lane) {
+    const pos = t.lane.position;
+    return { text: t.lane.stuckSince ? `in line (${pos} ahead), holder stalled` : `in line, ${pos} ahead`, kind: 'same_files' };
+  }
   if (t.holds.includes('deps_blocked')) return { text: 'after its dependency', kind: 'dependency' };
   return null;
 }

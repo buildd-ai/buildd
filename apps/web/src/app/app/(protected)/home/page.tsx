@@ -59,6 +59,7 @@ import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveRev
 import type { ReviewerGateResult, ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
+import PageColumn from '@/components/ui/PageColumn';
 import HomeLive, { type HomeRegion } from './HomeLive';
 import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
@@ -267,19 +268,19 @@ async function HomePage({
         </Suspense>
       )}
       {view.hostedRunnerBanner && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <HostedRunnerBanner level={view.hostedRunnerBanner.level} text={view.hostedRunnerBanner.text} />
-        </div>
+        </PageColumn>
       )}
       {view.serviceStatus.banner && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <ServiceStatusBanner status={view.serviceStatus.banner} href="/app/health" />
-        </div>
+        </PageColumn>
       )}
       {view.modelUpgradeTeamId && (
-        <div className="mx-auto max-w-[1320px]">
+        <PageColumn>
           <ModelUpgradeNotice teamId={view.modelUpgradeTeamId} />
-        </div>
+        </PageColumn>
       )}
       <HomeLive
           region={region}

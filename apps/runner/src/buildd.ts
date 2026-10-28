@@ -1284,7 +1284,9 @@ export class BuilddClient {
     maxConcurrent?: number,
     /** Epoch ms of the last change of those slots (config.json `slotsSetAt`): the later change wins against buildd.dev (spec 34a48877 R-21). */
     slotsChangedAt?: number,
-  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null; desiredSlots?: { slots: number; setBy: string | null; setAt: number } | null }> {
+    /** Epoch ms of the last hold or resume (config.json `holdChangedAt`): Pause on buildd.dev follows the same rule (spec 97b1bd0b R-18). */
+    holdChangedAt?: number,
+  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null; desiredSlots?: { slots: number; setBy: string | null; setAt: number } | null; desiredPause?: { paused: boolean; setBy: string | null; setAt: number } | null }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
       activeWorkerCount,
@@ -1327,13 +1329,15 @@ export class BuilddClient {
       payload.modelAuthSource = modelAuth.source;
       if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
-    if (typeof maxConcurrent === 'number' && Number.isInteger(maxConcurrent) && maxConcurrent > 0) payload.maxConcurrent = maxConcurrent;
+    // 0 is a real setting: the runner claims nothing (spec 97b1bd0b R-18).
+    if (typeof maxConcurrent === 'number' && Number.isInteger(maxConcurrent) && maxConcurrent >= 0) payload.maxConcurrent = maxConcurrent;
     if (typeof slotsChangedAt === 'number' && Number.isFinite(slotsChangedAt) && slotsChangedAt > 0) payload.slotsChangedAt = slotsChangedAt;
+    if (typeof holdChangedAt === 'number' && Number.isFinite(holdChangedAt) && holdChangedAt > 0) payload.holdChangedAt = holdChangedAt;
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt, desiredSlots: data.desiredSlots ?? null };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt, desiredSlots: data.desiredSlots ?? null, desiredPause: data.desiredPause ?? null };
   }
 
   /** Report a provider-wall probe result (budget-wall-probe.ts); the server clears or keeps the wall. */

@@ -1099,80 +1099,37 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.conflictRetryHeadSha).toBe('sha-abc123');
   });
 
-  it('does not make a collision repair depend on the task or PR it repairs', async () => {
-    const pathManifest = ['packages/core/drizzle'];
-    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
-    mockTaskFindMany.mockResolvedValue([
-      { status: 'in_progress', id: 'task-id', pathManifest },
-      { status: 'in_progress', id: 'same-pr-attempt', pathManifest, subjectPrNumber: 99 },
-      { status: 'in_progress', id: 'same-pr-conflict', pathManifest, conflictRetryPrNumber: 99 },
-      { status: 'in_progress', id: 'unrelated-sibling', pathManifest, subjectPrNumber: 80 },
-    ]);
-    const result = await dispatchConflictRetry({
-      ...BASE_PARAMS,
-      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 },
-    });
-    expect(result.dispatched).toBe(true);
-    expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
-  });
-
-  it('a migration-only overlap with a not-yet-started task on another branch is not a dependsOn edge', async () => {
-    const pathManifest = ['packages/core/drizzle'];
-    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
-    mockTaskFindMany.mockResolvedValue([
+  // R-1 (spec: Overlap scheduling): a repair attempt, the migration-collision
+  // one included, is filed with no guessed dependsOn and no softOverlaps,
+  // whatever its manifest overlaps. Lanes and the edit-time lease hold the work.
+  const overlapCases: Array<[string, string[], Array<Record<string, unknown>>, boolean]> = [
+    ['a prefix overlap', ['apps/web/src/lib'], [{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }], false],
+    ['the same file', ['apps/web/src/lib/foo.ts'], [{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }], false],
+    ['the same migration file', ['packages/core/drizzle/0400_x.sql'], [{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['packages/core/drizzle/0400_x.sql'] }], false],
+    ['pending and running migration work', ['packages/core/db/schema.ts', 'packages/core/drizzle'], [
+      { id: 'pending-holder', status: 'pending', pathManifest: ['packages/core/drizzle/0400_x.sql'], dependsOn: [] },
+      { id: 'running-holder', status: 'in_progress', pathManifest: ['packages/core/drizzle/0401_y.sql'], dependsOn: [] },
+    ], false],
+    ['the colliding PR\'s task (migration collision)', ['packages/core/drizzle'], [
+      { status: 'in_progress', id: 'colliding-pr-task', pathManifest: ['packages/core/drizzle'], subjectPrNumber: 80 },
       { status: 'pending', id: 'schema-feature', pathManifest: ['packages/core/db/schema.ts'], subjectPrNumber: null },
-      { status: 'in_progress', id: 'colliding-pr-task', pathManifest, subjectPrNumber: 80 },
-    ]);
-    const result = await dispatchConflictRetry({
-      ...BASE_PARAMS,
-      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 },
+    ], true],
+  ];
+  for (const [label, pathManifest, inFlight, collision] of overlapCases) {
+    it(`R-1: an overlap with ${label} mints no dependsOn and no softOverlaps on the attempt`, async () => {
+      mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest, missionId: 'mission-1' });
+      mockTaskFindMany.mockResolvedValue(inFlight);
+      const result = await dispatchConflictRetry({
+        ...BASE_PARAMS,
+        ...(collision ? { migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 } } : {}),
+      });
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.dependsOn).toBeUndefined();
+      expect(capturedInsertValues.pathDeclaration).toMatchObject({ declared: pathManifest, overlapPolicy: 'v2' });
+      expect(capturedInsertValues.pathDeclaration.inferredDependsOn).toBeUndefined();
+      expect(capturedInsertValues.pathDeclaration.softOverlaps).toBeUndefined();
     });
-    expect(result.dispatched).toBe(true);
-    expect(capturedInsertValues.dependsOn).toEqual(['colliding-pr-task']);
-  });
-
-  it('a prefix-only overlap with a sibling is soft evidence, never a dependsOn edge', async () => {
-    mockTaskFindFirst.mockResolvedValue({
-      ...MOCK_TASK,
-      pathManifest: ['apps/web/src/lib'],
-      missionId: 'mission-1',
-    });
-    // Sibling declares a file inside that directory — prefix overlap only
-    mockTaskFindMany.mockResolvedValue([
-      { status: 'in_progress', id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] },
-    ]);
-
-    const result = await dispatchConflictRetry(BASE_PARAMS);
-
-    expect(result.dispatched).toBe(true);
-    expect(capturedInsertValues.dependsOn).toBeUndefined();
-    expect(capturedInsertValues.pathDeclaration).toMatchObject({
-      overlapPolicy: 'v2',
-      softOverlaps: [{ taskId: 'sibling-task-id', kind: 'prefix' }],
-    });
-  });
-
-  it('a sibling declaring the same file is soft same_file evidence, decided at claim', async () => {
-    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib/foo.ts'], missionId: 'mission-1' });
-    mockTaskFindMany.mockResolvedValue([{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }]);
-
-    const result = await dispatchConflictRetry(BASE_PARAMS);
-
-    expect(result.dispatched).toBe(true);
-    expect(capturedInsertValues.dependsOn).toBeUndefined();
-    expect(capturedInsertValues.pathDeclaration).toMatchObject({ overlapPolicy: 'v2', softOverlaps: [{ taskId: 'sibling-task-id', kind: 'same_file' }] });
-  });
-
-  it('populates dependsOn when a sibling task declares the same migration file', async () => {
-    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['packages/core/drizzle/0400_x.sql'], missionId: 'mission-1' });
-    mockTaskFindMany.mockResolvedValue([{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['packages/core/drizzle/0400_x.sql'] }]);
-
-    const result = await dispatchConflictRetry(BASE_PARAMS);
-
-    expect(result.dispatched).toBe(true);
-    expect(capturedInsertValues.dependsOn).toEqual(['sibling-task-id']);
-    expect(capturedInsertValues.pathDeclaration).toMatchObject({ inferredDependsOn: ['sibling-task-id'], overlapPolicy: 'v2' });
-  });
+  }
 
   it('does not populate dependsOn when no sibling tasks overlap', async () => {
     mockTaskFindFirst.mockResolvedValue({
@@ -1255,73 +1212,6 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.pathManifest).toEqual(['**']);
     // …but it buys no dependency edges, from wildcard or concrete siblings.
     expect(capturedInsertValues.dependsOn).toBeUndefined();
-  });
-
-  it('conflict retry with a concrete manifest ignores wildcard siblings but keeps real overlaps', async () => {
-    mockTaskFindFirst.mockResolvedValue({
-      ...MOCK_TASK,
-      pathManifest: ['packages/core/drizzle/0400_x.sql'],
-      missionId: 'mission-1',
-    });
-    mockTaskFindMany.mockResolvedValue([
-      { status: 'in_progress', id: 'wildcard-sibling', pathManifest: ['**'] },
-      { status: 'in_progress', id: 'overlapping-sibling', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
-    ]);
-
-    const result = await dispatchConflictRetry(BASE_PARAMS);
-
-    expect(result.dispatched).toBe(true);
-    expect(capturedInsertValues.dependsOn).toEqual(['overlapping-sibling']);
-  });
-
-  it('does not depend on a task that is already downstream of the original task, directly or transitively, but still depends on an unrelated overlapping task', async () => {
-    // Migration files: a hard overlap, so the edges are real dependsOn candidates.
-    const pathManifest = ['packages/core/drizzle/foo.sql', 'packages/core/drizzle/bar.sql', 'packages/core/drizzle/baz.sql'];
-    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
-    mockTaskFindMany.mockResolvedValue([
-      { status: 'in_progress', id: 'task-id', pathManifest, dependsOn: [] },
-      // S: overlaps and already depends directly on the original task.
-      { status: 'in_progress', id: 'downstream-direct', pathManifest: ['packages/core/drizzle/foo.sql'], dependsOn: ['task-id'] },
-      // S2: overlaps and depends on the original task transitively, through X.
-      { status: 'in_progress', id: 'downstream-transitive', pathManifest: ['packages/core/drizzle/bar.sql'], dependsOn: ['intermediate'] },
-      { status: 'in_progress', id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
-      // U: overlaps but has no relationship to the original task.
-      { status: 'in_progress', id: 'unrelated-overlap', pathManifest: ['packages/core/drizzle/baz.sql'], dependsOn: [] },
-    ]);
-
-    const result = await dispatchConflictRetry(BASE_PARAMS);
-
-    expect(result.dispatched).toBe(true);
-    expect(capturedInsertValues.dependsOn).toEqual(['unrelated-overlap']);
-  });
-
-  for (const collision of [false, true]) {
-    it(`excludes pending work blocked by the subject PR without a stored dependency (collision=${collision})`, async () => {
-      const pathManifest = ['packages/core/db/schema.ts', 'packages/core/drizzle'];
-      mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest, dependsOn: ['caller-edge'] });
-      mockTaskFindMany.mockResolvedValue([
-        { id: 'pending-holder', status: 'pending', pathManifest: ['packages/core/drizzle/0400_x.sql'], dependsOn: [] },
-        { id: 'running-holder', status: 'in_progress', pathManifest: ['packages/core/drizzle/0401_y.sql'], dependsOn: [] },
-      ]);
-      const result = await dispatchConflictRetry({
-        ...BASE_PARAMS,
-        ...(collision ? { migrationCollision: { file: '0400_x.sql', otherFile: '0400_y.sql', otherPrNumber: 80 } } : {}),
-      });
-      expect(result.dispatched).toBe(true);
-      expect(capturedInsertValues.dependsOn).toEqual(['running-holder']);
-      expect(capturedInsertValues.pathDeclaration.inferredDependsOn).toEqual(['running-holder']);
-      expect(capturedInsertValues.pathDeclaration.softOverlaps).toBeUndefined();
-    });
-  }
-
-  it('does not store even soft evidence against pending work held by the subject PR', async () => {
-    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib'] });
-    mockTaskFindMany.mockResolvedValue([
-      { id: 'pending-holder', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
-    ]);
-    await dispatchConflictRetry(BASE_PARAMS);
-    expect(capturedInsertValues.dependsOn).toBeUndefined();
-    expect(capturedInsertValues.pathDeclaration.softOverlaps).toBeUndefined();
   });
 
   it('returns dispatched=false when workspace is not found', async () => {

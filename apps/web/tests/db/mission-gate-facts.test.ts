@@ -91,6 +91,8 @@ describe('loadMissionGateFacts: release arms match the claim gate', () => {
 
   test('schedule and mission holds: a future start, a local mission', async () => {
     const missionId = await seedMission(teamId, workspaceId);
+    // The wait comes from the claim route's own query, which reads the executor (AC-10).
+    await q(sql`UPDATE missions SET executor = 'local' WHERE id = ${missionId}::uuid`);
     const later = await seedTask(workspaceId, { startAt: new Date(Date.now() + 3_600_000), missionId });
     const ready = await seedTask(workspaceId, { missionId });
 
