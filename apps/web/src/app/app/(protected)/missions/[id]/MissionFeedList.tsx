@@ -24,7 +24,7 @@ import { buildMissionFeedGroups, type FeedGroup, type FeedPhaseItem, type FeedRo
 import type { MissionFeedTaskInput } from '@/lib/mission-pulse';
 import { missionTaskAnchorId, type MissionOrigin } from '@/lib/mission-task-href';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { useMissionLiveLines } from './MissionLiveStore';
+import { useMissionLiveLines, useMissionLiveSnapshot } from './MissionLiveStore';
 
 const LIVE_STATUSES: ReadonlySet<string> = new Set(LIVE_WORKER_STATUSES);
 
@@ -115,6 +115,7 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
   revealedTaskIds: revealedProp,
 }: MissionFeedListProps & { tasks: T[] }) {
   const liveLines = useMissionLiveLines(serverLiveLines, LIVE_STATUSES);
+  const liveSnapshot = useMissionLiveSnapshot();
   const store = useMissionFocusStore();
   const focus = useMissionFocusSnapshot();
 
@@ -146,6 +147,8 @@ export default function MissionFeedList<T extends MissionFeedTaskInput>({
     row,
     recordsCount: recordsCountByTask?.[row.taskId],
     liveLine: liveLines?.[row.taskId] ?? null,
+    liveProgressMs: liveSnapshot[row.taskId]?.milestones.reduce<number | null>(
+      (max, m) => (max == null || m.ts > max ? m.ts : max), null) ?? null,
     blockedByTitle: row.blockedByTaskId ? model.rowsById.get(row.blockedByTaskId)?.task.title ?? null : null,
   });
 
