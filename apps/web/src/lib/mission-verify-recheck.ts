@@ -12,6 +12,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { deliverableRole, isBuildDeliverable } from '@buildd/core/mission-helpers';
+import { isBuildComplete } from '@/lib/mission-checks';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 
 export type RecheckReason = 'build_complete' | 'repair_merged' | 'target_changed';
@@ -40,7 +41,8 @@ export function recheckReason(mergedTaskId: string, rows: readonly TaskRow[]): R
   if (role === 'repair') return 'repair_merged';
   if (role !== 'build' || !isBuildDeliverable(merged)) return null;
   const build = rows.filter(t => t.status !== 'cancelled' && isBuildDeliverable(t));
-  return build.length > 0 && build.every(t => t.status === 'completed' || t.id === mergedTaskId) ? 'build_complete' : null;
+  const done = build.filter(t => t.status === 'completed' || t.id === mergedTaskId).length;
+  return isBuildComplete({ done, total: build.length }) ? 'build_complete' : null;
 }
 
 export interface RecheckDeps {
