@@ -15,7 +15,7 @@ import {
 } from '@buildd/shared';
 import { settingsPermissions, type SettingsPermissions } from './settings-permissions';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
+import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { cachedTeamRead } from '@/lib/team-cache';
 import { callerDep } from '@/lib/caller-cache';
 
@@ -286,7 +286,7 @@ export async function loadAccountRunnerSlots(accountIds: string[], now: number =
     (out[r.accountId] ??= []).push({
       id: r.id,
       name: r.name || host,
-      online: now - new Date(r.lastHeartbeatAt).getTime() <= RUNNER_ONLINE_WINDOW_MS,
+      online: isRunnerOnline(r.lastHeartbeatAt, now),
       active: r.active,
       reported: r.reported,
       desired: r.desired ?? null,

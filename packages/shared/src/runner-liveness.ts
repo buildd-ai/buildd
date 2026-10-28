@@ -121,6 +121,21 @@ export function freeSlots(maxConcurrent: number, active: number): number {
   return Math.max(0, maxConcurrent - active);
 }
 
+/** Whether a runner can take one more worker. */
+export function hasFreeSlot(maxConcurrent: number, active: number): boolean {
+  return freeSlots(maxConcurrent, active) > 0;
+}
+
+/**
+ * Whether a last beat is strictly inside `windowMs` of `now`. Pick the window
+ * by the question (RUNNER_LIVE_WINDOW_MS, RUNNER_RECENTLY_SEEN_MS,
+ * RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS), never a literal. An
+ * unparseable beat is never within.
+ */
+export function beatWithin(lastBeat: string | number | Date, now: number, windowMs: number): boolean {
+  return now - new Date(lastBeat).getTime() < windowMs;
+}
+
 // ─── Interactive (MCP-claimed) workers ──────────────────────────────────────
 //
 // `claim_task` from an MCP session mints a worker with `runner = 'mcp'`: a
