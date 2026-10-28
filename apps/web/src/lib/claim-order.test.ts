@@ -13,7 +13,7 @@ const permissions = mock(async (_id: string, _o?: unknown): Promise<any[]> => []
 mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany } } } }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: permissions }));
 
-const { activeWorkerGate, claimableWorkspaceIds, runnerCooldownGate, runnerPreferenceGate, roleSlugGate } = await import('./claim-order');
+const { activeWorkerGate, claimableWorkspaceIds, laneOrderBy, runnerCooldownGate, runnerPreferenceGate, roleSlugGate } = await import('./claim-order');
 const { workspaces } = await import('@buildd/core/db/schema');
 const dialect = new PgDialect();
 const where = (args: any) => dialect.sqlToQuery(args.where.RAW(workspaces));
@@ -92,5 +92,14 @@ describe('claim predicates, rendered', () => {
     const q = dialect.sqlToQuery(roleSlugGate(['builder'])[1]!);
     expect(q.sql).toContain('"tasks"."role_slug" is null');
     expect(q.params).toContain('builder');
+  });
+});
+
+describe('laneOrderBy (spec: Overlap scheduling, I-3)', () => {
+  it('first come by the stored claimable time (unstamped last), then priority, then age', async () => {
+    const { sql } = await import('drizzle-orm');
+    const { tasks } = await import('@buildd/core/db/schema');
+    const q = dialect.sqlToQuery(sql.join(laneOrderBy({ claimableSince: sql`e.claimable_since` }, tasks), sql`, `));
+    expect(q.sql).toBe('e.claimable_since ASC NULLS LAST, "tasks"."priority" DESC, "tasks"."created_at" ASC, "tasks"."id" ASC');
   });
 });

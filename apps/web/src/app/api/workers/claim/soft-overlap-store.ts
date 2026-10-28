@@ -1,35 +1,24 @@
 /**
- * The one read behind the claim-time soft-overlap gate (./soft-overlap-gate.ts):
- * the named holder tasks' status, current manifest, title and newest worker
- * status. Called only when some candidate carries soft overlaps, so a claim
- * with none costs nothing.
+ * Which open-PR and lease holders cannot start themselves, so hold nobody at
+ * claim (./overlap-policy). One batched read per claim.
  */
-import { desc, eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions } from '@buildd/core/db/schema';
-import { holderCannotStart, type SoftHolderRow } from './soft-overlap-gate';
+import { tasks, missions } from '@buildd/core/db/schema';
 
-export async function loadSoftOverlapHolders(ids: string[]): Promise<Map<string, SoftHolderRow>> {
-  const out = new Map<string, SoftHolderRow>();
-  if (ids.length === 0) return out;
-  const [taskRows, workerRows] = await Promise.all([
-    db.select({ id: tasks.id, status: tasks.status, pathManifest: tasks.pathManifest, title: tasks.title, startAt: tasks.startAt, missionHeld: missions.isHeld })
-      .from(tasks)
-      .leftJoin(missions, eq(missions.id, tasks.missionId))
-      .where(inArray(tasks.id, ids)),
-    db.select({ taskId: workers.taskId, status: workers.status })
-      .from(workers)
-      .where(inArray(workers.taskId, ids))
-      .orderBy(desc(workers.createdAt)),
-  ]);
-  const newest = new Map<string, string>();
-  for (const w of workerRows as Array<{ taskId: string | null; status: string }>) {
-    if (w.taskId && !newest.has(w.taskId)) newest.set(w.taskId, w.status);
-  }
-  for (const t of taskRows as Array<{ id: string; status: string; pathManifest: string[] | null; title: string | null; startAt: Date | null; missionHeld: boolean | null }>) {
-    out.set(t.id, { id: t.id, status: t.status, pathManifest: t.pathManifest, title: t.title, startAt: t.startAt, missionHeld: t.missionHeld === true, workerStatus: newest.get(t.id) ?? null });
-  }
-  return out;
+/**
+ * A pending holder that cannot start itself (a future `startAt`, a held
+ * mission, a person's hold on the task) is not working on its files, so it
+ * holds nobody off them: the open-PR and live-lease checks in ./overlap-policy
+ * skip it.
+ */
+export function holderCannotStart(
+  h: { status: string; startAt?: Date | string | null; missionHeld?: boolean | null; taskHeld?: boolean | null },
+  now: Date = new Date(),
+): boolean {
+  if (h.status !== 'pending') return false;
+  if (h.missionHeld || h.taskHeld) return true;
+  return !!h.startAt && new Date(h.startAt).getTime() > now.getTime();
 }
 
 /**

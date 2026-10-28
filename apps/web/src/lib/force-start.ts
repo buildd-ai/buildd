@@ -59,7 +59,6 @@ export function buildForceStartIntent(opts: {
   note?: string | null;
 }): ForceStartIntent {
   const kinds = [...new Set(opts.reasons.map(r => r.kind))];
-  const liftDependsOn = opts.reasons.filter(r => r.kind === 'dep_inferred' && r.blocker?.id).map(r => r.blocker!.id);
   // Start anyway: the declared edges the person started past. Kept for a week
   // (a runner may be offline or miss the wake); the claim consumes it once.
   const assessDependsOn = opts.reasons.filter(r => r.kind === 'dep_declared' && r.blocker?.id).map(r => r.blocker!.id);
@@ -72,7 +71,6 @@ export function buildForceStartIntent(opts: {
     kinds,
     loopKeys: claimLoopKeysFor(kinds),
     prefilterLifts: prefilterLiftsFor(kinds),
-    ...(liftDependsOn.length > 0 ? { liftDependsOn: [...new Set(liftDependsOn)] } : {}),
     ...(assessDependsOn.length > 0 ? { assessDependsOn: [...new Set(assessDependsOn)] } : {}),
     reasonsDigest: waitingReasonsDigest(opts.digestOf ?? opts.reasons),
     blockers: opts.reasons.map(r => ({

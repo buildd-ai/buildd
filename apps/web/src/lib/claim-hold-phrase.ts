@@ -8,15 +8,14 @@
  * `claimHoldPhrase` is null for a reason it does not know: the caller then
  * says the work is waiting, never guesses a cause (AC-9).
  */
-import type { ClaimDiagnostics } from '@buildd/shared';
+import type { ClaimDeferralCounters } from '@buildd/shared';
 
-export type ClaimHoldReason = keyof Required<NonNullable<ClaimDiagnostics['deferrals']>>;
+export type ClaimHoldReason = keyof ClaimDeferralCounters;
 
 export const CLAIM_HOLD_PHRASES: Readonly<Record<ClaimHoldReason, string>> = {
   connector_mismatch: 'a connector its role needs is not available here',
   subject_dead: 'the PR it works on was closed',
   path_overlap: 'another open PR touches the same files',
-  advisory_manifest: 'another task with no declared files is running in the mission',
   soft_overlap: 'it waits for a task working on the same files',
   mission_budget: "the mission's budget is spent",
   mission_concurrent: 'the mission is already running as many tasks as it allows',

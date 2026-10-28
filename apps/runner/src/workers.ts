@@ -94,7 +94,7 @@ import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepai
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
-import { claimsHeldByPerson, currentRunnerHold, withRunnerHold } from './runner-hold';
+import { claimsHeldByPerson, currentRunnerHold, getRunnerHold, serverPauseToApply, withRunnerHold } from './runner-hold';
 import { SlotPauseQueue, slotResumes, saveSlotsToConfig, serverSlotsToApply } from './runner-slots';
 import { ClaimRefusalBackoff } from './claim-refusal-backoff';
 import { RESTART_CONTINUE_MESSAGE, SHUTDOWN_CHECKPOINT_MS, SHUTDOWN_SAFE_POINT_MS, UPDATE_CONTINUE_MESSAGE, UPDATE_CONTINUE_PROBE_MS, commitShutdownCheckpoint, pushUpdateCheckpoint } from './restart-resume';
@@ -1445,6 +1445,26 @@ export class WorkerManager {
   }
 
   /**
+   * Take a Pause or Resume a team owner or admin set on buildd.dev (spec
+   * 97b1bd0b R-18): delivered like slots, on the heartbeat reply with a nudge.
+   * Paused is this runner's hold (runner-hold.ts): nothing new starts, running
+   * agents finish, and the slots stay as they were, so Resume brings them
+   * back. Saved in config.json with who and when. A `buildd hold` /
+   * `buildd resume` made after the dashboard change is not overwritten.
+   */
+  applyServerHold(reply: unknown): boolean {
+    const store = getRunnerHold();
+    if (!store) return false;
+    const next = serverPauseToApply(reply, { held: store.isHeld(), changedAt: store.changeMeta()?.changedAt ?? null });
+    if (!next) return false;
+    const meta = { changedAt: next.setAt, origin: 'dashboard' as const, setBy: next.setBy };
+    // The store's listeners (index.ts) tell top and the server, and a resume claims at once.
+    if (next.paused) store.hold(null, meta);
+    else store.resume(meta);
+    return true;
+  }
+
+  /**
    * How this runner's own logins share its slots (`buildd logins`, b in top;
    * spec 34a48877 R-14, R-19). The caller saves it in config.json. The next
    * heartbeat reports it and the next claim follows it; running agents keep
@@ -1529,9 +1549,10 @@ export class WorkerManager {
       // whether Claude is confined here, not whether bwrap is installed, so a
       // macOS runner on Seatbelt no longer reads as "user namespaces denied".
       const sandboxEnabled = probeAt !== null ? isConfined(getIsolationRecord().claude) : null;
-      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent, this.config.singleTask ? undefined : this.config.slotsChangedAt);
+      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots, desiredPause } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent, this.config.singleTask ? undefined : this.config.slotsChangedAt, this.config.singleTask ? undefined : getRunnerHold()?.changeMeta()?.changedAt);
       // A slot change made on buildd.dev, newer than this runner's own (spec 34a48877 R-20).
       if (!this.config.singleTask) this.applyServerSlots(desiredSlots);
+      if (!this.config.singleTask) this.applyServerHold(desiredPause);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }

@@ -18,6 +18,7 @@
  *    "Report a Buildd problem";
  *  - no agent or task mechanics, file lists, raw codes or URLs in the words.
  */
+import { uiDeltaLine } from './visual-review-carry';
 import type {
   IntegrationPrStage,
   MissionVisualReviewState,
@@ -261,7 +262,7 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
   const progress = state.progress;
   const detail = state.status === 'running' && progress
     ? progress.expected ? `Captured ${progress.captured} of ${progress.expected} screens.` : `Captured ${plural(progress.captured, 'screen')}.`
-    : state.staleEvidence ? 'The branch changed since the last check.' : queuedHold(state) ?? 'Starts on the latest changes.';
+    : state.staleEvidence ? (state.uiDelta ? uiDeltaLine(state.uiDelta) : 'The branch changed since the last check.') : queuedHold(state) ?? 'Starts on the latest changes.';
   return {
     ...quiet, ...common, stage: 'verifying', tone: 'info', showPanel: !!pr || state.status !== 'needed',
     label: state.staleEvidence ? 'Checking the latest changes' : state.status === 'running' ? 'Checking screens' : 'Visual check queued',

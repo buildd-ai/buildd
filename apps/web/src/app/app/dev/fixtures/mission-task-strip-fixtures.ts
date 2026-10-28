@@ -361,7 +361,7 @@ export function overviewWavesInput(n: number): { tasks: BoardTaskInput[]; gateFa
       waitingKinds[id] = 'dep_declared';
     } else {
       tasks.push(task(i, title(i)));
-      if (kind === 'slot') waitingKinds[id] = 'mission_concurrent';
+      // A free slot is no waiting kind: the claim query would return it now (spec: Overlap scheduling, AC-10).
       if (kind === 'hold') waitingKinds[id] = 'mission_budget';
       if (kind === 'unknown') waitingKinds[id] = 'unknown';
     }

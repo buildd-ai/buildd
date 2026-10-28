@@ -439,6 +439,40 @@ export async function PATCH(
       return NextResponse.json({ id, assessment: out.assessment });
     }
 
+    // removeDependency: a person drops one declared dependency, saying why
+    // (spec "Health › Queue", R-11). Its own request: the edge goes, and who
+    // removed it, when and why is kept on the task (context.dependencyRemovals).
+    if (body?.removeDependency !== undefined) {
+      if (Object.keys(body).some(k => k !== 'removeDependency')) {
+        return NextResponse.json({ error: 'removeDependency is sent on its own, with no other fields' }, { status: 400 });
+      }
+      const person = requestingPerson(user, apiAccount);
+      if (!person) {
+        return NextResponse.json({ error: 'Only a person can remove a dependency.' }, { status: 403 });
+      }
+      const raw = (body.removeDependency ?? {}) as { taskId?: unknown; reason?: unknown };
+      const dependencyId = typeof raw.taskId === 'string' ? raw.taskId.trim() : '';
+      const reason = typeof raw.reason === 'string' ? raw.reason.trim().slice(0, 500) : '';
+      if (!dependencyId) return NextResponse.json({ error: 'removeDependency.taskId is required' }, { status: 400 });
+      if (!reason) return NextResponse.json({ error: 'Say why the dependency is removed.' }, { status: 400 });
+      const current = (task.dependsOn as string[] | null) ?? [];
+      if (!current.includes(dependencyId)) {
+        return NextResponse.json({ error: 'That task is not a dependency of this one.' }, { status: 404 });
+      }
+      const ctx = (task.context ?? {}) as Record<string, unknown>;
+      const prior = Array.isArray(ctx.dependencyRemovals) ? ctx.dependencyRemovals : [];
+      const record = { dependencyId, reason, userId: person, at: new Date().toISOString() };
+      const next = current.filter(d => d !== dependencyId);
+      const [updated] = await db.update(tasks)
+        .set({ dependsOn: next, context: { ...ctx, dependencyRemovals: [...prior, record].slice(-20) }, updatedAt: new Date() })
+        .where(eq(tasks.id, id))
+        .returning();
+      if (updated?.status === 'pending') await wakeIfDependenciesSatisfied(updated).catch(() => {});
+      noteWorkChanged({ missionIds: [task.missionId] });
+      await emitTaskUpdated({ id, workspaceId: task.workspaceId, missionId: task.missionId ?? null, status: task.status });
+      return NextResponse.json({ id, dependsOn: next, removed: record });
+    }
+
     // pause: true pauses the agent working on this task instead of cancelling
     // it (lib/worker-pause.ts): the session is kept and Resume continues it.
     // It is its own request, never mixed with other edits.
