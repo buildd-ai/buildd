@@ -3,7 +3,7 @@
 import type { FleetSnapshot } from '@buildd/shared';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { deriveSandboxPosture } from '@/lib/runner-heartbeats-shared';
-import { runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
+import { PLATFORM_TEXT } from '@/lib/runner-isolation-health';
 import { observedAgo } from '@/lib/health-metric-grammar';
 import { describeRunnerRoute } from '@/lib/runner-route';
 import RunnerSlotDetail from './RunnerSlotDetail';
@@ -35,12 +35,15 @@ interface RunnerRowProps {
   queueHref?: string;
 }
 
-const SANDBOX_PLAIN_LABEL: Record<string, string> = {
-  sandboxed: 'sandboxed',
-  Seatbelt: 'sandboxed',
-  unsandboxed: 'not sandboxed',
-  'sandbox disabled': 'sandbox off',
-  'mounts unrestricted': 'sandbox partly on',
+/**
+ * Only a runner that is not (fully) sandboxed earns a mark, and the mark says which way.
+ * A sandboxed runner, or one whose posture is unknown or unverified, shows nothing.
+ */
+const SANDBOX_WARNING: Record<string, string> = {
+  unsandboxed: 'Not sandboxed',
+  'sandbox disabled': 'Sandbox turned off',
+  'partly sandboxed': 'Sandbox partly on',
+  'mounts unrestricted': 'Sandbox partly on',
 };
 
 const STATUS_ICON: Record<string, string> = {
@@ -89,16 +92,17 @@ export function RunnerRow({
   const activeCount = fleetRow ? fleetRow.slots.filter(sl => sl.worker).length : runner.activeWorkerCount;
   const maxSlots = fleetRow?.maxSlots ?? runner.maxConcurrentWorkers;
   const posture = deriveSandboxPosture(runner);
-  const sandboxLabel = runnerIsolationDetail(runner).state === 'verified' ? SANDBOX_PLAIN_LABEL[posture.label] ?? null : null;
-  const sandboxClass = posture.tier === 'success'
-    ? 'text-status-success'
-    : posture.tier === 'warning'
-      ? 'text-status-warning'
-      : 'text-text-muted';
+  const sandboxWarning = SANDBOX_WARNING[posture.label] ?? null;
 
-  // First running task for second line
-  const firstRunningWorker = fleetRow?.slots.find(sl => sl.worker && !sl.worker.question);
-  const firstRunningTaskName = firstRunningWorker?.worker?.name ?? null;
+  // First live worker (a run waiting on a question still holds its slot), traced to its mission.
+  const firstWorker = fleetRow?.slots.find(sl => sl.worker)?.worker ?? null;
+  const firstWorkerHidden = !!firstWorker && !seesTeamWork && firstWorker.mine !== true && firstWorker.mine !== undefined;
+  const firstTaskName = !firstWorker
+    ? null
+    : firstWorkerHidden
+      ? (firstWorker.mine === null ? 'Unattributed work' : 'A teammate\'s work')
+      : firstWorker.name ?? firstWorker.title ?? firstWorker.label;
+  const firstMissionId = firstWorker && !firstWorkerHidden ? firstWorker.missionId ?? null : null;
 
   const working = activeCount > 0;
   const freeSlot = runner.maxConcurrentWorkers > activeCount;
@@ -154,18 +158,17 @@ export function RunnerRow({
               </span>
             )}
             {!online && <span className="text-chip font-mono text-text-muted">offline</span>}
-            {sandboxLabel === 'not sandboxed' ? (
+            {sandboxWarning && (
               <span
-                className={`text-meta font-mono shrink-0 ${sandboxClass}`}
-                title="Not sandboxed"
+                data-testid="health-runner-sandbox-warning"
+                role="img"
+                aria-label={sandboxWarning}
+                title={sandboxWarning}
+                className="text-meta font-mono shrink-0 text-status-warning"
               >
-                ⚠
+                ⚠<span className="sr-only">{sandboxWarning}</span>
               </span>
-            ) : sandboxLabel ? (
-              <span className={`text-chip font-mono ${sandboxClass}`}>
-                {sandboxLabel}
-              </span>
-            ) : null}
+            )}
           </div>
           <div className="text-xs text-text-muted">
             <div className="flex items-center gap-2 mb-1">
@@ -174,9 +177,15 @@ export function RunnerRow({
               {' · '}
               {online ? `seen ${observedAgo(runner.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(runner.lastHeartbeatAt, now) ?? 'never'}`}
             </div>
-            {firstRunningTaskName && activeCount > 0 && (
-              <p className="text-meta text-text-secondary truncate">
-                Running: {firstRunningTaskName}
+            {firstTaskName && (
+              <p data-testid="health-runner-running" className="text-meta text-text-secondary truncate">
+                {firstWorker?.question ? 'Waiting' : 'Running'}: {firstTaskName}
+                {firstMissionId && (
+                  <>
+                    {' · '}
+                    <a href={`/app/missions/${firstMissionId}`} className="underline hover:text-text-primary">mission</a>
+                  </>
+                )}
               </p>
             )}
           </div>

@@ -101,4 +101,76 @@ describe('RunnerRow (R-14, R-15, AC-10)', () => {
   it('never uses a fixed-width layout that can overflow a phone', () => {
     expect(html({ health: { loading: false, expanded: true } })).not.toMatch(/min-w-\[|w-\[\d{3,}px\]/);
   });
+
+  const pips = (h: string) => ({
+    total: (h.match(/inline-block w-1\.5 h-1\.5 rounded-full/g) ?? []).length,
+    filled: (h.match(/bg-status-success/g) ?? []).length,
+  });
+
+  it('pips: one per slot, filled for each running, with n/cap', () => {
+    const h = html({ runner: runner({ activeWorkerCount: 2, maxConcurrentWorkers: 4 }) });
+    expect(h).toContain('2/4');
+    expect(h).not.toContain('slots in use');
+    // glow-dot-success is the online dot, not a pip
+    expect(pips(h)).toEqual({ total: 4, filled: 2 });
+  });
+
+  it('0/0: no pips, still reads 0/0', () => {
+    const h = html({ runner: runner({ activeWorkerCount: 0, maxConcurrentWorkers: 0 }) });
+    expect(h).toContain('0/0');
+    expect(pips(h).total).toBe(0);
+  });
+
+  it('0/n: all pips empty', () => {
+    const h = html({ runner: runner({ activeWorkerCount: 0, maxConcurrentWorkers: 3 }) });
+    expect(h).toContain('0/3');
+    expect(pips(h)).toEqual({ total: 3, filled: 0 });
+  });
+
+  it('sandbox: warning icon (with accessible text) only when not sandboxed', () => {
+    const off = html({ runner: runner({ sandboxEnabled: false, mountAllowlistEnforced: false }) });
+    expect(off).toContain('health-runner-sandbox-warning');
+    expect(off).toContain('aria-label="Not sandboxed"');
+    expect(off).toContain('sr-only');
+  });
+
+  it('sandbox: nothing, not even a text chip, for a sandboxed or unknown runner', () => {
+    for (const over of [{ sandboxEnabled: true, mountAllowlistEnforced: true }, { sandboxEnabled: null }]) {
+      const h = html({ runner: runner(over as never) });
+      expect(h).not.toContain('health-runner-sandbox-warning');
+      expect(h).not.toMatch(/sandboxed|sandbox off|sandbox partly on/i);
+    }
+  });
+
+  const busyRow = (over: object = {}) => ({ id: 'r1', name: 'Studio', maxSlots: 2, online: true, slots: [
+    { index: 0, worker: { label: 'build', name: 'Fix the thing', mine: true, missionId: 'm-1', ...over }, last: null },
+    { index: 1, worker: null, last: null },
+  ] } as never);
+
+  it('Running line traces the first running task to its mission when active', () => {
+    const h = html({ runner: runner({ activeWorkerCount: 1 }), fleetRow: busyRow() });
+    expect(h).toContain('health-runner-running');
+    expect(h).toContain('Running: Fix the thing');
+    expect(h).toContain('href="/app/missions/m-1"');
+  });
+
+  it('Running line: no mission link without a mission; a waiting run still shows', () => {
+    expect(html({ runner: runner({ activeWorkerCount: 1 }), fleetRow: busyRow({ missionId: null }) })).not.toContain('/app/missions/');
+    expect(html({ runner: runner({ activeWorkerCount: 1 }), fleetRow: busyRow({ question: 'Which?' }) })).toContain('Waiting: Fix the thing');
+  });
+
+  it('Running line: absent when idle; masks a teammate\'s task and mission', () => {
+    const idle = { id: 'r1', name: 'Studio', maxSlots: 2, online: true, slots: [{ index: 0, worker: null, last: null }] } as never;
+    expect(html({ fleetRow: idle })).not.toContain('health-runner-running');
+    const h = html({ runner: runner({ activeWorkerCount: 1 }), fleetRow: busyRow({ mine: false, name: 'Secret' }) });
+    expect(h).not.toContain('Secret');
+    expect(h).not.toContain('/app/missions/');
+  });
+
+  it('expanded: the stepper can step down to 0 slots', () => {
+    const r = runner({ maxConcurrentWorkers: 1, slots: { desired: 1, origin: 'machine', setBy: null, setAt: null, canEdit: true } as never });
+    const h = html({ runner: r, health: { loading: false, expanded: true } });
+    expect(h).toMatch(/runner-slots-minus[^>]*>/);
+    expect(h).not.toMatch(/disabled=""[^>]*data-testid="runner-slots-minus"|data-testid="runner-slots-minus"[^>]*disabled=""/);
+  });
 });
