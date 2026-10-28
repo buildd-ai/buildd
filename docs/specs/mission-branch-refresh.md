@@ -2,13 +2,13 @@
 title: Mission Branch Refresh
 status: active
 owner: max
-last_verified: 2026-10-24
+last_verified: 2026-10-28
 summary: A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 domain: missions
-surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/refresh-migration-fork.ts, apps/web/src/lib/workflow/epoch-effects.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
-related: [workflow-kernel-library, mission-release-gate, mission-task-lifecycle, workflow-state-kernel]
-keywords: [refresh settlement, redundant refresh PR, branch retirement, delivery epoch, integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency]
-verified_by: [apps/web/src/lib/task-completed-without-pr.test.ts, apps/web/src/lib/agent-capabilities/pr-close-guard.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/epoch-effects.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/src/lib/mission-pr.test.ts, apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/refresh-migration-fork.test.ts, apps/web/src/lib/mission-shipping-pr.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
+surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/refresh-migration-fork.ts, apps/web/src/lib/refresh-migration-reparent.ts, packages/core/db/snapshot-reparent.ts, apps/web/src/lib/workflow/epoch-effects.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
+related: [workflow-kernel-library, mission-release-gate, mission-task-lifecycle, workflow-state-kernel, db-migration-gates]
+keywords: [refresh settlement, redundant refresh PR, branch retirement, delivery epoch, integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency, snapshot chain fork, regenerate migrations, re-parent snapshot, migrationsRegenerated, regenerateRefusal]
+verified_by: [apps/web/src/lib/task-completed-without-pr.test.ts, apps/web/src/lib/agent-capabilities/pr-close-guard.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/epoch-effects.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/src/lib/mission-pr.test.ts, apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/refresh-migration-fork.test.ts, packages/core/__tests__/snapshot-reparent.test.ts, packages/core/__tests__/snapshot-reparent-kit.test.ts, apps/web/src/lib/mission-shipping-pr.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -74,13 +74,31 @@ resolution task per mission.
 - The conflict task's PR must land as a merge commit (`context.requireMergeCommit`).
 - A clean merge that leaves Drizzle v1 migration folders from both sides in one
   dir (each side holds folders the other lacks) has forked the snapshot chain:
-  folders never conflict as text, so GitHub merges them with a 201. The server
-  cannot run `migrations:regenerate`, so it files the repair instead: one task
-  in the same `branchRefreshConflictTaskId` slot, with the same settlement, whose
-  brief is `bun run migrations:regenerate --base=origin/<trunk>`
-  (`detectRefreshMigrationFork`, `lib/refresh-migration-fork.ts`). Detection is
-  fail-open: a failed read files nothing, and the merge-ref commute check on the
-  next PR into the branch still catches the fork.
+  folders never conflict as text, so GitHub merges them with a 201. Both heads
+  are known before the merge, so the fork is detected before it
+  (`detectRefreshMigrationFork`, `lib/refresh-migration-fork.ts`), and the merge
+  is then computed on a scratch ref and landed on the branch as one merge commit
+  that already carries the mission's migrations regenerated on trunk's chain
+  (`mergeTrunkRegeneratingMigrations`, `lib/refresh-migration-reparent.ts`): the
+  mission's folders move past trunk's leaf with their `migration.sql` byte for
+  byte, and each snapshot names trunk's leaf (or the moved folder before it) as
+  its parent and holds trunk's entities. That is the answer
+  `migrations:regenerate` gives whenever the two sides changed different
+  objects (`packages/core/db/snapshot-reparent.ts`, proven against the pinned
+  kit by `packages/core/__tests__/snapshot-reparent-kit.test.ts`), and it is
+  refused otherwise: an entity both sides touched, a new entity that refers to a
+  table or column the other side changed, a snapshot carrying `renames`, chains
+  that are not each linear from one shared parent, a format mismatch, or a read
+  that failed. On a refusal the plain merge lands as before and the repair takes
+  the same `branchRefreshConflictTaskId` slot, with the same settlement, as one
+  task whose brief is `bun run migrations:regenerate --base=origin/<trunk>` and
+  whose `context.regenerateRefusal` says why the refresh did not do it. The
+  landing is a fast-forward from the head the merge was computed on: a branch
+  that moved meanwhile gets nothing written and the refresh reports `in_flight`,
+  so the next trigger computes it on the new head. The scratch ref
+  (`buildd-refresh/…`) is deleted on every exit. Detection stays fail-open: a
+  failed read merges plainly and files nothing, and the merge-ref commute check
+  on the next PR into the branch still catches the fork.
 - A completed or archived mission, a mission whose own PR into trunk has merged,
   and a mission without an integration branch are never refreshed. Which
   trigger may refresh a paused mission is in "Eligibility" below.
@@ -99,11 +117,29 @@ resolution task per mission.
 - AC-5: GIVEN the conflict task's PR was squash-merged WHEN the next refresh runs
   THEN no replacement task is created and the violation is recorded once.
 - AC-5a: GIVEN the mission added migration A and trunk added migration B on the
-  same parent WHEN a clean refresh runs THEN exactly one task titled
+  same parent, changing different objects WHEN a clean refresh runs THEN the
+  branch gains exactly one merge commit whose parents are the mission head and
+  trunk's head, in which A's folder is replaced by one that sorts after B's,
+  holds A's `migration.sql` byte for byte, and whose snapshot names B's as its
+  parent and holds both sides' entities once each; the chain has one head, no
+  task is created, and the outcome reports `migrationsRegenerated`. A later
+  trunk migration chained on B regenerates the moved folder again, past it.
+- AC-5b: GIVEN the mission's and trunk's migrations changed one entity, or one
+  side's new entity refers to a column the other side changed WHEN a clean
+  refresh runs THEN the plain merge lands and exactly one task titled
   `chore(mission): regenerate migrations on the <mission> integration branch
   after merging <trunk>` holds the conflict slot, carrying
-  `context.migrationFork`; once its PR lands the branch's snapshot chain has one
-  head, and the next refresh settles it and files nothing.
+  `context.migrationFork` and `context.regenerateRefusal`; once its PR lands
+  the branch's snapshot chain has one head, and the next refresh settles it and
+  files nothing.
+- AC-5c: GIVEN a fork and a task PR landing on the branch between the refresh
+  reading the mission head and writing the merge WHEN the refresh runs THEN
+  nothing is written to the branch, no task is created, no scratch ref remains,
+  and the outcome is `in_flight`; the next refresh lands the regenerated merge
+  on the new head.
+- AC-5d: GIVEN a fork and a snapshot read that fails WHEN the refresh runs THEN
+  the plain merge lands and the regenerate task is filed with
+  `regenerateRefusal.reason: read`.
 
 ## When a refresh runs
 
@@ -617,6 +653,7 @@ list.
 | Invariant / AC | Test |
 | --- | --- |
 | AC-1–AC-5, single-flight, stale holder fencing | `apps/web/src/lib/mission-branch-refresh.test.ts` › `refreshMissionIntegrationBranch` (incl. "an expired caller cannot dispatch twice or release its successor lease", "does not merge after its lease expires…") |
+| AC-5a–AC-5d (a forked snapshot chain regenerated inside the refresh merge, or filed) | `mission-branch-refresh.test.ts` › "a clean merge that forks the Drizzle migration chain"; the re-parent itself: `packages/core/__tests__/snapshot-reparent.test.ts`, and against the pinned kit `packages/core/__tests__/snapshot-reparent-kit.test.ts` |
 | AC-6, AC-7 (no `pr.merged` trigger; claim emits) | `apps/web/src/modules.test.ts`, `apps/web/src/app/api/workers/claim/route.test.ts` |
 | AC-8–AC-14 | `mission-branch-refresh.test.ts` › `refreshMissionBranchesBeforeStart`, `sweepMissionBranchRefresh` |
 | Start debounce (AC-42) | `mission-branch-refresh.test.ts` › "debounced: at most one start refresh per interval" |
@@ -708,6 +745,13 @@ conflict retry both tell the agent to run it first.
 - `apps/web/src/app/api/cron/pr-reconcile/route.ts`: runs the backstop.
 - `apps/web/src/lib/integration-refresh.ts`: `verifyRefreshLanded`, the ancestry
   proof a merged conflict task must pass.
+- `apps/web/src/lib/refresh-migration-fork.ts`: `detectRefreshMigrationFork`,
+  read before the merge.
+- `apps/web/src/lib/refresh-migration-reparent.ts`:
+  `mergeTrunkRegeneratingMigrations` (the scratch-ref merge that lands
+  regenerated), `planRefreshReparent`, `writeReparentedRefresh`.
+- `packages/core/db/snapshot-reparent.ts`: `planReparent`, the pure re-parent of
+  drizzle v1 snapshots and every reason it refuses.
 - `apps/web/src/lib/mission-shipping-pr.ts`: `missionShippingPrMerged`, the
   three-source "mission PR merged" read.
 - `apps/web/src/app/api/workers/[id]/route.ts`: the `pr_required` arm that

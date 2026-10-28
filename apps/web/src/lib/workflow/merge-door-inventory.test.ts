@@ -35,6 +35,7 @@ const INVENTORY: Record<string, { what: string; calls: number }> = {
   'apps/web/src/lib/release/pinned-merge.ts': { what: 'D8/D9/D10: the release doors, review gate + pinned to the verified head (release-executor.ts holds no merge call of its own: a branch with no PR is refused, never merged)', calls: 1 },
   'apps/web/src/lib/specs/repo-copy.ts': { what: 'D14: a Living Spec\'s generated repo copy, or a retired spec\'s copy removal (retire-repo-file.ts merges through it), only the generator\'s own commit, pinned (living-specs R-35, R-78)', calls: 1 },
   'apps/web/src/lib/mission-branch-refresh.ts': { what: 'not a door: a base refresh into a mission branch (POST /merges)', calls: 1 },
+  'apps/web/src/lib/refresh-migration-reparent.ts': { what: 'not a door: the same base refresh, merged on a scratch ref so the mission\'s migrations are regenerated in the merge commit before the branch fast-forwards (POST /merges)', calls: 1 },
   'apps/web/src/lib/workflow/delivery-epochs.ts': { what: 'not a door: the settlement tree probe, a test merge onto a scratch ref deleted in the same step (POST /merges, workflow-kernel-library §6)', calls: 1 },
 };
 

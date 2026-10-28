@@ -73,6 +73,16 @@ a move and lets it through (docs/specs/db-migration-gates.md, "A renumber in a
 refresh PR is not lineage"). A rename, a hand-edited file, or SQL that changed on
 the way is lineage and goes to a person.
 
+**A mission-branch refresh regenerates for you.** When buildd merges dev into a
+mission's integration branch and both sides added migrations, the refresh merge
+commit itself carries the mission's folders moved past dev's newest, with the
+same SQL and a snapshot re-parented on dev's leaf (the same answer
+`migrations:regenerate` gives when the two sides changed different objects;
+`packages/core/db/snapshot-reparent.ts`, spec `mission-branch-refresh`). Only
+when both sides touched one object, or a snapshot carries renames, does buildd
+file a "regenerate migrations" task instead, and its brief says why. A task PR
+into the mission branch should never carry the regeneration itself.
+
 **Regenerate rather than edit by hand.** Regeneration re-diffs your `schema.ts`
 against dev's *newest* snapshot, so a column another session added in the same
 window survives in yours. A hand-edited snapshot describes a schema that no longer
