@@ -8,6 +8,7 @@ import { missionDeliverableCounts } from './mission-pulse';
 import { readMissionSpecStanding } from './specs/mission-outcome';
 import { ensureFinalVerification } from './specs/mission-verification';
 import { resolveCriteriaEscalation } from '@/lib/criteria-escalation';
+import { criteriaFingerprint } from '@/lib/criteria-fingerprint';
 import { systemActor } from '@/lib/mission-feed';
 import type {
   GoalCriterion,
@@ -285,6 +286,11 @@ export async function evaluateCriteriaNow(
       // Reviewer findings accumulated on merged PRs — read before any evaluator
       // is dispatched (see the fold below).
       criteriaReviewerFindings: true,
+      // An escalation is cleared here when the verdict it was raised on moves:
+      // escalating stands the heartbeat down, so the re-arm that used to clear
+      // it never runs again for that mission (df808193).
+      criteriaEscalatedAt: true,
+      criteriaRearmFingerprint: true,
     },
   });
   if (!mission) return null;
@@ -509,14 +515,15 @@ export async function evaluateCriteriaNow(
     const criterion = criteria[cs.index] as LivingSpecGoalCriterion | undefined;
     if (!criterion || criterion.type !== 'living_spec') continue;
     try {
-      const standing = await readMissionSpecStanding(
-        { id: mission.id, workspaceId: mission.workspaceId, workingBranch: mission.workingBranch, integrationBranchEnabled: mission.integrationBranchEnabled, goalCriteria: mission.goalCriteria },
-        criterion,
-      );
-      cs.verdict = standing.verdict;
-      cs.evidence = standing.evidence;
+      const missionRow = { id: mission.id, workspaceId: mission.workspaceId, workingBranch: mission.workingBranch, integrationBranchEnabled: mission.integrationBranchEnabled, goalCriteria: mission.goalCriteria };
+      let standing = await readMissionSpecStanding(missionRow, criterion);
       const buildDone = isBuildComplete(missionDeliverableCounts(missionTasks));
-      cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings, buildDone };
+      const apply = () => {
+        cs.verdict = standing.verdict;
+        cs.evidence = standing.evidence;
+        cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings, buildDone };
+      };
+      apply();
       if (standing.verdict !== 'pass' && standing.verdict !== 'fail' && standing.target.kind !== 'unknown' && buildDone && canDispatch && mission.status !== 'completed' && mission.status !== 'archived') {
         const fv = await ensureFinalVerification(missionId, criterion, standing);
         if (fv.kind === 'dispatched') {
@@ -526,11 +533,25 @@ export async function evaluateCriteriaNow(
           await resolveCriteriaEscalation(missionId, 'work_filed', systemActor('final verification filed'))
             .catch((e) => console.error(`[criteria-eval] escalation clear failed for mission ${missionId}:`, e));
         }
-        if (fv.kind !== 'unavailable') {
+        if (fv.kind !== 'unavailable' && fv.settled) {
+          // Check runs that had finished without a recorded verdict were
+          // recorded just now: the fold read above is already behind them.
+          standing = await readMissionSpecStanding(missionRow, criterion);
+          apply();
+        }
+        if (standing.verdict === 'pass' || standing.verdict === 'fail') {
+          // Settled by what the verification step recorded: nothing is in flight.
+        } else if (fv.kind === 'open' || fv.kind === 'dispatched') {
           cs.verdict = 'PENDING';
           cs.workerTaskId = fv.taskId;
           cs.evidence = `${standing.evidence} Final verification ${fv.taskId.slice(0, 8)} is ${fv.kind === 'dispatched' ? 'filed' : 'open'}.`;
-        } else {
+        } else if (fv.kind === 'done') {
+          // Finished at this target and did not settle it. That is the verdict,
+          // not a verification in flight: PENDING here was what kept df808193
+          // "awaiting verification" with nothing running, and what the
+          // heartbeat then escalated as a decision nobody could make.
+          cs.evidence = `${standing.evidence} Final verification ${fv.taskId.slice(0, 8)} finished at this target without settling it; a new commit, an accepted test edit or Re-verify checks it again.`;
+        } else if (fv.kind === 'unavailable') {
           cs.evidence = `${standing.evidence} No final verification could be filed: ${fv.reason}.`;
         }
       } else if (!buildDone && standing.verdict !== 'pass') {
@@ -751,6 +772,18 @@ export async function evaluateCriteriaNow(
     .update(missions)
     .set({ goalCriteriaState: state as any, updatedAt: new Date() })
     .where(eq(missions.id, missionId));
+
+  // The escalation note promises the owner that "a changed check result lets
+  // automatic work resume". The heartbeat's re-arm used to be the only thing
+  // that kept that promise, and escalating stands the heartbeat down — so an
+  // escalated mission whose verdict later moved (a settled run, a pass) stayed
+  // escalated until a person acted (df808193). The producer clears it, through
+  // the single writer, whenever the verdict shape it was raised on has changed;
+  // an unchanged shape leaves the owner's decision standing.
+  if (mission.criteriaEscalatedAt && criteriaFingerprint(state) !== mission.criteriaRearmFingerprint) {
+    await resolveCriteriaEscalation(missionId, 'verdict_changed', systemActor('goal-criteria evaluation'))
+      .catch((e) => console.error(`[criteria-eval] escalation clear failed for mission ${missionId}:`, e));
+  }
 
   // Post a note when the verdict changed, or on every explicit (human/MCP) run.
   // Automatic re-evaluation is frequent; an unchanged verdict is not news.
