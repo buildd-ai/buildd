@@ -1052,7 +1052,7 @@ export type MissionPrMergeGate =
  * work will not happen, not an absence of one; a cancelled task holding the
  * gate forever is how a mission becomes unmergeable by hand.
  */
-type GuardTask = { id?: string | null; title?: string | null; taskClass?: string | null; missionId?: string | null; context?: unknown };
+type GuardTask = { id?: string | null; workspaceId?: string | null; title?: string | null; taskClass?: string | null; missionId?: string | null; context?: unknown };
 
 /** How far `deliveryOwnerTask` follows `parentTaskId`; attempts of attempts are rare and shallow. */
 const OWNER_WALK_LIMIT = 5;
@@ -1129,6 +1129,13 @@ export async function guardMissionPrMerge(
     void import('@/lib/workflow/visual-review-schedule-run')
       .then(m => m.scheduleMissionVisualReview(task.missionId!))
       .catch(err => console.error('[mission-pr] could not schedule the visual review:', err));
+  }
+  // Findings the automatic rounds left open no longer hold the merge (policy automatic); they are filed
+  // as follow-up fixes against trunk instead, so none vanishes (spec 072de598 AC-14, AC-33).
+  if (!gate.blocks && visual?.findings?.exhausted && task.workspaceId) {
+    void import('@/lib/visual-review-exhausted')
+      .then(m => m.fileExhaustedFindings({ id: task.missionId!, workspaceId: task.workspaceId ?? null }))
+      .catch(err => console.error('[mission-pr] could not file the unresolved visual findings:', err));
   }
   return gate;
 }

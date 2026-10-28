@@ -3122,6 +3122,17 @@ export interface VisualReviewNeedsYou {
   workerId?: string;
 }
 
+/** A screen still not fine when the automatic fix rounds ran out. */
+export interface VisualReviewExhaustedFinding {
+  key: string;
+  route: string;
+  viewport: VisualQaViewport;
+  variant: string | null;
+  finding: string;
+  artifactId: string;
+  src: string;
+}
+
 export interface VisualReviewModel {
   missionId: string;
   phase: VisualReviewPhase;
@@ -3159,7 +3170,7 @@ export interface VisualReviewModel {
   /** For `waiting_on_failed_work`: the failed build task the audit waits on; its recovery is there. */
   waitingOn?: { taskId: string; title: string | null } | null;
   /** Cells with exhausted findings (round cap reached, recapture decision needed). Under automatic policy, these are filed as [surface fix] tasks after merge (AC-14 second half). */
-  exhaustedFindings?: Array<{ key: string; route: string; viewport: VisualQaViewport; variant: string | null; issues: number }>;
+  exhaustedFindings?: VisualReviewExhaustedFinding[];
   /** The branch moved after these shots, so the counts describe an earlier commit. Set by the page from the check's own state, never by the loader. */
   onEarlierCommit?: boolean;
   generatedAt: string;

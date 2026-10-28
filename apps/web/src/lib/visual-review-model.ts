@@ -650,19 +650,6 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     .sort((a, b) => queueRankOf(a) - queueRankOf(b) || byPlace(a, b))
     .map(c => c.key);
 
-  // Exhausted findings: cells awaiting a decision when the round cap is reached (spec 072de598, AC-14 second half).
-  // Under automatic policy these are filed as [surface fix] tasks after merge; under other policies they block.
-  const exhaustedFindings = recapture?.next === 'decide' ? recapture.screens.map(s => {
-    const cell = liveCells.find(c => c.key === s.key);
-    return cell ? {
-      key: s.key,
-      route: s.route,
-      viewport: s.viewport,
-      variant: s.variant,
-      issues: cell.current.agentVerdict === 'issue' ? 1 : 0,
-    } : null;
-  }).filter((x): x is NonNullable<typeof x> => !!x) : [];
-
   // Every [surface fix] of the mission, plus any fix a cell links.
   for (const t of tasks) if (isSurfaceFixTask(t.title)) fixFor(t.id, 'auditor');
   const humanFixIds = new Set([...activeReview.values()].map(r => r.fixTaskId).filter(Boolean));
@@ -705,6 +692,22 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   const awaitingHuman = liveCells.filter(c => c.needsHuman).length;
   const fixDecisions = recapture?.next === 'decide' ? liveCells.filter(c => c.fixCheck?.state === 'decide' && fixCheckDue(c)).length : 0;
   const roundCapOpen = capNoteOpen;
+  // Exhausted findings: screens still not fine once the automatic rounds ran out (the round cap) or no
+  // recapture will come. Under automatic policy they stop blocking the merge and are filed as [surface fix]
+  // tasks against trunk instead (spec 072de598 AC-14, AC-33).
+  const exhaustedFindings = roundCapOpen || recapture?.next === 'decide'
+    ? liveCells
+        .filter(c => c.standing !== 'fine' && !(recapture?.next === 'queued' && awaitingCapture(c)))
+        .map(c => ({
+          key: c.key,
+          route: c.route,
+          viewport: c.viewport,
+          variant: c.variant,
+          finding: c.current.finding,
+          artifactId: c.current.shot.id,
+          src: c.current.shot.src,
+        }))
+    : [];
   let phase: VisualReviewPhase;
   let progress: VisualReviewModel['progress'] = null;
   const question = latest ? pendingQuestionOf(latest) : null;
