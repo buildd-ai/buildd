@@ -12,6 +12,8 @@
 import { describe, expect, it } from 'bun:test';
 import { isMissionPrTask, MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 import { decideReadyToMerge } from '../ready-to-merge';
+import { buildVisualReviewModel, screensToReview } from '../visual-review-model';
+import { recaptureFixtureInput } from '../visual-review-model.fixtures';
 import { visualReviewNeedsYou } from './visual-review-presentation';
 import { RETRY_BACKOFF_BASE_MS, MAX_AUTO_ATTEMPTS_PER_HEAD, retryBackoffMs } from './visual-review-schedule';
 import {
@@ -123,8 +125,8 @@ describe('findings', () => {
     expect(t.merge.ready).toBe(true);
   });
 
-  it('an ambiguous screen is Jev\'s, not the owner\'s; only spent fix rounds reach a person', async () => {
-    const m = newMission({ files: [SCREEN_EDIT] });
+  it('an ambiguous screen is Jev\'s, not the owner\'s; only spent fix rounds reach a person (strict)', async () => {
+    const m = newMission({ files: [SCREEN_EDIT], workspace: 'strict' });
     await tick(m);
     finishAudit(m, { status: 'completed', review: REVIEW.unsure });
     let t = await tick(m);
@@ -137,6 +139,20 @@ describe('findings', () => {
     expect(t.view).toMatchObject({ needsYou: true, problem: 'product' });
     expect(t.view.owner?.kind).toBe('judge');
     expect(t.merge.ready).toBe(false);
+  });
+});
+
+describe('spent fix rounds under the automatic policy', () => {
+  it('merge anyway: nobody is asked, the findings are carried', async () => {
+    const m = newMission({ files: [SCREEN_EDIT] });
+    await tick(m);
+    finishAudit(m, { status: 'completed', review: REVIEW.unsure });
+    await tick(m);
+    m.audits[0].review = REVIEW.exhausted;
+    const t = await tick(m);
+    expect(t.state).toMatchObject({ status: 'findings', nextActor: 'none', pendingVerification: false });
+    expect(t.state.findings?.carried).toBe(true);
+    expect(t.merge.ready).toBe(true);
   });
 });
 
@@ -438,5 +454,47 @@ describe('what the gate covers', () => {
     expect(t.state).toMatchObject({ status: 'optional', blocksMerge: false, blocksCompletion: false });
     expect(t.plan).toMatchObject({ action: 'none', why: 'no_integration_head' });
     expect(direct.filed).toEqual([]);
+  });
+});
+
+describe('a merged fix with no new screenshot', () => {
+  const R = '/app/dev/fixtures';
+  const iso = (min: number) => new Date(Date.parse('2026-03-10T10:00:00.000Z') + min * 60_000).toISOString();
+  const recaptureAudit = (id: string, createdMin: number, status: string) => ({
+    id, title: '[surface audit] round 3: Fixture mission', status, roleSlug: 'visual-auditor', createdAt: iso(createdMin), updatedAt: iso(createdMin),
+    dependsOn: [], context: { surfaceAuditRound: 3, visualReview: { reason: 'recapture' } }, workers: [],
+  });
+
+  it('a recapture filed before the fix merged did not miss it: capture again, never ask the owner', () => {
+    const input = recaptureFixtureInput('recapture');
+    // The only recapture so far ran for an earlier fix; these fixes merged after it was filed.
+    input.tasks = [...input.tasks, recaptureAudit('fixture-audit-3', 60, 'completed')];
+    const model = buildVisualReviewModel(input);
+    expect(model.recapture?.next).toBe('capture');
+    expect(screensToReview(model)).toBe(0);
+  });
+
+  it('a recapture filed after the merge that still missed it hands the screen to a person', () => {
+    const input = recaptureFixtureInput('recapture');
+    input.tasks = [...input.tasks, recaptureAudit('fixture-audit-3', 150, 'completed')];
+    expect(buildVisualReviewModel(input).recapture?.next).toBe('decide');
+  });
+
+  it('a fresh audit that is ok on every screen settles older findings of the same route and viewport, merged fix or not', () => {
+    const input = recaptureFixtureInput('recapture');
+    input.shots = [...input.shots, {
+      id: 'fixture-rc-6', type: 'screenshot', workerId: 'fixture-w3', taskId: 'fixture-audit-3', createdAt: iso(160), title: null,
+      metadata: { qa: { runKey: 'fixture-fixture-w3', route: R, viewport: 'mobile', verdict: 'ok', theme: 'dark', finding: 'Resolved.' } },
+    }];
+    input.shots.push({
+      id: 'fixture-rc-7', type: 'screenshot', workerId: 'fixture-w3', taskId: 'fixture-audit-3', createdAt: iso(161), title: null,
+      metadata: { qa: { runKey: 'fixture-fixture-w3', route: R, viewport: 'desktop', verdict: 'ok', theme: 'dark', finding: 'Fine.' } },
+    });
+    input.tasks = [...input.tasks, { ...recaptureAudit('fixture-audit-3', 150, 'completed'), context: { surfaceAuditRound: 3 } }];
+    input.requiredRoutesOf = () => [R];
+    const model = buildVisualReviewModel(input);
+    expect(model.recapture).toBeNull();
+    expect(screensToReview(model)).toBe(0);
+    expect(model.cells.filter(c => c.route === R && c.viewport === 'mobile' && c.fixCheck)).toEqual([]);
   });
 });

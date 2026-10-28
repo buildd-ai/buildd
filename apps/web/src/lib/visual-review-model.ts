@@ -575,6 +575,29 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
       resolvedKeys.add(c.key);
     }
   }
+  // A finished audit that found every screen of its round ok settles older
+  // open cells of the same route and viewport, whatever their state or title:
+  // the fix may already have merged, and no better screenshot is coming.
+  const newestRound = Math.max(0, ...cells.filter(c => !resolvedKeys.has(c.key)).map(roundOf));
+  const newestAudit = latestAuditOf(tasks);
+  if (newestRound > 1 && newestAudit?.status === 'completed') {
+    const fresh = cells.filter(c => !resolvedKeys.has(c.key) && roundOf(c) === newestRound);
+    const need = requiredRoutesOf ? requiredRoutesOf(newestAudit) : [];
+    const cover = requiredCoverage(fresh.map(c => c.current.shot as VisualShot), need);
+    // Only an audit that shot everything it was sent to check, and found it ok, settles other screens.
+    if (cover && cover.covered === cover.required && fresh.every(c => c.current.agentVerdict === 'ok')) {
+      for (const c of cells) {
+        if (resolvedKeys.has(c.key) || roundOf(c) >= newestRound || c.standing === 'fine') continue;
+        const f = c.fixCheck?.fix ?? c.current.fixTask;
+        if (f && !f.mergedAt) continue;
+        const by = fresh.find(x => x.route === c.route && x.viewport === c.viewport
+          && (!f?.mergedAt || ms(x.current.shot.createdAt) > ms(f.mergedAt)));
+        if (!by) continue;
+        resolvedElsewhere.push({ key: c.key, route: c.route, viewport: c.viewport, variant: c.variant, resolvedBy: by.key });
+        resolvedKeys.add(c.key);
+      }
+    }
+  }
   let liveCells = resolvedKeys.size > 0 ? cells.filter(c => !resolvedKeys.has(c.key)) : cells;
   // What stepped back stays viewable on the screen that replaced it.
   const earlierOf = new Map<string, VisualReviewCellEntry[]>();
@@ -601,7 +624,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     const next: VisualReviewRecapture['next'] = latestAudit && !TERMINAL.has(latestAudit.status)
       ? 'queued'
       : input.roundCapOpen === true
-          || (latestAudit && (isRecaptureAudit(latestAudit) || surfaceAuditRound(latestAudit) + 1 > MAX_TOTAL_SURFACE_AUDIT_ROUNDS))
+          || (latestAudit && (recaptureMissed(latestAudit, waiting) || surfaceAuditRound(latestAudit) + 1 > MAX_TOTAL_SURFACE_AUDIT_ROUNDS))
         ? 'decide'
         : 'capture';
     recapture = {
@@ -768,6 +791,12 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   };
 }
 
+/** A recapture only missed a screen if it was filed after that screen's fix merged. */
+function recaptureMissed(audit: VisualReviewTaskInput, waiting: readonly VisualReviewCell[]): boolean {
+  if (!isRecaptureAudit(audit)) return false;
+  return waiting.every(c => c.fixCheck?.state !== 'awaiting_capture' || ms(audit.createdAt) > ms(c.fixCheck.fix.mergedAt));
+}
+
 /** An audit filed to re-shoot screens whose fix merged (`context.visualReview.reason`). */
 export function isRecaptureAudit(t: { context?: unknown }): boolean {
   const ctx = t.context;
@@ -881,3 +910,34 @@ export { describeVisualPhase, visualPhaseDetailRole } from '@buildd/core/visual-
 export function emptyVisualReviewModel(missionId: string, now: number): VisualReviewModel {
   return buildVisualReviewModel({ missionId, shots: [], tasks: [], reviews: [], roundCapOpen: false, browserRunnerOnline: null, captureRef: null, missionIntegrationBranch: null, now });
 }
+
+/** One screen the review left open: what the auditor saw there and the shot it saw it in. */
+export interface OpenVisualFinding {
+  route: string;
+  viewport: VisualReviewCell['viewport'];
+  variant: string | null;
+  artifactId: string;
+  finding: string;
+}
+
+/**
+ * The screens still waiting on a person when the review ran out of rounds
+ * (an issue nobody is fixing, an unsure verdict, a merged fix with no new
+ * shot). Under policy `automatic` these ship with the mission and become
+ * `[surface fix]` tasks on trunk.
+ */
+export function openFindingsOf(m: Pick<VisualReviewModel, 'cells'>): OpenVisualFinding[] {
+  return m.cells
+    .filter(c => cellStanding(c) === 'to_review')
+    .map(c => ({
+      route: c.route,
+      viewport: c.viewport,
+      variant: c.variant,
+      artifactId: c.current.shot.id,
+      finding: (c.current.finding ?? '').replace(/\s+/g, ' ').trim(),
+    }));
+}
+
+/** The review ran out of automatic rounds: the round cap, or a merged fix no screenshot will be taken of. */
+export const reviewExhausted = (m: Pick<VisualReviewModel, 'roundCapOpen' | 'recapture'>): boolean =>
+  m.roundCapOpen || m.recapture?.next === 'decide';
