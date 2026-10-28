@@ -97,6 +97,11 @@ function AcceptanceHoldRow({
         <ul className="font-mono text-meta text-text-muted">
           {hold.paths.map((p) => <li key={p} className="[overflow-wrap:anywhere]">{p}</li>)}
         </ul>
+        {hold.weakened.length > 0 && (
+          <ul data-testid="acceptance-hold-weakened" className="mt-1 list-disc pl-4 text-meta text-text-secondary">
+            {hold.weakened.map((w) => <li key={`${w.path}:${w.text}`} className="[overflow-wrap:anywhere]">{w.text}</li>)}
+          </ul>
+        )}
         {hold.diffUrl && (
           <div className="mt-1 flex flex-col gap-1">
             {hold.paths.map((path) => {
