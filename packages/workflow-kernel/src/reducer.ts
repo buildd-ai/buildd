@@ -2217,9 +2217,12 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
   if (h === d.currentHeadSha) return c.duplicate('head_unchanged');
   const key = headObservationKey(c.prKey, d.currentHeadSha, h, d.version);
   const evidence = { live: cmd.live, hintedHeadSha: cmd.hintedHeadSha ?? null, previousHead: d.currentHeadSha };
-  const record = (): Decision => c.apply(key, d.state, { patch: { currentHeadSha: h }, evidence });
+  const record = (extra: Record<string, unknown> = {}): Decision => c.apply(key, d.state, { patch: { currentHeadSha: h }, evidence: { ...evidence, ...extra } });
   const toReview = (extra: { attempts?: AttemptOp[]; effects?: EffectSpec[]; patch?: DeliveryPatch; evidence?: Record<string, unknown> } = {}): Decision => {
-    const r = c.startRound(h, { trigger: headTrigger(c), delta: cmd.delta });
+    // 52a0de67: a push that brought only base commits (`baseOnly`, read by the fact layer) is a
+    // base refresh whatever state it lands in: the same change against a new base. §8.2: such a
+    // round spends no budget unless it asks for changes. Anything else is named by the state.
+    const r = c.startRound(h, { trigger: cmd.baseOnly ? 'base_refresh' : headTrigger(c), delta: cmd.delta });
     return c.apply(key, 'AWAITING_REVIEW', {
       patch: { ...r.patch, currentHeadSha: h, stateReason: null, boundAttemptId: null, ...(extra.patch ?? {}) },
       rounds: r.rounds, attempts: extra.attempts, effects: [...r.effects, ...(extra.effects ?? [])], evidence: extra.evidence ?? evidence,
@@ -2246,6 +2249,10 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
       if (d.stateReason === 'conflict_exhausted') return cmd.live.mergeableState === 'dirty' ? record() : toReview();
       // 2ded4e88: a spent review budget stays spent: the push is recorded, a person decides.
       if (d.stateReason === 'review_exhausted') return record();
+      // 52a0de67: a reviewer escalated the PR's own diff and that diff has not changed (the push
+      // brought only base commits: a mission branch's dev sync, a refresh). The verdict stands for
+      // the person; no reviewer is asked to escalate the same change again.
+      if (d.stateReason === 'review_escalated' && cmd.baseOnly) return record({ verdictKept: true, baseOnly: cmd.baseOnly });
       if (d.stateReason !== 'push_undeliverable') return d.stateReason?.startsWith('review_') ? toReview() : record();
       // T22: a head with §9 proof observed after the escalation wins over it.
     // falls through

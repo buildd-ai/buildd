@@ -280,6 +280,48 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(rec.toState).toBe('ESCALATED');
     expect(rec.rounds).toEqual([]);
   });
+  // 52a0de67: a mission integration PR's head moves on every dev sync. A push that brought only
+  // base commits (the PR's own diff is the one the reviewer escalated) is not new work for a
+  // reviewer: the escalation stands for the person, and no round is opened for it.
+  test('ESCALATED(review_escalated): a sync-only commit keeps the verdict; no round, the person still decides', () => {
+    for (const baseOnly of ['own_refresh', 'compare'] as const) {
+      const kept = applied(h(V(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentRound: 2 })), 'H2', { baseOnly }));
+      expect({ to: kept.toState, patch: kept.patch, rounds: kept.rounds, review: effectKinds(kept).includes('dispatch_review') })
+        .toEqual({ to: 'ESCALATED', patch: { currentHeadSha: 'H2' }, rounds: [], review: false });
+      expect(kept.evidence).toMatchObject({ verdictKept: true, baseOnly });
+    }
+    // A reviewer that never answered (review_unavailable) owes the head a review whatever the push was.
+    expect(applied(h(V(D({ state: 'ESCALATED', stateReason: 'review_unavailable' })), 'H2', { baseOnly: 'compare' })).toState).toBe('AWAITING_REVIEW');
+  });
+  test('a sync-only push that does start a round records it as base_refresh, which spends no budget unless it asks for changes', () => {
+    // A review in flight is superseded by the push, as before, but the round that replaces it is a
+    // base refresh, not "new commits": the same change against a new base.
+    const reviewing = V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R({ status: 'reviewing' })]);
+    const dec = applied(h(reviewing, 'H2', { baseOnly: 'compare' }));
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', trigger: 'base_refresh' }));
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'update', roundId: 'r1', set: { status: 'superseded', endReason: 'superseded_by_push' } }));
+    // Without the fact the push is what it always was.
+    expect(applied(h(reviewing, 'H2')).rounds).toContainEqual(expect.objectContaining({ op: 'insert', trigger: 'superseded_by_push' }));
+    // A dev merge pushed while a CI fix holds the delivery is a base refresh too, not the fix's round.
+    const ci = A({ id: 'c1', family: 'ci', status: 'running', triggerReason: 'sig', taskId: 'c1', reportedShas: [] });
+    const repairing = V(D({ state: 'REPAIRING', boundAttemptId: 'c1', currentRound: 1 }), [R({ status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate' })], [ci]);
+    const fix = applied(h(repairing, 'H2', { attribution: { descendsFromBound: true }, proof: { liveContainsLocal: true }, baseOnly: 'compare' }));
+    expect(fix.rounds).toContainEqual(expect.objectContaining({ op: 'insert', trigger: 'base_refresh' }));
+    // The budget: an escalation on a base_refresh round spends nothing; the same verdict on new_commits does.
+    const rounds = (t2: 'base_refresh' | 'new_commits') => [
+      R({ id: 'r1', round: 1, status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate', trigger: 'first_pass' }),
+      R({ id: 'r2', round: 2, headSha: 'H2', status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate', trigger: t2 }),
+    ];
+    expect(spentReviewRounds(V(D({ currentRound: 2 }), rounds('base_refresh')))).toBe(1);
+    expect(spentReviewRounds(V(D({ currentRound: 2 }), rounds('new_commits')))).toBe(2);
+  });
+  test('APPROVED by a person: a sync-only commit keeps the approval (carry-forward), whatever the basis', () => {
+    const v = V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'human' }));
+    const dec = applied(h(v, 'H2', { carryForward: 'content_equivalent' }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1', 'H2'], currentHeadSha: 'H2' });
+    expect(headCoverage({ ...D(), approvedHeads: ['H1', 'H2'], approvalBasis: 'human' }, 'H2')).toBe('human');
+  });
   test('BLOCKED_ON_TRUNK / CLOSED_UNMERGED record the head only', () => {
     expect(applied(h(V(D({ state: 'BLOCKED_ON_TRUNK' })))).toState).toBe('BLOCKED_ON_TRUNK');
     expect(applied(h(V(D({ state: 'CLOSED_UNMERGED' })))).toState).toBe('CLOSED_UNMERGED');
