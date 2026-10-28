@@ -2534,14 +2534,20 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     // An unknown local head counts as contained only when nothing local exists to lose: a reaped
     // (lost) or failed attempt that reported commits but no SHA is not proof (§9, AC-10, S9).
     const unknownLocalIsSafe = cmd.outcome === 'success' || cmd.commitCount === 0;
-    const contains = prOpen && ((!L && unknownLocalIsSafe) || (!!L && live!.headSha === L) || cmd.proof?.liveContainsLocal === true);
     const success = cmd.outcome === 'success';
+    // #5764 (§6.5 row `commitCount>0`): a clean end with no commits of its own has nothing local to
+    // lose, whatever worktree head the runner reported. An adopted PR's owner task may run in a
+    // worktree parked on the base, whose HEAD is the trunk commit and never the PR head; push
+    // recovery for that head could only ever exhaust into ESCALATED(push_undeliverable).
+    const nothingLocal = success && cmd.commitCount === 0;
+    const contains = prOpen && (nothingLocal || (!L && unknownLocalIsSafe) || (!!L && live!.headSha === L) || cmd.proof?.liveContainsLocal === true);
+    const handedOnEmpty = prOpen && nothingLocal && !!L && live!.headSha !== L && cmd.proof?.liveContainsLocal !== true;
     // §6.5 row 1 (§15 step 2): the owner attempt ended and its head is on
     // GitHub, so the worker no longer owns the next move — hand it on.
-    const handOn = (h: string): Decision => {
+    const handOn = (h: string, ev: Record<string, unknown> = evidence): Decision => {
       // T28: a finding recorded for exactly this head while the owner worked decides the hand-off.
       if (d.policyEvidence && d.policyEvidence.headSha === h) {
-        return policyDecision(c, key, d.policyEvidence, { currentHeadSha: h }, evidence);
+        return policyDecision(c, key, d.policyEvidence, { currentHeadSha: h }, ev);
       }
       // e9f1674b: a CI failure hint that arrived while the owner worked was refused by T10
       // (state_not_allowed). The hand-off is where the platform takes the move, so a head the
@@ -2550,25 +2556,25 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
       // delivery can hold) does not skip the repair: a red head is repaired first, and leaving the
       // repair re-enters that verdict (resumeAfterRepair).
       if (cmd.ci && cmd.ci.liveChecks.failing.length > 0 && !c.openAttempt(['ci'])) {
-        return ciRepairAtHandOff(c, key, h, cmd.ci, cmd.reviewRequired === false ? { approvalBasis: 'policy' } : {}, evidence);
+        return ciRepairAtHandOff(c, key, h, cmd.ci, cmd.reviewRequired === false ? { approvalBasis: 'policy' } : {}, ev);
       }
       if (cmd.reviewRequired === false) {
         // The policy needs no review: approved BY POLICY. No round, no verdict,
         // approved_heads untouched (§8 exact-head binding); T15's rails still gate landing.
-        return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h, approvalBasis: 'policy', stateReason: 'policy_no_review' }, evidence: { ...evidence, policy: 'no_review' } });
+        return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h, approvalBasis: 'policy', stateReason: 'policy_no_review' }, evidence: { ...ev, policy: 'no_review' } });
       }
-      if (c.openRoundAt(h)) return c.apply(key, 'AWAITING_REVIEW', { patch: { currentHeadSha: h }, evidence });
+      if (c.openRoundAt(h)) return c.apply(key, 'AWAITING_REVIEW', { patch: { currentHeadSha: h }, evidence: ev });
       const decided = c.decidedAt(h);
-      if (decided) return reenterVerdict(c, key, decided, h, evidence);
+      if (decided) return reenterVerdict(c, key, decided, h, ev);
       const r = c.startRound(h);
-      return c.apply(key, 'AWAITING_REVIEW', { patch: { ...r.patch, currentHeadSha: h }, rounds: r.rounds, effects: r.effects, evidence });
+      return c.apply(key, 'AWAITING_REVIEW', { patch: { ...r.patch, currentHeadSha: h }, rounds: r.rounds, effects: r.effects, evidence: ev });
     };
     // §6.6 (S30): a hand-off failure with nothing local is a requeue while the task's own retry
     // is queued — never a review round at a head the retry is about to move.
     if (cmd.outcome === 'unproven' && cmd.commitCount === 0 && cmd.taskRetryBudgetLeft) {
       return c.apply(key, 'WORKING', { evidence: { ...evidence, requeue: true } });
     }
-    if ((success || cmd.outcome === 'unproven') && contains) return handOn(live!.headSha);
+    if ((success || cmd.outcome === 'unproven') && contains) return handOn(live!.headSha, handedOnEmpty ? { ...evidence, nothingLocal: true } : evidence);
     if (success || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
       // A local commit is never delivery (§9).
       return c.apply(key, 'AWAITING_PUSH', { effects: [c.pushRecovery(L)], evidence });
@@ -2646,7 +2652,25 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     });
   }
 
-  if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
+  // #5796: a repair that ended with nothing local beyond the head it was bound to, on a head that
+  // did not move, pushed nothing and has nothing for push recovery to deliver: its reported head IS
+  // the PR head (the runner reports the worktree as it stands, the PR's own commits ahead of the
+  // base), or it reported no head and no commits. AWAITING_PUSH would wait on a push that cannot
+  // come and end at a person as push_undeliverable, under an approval and a green that nothing
+  // then applies. A clean end is a no-change end instead: the row ends `noop` (it spends its
+  // budget, AC-19) and the delivery resumes at the unmoved head as a cancelled-unstarted repair's
+  // does, where the next CI reading decides (green lands it, red files the next repair or exhausts).
+  // An unproven end is not that claim: it is a failed end, the ledger's next row below.
+  const headUnmoved = d.state === 'REPAIRING' && livePrOpen(live) && !!a.boundHeadSha && live!.headSha === a.boundHeadSha && d.currentHeadSha === a.boundHeadSha;
+  const nothingLocal = L ? L === a.boundHeadSha : cmd.commitCount === 0 && a.reportedShas.every((s) => s === a.boundHeadSha);
+  if (headUnmoved && nothingLocal && cmd.outcome === 'success') {
+    return resumeAfterRepair(c, key, a.boundHeadSha!, {
+      attempts: [end('noop')], patch: {},
+      evidence: { ...evidence, attemptId: a.id, family: a.family, noChange: true, nothingToPush: true },
+    });
+  }
+
+  if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0 && !(headUnmoved && nothingLocal))) {
     // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
     // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
     // AWAITING_PUSH head path and the floor already read it. Only when nothing local can be lost
