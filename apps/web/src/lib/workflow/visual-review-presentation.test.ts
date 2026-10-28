@@ -107,8 +107,13 @@ describe('presentVisualReview: owner decisions', () => {
     expect(copyOf(p)).not.toMatch(/waive/i);
   });
 
-  it('exhausted fixes become a genuine visual judgment', () => {
+  it('exhausted fixes under automatic ask nobody: the merge goes ahead and the screens are queued', () => {
     const p = present({ audit, review: review({ phase: 'needs_you', effectiveIssues: 3, roundCapOpen: true, needsYouReason: 'round_cap' }) });
+    expect(p).toMatchObject({ needsYou: false, owner: null, label: '3 screens are still open' });
+  });
+
+  it('exhausted fixes become a genuine visual judgment (ask)', () => {
+    const p = present({ audit, review: review({ phase: 'needs_you', effectiveIssues: 3, roundCapOpen: true, needsYouReason: 'round_cap' }), policy: resolveVisualReviewPolicy({ workspace: 'ask' }) });
     expect(p.needsYou).toBe(true);
     expect(p.owner).toMatchObject({ kind: 'judge' });
     expect(p.owner?.label).toContain('3');

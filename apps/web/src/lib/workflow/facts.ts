@@ -307,19 +307,28 @@ export async function readDeltaForApproval(
 }
 
 /**
- * AC-79 (workflow-kernel-library.md §5): did the move from the head a FIXING delivery holds to
- * `live` bring only base commits? `own_refresh` when the platform's own `refresh_branch`, pinned
- * to the held head, updated the branch; `compare` when the PR's diff against the base is the same
- * at both heads (a merge of the base, by anyone). Null when it is not read (another state, the
- * fix reported this head itself, no reader) or the read says the diff changed or could not tell.
+ * States where the move to a new head could open a review round, so a push that brought only
+ * base commits has to be told from new work (52a0de67). An approval reads its own carry-forward
+ * evidence (`carryForwardReading`); the owner's own work (WORKING) and a merged PR need nothing.
+ */
+const BASE_ONLY_READ_STATES: ReadonlySet<string> = new Set(['FIXING', 'REPAIRING', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'ESCALATED']);
+
+/**
+ * AC-79 (workflow-kernel-library.md §5): did the move from the head the delivery holds to `live`
+ * bring only base commits? `own_refresh` when the platform's own `refresh_branch`, pinned to the
+ * held head, updated the branch; `compare` when the PR's diff against the base is the same at both
+ * heads (a merge of the base, by anyone). Null when it is not read (a state where no round could
+ * follow, the bound attempt reported this head itself, no reader) or the read says the diff
+ * changed or could not tell. 52a0de67: read in every state a round could follow, not only while
+ * a fix runs: a mission branch's dev sync under an escalation or a review is this push too.
  */
 export async function baseOnlyReading(
   view: KernelView, repoFullName: string, live: LivePr, exec: Exec, github?: GithubFactReader,
 ): Promise<'own_refresh' | 'compare' | null> {
   const d = view.delivery;
-  if (!d || d.state !== 'FIXING' || !d.currentHeadSha || live.headSha === d.currentHeadSha) return null;
+  if (!d || !BASE_ONLY_READ_STATES.has(d.state) || !d.currentHeadSha || live.headSha === d.currentHeadSha) return null;
   const bound = view.attempts.find((a) => a.id === d.boundAttemptId);
-  if (!bound || bound.reportedShas.includes(live.headSha)) return null;
+  if (bound?.reportedShas.includes(live.headSha)) return null;
   if (((await exec(ownRefreshSql(d.id, d.currentHeadSha))).rows ?? []).length > 0) return 'own_refresh';
   if (!live.baseRef || !github?.contentEquivalent) return null;
   return (await github.contentEquivalent(repoFullName, live.baseRef, d.currentHeadSha, live.headSha).catch(() => null)) === true ? 'compare' : null;
@@ -415,7 +424,9 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       // 58c8961e: what changed since the approval, read only when the next round could be a delta review.
       const delta = live && !carryForward ? await readDeltaForApproval(view, fact.repoFullName, live, github) : null;
       // AC-79: while a review fix runs, a push that brought only base commits is foreign (never the fix's).
-      const baseOnly = live ? await baseOnlyReading(view, fact.repoFullName, live, exec, github) : null;
+      // 52a0de67: under an escalation or a review it keeps the verdict / names the round a base refresh.
+      // A carry-forward read that already compared the diff (either way) is not repeated.
+      const baseOnly = live && !carryForward && !diffChanged ? await baseOnlyReading(view, fact.repoFullName, live, exec, github) : null;
       return {
         command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}), ...(changedPaths ? { changedPaths } : {}), ...(delta ? { delta } : {}), ...(baseOnly ? { baseOnly } : {}) },
         ref,

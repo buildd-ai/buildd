@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { LivePr } from './commands';
-import { carryForwardReading, CLOSE_DECISION_WINDOW_MIN, closeDecisionSql, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, refreshUnappliedFactSql, type GithubFactReader } from './facts';
+import { baseOnlyReading, carryForwardReading, CLOSE_DECISION_WINDOW_MIN, closeDecisionSql, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, refreshUnappliedFactSql, type GithubFactReader } from './facts';
 import type { Exec } from './kernel';
 
 const dialect = new PgDialect();
@@ -314,6 +314,42 @@ describe('carryForwardReading: diff evidence for an approved head that moved', (
   test('an unread compare is not a changed diff', async () => {
     expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), reader(null))).toEqual({ evidence: null, diffChanged: false });
     expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), undefined)).toEqual({ evidence: null, diffChanged: false });
+  });
+});
+
+// 52a0de67: a mission PR's dev sync under an escalation (or a review) used to be read nowhere: the
+// carry-forward read runs only under an approval, so every sync opened a full round. The base-only
+// read answers for every state where the next move could be a round.
+describe('baseOnlyReading: a push that brought only base commits, in every state a round could follow', () => {
+  const at = (state: string, stateReason: string | null = null) => ({
+    delivery: {
+      id: 'd1', workspaceId: 'w1', ownerTaskId: 't1', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
+      state, stateReason, version: 5, currentHeadSha: 'H1', currentRound: 2, maxRounds: 3,
+      boundAttemptId: null, resumeState: null, trunkIncidentId: null, approvedHeads: [], approvalBasis: null,
+      compositionHeads: [], ci: null, ciHeadSha: null, mergeable: null, mergeableHeadSha: null, mergedAt: null,
+      mergeCommitSha: null, supersededByPr: null,
+    },
+    rounds: [], attempts: [],
+  } as unknown as Parameters<typeof baseOnlyReading>[0]);
+  const exec = (own: boolean): Exec => async () => ({ rows: own ? [{ '?column?': 1 }] : [] });
+  const reader = (same: boolean | null): GithubFactReader => ({ readPr: async () => null, contentEquivalent: async () => same } as unknown as GithubFactReader);
+
+  test('an escalated delivery: the platform\'s own refresh, else the compare', async () => {
+    expect(await baseOnlyReading(at('ESCALATED', 'review_escalated'), 'acme/widgets', live('H2'), exec(true), reader(null))).toBe('own_refresh');
+    expect(await baseOnlyReading(at('ESCALATED', 'review_escalated'), 'acme/widgets', live('H2'), exec(false), reader(true))).toBe('compare');
+    expect(await baseOnlyReading(at('ESCALATED', 'review_escalated'), 'acme/widgets', live('H2'), exec(false), reader(false))).toBeNull();
+    expect(await baseOnlyReading(at('ESCALATED', 'review_escalated'), 'acme/widgets', live('H2'), exec(false), reader(null))).toBeNull();
+  });
+  test('a review in flight, a repair and a requested change are read too; the owner\'s own work and an approval are not', async () => {
+    for (const state of ['AWAITING_REVIEW', 'REPAIRING', 'CHANGES_REQUESTED', 'FIXING']) {
+      expect(await baseOnlyReading(at(state), 'acme/widgets', live('H2'), exec(false), reader(true))).toBe('compare');
+    }
+    for (const state of ['WORKING', 'APPROVED', 'LANDING', 'MERGED']) {
+      expect(await baseOnlyReading(at(state), 'acme/widgets', live('H2'), exec(true), reader(true))).toBeNull();
+    }
+  });
+  test('a head the delivery already holds is not a move', async () => {
+    expect(await baseOnlyReading(at('ESCALATED', 'review_escalated'), 'acme/widgets', live('H1'), exec(true), reader(true))).toBeNull();
   });
 });
 
