@@ -35,7 +35,7 @@
  */
 
 import type { InsightsUsageRow } from '../../../../packages/shared/src/insights';
-import { FAILED_WORKER_STATUSES, LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { percentile, FAILED_WORKER_STATUSES, LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { basisOfRow } from './cost-basis-split';
 import { executorOf } from './executor';
 import { MAX_UNENDED_RUN_MS } from './fleet-occupancy';
@@ -232,13 +232,6 @@ export { MAX_UNENDED_RUN_MS };
 
 function overlap(a0: number, a1: number, b0: number, b1: number): number {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
-}
-
-/** Nearest-rank percentile (0..1); null when empty. */
-export function percentile(values: number[], p: number): number | null {
-  if (values.length === 0) return null;
-  const s = [...values].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))];
 }
 
 function median(values: number[]): number | null {
@@ -496,7 +489,7 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       medianStartToProdMs: median(startToProd),
     },
     days,
-    time: TIME_CATEGORIES.map(category => ({ category, ms: timeTotals[category], tasks: timeTasks[category], longestMs: timeLongest[category], medianMs: median(timeEach[category]) ?? 0, p90Ms: percentile(timeEach[category], 0.9) ?? 0 })),
+    time: TIME_CATEGORIES.map(category => ({ category, ms: timeTotals[category], tasks: timeTasks[category], longestMs: timeLongest[category], medianMs: median(timeEach[category]) ?? 0, p90Ms: percentile(timeEach[category], 90) ?? 0 })),
   };
 }
 

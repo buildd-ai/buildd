@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildFlowSeries, percentile, type FlowInput, type FlowWorkerRow } from './insights-flow';
+import { buildFlowSeries, type FlowInput, type FlowWorkerRow } from './insights-flow';
 
 const H = 3_600_000;
 const D = 24 * H;
@@ -137,11 +137,5 @@ describe('waiting is per item, not a summed headline', () => {
     expect(runner.medianMs).toBe(5.5 * H);
     expect(runner.p90Ms).toBe(9 * H);
     expect(runner.longestMs).toBe(10 * H);
-  });
-
-  it('percentile is nearest-rank and null on nothing', () => {
-    expect(percentile([], 0.9)).toBeNull();
-    expect(percentile([5], 0.9)).toBe(5);
-    expect(percentile([3, 1, 2], 0.5)).toBe(2);
   });
 });

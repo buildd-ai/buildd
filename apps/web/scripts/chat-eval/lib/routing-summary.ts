@@ -5,15 +5,12 @@
  * can report the production deadline's fallback rate.
  */
 import type { RoutingRecord } from '../../../src/lib/chat/routing';
+import { percentile } from '@buildd/shared';
 
 export interface RoutingSummary {
   total: number;
   outcomes: Record<string, number>;
   latencyMs: { p50: number; p90: number; max: number } | null;
-}
-
-function percentile(sorted: number[], p: number): number {
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
 }
 
 export function summarizeRouting(records: readonly RoutingRecord[]): RoutingSummary {
@@ -23,7 +20,7 @@ export function summarizeRouting(records: readonly RoutingRecord[]): RoutingSumm
   return {
     total: records.length,
     outcomes,
-    latencyMs: lat.length ? { p50: percentile(lat, 50), p90: percentile(lat, 90), max: lat[lat.length - 1] } : null,
+    latencyMs: lat.length ? { p50: percentile(lat, 50)!, p90: percentile(lat, 90)!, max: lat[lat.length - 1] } : null,
   };
 }
 
