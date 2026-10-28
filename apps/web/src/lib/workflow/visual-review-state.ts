@@ -158,7 +158,7 @@ export interface MissionVisualReviewState {
   policy: Pick<ResolvedVisualReviewPolicy, 'mode' | 'origin' | 'waiverAllowed' | 'locked'>;
   scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean; /** What the impact read said: `unknown` when the builders' files could not be read. */ impact?: 'yes' | 'no' | 'unknown' };
   progress?: { captured: number; expected: number | null };
-  findings?: { issues: number; undecided: number; fixesOpen: number; stage: 'fixing' | 'needs_decision'; /** The automatic fix rounds ran out and the audit still finds issues: a person's call. */ exhausted: boolean };
+  findings?: { issues: number; undecided: number; fixesOpen: number; stage: 'fixing' | 'needs_decision'; /** The automatic fix rounds ran out and the audit still finds issues: a person's call. */ exhausted: boolean; /** Policy `automatic` and the rounds ran out: the mission merges anyway and the open findings go to trunk as `[surface fix]` tasks. Never set under strict, ask or off. */ carried?: boolean };
   blocked?: { cause: VisualReviewBlockedCause; causeOwner: 'buildd' | 'workspace' | 'unknown'; autoRetriesLeft: number };
   /**
    * A person's Skip (spec 072de598 I-7, I-18). It stands until a person
@@ -297,6 +297,11 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       // Ambiguity is Jev's; the owner is not a routine reviewer. Only when the
       // automatic fix rounds are spent and the audit still finds issues is it theirs.
       nextActor = findings.exhausted ? 'owner' : findings.stage === 'fixing' ? 'system' : 'jev';
+      // Under `automatic` an exhausted review is not the owner's gate: it merges, and what is left is filed as fixes on trunk.
+      if (findings.exhausted && policy.mode === 'automatic') {
+        findings.carried = true;
+        nextActor = 'none';
+      }
     } else if (input.auditedSha !== undefined && input.uiChange.state !== 'no' && branch.headSha && input.auditedSha !== branch.headSha) {
       // Same-commit evidence only, unless the mission's own UI did not move since: a pass on another commit (or on none we can name) is not a pass for this head.
       const carry = input.carry && input.auditedSha && input.carry.headSha === branch.headSha.toLowerCase() && input.carry.from === input.auditedSha.toLowerCase()
@@ -335,7 +340,8 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
   if (blockedActor) nextActor = blockedActor;
 
   const unfinished = status === 'needed' || status === 'queued' || status === 'running' || status === 'findings' || status === 'blocked';
-  const pendingVerification = required && unfinished;
+  const carried = status === 'findings' && findings?.carried === true;
+  const pendingVerification = required && unfinished && !carried;
   const merged = prStage === 'merged';
   const progress = status === 'running' && review ? { captured: review.captured, expected: review.expected } : undefined;
 
