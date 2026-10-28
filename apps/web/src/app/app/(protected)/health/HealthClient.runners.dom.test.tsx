@@ -170,13 +170,13 @@ describe('Health › Runners at first glance', () => {
     expect(location.href).toBe(href);
   });
 
-  it('the runner row names and counts the runner from the fleet', async () => {
+  it('the runner row names and counts the runner from the fleet with pips and n/cap', async () => {
     await mount(1);
     const row = q('health-runner-row')!;
     expect(row.querySelector('[data-testid="health-runner-name"]')!.textContent).toBe('runner-one');
     // The token's own name is secondary, so the row can still be found under Runner tokens.
     expect(row.textContent).toContain('Runner one');
-    expect(row.textContent).toContain('1 of 3 slots in use');
+    expect(row.textContent).toContain('1/3');
     expect(row.textContent).not.toContain('agents running');
   });
 
@@ -211,7 +211,7 @@ describe('Health › Runners idle alert (R-16)', () => {
 });
 
 describe('Health › Runner row detail (R-5)', () => {
-  it('is folded by default and expands on demand to slots, current work, connectivity and failures', async () => {
+  it('is folded by default and expands on demand to running slots only, current work, connectivity and failures', async () => {
     await mount(0);
     const row = q('health-runner-row')!;
     expect(row.querySelector('[data-testid="health-runner-detail"]')).toBeNull();
@@ -220,7 +220,7 @@ describe('Health › Runner row detail (R-5)', () => {
     for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
     const detail = row.querySelector('[data-testid="health-runner-detail"]')!;
     expect(detail).not.toBeNull();
-    expect(detail.querySelectorAll('[data-testid="health-runner-slot"]').length).toBe(3);
+    expect(detail.querySelectorAll('[data-testid="health-runner-slot"]').length).toBe(1);
     expect(detail.textContent).toContain('Working · ');
     expect(detail.textContent).toContain('Keep captions readable');
     expect(detail.querySelector('[data-testid="health-runner-connectivity"]')!.textContent).toContain('Connected');
@@ -253,7 +253,7 @@ describe('Health › Runner row detail (R-7)', () => {
     const detail = await open({ viewerId: 'me', seesTeamWork: false });
     expect(detail.textContent).toContain("A teammate's work");
     expect(detail.textContent).not.toContain('Keep captions readable');
-    expect(detail.querySelectorAll('[data-testid="health-runner-slot"]').length).toBe(3);
+    expect(detail.querySelectorAll('[data-testid="health-runner-slot"]').length).toBe(1);
   });
 
   it('names it for a team viewer, and a member keeps their own', async () => {
