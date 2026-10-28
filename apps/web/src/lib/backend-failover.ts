@@ -24,7 +24,7 @@ import {
   type BackendId,
   type FailoverDecision,
 } from '@buildd/core/backend-policy';
-import { resolveCodexApiKey } from './codex-credential';
+import { resolveCodexApiKey } from './codex-api-key';
 import { hasOpenAiApiKey } from './openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { effectiveBudgetResetAt, isBudgetExhausted } from './budget-errors';

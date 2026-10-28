@@ -704,14 +704,6 @@ export function buildHealthProbeSpawn(opts: {
   env.BUILDD_CONFIG = opts.configFile;
   env.BUILDD_SERVER = HEALTH_PROBE_SERVER;
   env[HEALTH_PROBE_ENV] = '1';
-  // The credential broker's socket path defaults to a FIXED path shared by
-  // every process on the host. Left un-isolated, the probe's broker unlinks the
-  // live runner's socket and rebinds it on start, then unlinks it again on
-  // shutdown — so worker credential-token fetches on the live runner break
-  // until that process restarts. One line, and it is the difference between a
-  // probe that is merely wasteful and one that breaks the credential path on
-  // every single update attempt.
-  env.BUILDD_BROKER_SOCKET = join(opts.probeHome, 'broker.sock');
 
   return {
     // --debug is explicit: the HTTP server only exists in debug mode, and a
@@ -760,17 +752,14 @@ export interface ReapableChild {
  * the probe stayed alive, and a watchdog cleared the flag ~10 minutes later so
  * the next tick could leak another one.
  *
- * SIGTERM does not take, and the reason is specific rather than mysterious:
- * `CredentialBroker.start()` registers `process.on('SIGTERM', ...)`, which
- * **replaces the default terminate disposition**, and its handler never calls
- * `process.exit` — it releases leases and returns. The probe is a full runner,
- * so it keeps `Bun.serve` and its interval timers alive and the event loop
- * never drains. The signal is delivered, handled, and terminal for nothing.
- * (The handler is also guarded by a `shuttingDown` flag, so repeating SIGTERM
- * is a no-op.) SIGKILL is uncatchable, which is why it has to be the last step.
+ * SIGTERM may not take: any signal listener a module registers
+ * **replaces the default terminate disposition**, and a handler that does not
+ * call `process.exit` leaves the probe's `Bun.serve` and interval timers
+ * alive, so the event loop never drains. The signal is delivered, handled, and
+ * terminal for nothing. SIGKILL is uncatchable, which is why it has to be the
+ * last step.
  *
- * That broker handler is being fixed separately, but **do not weaken this
- * function when it is**. Escalation is the invariant, not a workaround for one
+ * **Do not weaken this function.** Escalation is the invariant, not a workaround for one
  * known handler: the probe boots the entire runner module graph, so any module
  * that ever registers a signal listener — now or later — can make SIGTERM
  * non-terminal again, and the caller has no way to know. Bounded teardown must

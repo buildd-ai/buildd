@@ -566,9 +566,11 @@ describe('shouldUseClaudeCredential: the Claude credential never rides along to 
     expect(shouldUseClaudeCredential(r, { claudeAccessToken: 'claude-token-value', claudeCredentialId: 'cred-1' })).toBe(false);
   });
 
-  test('workers.ts gates the Claude credential block on it', async () => {
+  test('workers.ts no longer receives or writes a server-delivered Claude login', async () => {
     const src = await Bun.file(new URL('../../src/workers.ts', import.meta.url)).text();
-    expect(src).toContain('if (shouldUseClaudeCredential(modelEnv, worker)) {');
+    expect(src).not.toContain('shouldUseClaudeCredential');
+    expect(src).not.toContain('claudeAccessToken');
+    expect(src).not.toContain('serverOauthToken');
   });
 
   test('workers.ts fails the task when a Codex endpoint has no OpenAI-compatible route', async () => {

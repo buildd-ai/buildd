@@ -4,8 +4,6 @@ import { NextRequest } from 'next/server';
 // ── DB mocks ────────────────────────────────────────────────────────────────
 
 const mockSecretsFindMany = mock(() => [] as any[]);
-const mockTasksFindFirst = mock(() => null as any);
-const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 
 /**
  * Every non-cron_runs insert the route attempts, captured. The route is
@@ -25,8 +23,6 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       secrets: { findMany: mockSecretsFindMany },
-      tasks: { findFirst: mockTasksFindFirst },
-      workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     insert: mock((table: any) => ({
       values: mock((vals: any) => {
@@ -70,25 +66,13 @@ mock.module('@buildd/core/db/schema', () => ({
 
 // ── Lib mocks ────────────────────────────────────────────────────────────────
 
-const mockRefreshCodex = mock((_id: string) => Promise.resolve('refreshed'));
-const mockRefreshClaude = mock((_id: string) => Promise.resolve('refreshed'));
-const mockVerifyClaude = mock((_id: string) => Promise.resolve({ verified: true, error: null }));
+const mockVerifyKey = mock((_id: string) => Promise.resolve({ verified: true, error: null }));
 const mockRefreshMcp = mock((_id: string) => Promise.resolve('refreshed'));
-const mockRecordSuccess = mock((_id: string) => Promise.resolve());
-const mockNotifyTeam = mock((_teamId: string, _event: string, _opts: any) => Promise.resolve());
 
-mock.module('@/lib/codex-credential', () => ({ refreshCodexCredential: mockRefreshCodex }));
-mock.module('@/lib/claude-credential', () => ({
-  refreshClaudeCredential: mockRefreshClaude,
-  verifyClaudeCredential: mockVerifyClaude,
-}));
+mock.module('@/lib/anthropic-auth', () => ({ verifyAnthropicApiKey: mockVerifyKey }));
 mock.module('@/lib/mcp-connector-refresh', () => ({ refreshMcpConnectorCredential: mockRefreshMcp }));
-mock.module('@/lib/credential-health', () => ({ recordCredentialAuthSuccess: mockRecordSuccess }));
-mock.module('@/lib/notify', () => ({ notifyTeam: mockNotifyTeam }));
 
 import { GET } from './route';
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeRequest(token?: string, vercelCron = false) {
   const headers: Record<string, string> = {};
@@ -101,300 +85,91 @@ function authedRequest() { return makeRequest('test-secret'); }
 
 const originalEnv = { ...process.env };
 
-// ── Tests ────────────────────────────────────────────────────────────────────
-
 describe('GET /api/cron/codex-token-refresh', () => {
   beforeEach(() => {
-    // Reset mocks
     mockSecretsFindMany.mockReset();
-    mockTasksFindFirst.mockReset();
-    mockWorkspacesFindFirst.mockReset();
-    mockRefreshCodex.mockReset();
-    mockRefreshClaude.mockReset();
-    mockVerifyClaude.mockReset();
+    mockVerifyKey.mockReset();
     mockRefreshMcp.mockReset();
-    mockRecordSuccess.mockReset();
-    mockNotifyTeam.mockReset();
-    tasksInsertValues = [];
-
-    // Defaults
     process.env.CRON_SECRET = 'test-secret';
-    delete process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH;
-
-    // Default: no secrets, no tasks, workspace exists
     mockSecretsFindMany.mockReturnValue([]);
-    mockTasksFindFirst.mockReturnValue(null);
-    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1' });
-    mockVerifyClaude.mockReturnValue(Promise.resolve({ verified: true, error: null }));
+    mockVerifyKey.mockReturnValue(Promise.resolve({ verified: true, error: null }));
     mockRefreshMcp.mockReturnValue(Promise.resolve('refreshed'));
   });
 
   afterAll(() => {
     Object.assign(process.env, originalEnv);
-    // Clean up keys not in originalEnv
     for (const key of Object.keys(process.env)) {
       if (!(key in originalEnv)) delete process.env[key];
     }
   });
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
-
   it('returns 401 when no authorization header', async () => {
-    const res = await GET(makeRequest());
-    expect(res.status).toBe(401);
+    expect((await GET(makeRequest())).status).toBe(401);
   });
 
   it('returns 401 when wrong token', async () => {
-    const res = await GET(makeRequest('wrong-token'));
-    expect(res.status).toBe(401);
+    expect((await GET(makeRequest('wrong-token'))).status).toBe(401);
   });
 
   it('returns 500 when CRON_SECRET not configured', async () => {
     delete process.env.CRON_SECRET;
-    const res = await GET(makeRequest('anything'));
-    expect(res.status).toBe(500);
+    expect((await GET(makeRequest('anything'))).status).toBe(500);
   });
 
   it('rejects a platform cron header used in place of the secret', async () => {
-    // Platform-native cron does not fire in this project (cron-manifest.json is
-    // explicit; vercel.json declares no crons), so this header can only come
-    // from a caller that is not the scheduler. This route refreshes
-    // credentials, which is precisely what must not be reachable without the
-    // secret. CRON_SECRET is the single accepted credential.
-    const res = await GET(makeRequest(undefined, true));
-    expect(res.status).toBe(401);
+    // Platform-native cron does not fire in this project; CRON_SECRET is the single accepted credential.
+    expect((await GET(makeRequest(undefined, true))).status).toBe(401);
   });
 
-  // ── Observe-only mode (default) ───────────────────────────────────────────
-  //
-  // This sweep used to file one task per expiring credential, titled
-  // `[sys] refresh credential <id>`. Nothing on the runner side matched that
-  // title, so the row went down the ordinary claim path and a general-purpose
-  // agent picked it up — with no control-plane key in its sandbox, so it 401'd
-  // and the task failed, every sweep, indefinitely. Worse, one such agent did
-  // take the refresh lock, called the provider, and lost the rotated refresh
-  // token to output redaction; rotation-on-use makes that unrecoverable. The
-  // title also published the credential's identifier everywhere a task title is
-  // rendered. The runner-side broker owns refresh now; with the opt-in flag off
-  // this route observes and reports, and takes no action.
-
-  it('creates no task for an expiring codex credential', async () => {
-    mockSecretsFindMany.mockReturnValueOnce([
-      { id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' },
-    ]).mockReturnValue([]);
-
-    const res = await GET(authedRequest());
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(tasksInsertValues).toHaveLength(0);
-    expect(body.codex.checked).toBe(1);
-  });
-
-  it('creates no task for an expiring claude credential', async () => {
-    mockSecretsFindMany
-      .mockReturnValueOnce([])  // codex expiring
-      .mockReturnValueOnce([{ id: 'sec-2', teamId: 'team-1', workspaceId: 'ws-1' }])  // claude expiring
-      .mockReturnValue([]);  // zombie and verify queries
-
-    const res = await GET(authedRequest());
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(tasksInsertValues).toHaveLength(0);
-    expect(body.claudeRefresh.checked).toBe(1);
-  });
-
-  it('never writes a credential identifier into a task row', async () => {
-    mockSecretsFindMany
-      .mockReturnValueOnce([{ id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' }])
-      .mockReturnValueOnce([{ id: 'sec-2', teamId: 'team-1', workspaceId: null }])
-      .mockReturnValue([]);
-
+  it('never selects a stored subscription login', async () => {
     await GET(authedRequest());
-
-    expect(tasksInsertValues).toHaveLength(0);
-    const written = JSON.stringify(tasksInsertValues);
-    expect(written).not.toContain('sec-1');
-    expect(written).not.toContain('sec-2');
+    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
+    for (const w of wheres) {
+      expect(w).not.toContain('claude_credential');
+      expect(w).not.toContain('codex_credential');
+      expect(w).not.toContain('oauth_token');
+    }
   });
 
-  it('does not look for a task to dedupe against, nor a workspace to file one in', async () => {
-    // Both queries existed only to serve the task-filing path. Reaching either
-    // means some remnant of it survived.
-    mockSecretsFindMany.mockReturnValueOnce([
-      { id: 'sec-1', teamId: 'team-1', workspaceId: null },
-    ]).mockReturnValue([]);
+  it('refreshes due MCP connector credentials', async () => {
+    mockSecretsFindMany.mockReturnValueOnce([{ id: 'mcp-1' }, { id: 'mcp-2' }] as any).mockReturnValue([]);
+    mockRefreshMcp.mockImplementation((id: string) => Promise.resolve(id === 'mcp-1' ? 'refreshed' : 'error'));
 
-    await GET(authedRequest());
+    const body = await (await GET(authedRequest())).json();
 
-    expect(mockTasksFindFirst).not.toHaveBeenCalled();
-    expect(mockWorkspacesFindFirst).not.toHaveBeenCalled();
-  });
-
-  it('reports what it observed, in no nudge vocabulary', async () => {
-    mockSecretsFindMany.mockReturnValueOnce([
-      { id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' },
-    ]).mockReturnValue([]);
-
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.controlPlaneRefresh).toBe(false);
-    expect(body.codex.checked).toBe(1);
-    expect(body).not.toHaveProperty('nudgeMode');
-    expect(body).not.toHaveProperty('nudgedCredentials');
-    expect(body.codex).not.toHaveProperty('nudged');
-    expect(body.codex).not.toHaveProperty('deduped');
-    expect(body.claudeRefresh).not.toHaveProperty('nudged');
-    expect(body.claudeRefresh).not.toHaveProperty('deduped');
-  });
-
-  it('does not call refreshCodexCredential or refreshClaudeCredential when the flag is off', async () => {
-    mockSecretsFindMany.mockReturnValueOnce([
-      { id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' },
-    ]).mockReturnValue([]);
-
-    await GET(authedRequest());
-    expect(mockRefreshCodex).not.toHaveBeenCalled();
-    expect(mockRefreshClaude).not.toHaveBeenCalled();
-  });
-
-  // ── Direct mode (BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true) ─────────────────
-
-  it('reports controlPlaneRefresh=true when BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true', async () => {
-    // The break-glass fallback — refresh straight from the control plane, at
-    // the cost of a rotating egress IP. Deliberately kept, deliberately opt-in.
-    process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH = 'true';
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.controlPlaneRefresh).toBe(true);
-  });
-
-  it('calls refreshCodexCredential in direct mode', async () => {
-    process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH = 'true';
-    mockSecretsFindMany.mockReturnValueOnce([
-      { id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' },
-    ]).mockReturnValue([]);
-    mockRefreshCodex.mockReturnValue(Promise.resolve('refreshed'));
-
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.codex.refreshed).toBe(1);
-    expect(mockRefreshCodex).toHaveBeenCalledWith('sec-1');
-    expect(tasksInsertValues).toHaveLength(0);
-  });
-
-  it('calls refreshClaudeCredential in direct mode', async () => {
-    process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH = 'true';
-    mockSecretsFindMany
-      .mockReturnValueOnce([])  // codex expiring
-      .mockReturnValueOnce([{ id: 'sec-2', teamId: 'team-1', workspaceId: 'ws-1' }])  // claude expiring
-      .mockReturnValue([]);
-    mockRefreshClaude.mockReturnValue(Promise.resolve('refreshed'));
-
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.claudeRefresh.refreshed).toBe(1);
-    expect(mockRefreshClaude).toHaveBeenCalledWith('sec-2');
-  });
-
-  // ── Response shape ────────────────────────────────────────────────────────
-
-  it('always runs MCP refresh regardless of mode', async () => {
-    // flag off — MCP is not affected
-    mockSecretsFindMany.mockReturnValue([]).mockReturnValueOnce([]).mockReturnValueOnce([])
-      .mockReturnValueOnce([]).mockReturnValueOnce([{ id: 'mcp-1' }]).mockReturnValue([]);
-    mockRefreshMcp.mockReturnValue(Promise.resolve('refreshed'));
-
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.mcp).toBeDefined();
+    expect(mockRefreshMcp.mock.calls.map((c) => c[0])).toEqual(['mcp-1', 'mcp-2']);
+    expect(body.mcp).toMatchObject({ checked: 2, refreshed: 1, errors: 1 });
   });
 
   it('sweeps a window that covers its own cron cadence, not 10 minutes', async () => {
     // Regression: a 10-minute lookahead on a 4-hourly cron meant a credential
     // expiring in (10min, 4h] was only ever seen after it had already died.
-    mockSecretsFindMany.mockReturnValue([]);
-
     await GET(authedRequest());
 
     const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
-    const sweep = wheres.find(w => w.includes("1 minute"));
+    const sweep = wheres.find(w => w.includes('1 minute'));
     expect(sweep, 'no query derives its window from the cron cadence').toBeDefined();
     expect(sweep).toContain('300');
   });
 
   it('includes null-expiry connector credentials in the sweep instead of stranding them', async () => {
-    // A NULL tokenExpiresAt is where the refresher parks a credential it marked
-    // dead, and where an AS that omits expires_in leaves one. isNotNull() meant
-    // neither was ever retried — a manual reconnect was the only way out.
-    mockSecretsFindMany.mockReturnValue([]);
-
     await GET(authedRequest());
 
     const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
-    const sweep = wheres.find(w => w.includes("1 minute"));
+    const sweep = wheres.find(w => w.includes('1 minute'));
     expect(sweep).toContain('isNull');
-  });
-
-  it('includes null-expiry codex credentials in the sweep instead of stranding them', async () => {
-    // Same trap, one branch over: a token response without expires_in stores
-    // NULL, and isNotNull() then excluded that row from every later sweep — so
-    // the credential most in need of a refresh was the one guaranteed never to
-    // be offered another.
-    mockSecretsFindMany.mockReturnValue([]);
-
-    await GET(authedRequest());
-
-    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
-    const sweep = wheres.find(w => w.includes('codex_credential'));
-    expect(sweep, 'no query selects codex credentials').toBeDefined();
-    expect(sweep).toContain('isNull');
-  });
-
-  it('includes null-expiry claude credentials in the expiry sweep', async () => {
-    mockSecretsFindMany.mockReturnValue([]);
-
-    await GET(authedRequest());
-
-    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
-    // Zombie detection also selects claude_credential rows by a null expiry;
-    // the expiry sweep is the one carrying an upper bound.
-    const sweep = wheres.find(w => w.includes('claude_credential') && w.includes('"type":"lt"'));
-    expect(sweep, 'no claude expiry sweep found').toBeDefined();
-    expect(sweep).toContain('isNull');
-  });
-
-  it('no expiry sweep filters a null expiry out', async () => {
-    // One assertion covering every credential family: isNotNull on
-    // tokenExpiresAt is a one-way trap, so it should appear nowhere.
-    mockSecretsFindMany.mockReturnValue([]);
-
-    await GET(authedRequest());
-
-    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
     expect(wheres.some(w => w.includes('isNotNull'))).toBe(false);
   });
 
-  it('always runs zombie detection regardless of mode', async () => {
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.claudeRefresh.zombies).toBe(0);
-  });
-
-  it('always runs claude verify regardless of mode', async () => {
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.claudeVerify).toBeDefined();
-    expect(typeof body.claudeVerify.checked).toBe('number');
-  });
-
   // Agent runs read a team's Anthropic key from canonical storage too, so the
-  // liveness ping checks it there; another provider's key and a personal key
-  // are never pinged.
-  it('verifies a team Anthropic key in canonical storage, and only team Anthropic keys', async () => {
+  // liveness ping checks it there; another provider's key, a personal key and a
+  // stored subscription login are never pinged.
+  it('verifies a team Anthropic API key in either storage, and only those', async () => {
     mockSecretsFindMany.mockImplementation((args: any) => {
       const where = JSON.stringify(args?.where ?? null);
-      if (!where.includes('anthropic_api_key') || !where.includes('oauth_token') || where.includes('claude_credential')) return [] as any;
+      if (!where.includes('anthropic_api_key')) return [] as any;
       expect(where).toContain('inference_key');
+      expect(where).not.toContain('oauth_token');
       return [
         { id: 'seat', purpose: 'oauth_token', label: null, userId: null },
         { id: 'legacy', purpose: 'anthropic_api_key', label: null, userId: null },
@@ -403,9 +178,8 @@ describe('GET /api/cron/codex-token-refresh', () => {
         { id: 'mine', purpose: 'inference_key', label: 'anthropic', userId: 'u-1' },
       ] as any;
     });
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(mockVerifyClaude.mock.calls.map((c) => c[0]).sort()).toEqual(['canon', 'legacy', 'seat']);
-    expect(body.claudeVerify.checked).toBe(3);
+    const body = await (await GET(authedRequest())).json();
+    expect(mockVerifyKey.mock.calls.map((c) => c[0]).sort()).toEqual(['canon', 'legacy']);
+    expect(body.apiKeyVerify.checked).toBe(2);
   });
 });

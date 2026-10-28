@@ -461,8 +461,6 @@ export interface LocalWorker {
   mcpSecrets?: Record<string, string>;
   // Server-managed API key (delivered inline during claim, injected into subprocess env)
   serverApiKey?: string;
-  // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
-  serverOauthToken?: string;
   // How the claim chose the model credential (no secret). `scope` personal/none =
   // this worker's alone; `runnerLocalAllowed: false` = the machine's own seat,
   // login and provider must not be used. Absent on older servers / no team policy.
@@ -477,24 +475,13 @@ export interface LocalWorker {
   // Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
   // 'scoped': only the task-scoped token (agent-github-credentials.ts). A mode, not a secret.
   githubCredentials?: { mode: 'scoped' | 'runner' };
-  // Managed Claude access token (from claude_credential purpose). When set, the runner
-  // creates a per-worker CLAUDE_CONFIG_DIR and writes credentials.json with ONLY this
-  // access_token — no refresh_token — preventing in-session token rotation.
-  claudeAccessToken?: string;
-  claudeTokenExpiresAt?: Date | null;
-  /** OAuth scopes recorded for the managed claude_credential; written into .credentials.json. */
-  claudeTokenScopes?: string[];
   /** claude.ai artifact access resolved by the claim (absent = off). */
   claudeAiArtifacts?: import('@buildd/shared').ClaudeAiArtifactAccess;
-  // secretId of the claude_credential managed by the broker for this worker.
-  // Used by startSession to fetch a fresh token via the broker socket instead
-  // of relying on the potentially-stale claudeAccessToken from the claim response.
-  claudeCredentialId?: string;
-  // Codex OAuth credential (delivered inline during claim, materialized as CODEX_HOME/auth.json)
+  // Codex API key (delivered inline during claim, written into CODEX_HOME/auth.json).
+  // A subscription login is never delivered: the runner uses its own `codex login`.
   codexCredential?: {
-    accessToken: string;
-    refreshToken: string;
-    accountId: string;
+    credentialType?: 'api_key';
+    apiKey?: string;
     expiresAt: Date | null;
   };
   // Role config from claim route (for role env resolution) — packaged roles only

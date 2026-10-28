@@ -336,7 +336,7 @@ mock.module('@/lib/task-dependencies', () => ({
   checkDependsOnResolved: mock(() => Promise.resolve()),
 }));
 
-mock.module('@/lib/codex-credential', () => ({
+mock.module('@/lib/codex-api-key', () => ({
   resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 

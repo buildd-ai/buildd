@@ -326,7 +326,7 @@ export interface RunOnceDeps {
   workerManager: OnceWorkerManager;
   /** Replay queued mutations; returns how many are still undelivered. */
   flushOutbox(): Promise<{ remaining: number }>;
-  /** Stop auxiliary daemons (credential broker). */
+  /** Stop auxiliary daemons. */
   shutdown?(): Promise<void>;
   /**
    * After the outcome is known and before the final flush: the warm-repo
@@ -655,7 +655,6 @@ export async function runOnceFromCli(opts: {
 
   const { WorkerManager } = await import('./workers');
   const { Outbox, createReplayHandler } = await import('./outbox');
-  const { credentialBroker } = await import('./broker');
 
   const isolationRoot = config.workspaceIsolationRoot || join(opts.builddHome, 'once-workspaces');
   // Warm repos (BUILDD_WARM_REPO=1, set only by the cloud Worker): restore the
@@ -697,18 +696,11 @@ export async function runOnceFromCli(opts: {
   }
   const wm = new WorkerManager(config, resolver);
   wm.attachOutbox(outbox);
-  // Mid-session credential refresh for long tasks. Not in a cloud container:
-  // it holds no credential to refresh (the claim carries none, see
-  // packages/shared/src/executor.ts), and a broker there would only be a way
-  // to lease and bootstrap one.
-  const cloud = opts.env.BUILDD_EXECUTOR === 'cloud';
-  if (!cloud) credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer });
-
   const deps: RunOnceDeps = {
     getTask: (id) => client.getTask(id) as Promise<OnceTask | null>,
     workerManager: wm,
     flushOutbox: async () => ({ remaining: await flushOutboxWithRetry(outbox) }),
-    shutdown: async () => { stopBrowserShim(); if (!cloud) await credentialBroker.shutdown(); },
+    shutdown: async () => { stopBrowserShim(); },
     afterRun: async (outcome) => warm?.refresh(outcome),
     emitRunEnd: () => emitPhase('run_end'),
     ...(parking ? {

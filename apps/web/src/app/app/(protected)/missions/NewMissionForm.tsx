@@ -56,29 +56,15 @@ function useBackendStatus(teamId: string | undefined, fallbackWorkspaceId: strin
       return;
     }
 
+    // buildd keeps no subscription login: "connected" means a stored API key.
     fetch(`/api/secrets?teamId=${teamId}`)
       .then(r => r.ok ? r.json() : { secrets: [] })
       .then((data: { secrets?: Array<{ purpose: string }> }) => {
-        const hasCredential = (data.secrets ?? []).some(
-          s => s.purpose === 'oauth_token' || s.purpose === 'anthropic_api_key'
-        );
-        setClaude(hasCredential ? 'connected' : 'not_connected');
+        const purposes = (data.secrets ?? []).map(s => s.purpose);
+        setClaude(purposes.includes('anthropic_api_key') ? 'connected' : 'not_connected');
+        setCodex(purposes.some(p => p === 'codex_credential' || p === 'openai_api_key') ? 'connected' : 'not_connected');
       })
-      .catch(() => setClaude('not_connected'));
-
-    if (!fallbackWorkspaceId) {
-      setCodex('not_connected');
-      return;
-    }
-
-    fetch(`/api/workspaces/${fallbackWorkspaceId}/codex-credential?scope=team`)
-      .then(r => r.ok ? r.json() : null)
-      .then((data: { connected: boolean; expired: boolean } | null) => {
-        if (!data?.connected) setCodex('not_connected');
-        else if (data.expired) setCodex('expired');
-        else setCodex('connected');
-      })
-      .catch(() => setCodex('not_connected'));
+      .catch(() => { setClaude('not_connected'); setCodex('not_connected'); });
   }, [teamId, fallbackWorkspaceId]);
 
   return { claude, codex };

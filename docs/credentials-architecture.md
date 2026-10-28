@@ -269,7 +269,7 @@ the plain API key got a 404 and egress fell through past the key straight to
 it on a cloud run.
 
 The route now also calls `resolveAnthropicAuth`
-(`apps/web/src/lib/claude-credential.ts` — the same resolver server-side
+(`apps/web/src/lib/anthropic-auth.ts` — the same resolver server-side
 Anthropic calls use, scoped exactly as the self-hosted runner resolves it) when
 the `agent_endpoint` ranking does not win, and returns the key, flagged
 `{ source: 'anthropic_api_key', key }`, when that resolver's winner is a plain
@@ -462,11 +462,9 @@ exactly like `anthropic_api_key`. This is **not** the same credential as
   authenticates a CLI subprocess is not the same thing as a key that pays for
   one inference call, even though both happen to be OpenAI keys.
 - **Why not just extend `codex_credential`?** `codex_credential` already
-  accepts a plain API key as one of its two credential shapes (the other being
-  the ChatGPT OAuth blob) — see "Multi-field credentials (Codex)" above. But
-  storing it means going through the Codex OAuth-connect UI/route family
-  (`/api/workspaces/[id]/codex-credential/*`, a JSON blob with its own
-  normalization), which is overkill for a team that just wants to paste a key
+  can still hold a plain API key (a `{ api_key }` blob; a stored ChatGPT login
+  is no longer read or served) — see "Multi-field credentials (Codex)" above.
+  But that is a JSON blob with its own shape, which is overkill for a team that just wants to paste a key
   the way they already do for Anthropic. `openai_api_key` is that simpler path
   through the generic `/api/secrets` route, with the same `RAW_STRING_PURPOSES`
   quote-stripping and `REQUIRED_PREFIXES` sanity check as `anthropic_api_key`.
@@ -507,7 +505,7 @@ today.
 
 - Schema: `packages/core/db/schema.ts` (`secrets`)
 - Provider: `packages/core/secrets/` (`postgres-provider.ts`, `types.ts`)
-- Codex helper (blob + refresh): `apps/web/src/lib/codex-credential.ts`
+- Codex API-key helper (resolve + verify, no refresh): `apps/web/src/lib/codex-api-key.ts`
 - OpenAI API key helper (plain key, no refresh): `apps/web/src/lib/openai-credential.ts`
 - Claim-time resolution: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/workers/claim/credential-injection.ts`
 - Refresh cron: `apps/web/src/app/api/cron/codex-token-refresh/route.ts`

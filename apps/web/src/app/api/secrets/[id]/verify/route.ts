@@ -4,8 +4,8 @@ import { secrets } from '@buildd/core/db/schema';
 import { eq, or } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
-import { verifyClaudeCredential } from '@/lib/claude-credential';
-import { getCodexSecretId, verifyCodexCredential } from '@/lib/codex-credential';
+import { verifyAnthropicApiKey } from '@/lib/anthropic-auth';
+import { verifyCodexApiKey } from '@/lib/codex-api-key';
 import { isUuid } from '@/lib/uuid';
 import { verifyCloudflareCredential } from '@/lib/cloudflare-credential';
 import { verifyAgentEndpointSecret } from '@/lib/agent-endpoint-settings';
@@ -15,7 +15,7 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 // POST /api/secrets/[id]/verify
 // Smoke-tests a stored credential against its provider API.
-// Supports: oauth_token, anthropic_api_key (Claude), codex_credential (Codex)
+// Supports: anthropic_api_key (Claude), codex_credential holding an API key (Codex),
 // cloudflare_token (the cloud runner's Cloudflare API token) and agent_endpoint
 // (one Messages call through the team's agent model endpoint).
 export async function POST(req: NextRequest, { params }: RouteContext) {
@@ -38,13 +38,13 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   if (!row) return NextResponse.json({ error: 'Credential not found' }, { status: 404 });
   if (!teamIds.includes(row.teamId)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-  if (row.purpose === 'oauth_token' || row.purpose === 'anthropic_api_key') {
-    const result = await verifyClaudeCredential(id);
+  if (row.purpose === 'anthropic_api_key') {
+    const result = await verifyAnthropicApiKey(id);
     return NextResponse.json(result);
   }
 
   if (row.purpose === 'codex_credential') {
-    const result = await verifyCodexCredential(id);
+    const result = await verifyCodexApiKey(id);
     return NextResponse.json(result);
   }
 
