@@ -32,6 +32,7 @@
  * resolves to mode `off`, whatever a workspace configured.
  */
 
+import { RUNNER_RECENTLY_SEEN_MS } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { accounts, qualityScoutFindings, qualityScoutProbes, qualityScoutRuns, workerHeartbeats, workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, lte, or, sql } from 'drizzle-orm';
@@ -443,7 +444,7 @@ export const dbScoutRunLedger: ScoutRunLedger = {
 // ── Runner host availability ────────────────────────────────────────────────
 
 /** A runner counts as a Scout host only if it advertised one this recently. */
-export const SCOUT_RUNNER_HOST_WINDOW_MS = 15 * 60_000;
+export const SCOUT_RUNNER_HOST_WINDOW_MS = RUNNER_RECENTLY_SEEN_MS;
 
 const ADVERT_NEEDS: ReadonlyArray<[keyof ScoutRunnerHostAdvert, ScoutHostNeed]> = [
   ['command', 'command'],

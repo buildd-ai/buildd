@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, test } from 'bun:test';
 import { scoutRunId, type ScoutRunDeps, type ScoutRunOutcome, type ScoutRunRequest } from './quality-scout-run';
 import type { ScoutProbeRecord, ScoutRun, ScoutRunMetrics } from '@buildd/core/quality-scout/types';
 import {
@@ -534,5 +534,13 @@ describe('finalizeExpiredQualityScoutRuns', () => {
     s.deps.loadProbes = async (id) => { if (id === 'bad') throw new Error('db'); return loadProbes(id); };
     const out = await finalizeExpiredQualityScoutRuns({ deps: s.deps });
     expect(out).toMatchObject({ expired: 2, finalized: ['ok'], errors: 1 });
+  });
+});
+
+describe('scout runner-host window', () => {
+  test('is the shared "demonstrably up" window, not a hand-typed number', async () => {
+    const { RUNNER_RECENTLY_SEEN_MS } = await import('@buildd/shared');
+    const { SCOUT_RUNNER_HOST_WINDOW_MS } = await import('./quality-scout-trigger');
+    expect(SCOUT_RUNNER_HOST_WINDOW_MS).toBe(RUNNER_RECENTLY_SEEN_MS);
   });
 });

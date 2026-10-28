@@ -5,6 +5,7 @@
  * as a list), and the task page's PR card in the pane.
  */
 import Link from 'next/link';
+import { PR_PILL } from '@/lib/pr-presentation';
 import PrCard from '@/components/task/PrCard';
 import { taskPageHref } from '@/lib/mission-task-href';
 import type { BuilddObjectRef } from '../chat-contract';
@@ -12,19 +13,20 @@ import { useChatActions } from '../ChatActions';
 import type { PrObjectView } from './object-views';
 import { Eyebrow, OpenButton } from './parts';
 
-const STATE: Record<PrObjectView['state'], { text: string; cls: string }> = {
-  merged: { text: 'merged', cls: 'text-status-success' },
-  ci_passed: { text: 'CI green', cls: 'text-status-success' },
-  ci_running: { text: 'CI running', cls: 'text-accent-text' },
-  ci_failed: { text: 'CI failed', cls: 'text-status-error' },
-  conflict: { text: 'conflict', cls: 'text-status-warning' },
-  open: { text: 'open', cls: 'text-text-secondary' },
-  closed: { text: 'closed', cls: 'text-text-muted' },
+// Wording comes from the one PR map (PR_PILL); only the inline text tone is local.
+const TONE: Record<PrObjectView['state'], string> = {
+  merged: 'text-status-success',
+  ci_passed: 'text-status-success',
+  ci_running: 'text-accent-text',
+  ci_failed: 'text-status-error',
+  conflict: 'text-status-warning',
+  open: 'text-text-secondary',
+  closed: 'text-text-muted',
 };
 
 export function PrRow({ objRef, view, flush = false }: { objRef: BuilddObjectRef; view: PrObjectView; flush?: boolean }) {
   const actions = useChatActions();
-  const st = STATE[view.state];
+  const st = { text: PR_PILL[view.state].label.toLowerCase(), cls: TONE[view.state] };
   const inPane = actions.paneRef?.kind === 'pr' && actions.paneRef.id === objRef.id;
   const merged = view.state === 'merged';
   return (
