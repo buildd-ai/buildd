@@ -29,9 +29,10 @@ export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
 
   const href = (base: string) => (workspace ? `${base}?workspace=${encodeURIComponent(workspace)}` : base);
   // The Queue tab publishes its own count; any other tab reads it once.
+  // A zero count is noise, so the tab shows the bare label then.
   const waiting = useQueueWaitingCount(workspace, active?.id !== 'queue');
   const label = (item: HealthNavItem) => (
-    item.id === 'queue' && waiting != null
+    item.id === 'queue' && waiting != null && waiting > 0
       ? <>{item.label} <span data-testid="health-queue-count" className="font-mono text-text-muted">{waiting}</span></>
       : item.label
   );
@@ -77,7 +78,7 @@ export default function HealthSubNav({ viewer }: { viewer: HealthViewer }) {
               ref={isActive ? activeTabRef : undefined}
               href={href(item.href)}
               aria-current={isActive ? 'page' : undefined}
-              className={`shrink-0 px-3 min-h-11 flex items-center text-body border-b-2 ${
+              className={`shrink-0 px-3 min-h-11 flex items-center gap-1.5 text-body border-b-2 ${
                 isActive ? 'border-text-primary text-text-primary font-semibold' : 'border-transparent text-text-secondary'
               }`}
             >
