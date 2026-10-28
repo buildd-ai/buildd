@@ -210,7 +210,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
             <span aria-hidden="true" className="shrink-0 font-mono text-[13px] text-text-muted">›</span>
           </span>
           {(meta || attemptsLabel) && (
-            <span className="flex h-4 min-w-0 pl-[2.5rem] font-mono text-[11px] leading-4 text-text-muted">
+            <span className={`flex h-4 min-w-0 pl-[2.5rem] font-mono text-[11px] leading-4 ${meta.includes(' · no progress for ') ? PULSE_TOKEN_TEXT.warning : 'text-text-muted'}`}>
               <span className="min-w-0 truncate">{meta}</span>
               {/* The visible `· ↻ N`, inside the link so it moves with the row
                   (FLIP). The button over it announces it, so it is aria-hidden here. */}
