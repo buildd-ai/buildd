@@ -94,7 +94,7 @@ mock.module('@/lib/account-workspace-cache', () => ({
 // The team's Codex API key (codex_credential `{api_key}` row). A stored
 // ChatGPT/OAuth login never resolves here: the claim delivers none.
 const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
-mock.module('@/lib/codex-credential', () => ({
+mock.module('@/lib/codex-api-key', () => ({
   resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 
@@ -9212,14 +9212,11 @@ describe('claim insert — atomic duplicate-worker guard', () => {
 });
 
 /**
- * Idle-runner credential discovery.
- *
- * The claim call is the runner's heartbeat: it polls on a loop whether or not
- * work exists, so the top-level `pendingCredentialRefreshes` is announced on
- * every poll, zero-worker polls included. No claimed worker carries its own
- * list any more (model credentials spec AC-6).
+ * buildd keeps no subscription login, so a claim poll announces none to
+ * refresh: not on a zero-worker poll, not on a claim, even when an old login
+ * row is still sitting in the secrets table.
  */
-describe('claim response — top-level pendingCredentialRefreshes', () => {
+describe('claim response — never announces stored logins', () => {
   const ORIGINAL_KEY = process.env.ENCRYPTION_KEY;
 
   const expiringRow = {
@@ -9288,11 +9285,10 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
       body: { runner: 'idle-runner', ...body },
     }));
 
-  // THE case this change exists for.
-  it('announces credentials on a poll that claims zero workers', async () => {
+  it('announces nothing on a poll that claims zero workers', async () => {
     mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'restricted', teamId: 'team-1' }]);
-    mockTasksFindMany.mockResolvedValue([]); // nothing pending — the idle runner's normal state
+    mockTasksFindMany.mockResolvedValue([]);
 
     const res = await poll();
     const data = await res.json();
@@ -9300,31 +9296,22 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
     expect(res.status).toBe(200);
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics?.reason).toBe('no_pending_tasks');
-    expect(data.pendingCredentialRefreshes).toEqual([
-      { secretId: 'sec-1', purpose: 'claude_credential', expiresAt: '2026-09-03T10:00:00.000Z' },
-    ]);
+    expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 
-  it('announces on the no-slots early return', async () => {
-    const res = await poll({ maxTasks: 0 });
-    const data = await res.json();
-
+  it('announces nothing on the no-slots early return', async () => {
+    const data = await (await poll({ maxTasks: 0 })).json();
     expect(data.diagnostics?.reason).toBe('no_slots');
-    expect(data.pendingCredentialRefreshes).toHaveLength(1);
+    expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 
-  it('announces on the no-workspaces early return', async () => {
-    const res = await poll();
-    const data = await res.json();
-
+  it('announces nothing on the no-workspaces early return', async () => {
+    const data = await (await poll()).json();
     expect(data.diagnostics?.reason).toBe('no_workspaces');
-    expect(data.pendingCredentialRefreshes).toHaveLength(1);
+    expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 
-  // Model credentials spec AC-6: a claimed task is never wired to a stored
-  // login, so it carries no per-worker refresh list. Only the idle broker's
-  // account list remains.
-  it('a claimed task gets no per-worker refresh list; the account list still announces', async () => {
+  it('a claimed task carries no refresh list, per worker or top-level', async () => {
     mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'restricted', teamId: 'team-1' }]);
     mockTasksFindMany.mockResolvedValue([{
@@ -9340,23 +9327,10 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
       set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
     });
 
-    const res = await poll();
-    const data = await res.json();
+    const data = await (await poll()).json();
 
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].pendingCredentialRefreshes).toBeUndefined();
-    expect(data.pendingCredentialRefreshes).toHaveLength(1);
-  });
-
-  it('announces nothing for an account with no team — the scope would be unbounded', async () => {
-    mockAuthenticateApiKey.mockResolvedValue({
-      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api', teamId: null,
-    });
-
-    const res = await poll();
-    const data = await res.json();
-
-    expect(data.diagnostics?.reason).toBe('no_workspaces');
     expect(data.pendingCredentialRefreshes).toBeUndefined();
   });
 });

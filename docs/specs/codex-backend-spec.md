@@ -187,7 +187,7 @@ The runner's own login comes first; API keys come from buildd (approved spec a8d
 
 **R-27 (a machine login stays on the machine).** When the machine's own login ran the session, the runner never sends its tokens to buildd: the post-session write-back in `workers.ts` is skipped for `codexSeatSource === 'machine'`. *Guard:* none yet; this is a gap.
 
-The older path, where buildd stores a ChatGPT (subscription) Codex login, delivers it to the runner (`seedCodexAuthIfMissing`) and takes refreshed tokens back after the session (`writeBackCodexAuth`), still exists in code but is being removed. This spec does not promise it, and new work must not build on it.
+The older path, where buildd stored a ChatGPT (subscription) Codex login, delivered it to the runner and took refreshed tokens back after the session, is removed. A Codex run uses the runner's own `codex login`, or an API key delivered here.
 
 ---
 
