@@ -33,6 +33,8 @@ export interface MissionFeedWorkerInput {
   supersededByPrNumber?: number | null;
   /** A person recorded that this closed PR's work is deliberately not shipping: settled. */
   abandonedAt?: Date | string | null;
+  /** Milestones from the worker's progress log. */
+  milestones?: Array<{ ts: number; label: string }> | null;
 }
 
 export interface MissionFeedTaskInput {
