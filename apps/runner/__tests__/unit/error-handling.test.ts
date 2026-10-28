@@ -855,11 +855,7 @@ describe('Error Handling', () => {
       expect(manager.getWorkers()).toEqual([]);
     });
 
-    // Pre-existing broken test: claimPendingTasks short-circuits when
-    // !hasCredentials && !serverless (workers.ts:586), which is always true in
-    // tests (no real Claude credentials). Previously hidden by the CI SKIP list.
-    // Fixing requires injecting hasCredentials — out of scope here.
-    test.skip('heartbeat with pendingTaskCount triggers claim', async () => {
+    test('heartbeat with pendingTaskCount triggers claim', async () => {
       mockSendHeartbeat.mockImplementation(async () => ({
         pendingTaskCount: 3,
       }));
