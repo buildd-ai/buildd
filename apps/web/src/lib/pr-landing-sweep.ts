@@ -125,6 +125,8 @@ export interface LandingSweepDeps {
   reseedDue(entries: Array<{ member: string; dueAtMs: number }>): Promise<void>;
   sleep(ms: number): Promise<void>;
   now(): number;
+  /** What is left of the pass's control-plane budget in ms (kernel-client.ts); null or absent outside a pass. */
+  controlPlaneBudgetLeft?(): number | null;
 }
 
 export interface LandingSweepOptions {
@@ -150,8 +152,10 @@ export interface LandingSweepResult {
   headMoved: number;
   /** Failed reads, thrown calls, and transient `needs_human` outcomes. Cron health alarms on this. */
   errors: number;
-  /** Candidates left for a later tick (batch cap or time budget). */
+  /** Candidates left for a later tick (batch cap, time budget or control-plane budget). */
   deferred: number;
+  /** The run stopped because its control-plane budget was spent; the rest stay due. */
+  controlPlaneSpent: boolean;
   /** The floor enumeration hit its cap, so the queue was upserted rather than replaced. */
   truncated: boolean;
 }
@@ -239,6 +243,7 @@ const emptyResult = (source: LandingSweepSource): LandingSweepResult => ({
   headMoved: 0,
   errors: 0,
   deferred: 0,
+  controlPlaneSpent: false,
   truncated: false,
 });
 
@@ -294,6 +299,13 @@ export async function runLandingSweep(
   let i = 0;
   for (; i < refs.length; i++) {
     if (i >= batchCap || deps.now() - startedAt >= timeBudgetMs) break;
+    // Every refresh needs the control plane: past its budget a PR would only be
+    // refused and look stranded, so it is left due for the next tick instead.
+    const cpLeft = deps.controlPlaneBudgetLeft?.() ?? null;
+    if (cpLeft !== null && cpLeft <= 0) {
+      result.controlPlaneSpent = true;
+      break;
+    }
     const ref = refs[i];
     const member = dueMember(ref);
 
