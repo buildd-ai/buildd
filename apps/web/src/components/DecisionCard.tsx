@@ -25,8 +25,9 @@
  * answer: a parked worker through the one answer path every surface shares
  * (`useAnswerSubmit`), an organizer's note through the mission's reply
  * route, an approval by linking to where it is decided. After an answer the
- * card collapses to `You chose <option> · Undo`, showing an Undo button to
- * re-open the card and change the answer. ⌘⏎ (Ctrl⏎) picks the focused
+ * card collapses to `You chose <option> · Undo`. The send is held for a short
+ * window (UNDO_MS); Undo inside it cancels the request and re-opens the card,
+ * and after it the answer is committed and Undo is gone. ⌘⏎ (Ctrl⏎) picks the focused
  * card's primary option, never on an approval.
  */
 import Link from 'next/link';
@@ -49,6 +50,8 @@ export interface DecisionCardProps {
   onNotNow?: () => void;
   /** Acts on a visual-review option (`missions/[id]/visual-decision-act.ts`); throws with the reason on a refusal. */
   visualAct?: (label: string) => Promise<void>;
+  /** How long an answer is held so Undo can cancel it (default UNDO_MS). */
+  undoMs?: number;
   /** The mission whose page this is: a subject naming it is left out (the page already says so). */
   pageMissionId?: string;
   /** Extra attributes on the article (a surface's own test id). */
@@ -121,7 +124,10 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
   );
 }
 
-export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNow, pageMissionId, visualAct, testId }: DecisionCardProps) {
+/** How long an answer is held before it is sent, so Undo is real. */
+export const UNDO_MS = 5000;
+
+export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNow, pageMissionId, visualAct, testId, undoMs = UNDO_MS }: DecisionCardProps) {
   const router = useRouter();
   const now = useNow(serverNow);
   const [more, setMore] = useState(false);
@@ -231,12 +237,39 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     }
   }, [view.answer, noteSending, onAnswered, router]);
 
-  const pick = useCallback((label: string) => {
+  const commit = useCallback((label: string) => {
     if (view.answer.kind === 'worker') void submit.submit(label);
     else if (view.answer.kind === 'note') void answerNote(label);
     else if (view.answer.kind === 'visual') void answerVisual(label);
     else if (view.answer.kind === 'criteria') void (view.options.some(o => o.label === label) ? waive(label) : fileAnswer(label));
   }, [view.answer.kind, view.options, submit, answerNote, answerVisual, waive, fileAnswer]);
+
+  // The send is held for UNDO_MS so Undo cancels a request that never left, rather than
+  // pretending to retract an answer the worker, note or task already has.
+  const [pending, setPending] = useState<string | null>(null);
+  const pendingRef = useRef<{ label: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
+  const flushPending = useCallback(() => {
+    const p = pendingRef.current;
+    if (!p) return;
+    clearTimeout(p.timer);
+    pendingRef.current = null;
+    setPending(null);
+    commitRef.current(p.label);
+  }, []);
+  // Leaving the page inside the window sends the answer: the person did choose it.
+  useEffect(() => () => {
+    const p = pendingRef.current;
+    if (p) { clearTimeout(p.timer); pendingRef.current = null; commitRef.current(p.label); }
+  }, []);
+  const pick = useCallback((label: string) => {
+    if (pendingRef.current) return;
+    // Opening the review is navigation, not an answer: nothing to hold.
+    if (view.answer.kind === 'visual' && label === 'Review screens') { commit(label); return; }
+    pendingRef.current = { label, timer: setTimeout(flushPending, undoMs) };
+    setPending(label);
+  }, [view.answer.kind, commit, flushPending, undoMs]);
 
   const primary = view.options[0] ?? null;
   const sending = submit.sending ?? noteSending;
@@ -262,7 +295,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
   const answeredRef = useRef(false);
 
   // Collapsed: answered, or set aside.
-  const chosen = submit.outcome
+  const chosen = pending != null ? pending : submit.outcome
     ? (submit.outcome.kind === 'sent' ? submit.outcome.answer : submit.outcome.recordedAnswer ?? submit.outcome.answer)
     : noteOutcome?.label ?? null;
   // Once answered, focus moves to the next item that still needs the person.
@@ -278,10 +311,12 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     next?.querySelector<HTMLElement>('button, a[href]')?.focus();
   }, [isAnswered]);
   const handleUndo = useCallback(() => {
-    submit.reset();
-    setNoteOutcome(null);
-    setNoteError(null);
-  }, [submit]);
+    const p = pendingRef.current;
+    if (!p) return;
+    clearTimeout(p.timer);
+    pendingRef.current = null;
+    setPending(null);
+  }, []);
 
   if (chosen != null) {
     const lines = submit.outcome ? answerOutcomeLines(submit.outcome) : null;
@@ -290,14 +325,16 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
       <article ref={cardRef} data-testid={testId ?? 'decision-card'} data-kind={view.kind} data-answered="true" className="flex min-w-0 flex-col gap-1 border-t border-[var(--line-soft)] py-3 text-body">
         <p className="flex items-center gap-1 text-text-primary [overflow-wrap:anywhere]">
           <span>{already ? 'Already answered' : 'You chose'} <span className="font-semibold">{chosen}</span> ·</span>
-          <button
-            type="button"
-            onClick={handleUndo}
-            data-testid="decision-undo"
-            className={TEXT_BUTTON}
-          >
-            Undo
-          </button>
+          {pending != null && (
+            <button
+              type="button"
+              onClick={handleUndo}
+              data-testid="decision-undo"
+              className={TEXT_BUTTON}
+            >
+              Undo
+            </button>
+          )}
         </p>
         {lines?.detail && <p className="text-meta text-text-muted [overflow-wrap:anywhere]">{lines.detail}</p>}
       </article>
