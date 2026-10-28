@@ -109,6 +109,19 @@ describe('RunnerKeysSection: Remove a runner from another team', () => {
   });
 });
 
+describe('RunnerKeysSection: foreign runners grouped by workspace', () => {
+  it('shows one disclosure per workspace with a runner count', async () => {
+    const more = [foreign, { ...foreign, accountId: 'acct-10', accountName: 'Second box' }, { ...foreign, accountId: 'acct-11', workspaceId: 'ws-2', workspaceName: 'api' }];
+    await act(async () => { root.render(createElement(RunnerKeysSection, { keys: [key], foreign: more })); });
+    const groups = all('foreign-runner-group');
+    expect(groups.length).toBe(2);
+    expect(groups[0].textContent).toContain('2 runners');
+    expect(groups[1].textContent).toContain('1 runner');
+    expect((groups[0] as HTMLDetailsElement).open).toBe(false);
+    expect(all('foreign-runner-row').length).toBe(3);
+  });
+});
+
 describe('workspace picks', () => {
   it('collapses the list behind a count, closed by default', async () => {
     const picked: Key = {
