@@ -67,6 +67,11 @@ const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
  */
 export function toMissionFeedTaskInput(t: Loose & { id: string; title: string; status: string }): MissionFeedTaskInput {
   const w = (Array.isArray(t.workers) ? (t.workers[0] as Loose | undefined) : undefined) ?? null;
+  const milestones = Array.isArray(w?.milestones)
+    ? (w.milestones as unknown[])
+        .filter((m): m is { ts?: unknown; label?: unknown } => typeof m === 'object' && m !== null)
+        .filter((m): m is { ts: number; label: string } => typeof m.ts === 'number' && typeof m.label === 'string')
+    : null;
   return {
     id: t.id,
     title: t.title,
@@ -92,6 +97,7 @@ export function toMissionFeedTaskInput(t: Loose & { id: string; title: string; s
           prUrl: str(w.prUrl),
           prLifecycleStatus: str(w.prLifecycleStatus),
           mergedAt: date(w.mergedAt),
+          milestones: milestones && milestones.length > 0 ? milestones : null,
         }
       : null,
   };
