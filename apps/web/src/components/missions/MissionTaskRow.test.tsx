@@ -152,6 +152,48 @@ describe('buildTaskRowMeta', () => {
     expect(buildTaskRowMeta(rowFor(tasks, 'm'), { now: NOW, recordsCount: 2 })).toBe('BUILD · running 4m · 2 rec');
   });
 
+  it('stalled run (30+ min no progress): shows stall label with amber tone flag in spec AC-15', () => {
+    const MIN = 60_000;
+    const start = NOW - 72 * MIN;
+    const lastProgress = start + 24 * MIN;
+    const stalledWorker = { status: 'running', startedAt: new Date(start), milestones: [{ ts: lastProgress, label: 'milestone' }] };
+    const tasks = [t('s', { ...BUILD, status: 'in_progress', worker: stalledWorker })];
+    const meta = buildTaskRowMeta(rowFor(tasks, 's'), { now: NOW });
+    expect(meta).toContain('Running 1h 12m · no progress for 48m');
+  });
+
+  it('a fresh live milestone suppresses the stall that load-time milestones imply', () => {
+    const MIN = 60_000;
+    const start = NOW - 72 * MIN;
+    const worker = { status: 'running', startedAt: new Date(start), milestones: [{ ts: start + 24 * MIN, label: 'old' }] };
+    const row = rowFor([t('s', { ...BUILD, status: 'in_progress', worker })], 's');
+    const meta = buildTaskRowMeta(row, { now: NOW, liveLine: 'editing x.ts', liveProgressMs: NOW - 2 * MIN });
+    expect(meta).not.toContain('no progress');
+    expect(meta).toContain('editing x.ts');
+  });
+
+  it('an old live milestone does not hide a stall', () => {
+    const MIN = 60_000;
+    const start = NOW - 72 * MIN;
+    const worker = { status: 'running', startedAt: new Date(start), milestones: [{ ts: start + 24 * MIN, label: 'm' }] };
+    const row = rowFor([t('s', { ...BUILD, status: 'in_progress', worker })], 's');
+    expect(buildTaskRowMeta(row, { now: NOW, liveProgressMs: start + 10 * MIN })).toContain('no progress for 48m');
+  });
+
+  it('no milestones: the stall is measured from startedAt', () => {
+    const MIN = 60_000;
+    const worker = { status: 'running', startedAt: new Date(NOW - 45 * MIN), milestones: [] };
+    const row = rowFor([t('s', { ...BUILD, status: 'in_progress', worker })], 's');
+    expect(buildTaskRowMeta(row, { now: NOW })).toContain('no progress for 45m');
+  });
+
+  it('a non-running worker shows no stall', () => {
+    const MIN = 60_000;
+    const worker = { status: 'waiting_input', startedAt: new Date(NOW - 90 * MIN), milestones: [] };
+    const row = rowFor([t('s', { ...BUILD, status: 'in_progress', worker })], 's');
+    expect(buildTaskRowMeta(row, { now: NOW })).not.toContain('no progress');
+  });
+
   it('queued behind an unfinished dependency reads "after <title>"', () => {
     const tasks = [t('a', { ...BUILD, title: 'Schema v2' }), t('b', { ...BUILD, dependsOn: ['a'] })];
     expect(buildTaskRowMeta(rowFor(tasks, 'b'), { now: NOW, blockedByTitle: 'Schema v2' })).toBe('BUILD · after Schema v2');
