@@ -343,14 +343,14 @@ function PolicySection({ rules, canManage, providers, workspaces, teamQuery, onC
                           onChange={v => setEffect(p, risk, v)}
                           testId={`access-policy-${p.slug}-${risk}`}
                           options={[
-                            { value: DEFAULT, label: `Default: ${defaultEffectText(risk)}` },
+                            { value: DEFAULT, label: `Default: ${defaultEffectText(risk, p.slug)}` },
                             ...effectsFor(risk).map(e => ({ value: e, label: EFFECT_LABEL[e] })),
                           ]}
                           wrapLabels
                         />
                       ) : (
                         <p className="text-xs text-text-primary" data-testid={`access-policy-${p.slug}-${risk}-value`}>
-                          {rule ? EFFECT_LABEL[rule.effect] : `Default: ${defaultEffectText(risk)}`}
+                          {rule ? EFFECT_LABEL[rule.effect] : `Default: ${defaultEffectText(risk, p.slug)}`}
                         </p>
                       )}
                       {rule?.maxTtlSeconds && <p className="mt-0.5 text-xs text-text-muted">At most {formatLease(rule.maxTtlSeconds)}</p>}

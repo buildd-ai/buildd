@@ -4,9 +4,9 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (88)
+## Active (89)
 
-### auth (9)
+### auth (10)
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
@@ -18,6 +18,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
 - [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-10-16
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
+- [Database Query Agent Capability](./database-query-agent-capability.md) · @max — verified 2026-10-28
+  An agent MUST read production only through buildd's broker, under a live task-scoped database.query grant, as one SELECT over an allowlist run by a read-only role, with every query recorded on the task.
 - [Deployment Actions](./deployment-actions.md) · @max — verified 2026-10-05
   A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 - [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-23
