@@ -22,7 +22,7 @@ import { recordPrFact, unscopedPrFactScope } from '../pr-facts';
 /** A manual operator backfill, run by hand; it cannot import the kernel's scope (TODO S4b: heal through the kernel floor). */
 const OPERATOR_SCOPE = unscopedPrFactScope('backfill-mergedat');
 import { and, isNull, isNotNull, eq } from 'drizzle-orm';
-import { createSign, createPrivateKey } from 'crypto';
+import { signGitHubAppJwt } from '@buildd/shared/github-app-jwt';
 import { sqlWhere } from '../db/relational-sql';
 
 // ─── Minimal inline GitHub auth ──────────────────────────────────────────────
@@ -31,21 +31,6 @@ function getPrivateKey(): string | undefined {
   const b64 = process.env.GITHUB_APP_PRIVATE_KEY_BASE64;
   if (b64) return Buffer.from(b64, 'base64').toString('utf-8');
   return process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
-}
-
-function b64url(input: string | Buffer): string {
-  const buf = typeof input === 'string' ? Buffer.from(input) : input;
-  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-function makeJwt(appId: string, privateKey: string): string {
-  const now = Math.floor(Date.now() / 1000);
-  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const payload = b64url(JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId }));
-  const signing = `${header}.${payload}`;
-  const signer = createSign('RSA-SHA256');
-  signer.update(signing);
-  return `${signing}.${b64url(signer.sign(createPrivateKey(privateKey)))}`;
 }
 
 async function getToken(appId: string, privateKey: string, installationId: number): Promise<string> {
@@ -65,7 +50,7 @@ async function getToken(appId: string, privateKey: string, installationId: numbe
     {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${makeJwt(appId, privateKey)}`,
+        Authorization: `Bearer ${signGitHubAppJwt(appId, privateKey)}`,
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
       },

@@ -2,37 +2,17 @@
 import { db } from './db';
 import { githubInstallations } from './db/schema';
 import { eq } from 'drizzle-orm';
-import { createSign, createPrivateKey } from 'crypto';
+import { signGitHubAppJwt } from '@buildd/shared/github-app-jwt';
 import { sqlWhere } from './db/relational-sql';
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
 const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY_BASE64 ? Buffer.from(process.env.GITHUB_APP_PRIVATE_KEY_BASE64, 'base64').toString('utf-8') : process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
-const base64UrlEncode = (data: string | Buffer) => Buffer.from(data).toString('base64url');
 
 // Generate JWT for GitHub App authentication
 export function generateAppJWT(): string {
   if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
     throw new Error('GitHub App not configured');
   }
-
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const payload = {
-    iat: now - 60,  // Issued 60 seconds ago to account for clock drift
-    exp: now + 600, // Expires in 10 minutes
-    iss: GITHUB_APP_ID,
-  };
-
-  const encodedHeader = base64UrlEncode(JSON.stringify(header));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const signatureInput = `${encodedHeader}.${encodedPayload}`;
-
-  // Use Node's crypto - handles both PKCS#1 and PKCS#8 key formats
-  const privateKey = createPrivateKey(GITHUB_APP_PRIVATE_KEY);
-  const sign = createSign('RSA-SHA256');
-  sign.update(signatureInput);
-  const signature = sign.sign(privateKey);
-
-  return `${signatureInput}.${base64UrlEncode(signature)}`;
+  return signGitHubAppJwt(GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY);
 }
 
 // Get installation access token
