@@ -225,3 +225,22 @@ describe('presentVisualReview: a closed mission passed on an earlier commit', ()
     expect(copyOf(p)).not.toMatch(MECHANICS);
   });
 });
+
+describe('merged fixes waiting on a recapture (spec 072de598 I-15)', () => {
+  const waiting = (next: 'queued' | 'capture' | 'decide') => ({
+    review: review({ phase: next === 'decide' ? 'needs_you' : 'queued', effectiveIssues: 0, roundCapOpen: next === 'decide',
+      recapture: { next, screens: [{ route: '/app/x', viewport: 'mobile', state: null }], routes: ['/app/x'] } } as never),
+    audit,
+    branch: { headSha: 'abc123', base: 'dev', integrationPr: pr(), workLanded: true },
+  });
+
+  it('queued or owed: no owner, no decide or skip, and a new screenshot is said to be coming', () => {
+    for (const next of ['queued', 'capture'] as const) {
+      const p = present(waiting(next) as never);
+      expect(p.needsYou).toBe(false);
+      expect(p.owner).toBeNull();
+      expect(p.canWaive).toBe(false);
+      expect(p.label.toLowerCase()).toContain('new screenshot');
+    }
+  });
+});

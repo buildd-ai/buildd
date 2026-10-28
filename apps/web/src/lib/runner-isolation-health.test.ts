@@ -241,7 +241,7 @@ describe('runnerIsolationDetail: state, eligibility and blocked work', () => {
 
   it("names a teammate's opt-out by its operator", () => {
     const d = runnerIsolationDetail(runner({ shared: false, mine: false, isolation: optOut }));
-    expect(d.headline).toBe('Sandbox disabled by its operator');
+    expect(d.headline).toBe('Sandbox off');
   });
 
   it('says how many waiting protected tasks it refuses, and what to change', () => {

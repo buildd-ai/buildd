@@ -80,6 +80,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ONLY,
     minKeyLevel: null,
   },
+  require_spec_passkey: {
+    description: 'Require a passkey to approve, retire or restore a spec in this team, or stop requiring one.',
+    defaultRoles: OWNER_ONLY,
+    minKeyLevel: null,
+  },
   seed_team_timezone: {
     description: "A user's own timezone change also seeds the timezone of teams they own.",
     defaultRoles: OWNER_ONLY,

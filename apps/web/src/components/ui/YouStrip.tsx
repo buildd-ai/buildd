@@ -21,6 +21,8 @@ export interface YouStripProps {
    * (e.g. `<DecisionCard>`). Absent: the strip's own compact card.
    */
   decision?: ReactNode;
+  /** Where the count stops, when it is not everything (e.g. `this team`). Named so it cannot disagree silently with a wider count. */
+  scope?: string;
   className?: string;
 }
 
@@ -31,7 +33,7 @@ export interface YouStripProps {
  * is used, with the meter's waiting state), `1/N` on its reason when more
  * wait behind it. Spec 9430a28f r2 R-12, AC-11.
  */
-export default function YouStrip({ waiting, decision, className = '' }: YouStripProps) {
+export default function YouStrip({ waiting, decision, scope, className = '' }: YouStripProps) {
   const first = waiting[0];
   if (!first) {
     return (
@@ -42,7 +44,7 @@ export default function YouStrip({ waiting, decision, className = '' }: YouStrip
         className={`flex min-h-11 items-center gap-2.5 rounded-[var(--radius-card)] border border-border-default bg-card px-3.5 py-3 ${className}`}
       >
         <span aria-hidden="true" data-testid="you-strip-dot" className="block h-2 w-2 shrink-0 rounded-full bg-status-success" />
-        <span className="text-title text-text-primary">Nothing waiting on you</span>
+        <span className="text-title text-text-primary">Nothing waiting on you{scope ? ` in ${scope}` : ''}</span>
       </section>
     );
   }
@@ -58,7 +60,7 @@ export default function YouStrip({ waiting, decision, className = '' }: YouStrip
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="truncate text-[15px] font-semibold text-text-primary">{first.title}</span>
             <span className="font-mono text-meta text-text-muted">
-              {first.reason}{n > 1 && <span data-testid="you-strip-position"> · 1/{n}</span>}
+              {first.reason}{n > 1 && <span data-testid="you-strip-position"> · 1/{n}</span>}{scope && <span data-testid="you-strip-scope"> · {scope}</span>}
             </span>
           </div>
           <Link href={first.href} className="btn btn-ink min-h-10 shrink-0">{first.action ?? 'Review'}</Link>

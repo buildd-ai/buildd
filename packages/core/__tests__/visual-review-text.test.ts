@@ -81,9 +81,9 @@ describe('formatVisualReview for MCP', () => {
     expect(text).toContain(`${BASE}/app/artifacts/${SHOT2}`);
   });
 
-  it('gives per cell: viewport, round, verdict, finding, decision and fix with status', () => {
+  it('gives per cell: viewport, verdict, finding, decision and fix with status', () => {
     const text = formatVisualReview(model(), 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
-    expect(text).toMatch(/phone; round 2; agent: unsure; "Header may overlap\."; human: not reviewed, needs review/);
+    expect(text).toMatch(/phone; agent: unsure; "Header may overlap\."; human: not reviewed, needs review/);
     expect(text).toMatch(new RegExp(`fix: in progress, PR #12 \\(task ${FIX}\\)`));
     expect(text).toContain('1 screen to review.');
   });
@@ -339,7 +339,7 @@ describe('formatVisualReview state line', () => {
 describe('formatVisualReview: a merged fix waiting for a screenshot (spec 072de598 I-15)', () => {
   const screen = { key: '/app/x|mobile|dialog', route: '/app/x', viewport: 'mobile' as const, state: 'dialog', variant: 'dialog', fixTaskId: 'fx', fixPrNumber: 7 };
   it('names the exact screen and who takes the next step, never "nothing to decide"', () => {
-    for (const [next, words] of [['queued', 'a capture of each is queued'], ['capture', 'a capture of each is filed next'], ['decide', 'no new screenshot is coming: a human decides fixed or still broken']] as const) {
+    for (const [next, words] of [['queued', 'a capture of each is queued, no decision from you yet'], ['capture', 'a capture of each is filed next, no decision from you yet'], ['decide', 'no new screenshot is coming: a human decides fixed or still broken']] as const) {
       const text = formatVisualReview(model({ recapture: { next, screens: [screen] } }), 'Example', { audience: 'mcp' });
       expect(text).toContain(`Fixes merged, waiting for a new screenshot (1): ${words}: /app/x · dialog · phone.`);
       expect(text).not.toContain('nothing to decide');

@@ -55,6 +55,7 @@ import Disclosure from '@/components/ui/Disclosure';
 import Segmented from '@/components/ui/Segmented';
 import type { FleetSnapshot } from '@buildd/shared';
 import { runnerBusyLine } from '@/lib/fleet-view';
+import { runnerGroupCounts } from '@/lib/runner-busy-line';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
@@ -248,7 +249,7 @@ const SANDBOX_PLAIN_LABEL: Record<string, string> = {
   Seatbelt: 'sandboxed',
   unsandboxed: 'not sandboxed',
   'sandbox disabled': 'sandbox off',
-  'mounts unrestricted': 'sandbox partly on',
+  'mounts unrestricted': 'sandbox limited',
 };
 
 const VIEW_TITLE: Record<HealthView, string> = {
@@ -703,7 +704,7 @@ export function HealthClient({
                 <span className="glow-dot" style={{ background: 'var(--status-error)' }} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-text-primary">
-                    {hb.accountName || 'Runner'} offline
+                    {fleetById.get(hb.id)?.name ?? hb.accountName ?? 'Runner'} offline
                   </p>
                   <p className="text-xs text-text-muted">Last seen {timeAgo(hb.lastHeartbeatAt, now)}</p>
                 </div>
@@ -871,11 +872,16 @@ export function HealthClient({
           <h3 className="text-xs font-medium text-text-secondary">{g.title}</h3>
           <span data-testid={`health-runners-${g.key}-capacity`} className="text-meta text-text-muted">
             {(() => {
-              // Aggregate over this section's online runners, same counts as each row.
-              const on = g.list.filter(r => (fleetById.get(r.id)?.online ?? isRunnerOnline(r.lastHeartbeatAt, now)));
-              const slots = on.reduce((n, r) => n + (fleetById.get(r.id)?.maxSlots ?? r.maxConcurrentWorkers), 0);
-              const busy = on.reduce((n, r) => { const f = fleetById.get(r.id); return n + (f ? f.slots.filter(x => x.worker).length : r.activeWorkerCount); }, 0);
-              return `${countOf(g.list.length, 'runner')} · ${busy} of ${slots} slots busy`;
+              // Every runner in the section, counted the way each row counts it.
+              const c = runnerGroupCounts(g.list.map(r => {
+                const f = fleetById.get(r.id);
+                return {
+                  online: f?.online ?? isRunnerOnline(r.lastHeartbeatAt, now),
+                  maxSlots: f?.maxSlots ?? r.maxConcurrentWorkers,
+                  busy: f ? f.slots.filter(x => x.worker).length : r.activeWorkerCount,
+                };
+              }));
+              return `${countOf(c.runners, 'runner')}${c.offline > 0 ? ` (${c.offline} offline)` : ''} · ${c.busy} of ${c.slots} slots busy`;
             })()}
           </span>
         </div>
@@ -1039,6 +1045,21 @@ export function HealthClient({
         </div>
         </div>
         ))}
+        {(() => {
+          const known = new Set(runners.map(r => r.id));
+          const extra = (runnerLanes?.fleet.runners ?? []).filter(r => !known.has(r.id) && !r.interactive);
+          if (extra.length === 0) return null;
+          return (
+            <div data-testid="health-runners-other" className="mb-6 border-y border-border-default divide-y divide-border-default">
+              {extra.map(r => (
+                <div key={r.id} data-testid="health-runner-row" className="px-4 py-3">
+                  <p data-testid="health-runner-name" className="text-sm text-text-primary truncate">{r.name}</p>
+                  <p className="text-xs text-text-muted">{runnerBusyLine(r)}</p>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </div>
 
       )}
