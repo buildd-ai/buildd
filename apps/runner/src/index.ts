@@ -9,7 +9,7 @@ import { resolveBuilddHome } from './buildd-home';
 import { headlessRunnerKey, runnerHostName, wslIdentityNotice } from './runner-host';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
-import { DEFAULT_LOGIN_MODE, parseLoginMode } from '@buildd/shared';
+import { DEFAULT_LOGIN_MODE, freeSlots, parseLoginMode } from '@buildd/shared';
 import { sandboxPosture } from './isolation-check';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager, getIsolationRecord } from './workers';
@@ -1617,7 +1617,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         alive: true,
         activeWorkers: activeCount,
         maxConcurrent: config.maxConcurrent,
-        capacity: Math.max(0, config.maxConcurrent - activeCount),
+        capacity: freeSlots(config.maxConcurrent, activeCount),
       }, { headers: corsHeaders });
     }
 

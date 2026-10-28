@@ -8,6 +8,7 @@ import {
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import type { SubjectIntakeRepository, SubjectTask } from './subject-intake';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 
 type IntakeTask = typeof tasks.$inferSelect & SubjectTask;
 
@@ -146,7 +147,7 @@ export function createSubjectIntakeRepository(
       });
       const openPrTaskIds = new Set(
         workerRows
-          .filter(worker => worker.taskId && !['closed', 'merged'].includes(worker.prLifecycleStatus ?? ''))
+          .filter(worker => worker.taskId && !isTerminalPrLifecycle(worker.prLifecycleStatus))
           .map(worker => worker.taskId),
       );
       return taskRows.map(task => ({

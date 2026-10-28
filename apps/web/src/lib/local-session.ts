@@ -9,6 +9,7 @@ import {
   LOCAL_SESSION_TOUCH_THROTTLE_MS,
   type LocalSessionEvent,
   type LocalSessionEventResult,
+  isUniqueViolation,
 } from '@buildd/shared';
 import { INTERACTIVE_CLAIM_USER_KEY, INTERACTIVE_LIVE_STATUSES } from '@/lib/interactive-worker-liveness';
 import { priceSessionUsage } from '@buildd/core/model-prices';
@@ -617,11 +618,6 @@ const toPresence = (r: { id: string; endedAt: Date | null; endReason: string | n
   endReason: r.endReason,
   workerIds: toIdArray(r.workerIds),
 });
-
-function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string }; message?: string };
-  return e?.code === '23505' || e?.cause?.code === '23505' || /duplicate key|unique constraint/i.test(e?.message ?? '');
-}
 
 export const drizzleLocalSessionStore: LocalSessionStore = {
   async upsertStart(i) {

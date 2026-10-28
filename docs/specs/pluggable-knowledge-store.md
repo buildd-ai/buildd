@@ -11,8 +11,8 @@ keywords: [turbopuffer, pgvector, index backend, dual-write, shadow read, outbox
 supersedes: []
 assertions:
   - id: pg-vector-default-store
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-09"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): most named symbols (getKnowledgeStore, strongRead, KNOWLEDGE_STORE ...) are unbuilt and verified_by is empty; re-review by 2027-03-09."
     type: symbol
     name: PgVectorStore
     path: packages/core/knowledge-store/pg-vector-store.ts

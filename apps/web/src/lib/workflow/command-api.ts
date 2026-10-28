@@ -47,6 +47,7 @@ import { kernelHost } from './kernel-host';
 import { KERNEL_SPAN, commandOutcomeOf, commandSpanAttributes, commandCallerOf, emitKernelSpan, type CommandAuthFailure } from './kernel-telemetry';
 import type { InstallationResolution } from './command-installation';
 import { COMMAND_HEARTBEAT_MS, postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
+import { isUuid } from '@/lib/uuid';
 
 export const COMMAND_API_VERSION = 1;
 export const COMMAND_PATH = '/v1/commands';
@@ -309,7 +310,6 @@ export interface CommandAnswer<K extends KernelOp = KernelOp> {
   replayed: boolean;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KEY = /^[A-Za-z0-9:._\-]{8,200}$/;
 
 const MAX_GRANT_WORKSPACES = 500;
@@ -319,15 +319,15 @@ function isPrincipal(p: unknown): p is KernelPrincipal {
   const r = p as Record<string, unknown>;
   const { kind, id } = r;
   if (typeof id !== 'string' || id.length === 0 || id.length > 200) return false;
-  if (kind === 'user') return UUID.test(id);
-  if (kind === 'account') return UUID.test(id) && (!('grant' in r) || r.grant === null);
+  if (kind === 'user') return isUuid(id);
+  if (kind === 'account') return isUuid(id) && (!('grant' in r) || r.grant === null);
   if (kind === 'grant') {
-    return UUID.test(id)
+    return isUuid(id)
       && typeof r.grantId === 'string' && r.grantId.length > 0 && r.grantId.length <= 200
       && Array.isArray(r.workspaceIds) && r.workspaceIds.length <= MAX_GRANT_WORKSPACES
-      && r.workspaceIds.every((w) => typeof w === 'string' && UUID.test(w))
+      && r.workspaceIds.every((w) => typeof w === 'string' && isUuid(w))
       && Array.isArray(r.scopes) && r.scopes.length <= 20 && r.scopes.every((x) => typeof x === 'string' && x.length <= 50)
-      && (r.userId === undefined || r.userId === null || (typeof r.userId === 'string' && UUID.test(r.userId)));
+      && (r.userId === undefined || r.userId === null || (typeof r.userId === 'string' && isUuid(r.userId)));
   }
   return kind === 'system';
 }
@@ -342,8 +342,8 @@ export function commandProblem(body: unknown): string | null {
   if (!isPrincipal(b.principal)) return 'principal must be { kind: user|account|grant (uuid id) | system, id }';
   const input = b.input as Record<string, unknown> | null;
   if (!input || typeof input !== 'object') return 'input must be an object';
-  if (isSystemDeliveryOp(b.op)) return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : `${b.op} needs input.deliveryId (uuid)`;
-  if (typeof input.workspaceId !== 'string' || !UUID.test(input.workspaceId)) return 'input.workspaceId must be a uuid';
+  if (isSystemDeliveryOp(b.op)) return typeof input.deliveryId === 'string' && isUuid(input.deliveryId) ? null : `${b.op} needs input.deliveryId (uuid)`;
+  if (typeof input.workspaceId !== 'string' || !isUuid(input.workspaceId)) return 'input.workspaceId must be a uuid';
   if ('prNumber' in input && !(Number.isInteger(input.prNumber) && (input.prNumber as number) > 0)) return 'input.prNumber must be a positive integer';
   if (INSTALLATION_OPS.has(b.op) && !(typeof input.repoFullName === 'string' && REPO.test(input.repoFullName))) return 'input.repoFullName must be owner/name';
   if (input.installationId !== undefined && !(Number.isInteger(input.installationId) && (input.installationId as number) > 0)) return 'input.installationId must be a positive integer';

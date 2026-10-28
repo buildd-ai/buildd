@@ -19,6 +19,7 @@ import {
 } from './operator-recovery-decisions';
 import { mergeOutcomeLabel, priorityOutcomeLabel, repairOutcomeLabel } from './operator-recovery-decision-apply';
 import type { OperatorPassDeps } from './operator-recovery-pass';
+import { isUuid } from '@/lib/uuid';
 
 const DAY = 86_400_000;
 const HEALTH_WINDOW_DAYS = 30;
@@ -287,7 +288,7 @@ export async function evaluateOperatorKindsHealth(now: Date = new Date()): Promi
 /** Worker errors of the members' failed workers, newest first: the raw text the pack redacts. */
 async function loadExcerpts(members: ReadonlyArray<{ id: string; affectedRefs: { workerIds: string[] }; evidenceRefs: Array<{ kind: string; id: string; note?: string }> }>) {
   const [{ db }, { workers }, { desc, inArray, isNotNull, and }] = await Promise.all([import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm')]);
-  const uuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+  const uuid = (s: string) => isUuid(s);
   const workerIds = [...new Set(members.flatMap(m => m.affectedRefs.workerIds))].filter(uuid).slice(0, 20);
   const notes = members.flatMap(m => m.evidenceRefs.filter(e => e.note).map(e => ({ ref: `${e.kind}:${e.id}`, text: e.note! })));
   const rows = workerIds.length

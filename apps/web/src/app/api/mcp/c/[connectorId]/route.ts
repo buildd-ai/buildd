@@ -64,10 +64,10 @@ import {
   type RejectionOutcome,
   type ToolAuditRow,
 } from '@/lib/connector-gateway-store';
+import { isUuid } from '@/lib/uuid';
 
 export const maxDuration = 120;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const NO_STORE = { 'Cache-Control': 'no-store' };
 /** Request headers forwarded to the provider. Never the caller's Authorization or cookies. */
@@ -120,7 +120,7 @@ function upstreamUrlAllowed(url: string): boolean {
 }
 
 async function authenticate(req: NextRequest, connectorId: string): Promise<{ principal: AgentPrincipal } | NextResponse> {
-  if (!UUID_RE.test(connectorId)) return NextResponse.json({ error: 'Not found' }, { status: 404, headers: NO_STORE });
+  if (!isUuid(connectorId)) return NextResponse.json({ error: 'Not found' }, { status: 404, headers: NO_STORE });
   const token = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
   const account = await authenticateTaskScopedCaller(token, req);
   if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE });

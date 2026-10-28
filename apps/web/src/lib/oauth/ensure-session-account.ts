@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { generateApiKey } from '@buildd/shared/api-key';
 import { db } from '@buildd/core/db';
 import { accounts, users } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -30,7 +30,7 @@ export async function ensureTeamSessionAccount(userId: string, teamId: string): 
         columns: { name: true, email: true },
       });
 
-      const plaintextKey = `bld_${randomBytes(32).toString('hex')}`;
+      const plaintextKey = generateApiKey();
       const [created] = await db.insert(accounts).values({
         name: `${user?.name || user?.email || 'User'}'s Account`,
         type: 'user',

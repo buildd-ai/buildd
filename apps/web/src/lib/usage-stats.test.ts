@@ -15,7 +15,6 @@ import {
   aggregateByTask,
   toolCountsForWorker,
   distribution,
-  percentile,
   serverOf,
   parseWindowMs,
   describeScan,
@@ -53,11 +52,8 @@ function row(overrides: Partial<UsageWorkerRow> = {}): UsageWorkerRow {
 }
 
 describe('percentile / distribution', () => {
-  test('nearest-rank percentiles', () => {
-    const values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    expect(percentile(values, 0.5)).toBe(5);
-    expect(percentile(values, 0.9)).toBe(9);
-    expect(percentile(values, 1)).toBe(10);
+  test('nearest-rank median and p90', () => {
+    expect(distribution([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])).toMatchObject({ median: 5, p90: 9, max: 10 });
   });
 
   test('single value is its own median and p90', () => {

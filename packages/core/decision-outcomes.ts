@@ -1,3 +1,4 @@
+import { isUuid } from '@buildd/shared';
 /**
  * Late outcome labels for the decision ledger.
  *
@@ -101,7 +102,6 @@ async function dbStore(): Promise<OutcomeStore> {
   };
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Attach an outcome to one or more decision records. Never throws. */
 export async function labelDecisionOutcome(
@@ -115,7 +115,7 @@ export async function labelDecisionOutcome(
   if (!input.decisionRecordId && !bySubject) return { ok: false, error: 'invalid' };
   if (input.value !== undefined && input.value !== null && !Number.isFinite(input.value)) return { ok: false, error: 'invalid' };
   // A real store would reject a malformed id with a cast error; read it as not found.
-  if (input.decisionRecordId && !deps.store && !UUID_RE.test(input.decisionRecordId)) return { ok: false, error: 'not_found' };
+  if (input.decisionRecordId && !deps.store && !isUuid(input.decisionRecordId)) return { ok: false, error: 'not_found' };
 
   try {
     const store = deps.store ?? await dbStore();

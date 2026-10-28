@@ -17,7 +17,7 @@ import { OPEN_TASK_STATUSES, agentReviewsDataMigrations } from '@buildd/shared';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { policyValue } from '@/lib/policy-overrides';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { kernelInboxMembership, missionPrRoleOf } from '@/lib/action-queue';
+import { kernelDecidesInbox, missionPrRoleOf } from '@/lib/action-queue';
 import { resolveLandingOwnership } from '@/lib/pr-landing-ownership';
 import type { EscalationVerdict } from '@buildd/core/escalation-gate';
 import { gateEscalations, type EscalationGateDeps } from '@/lib/escalation-gate-check';
@@ -263,7 +263,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
     if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
 
     const kernelView = w.taskId ? deliveryViews.get(w.taskId) : undefined;
-    if (kernelView && kernelView.owner !== 'landing') return kernelInboxMembership(kernelView, false);
+    if (kernelDecidesInbox(kernelView)) return kernelView.needsYou;
 
     // Exclude items currently under an active agent-review lease
     if (w.taskId && agentReviewingTaskIds.has(w.taskId)) return false;

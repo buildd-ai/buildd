@@ -11,6 +11,8 @@ import { after } from 'next/server';
 import { TTLCache } from '@/lib/cache';
 import { commentsOnRevision, type CommentView } from './comments';
 import { criteriaUnreadText, specCriteria } from '@buildd/spec-contract/requirements';
+import { NO_CRITERIA_CHANGE_CHECK } from '@buildd/spec-contract/no-criteria-change';
+import type { SpecAutoApprovalEvidence } from '@buildd/core/db/schema';
 import { outlineOf } from '@buildd/core/artifact-read';
 import { specApprover } from './approval';
 import { diffSpecRowRevisions, type DiffHunk } from './diff';
@@ -267,6 +269,12 @@ export interface SpecRevisionLine {
   changeSummary: string | null;
   approvedBy: string | null;
   approvedAt: string | null;
+  /**
+   * Approved by `check:no-criteria-change`, not a person (spec b7fc9316 R-23):
+   * the evidence it recorded. `approvedBy` then names the check. Absent for a
+   * person's approval.
+   */
+  approvedByCheck?: SpecAutoApprovalEvidence;
   createdAt: string;
   /** createdAt and approvedAt in words. */
   createdAgo: string;
@@ -507,6 +515,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     revRows: db.select({
       id: specRevisions.id, revision: specRevisions.revision, authorKind: specRevisions.authorKind, changeSummary: specRevisions.changeSummary,
       approvedBy: specRevisions.approvedBy, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
+      approvedByCheck: sql<SpecAutoApprovalEvidence | null>`${specRevisions.approval}->'check'->'evidence'`,
     }).from(specRevisions).where(eq(specRevisions.specId, specId)).orderBy(desc(specRevisions.revision)),
     // Parent, siblings and children only from the same workspace (a parent is always there, §1).
     parent: spec.parentSpecId
@@ -614,9 +623,11 @@ export async function specPageView(userId: string, specId: string, opts: { revis
 
   const revisions: SpecRevisionLine[] = revRows.map((r) => {
     const pid = personLabel(r.approvedBy);
+    const byCheck = r.approvedAt && r.approvedBy === NO_CRITERIA_CHANGE_CHECK && r.approvedByCheck ? r.approvedByCheck : null;
     return {
       revision: r.revision, author: r.authorKind === 'user' ? 'person' : 'agent', changeSummary: r.changeSummary,
-      approvedBy: r.approvedAt ? (pid && names.get(pid)) || 'a person' : null,
+      approvedBy: r.approvedAt ? (byCheck ? NO_CRITERIA_CHANGE_CHECK : (pid && names.get(pid)) || 'a person') : null,
+      ...(byCheck ? { approvedByCheck: byCheck } : {}),
       approvedAt: r.approvedAt ? new Date(r.approvedAt).toISOString() : null,
       createdAt: new Date(r.createdAt).toISOString(),
       createdAgo: ago(r.createdAt), approvedAgo: r.approvedAt ? ago(r.approvedAt) : null,

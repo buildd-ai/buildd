@@ -55,8 +55,13 @@ export function effectsFor(risk: AccessRisk): AccessEffect[] {
   return risk === 'write' || risk === 'admin' ? ['ask_human', 'forbidden'] : ['auto_grant', 'ask_human', 'forbidden'];
 }
 
-/** What happens with no team rule, in the words of capability-grants.ts `defaultEffect`. */
-export function defaultEffectText(risk: AccessRisk): string {
+/**
+ * What happens with no team rule, in the words of capability-grants.ts
+ * `defaultEffect`. A Neon read is served by buildd's query broker, which no
+ * role mounts, so with no rule it always asks a person.
+ */
+export function defaultEffectText(risk: AccessRisk, provider?: string): string {
+  if (provider === 'neon' && (risk === 'read' || risk === 'query')) return 'Ask a person';
   return risk === 'write' || risk === 'admin' ? 'Ask a person' : 'Allow if the agent uses it';
 }
 

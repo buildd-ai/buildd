@@ -18,6 +18,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { RECEIPT_EVENTS, isTerminalState, type IntentSummary, type Receipt } from '@buildd/dispatch-contract';
 import { db } from './db';
 import { DISPATCH_FALLBACK_KEY, FALLEN_BACK_SQL, type DispatchCause, type DispatchIntent } from './dispatch-outbox';
+import { isUuid } from '@buildd/shared';
+export { isUuid };
 
 export type WorkspaceDispatchTransport = 'in_app' | 'shadow' | 'dispatch';
 /** The transports that publish. `in_app` (the default) never does. */
@@ -34,8 +36,6 @@ export const PUBLISH_SWEEP_LIMIT = 25;
 
 type RawRow = Record<string, unknown>;
 const rowsOf = (r: unknown): RawRow[] => ((r as { rows?: RawRow[] })?.rows ?? []);
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
 
 // ── Publish selection ─────────────────────────────────────────────────────
 
