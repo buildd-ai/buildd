@@ -12,20 +12,20 @@ verified_by: []
 supersedes: []
 assertions:
   - id: failure-incident-triage
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-02"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): intakeReport/introducedBy are unbuilt and verified_by is empty; re-review by 2027-03-02."
     type: symbol
     name: triageIncident
     path: apps/web/src/lib/failure-incident-actions.ts
   - id: failure-incidents-table
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-02"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): intakeReport/introducedBy are unbuilt and verified_by is empty; re-review by 2027-03-02."
     type: symbol
     name: failureIncidents
     path: packages/core/db/schema.ts
   - id: release-attribution
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-02"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): intakeReport/introducedBy are unbuilt and verified_by is empty; re-review by 2027-03-02."
     type: symbol
     name: attributeRelease
     path: packages/core/release-attribution.ts
