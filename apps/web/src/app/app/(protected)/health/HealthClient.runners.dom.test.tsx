@@ -170,13 +170,13 @@ describe('Health › Runners at first glance', () => {
     expect(location.href).toBe(href);
   });
 
-  it('the runner row names and counts the runner from the fleet', async () => {
+  it('the runner row names and counts the runner from the fleet with pips and n/cap', async () => {
     await mount(1);
     const row = q('health-runner-row')!;
     expect(row.querySelector('[data-testid="health-runner-name"]')!.textContent).toBe('runner-one');
     // The token's own name is secondary, so the row can still be found under Runner tokens.
     expect(row.textContent).toContain('Runner one');
-    expect(row.textContent).toContain('1 of 3 slots in use');
+    expect(row.textContent).toContain('1/3');
     expect(row.textContent).not.toContain('agents running');
   });
 

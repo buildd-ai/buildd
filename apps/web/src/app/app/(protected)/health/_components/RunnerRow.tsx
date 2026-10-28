@@ -55,6 +55,24 @@ const STATUS_CLASS: Record<string, string> = {
   error: 'text-status-error',
 };
 
+function renderSlotPips(active: number, max: number): React.ReactNode {
+  return (
+    <div className="flex items-center gap-1">
+      {Array.from({ length: max }, (_, i) => (
+        <span
+          key={i}
+          className={`inline-block w-1.5 h-1.5 rounded-full ${
+            i < active ? 'bg-status-success' : 'bg-border-strong'
+          }`}
+        />
+      ))}
+      <span className="text-meta font-mono text-text-muted ml-1">
+        {active}/{max}
+      </span>
+    </div>
+  );
+}
+
 export function RunnerRow({
   runner,
   fleetRow,
@@ -69,7 +87,7 @@ export function RunnerRow({
   const name = fleetRow?.name ?? runner.accountName ?? 'Runner';
   const tokenName = fleetRow && runner.accountName && runner.accountName !== fleetRow.name ? runner.accountName : null;
   const activeCount = fleetRow ? fleetRow.slots.filter(sl => sl.worker).length : runner.activeWorkerCount;
-  const busyLine = `${activeCount} of ${fleetRow?.maxSlots ?? runner.maxConcurrentWorkers} slots in use`;
+  const maxSlots = fleetRow?.maxSlots ?? runner.maxConcurrentWorkers;
   const posture = deriveSandboxPosture(runner);
   const sandboxLabel = runnerIsolationDetail(runner).state === 'verified' ? SANDBOX_PLAIN_LABEL[posture.label] ?? null : null;
   const sandboxClass = posture.tier === 'success'
@@ -77,6 +95,10 @@ export function RunnerRow({
     : posture.tier === 'warning'
       ? 'text-status-warning'
       : 'text-text-muted';
+
+  // First running task for second line
+  const firstRunningWorker = fleetRow?.slots.find(sl => sl.worker && !sl.worker.question);
+  const firstRunningTaskName = firstRunningWorker?.worker?.name ?? null;
 
   const working = activeCount > 0;
   const freeSlot = runner.maxConcurrentWorkers > activeCount;
@@ -132,18 +154,32 @@ export function RunnerRow({
               </span>
             )}
             {!online && <span className="text-chip font-mono text-text-muted">offline</span>}
-            {sandboxLabel && (
+            {sandboxLabel === 'not sandboxed' ? (
               <span
-                className={`text-chip font-mono ${sandboxClass}`}
+                className={`text-meta font-mono shrink-0 ${sandboxClass}`}
+                title="Not sandboxed"
               >
+                ⚠
+              </span>
+            ) : sandboxLabel ? (
+              <span className={`text-chip font-mono ${sandboxClass}`}>
                 {sandboxLabel}
               </span>
+            ) : null}
+          </div>
+          <div className="text-xs text-text-muted">
+            <div className="flex items-center gap-2 mb-1">
+              {runner.isolation && runner.isolation.platform !== 'other' ? `${PLATFORM_TEXT[runner.isolation.platform] ?? runner.isolation.platform} · ` : ''}
+              {renderSlotPips(activeCount, maxSlots)}
+              {' · '}
+              {online ? `seen ${observedAgo(runner.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(runner.lastHeartbeatAt, now) ?? 'never'}`}
+            </div>
+            {firstRunningTaskName && activeCount > 0 && (
+              <p className="text-meta text-text-secondary truncate">
+                Running: {firstRunningTaskName}
+              </p>
             )}
           </div>
-          <p className="text-xs text-text-muted">
-            {runner.isolation && runner.isolation.platform !== 'other' ? `${PLATFORM_TEXT[runner.isolation.platform] ?? runner.isolation.platform} · ` : ''}{busyLine} ·{' '}
-            {online ? `seen ${observedAgo(runner.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(runner.lastHeartbeatAt, now) ?? 'never'}`}
-          </p>
           {stateLine}
         </div>
         <button

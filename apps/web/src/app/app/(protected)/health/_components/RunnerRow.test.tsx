@@ -26,8 +26,8 @@ describe('RunnerRow (R-14, R-15, AC-10)', () => {
     expect(h).not.toContain('health-runner-detail');
   });
 
-  it('working: busy count shown', () => {
-    expect(html({ runner: runner({ activeWorkerCount: 2 }) })).toContain('2 of 4 slots in use');
+  it('working: busy count shown with pips', () => {
+    expect(html({ runner: runner({ activeWorkerCount: 2 }) })).toContain('2/4');
   });
 
   it('working names the work, masking a teammate\'s run from a member', () => {
