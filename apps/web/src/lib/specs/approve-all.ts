@@ -49,11 +49,11 @@ function outcomeOf(item: ApproveAllItem, r: ConfirmReply): ApproveAllOutcome {
 }
 
 /** Confirm every item, one request each, in order; one failure never stops the rest. */
-export async function approveAll(items: readonly ApproveAllItem[], confirm: (item: ApproveAllItem) => Promise<ConfirmReply>): Promise<ApproveAllResult> {
+export async function approveAll(items: readonly ApproveAllItem[], send: (item: ApproveAllItem) => Promise<ConfirmReply>): Promise<ApproveAllResult> {
   const outcomes: ApproveAllOutcome[] = [];
   for (const item of items) {
     try {
-      outcomes.push(outcomeOf(item, await confirm(item)));
+      outcomes.push(outcomeOf(item, await send(item)));
     } catch (err) {
       outcomes.push({ item, outcome: 'failed', error: err instanceof Error ? err.message : String(err) });
     }
