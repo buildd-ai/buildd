@@ -287,6 +287,33 @@ describe('GET /api/connectors/callback', () => {
     expect(mockInsertValues).toHaveBeenCalled();
   });
 
+  it('tells the user at connect time when the provider issued no refresh token', async () => {
+    const state = 'no-refresh-state';
+    const stateCookie = await signOAuthState({
+      state,
+      connectorId: 'conn-uuid-1',
+      codeVerifier: 'pkce-verifier-value',
+      userId: 'user-1',
+    });
+    mockCookiesGet.mockReturnValue({ value: stateCookie });
+    mockConnectorsFindFirst.mockResolvedValue(mockConnector);
+    mockSecretsFindFirst.mockResolvedValue(null);
+    const payload = Buffer.from(JSON.stringify({ aud: 'https://mcp.example.com' })).toString('base64url');
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.sig`,
+        expires_in: 7200,
+        token_type: 'bearer',
+      }), { status: 200 }),
+    );
+
+    const res = await GET(makeRequest({ code: 'authcode123', state }));
+
+    const loc = new URL(res.headers.get('location') ?? '', 'http://x');
+    expect(loc.searchParams.get('connected')).toBe('conn-uuid-1');
+    expect(loc.searchParams.get('no_refresh_hours')).toBe('2');
+  });
+
   it('updates existing secret row instead of inserting', async () => {
     const state = 'update-state';
     const stateCookie = await signOAuthState({

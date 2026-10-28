@@ -202,9 +202,14 @@ export async function GET(req: NextRequest) {
   try { scheduleAuthedIconRefresh(connector, tokenResponse.access_token); } catch { /* best effort */ }
 
   // Clear the state cookie
-  const response = NextResponse.redirect(
-    new URL(`/app/settings/apps?connected=${encodeURIComponent(connectorId)}`, req.url),
-  );
+  // A provider that issues no refresh token cannot renew this login: say so once,
+  // now, with its lifetime, rather than as a recurring "expired" surprise later.
+  const redirectUrl = new URL(`/app/settings/apps?connected=${encodeURIComponent(connectorId)}`, req.url);
+  if (!tokenResponse.refresh_token) {
+    const hours = tokenResponse.expires_in ? Math.max(1, Math.round(tokenResponse.expires_in / 3600)) : 0;
+    redirectUrl.searchParams.set('no_refresh_hours', String(hours));
+  }
+  const response = NextResponse.redirect(redirectUrl);
   response.cookies.delete(OAUTH_STATE_COOKIE);
   return response;
 }
