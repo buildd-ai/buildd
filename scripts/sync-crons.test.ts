@@ -231,7 +231,7 @@ describe('profiles — an operator schedules only the parts it runs', () => {
   test('the design classification: core loop, ops, and module jobs', () => {
     const core = selectJobs(m.jobs, parseProfiles('core')).map((j) => j.path).sort();
     expect(core).toEqual([
-      '/api/cron/codex-token-refresh',
+      '/api/cron/connector-token-refresh',
       '/api/cron/dispatch-drain',
       '/api/cron/dispatch-drain?gate=due',
       '/api/cron/maintenance',

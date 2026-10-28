@@ -48,7 +48,7 @@ never firing is a reviewable diff rather than an invisible production gap.
 
 Buildd has two trigger mechanisms and they MUST NOT overlap. **Only the
 external scheduler is in use**: Vercel-native crons do not fire in this project,
-and the five routes parked there (`codex-token-refresh`, `connector-block-notify`,
+and the five routes parked there (`connector-token-refresh`, then named `codex-token-refresh`, `connector-block-notify`,
 `lease-expiry-guard`, `pr-reconcile`, `task-archive`) silently never ran, which
 is how an MCP connector credential holding a valid refresh token stayed dead for
 15 days. `vercel.json` now declares no `crons`.
@@ -78,7 +78,7 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
     - `/api/cron/schedules`: hourly, hour field `*`. `isOverdue()` allows only
     `interval*2`. An hour range here is precisely what starved every schedule for
     12h a night, and an enabled schedule fires at 06:00.
-    - `/api/cron/codex-token-refresh`: `0 */4 * * *`, unrestricted. Tokens expire
+    - `/api/cron/connector-token-refresh`: `0 */4 * * *`, unrestricted. Tokens expire
     overnight, and its cadence sizes the credential sweep window (below), which
     must be an **even** interval.
 - A job whose cadence sizes a derived window MUST run on an even interval. An
@@ -88,7 +88,7 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
 - Every externally-triggered route MUST authenticate via `Authorization: Bearer
   $CRON_SECRET`; the scheduler cannot send `x-vercel-cron`. Enforced by the same test.
 - A job whose cadence another module reasons about (currently
-  `codex-token-refresh`, whose cadence sizes the credential sweep window, and
+  `connector-token-refresh`, whose cadence sizes the credential sweep window, and
   `release-health-check`) is mirrored in `CRON_SCHEDULES`
   (`apps/web/src/lib/cron-cadence.ts`) and pinned by
   `cron-cadence.test.ts`, so a schedule change cannot silently mis-size a window.
