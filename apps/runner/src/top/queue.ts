@@ -26,7 +26,7 @@
  * lane place, a limit), the row says that; when it says only a free slot, an
  * older refusal on overlap or a dependency no longer holds and is not repeated.
  */
-import { TERMS, queueWaitShort, titleWithAttempt, type QueueWait, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
+import { TERMS, freeSlots, queueWaitShort, titleWithAttempt, type QueueWait, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
 import { taskIdInSentence } from '../claim-outcomes';
 import {
   DEFERRAL_WORDS, EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, PROVIDER_NAME, providerHolds, providerHoldLine, roleLabel, wallFor, workspaceList,
@@ -363,7 +363,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
   const keep = (t: RunnerQueueTask) => !isOrganizerTask(t) && show(t.workspaceId) && matchesFilter(t.title, state.filter);
   const out: QueueSection[] = [];
   // Free slots go to Queued rows in the claim's order across the teams in view (AC-27).
-  let free = Math.max(0, state.runner.maxConcurrent - busySlots(state));
+  let free = freeSlots(state.runner.maxConcurrent, busySlots(state));
   const remaining = runningRemaining(state, now);
   let slotWait = 0;
   // Rows counted against a mission's cap: the mission's running agents, then each row a free slot takes.
