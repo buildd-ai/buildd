@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { statusPill } from '@/components/ui/states';
+import { STATES, TONE_TEXT, statusPill } from '@/components/ui/states';
 import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 interface TaskOption {
@@ -18,14 +18,8 @@ interface Props {
   disabled?: boolean;
 }
 
-const STATUS_DOT: Record<string, string> = {
-  pending: 'bg-status-warning',
-  assigned: 'bg-status-info',
-  in_progress: 'bg-status-running',
-  review: 'bg-status-info',
-  completed: 'bg-status-success',
-  failed: 'bg-status-error',
-};
+/** A status dot coloured by the shared state table: `bg-current` on the state's tone. */
+const statusDot = (status: string) => `bg-current ${TONE_TEXT[STATES[statusPill(status).state].tone]}`;
 
 export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, onChange, disabled }: Props) {
   const [tasks, setTasks] = useState<TaskOption[]>([]);
@@ -86,7 +80,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
               key={t.id}
               className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs bg-primary/10 text-primary"
             >
-              <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[t.status] || 'bg-text-muted'}`} />
+              <span className={`w-1.5 h-1.5 rounded-full ${statusDot(t.status)}`} />
               <span className="max-w-[180px] truncate"><TaskTitle title={t.title} /></span>
               {!disabled && (
                 <button
@@ -160,7 +154,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
                   }}
                   className="w-full text-left px-3 py-2 text-sm hover:bg-surface-3 flex items-center gap-2"
                 >
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[t.status] || 'bg-text-muted'}`} />
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot(t.status)}`} />
                   <span className="truncate"><TaskTitle title={t.title} /></span>
                   <span className="ml-auto text-xs text-text-muted shrink-0">{statusPill(t.status).label}</span>
                 </button>
