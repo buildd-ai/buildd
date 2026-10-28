@@ -240,7 +240,7 @@ describe('HealthClient — Problems', () => {
     expect(html).toContain('All systems healthy');
     expect(html).not.toContain('data-testid="problem-isolation"');
     expect(html).toContain('data-testid="runner-isolation"');
-    expect(html).toContain('Sandbox disabled by its operator');
+    expect(html).toContain('Sandbox off');
     expect(html).not.toContain('needs attention');
   });
 

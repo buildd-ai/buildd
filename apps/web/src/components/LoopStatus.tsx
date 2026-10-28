@@ -3,7 +3,7 @@ import { ZonedTime } from './DisplayTimezone';
 
 type ConditionType = LoopExitCondition['type'];
 
-/** The exit condition in words, for the history heading ("until CI passes"). */
+/** The exit condition in words, for the history heading. */
 const CONDITION_GOAL: Record<ConditionType, string> = {
   command: 'until the check passes',
   pr_checks_green: 'until CI passes',
@@ -109,11 +109,12 @@ export function LoopStatusChip({
       ? 'text-status-success border-status-success bg-status-success/8'
       : 'text-purple-400 border-purple-400 bg-purple-500/8';
 
+  const outcome = exitConditionType ? outcomeLabel(exitConditionType, loopState === 'satisfied') : null;
   const fullLabel = loopState === 'exhausted'
-    ? `LOOP EXHAUSTED · ${attempt}/${maxLoops}`
+    ? `${outcome || 'Condition unmet'} · ${attempt}/${maxLoops}`
     : loopState === 'satisfied'
-      ? `LOOP SATISFIED · ${attempt}/${maxLoops}`
-      : `LOOPING · attempt ${attempt}/${maxLoops}`;
+      ? `${outcome || 'Condition met'} · ${attempt}/${maxLoops}`
+      : `Waiting · attempt ${attempt}/${maxLoops}`;
 
   return (
     <span
@@ -126,7 +127,7 @@ export function LoopStatusChip({
       ) : (
         <>
           {/* Below md the chip sits shrink-0 beside the task title, so it must stay short. */}
-          <span className="md:hidden" aria-hidden="true">{`LOOP ${attempt}/${maxLoops}`}</span>
+          <span className="md:hidden" aria-hidden="true">{`WAIT ${attempt}/${maxLoops}`}</span>
           <span className="hidden md:inline" aria-hidden="true">
             {fullLabel}
             {deferred && (
@@ -159,7 +160,7 @@ export function LoopHistory({
   return (
     <section className="mb-6" data-testid="loop-history">
       <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
-        Loop history
+        Attempts
         {goal && <span className="normal-case tracking-normal"> · {goal}</span>}
       </div>
       {loopState === 'exhausted' && (
@@ -179,12 +180,7 @@ export function LoopHistory({
               <div key={`${entry.iteration}-${entry.workerId}-${entry.evaluatedAt}`} className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-sm text-text-primary">Iteration {entry.iteration + 1}</span>
-                      <span className={`text-xs font-medium ${entry.satisfied ? 'text-status-success' : 'text-status-error'}`}>
-                        {outcomeLabel(entry.conditionType, entry.satisfied)}
-                      </span>
-                    </div>
+                    <div className="font-medium text-sm text-text-primary">Attempt {entry.iteration + 1}</div>
                     <p className="mt-1 text-sm text-text-secondary">{entry.summary}</p>
                   </div>
                   <div className="text-right text-[11px] text-text-muted shrink-0">

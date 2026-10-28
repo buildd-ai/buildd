@@ -26,9 +26,9 @@ describe('LoopStatusChip', () => {
         startAt="2099-01-01T00:00:00.000Z"
       />,
     );
-    expect(active).toContain('LOOPING · attempt 2/5');
+    expect(active).toContain('Waiting · attempt 2/5');
     expect(active).toContain('data-loop-status="active"');
-    expect(deferred).toContain('LOOPING · attempt 2/5');
+    expect(deferred).toContain('Waiting · attempt 2/5');
     expect(deferred).toContain('resumes');
     expect(deferred).toContain('data-loop-status="deferred"');
   });
@@ -37,20 +37,20 @@ describe('LoopStatusChip', () => {
     const html = renderToStaticMarkup(
       <LoopStatusChip loopIteration={8} maxLoops={5} loopState="exhausted" />,
     );
-    expect(html).toContain('LOOP EXHAUSTED · 5/5');
+    expect(html).toContain('Condition unmet · 5/5');
   });
 });
 
 describe('LoopStatusChip on narrow viewports', () => {
   // The chip is shrink-0 beside the task title in Activity rows; the full
-  // "LOOPING · attempt X/Y" label left the title a few characters at 320px.
+  // "Waiting · attempt X/Y" label left the title a few characters at 320px.
   it('shows a compact label below md and keeps the full text for assistive tech', () => {
     const html = renderToStaticMarkup(
       <LoopStatusChip loopIteration={1} maxLoops={5} loopState="running" />,
     );
-    expect(html).toMatch(/<span[^>]*class="[^"]*md:hidden[^"]*"[^>]*aria-hidden="true"[^>]*>LOOP 2\/5<\/span>/);
-    expect(html).toMatch(/<span[^>]*class="[^"]*hidden md:inline[^"]*"[^>]*aria-hidden="true"[^>]*>LOOPING · attempt 2\/5<\/span>/);
-    expect(html).toMatch(/<span class="sr-only">LOOPING · attempt 2\/5<\/span>/);
+    expect(html).toMatch(/<span[^>]*class="[^"]*md:hidden[^"]*"[^>]*aria-hidden="true"[^>]*>WAIT 2\/5<\/span>/);
+    expect(html).toMatch(/<span[^>]*class="[^"]*hidden md:inline[^"]*"[^>]*aria-hidden="true"[^>]*>Waiting · attempt 2\/5<\/span>/);
+    expect(html).toMatch(/<span class="sr-only">Waiting · attempt 2\/5<\/span>/);
   });
 
   it('drops the deferred resume time from the compact label but keeps it at md+', () => {
@@ -63,7 +63,7 @@ describe('LoopStatusChip on narrow viewports', () => {
       />,
     );
     const compact = html.match(/<span[^>]*md:hidden[^>]*>([^<]*)<\/span>/)?.[1];
-    expect(compact).toBe('LOOP 2/5');
+    expect(compact).toBe('WAIT 2/5');
     expect(html).toMatch(/hidden md:inline[^>]*>[^<]*<span[^>]*> · resumes/);
   });
 });
@@ -78,8 +78,8 @@ describe('LoopHistory', () => {
     const html = renderToStaticMarkup(
       <LoopHistory entries={[entry(0)]} loopState="condition_unmet" maxLoops={5} />,
     );
-    expect(html).toContain('Iteration 1');
-    expect(html).toContain('Check failed');
+    expect(html).toContain('Attempt 1');
+    expect(html).toContain('Command failed');
     expect(html).toContain('1 failing test');
     expect(html).toContain('1.23s');
   });
@@ -89,7 +89,7 @@ describe('LoopHistory', () => {
       <LoopHistory entries={[entry(0), entry(1), entry(2)]} loopState="exhausted" maxLoops={3} />,
     );
     expect(html).toContain('Condition unmet after 3 attempts');
-    expect((html.match(/Iteration /g) ?? []).length).toBe(3);
+    expect((html.match(/Attempt /g) ?? []).length).toBe(3);
   });
 });
 
@@ -113,15 +113,15 @@ describe('Loop chip and history agree (surface fix 415f718a)', () => {
       <LoopStatusChip loopIteration={2} maxLoops={3} loopState="satisfied" exitConditionType="pr_checks_green" />,
     );
     const list = renderToStaticMarkup(<LoopHistory entries={entries} loopState="satisfied" maxLoops={3} />);
-    expect(chip).toContain('LOOP SATISFIED · 2/3');
-    expect((list.match(/Iteration \d/g) ?? []).length).toBe(2);
+    expect(chip).toContain('CI passed · 2/3');
+    expect((list.match(/Attempt \d/g) ?? []).length).toBe(2);
   });
 
   it('counts evaluations on an exhausted loop', () => {
     const chip = renderToStaticMarkup(
       <LoopStatusChip loopIteration={3} maxLoops={3} loopState="exhausted" />,
     );
-    expect(chip).toContain('LOOP EXHAUSTED · 3/3');
+    expect(chip).toContain('Condition unmet · 3/3');
   });
 
   it('renders no worker UUID and no raw condition enum', () => {
@@ -132,9 +132,8 @@ describe('Loop chip and history agree (surface fix 415f718a)', () => {
     expect(list).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
     expect(list).not.toContain('pr_checks_green');
     expect(list).not.toMatch(/PR_CHECKS_GREEN/i);
-    expect(list).toContain('until CI passes');
-    expect(list).toContain('CI passed');
-    expect(list).toContain('CI not passing');
+    expect(list).toContain('Checks green');
+    expect(list).toContain('Checks failing');
   });
 });
 

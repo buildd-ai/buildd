@@ -2218,7 +2218,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       return d.missionPr
         ? `mission PR${ref} ready to merge`
         : d.count === 1
-          ? `1 PR${ref} ready to merge`
+          ? (ref ? `PR${ref} is ready to merge` : '1 PR ready to merge')
           : `${d.count} PRs ready to merge`;
     }
     case 'ci_red':

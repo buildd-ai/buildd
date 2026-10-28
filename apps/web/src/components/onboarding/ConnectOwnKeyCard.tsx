@@ -11,9 +11,8 @@ import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/setti
 export default function ConnectOwnKeyCard({ teamId, returnTo }: { teamId: string; returnTo: string }) {
   const flow = providerFlowMessage(useSearchParams());
   return (
-    <section data-testid="connect-own-key" className="mb-8 border-2 border-border-strong bg-card px-5 py-4 shadow-[var(--card-shadow)]">
-      <div className="section-label !text-accent-text">Agent chat</div>
-      <h2 className="mt-1.5 text-[17px] font-semibold text-text-primary">Connect OpenRouter to start</h2>
+    <section data-testid="connect-own-key" className="card mb-8 p-4">
+      <h2 className="text-title font-semibold text-text-primary">Connect OpenRouter to start</h2>
       <p className="mt-1 text-sm text-text-secondary">Your team has everyone bring their own key. OpenRouter makes one in your account, and your chats bill to it.</p>
       {flow && (
         <p role={flow.tone === 'err' ? 'alert' : 'status'} className={`mt-2 text-sm ${flow.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{flow.text}</p>

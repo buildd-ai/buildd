@@ -54,7 +54,7 @@ it('AC-11: with nothing waiting the phone opens on a green dot and "Nothing wait
     expect(first().getAttribute('data-testid')).toBe('you-strip');
     expect(first().getAttribute('data-waiting')).toBe('0');
     expect(first().querySelector('[data-testid="you-strip-dot"]')).not.toBeNull();
-    expect(first().textContent).toBe('Nothing waiting on you');
+    expect(first().textContent).toBe('Nothing waiting on you in this team');
 
     act(() => root.render(<ActivityView mode="now" now={buildActivityNow({ tasks: [building, asking], missions: [], rules, now: nowMs })} history={[]} nowMs={nowMs} hrefs={hrefs} />));
     expect(first().getAttribute('data-waiting')).toBe('1');
@@ -63,6 +63,7 @@ it('AC-11: with nothing waiting the phone opens on a green dot and "Nothing wait
     expect(card.querySelector('a')?.getAttribute('href')).toBe('/app/tasks/q');
     const meter = container.querySelector('[data-testid="activity-now-row"][data-row="q"] [data-testid="delivery-meter"]')!;
     expect(meter.getAttribute('data-state')).toBe('waiting-on-you');
+    expect(first().querySelector('[data-testid="you-strip-scope"]')?.textContent).toContain('this team');
     // The desktop rail carries the same strip under Waiting on you.
     expect(container.querySelector('[data-testid="activity-rail-waiting"] [data-testid="you-strip-card"]')?.getAttribute('data-item')).toBe('q');
   } finally { act(() => root.unmount()); }
