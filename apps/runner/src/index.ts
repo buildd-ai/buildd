@@ -14,7 +14,6 @@ import { sandboxPosture } from './isolation-check';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
-import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemoteAsync } from './workspace';
 import { gitShellAsync } from './git-async';
 import { toTopWorkerSummaries } from './top-worker-summary';
@@ -1441,9 +1440,6 @@ const manualUpdateDeps: ManualUpdateDeps = {
   isNoProgressUpdate,
 };
 
-// Whether this process started the credential broker (its shutdown removes the broker socket).
-let brokerStarted = false;
-
 // Subscribe to worker events (if configured)
 if (workerManager) {
   workerManager.onEvent(broadcast);
@@ -1453,20 +1449,6 @@ if (workerManager) {
       setLatestCommit(event.latestCommit);
     }
   });
-  // Start the credential broker daemon — acquires Postgres leases and proactively
-  // refreshes credentials on behalf of all workers on this runner.
-  //
-  // The resolved config is passed explicitly: the broker singleton is constructed
-  // at import time and can only see the environment, but a stock install keeps
-  // its API key in config.json (BUILDD_API_KEY is a CI/Docker override we
-  // document as "NOT recommended"). Left to the env alone the broker sent no
-  // Authorization header, 401'd on every lease acquire, and silently never
-  // refreshed a single credential.
-  //
-  // Without its own signal handlers: the runner's stop handler below owns the
-  // exit, and releases the broker's leases after pausing the agents (R-37).
-  credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer }, { signalHandlers: false });
-  brokerStarted = true;
   // R-37: agents the last stop paused (or a crash left with their worktree and
   // session intact) continue in their own sessions, unless the runner is on hold.
   void workerManager.continueRestoredAgents().catch((err) => console.warn('[restart] continuing paused agents failed:', err));
@@ -1482,7 +1464,6 @@ if (workerManager) {
 // SIGTERM/SIGINT listener in this process. A second signal exits at once.
 installRunnerShutdown({
   pauseAgents: async () => { await workerManager?.pauseAllForShutdown(); },
-  releaseBroker: async () => { if (brokerStarted) await credentialBroker.shutdown(); },
   exit: (code) => process.exit(code),
 });
 

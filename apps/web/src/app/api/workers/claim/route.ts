@@ -26,7 +26,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { pinnedRunnerOf, runnerMatchesPin } from '@buildd/core/runner-pin';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
-import { resolveCodexApiKey } from '@/lib/codex-credential';
+import { resolveCodexApiKey } from '@/lib/codex-api-key';
 import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
@@ -122,7 +122,6 @@ import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
   attachCodexCredentials,
   attachServerManagedSecrets,
-  resolveAccountCredentialRefreshes,
 } from './credential-injection';
 import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint, runnerSupportsEndpointHeaders } from './agent-endpoint-injection';
 import {
@@ -405,15 +404,7 @@ export async function POST(req: NextRequest) {
   /**
    * Every zero-worker 200 goes through here.
    *
-   * The claim call is the runner's heartbeat — it polls on a loop whether or not
-   * work exists — so each of these polls is also the only chance an idle runner
-   * gets to discover the credentials its broker is responsible for. Attaching
-   * `pendingCredentialRefreshes` per claimed worker alone meant an online-but-idle
-   * runner was told about nothing and refreshed nothing. Scope is the account's
-   * own team; the payload is metadata, never token material. See
-   * ./credential-injection → resolveAccountCredentialRefreshes.
-   *
-   * Non-200 exits (401/403/400/429/422) deliberately do NOT announce: those are
+   * Non-200 exits (401/403/400/429/422) deliberately do not use it: those are
    * error bodies the runner throws on rather than parses as a claim response.
    */
   const emptyClaim = async (payload: {
@@ -459,12 +450,9 @@ export async function POST(req: NextRequest) {
         })
         .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${stampTaskId}:`, err));
     }
-    // A cloud container has no credential broker and must not learn secret ids.
-    const pendingCredentialRefreshes = cloudExecutor ? undefined : await resolveAccountCredentialRefreshes(account);
     return NextResponse.json({
       workers: [],
       ...payload,
-      ...(pendingCredentialRefreshes ? { pendingCredentialRefreshes } : {}),
     });
   };
 
@@ -3436,9 +3424,6 @@ export async function POST(req: NextRequest) {
       }
     }
   }
-  // The idle broker's account-team-scoped list, on every poll, claim or no
-  // claim. No claimed worker is wired to it (spec AC-6).
-  const accountCredentialRefreshes = cloudExecutor ? undefined : await resolveAccountCredentialRefreshes(account);
 
   // Notify on task claims — routed to the OWNING team's channel (not a global one).
   for (const cw of claimedWorkers) {
@@ -3473,7 +3458,6 @@ export async function POST(req: NextRequest) {
     workers: claimedWorkers.map((cw) => (cw.task
       ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
       : cw)),
-    ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     // Only report partial budget exhaustion for background runners. Interactive sessions
     // have their own credentials and should not be told about account budget state.
     ...(accountBudgetExhausted && !runsOnCallersSeat && {

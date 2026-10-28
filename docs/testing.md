@@ -453,7 +453,7 @@ Two consequences, both of which have cost real debugging time:
    `SyntaxError: Export named 'baz' not found in module ...` — in a file whose
    author never touched that stub.
 2. **A module cannot be both globally stubbed and unit-tested in one process.**
-   If nine files stub `@/lib/codex-credential` and `codex-credential.test.ts`
+   If nine files stub `@/lib/codex-api-key` and `codex-api-key.test.ts`
    tests the real thing, one of them loses. Completing the stubs does not fix
    this; it only converts import errors into assertion failures.
 

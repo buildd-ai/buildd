@@ -7,7 +7,6 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { mintApiKeyAccount } from '@/lib/api-key-mint';
 import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { parseKeyLevel, isKeyLevelAllowed, keyLevelNotAllowedMessage, canAdministerTeamKeys } from '@/lib/key-level-policy';
-import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { roleHas } from '@/lib/permissions';
 import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
@@ -142,23 +141,6 @@ export async function POST(req: NextRequest) {
 
     // Auto-creates the workspace bindings too.
     const { account, plaintextKey } = await mintApiKeyAccount(insertValues as Parameters<typeof mintApiKeyAccount>[0], selectedWorkspaces);
-
-    // For OAuth accounts, populate seatId from the team's Claude credential
-    // without waiting for re-auth.
-    if (insertValues.authType === 'oauth' && account) {
-      try {
-        const cred = await resolveClaudeCredential({ teamId, accountId: account.id });
-        if (cred) {
-          const seatId = extractJwtSub(cred.accessToken);
-          if (seatId) {
-            await db.update(accounts).set({ seatId }).where(eq(accounts.id, account.id));
-            account.seatId = seatId;
-          }
-        }
-      } catch {
-        // Non-fatal: account is created successfully; seatId can be set on next credential store.
-      }
-    }
 
     // A token that names no workspaces of its own, minted by the owner of a
     // personal team, reaches that team's restricted workspaces (the "My

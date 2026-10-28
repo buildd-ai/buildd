@@ -234,8 +234,6 @@ describe('profiles — an operator schedules only the parts it runs', () => {
       '/api/cron/codex-token-refresh',
       '/api/cron/dispatch-drain',
       '/api/cron/dispatch-drain?gate=due',
-      '/api/cron/lease-expiry-guard',
-      '/api/cron/lease-expiry-guard?gate=due',
       '/api/cron/maintenance',
       '/api/cron/pr-reconcile?scope=landing&gate=due',
       '/api/cron/pr-reconcile?scope=merge-state',

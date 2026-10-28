@@ -26,8 +26,7 @@ import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth, worktreeGitWritableRoots } from './codex-auth.js';
-import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
+import { writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, ensureStableCodexHome, teardownStableCodexHome, writeCodexApiKeyToHome, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth, worktreeGitWritableRoots } from './codex-auth.js';
 import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
 import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
 import { rehydratePromptBundles, writeSessionPromptFiles } from './session-prompt-bundles.js';
@@ -72,7 +71,6 @@ import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLim
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
-import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
@@ -112,7 +110,7 @@ import { EvidenceWriter, buildWorkerSecretValues } from './evidence-writer';
 import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } from './agent-task-token';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { applyModelEnv, endpointSessionModels, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
 import { applyMachineLoginPolicy, claudeLoginIdentity, claudeModelAuthMissing, detectMachineLogin, machineLoginStamp, decideCodexLogin, describeCodexAuthSource, describeMachineLogin, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, reportIgnoredLoginSetting, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
@@ -597,11 +595,9 @@ function isBenignBashCommand(cmd: string): boolean {
  */
 export function selectServerCredentials(claimed: {
   serverApiKey?: string;
-  serverOauthToken?: string;
-}): { serverApiKey?: string; serverOauthToken?: string } {
+}): { serverApiKey?: string } {
   return {
     serverApiKey: claimed.serverApiKey || undefined,
-    serverOauthToken: claimed.serverOauthToken || undefined,
   };
 }
 
@@ -2316,11 +2312,6 @@ export class WorkerManager {
         workers: any[];
         diagnostics?: any;
         budgetResetsAt?: string | null;
-        pendingCredentialRefreshes?: Array<{
-          secretId: string;
-          purpose: 'claude_credential' | 'codex_credential';
-          expiresAt: string | null;
-        }>;
       };
       // `buildd top` says "Looking for work…" while this is out (R-26 claim-loop line).
       this.lookingForWork = (this.lookingForWork || 0) + 1;
@@ -2346,18 +2337,6 @@ export class WorkerManager {
       this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
       this.clearClaimDegradedAlertIfRecovered();
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
-
-      // Credential discovery. This is the ONLY path by which an idle runner
-      // learns which credentials its broker is responsible for: the server now
-      // announces them at the top level of every claim response, including the
-      // polls that claim nothing. Reading it here — before the empty-claim
-      // return below — is the whole point; the per-worker field in
-      // startClaimedWorker() can only fire when work was actually claimed.
-      // notifyCredentials() is idempotent, so both paths announcing is safe.
-      const announced = claimPollResult.pendingCredentialRefreshes;
-      if (announced && announced.length > 0) {
-        notifyBrokerCredentials(announced);
-      }
 
       // Server reports account budget exhausted but still served tenant tasks.
       // Emit an informational event for the UI — no circuit breaker needed since
@@ -2595,15 +2574,6 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${roleCwd.cwd}`);
     }
     this.workerAuthContexts.set(claimedWorker.id, authContextOf(task));
-
-    // Notify the credential broker about credentials seen in this claim response.
-    // The broker acquires leases and schedules proactive refreshes; workers fetch
-    // their token from the broker socket at spawn (Phase 2 live path).
-    const pendingRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
-      Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
-    if (pendingRefreshes && pendingRefreshes.length > 0) {
-      notifyBrokerCredentials(pendingRefreshes);
-    }
 
     return { kind: 'ready', task, cwd: roleCwd.cwd, ...(roleCwd.roleBundle ? { role: { bundle: roleCwd.roleBundle, overlay: !!roleCwd.overlay } } : {}) };
   }
@@ -2910,7 +2880,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number }; credentialDecision?: ClaimCredentialDecision },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'api_key'; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number }; credentialDecision?: ClaimCredentialDecision },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
@@ -2949,7 +2919,6 @@ export class WorkerManager {
     // payload (the common path — no extra endpoint needed).
     if (!workerScoped) {
       this.credCache.set(teamKey, {
-        oauthToken: fromClaim.serverOauthToken,
         apiKey: fromClaim.serverApiKey,
       });
     }
@@ -2958,22 +2927,17 @@ export class WorkerManager {
     // fresh cached entry for this team (e.g. the server didn't re-inject on this
     // particular claim but a valid one was delivered recently).
     let serverApiKey = fromClaim.serverApiKey;
-    let serverOauthToken = fromClaim.serverOauthToken;
     // A team agent model endpoint won the claim's ranking: it is the only model
     // credential for this worker, so no cached Anthropic credential is reused.
-    if (!workerScoped && !serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
+    if (!workerScoped && !serverApiKey && !claimedWorker.modelEndpoint) {
       const cached = this.credCache.get(teamKey);
       if (cached) {
         serverApiKey = cached.apiKey;
-        serverOauthToken = cached.oauthToken;
         console.log(`[Worker ${claimedWorker.id}] Using cached server-managed credential for team ${teamKey}`);
       }
     }
     if (serverApiKey) {
       console.log(`[Worker ${claimedWorker.id}] Using server-managed API key`);
-    }
-    if (serverOauthToken) {
-      console.log(`[Worker ${claimedWorker.id}] Using server-managed OAuth token`);
     }
 
     // Sequential enforcement for Codex: at most 1 active Codex worker per workspace.
@@ -3048,9 +3012,6 @@ export class WorkerManager {
     if (serverApiKey) {
       worker.serverApiKey = serverApiKey;
     }
-    if (serverOauthToken) {
-      worker.serverOauthToken = serverOauthToken;
-    }
     if (claimedWorker.modelEndpoint) {
       worker.modelEndpoint = claimedWorker.modelEndpoint;
       console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
@@ -3065,23 +3026,6 @@ export class WorkerManager {
     if (claimedWorker.githubCredentials?.mode === 'scoped' || claimedWorker.githubCredentials?.mode === 'runner') {
       worker.githubCredentials = { mode: claimedWorker.githubCredentials.mode };
     }
-    if (claimedWorker.claudeAccessToken) {
-      worker.claudeAccessToken = claimedWorker.claudeAccessToken;
-      worker.claudeTokenExpiresAt = claimedWorker.claudeTokenExpiresAt
-        ? new Date(claimedWorker.claudeTokenExpiresAt)
-        : null;
-      console.log(`[Worker ${claimedWorker.id}] Received managed Claude access token`);
-    }
-    // Extract the claude_credential secretId from pendingCredentialRefreshes so startSession
-    // can query the broker for a fresh token at spawn time (Phase 2 live path).
-    const pendingCredentialRefreshes = (claimedWorker as any).pendingCredentialRefreshes as
-      Array<{ secretId: string; purpose: 'claude_credential' | 'codex_credential'; expiresAt: string | null }> | undefined;
-    const claudeCredentialId = pendingCredentialRefreshes?.find(r => r.purpose === 'claude_credential')?.secretId;
-    if (claudeCredentialId) {
-      worker.claudeCredentialId = claudeCredentialId;
-      console.log(`[Worker ${claimedWorker.id}] Claude credential broker secretId: ${claudeCredentialId}`);
-    }
-
     if (claimedWorker.mcpSecrets && Object.keys(claimedWorker.mcpSecrets).length > 0) {
       worker.mcpSecrets = claimedWorker.mcpSecrets;
       console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s): ${Object.keys(claimedWorker.mcpSecrets).join(', ')}`);
@@ -3121,9 +3065,6 @@ export class WorkerManager {
     if (claimedWorker.skillBundles && claimedWorker.skillBundles.length > 0) {
       worker.skillBundles = claimedWorker.skillBundles;
       console.log(`[Worker ${claimedWorker.id}] Received ${claimedWorker.skillBundles.length} skill bundle(s): ${claimedWorker.skillBundles.map(b => b.slug).join(', ')}`);
-    }
-    if (claimedWorker.claudeTokenScopes?.length) {
-      worker.claudeTokenScopes = claimedWorker.claudeTokenScopes;
     }
     if (claimedWorker.claudeAiArtifacts) {
       worker.claudeAiArtifacts = claimedWorker.claudeAiArtifacts;
@@ -4352,9 +4293,6 @@ export class WorkerManager {
     // Declared before try so the finally block can always clean up the correct
     // temp dir, even if the session is superseded by a newer generation.
     let codexHome: string | undefined;
-    // Per-worker CLAUDE_CONFIG_DIR for managed claude_credential tokens.
-    // Cleaned up in finally — never persist between runs (access_token is refreshed at claim time).
-    let claudeConfigDir: string | undefined;
     // Set when this session wrote role/skill files into <cwd>/.claude/skills,
     // which the SDK reads only through the `project` setting source.
     let wroteSessionSkills = false;
@@ -4624,21 +4562,12 @@ export class WorkerManager {
         cloud: !!cloudCostBasis(process.env),
         credentials: {
           serverApiKey: worker.serverApiKey,
-          serverOauthToken: worker.serverOauthToken,
           tenantOauthToken,
-          claudeAccessToken: worker.claudeAccessToken,
-          claudeCredentialId: worker.claudeCredentialId,
         },
       });
       const authSource = resolved.decision;
       // Everything below reads claim credentials through this view only.
       const claimCreds = resolved.credentials;
-      if (authSource.dropServerCredentials) {
-        // shouldUseClaudeCredential, the broker fetch and the session token
-        // path all read these off the worker: none may see a server seat.
-        worker.claudeAccessToken = undefined;
-        worker.claudeCredentialId = undefined;
-      }
       if (authSource.active) {
         sessionLog(worker.id, 'info', 'model_auth_source', `source=${authSource.label}`, task.id);
       }
@@ -4652,7 +4581,6 @@ export class WorkerManager {
         machineLogin,
         llmProvider: this.config.llmProvider,
         serverApiKey: claimCreds.serverApiKey,
-        serverOauthToken: claimCreds.serverOauthToken,
         tenantOauthToken: claimCreds.tenantOauthToken,
         isCodexTask,
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
@@ -4677,7 +4605,7 @@ export class WorkerManager {
         isCodexTask,
         modelEnv,
         env: cleanEnv,
-        claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker),
+        claudeCredentialUsed: false,
       });
       worker.modelAuthMissing = !!missingModelAuth;
       if (missingModelAuth) {
@@ -4720,9 +4648,6 @@ export class WorkerManager {
       if (modelEnv.injected.includes('serverApiKey')) {
         console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
       }
-      if (modelEnv.injected.includes('serverOauthToken')) {
-        console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
-      }
       if (modelEnv.machineLoginUsed && machineLogin) {
         console.log(`[Worker ${worker.id}] Claude login: ${describeMachineLogin(machineLogin)}`);
         sessionLog(worker.id, 'info', 'claude_login_source', `source=${machineLogin === 'env' ? 'machine_token' : 'machine_login'}`, task.id);
@@ -4736,14 +4661,14 @@ export class WorkerManager {
       // placeholder key, so its supervisor's hint decides there. Codex is
       // classified below, once its CODEX_HOME auth is in place.
       worker.costBasis = cloudCostBasis(process.env)
-        ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv, { claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker) }));
+        ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv, { claudeCredentialUsed: false }));
       worker.claudeLoginUsed = claudeLoginUsed({
         isCodexTask,
         cloud: !!cloudCostBasis(process.env),
         machineLoginUsed: modelEnv.machineLoginUsed,
         machineLogin,
         injected: modelEnv.injected,
-        claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker),
+        claudeCredentialUsed: false,
       });
       // Which login that was, when it is this machine's `claude login`: the
       // server keys the wall on it so it holds every runner on the login.
@@ -4758,7 +4683,7 @@ export class WorkerManager {
       worker.route = cloudRunRoute(process.env, isCodexTask ? 'codex' : 'claude')
         ?? (isCodexTask ? null : claudeRunRoute({
           modelEnv,
-          claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker),
+          claudeCredentialUsed: false,
           llmProvider: runnerLocalAllowed ? this.config.llmProvider : undefined,
           teamEndpoint: worker.modelEndpoint,
           credentialScope: worker.credentialDecision?.scope,
@@ -4835,12 +4760,6 @@ export class WorkerManager {
           // reads CODEX_HOME/auth.json; api_key there maps to OPENAI_API_KEY internally).
           writeCodexApiKeyToHome(_ch, worker.codexCredential.apiKey);
           console.log(`[Worker ${worker.id}] Injecting Codex API key credential`);
-        } else if (worker.codexCredential?.credentialType === 'oauth') {
-          // B (seed-if-missing): only write auth.json the first time. If auth.json
-          // already exists (from a prior run), the CLI may have refreshed the tokens
-          // — don't overwrite with the potentially staler stored snapshot.
-          const { codexHome: home } = seedCodexAuthIfMissing(worker.id, worker.codexCredential, codexIsolatedPath);
-          _ch = home;
         } else {
           _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
         }
@@ -4930,102 +4849,6 @@ export class WorkerManager {
         // NOTE: deliberately NOT assigning the local `codexHome` var here — that
         // var drives the finally-block teardown, which must not delete a stable
         // home (would destroy resumable sessions).
-      } else if (worker.codexCredential) {
-        // Non-Codex task with a Codex credential: transient temp home, cleaned up.
-        const { codexHome: _ch } = materializeCodexAuth(worker.id, worker.codexCredential);
-        codexHome = _ch;
-        cleanEnv.CODEX_HOME = codexHome;
-        const session = this.sessions.get(worker.id);
-        if (session) (session as any).codexHome = codexHome;
-      }
-
-      // Claude credential isolation: create a per-worker CLAUDE_CONFIG_DIR and write
-      // credentials.json with ONLY the access_token (no refresh_token). This prevents
-      // the SDK from calling the Anthropic refresh endpoint in-session, eliminating the
-      // token family revocation cascade from concurrent workers.
-      //
-      // Phase 2 live path: query the broker socket first (env injection at spawn).
-      // The broker holds the most recently refreshed token in memory; this ensures
-      // workers starting after a proactive refresh pick up the fresh token immediately
-      // rather than the potentially-older token from the claim response.
-      // Fallback: use claudeAccessToken from the claim response (always available if a
-      // claude_credential exists), which remains valid until the broker has had time to
-      // refresh it.
-      // Never alongside a team endpoint (shouldUseClaudeCredential): a Claude
-      // seat token must not ride along to a third-party host.
-      if (shouldUseClaudeCredential(modelEnv, worker)) {
-        let claudeTokenForSession: string | undefined = worker.claudeAccessToken;
-        let claudeTokenExpiry: Date | null = worker.claudeTokenExpiresAt ?? null;
-
-        let claudeTokenFromBroker = false;
-
-        if (worker.claudeCredentialId && !isCodexTask) {
-          const brokerToken = await fetchTokenFromBroker(worker.claudeCredentialId, getBrokerSocketPath());
-          if (brokerToken) {
-            claudeTokenForSession = brokerToken.accessToken;
-            claudeTokenExpiry = brokerToken.expiresAt ? new Date(brokerToken.expiresAt) : null;
-            claudeTokenFromBroker = true;
-            console.log(`[Worker ${worker.id}] Using broker-fetched Claude token (Phase 2)`);
-          } else {
-            console.log(`[Worker ${worker.id}] Broker not ready — falling back to claim-delivered claudeAccessToken`);
-          }
-        }
-
-        // A resume — a parked question answered, or a crash recovery — can be
-        // hours after the claim, and the claim-delivered token is exactly that
-        // old. Fail loudly here rather than spawning a session that dies "not
-        // logged in" with the human's answer already in flight.
-        const staleResume = staleResumeCredentialError({
-          isResume: !!resumeSessionId,
-          fromBroker: claudeTokenFromBroker,
-          tokenExpiresAt: claudeTokenExpiry,
-        });
-        if (staleResume) {
-          sessionLog(worker.id, 'error', 'resume_credential_stale', staleResume, task.id);
-          throw new Error(staleResume);
-        }
-
-        if (claudeTokenForSession) {
-          const { claudeConfigDir: _cd } = materializeClaudeConfigDir(
-            worker.id,
-            claudeTokenForSession,
-            claudeTokenExpiry,
-            {
-              ...(this.config.workspaceIsolationRoot
-                ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
-                : {}),
-              scopes: worker.claudeTokenScopes,
-            },
-          );
-          claudeConfigDir = _cd;
-          cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
-          // Remove any injected CLAUDE_CODE_OAUTH_TOKEN — the credentials file takes precedence.
-          delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
-          // Register the credential file with the broker so mid-session proactive refreshes
-          // update the file on disk (prevents mid-session 401s on long-running workers).
-          if (worker.claudeCredentialId) {
-            credentialBroker.registerCredentialFile(
-              worker.id,
-              worker.claudeCredentialId,
-              join(claudeConfigDir, '.credentials.json'),
-            );
-          }
-          console.log(`[Worker ${worker.id}] Using managed Claude access token via isolated CLAUDE_CONFIG_DIR`);
-        }
-      }
-
-      // Preflight C: fast-fail (<1s) before spawning Codex if the stored credential
-      // is known-expired. The claim route (criterion D) already attempts a refresh
-      // and clears the credential on unrecoverable failure — this is a second guard
-      // for the window between claim and spawn (clock skew, race, long queue wait).
-      if (isCodexTask && worker.codexCredential && (worker as any).codexLoginSource !== 'machine') {
-        const expiryError = checkCodexCredentialExpiry(worker.codexCredential);
-        if (expiryError) {
-          worker.modelLoginFailed = true;
-          throw new Error(
-            `Codex credential expired: ${expiryError}. Reconnect your ChatGPT / OpenAI account in Settings → Credentials.`,
-          );
-        }
       }
 
       // Preflight: fail fast with a clear message if no Codex auth is available.
@@ -5429,7 +5252,6 @@ export class WorkerManager {
           repoPath,
           homePath: cleanEnv.HOME,
           bunInstallPath: cleanEnv.BUN_INSTALL,
-          claudeConfigDir,
           codexHome: cleanEnv.CODEX_HOME,
           isCodexTask,
           executablePath: pathToClaudeCodeExecutable,
@@ -6396,30 +6218,6 @@ export class WorkerManager {
         this.consecutiveAuthFailures = 0;
         const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
 
-        // B (write-back): After a successful OAuth Codex session, the CLI may have
-        // silently refreshed the tokens. Read the auth.json we left in place
-        // (seed-if-missing means it was never rewritten from the stale snapshot) and
-        // POST the current tokens back so the credential store stays fresh.
-        // Best-effort — never throws, never logs token values.
-        // Never when the machine's own login ran the session: that would upload
-        // the runner host's login into buildd.
-        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth' && (worker as any).codexLoginSource !== 'machine') {
-          try {
-            const currentAuth = readCodexAuthJson(worker.id);
-            if (currentAuth?.access_token && currentAuth?.refresh_token) {
-              await this.buildd.writeBackCodexAuth(task.workspaceId, {
-                accessToken: currentAuth.access_token,
-                refreshToken: currentAuth.refresh_token,
-                ...(currentAuth.account_id ? { accountId: currentAuth.account_id } : {}),
-                ...(currentAuth.id_token ? { idToken: currentAuth.id_token } : {}),
-              });
-              console.log(`[Worker ${worker.id}] Codex OAuth tokens written back to credential store`);
-            }
-          } catch (err) {
-            console.warn(`[Worker ${worker.id}] Codex write-back warning (non-fatal): ${err instanceof Error ? err.message : 'unknown'}`);
-          }
-        }
-
         // The checkpoint is the one "Task completed" entry; a status milestone
         // with the same label beside it logged the completion twice.
         this.addCheckpoint(worker, CheckpointEvent.TASK_COMPLETED);
@@ -6886,17 +6684,6 @@ export class WorkerManager {
         // even when the session was superseded by a newer generation.
         if (codexHome) {
           cleanupCodexAuth(worker.id, codexHome);
-        }
-
-        // Deregister credential file from broker before cleanup — so mid-session refresh
-        // callbacks stop writing to a path we're about to delete.
-        if (worker.claudeCredentialId) {
-          credentialBroker.deregisterCredentialFile(worker.id);
-        }
-
-        // Clean up per-worker Claude config dir (access_token isolation).
-        if (claudeConfigDir) {
-          cleanupClaudeConfigDir(worker.id, claudeConfigDir);
         }
 
         this.sessions.delete(worker.id);

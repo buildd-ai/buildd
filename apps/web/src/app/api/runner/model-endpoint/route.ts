@@ -72,7 +72,7 @@ import {
 import { surfacePolicy, type TeamPolicyColumns } from '@buildd/core/providers';
 import { resolveProviderCredential, type ProviderCredentialResult } from '@buildd/core/providers/resolve';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
-import { isAnthropicApiKeyAuth, resolveAnthropicAuth } from '@/lib/claude-credential';
+import { isAnthropicApiKeyAuth, resolveAnthropicAuth } from '@/lib/anthropic-auth';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';

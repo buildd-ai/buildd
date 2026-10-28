@@ -7,11 +7,7 @@
       "apps/web/src/lib/personal-workspace-links.ts": "notifications"
     },
     "apps/web/src/app/api/cron/codex-token-refresh/route.ts": {
-      "apps/web/src/lib/mcp-connector-refresh.ts": "connectors",
-      "apps/web/src/lib/notify.ts": "notifications"
-    },
-    "apps/web/src/app/api/cron/lease-expiry-guard/route.ts": {
-      "apps/web/src/lib/notify.ts": "notifications"
+      "apps/web/src/lib/mcp-connector-refresh.ts": "connectors"
     },
     "apps/web/src/app/api/cron/pr-reconcile/route.ts": {
       "apps/web/src/lib/ci-red-queue.ts": "reviews-merge",
@@ -103,9 +99,6 @@
       "apps/web/src/lib/chat-objects/load-pr-object.ts": "chat",
       "apps/web/src/lib/chat-objects/load-question-object.ts": "chat",
       "apps/web/src/lib/chat-objects/load-task-object.ts": "chat"
-    },
-    "apps/web/src/app/api/runner/credential-refresh/route.ts": {
-      "apps/web/src/lib/notify.ts": "notifications"
     },
     "apps/web/src/app/api/tasks/[id]/closed-pr/route.ts": {
       "apps/web/src/lib/pr-supersession.ts": "reviews-merge"

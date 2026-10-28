@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-20
 summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST otherwise start a new attempt of the same task (never a new task) for a recorded, owner-visible reason.
 domain: runners
-surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/lib/answer-attempt.ts, apps/web/src/lib/stale-workers.ts, apps/runner/src/prompt-builder.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.ts]
+surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/lib/answer-attempt.ts, apps/web/src/lib/stale-workers.ts, apps/runner/src/prompt-builder.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.ts]
 related: [human-in-the-loop-protocol, runner-liveness, codex-backend-spec, credential-refresh-lifecycle]
 keywords: [await_answer, ask_human, waitCommand, wait capability, run_in_background, sessionSeenAt, resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript, new attempt, answeredQuestions, same task, attempt history]
-verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/lib/answer-attempt.test.ts, apps/web/tests/db/answered-attempt-mission.test.ts, apps/runner/src/prompt-builder.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/unanswered-question-prompt.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/local-session.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
+verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/lib/answer-attempt.test.ts, apps/web/tests/db/answered-attempt-mission.test.ts, apps/runner/src/prompt-builder.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/unanswered-question-prompt.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/local-session.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -861,88 +861,13 @@ stateDiagram-v2
 
 ---
 
-## Credential preflight
+## Credential preflight (retired)
 
-An owner answered a long-parked worker and it terminated saying it was not
-logged in. That is the failure this section exists to prevent.
-
-The mechanism: the runner materialises a per-worker Claude config dir at
-session start and **deletes it in the `finally` block** — which runs for a park
-too — after deregistering it from the credential broker, so nothing refreshes
-it while the question waits. On resume, `startSession` re-materialises it from
-the broker, and if the broker has nothing it falls back to the access token
-delivered at **claim** time. For a session parked for hours that token is
-stale, and the resumed session dies on its first request.
-
-**Invariants**:
-- `/respond` MUST evaluate the backend credential BEFORE choosing `resume`, via
-  `preflightBackendCredential`
-  (`apps/web/src/lib/answer-credential-preflight.ts`). The preflight attempts a
-  refresh when the stored token is expired or expires within
-  `CREDENTIAL_PREFLIGHT_MARGIN_MS`, and reports the post-refresh state.
-- The preflight MUST return exactly one of `ok`, `unhealthy`, `unknown`. A
-  missing managed credential row is `unknown`, never `unhealthy` — accounts
-  that supply their own key have no row, and reading absence as breakage would
-  send every one of them down the cold path forever.
-- A **revoked** credential MUST be refused outright — `409` with
-  `credentialRevoked: true` — taking neither path and writing nothing, so
-  `waitingFor` stays set and the question stays parked. Revoked is terminal
-  until a human reconnects the account, and the claim rail already declines to
-  inject a revoked credential (`credential-injection.ts`), so a cold
-  continuation could not run either. Superseding the worker to create one would
-  destroy the transcript and the worktree for nothing; keeping the session
-  parked means the re-answer after reconnecting can still take the RESUME path.
-  This is the behaviour the sibling change shipped, and resume strengthens
-  rather than weakens its case.
-- `unhealthy` for any OTHER reason (expired and unrefreshable) MUST NOT silently
-  become a cold continuation. That state is recoverable without human action, so
-  the answer is recorded durably (the task is reopened for a new attempt
-  carrying it, nothing the
-  human typed is lost) AND the owner is told at answer time with a `warning`
-  note naming the credential.
-- The preflight MUST be advisory-on-error: a refresh that throws, times out or
-  returns `locked` yields `unknown`, not `unhealthy`. A transient failure of
-  the credential service must not permanently route every answer cold.
-- The runner MUST NOT resume a session on a claim-time access token it can see
-  is already expired. When `startSession` is invoked with a resume id, the
-  broker returns nothing, and the claim-delivered token's expiry is in the past,
-  it MUST fail with a named error rather than spawn a session that will die
-  unauthenticated. A loud failure is visible to error traces and failure
-  analytics; "not logged in" 300 turns deep is not.
-
-**Acceptance criteria**:
-- AC-27: GIVEN a managed Claude credential whose `healthStatus` is
-  `revoked` WHEN `preflightBackendCredential` runs THEN it returns `unhealthy`
-  with `revoked: true` and attempts no refresh.
-- AC-20: GIVEN a credential whose `tokenExpiresAt` is in the past WHEN the
-  preflight runs THEN a refresh is attempted; if it succeeds the result is `ok`
-  and if it still reports expired the result is `unhealthy`.
-- AC-21: GIVEN no credential row for the team or workspace THEN the result
-  is `unknown` and the answer path is unaffected.
-- AC-22: GIVEN a refresh that throws THEN the result is `unknown`, not
-  `unhealthy`.
-- AC-23: GIVEN an `unhealthy` preflight WITHOUT `revoked` (expired and
-  unrefreshable) WHEN `POST /respond` succeeds THEN the task is reopened with
-  the answer in `context.answeredQuestions`
-  (the answer is not dropped) AND a `warning` note naming the credential is
-  posted.
-- AC-24: GIVEN a resume invocation whose broker lookup returns nothing and
-  whose claim-delivered token expired WHEN the runner starts the session THEN
-  it throws a named credential error before spawning the agent.
-- AC-25: GIVEN a preflight returning `revoked: true` WHEN `POST /respond`
-  runs THEN it responds `409` with `credentialRevoked: true` and the backend
-  name, no worker row is written, no task is reopened or inserted and no feed
-  note is posted.
-
-**Code surface**:
-- `apps/web/src/lib/answer-credential-preflight.ts` —
-  `preflightBackendCredential`, `CREDENTIAL_PREFLIGHT_MARGIN_MS`
-- `apps/web/src/lib/claude-credential.ts` — `getClaudeStatus`,
-  `refreshClaudeCredential`
-- `apps/web/src/lib/codex-credential.ts` — `getCodexStatus`,
-  `refreshCodexCredential`
-- `apps/runner/src/workers.ts` — the managed-token block in `startSession`
-- `apps/runner/src/broker.ts` — `fetchTokenFromBroker`
+`/respond` used to read the stored Claude or Codex login's health, refresh it,
+and refuse the answer (`409`, `credentialRevoked`) when it was revoked. buildd
+no longer stores a subscription login, so there is nothing to check: the
+runner resumes on its own machine's login, and `/respond` always evaluates the
+answer path with the credential state `unknown`.
 
 ---
 

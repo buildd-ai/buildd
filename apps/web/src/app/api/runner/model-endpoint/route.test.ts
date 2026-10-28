@@ -28,7 +28,7 @@ const realProviders = { ...(await import('@buildd/core/providers')) };
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: mockGetPermissions }));
 mock.module('@buildd/core/agent-endpoint', () => ({ ...realAgentEndpoint, resolveAgentModelRoute: mockResolveRoute, resolveAgentEndpoint: mockGateway }));
-mock.module('@/lib/claude-credential', () => ({
+mock.module('@/lib/anthropic-auth', () => ({
   resolveAnthropicAuth: mockResolveAnthropicAuth,
   isAnthropicApiKeyAuth: (a: { purpose: string }) => a.purpose === 'inference_key' || a.purpose === 'anthropic_api_key',
 }));
