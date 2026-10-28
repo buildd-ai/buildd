@@ -54,7 +54,7 @@ describe('OccupancyPlot', () => {
       <OccupancyPlot series={buildOccupancySeries({ window: '24h', now: NOW, workers: [run('http://r', NOW - 2 * H, NOW - H)] })} capacityNow={5} busyNow={1} slots={slots} />,
     );
     const note = html.match(/data-testid="occupancy-now-note"[^>]*>([^<]*)</)?.[1] ?? '';
-    expect(note).toContain('runners that checked in within 3 minutes');
+    expect(note).not.toContain('checked in within');
     expect(note).toContain('4 on paused runners');
     expect(note).toContain('4 more on offline runners');
   });
