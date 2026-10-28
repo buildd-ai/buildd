@@ -17,6 +17,12 @@
  * CI shard has its own database, so a slice only ever sees rows its own files
  * wrote. An empty slice is a failure unless there are fewer files than shards.
  *
+ * qa-scrub-prod-ahead.test.ts scrubs every table, so its cost is the rows
+ * earlier files left: ~545s at the end of the serial suite, ~2s on a fresh
+ * database. Its hint keeps the serial figure on purpose: it is larger than any
+ * other slice, so the scheduler gives that file a shard of its own and it
+ * never runs behind the budget tests' seeded rows.
+ *
  * Guard: with RUN_DB_TESTS_DOUBLE_RUN=1 only the files in DOUBLE_RUN_FILES
  * (workflow-matrix.test.ts, §16 kernel acceptance) run a second time against the same
  * database, catching state leaks where the second run fails on rows the first left

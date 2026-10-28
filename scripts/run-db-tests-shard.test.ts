@@ -64,6 +64,11 @@ describe('the real suite split four ways', () => {
     expect(runsFor(files.find(f => !DOUBLE_RUN_FILES.has(f.slice('apps/web/'.length)))!, true)).toBe(1);
   });
 
+  it('qa-scrub-prod-ahead gets a shard to itself, so it never scrubs the budget tests\' rows', () => {
+    const holder = slices.find(s => s.includes('apps/web/tests/db/qa-scrub-prod-ahead.test.ts'));
+    expect(holder).toEqual(['apps/web/tests/db/qa-scrub-prod-ahead.test.ts']);
+  });
+
   it('every duration hint names a real DB test file', () => {
     for (const key of Object.keys(hints)) expect(files).toContain(key);
   });
