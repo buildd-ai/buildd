@@ -18,16 +18,16 @@ export const dynamic = 'force-dynamic';
 export default async function TeamAppsSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ connected?: string; error?: string; request?: string }>;
+  searchParams: Promise<{ connected?: string; error?: string; request?: string; no_refresh_hours?: string }>;
 }) {
-  const [{ currentTeamId, workspaces }, { connected, error, request }] = await Promise.all([
+  const [{ currentTeamId, workspaces }, { connected, error, request, no_refresh_hours }] = await Promise.all([
     loadSettingsContext(),
     searchParams,
   ]);
   const teamWorkspaces = workspaces.filter((ws) => ws.teamId === currentTeamId).map((ws) => ({ id: ws.id, name: ws.name }));
   return (
     <SettingsPage title="Agent tools">
-      <TeamAppsSection teamId={currentTeamId} workspaces={teamWorkspaces} connectedId={connected} errorMsg={error} />
+      <TeamAppsSection teamId={currentTeamId} workspaces={teamWorkspaces} connectedId={connected} noRefreshHours={no_refresh_hours} errorMsg={error} />
       <AgentAccessSection teamId={currentTeamId} workspaces={teamWorkspaces} focusRequestId={request ?? null} />
     </SettingsPage>
   );

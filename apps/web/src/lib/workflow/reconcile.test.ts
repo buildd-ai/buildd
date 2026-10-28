@@ -42,14 +42,18 @@ describe('floorCandidatesSql', () => {
 
 describe('treadmillCycleCandidatesSql (S15 cycles)', () => {
   const dialect = new PgDialect();
-  test('kernel deliveries the treadmill escalated, pinned to that transition, past the cooldown', () => {
+  test('kernel deliveries the treadmill escalated, anchored on the escalation that opened the current stay, past the cooldown', () => {
     const q = dialect.sqlToQuery(treadmillCycleCandidatesSql({ limit: 20, cooldownMs: 3_600_000 }));
     expect(q.sql).toContain("d.authority = 'kernel'");
     expect(q.sql).toContain("d.state = 'ESCALATED'");
     expect(q.sql).toContain("d.state_reason = 'landing_needs_human'");
-    // The escalation that produced the delivery's CURRENT version, and only a treadmill one:
-    // a later merge refusal or a person's move is a newer version and never qualifies.
-    expect(q.sql).toContain('t.to_version = d.version');
+    // #5766: the anchor is the newest transition INTO ESCALATED, and only a treadmill one. A head
+    // or CI fact recorded while escalated is a newer version of the same stay and must not hide
+    // the delivery from the sweep; a person's move or a merge refusal leaves ESCALATED, so the
+    // state check drops it, and a later escalation of another kind is a newer entry.
+    expect(q.sql).not.toContain('t.to_version = d.version');
+    expect(q.sql).toContain("e.to_state = 'ESCALATED' AND e.from_state IS DISTINCT FROM 'ESCALATED'");
+    expect(q.sql).toContain('ORDER BY e.to_version DESC LIMIT 1');
     expect(q.sql).toContain("t.idempotency_key LIKE '%:treadmill'");
     expect(q.sql).toContain('t.created_at <= now() - make_interval');
     expect(q.params).toEqual([3_600_000, 20]);
