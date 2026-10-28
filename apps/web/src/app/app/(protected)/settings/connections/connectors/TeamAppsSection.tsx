@@ -120,7 +120,7 @@ export default function TeamAppsSection({
   const [requested, setRequested] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(() =>
     connectedId && noRefreshHours != null
-      ? { tone: 'ok', text: `Connected, but this provider can’t renew the login by itself — you’ll need to reconnect${Number(noRefreshHours) > 0 ? ` about every ${noRefreshHours} hour${noRefreshHours === '1' ? '' : 's'}` : ' when it expires'}.` }
+      ? { tone: 'ok', text: `Connected. This provider can’t renew the login by itself, so reconnect${Number(noRefreshHours) > 0 ? ` about every ${noRefreshHours} hour${noRefreshHours === '1' ? '' : 's'}` : ' when it expires'}.` }
       : connectedId ? { tone: 'ok', text: 'Connected.' }
       : errorMsg ? { tone: 'err', text: OAUTH_ERROR_TEXT[errorMsg] ?? 'The sign-in didn’t finish. Try Connect again.' }
         : null,
