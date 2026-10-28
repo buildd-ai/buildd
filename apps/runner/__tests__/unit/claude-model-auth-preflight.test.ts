@@ -31,7 +31,6 @@ function loginHome(): string {
 function check(env: Record<string, string>, opts: {
   isCodexTask?: boolean;
   home?: string;
-  claudeCredentialUsed?: boolean;
   modelEnvInput?: Partial<Parameters<typeof applyModelEnv>[1]>;
 } = {}) {
   const home = opts.home ?? emptyHome();
@@ -41,7 +40,6 @@ function check(env: Record<string, string>, opts: {
       isCodexTask: !!opts.isCodexTask,
       modelEnv,
       env: modelEnv.env,
-      claudeCredentialUsed: !!opts.claudeCredentialUsed,
       probe: { home, platform: 'linux', macKeychainHasLogin: noKeychain },
     });
   } finally {
@@ -74,10 +72,6 @@ describe('claudeModelAuthMissing: refused only when nothing can authenticate', (
 
   test('a server-delivered API key (injected by applyModelEnv) is enough', () => {
     expect(check({}, { modelEnvInput: { serverApiKey: 'server-key-value' } })).toBeNull();
-  });
-
-  test("the claim's Claude credential written into the session is enough", () => {
-    expect(check({}, { claudeCredentialUsed: true })).toBeNull();
   });
 
   test('a team endpoint is not refused: its own host decides auth', () => {

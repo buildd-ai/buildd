@@ -329,8 +329,8 @@ runner `availableSkills`.
 
 ### Secret (`secrets`)
 **The single, unified credential store.** One row per scoped credential; `purpose` ∈
-`anthropic_api_key | oauth_token | codex_credential | webhook_token | mcp_credential |
-vercel_token | custom | claude_credential | inference_key | decision_key | …`. Scoped
+`anthropic_api_key | codex_credential | webhook_token | mcp_credential |
+vercel_token | custom | inference_key | decision_key | …`. Scoped
 by team (always) + optional account + optional workspace (+ optional `userId`, for a
 person's own `inference_key` only); a team-wide row (account/workspace/user NULL)
 covers everything. Multi-field

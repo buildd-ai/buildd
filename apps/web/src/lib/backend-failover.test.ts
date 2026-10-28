@@ -21,7 +21,7 @@ mock.module('@buildd/core/db', () => ({
 
 // Mock resolveCodexApiKey directly to avoid relying on transitive @buildd/core/db
 // mock resolution — Bun 1.4.0 (CI) uses per-file module registries so transitive
-// mocks from @buildd/core/db don't propagate into codex-credential.ts's imports.
+// mocks from @buildd/core/db don't propagate into codex-api-key.ts's imports.
 const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
 mock.module('@/lib/codex-api-key', () => ({
   resolveCodexApiKey: mockResolveCodexApiKey,

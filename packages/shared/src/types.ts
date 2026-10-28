@@ -2060,18 +2060,6 @@ export interface DegradedConnector {
 }
 
 /**
- * A credential the runner's broker should pre-refresh (expiring within 2 hours).
- *
- * Metadata only — never token material. `secretId` names the row; the runner
- * exchanges it for a fresh token via POST /api/runner/credential-refresh.
- */
-export interface PendingCredentialRefresh {
-  secretId: string;
-  purpose: 'claude_credential' | 'codex_credential';
-  expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
-}
-
-/**
  * GET /api/workers/[id]/prompt-bundles — the claim response's role and skill
  * payload, resolved again for a session resumed by a runner that no longer
  * holds it (restart, park → reattach). Each field is absent when the task has
@@ -2128,17 +2116,6 @@ export interface ClaimTasksResponse {
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
     /**
-     * @deprecated Never sent: a claim carries no subscription login (model
-     * credentials spec R-2). Kept until runners stop reading it.
-     */
-    serverOauthToken?: string;
-    /** @deprecated Never sent (spec R-2): was a stored claude_credential access token. */
-    claudeAccessToken?: string;
-    /** @deprecated Never sent (spec R-2). */
-    claudeTokenExpiresAt?: string | null;
-    /** @deprecated Never sent (spec R-2). */
-    claudeTokenScopes?: string[];
-    /**
      * The team's agent model endpoint, when it won the §2 ranking for this task
      * (docs/design/agent-model-endpoint.md). When set, serverApiKey and
      * codexCredential are absent for this worker: it is the only model
@@ -2172,12 +2149,6 @@ export interface ClaimTasksResponse {
      * runner that declares the `scoped_github_token` feature, never on a cloud claim.
      */
     githubCredentials?: { mode: 'scoped' | 'runner' };
-    /**
-     * @deprecated Never sent: no claimed worker is wired to a stored login, so
-     * a task causes no refresh (model credentials spec AC-6). Kept until
-     * runners stop reading it.
-     */
-    pendingCredentialRefreshes?: PendingCredentialRefresh[];
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
     /** Active MCP connector configs resolved at claim time (URL + optional auth headers, or assertion-mode exchange metadata) */
@@ -2186,17 +2157,11 @@ export interface ClaimTasksResponse {
       | AssertionConnectorEntry
     >;
     /**
-     * A decrypted Codex API key (only present for backend=codex tasks). Always
-     * `credentialType: 'api_key'`: a stored ChatGPT/OAuth login is never sent
-     * (model credentials spec R-2); the OAuth fields remain for older runners.
+     * A decrypted Codex API key (only present for backend=codex tasks). A
+     * stored ChatGPT/OAuth login is never sent: the runner uses its own.
      */
     codexCredential?: {
-      credentialType: 'oauth' | 'api_key';
-      /** @deprecated Never sent (spec R-2). */
-      accessToken?: string;
-      refreshToken?: string;
-      accountId?: string;
-      /** API key — present when credentialType === 'api_key' */
+      credentialType: 'api_key';
       apiKey?: string;
       expiresAt: Date | null;
     };
@@ -2221,16 +2186,6 @@ export interface ClaimTasksResponse {
   diagnostics?: ClaimDiagnostics;
   /** ISO timestamp when the account's OAuth budget resets (present when budget is exhausted but tenant tasks were still served) */
   budgetResetsAt?: string | null;
-  /**
-   * Credentials of the AUTHENTICATED ACCOUNT'S OWN TEAM that expire within 2 hours.
-   *
-   * Announced on every claim poll — including polls that claim nothing — because
-   * the claim call is the runner's heartbeat: the discovery channel for an idle
-   * runner's credential broker. No claimed worker is wired to these.
-   *
-   * Scope is a single team (the account's), never wider. Metadata only.
-   */
-  pendingCredentialRefreshes?: PendingCredentialRefresh[];
 }
 
 /** @deprecated Use Memory service types instead. Kept for backward compat. */

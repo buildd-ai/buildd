@@ -1,7 +1,7 @@
 /**
  * In-memory, per-team server-managed credential cache.
  *
- * Server-managed Claude credentials (OAuth token / API key) are delivered
+ * Server-managed Claude API keys are delivered
  * inline on every claim response. To let a runner with ZERO local credentials
  * run entirely off server-injected creds — and to survive between claims —
  * we cache the most-recently-delivered credential per team IN MEMORY ONLY.
@@ -21,7 +21,6 @@
  */
 
 export interface ServerCredential {
-  oauthToken?: string;
   apiKey?: string;
   /** Epoch ms the credential was fetched/delivered. */
   fetchedAt: number;
@@ -30,12 +29,8 @@ export interface ServerCredential {
 /**
  * Default freshness window for a cached server credential (50 min).
  *
- * Claude OAuth access tokens typically live ~1h. Caching beyond that causes
- * stale token reuse when the same team claims a second worker after the token
- * has expired. 50 min stays safely within the 1h window while giving a margin
- * for clock skew. Teams using the managed claude_credential flow are not
- * affected (their access_token is isolated per-worker; cred cache only carries
- * the legacy oauth_token / anthropic_api_key).
+ * A key can be rotated or revoked between claims, so a cached copy is only
+ * reused for a bounded window; a fresh claim payload replaces it.
  */
 export const DEFAULT_SERVER_CRED_TTL_MS = 50 * 60 * 1000;
 
@@ -58,11 +53,10 @@ export class CredentialCache {
    * Populate/refresh the cache for a team from a claim payload. A credential
    * with neither token nor key is ignored (nothing useful to cache).
    */
-  set(teamId: string, cred: { oauthToken?: string; apiKey?: string }, now: number = Date.now()): void {
+  set(teamId: string, cred: { apiKey?: string }, now: number = Date.now()): void {
     if (!teamId) return;
-    if (!cred.oauthToken && !cred.apiKey) return;
+    if (!cred.apiKey) return;
     this.entries.set(teamId, {
-      oauthToken: cred.oauthToken,
       apiKey: cred.apiKey,
       fetchedAt: now,
     });

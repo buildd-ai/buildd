@@ -26,7 +26,7 @@ import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, ensureStableCodexHome, teardownStableCodexHome, writeCodexApiKeyToHome, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth, worktreeGitWritableRoots } from './codex-auth.js';
+import { writeCodexMcpConfig, cleanupCodexAuth, ensureStableCodexHome, teardownStableCodexHome, writeCodexApiKeyToHome, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth, worktreeGitWritableRoots } from './codex-auth.js';
 import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
 import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
 import { rehydratePromptBundles, writeSessionPromptFiles } from './session-prompt-bundles.js';
@@ -110,7 +110,7 @@ import {
 import { EvidenceWriter, buildWorkerSecretValues } from './evidence-writer';
 import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } from './agent-task-token';
 import { archiveSession } from './history-store';
-import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
+import { extractTenantContext } from './tenant-context';
 import { applyModelEnv, endpointSessionModels, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
 import { applyMachineLoginPolicy, claudeLoginIdentity, claudeModelAuthMissing, detectMachineLogin, machineLoginStamp, decideCodexLogin, describeCodexAuthSource, describeMachineLogin, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, reportIgnoredLoginSetting, localCodexAuthPath, type ModelAuthReport } from './host-seat';
@@ -4529,24 +4529,11 @@ export class WorkerManager {
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
 
-      // Model auth: provider config, server-managed Anthropic credentials and
-      // the tenant OAuth token (Dispatch multi-tenant mode). See
-      // agent-model-env.ts — server/tenant Anthropic credentials are only given
+      // Model auth: provider config and server-managed Anthropic API keys. See
+      // agent-model-env.ts — server Anthropic credentials are only given
       // to an agent whose model traffic goes to Anthropic. Codex tasks run
       // against OpenAI, so an inherited ANTHROPIC_API_KEY is stripped and no
       // server-managed Anthropic credential is injected for them.
-      // Tenant tokens are decrypted at runtime using the shared TENANT_MASTER_KEY
-      // so costs go to the tenant's subscription.
-      const tenantCtx = extractTenantContext(task.context as Record<string, unknown>);
-      let tenantOauthToken: string | undefined;
-      if (tenantCtx?.encryptedOauthToken && process.env.TENANT_MASTER_KEY) {
-        try {
-          tenantOauthToken = decryptTenantSecret(tenantCtx.encryptedOauthToken);
-        } catch (err) {
-          console.error(`[Worker ${worker.id}] Failed to decrypt tenant OAuth token:`, err);
-          this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
-        }
-      }
       // personal_only keeps the machine's login and provider from displacing
       // the requester's own key. Older servers omit the decision.
       const runnerLocalAllowed = runnerLocalCredentialsAllowed(worker.credentialDecision);
@@ -4563,7 +4550,6 @@ export class WorkerManager {
         cloud: !!cloudCostBasis(process.env),
         credentials: {
           serverApiKey: worker.serverApiKey,
-          tenantOauthToken,
         },
       });
       const authSource = resolved.decision;
@@ -4582,7 +4568,6 @@ export class WorkerManager {
         machineLogin,
         llmProvider: this.config.llmProvider,
         serverApiKey: claimCreds.serverApiKey,
-        tenantOauthToken: claimCreds.tenantOauthToken,
         isCodexTask,
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
         modelEndpoint: worker.modelEndpoint,
@@ -4606,7 +4591,6 @@ export class WorkerManager {
         isCodexTask,
         modelEnv,
         env: cleanEnv,
-        claudeCredentialUsed: false,
       });
       worker.modelAuthMissing = !!missingModelAuth;
       if (missingModelAuth) {
@@ -4653,23 +4637,17 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Claude login: ${describeMachineLogin(machineLogin)}`);
         sessionLog(worker.id, 'info', 'claude_login_source', `source=${machineLogin === 'env' ? 'machine_token' : 'machine_login'}`, task.id);
       }
-      if (modelEnv.injected.includes('tenantOauthToken') && tenantCtx) {
-        console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
-        this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
-      }
       // How this run's usage is charged (docs/specs/real-and-virtual-cost.md),
       // sent with every usage report. A cloud run's container only holds a
       // placeholder key, so its supervisor's hint decides there. Codex is
       // classified below, once its CODEX_HOME auth is in place.
       worker.costBasis = cloudCostBasis(process.env)
-        ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv, { claudeCredentialUsed: false }));
+        ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv));
       worker.claudeLoginUsed = claudeLoginUsed({
         isCodexTask,
         cloud: !!cloudCostBasis(process.env),
         machineLoginUsed: modelEnv.machineLoginUsed,
         machineLogin,
-        injected: modelEnv.injected,
-        claudeCredentialUsed: false,
       });
       // Which login that was, when it is this machine's `claude login`: the
       // server keys the wall on it so it holds every runner on the login.
@@ -4684,7 +4662,6 @@ export class WorkerManager {
       worker.route = cloudRunRoute(process.env, isCodexTask ? 'codex' : 'claude')
         ?? (isCodexTask ? null : claudeRunRoute({
           modelEnv,
-          claudeCredentialUsed: false,
           llmProvider: runnerLocalAllowed ? this.config.llmProvider : undefined,
           teamEndpoint: worker.modelEndpoint,
           credentialScope: worker.credentialDecision?.scope,
@@ -4717,12 +4694,9 @@ export class WorkerManager {
       // Phase 1C / R5 + B (seed-if-missing): Codex tasks use a STABLE per-worker
       // CODEX_HOME (keyed by worker id) so `sessions/` rollouts survive restarts.
       //
-      // Auth seeding follows OpenAI's CI/CD guidance:
-      //   "Seed auth.json only if missing; if you rewrite from the original secret
-      //    every run you throw away the refreshed tokens."
-      // - API key credential: inject as OPENAI_API_KEY; stable home holds config.toml only.
-      // - OAuth credential: seed auth.json ONLY when missing (preserves CLI-refreshed tokens).
+            // - API key credential: inject as OPENAI_API_KEY; stable home holds config.toml only.
       // - No server credential: fall back to operator's local CODEX_HOME/auth.json.
+      //   (A subscription login is never delivered; the machine's own is linked below.)
       //
       // The home is torn down ONLY on true terminal teardown (purge past follow-up TTL)
       // — never in the finally block (would destroy resumable sessions).

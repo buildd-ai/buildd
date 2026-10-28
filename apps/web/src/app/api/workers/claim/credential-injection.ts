@@ -3,10 +3,9 @@
  * claim response so the runner never needs DB access.
  *
  * A claim carries no subscription (OAuth) login (model credentials spec R-2 /
- * AC-3): no `oauth_token`, `claude_credential` or ChatGPT `codex_credential`
- * value. The runner uses its own machine login (`claude login`, `codex login`)
- * first, then an API key delivered here, then refuses the task. Stored login
- * rows are ignored, not yet deleted (R-8).
+ * AC-3): no stored login value of any kind. The runner uses its own machine
+ * login (`claude login`, `codex login`) first, then an API key delivered here,
+ * then refuses the task.
  *
  * Every function here is a no-op without ENCRYPTION_KEY, and every failure is
  * non-fatal: a claim must still succeed with no credentials attached (the
@@ -35,8 +34,8 @@ type ClaimedTask = { id: string; workspaceId: string };
 
 /**
  * Attach inline decrypted server-managed credentials: the Anthropic API key
- * and flat mcp_credential values. A stored `oauth_token` (a subscription
- * setup token) is never read or delivered.
+ * and flat mcp_credential values. A subscription login is never read or
+ * delivered.
  *
  * The Anthropic key is read from its canonical storage (`inference_key` /
  * `anthropic`, the key chat uses) and its legacy alias (`anthropic_api_key`);

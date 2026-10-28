@@ -296,9 +296,8 @@ container sees only `api.anthropic.com` and the placeholder key.
   on the agent allowlist, so setting it on the runner would do nothing.
 - **`CLAUDE_CODE_OAUTH_TOKEN`**: not set in env, and with `BUILDD_EXECUTOR=cloud`
   not delivered any other way either. A host claim can carry the team's
-  server-managed model credential, which the runner writes into the session's
-  Claude config dir (`materializeClaudeConfigDir` in `workers.ts`). A cloud
-  claim carries none (see `BUILDD_EXECUTOR` above), so the only model
+  server-managed API key, which the runner sets as `ANTHROPIC_API_KEY` for the
+  session. A cloud claim carries none (see `BUILDD_EXECUTOR` above), so the only model
   credential the container's traffic ever uses is the one the egress handler
   adds.
 

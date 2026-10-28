@@ -554,8 +554,8 @@ function saveConfig(data: Partial<SavedConfig>) {
     const merged = { ...existing, ...data };
     // Clean up: remove empty/null values
     if (!merged.apiKey) delete merged.apiKey;
-    // config.json holds a plaintext bld_* API key -- 0600, like codex-auth.ts and
-    // claude-auth.ts do for their own credential files.
+    // config.json holds a plaintext bld_* API key -- 0600, like codex-auth.ts does
+    // for its auth.json.
     writeSecretJsonFile(CONFIG_FILE, merged);
     console.log(`Config saved to ${CONFIG_FILE}`);
   } catch (err) {

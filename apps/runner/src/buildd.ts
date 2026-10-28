@@ -501,7 +501,7 @@ export class BuilddClient {
      */
     costBasis?: 'real' | 'virtual' | 'unknown';
     /** Which Claude login the run used; a machine login's wall holds only this runner. */
-    claudeLoginUsed?: 'machine_login' | 'machine_token' | 'stored';
+    claudeLoginUsed?: 'machine_login' | 'machine_token';
     /** That login's identity (host-seat.ts claudeLoginIdentity), a one-way hash. */
     claudeLoginId?: string;
     /**

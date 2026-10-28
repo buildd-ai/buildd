@@ -6,22 +6,16 @@ import type { LocalWorker } from '../../src/types';
 // the run says it used that machine's own login, so one machine's limit never
 // holds another runner's work. These pin what the runner reports.
 describe('claudeLoginUsed', () => {
-  const base = { isCodexTask: false, cloud: false, machineLoginUsed: false, machineLogin: null, injected: [] as string[], claudeCredentialUsed: false };
+  const base = { isCodexTask: false, cloud: false, machineLoginUsed: false, machineLogin: null };
 
   it("names this machine's login (claude login) or token (CLAUDE_CODE_OAUTH_TOKEN)", () => {
     expect(claudeLoginUsed({ ...base, machineLoginUsed: true, machineLogin: 'login' })).toBe('machine_login');
     expect(claudeLoginUsed({ ...base, machineLoginUsed: true, machineLogin: 'env' })).toBe('machine_token');
   });
 
-  it('names a stored team credential when the claim handed one to the run', () => {
-    expect(claudeLoginUsed({ ...base, injected: ['serverOauthToken'] })).toBe('stored');
-    expect(claudeLoginUsed({ ...base, claudeCredentialUsed: true })).toBe('stored');
-  });
-
   it('says nothing for Codex, cloud runs, API keys and endpoints', () => {
     expect(claudeLoginUsed({ ...base, isCodexTask: true, machineLoginUsed: true, machineLogin: 'login' })).toBeUndefined();
     expect(claudeLoginUsed({ ...base, cloud: true, machineLoginUsed: true, machineLogin: 'login' })).toBeUndefined();
-    expect(claudeLoginUsed({ ...base, injected: ['serverApiKey'] })).toBeUndefined();
     expect(claudeLoginUsed(base)).toBeUndefined();
   });
 });

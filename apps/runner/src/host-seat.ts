@@ -270,14 +270,12 @@ export function claudeModelAuthMissing(input: {
   modelEnv: { endpoint: string; machineLoginUsed?: boolean };
   /** The agent env, after applyModelEnv. */
   env: Record<string, string | undefined>;
-  /** shouldUseClaudeCredential for this run. */
-  claudeCredentialUsed: boolean;
   /** Login probe; `home` defaults to the agent env's HOME. Injected in tests. */
   probe?: Omit<MachineLoginProbe, 'env'>;
 }): string | null {
   if (input.isCodexTask) return null;
   if (input.modelEnv.endpoint !== 'anthropic') return null;
-  if (input.modelEnv.machineLoginUsed || input.claudeCredentialUsed) return null;
+  if (input.modelEnv.machineLoginUsed) return null;
   if (MODEL_AUTH_VARS.some((k) => (input.env[k] ?? '').trim().length > 0)) return null;
   const home = input.probe?.home ?? input.env.HOME;
   if (detectMachineLogin({ ...input.probe, ...(home ? { home } : {}), env: {} }) === 'login') return null;
@@ -338,7 +336,7 @@ export type CodexLoginChoice = 'machine' | 'server' | 'none';
 
 /** Use the machine's Codex login first; personal_only forbids local credentials. */
 export function decideCodexLogin(opts: {
-  serverCredentialType?: 'oauth' | 'api_key' | null;
+  serverCredentialType?: 'api_key' | null;
   localAuthPath: string | null;
   runnerLocalAllowed?: boolean;
 }): CodexLoginChoice {

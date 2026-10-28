@@ -10,7 +10,6 @@ import {
   connectedProviders,
   loneProviderLine,
   usedForView,
-  listedProviders,
   providerRows,
   keyRuleLine,
   maskedValue,
@@ -181,11 +180,11 @@ describe('rows', () => {
       ['litellm', 'LiteLLM gateway', 'litellm'],
       ['custom-endpoint', 'Custom endpoint', 'custom-endpoint'],
     ]);
-    expect(listedProviders(res.providers).some((p) => p.connectFlow === 'oauth')).toBe(false);
+    expect(res.providers.some((p) => (p.connectFlow as string) === 'oauth')).toBe(false);
   });
 
-  it('a stored subscription row is not a connected provider', () => {
-    const res = fixtureResponse({ rows: [{ provider: 'claude-subscription', scope: 'team', shape: 'setup_token' }, { provider: 'openrouter', scope: 'team' }] });
+  it('only a stored key makes a provider connected', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }] });
     expect(connectedProviders(res).map((p) => p.id)).toEqual(['openrouter']);
     expect(usedForView(res, {})).toBeNull();
   });

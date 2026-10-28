@@ -124,8 +124,6 @@ export interface ClaudeRouteInput {
     injected?: string[];
     baseUrlOrigin?: string;
   };
-  /** shouldUseClaudeCredential for this run: the claim's Claude seat was written into the session. */
-  claudeCredentialUsed: boolean;
   /** This runner's own LLM_PROVIDER, when it applied (runnerLocalAllowed). */
   llmProvider?: { provider?: string; baseUrl?: string } | null;
   /** The team endpoint the claim delivered. */
@@ -163,13 +161,8 @@ export function claudeRunRoute(input: ClaudeRouteInput): RunRoute | null {
     }
     return { backend: 'claude', bucket: 'api_key', provider: 'anthropic', owner };
   }
-  if (set(env.CLAUDE_CODE_OAUTH_TOKEN) || modelEnv.machineLoginUsed || input.claudeCredentialUsed) {
-    let owner: RouteOwner = 'machine';
-    if (!modelEnv.machineLoginUsed) {
-      if (injected.includes('tenantOauthToken')) owner = 'team';
-      else if (injected.includes('serverOauthToken') || input.claudeCredentialUsed) owner = serverOwner;
-    }
-    return { backend: 'claude', bucket: 'plan', provider: 'anthropic', owner };
+  if (set(env.CLAUDE_CODE_OAUTH_TOKEN) || modelEnv.machineLoginUsed) {
+    return { backend: 'claude', bucket: 'plan', provider: 'anthropic', owner: 'machine' };
   }
   return null;
 }
@@ -198,7 +191,7 @@ export function codexRunRoute(input: CodexRouteInput): RunRoute | null {
       ? { ...machineGateway('codex', input.openAiBaseUrl), owner }
       : { backend: 'codex', bucket: 'api_key', provider: 'openai', owner };
   if (kind === 'api_key') return keyRoute(input.codexLogin === 'server' ? serverOwner : 'machine');
-  if (kind === 'chatgpt') return { backend: 'codex', bucket: 'plan', provider: 'openai', owner: input.codexLogin === 'server' ? serverOwner : 'machine' };
+  if (kind === 'chatgpt') return { backend: 'codex', bucket: 'plan', provider: 'openai', owner: 'machine' };
   if (set(input.envApiKey)) return keyRoute('machine');
   return null;
 }
@@ -521,7 +514,7 @@ export function machineRoutes(input: MachineRoutesInput): { routes: RunRoute[]; 
     machineLogin: input.machineLogin ?? null,
     trustedBaseUrl: input.trustedBaseUrl,
   });
-  const claude = claudeRunRoute({ modelEnv, claudeCredentialUsed: false, llmProvider: input.llmProvider });
+  const claude = claudeRunRoute({ modelEnv, llmProvider: input.llmProvider });
   if (claude?.bucket === 'plan' && failed.claude?.owner === 'machine') problems.push({ backend: 'claude', text: expiredText('claude', 'machine') });
   else if (claude) routes.push(claude);
   if (failed.claude && failed.claude.owner !== 'machine') problems.push({ backend: 'claude', text: expiredText('claude', failed.claude.owner) });

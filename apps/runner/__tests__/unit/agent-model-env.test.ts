@@ -1,23 +1,20 @@
 /**
  * Model auth env for a runner-spawned agent.
  *
- * Invariant: server-managed Anthropic credentials (the team's key / OAuth seat,
- * or a tenant's OAuth token) are only given to an agent whose model traffic
+ * Invariant: server-managed Anthropic credentials (the team's API key) are only given to an agent whose model traffic
  * goes to Anthropic. When it goes anywhere else, at most one model auth
  * variable is set, and it is the provider's or operator's own — never a
- * server/tenant value. Unset means deleted, not ''.
+ * server value. Unset means deleted, not ''.
  */
 import { describe, test, expect } from 'bun:test';
-import { applyModelEnv, customHeadersValue, endpointSessionModels, shouldUseClaudeCredential, type ModelEnvInput } from '../../src/agent-model-env';
+import { applyModelEnv, customHeadersValue, endpointSessionModels, type ModelEnvInput } from '../../src/agent-model-env';
 import { buildAgentBaseEnv, RUNNER_ENV_PASSTHROUGH } from '../../src/agent-env';
 import type { ClaimModelEndpoint } from '@buildd/shared';
 import type { ProviderConfig } from '../../src/types';
 
 const SERVER_KEY = 'server-key-value';
-const SERVER_OAUTH = 'server-oauth-value';
-const TENANT_OAUTH = 'tenant-oauth-value';
 const PROVIDER_KEY = 'provider-key-value';
-const SERVER_VALUES = [SERVER_KEY, SERVER_OAUTH, TENANT_OAUTH];
+const SERVER_VALUES = [SERVER_KEY];
 const AUTH_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'] as const;
 
 /**
@@ -27,7 +24,7 @@ const AUTH_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAU
  */
 function legacy(
   env: Record<string, string>,
-  o: { llmProvider?: ProviderConfig; serverApiKey?: string; serverOauthToken?: string; tenantOauthToken?: string; isCodexTask: boolean },
+  o: { llmProvider?: ProviderConfig; serverApiKey?: string; isCodexTask: boolean },
 ): Record<string, string> {
   const cleanEnv = { ...env };
   if (o.isCodexTask) delete cleanEnv.ANTHROPIC_API_KEY;
@@ -43,8 +40,6 @@ function legacy(
     }
   }
   if (!o.isCodexTask && o.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) cleanEnv.ANTHROPIC_API_KEY = o.serverApiKey;
-  if (!o.isCodexTask && o.serverOauthToken && !cleanEnv.CLAUDE_CODE_OAUTH_TOKEN) cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = o.serverOauthToken;
-  if (o.tenantOauthToken) cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = o.tenantOauthToken;
   return cleanEnv;
 }
 
@@ -75,10 +70,6 @@ describe('default Anthropic path — unchanged from the pre-extraction code', ()
   const creds = [
     {},
     { serverApiKey: SERVER_KEY },
-    { serverOauthToken: SERVER_OAUTH },
-    { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH },
-    { tenantOauthToken: TENANT_OAUTH },
-    { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH },
   ];
 
   for (const [envName, env] of Object.entries(baseEnvs)) {
@@ -103,42 +94,56 @@ describe('default Anthropic path — unchanged from the pre-extraction code', ()
     expect(run({ ANTHROPIC_API_KEY: 'operator-key' }, { serverApiKey: SERVER_KEY }).env.ANTHROPIC_API_KEY).toBe('operator-key');
   });
 
-  test('server key and server OAuth are both injected when both are delivered', () => {
-    const { env } = run({}, { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH });
-    expect(env.ANTHROPIC_API_KEY).toBe(SERVER_KEY);
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(SERVER_OAUTH);
-  });
-
-  test('tenant OAuth overrides server OAuth', () => {
-    const { env, injected } = run({}, { serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH });
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(TENANT_OAUTH);
-    expect(injected).toContain('tenantOauthToken');
-  });
-
   test('reports what it injected', () => {
-    const { injected } = run({}, { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH });
-    expect(injected).toEqual(['serverApiKey', 'serverOauthToken']);
+    const { injected } = run({}, { serverApiKey: SERVER_KEY });
+    expect(injected).toEqual(['serverApiKey']);
+  });
+});
+
+describe('API key paths stay; no server-delivered subscription login exists', () => {
+  test('the claim\'s API key fills an unset ANTHROPIC_API_KEY and never touches the machine login variable', () => {
+    const { env, injected } = run({ CLAUDE_CODE_OAUTH_TOKEN: 'machine-token' }, { serverApiKey: SERVER_KEY });
+    expect(env.ANTHROPIC_API_KEY).toBe(SERVER_KEY);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('machine-token');
+    expect(injected).toEqual(['serverApiKey']);
+  });
+
+  test('with no key and no machine login, nothing authenticates: no login variable is invented', () => {
+    const { env, injected, machineLoginUsed } = run({}, {});
+    expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false);
+    expect(injected).toEqual([]);
+    expect(machineLoginUsed).toBeUndefined();
+  });
+
+  test('the input type has no field that could carry a stored login', async () => {
+    const src = await Bun.file(new URL('../../src/agent-model-env.ts', import.meta.url)).text();
+    expect(src).not.toContain('serverOauthToken');
+    expect(src).not.toContain('tenantOauthToken');
+  });
+
+  test('the tenant-crypto and claude-auth modules are gone and nothing imports them', async () => {
+    const { existsSync } = await import('fs');
+    expect(existsSync(new URL('../../src/tenant-crypto.ts', import.meta.url))).toBe(false);
+    expect(existsSync(new URL('../../src/claude-auth.ts', import.meta.url))).toBe(false);
+    const workers = await Bun.file(new URL('../../src/workers.ts', import.meta.url)).text();
+    expect(workers).not.toContain('tenant-crypto');
+    expect(workers).not.toContain('decryptTenantSecret');
   });
 });
 
 describe('Codex — unchanged', () => {
-  test('inherited ANTHROPIC_API_KEY stripped, server creds never injected', () => {
+  test('inherited ANTHROPIC_API_KEY stripped, server key never injected', () => {
     const { env } = applyModelEnv(
       { ANTHROPIC_API_KEY: 'operator-key' },
-      { isCodexTask: true, serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH },
+      { isCodexTask: true, serverApiKey: SERVER_KEY },
     );
     expect('ANTHROPIC_API_KEY' in env).toBe(false);
     expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false);
   });
-
-  test('tenant token still delivered on the Anthropic endpoint', () => {
-    const { env } = applyModelEnv({}, { isCodexTask: true, tenantOauthToken: TENANT_OAUTH });
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(TENANT_OAUTH);
-  });
 });
 
 describe('non-Anthropic endpoint — server credentials withheld', () => {
-  const allCreds = { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH };
+  const allCreds = { serverApiKey: SERVER_KEY };
 
   test('OpenRouter: provider key as ANTHROPIC_AUTH_TOKEN, no API key or OAuth variable at all', () => {
     const { env, withheld, endpoint } = run({}, { llmProvider: { provider: 'openrouter', apiKey: PROVIDER_KEY }, ...allCreds });
@@ -147,7 +152,7 @@ describe('non-Anthropic endpoint — server credentials withheld', () => {
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe(PROVIDER_KEY);
     expect('ANTHROPIC_API_KEY' in env).toBe(false);
     expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false);
-    expect(withheld).toEqual(['serverApiKey', 'serverOauthToken', 'tenantOauthToken']);
+    expect(withheld).toEqual(['serverApiKey']);
   });
 
   test('OpenRouter keeps a custom base URL', () => {
@@ -191,20 +196,12 @@ describe('non-Anthropic endpoint — server credentials withheld', () => {
     const { env, withheld, endpoint } = run({ ANTHROPIC_BASE_URL: 'https://proxy.example' }, allCreds);
     expect(endpoint).toBe('custom');
     expect(authVarsSet(env)).toEqual([]);
-    expect(withheld).toEqual(['serverApiKey', 'serverOauthToken', 'tenantOauthToken']);
+    expect(withheld).toEqual(['serverApiKey']);
   });
 
   test('a look-alike host is not Anthropic', () => {
     for (const url of ['https://api.anthropic.com.evil.example', 'http://api.anthropic.com', 'https://api.anthropic.com:8443', 'not a url']) {
       expect(run({ ANTHROPIC_BASE_URL: url }, { serverApiKey: SERVER_KEY }).env.ANTHROPIC_API_KEY).toBeUndefined();
-    }
-  });
-
-  test('tenant token withheld when the base URL is not Anthropic', () => {
-    for (const isCodexTask of [false, true]) {
-      const { env, withheld } = applyModelEnv({ ANTHROPIC_BASE_URL: 'https://proxy.example' }, { isCodexTask, tenantOauthToken: TENANT_OAUTH });
-      expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false);
-      expect(withheld).toEqual(['tenantOauthToken']);
     }
   });
 
@@ -214,7 +211,7 @@ describe('non-Anthropic endpoint — server credentials withheld', () => {
 });
 
 describe('trusted base URL escape hatch (off by default)', () => {
-  const creds = { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH };
+  const creds = { serverApiKey: SERVER_KEY };
 
   test('an explicitly trusted operator base URL gets the default path', () => {
     const env = { ANTHROPIC_BASE_URL: 'http://localhost:8080/' };
@@ -261,13 +258,10 @@ describe('invariant across a matrix of inputs', () => {
   const credSets = [
     {},
     { serverApiKey: SERVER_KEY },
-    { serverOauthToken: SERVER_OAUTH },
-    { tenantOauthToken: TENANT_OAUTH },
-    { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH },
   ];
 
   let cases = 0;
-  test('non-Anthropic endpoint ⇒ at most one auth var, never a server/tenant value, never an empty string', () => {
+  test('non-Anthropic endpoint ⇒ at most one auth var, never a server value, never an empty string', () => {
     for (const env of envs) {
       for (const llmProvider of providers) {
         for (const c of credSets) {
@@ -286,7 +280,7 @@ describe('invariant across a matrix of inputs', () => {
         }
       }
     }
-    expect(cases).toBeGreaterThan(200);
+    expect(cases).toBeGreaterThan(100);
   });
 });
 
@@ -313,7 +307,7 @@ describe('team endpoint delivered on the claim', () => {
     ANTHROPIC_API_KEY: 'operator-key', ANTHROPIC_AUTH_TOKEN: 'operator-token', CLAUDE_CODE_OAUTH_TOKEN: 'operator-oauth',
     ANTHROPIC_BASE_URL: 'https://proxy.example',
   };
-  const allCreds = { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH };
+  const allCreds = { serverApiKey: SERVER_KEY };
 
   test('authorization: base URL + ANTHROPIC_AUTH_TOKEN only; every other auth var deleted', () => {
     const got = run(noisyEnv, { modelEndpoint: bearerEndpoint, ...allCreds });
@@ -322,7 +316,7 @@ describe('team endpoint delivered on the claim', () => {
     expect(got.env.ANTHROPIC_AUTH_TOKEN).toBe(ENDPOINT_KEY);
     expect('ANTHROPIC_API_KEY' in got.env).toBe(false);
     expect('CLAUDE_CODE_OAUTH_TOKEN' in got.env).toBe(false);
-    expect(got.withheld).toEqual(['serverApiKey', 'serverOauthToken', 'tenantOauthToken']);
+    expect(got.withheld).toEqual(['serverApiKey']);
     expect(got.injected).toEqual([]);
   });
 
@@ -367,7 +361,7 @@ describe('team endpoint delivered on the claim', () => {
 });
 
 describe('team endpoint — Codex', () => {
-  const allCreds = { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH };
+  const allCreds = { serverApiKey: SERVER_KEY };
 
   test.each(['gateway', 'openrouter'] as const)('%s: OPENAI_BASE_URL + OPENAI_API_KEY only, no Anthropic var touched', (kind) => {
     const endpoint = kind === 'gateway' ? gatewayEndpoint : openRouterEndpoint;
@@ -378,7 +372,7 @@ describe('team endpoint — Codex', () => {
     expect(got.env.OPENAI_API_KEY).toBe(ENDPOINT_KEY);
     expect(got.env.ANTHROPIC_AUTH_TOKEN).toBe('operator-token');
     expect('ANTHROPIC_API_KEY' in got.env).toBe(false);
-    expect(got.withheld).toEqual(['serverApiKey', 'serverOauthToken', 'tenantOauthToken']);
+    expect(got.withheld).toEqual(['serverApiKey']);
     expect(got.baseUrlOrigin).toBe(new URL(endpoint.openAiBaseUrl!).origin);
   });
 
@@ -508,14 +502,14 @@ describe('invariant across a matrix, team endpoint included', () => {
     // The endpoint's own key may equal a server value (e.g. the same proxy key): allowed.
     { ...bearerEndpoint, authToken: SERVER_KEY },
   ];
-  const credSets = [{}, { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH }];
+  const credSets = [{}, { serverApiKey: SERVER_KEY }];
 
   // isCodexTask: true is covered separately ('team endpoint — Codex' above) —
   // a Codex task speaks OPENAI_* vars instead of ANTHROPIC_* ones, and an
   // anthropic-compatible-only endpoint (most of `endpoints` here) now returns
   // an `error` rather than applying anything, so it doesn't fit this matrix's
   // ANTHROPIC_* assertions.
-  test('base URL set and not Anthropic ⇒ exactly one auth var when any credential exists, never a server/tenant value unless it is the endpoint key', () => {
+  test('base URL set and not Anthropic ⇒ exactly one auth var when any credential exists, never a server value unless it is the endpoint key', () => {
     let cases = 0;
     for (const env of envs) for (const llmProvider of providers) for (const modelEndpoint of endpoints) for (const c of credSets) for (const isCodexTask of [false]) {
       const got = applyModelEnv({ ...env }, { llmProvider, modelEndpoint, isCodexTask, trustedBaseUrl: undefined, ...c });
@@ -547,30 +541,12 @@ describe('invariant across a matrix, team endpoint included', () => {
   });
 });
 
-describe('shouldUseClaudeCredential: the Claude credential never rides along to a team endpoint', () => {
-  const withCred = [{ claudeAccessToken: 'claude-token-value' }, { claudeCredentialId: 'cred-1' }, { claudeAccessToken: 'x', claudeCredentialId: 'cred-1' }];
-
-  test('under a team endpoint the credential is skipped, whatever the claim carried', () => {
-    for (const w of withCred) expect(shouldUseClaudeCredential({ endpoint: 'team' }, w)).toBe(false);
-  });
-
-  test.each(['anthropic', 'trusted', 'custom'] as const)('endpoint %s: used when the claim carries one', (endpoint) => {
-    for (const w of withCred) expect(shouldUseClaudeCredential({ endpoint }, w)).toBe(true);
-    expect(shouldUseClaudeCredential({ endpoint }, {})).toBe(false);
-  });
-
-  test('wired end to end: a claim with a team endpoint and a Claude credential skips the credential', () => {
-    const endpoint: ClaimModelEndpoint = { kind: 'gateway', baseUrl: 'https://litellm.example.com', authToken: 'team-endpoint-key', authHeader: 'authorization', models: {} };
-    const r = applyModelEnv({}, { modelEndpoint: endpoint, isCodexTask: false } as ModelEnvInput);
-    expect(r.endpoint).toBe('team');
-    expect(shouldUseClaudeCredential(r, { claudeAccessToken: 'claude-token-value', claudeCredentialId: 'cred-1' })).toBe(false);
-  });
-
+describe('workers.ts model auth wiring', () => {
   test('workers.ts no longer receives or writes a server-delivered Claude login', async () => {
     const src = await Bun.file(new URL('../../src/workers.ts', import.meta.url)).text();
-    expect(src).not.toContain('shouldUseClaudeCredential');
     expect(src).not.toContain('claudeAccessToken');
     expect(src).not.toContain('serverOauthToken');
+    expect(src).not.toContain('tenantOauthToken');
   });
 
   test('workers.ts fails the task when a Codex endpoint has no OpenAI-compatible route', async () => {

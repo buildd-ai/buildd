@@ -16,10 +16,6 @@ assertions:
     method: GET
     path: /api/cron/codex-token-refresh
     file: apps/web/src/app/api/cron/codex-token-refresh/route.ts
-  - id: materialize-claude-config-dir-symbol
-    type: symbol
-    name: materializeClaudeConfigDir
-    path: apps/runner/src/claude-auth.ts
   # Phase 1 targets — shipped; skip_until suppressions lifted now that each passes.
 ---
 

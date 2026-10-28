@@ -9,13 +9,13 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 /**
  * A plain team/workspace OpenAI API key for Codex agent tasks.
  *
- * This is the simple sibling of `codex_credential` (the ChatGPT OAuth / JSON-blob
- * connect flow in lib/codex-credential.ts): a single raw string, stored via
+ * This is the simple sibling of `codex_credential` (a JSON blob that can hold
+ * an API key, see lib/codex-api-key.ts): a single raw string, stored via
  * POST /api/secrets exactly like `anthropic_api_key`, for a team that just wants
  * to paste a key instead of connecting an account. See
  * docs/credentials-architecture.md for why this is a separate purpose rather
  * than reusing `inference_key` (chat/decision calls only) or `codex_credential`
- * (multi-field, OAuth-oriented, its own UI flow).
+ * (a JSON blob).
  *
  * Provider parity: the key's canonical storage is now `inference_key` / label
  * `openai`, the row chat reads, so one stored OpenAI key serves chat and Codex
