@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { loadHealthQueueFor } from '@/lib/health-queue-scope';
 import QueueClient from './QueueClient';
+import { resolveQueueSample, sampleQueueView } from './sample-queue';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,11 +14,14 @@ export const dynamic = 'force-dynamic';
  * it. Reads `?workspace=`, `?mission=`, `?reason=`, `?page=` and `?open=`; the same
  * read backs GET /api/health/queue.
  */
-export default async function HealthQueuePage({ searchParams }: { searchParams: Promise<{ workspace?: string; mission?: string; reason?: string; page?: string }> }) {
+export default async function HealthQueuePage({ searchParams }: { searchParams: Promise<{ workspace?: string; mission?: string; reason?: string; page?: string; state?: string | string[] }> }) {
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
   const params = await searchParams;
   const now = new Date();
+  if (resolveQueueSample(params.state)) {
+    return <QueueClient view={sampleQueueView(now.getTime())} workspaces={[]} workspace={null} mission={null} now={now.getTime()} />;
+  }
   const loaded = await loadHealthQueueFor(user.id, (await cookies()).get('buildd-team')?.value, params, now);
   if (loaded.kind !== 'ok') {
     return (

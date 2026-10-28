@@ -4075,6 +4075,7 @@ describe('POST /api/tasks', () => {
       expect(Object.keys(json).sort()).toEqual(['error', 'frictionSignature']);
       expect(json.error).toBe(
         'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]. ' +
+        'Schema, migrations and configured hard surfaces use serial lanes; the edit-time file lock stops concurrent edits to the same file. ' +
         "If this task won't produce a PR, set outputRequirement: 'none' instead.",
       );
       expect(mockScheduleCreationManifestShadow).not.toHaveBeenCalled();
