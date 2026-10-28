@@ -39,8 +39,10 @@ export default function RunnerSlotDetail({
   route,
 }: RunnerSlotDetailProps) {
   const hidden = (mine: boolean | null | undefined) => !seesTeamWork && mine !== true && mine !== undefined;
-  const slots = fleetRow?.slots ?? [];
-  const failed = slots.filter(s => !s.worker && s.last?.failed);
+  const allSlots = fleetRow?.slots ?? [];
+  // Running tasks only: an idle slot is capacity, already shown by the pips (spec 97b1bd0b R-18).
+  const slots = allSlots.filter(s => s.worker);
+  const failed = allSlots.filter(s => !s.worker && s.last?.failed);
 
   return (
     <div data-testid="health-runner-detail" className="pt-3 space-y-2">
@@ -70,21 +72,15 @@ export default function RunnerSlotDetail({
         canEdit={runner.slots?.canEdit ?? false}
       />
       {slots.length === 0 ? (
-        <p className="text-xs text-text-muted">No slot detail reported for this runner.</p>
+        <p className="text-xs text-text-muted">{allSlots.length === 0 ? 'No slot detail reported for this runner.' : 'No tasks running.'}</p>
       ) : (
         <ul className="space-y-1">
           {slots.map(s => (
             <li key={s.index} data-testid="health-runner-slot" className="flex items-baseline gap-2 text-xs min-w-0">
               <span className="font-mono text-text-muted shrink-0">#{s.index + 1}</span>
-              {s.worker ? (
-                <span className="text-text-primary truncate">
-                  {s.worker.question ? 'Waiting · ' : 'Working · '}{hidden(s.worker.mine) ? (s.worker.mine === null ? 'Unattributed work' : 'A teammate\'s work') : (s.worker.name ?? s.worker.title ?? s.worker.label)}{s.worker.startedAt ? ` · ${timeAgo(s.worker.startedAt, now).replace(' ago', '')}` : ''}
-                </span>
-              ) : (
-                <span className="text-text-muted truncate">
-                  Idle{s.last ? ` · last ${hidden(s.last.mine) ? 'run' : (s.last.label ?? 'run')}${s.last.failed ? ' (failed)' : ''}${s.last.at ? `, ${timeAgo(new Date(s.last.at).toISOString(), now)}` : ''}` : ''}
-                </span>
-              )}
+              <span className="text-text-primary truncate">
+                {s.worker!.question ? 'Waiting · ' : 'Working · '}{hidden(s.worker!.mine) ? (s.worker!.mine === null ? 'Unattributed work' : 'A teammate\'s work') : (s.worker!.name ?? s.worker!.title ?? s.worker!.label)}{s.worker!.startedAt ? ` · ${timeAgo(s.worker!.startedAt, now).replace(' ago', '')}` : ''}
+              </span>
             </li>
           ))}
         </ul>
