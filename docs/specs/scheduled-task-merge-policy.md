@@ -15,8 +15,8 @@ assertions:
     type: "symbol"
     name: "resolvePolicy"
     path: "apps/web/src/lib/merge-policy.ts"
-    skip_until: "2026-12-15"
-    skip_reason: "resolvePolicy has been exported since #1162 (2026-07-12), two months before this spec was drafted. Passing this assertion only proves the pre-existing export still exists, not that this spec's proposed task.mergePolicy step was added to it — see status callout."
+    skip_until: "2027-03-16"
+    skip_reason: "resolvePolicy has been exported since #1162 (2026-07-12), two months before this spec was drafted. Passing this assertion only proves the pre-existing export still exists, not that this spec's proposed task.mergePolicy step was added to it — see status callout. Owner note (max, restaged 2026-10-28 from 2026-12-15): its task.mergePolicy step is not built and the passing assertions only cover pre-existing code; re-review by 2027-03-16."
   - id: "schedule-copies-merge-policy"
     type: "symbol_reachable"
     symbol: "mergePolicy"
@@ -25,8 +25,8 @@ assertions:
   - id: "merge-policy-precedence-tests"
     type: "test_file"
     path: "apps/web/src/lib/merge-policy.test.ts"
-    skip_until: "2026-12-15"
-    skip_reason: "merge-policy.test.ts predates this spec and tests today's shipped precedence chain, not this spec's proposed task.mergePolicy step. File-existence passing says nothing about this capability — see status callout."
+    skip_until: "2027-03-16"
+    skip_reason: "merge-policy.test.ts predates this spec and tests today's shipped precedence chain, not this spec's proposed task.mergePolicy step. File-existence passing says nothing about this capability — see status callout. Owner note (max, restaged 2026-10-28 from 2026-12-15): its task.mergePolicy step is not built and the passing assertions only cover pre-existing code; re-review by 2027-03-16."
 ---
 
 # Scheduled-task merge policy override
