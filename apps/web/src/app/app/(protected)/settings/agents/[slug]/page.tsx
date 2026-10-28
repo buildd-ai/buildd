@@ -6,7 +6,7 @@ import Link from 'next/link';
 import SettingsPage from '../../_components/SettingsPage';
 import Section from '@/components/ui/Section';
 import PrimaryAction from '@/components/ui/PrimaryAction';
-import StatePill, { TonePill } from '@/components/ui/StatePill';
+import { StatusPill, TonePill } from '@/components/ui/StatePill';
 import { TERMS } from '@buildd/shared';
 import type { StateTone } from '@/components/ui/states';
 import { notFound, redirect } from 'next/navigation';
@@ -37,8 +37,7 @@ const HEALTH_TONE: Record<MissionHealth, StateTone> = {
 };
 
 function RoleStatePill({ status }: { status: string }) {
-  if (status === 'waiting_input') return <StatePill state="waiting" label="Has a question" />;
-  if (status === 'running' || status === 'starting') return <StatePill state="running" label="Working" />;
+  if (status === 'waiting_input' || status === 'running' || status === 'starting') return <StatusPill status={status} />;
   return <TonePill tone="q">Idle</TonePill>;
 }
 

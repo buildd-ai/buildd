@@ -39,9 +39,9 @@ export default function StatePill({ state, label, variant = 'tinted', trailing, 
 }
 
 /** A task or worker row's status (`pending`, `in_progress`, `failed`…) as a StatePill. */
-export function StatusPill({ status, variant, className }: { status: string; variant?: StatePillVariant; className?: string }) {
+export function StatusPill({ status, variant, trailing, className }: { status: string; variant?: StatePillVariant; trailing?: ReactNode; className?: string }) {
   const { state, label } = statusPill(status);
-  return <StatePill state={state} label={label} variant={variant} className={className} />;
+  return <StatePill state={state} label={label} variant={variant} trailing={trailing} className={className} />;
 }
 
 /**
