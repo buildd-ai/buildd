@@ -5930,6 +5930,8 @@ async function handleReviewerOutcomeIfNeeded(
     // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
     let currentFiles: Array<{ filename: string }> | null = null;
     let migrationSafety: MigrationSafety | undefined;
+    // 52a0de67: a person's approval at an earlier head covers the PR's files unchanged since it.
+    let personApproved: { headSha: string; unchangedPaths: string[] } | null = null;
     try {
       const { githubApi } = await import('@/lib/github');
       const fetched = await githubApi(
@@ -5947,13 +5949,33 @@ async function handleReviewerOutcomeIfNeeded(
       const { refreshDeltaBase } = await import('@/lib/integration-refresh');
       const original = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, originalTaskId)), columns: { context: true } });
       const deltaBase = refreshDeltaBase(original?.context, workspace?.gitConfig ?? null);
+      // 52a0de67: the files a person already approved, byte-identical at this head, are not gated
+      // again (the person decided on those bytes); the gates judge what changed since. Read from the
+      // kernel's delivery (a kernel round names it) and a delta bounded against the base; anything
+      // unreadable covers nothing. A legacy reviewer has no delivery, so nothing is read for it.
+      try {
+        if (reviewerTask.deliveryId && ctx.workflowRoundId && currentFiles) {
+          const { loadView } = await import('@/lib/workflow/kernel');
+          const d = (await loadView({ deliveryId: reviewerTask.deliveryId })).delivery;
+          const from = d?.approvalBasis === 'human' ? d.approvedHeads.at(-1) : undefined;
+          const baseRef = gatedWorker?.prBaseRef ?? d?.baseRef ?? null;
+          const delta = from && from !== headSha && baseRef
+            ? await (await import('@/lib/workflow/github-facts')).githubReader(installationId).reviewedDelta?.(repoFullName, baseRef, from, headSha)
+            : null;
+          const { personApprovedScope } = await import('@/lib/reviewer');
+          personApproved = personApprovedScope(d, headSha, currentFiles, delta ?? null);
+        }
+      } catch (err) {
+        console.warn(`[reviewer] PR #${prNumber}: could not read a person's earlier approval; every file is gated:`, err);
+      }
+      const decidedByPerson = new Set(personApproved?.unchangedPaths ?? []);
       const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
       migrationSafety = await inspectPullRequestMigrations({
         installationId,
         repoFullName,
         prNumber,
         headSha,
-        files: (currentFiles ?? []) as never,
+        files: (currentFiles ?? []).filter((f) => !decidedByPerson.has(f.filename)) as never,
         trunkRef: workspace?.gitConfig?.targetBranch ?? workspace?.gitConfig?.defaultBranch ?? null,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
@@ -5969,6 +5991,7 @@ async function handleReviewerOutcomeIfNeeded(
       policy: reviewPolicy,
       policyConfig: workspace?.gitConfig?.policyConfig ?? undefined,
       migrationSafety,
+      personApproved,
     });
     effectiveVerdict = enforced.verdict;
     serverOverrideReason = enforced.overrideReason;
