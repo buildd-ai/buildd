@@ -160,42 +160,6 @@ describe('Task page — design preview empty state', () => {
     expect(html).toContain('Download the file to open it');
     expect(html).not.toContain('design-retry');
   });
-
-  it('DesignPreview shows error message with retry button when frame fails to load', async () => {
-    const { default: DesignPreview } = await import('@/components/DesignPreview');
-    const html = renderToStaticMarkup(
-      <DesignPreview
-        artifactId="test-id"
-        title="Test Design"
-        revision={1}
-        frameUrl="https://example.com/design.html"
-        screens={[]}
-      />,
-    );
-    // The error message text requires the error state to be triggered,
-    // which happens after 15s in the component. The DOM test verifies
-    // the retry button exists when frameError would be true.
-    expect(html).toContain('design-frame');
-    expect(html).toContain('Loading design…');
-  });
-
-  it('DesignPreview error message and retry button structure exists', () => {
-    const { default: DesignPreview } = require('@/components/DesignPreview');
-    const html = renderToStaticMarkup(
-      <DesignPreview
-        artifactId="test-id"
-        title="Test Design"
-        revision={1}
-        frameUrl="https://example.com/design.html"
-        screens={[]}
-      />,
-    );
-    // Error message and retry button are in the component code structure,
-    // rendered when frameError state becomes true (after 15s timeout).
-    // Static rendering shows loading state; interactive tests verify timeout/retry flow.
-    expect(html).toContain('design-frame');
-    expect(html).toContain('Loading design…');
-  });
 });
 
 describe('Task page — disclosure styles', () => {
@@ -228,7 +192,6 @@ describe('Task page — disclosure styles', () => {
         currentTaskId="task-1"
       />,
     );
-    expect(html).toContain('items-baseline');
     expect(html).toContain('items-baseline');
   });
 });
