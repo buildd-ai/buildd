@@ -15,10 +15,11 @@
  *  - anything else (no delivery, a delivery that has not seen this head, one
  *    that is over): pending, "Review not requested" or "Review in progress";
  *  - except a *foreign* PR (buildd has no record of it, `isForeignPr`) with no
- *    review asked for, in a workspace whose `mergePolicy.autoReviewUnowned` is
- *    off: nothing at all. buildd is not going to review it, so it puts no
- *    required status on it. With the setting on, the PR webhook requests the
- *    review first (lib/auto-review-unowned.ts), so it reads "Review in progress".
+ *    review asked for: nothing at all, whatever the workspace's
+ *    `mergePolicy.autoReviewUnowned` says. buildd is not going to review it, so
+ *    it puts no required status on it. When auto-review does take one, the PR
+ *    webhook requests the review first (lib/auto-review-unowned.ts): the PR is
+ *    adopted, so it is no longer foreign and reads "Review in progress".
  * The host writes the last two only when GitHub shows something else, so a
  * second pass writes nothing. Then it re-reads the context on every head and
  * reports coverage: a head still without it is listed and counted as an error
@@ -31,7 +32,6 @@ import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { LANDING_STATUS_CONTEXT, type LandingStatus } from '@buildd/workflow-kernel/landing-gate';
 import { openHeadStatus, statusCoverage, type CandidateGateInput, type OpenHeadAnswer, type OpenHead, type StatusCoverage, type UnownedReview } from '@buildd/workflow-kernel/open-pr-status';
 import type { KernelView } from '@buildd/workflow-kernel/types';
-import { autoReviewUnownedEnabled } from '@buildd/shared';
 import { githubApi } from '@/lib/github';
 import { kernelDeliveryForPr } from './authority';
 import { enqueueEffectSql } from './enqueue-missing';
@@ -107,8 +107,8 @@ export interface OpenPrStatusSummary {
   candidates: number;
   /** Heads skipped due to repo or permission issues (not counted as errors). */
   skipped: number;
-  /** `foreignOff`: a foreign PR in a workspace that does not auto-review it carries no status at all. */
-  skipReasons: { noStatusesPermission: number; noDelivery: number; foreignOff: number };
+  /** `foreign`: a PR buildd has no record of and was not asked to review carries no status at all. */
+  skipReasons: { noStatusesPermission: number; noDelivery: number; foreign: number };
   errors: number;
   coverage: StatusCoverage;
 }
@@ -238,12 +238,11 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
   // Only what the answer needs: the kernel's own answer reads no review state.
   const kernelHere = openHeadStatus({ sha, view });
   const review = kernelHere.by === 'kernel' || candidateLink ? undefined : await reviews.review({ workspaceId, prNumber: pr.number });
-  // A PR buildd has no record of, nobody asked buildd to review, in a workspace that does not auto-review
-  // one: buildd puts no required status on it at all (the repo's primary link decides, as auto-review does).
-  // Coverage counts it as answered: the skip is the answer.
+  // A PR buildd has no record of and nobody asked buildd to review (auto-review off, or it did not take
+  // this one: a draft, a bot's, another base): buildd puts no required status on it at all. One it did
+  // take is adopted before this runs, so it is not foreign. Coverage counts the skip as answered.
   if (!owner && !candidateLink && review === 'not_requested'
     && !links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts))
-    && !autoReviewUnownedEnabled((links[0]!.gitConfig as { mergePolicy?: unknown } | null | undefined)?.mergePolicy)
     && await foreign(links, repoFullName, pr)) {
     out.skippedForeign = true;
     out.shown = true;
@@ -306,7 +305,7 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
 
   const s: Omit<OpenPrStatusSummary, 'coverage'> = {
     repos: 0, checked: 0, published: 0, republished: 0, unchanged: 0, candidates: 0, skipped: 0,
-    skipReasons: { noStatusesPermission: 0, noDelivery: 0, foreignOff: 0 }, errors: 0,
+    skipReasons: { noStatusesPermission: 0, noDelivery: 0, foreign: 0 }, errors: 0,
   };
   const heads: Array<OpenHead & { shown: boolean }> = [];
 
@@ -353,7 +352,7 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
         shown = r.shown;
         if (r.skippedForeign) {
           s.skipped++;
-          s.skipReasons.foreignOff++;
+          s.skipReasons.foreign++;
           heads.push({ ...head, shown });
           continue;
         }

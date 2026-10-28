@@ -23,8 +23,9 @@
  * onto a base the repo's normal flow does not target (neither the default
  * branch nor a mission integration branch).
  *
- * With the setting off, a foreign PR carries no `Buildd / Review approval` at
- * all (lib/workflow/open-pr-status.ts reads `isForeignPr` too).
+ * A foreign PR this does not take (setting off, a draft, a bot's, another base)
+ * carries no `Buildd / Review approval` at all (lib/workflow/open-pr-status.ts
+ * reads `isForeignPr` too); one it takes is adopted, so it reads "Review in progress".
  *
  * Idempotent: the first request adopts the PR, so a duplicate or re-delivered
  * event finds it owned and requests nothing. A push to an adopted PR is the

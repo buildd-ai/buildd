@@ -42,15 +42,19 @@ const at = (n: number) => ({ installationId: 1, repoFullName: REPO, prNumber: 9,
 const stateOn = (h: ReturnType<typeof harness>, sha: string) => h.statuses.get(`${sha}|${CONTEXT}`)?.state;
 
 describe('an event publishes one open head now (AC-78)', () => {
-  test('a foreign PR (buildd has no record of it) with autoReviewUnowned off: the webhook path writes no status at all', async () => {
+  test('a foreign PR (buildd has no record of it, no review asked for) with autoReviewUnowned off: the webhook path writes no status at all', async () => {
     const h = harness({ sha: H(1), foreign: true, gitConfig: { mergePolicy: { tier: 'human' } } });
     expect(await publishOpenPrHead(at(1), h.deps)).toBe('skipped_foreign');
     expect(h.writes).toEqual([]);
   });
 
-  test('a foreign PR with autoReviewUnowned on: written as today (the auto-review runs before it)', async () => {
-    const h = harness({ sha: H(1), foreign: true, gitConfig: { mergePolicy: { tier: 'human', autoReviewUnowned: true } } });
-    expect(await publishOpenPrHead(at(1), h.deps)).toBe('published');
+  test('a foreign PR with autoReviewUnowned on that auto-review did not take (a base outside the normal flow): no status either', async () => {
+    // feat/x onto some-feature: neither the default branch nor a mission branch, so no review was requested.
+    const h = harness({ sha: H(1), foreign: true, gitConfig: { defaultBranch: 'dev', mergePolicy: { tier: 'human', autoReviewUnowned: true } } });
+    const getPull = h.deps.getPull!;
+    h.deps.getPull = async (...a) => ({ ...(await getPull(...a))!, base: { ref: 'some-feature', repo: { full_name: REPO } } });
+    expect(await publishOpenPrHead(at(1), h.deps)).toBe('skipped_foreign');
+    expect(h.writes).toEqual([]);
   });
 
   test('a known PR with autoReviewUnowned off: written as today', async () => {

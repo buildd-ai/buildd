@@ -1002,9 +1002,11 @@ recorded as such, never as an approval.
   `mergePolicy.autoReviewUnowned` (unset: on under tier `agent-review`). On, the
   PR webhook requests buildd's review of it through the same door as
   `request_pr_review` (adopting it), unless it is a draft, a bot's PR or a
-  (possible) release candidate, so its head reads "Review in progress". Off,
-  and with no review asked for, it carries no `Buildd / Review approval` at
-  all, from the webhook or the floor; coverage counts that skip as answered.
+  (possible) release candidate or onto a base outside the normal flow, so its
+  head reads "Review in progress". A foreign PR with no review asked for (the
+  setting off, or one auto-review did not take) carries no
+  `Buildd / Review approval` at all, from the webhook or the floor; coverage
+  counts that skip as answered.
   Kernel-owned PRs and release candidates are unaffected.
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and

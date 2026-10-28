@@ -383,7 +383,7 @@ describe('a foreign PR (buildd has no record of it) and mergePolicy.autoReviewUn
     const h = harness({ gitConfig: OFF, foreign: [7, 8, 9], pulls: [{ number: 7, sha: H(7) }, { number: 8, sha: H(8), draft: true }, { number: 9, sha: H(9), author: 'renovate[bot]' }] });
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.writes).toEqual([]);
-    expect(s).toMatchObject({ checked: 3, published: 0, skipped: 3, skipReasons: { foreignOff: 3 }, errors: 0, coverage: { verdict: 'covered', missing: [] } });
+    expect(s).toMatchObject({ checked: 3, published: 0, skipped: 3, skipReasons: { foreign: 3 }, errors: 0, coverage: { verdict: 'covered', missing: [] } });
   });
 
   test('setting off (the default for a tier other than agent-review): same', async () => {
@@ -396,6 +396,13 @@ describe('a foreign PR (buildd has no record of it) and mergePolicy.autoReviewUn
     const h = harness({ gitConfig: OFF, foreign: [], pulls: [{ number: 8, sha: H(8), draft: true }] });
     await publishOpenPrStatuses(h.deps);
     expect(h.writes.map((w) => [w.state, w.description])).toEqual([['pending', 'Review not requested: no buildd review covers 8888888 yet']]);
+  });
+
+  test('setting on: a foreign head auto-review did not take (draft, other base) gets no status either', async () => {
+    const h = harness({ gitConfig: ON, foreign: [7, 8], pulls: [{ number: 7, sha: H(7), baseRef: 'some-feature' }, { number: 8, sha: H(8), draft: true }] });
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(h.writes).toEqual([]);
+    expect(s).toMatchObject({ skipped: 2, skipReasons: { foreign: 2 }, coverage: { verdict: 'covered' } });
   });
 
   test('setting on: a foreign head with its review requested reads "Review in progress"', async () => {
