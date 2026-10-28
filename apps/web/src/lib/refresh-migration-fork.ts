@@ -8,9 +8,11 @@
  * `drizzle-kit check` fails, `schema-matches-snapshot` goes red on every PR into
  * the branch, and the next `db:generate` diffs against whichever head it picks.
  *
- * Only `bun run migrations:regenerate --base=<trunk>` repairs that, and it
- * needs a checkout and drizzle-kit, which the server has neither of. So this
- * only detects: the caller files the repair task.
+ * This module only detects. Both heads are known before the merge, so the
+ * refresh asks first and, on a fork, lands the merge with the mission's
+ * migrations already regenerated on trunk's chain
+ * (`lib/refresh-migration-reparent.ts`); when that is refused it files the
+ * repair task, whose brief is `bun run migrations:regenerate --base=<trunk>`.
  *
  * Detection is by folder names, not snapshot contents. The mission head and
  * trunk each hold the merge base's folders plus their own new ones, so each

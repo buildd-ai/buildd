@@ -871,6 +871,111 @@ describe('inspectPullRequestMigrations — a refresh PR that renumbers the missi
   });
 });
 
+describe('inspectPullRequestMigrations — a table another open mission’s branch carries (missionBranches)', () => {
+  const TRUNK_FOLDER = '20261020000000_trunk_leaf';
+  const B_FOLDER = '20261025000000_serial_lanes';
+  const PR_FOLDER = '20261027000000_serial_lanes_again';
+  const PR_SQL = `${DIR}/${PR_FOLDER}/migration.sql`;
+  const tbl = (name: string) => ({ entityType: 'tables', schema: 'public', name });
+  const snapshot = (id: string, prev: string, tables: string[]) =>
+    JSON.stringify({ version: '8', dialect: 'postgres', id, prevIds: [prev], ddl: tables.map(tbl) });
+  type Tree = Record<string, string>;
+  const TRUNK: Tree = {
+    [`${DIR}/${TRUNK_FOLDER}/migration.sql`]: 'CREATE TABLE "tasks" ("id" uuid);',
+    [`${DIR}/${TRUNK_FOLDER}/snapshot.json`]: snapshot('trunk', 'root', ['tasks']),
+  };
+  const B_TREE: Tree = {
+    ...TRUNK,
+    [`${DIR}/${B_FOLDER}/migration.sql`]: 'CREATE TABLE "t" ("id" uuid);',
+    [`${DIR}/${B_FOLDER}/snapshot.json`]: snapshot('b', 'trunk', ['tasks', 't']),
+  };
+  const B = { missionId: 'mission-b', title: 'Serial lanes', branch: 'mission/b-bbbbbbbb' };
+
+  /** Trunk is `dev`; mission B's branch adds table `t` over it; PR #42 adds `t` again with `sql`. */
+  function routes(opts: { baseRef: string; sql: string }) {
+    const head: Tree = {
+      ...TRUNK,
+      [PR_SQL]: opts.sql,
+      [`${DIR}/${PR_FOLDER}/snapshot.json`]: snapshot('pr', 'trunk', ['tasks', 't']),
+    };
+    const trees: Record<string, Tree> = { [BASE_SHA]: TRUNK, [TRUNK_SHA]: TRUNK, 'b-sha': B_TREE, abc123: head };
+    const shaOf: Record<string, string> = { dev: TRUNK_SHA, 'mission/a-aaaaaaaa': BASE_SHA, [B.branch]: 'b-sha' };
+    if (opts.baseRef === 'dev') shaOf.dev = BASE_SHA;
+    mockGithubApi.mockImplementation(async (_i, url) => {
+      if (url.includes('/pulls/42/files')) {
+        return [{ filename: PR_SQL, status: 'added' }, { filename: `${DIR}/${PR_FOLDER}/snapshot.json`, status: 'added' }];
+      }
+      if (url.endsWith('/pulls/42')) return { number: 42, base: { ref: opts.baseRef }, head: { ref: 'buildd/12345678-task' } };
+      if (url.endsWith('/repos/acme/app')) return { default_branch: 'dev' };
+      const ref = /\/git\/ref\/heads\/(.+)$/.exec(url);
+      if (ref) return { object: { sha: shaOf[decodeURIComponent(ref[1])] } };
+      if (url.includes('/pulls?')) return [{ number: 42 }];
+      if (url.includes('/commits?sha=b-sha')) return [{ sha: 'land-commit' }];
+      if (url.endsWith('/commits/land-commit/pulls')) return [{ number: 77, head: { ref: 'buildd/cafebabe-add-serial-lanes' } }];
+      const contents = /\/contents\/(.+)\?ref=(.+)$/.exec(url);
+      if (contents) {
+        const path = decodeURIComponent(contents[1]);
+        const tree = trees[decodeURIComponent(contents[2])];
+        if (!tree) throw new Error('Not Found');
+        if (path === DIR) {
+          return [...new Set(Object.keys(tree).map((p) => p.slice(DIR.length + 1).split('/')[0]))].map((name) => ({ name, type: 'dir' }));
+        }
+        if (tree[path] === undefined) throw new Error('Not Found');
+        return blob(tree[path]);
+      }
+      throw new Error(`unexpected GitHub call ${url}`);
+    });
+  }
+
+  const inspectWith = (baseRef: string, missionBranches: () => Promise<readonly typeof B[]>) =>
+    inspectPullRequestMigrations({
+      installationId: 1, repoFullName: 'acme/app', prNumber: 42, headSha: 'abc123', files: [], baseRef, trunkRef: 'dev', missionBranches,
+    });
+
+  beforeEach(async () => {
+    mockGithubApi.mockReset();
+    (await import('./mission-schema-overlap')).clearLeafCache();
+  });
+
+  for (const baseRef of ['mission/a-aaaaaaaa', 'dev']) {
+    it(`a novel v1 migration whose table mission B carries is safe with a hold naming B (PR into ${baseRef})`, async () => {
+      routes({ baseRef, sql: SAFE.replace('"safe"', '"t"') });
+      const verdict = await inspectWith(baseRef, async () => [B]);
+      expect(verdict).toMatchObject({
+        safe: true,
+        operationClass: 'EXPAND',
+        hold: { missionId: 'mission-b', branch: B.branch, entities: ['table "t"'], landedBy: { prNumber: 77, taskShortId: 'cafebabe' } },
+      });
+      if (!verdict.safe) throw new Error('unreachable');
+      expect(verdict.hold!.reason).toMatch(/^shared schema hold:/);
+      expect(verdict.hold!.reason).toContain('bun run migrations:regenerate --base=origin/dev');
+    });
+  }
+
+  it('the same PR with no open missions is a plain safe verdict', async () => {
+    routes({ baseRef: 'mission/a-aaaaaaaa', sql: SAFE.replace('"safe"', '"t"') });
+    const verdict = await inspectWith('mission/a-aaaaaaaa', async () => []);
+    expect(verdict).toEqual({ safe: true, operationClass: 'EXPAND' });
+    expect(mockGithubApi.mock.calls.some((c) => c[1].includes('b-sha') || c[1].includes(B.branch))).toBe(false);
+  });
+
+  it('the same PR whose mission lookup fails is a plain safe verdict', async () => {
+    routes({ baseRef: 'mission/a-aaaaaaaa', sql: SAFE.replace('"safe"', '"t"') });
+    const verdict = await inspectWith('mission/a-aaaaaaaa', async () => { throw new Error('db down'); });
+    expect(verdict).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('an unsafe verdict never carries a hold, and the missions are not read for it', async () => {
+    routes({ baseRef: 'mission/a-aaaaaaaa', sql: 'CREATE TABLE "t" ("id" uuid);\nALTER TABLE "tasks" DROP COLUMN "legacy";' });
+    const lookup = mock(async () => [B]);
+    const verdict = await inspectWith('mission/a-aaaaaaaa', lookup);
+    expect(verdict.safe).toBe(false);
+    expect(verdict).toMatchObject({ reason: expect.stringContaining('drops column tasks.legacy') });
+    expect('hold' in verdict).toBe(false);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+});
+
 describe('inspectPullRequestMigrations — functions and triggers', () => {
   beforeEach(() => mockGithubApi.mockReset());
 

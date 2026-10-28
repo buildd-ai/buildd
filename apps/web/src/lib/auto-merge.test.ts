@@ -641,6 +641,28 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
     expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
   });
 
+  it('holds safe SQL for a table another open mission already carries', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        { filename: 'packages/core/drizzle/20261027000000_t/migration.sql', additions: 1, deletions: 0 },
+      ]);
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({
+      safe: true,
+      operationClass: 'EXPAND',
+      hold: {
+        missionId: 'mission-b', missionTitle: 'B', branch: 'mission/b-bbbbbbbb', entities: ['table "t"'], landedBy: null,
+        reason: 'shared schema hold: this PR adds table "t", which mission "B" already carries',
+      },
+    } as never);
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: false, reason: 'shared schema hold: this PR adds table "t", which mission "B" already carries' });
+  });
+
   it('returns the specific destructive migration reason', async () => {
     mockGithubApi.mockReset();
     mockGithubApi

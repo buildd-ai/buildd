@@ -1,6 +1,6 @@
 ---
 title: Execution Control Plane
-status: draft
+status: active
 owner: max
 last_verified: 2026-10-14
 summary: Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
@@ -12,14 +12,10 @@ verified_by: [packages/core/__tests__/state-ownership.test.ts, apps/control-plan
 supersedes: []
 assertions:
   - id: control-plane-worker
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
     name: default
     path: apps/control-plane/src/index.ts
   - id: control-plane-test
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: test_file
     path: apps/control-plane/src/index.test.ts
 ---

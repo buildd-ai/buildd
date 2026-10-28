@@ -12,20 +12,20 @@ verified_by: []
 supersedes: []
 assertions:
   - id: workers-table
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-09"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): names symbols (usageByBasis) that do not exist yet and has no verified_by tests, so it cannot be active; re-review by 2027-03-09."
     type: symbol
     name: workers
     path: packages/core/db/schema.ts
   - id: agent-sdk-credit-pool
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-09"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): names symbols (usageByBasis) that do not exist yet and has no verified_by tests, so it cannot be active; re-review by 2027-03-09."
     type: symbol
     name: countsTowardAgentSdkCreditPool
     path: packages/core/budget-alerts.ts
   - id: worker-report-route
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-09"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): names symbols (usageByBasis) that do not exist yet and has no verified_by tests, so it cannot be active; re-review by 2027-03-09."
     type: route
     method: PATCH
     path: "/api/workers/[id]"

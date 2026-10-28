@@ -12,19 +12,19 @@ verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/workflow-kernel/src/d
 supersedes: []
 assertions:
   - id: "kernel-seam-contract"
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-23"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): the delivery-view and PR-lifecycle symbols it names are unbuilt; re-review by 2027-03-23."
     type: "symbol"
     name: "REVIEW_CONTRACT_RETRIES"
     path: "apps/web/src/lib/workflow/seam.ts"
   - id: "kernel-reducer-tests"
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-23"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): the delivery-view and PR-lifecycle symbols it names are unbuilt; re-review by 2027-03-23."
     type: "test_file"
     path: "packages/workflow-kernel/src/reducer.test.ts"
   - id: "workflow-write-site-guard"
-    skip_until: "2026-12-15"
-    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    skip_until: "2027-03-23"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active. Owner note (max, restaged 2026-10-28 from 2026-12-15): the delivery-view and PR-lifecycle symbols it names are unbuilt; re-review by 2027-03-23."
     type: "test_file"
     path: "packages/core/__tests__/workflow-write-sites.test.ts"
 ---
@@ -1744,8 +1744,9 @@ recorded as an external merge with a trunk fix filed once (AC-15) and is what
 `buildd/landing` exists to stop once trunk requires it; D13 is unchanged (deny lists).
 The inventory is held to the code by `apps/web/src/lib/workflow/merge-door-inventory.test.ts`.
 
-Branch-to-branch merges that do not go through a PR (`mission-branch-refresh.ts`,
-`scripts/sync-dev.sh`, `release-refresh.yml`) are not landing doors. They move a base,
+Branch-to-branch merges that do not go through a PR (`mission-branch-refresh.ts` and its
+migration-regenerating merge in `refresh-migration-reparent.ts`, `scripts/sync-dev.sh`,
+`release-refresh.yml`) are not landing doors. They move a base,
 and §5.9 refresh composition reviews what that merge decided. The release executor used
 to be on this list with a `POST /merges` of a worker branch that had no PR straight into
 the prod branch. That merge moved production, not a base, so §5.9 never reviewed it, and
