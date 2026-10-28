@@ -12,7 +12,10 @@ let dispatched: unknown[] = [];
 let registered: unknown[][] = [];
 let available = true;
 let registeredFails = false;
-mock.module('./criterion-checks', () => ({ dispatchCriterionChecks: async (input: unknown) => { dispatched.push(input); return { dispatched: 2 }; } }));
+mock.module('./criterion-checks', () => ({
+  dispatchCriterionChecks: async (input: unknown) => { dispatched.push(input); return { dispatched: 2 }; },
+  settleFinishedCheckRuns: async () => ({ settled: 0, attempted: 0 }),
+}));
 mock.module('./registered-verification', () => ({ dispatchRegisteredVerification: async (input: unknown, deps: unknown) => {
   registered.push([input, deps]);
   if (registeredFails) throw new Error('store unavailable');
