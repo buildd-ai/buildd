@@ -19,6 +19,13 @@ const waits = (over: Partial<QuestionWaits> = {}): QuestionWaits => {
 };
 
 describe('decisionFromQuestion (Navigation R-16, AC-10)', () => {
+  it('names what waits on the decision after the why', () => {
+    const answer = { kind: 'worker' as const, workerId: 'w', taskId: 't1', noteId: null };
+    const q = { headline: 'Tabs or spaces?', body: null, context: 'CI needs one', noteId: null, options: [] };
+    expect(decisionFromQuestion({ key: 'k', question: q, task, askedAt: null, dependents: ['Release'], answer }).summary).toBe('CI needs one. Release waits on this.');
+    expect(decisionFromQuestion({ key: 'k', question: q, task, askedAt: null, dependents: ['A', 'B'], answer }).summary).toBe('CI needs one. A and B wait on this.');
+  });
+
   const q = {
     headline: 'How should Docker Hub credentials be set up?',
     body: null,

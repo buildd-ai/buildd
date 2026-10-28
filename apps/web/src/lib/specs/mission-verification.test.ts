@@ -3,10 +3,12 @@ import { describe, it, expect, mock } from 'bun:test';
 let prior: any[] = [];
 let runs: unknown[] = [];
 let inserted: any[] = [];
+// Finished check runs the acceptance-check step settled into verdicts this time.
+let settledCount = 0;
 // What the atomic insert finds already filed: a racing evaluation that won, or nothing.
 let raced: any[] | null = null;
 const params = (q: any) => (q.queryChunks as unknown[]).filter((c): c is string => typeof c === 'string');
-mock.module('./mission-acceptance-checks', () => ({ runFinalAcceptanceChecks: async (...args: unknown[]) => { runs.push(args); } }));
+mock.module('./mission-acceptance-checks', () => ({ runFinalAcceptanceChecks: async (...args: unknown[]) => { runs.push(args); return { dispatched: 0, settled: settledCount }; } }));
 mock.module('@buildd/core/db', () => ({ db: {
   query: {
     tasks: { findMany: async () => prior },
@@ -49,9 +51,11 @@ describe('final verification is filed once per integrated target', () => {
     expect(decideFinalVerification([{ id: 't1', status: 'in_progress', targetKey: 'k' }], 'k')).toEqual({ kind: 'open', taskId: 't1' });
   });
 
-  it('does not re-file after a completed run at the same target (an inconclusive verdict waits), direct missions included', () => {
+  // df808193: a verification that finished at this target was reported as "open", so the
+  // criterion read PENDING for good and the heartbeat escalated a verdict that was in flight.
+  it('does not re-file after a completed run at the same target (an inconclusive verdict waits), direct missions included: that run is done, not open', () => {
     const key = targetKey(direct(['c1']));
-    expect(decideFinalVerification([{ id: 't1', status: 'completed', targetKey: key }], key)).toEqual({ kind: 'open', taskId: 't1' });
+    expect(decideFinalVerification([{ id: 't1', status: 'completed', targetKey: key }], key)).toEqual({ kind: 'done', taskId: 't1' });
   });
 
   it('files a new one when the target moves', () => {
@@ -61,7 +65,8 @@ describe('final verification is filed once per integrated target', () => {
   it('retries a failed run once, then stops re-filing', () => {
     expect(decideFinalVerification([{ id: 't1', status: 'failed', targetKey: 'k' }], 'k')).toEqual({ kind: 'file' });
     const twice = Array.from({ length: MAX_ATTEMPTS_PER_TARGET }, (_, i) => ({ id: `t${i}`, status: 'failed', targetKey: 'k' }));
-    expect(decideFinalVerification(twice, 'k').kind).toBe('open');
+    // Nothing is running any more: the attempts at this target are spent, not in flight.
+    expect(decideFinalVerification(twice, 'k').kind).toBe('done');
   });
 });
 
@@ -72,9 +77,15 @@ it('launches mechanical checks for both newly filed and reused final verificatio
   expect((await ensureFinalVerification('m', criterion, standing)).kind).toBe('dispatched');
   expect(runs).toEqual([['new-final', 'm']]);
   prior = [{ id: 'old-final', status: 'completed', context: { finalVerification: { missionId: 'm', targetKey: `head:${A}` } } }];
-  runs = [];
-  expect((await ensureFinalVerification('m', criterion, standing)).kind).toBe('open');
+  runs = []; settledCount = 3;
+  try {
+    // A finished verification at this target is reused as done, and the check runs it
+    // left unrecorded are settled now, so the caller can read the fold again.
+    expect(await ensureFinalVerification('m', criterion, standing)).toEqual({ kind: 'done', taskId: 'old-final', settled: 3 });
+  } finally { settledCount = 0; }
   expect(runs).toEqual([['old-final', 'm']]);
+  prior = [{ id: 'live-final', status: 'in_progress', context: { finalVerification: { missionId: 'm', targetKey: `head:${A}` } } }];
+  expect(await ensureFinalVerification('m', criterion, standing)).toEqual({ kind: 'open', taskId: 'live-final', settled: 0 });
 });
 
 it('two evaluations racing on one target file one verification: the loser reuses the winner\'s task and its checks', async () => {
@@ -83,7 +94,7 @@ it('two evaluations racing on one target file one verification: the loser reuses
   prior = []; runs = []; inserted = [];
   raced = [{ id: 'winner', status: 'pending', context: { finalVerification: { missionId: 'm', targetKey: `head:${A}` } } }];
   try {
-    expect(await ensureFinalVerification('m', criterion, standing)).toEqual({ kind: 'open', taskId: 'winner' });
+    expect(await ensureFinalVerification('m', criterion, standing)).toEqual({ kind: 'open', taskId: 'winner', settled: 0 });
   } finally { raced = null; }
   expect(inserted).toEqual([]);
   expect(runs).toEqual([['winner', 'm']]);
