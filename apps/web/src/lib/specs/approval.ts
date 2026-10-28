@@ -265,6 +265,21 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     db.select().from(specs).where(eq(specs.id, specId)).limit(1),
     db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1),
   ]);
+  followApproval(after, n);
+  // R-77: then each replaced spec the person left checked, superseded by this one.
+  // The approval has committed: a replaced spec that moved is reported stale, never undoes it.
+  const retirements = choice.length
+    ? await (await import('./retire')).supersedeOnApproval(approver, { id: specId, title: after.title, workspaceId: after.workspaceId, revision: n }, choice)
+    : [];
+  return { ok: true, spec: after, revision, retirements };
+}
+
+/**
+ * What follows any approval of revision `n`, a person's or the
+ * no-criteria-change check's, once it has committed.
+ */
+export function followApproval(after: SpecRow, n: number): void {
+  const specId = after.id;
   // Modules react (the knowledge index), after the response: the approval has
   // committed, and emit never throws, so nothing there undoes it.
   const workspaceId = after.workspaceId;
@@ -286,12 +301,6 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     // approved revision of it re-decides every spec in the workspace.
     if (after.scope === 'product') await redecidePublication(workspaceId);
   });
-  // R-77: then each replaced spec the person left checked, superseded by this one.
-  // The approval has committed: a replaced spec that moved is reported stale, never undoes it.
-  const retirements = choice.length
-    ? await (await import('./retire')).supersedeOnApproval(approver, { id: specId, title: after.title, workspaceId, revision: n }, choice)
-    : [];
-  return { ok: true, spec: after, revision, retirements };
 }
 
 async function conflictNow(specId: string): Promise<SpecError> {
@@ -373,10 +382,10 @@ async function approvePinned(
   if (!approver) return fail(403, notAPerson(specId));
   const [rev] = await db.select().from(specRevisions)
     .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, pin.revision))).limit(1);
-  if (!rev || rev.contentHash !== pin.contentHash) return fail(409, opts.staleText, { code: opts.staleCode, currentVersion: spec.version });
+  if (!rev || rev.contentHash !== pin.contentHash) return fail(409, opts.staleText, { code: opts.staleCode, currentVersion: spec.version, headRevision: spec.headRevision });
   if (spec.approvedRevision === pin.revision && rev.approvedAt) return { ok: true, already: true, spec, revision: rev, retirements: [] };
   if (spec.version !== pin.expectedVersion || spec.headRevision !== pin.revision) {
-    return fail(409, opts.staleText, { code: opts.staleCode, currentVersion: spec.version });
+    return fail(409, opts.staleText, { code: opts.staleCode, currentVersion: spec.version, headRevision: spec.headRevision });
   }
   // Asked again now: a pin or a body may have moved since the page or the
   // request. A refusal stands unless the person gives a reason, which is recorded.

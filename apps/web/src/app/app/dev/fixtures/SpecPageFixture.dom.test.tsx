@@ -77,6 +77,20 @@ describe('SpecPageFixture', () => {
     });
   }
 
+  it('auto-approved: the revision reads as approved by check:no-criteria-change with its evidence, never a person', async () => {
+    const m = await render('auto-approved');
+    mounted.push(m);
+    const tab = m.container.querySelector('[role="tab"][data-tab="history"]') as HTMLElement;
+    await act(async () => { tab.click(); });
+    const line = m.container.querySelector('[data-testid="spec-page-approved-by-check"]');
+    expect(line).not.toBeNull();
+    expect(line!.textContent).toContain('Approved automatically by check:no-criteria-change');
+    expect(line!.textContent).toContain('since revision 2');
+    expect(line!.textContent).toContain('4 other lines changed');
+    expect(line!.textContent).toContain('No person approved it.');
+    expect(line!.textContent).not.toContain('Sam Rivera');
+  });
+
   it('says each state on the status line', async () => {
     const said: Record<string, string> = {};
     for (const v of ['waiting', 'retired', 'imported']) {
