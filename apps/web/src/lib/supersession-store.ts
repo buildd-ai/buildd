@@ -30,8 +30,8 @@ import {
   selectOpenRetryBlockers,
 } from './supersession';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 
-const DEAD_LIFECYCLE = new Set(['closed', 'merged']);
 
 const CANDIDATE_COLUMNS = {
   id: true,
@@ -112,7 +112,7 @@ async function loadCandidates(event: SubjectEvent): Promise<SupersessionCandidat
   const ownLive = new Map<string, number>();
   for (const w of prWorkers) {
     if (!w.taskId || w.prNumber == null || ownLive.has(w.taskId)) continue;
-    if (w.mergedAt || (w.prLifecycleStatus && DEAD_LIFECYCLE.has(w.prLifecycleStatus))) continue;
+    if (w.mergedAt || isTerminalPrLifecycle(w.prLifecycleStatus)) continue;
     ownLive.set(w.taskId, w.prNumber);
   }
 
@@ -156,7 +156,7 @@ export async function subjectHasLiveSuccessor(workspaceId: string, prNumber: num
     )),
     columns: { prLifecycleStatus: true },
   });
-  return chainWorkers.some(w => !!w.prLifecycleStatus && !DEAD_LIFECYCLE.has(w.prLifecycleStatus));
+  return chainWorkers.some(w => !!w.prLifecycleStatus && !isTerminalPrLifecycle(w.prLifecycleStatus));
 }
 
 async function loadEventFacts(event: SubjectEvent): Promise<EventFacts> {

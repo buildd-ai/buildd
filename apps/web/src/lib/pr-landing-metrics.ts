@@ -17,12 +17,13 @@ import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { GATE_SLUGS } from '@buildd/core/gate-slugs';
 import { gateWindowStartFor } from '@buildd/core/gate-analytics';
 import type { GateWindow, LandingMetrics } from '@buildd/shared';
+import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 
 /** The design's landing target: approved and green should merge within this. */
 export const LANDING_STUCK_THRESHOLD_MS = 30 * 60 * 1000;
 
 const MAX_LANDING_ROWS = 5000;
-const TERMINAL_WORKER_LIFECYCLE = ['merged', 'closed', 'unresolvable'] as const;
+const TERMINAL_WORKER_LIFECYCLE = TERMINAL_PR_LIFECYCLE;
 
 export interface LandingLedgerRow {
   workspaceId: string | null;

@@ -40,6 +40,7 @@ import { basisOfRow } from './cost-basis-split';
 import { executorOf } from './executor';
 import { MAX_UNENDED_RUN_MS } from './fleet-occupancy';
 import { emptySplit, splitTime, TIME_CATEGORIES, type TimeCategory, type TimeInterval } from './insights-time-split';
+import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 
 export type FlowWindow = '7d' | '30d';
 export const FLOW_WINDOWS: readonly FlowWindow[] = ['7d', '30d'];
@@ -221,7 +222,8 @@ const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const FAILED_WORKER = new Set<string>(FAILED_WORKER_STATUSES);
 const DAY = 24 * HOUR;
 const SHIPPED_RELEASE_STATES = new Set(['healthy', 'degraded']);
-const CLOSED_PR = new Set(['closed', 'unresolvable']);
+// Terminal minus merged: this counts PRs that ended WITHOUT landing (intentional narrowing).
+const CLOSED_PR = new Set<string>(TERMINAL_PR_LIFECYCLE.filter(s => s !== 'merged'));
 // Terminal task statuses that mean the work did not land (`completed` is the other one).
 const LOST_TASK = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'completed'));
 
