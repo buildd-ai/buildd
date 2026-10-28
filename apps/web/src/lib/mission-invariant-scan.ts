@@ -128,6 +128,7 @@ function jsonText(doc: unknown, ...path: string[]) {
 const MISSION_EXTRAS = sqlExtras({
   hasGoalCriteriaSql: sql<boolean>`COALESCE(jsonb_typeof(${missions.goalCriteria}) = 'array' AND jsonb_array_length(${missions.goalCriteria}) > 0, false)`,
   criteriaOverallVerdictSql: jsonText(missions.goalCriteriaState, 'overall'),
+  criteriaPendingSql: sql<boolean>`COALESCE(jsonb_typeof(${missions.goalCriteriaState} -> 'criteria') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(${missions.goalCriteriaState} -> 'criteria') c WHERE c ->> 'verdict' = 'PENDING'), false)`,
 });
 
 /**
@@ -244,6 +245,7 @@ export async function loadInvariantSnapshot(
       criteriaEscalatedAt: m.criteriaEscalatedAt ?? null,
       hasGoalCriteria: m.hasGoalCriteriaSql === true,
       criteriaOverallVerdict: stringOrNull(m.criteriaOverallVerdictSql),
+      criteriaPending: m.criteriaPendingSql === true,
       updatedAt: m.updatedAt,
     }));
 

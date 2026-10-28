@@ -69,15 +69,20 @@ type Prior = { id: string; status: string; targetKey: string | null };
  * one. A completed run at the same target is never repeated (an inconclusive
  * verdict waits for a person or a new commit); a run that failed or was
  * cancelled is retried once.
+ *
+ * `open` is a verification still running; `done` is one that finished at this
+ * target (or the attempts at it are spent), reused so nothing is re-filed. The
+ * two are not the same answer: a caller that reads `done` as "in flight" keeps
+ * a criterion PENDING for good (df808193).
  */
-export function decideFinalVerification(prior: readonly Prior[], key: string | null): { kind: 'open'; taskId: string } | { kind: 'file' } {
+export function decideFinalVerification(prior: readonly Prior[], key: string | null): { kind: 'open' | 'done'; taskId: string } | { kind: 'file' } {
   const live = prior.find((r) => !(TERMINAL_TASK_STATUSES as readonly string[]).includes(r.status));
   if (live) return { kind: 'open', taskId: live.id };
   if (key === null) return { kind: 'file' };
   const same = prior.filter((r) => r.targetKey === key);
   const done = same.find((r) => r.status === 'completed');
-  if (done) return { kind: 'open', taskId: done.id };
-  if (same.length >= MAX_ATTEMPTS_PER_TARGET) return { kind: 'open', taskId: same[0].id };
+  if (done) return { kind: 'done', taskId: done.id };
+  if (same.length >= MAX_ATTEMPTS_PER_TARGET) return { kind: 'done', taskId: same[0].id };
   return { kind: 'file' };
 }
 
@@ -98,16 +103,24 @@ async function findPrior(missionId: string, fingerprint: string): Promise<Prior[
   });
 }
 
-export type FinalVerification = { kind: 'open' | 'dispatched'; taskId: string } | { kind: 'unavailable'; reason: string };
+export type FinalVerification =
+  | {
+    /** `open`: running now. `dispatched`: filed now. `done`: finished at this target, nothing in flight. */
+    kind: 'open' | 'dispatched' | 'done';
+    taskId: string;
+    /** Check runs that had finished without a recorded verdict and were settled now: the fold has moved, read it again. */
+    settled?: number;
+  }
+  | { kind: 'unavailable'; reason: string };
 
 export async function ensureFinalVerification(missionId: string, criterion: LivingSpecGoalCriterion, standing: MissionSpecStanding): Promise<FinalVerification> {
   const fingerprint = criterionFingerprint(criterion);
   const targetSha = standing.target.kind === 'integration' ? standing.target.headSha : null;
   const key = targetKey(standing.target);
   const decision = decideFinalVerification(await findPrior(missionId, fingerprint), key);
-  if (decision.kind === 'open') {
-    await (await import('./mission-acceptance-checks')).runFinalAcceptanceChecks(decision.taskId, missionId);
-    return decision;
+  if (decision.kind === 'open' || decision.kind === 'done') {
+    const checks = await (await import('./mission-acceptance-checks')).runFinalAcceptanceChecks(decision.taskId, missionId);
+    return { ...decision, settled: checks?.settled ?? 0 };
   }
 
   const mission = await db.query.missions.findFirst({
@@ -181,15 +194,15 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
   const task = (inserted as { rows?: Array<Record<string, unknown>> })?.rows?.[0] as { id: string } | undefined;
   if (!task) {
     const reuse = decideFinalVerification(await findPrior(missionId, fingerprint), key);
-    if (reuse.kind !== 'open') return { kind: 'unavailable', reason: 'the verification task could not be filed' };
-    await (await import('./mission-acceptance-checks')).runFinalAcceptanceChecks(reuse.taskId, missionId);
-    return reuse;
+    if (reuse.kind === 'file') return { kind: 'unavailable', reason: 'the verification task could not be filed' };
+    const checks = await (await import('./mission-acceptance-checks')).runFinalAcceptanceChecks(reuse.taskId, missionId);
+    return { ...reuse, settled: checks?.settled ?? 0 };
   }
-  await (await import('./mission-acceptance-checks')).runFinalAcceptanceChecks(task.id, missionId);
+  const checks = await (await import('./mission-acceptance-checks')).runFinalAcceptanceChecks(task.id, missionId);
   await announceTaskCreated(
     { id: task.id, title, description: null, workspaceId: mission.workspaceId, mode: 'execution', priority: 3, missionId },
     workspace as any,
   ).catch((e) => console.error(`[final-verification] dispatch failed for task ${task.id}:`, e));
   await wakeTask(task.id, 'task.created');
-  return { kind: 'dispatched', taskId: task.id };
+  return { kind: 'dispatched', taskId: task.id, settled: checks?.settled ?? 0 };
 }
