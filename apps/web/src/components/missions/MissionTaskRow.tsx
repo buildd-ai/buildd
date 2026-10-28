@@ -26,6 +26,7 @@ import type { FeedRow } from '@/lib/mission-feed-groups';
 import { PR_STATE_TOKEN, PULSE_STATE_GLYPH, PULSE_STATE_TOKEN, type MissionFeedTaskInput } from '@/lib/mission-pulse';
 import { missionTaskAnchorId, missionTaskHref, taskPageHref, type MissionOrigin } from '@/lib/mission-task-href';
 import { deriveWorkKind } from '@/lib/task-presentation';
+import { runStall } from '@/lib/run-stall';
 import { PULSE_STATE_LABEL, PULSE_TOKEN_TEXT } from './MissionPulse';
 import { useMissionFocusSnapshot, useMissionFocusStore } from './mission-focus-context';
 import { statusPill } from '@/components/ui/states';
@@ -52,6 +53,8 @@ export interface TaskRowMetaOptions {
   now: number;
   /** The live current action (`MissionLiveStore`, S7), e.g. "editing lease.ts". */
   liveLine?: string | null;
+  /** Newest milestone ts from the live store; the load-time milestones go stale. */
+  liveProgressMs?: number | null;
   /** Review-worthy records this task produced. */
   recordsCount?: number;
   /** Title of `row.blockedByTaskId`, for "after <title>". */
@@ -83,7 +86,21 @@ export function buildTaskRowMeta<T extends MissionFeedTaskInput>(row: FeedRow<T>
       }
       case 'moving': {
         if (row.task.status === 'completed' && row.pr?.state === 'checks_running') return 'checks running';
-        const elapsed = age(ms(row.task.worker?.startedAt), now);
+        const startMs = ms(row.task.worker?.startedAt);
+        const milestones = row.task.worker?.milestones ?? null;
+        const loadedMs = milestones && milestones.length > 0
+          ? Math.max(...milestones.map(m => m.ts))
+          : null;
+        const liveMs = opts.liveProgressMs != null && Number.isFinite(opts.liveProgressMs) ? opts.liveProgressMs : null;
+        const progressMs = loadedMs != null && liveMs != null ? Math.max(loadedMs, liveMs) : (loadedMs ?? liveMs);
+        const stall = runStall({
+          status: row.task.worker?.status ?? 'unknown',
+          startMs,
+          progressMs,
+          nowMs: now,
+        });
+        if (stall) return stall.label;
+        const elapsed = age(startMs, now);
         if (opts.liveLine) return elapsed ? `${elapsed} · ${opts.liveLine}` : opts.liveLine;
         return elapsed ? `running ${elapsed}` : 'starting';
       }
@@ -110,6 +127,7 @@ export interface MissionTaskRowProps<T extends MissionFeedTaskInput = MissionFee
    */
   now: number;
   liveLine?: string | null;
+  liveProgressMs?: number | null;
   recordsCount?: number;
   blockedByTitle?: string | null;
   /** Outline override. Inside a provider the shared selection decides. */
@@ -124,6 +142,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
   initiativeId,
   now,
   liveLine,
+  liveProgressMs,
   recordsCount,
   blockedByTitle,
   focused: focusedProp,
@@ -145,7 +164,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
 
   const token = PULSE_STATE_TOKEN[row.state];
   const kind = deriveWorkKind({ kind: task.kind, roleSlug: task.roleSlug });
-  const meta = buildTaskRowMeta(row, { now, liveLine, recordsCount, blockedByTitle });
+  const meta = buildTaskRowMeta(row, { now, liveLine, liveProgressMs, recordsCount, blockedByTitle });
   const href = missionTaskHref({ missionId, taskId, from, initiativeId });
   const attempts = row.attempts;
   const [attemptsOpen, setAttemptsOpen] = useState(false);
@@ -197,7 +216,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
             <span aria-hidden="true" className="shrink-0 font-mono text-[13px] text-text-muted">›</span>
           </span>
           {(meta || attemptsLabel) && (
-            <span className="flex h-4 min-w-0 pl-[2.5rem] font-mono text-[11px] leading-4 text-text-muted">
+            <span className={`flex h-4 min-w-0 pl-[2.5rem] font-mono text-[11px] leading-4 ${meta.includes(' · no progress for ') ? PULSE_TOKEN_TEXT.warning : 'text-text-muted'}`}>
               <span className="min-w-0 truncate">{meta}</span>
               {/* The visible `· ↻ N`, inside the link so it moves with the row
                   (FLIP). The button over it announces it, so it is aria-hidden here. */}

@@ -438,6 +438,17 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
 }
 
 /**
+ * 52a0de67: who approved a delivery and at which heads, and its base, so the reviewer can keep a
+ * person's approval for files unchanged since it. A read; null = no such delivery.
+ */
+export async function deliveryApproval(deliveryId: string, deps: SeamDeps = {}): Promise<{
+  approvalBasis: string | null; approvedHeads: string[]; baseRef: string | null;
+} | null> {
+  const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+  return d ? { approvalBasis: d.approvalBasis ?? null, approvedHeads: d.approvedHeads, baseRef: d.baseRef ?? null } : null;
+}
+
+/**
  * Living Spec r7 AC-45: the id of a person's decision on an escalation: the action, the head
  * and the delivery version they decided at. The same decision submitted again (a double tap, a
  * retried request, a door re-sent after an unknown outcome) carries the same id, so the kernel

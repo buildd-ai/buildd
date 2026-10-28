@@ -917,3 +917,33 @@ describe('approvePlan — schedules the creation-manifest shadow for missing-sco
     expect(r.taskIds).toHaveLength(1);
   });
 });
+
+describe('approvePlan — coordinate-only missions (decompositionSkipped)', () => {
+  beforeEach(reset);
+
+  it('creates no children from an organizer cycle plan when the mission is coordinate-only', async () => {
+    planningTaskRow.missionId = 'm-1';
+    planningTaskRow.creationSource = 'orchestrator';
+    missionRow = { workingBranch: null, integrationBranchEnabled: false, decompositionSkipped: true };
+    const res = await approvePlan(PLANNING_TASK_ID, PLAN as any, { autoApproved: true });
+    expect(insertedValues).toHaveLength(0);
+    expect(res.taskIds).toEqual([]);
+    expect(res.droppedSteps?.map(d => d.reason)).toEqual(['coordinate_only', 'coordinate_only']);
+  });
+
+  it('still decomposes when the flag is unset', async () => {
+    planningTaskRow.missionId = 'm-1';
+    planningTaskRow.creationSource = 'orchestrator';
+    missionRow = { workingBranch: null, integrationBranchEnabled: false, decompositionSkipped: false };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any, { autoApproved: true });
+    expect(insertedValues).toHaveLength(2);
+  });
+
+  it('does not hold a person-filed planning task to the flag', async () => {
+    planningTaskRow.missionId = 'm-1';
+    planningTaskRow.creationSource = 'api';
+    missionRow = { workingBranch: null, integrationBranchEnabled: false, decompositionSkipped: true };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(insertedValues).toHaveLength(2);
+  });
+});
