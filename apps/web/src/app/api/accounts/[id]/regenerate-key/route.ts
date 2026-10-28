@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
-import { randomBytes } from 'crypto';
+import { generateApiKey } from '@buildd/shared/api-key';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix, invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { clearTeamCache } from '@/lib/team-cache';
@@ -11,10 +11,6 @@ import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { isUuid } from '@/lib/uuid';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-
-function generateApiKey(): string {
-  return `bld_${randomBytes(32).toString('hex')}`;
-}
 
 export async function POST(
   req: NextRequest,
