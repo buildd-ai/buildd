@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { presenceTokens } from '@buildd/core/db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
 /**
  * A person's presence token: what the buildd agent plugin's hooks
@@ -149,7 +150,6 @@ async function defaultTeamIds(userId: string): Promise<string[]> {
   return getUserTeamIds(userId);
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const drizzlePresenceTokenStore: PresenceTokenStore = {
   async insert(userId, label, now) {
@@ -162,7 +162,7 @@ export const drizzlePresenceTokenStore: PresenceTokenStore = {
   },
   async find(tokenId) {
     // A signed token always names a uuid; anything else is not ours.
-    if (!UUID_RE.test(tokenId)) return null;
+    if (!isUuid(tokenId)) return null;
     const row = await db.query.presenceTokens.findFirst({
       where: sqlWhere(eq(presenceTokens.id, tokenId)),
       columns: { userId: true, revokedAt: true, lastUsedAt: true },
@@ -173,7 +173,7 @@ export const drizzlePresenceTokenStore: PresenceTokenStore = {
     await db.update(presenceTokens).set({ lastUsedAt: now }).where(eq(presenceTokens.id, tokenId));
   },
   async revoke(tokenId, userId, now) {
-    if (!UUID_RE.test(tokenId)) return false;
+    if (!isUuid(tokenId)) return false;
     const rows = await db.update(presenceTokens).set({ revokedAt: now })
       .where(and(eq(presenceTokens.id, tokenId), eq(presenceTokens.userId, userId), isNull(presenceTokens.revokedAt)))
       .returning({ id: presenceTokens.id });

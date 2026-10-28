@@ -36,6 +36,7 @@ import {
 import { buildAttemptEvent, REPAIR_KINDS, type RecoveryEventsPort, type RepairKind } from './failure-incident-recovery-events';
 import { checkRepair, leadIncidentOf, REPAIRS, repairAppliesTo, repairTarget, type RepairFacts } from './failure-incident-repairs';
 import { applyIncidentAction, type IncidentStorePort, type StoredIncident } from './failure-incident-store';
+import { isUuid } from '@/lib/uuid';
 
 export const ORQ_CAP_VERSION = 'orq-cap-v1';
 
@@ -92,7 +93,6 @@ export interface AdminRecoveryActionRequest {
   reason: string;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CAUSE_KEY_RE = /^c1:[0-9a-f]{20}$/;
 const RULE_RE = /^[a-z_]{3,40}$/;
 const DECISION_OPTIONS: readonly FailureRecoveryCapability[] = ['dismiss', 'retry_recovery', 'cancel_attempt', 'narrow_subject_manifest', 'narrow_blocker_manifest', 'open_blocker'];
@@ -136,12 +136,12 @@ function parseParams(capability: AdminRecoveryCapability, raw: unknown): AdminRe
     case 'link_fix': {
       if ('taskId' in p) {
         const bad = closed(['taskId']); if (bad) return bad;
-        if (typeof p.taskId !== 'string' || !UUID_RE.test(p.taskId)) return 'params.taskId must be a UUID';
+        if (typeof p.taskId !== 'string' || !isUuid(p.taskId)) return 'params.taskId must be a UUID';
         return { capability, taskId: p.taskId };
       }
       const bad = closed(['prNumber', 'workspaceId']); if (bad) return bad;
       if (typeof p.prNumber !== 'number' || !Number.isInteger(p.prNumber) || p.prNumber < 1) return 'params needs taskId, or prNumber and workspaceId';
-      if (typeof p.workspaceId !== 'string' || !UUID_RE.test(p.workspaceId)) return 'params.workspaceId must be a UUID';
+      if (typeof p.workspaceId !== 'string' || !isUuid(p.workspaceId)) return 'params.workspaceId must be a UUID';
       return { capability, prNumber: p.prNumber, workspaceId: p.workspaceId };
     }
     case 'queue_fix': {
@@ -156,7 +156,7 @@ function parseParams(capability: AdminRecoveryCapability, raw: unknown): AdminRe
         return { capability, mergeInto: p.mergeInto };
       }
       const bad = closed(['split']); if (bad) return bad;
-      if (!Array.isArray(p.split) || p.split.length === 0 || p.split.length > 50 || !p.split.every(x => typeof x === 'string' && UUID_RE.test(x))) return 'params needs mergeInto, or split: 1 to 50 incident UUIDs';
+      if (!Array.isArray(p.split) || p.split.length === 0 || p.split.length > 50 || !p.split.every(x => typeof x === 'string' && isUuid(x))) return 'params needs mergeInto, or split: 1 to 50 incident UUIDs';
       return { capability, split: p.split as string[] };
     }
     case 'set_priority': {
@@ -207,7 +207,7 @@ export function parseAdminRecoveryAction(body: unknown): Parsed {
   let target: RecoveryTarget;
   const want = TARGET_OF[cap];
   if (isObj(t) && 'incidentId' in t) {
-    if (onlyKeys(t, ['incidentId', 'generation']) || typeof t.incidentId !== 'string' || !UUID_RE.test(t.incidentId) || typeof t.generation !== 'number' || !Number.isInteger(t.generation)) {
+    if (onlyKeys(t, ['incidentId', 'generation']) || typeof t.incidentId !== 'string' || !isUuid(t.incidentId) || typeof t.generation !== 'number' || !Number.isInteger(t.generation)) {
       return { ok: false, error: 'target must be { incidentId: UUID, generation: integer }' };
     }
     target = { incidentId: t.incidentId, generation: t.generation };

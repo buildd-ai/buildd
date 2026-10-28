@@ -21,8 +21,8 @@ import { resolveOpenWorkerForUser } from '@/lib/pr-resolve';
 import { doorErrorResponse, disposeFinding, isDoorError } from '@/lib/workflow/kernel-client';
 import { workspaceRepo } from '@/lib/workflow/github-facts';
 import { explainDecisionRefusal, STALE_DECISION_REASONS } from '@buildd/workflow-kernel/decision-refusal';
+import { isUuid } from '@/lib/uuid';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const bad = (error: string, status: number, extra: Record<string, unknown> = {}) => NextResponse.json({ error, ...extra }, { status });
 
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ prN
   if (!findingId) return bad('findingId is required', 400);
   if (disposition !== 'waived' && disposition !== 'deferred') return bad('disposition must be "waived" or "deferred"', 400);
   if (!reason) return bad('A reason is required to waive or defer a finding', 400, { code: 'reason_required' });
-  if (disposition === 'deferred' && !UUID.test(deferredToTaskId)) {
+  if (disposition === 'deferred' && !isUuid(deferredToTaskId)) {
     return bad('Deferring a finding needs the full id of the task that takes it', 400, { code: 'deferral_needs_task' });
   }
 

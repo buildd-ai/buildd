@@ -83,6 +83,7 @@ import {
   type ConversationRow,
   type MessageRow,
 } from './store';
+import { isUuid } from '@/lib/uuid';
 
 export const MAX_STEPS = 8;
 export { TURN_BUDGET_MS } from './turn-deadline';
@@ -227,7 +228,6 @@ export function toUiHistory(rows: MessageRow[], attachmentText: ReadonlyMap<stri
   return out;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The client's `entry` (how the chat was opened), reduced to known values.
@@ -239,7 +239,7 @@ export function turnEntry(raw: unknown): ChatTurnEntry | null {
   const r = raw as { intent?: unknown; about?: unknown };
   const intent = r.intent === 'mission' || r.intent === 'task' ? r.intent : null;
   const a = r.about as { kind?: unknown; id?: unknown } | null | undefined;
-  const about = a && (a.kind === 'mission' || a.kind === 'task') && typeof a.id === 'string' && UUID_RE.test(a.id)
+  const about = a && (a.kind === 'mission' || a.kind === 'task') && typeof a.id === 'string' && isUuid(a.id)
     ? { kind: a.kind as 'mission' | 'task', id: a.id }
     : null;
   return intent || about ? { intent, about } : null;

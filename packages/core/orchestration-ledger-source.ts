@@ -26,9 +26,9 @@ import {
   normalizeTouchLabel,
   type OutcomeJoinInput,
 } from './orchestration-outcomes';
+import { isUuid } from '@buildd/shared';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const uuidOrNull = (v: string | null | undefined): string | null => (typeof v === 'string' && UUID_RE.test(v) ? v : null);
+const uuidOrNull = (v: string | null | undefined): string | null => (typeof v === 'string' && isUuid(v) ? v : null);
 
 /** Bound on decisions loaded per readout call. */
 export const OUTCOME_JOIN_MAX_DECISIONS = 5_000;

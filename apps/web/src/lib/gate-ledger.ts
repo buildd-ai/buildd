@@ -22,6 +22,7 @@ import {
   type RecordGateEventInput,
 } from '@buildd/core/gate-events';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
 export { GATE_SLUGS, gateFrictionSignature };
 export type { GateCallerOrigin };
@@ -87,7 +88,6 @@ export function fireRepeatGateEvent(
   return gateFrictionSignature(input.gate, input.reason);
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Record a gate event whose route refused BEFORE it resolved a workspace.
@@ -113,7 +113,7 @@ export function fireGateEventForWorkspaceRef(
   void (async () => {
     let workspaceId: string | null = null;
     try {
-      workspaceId = UUID_RE.test(ref) ? ref : await resolveWorkspaceIdForGate(ref);
+      workspaceId = isUuid(ref) ? ref : await resolveWorkspaceIdForGate(ref);
     } catch {
       // Resolution is best-effort by construction — see above.
     }

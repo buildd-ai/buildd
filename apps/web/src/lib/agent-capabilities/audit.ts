@@ -14,6 +14,7 @@ import { db } from '@buildd/core/db';
 // with only the tables they touch, and a named import of a table they leave
 // out would fail at load.
 import * as schema from '@buildd/core/db/schema';
+import { isUuid } from '@/lib/uuid';
 
 export type CapabilityName =
   | 'github.repo_grant'
@@ -54,8 +55,7 @@ export interface CapabilityDecisionRecord {
 }
 
 /** Ids only: a non-id value (an unvalidated request field) is dropped rather than risk an FK failure. */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const id = (v: string | null | undefined) => (v && UUID_RE.test(v) ? v : null);
+const id = (v: string | null | undefined) => (v && isUuid(v) ? v : null);
 
 export function recordCapabilityDecision(row: CapabilityDecisionRecord, deps: { insert?: (values: Record<string, unknown>) => Promise<unknown> } = {}): Promise<void> {
   const values = {

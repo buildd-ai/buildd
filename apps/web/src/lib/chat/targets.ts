@@ -10,6 +10,8 @@
  */
 
 import type { ApiFn } from '@buildd/core/mcp-tools';
+import { isUuid } from '@/lib/uuid';
+export { isUuid };
 
 export interface TaskCandidate {
   id: string;
@@ -22,11 +24,9 @@ export type Resolution =
   | { ok: true; id: string }
   | { ok: false; question: string };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHORT_ID = /^[0-9a-f]{6,12}$/i;
 const STOP = new Set(['the', 'a', 'an', 'task', 'agent', 'one', 'job', 'for', 'on', 'of', 'this', 'that']);
 
-export const isUuid = (s: string) => UUID.test(s);
 
 function words(s: string): string[] {
   return s.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter(w => w && !STOP.has(w));
@@ -39,7 +39,7 @@ function describe(c: TaskCandidate): string {
 /** Pure matcher: one candidate, or a question. */
 export function matchTask(ref: string, candidates: readonly TaskCandidate[], scope: string): Resolution {
   const r = ref.trim();
-  if (isUuid(r)) return { ok: true, id: r };
+  if (isUuid(r as unknown)) return { ok: true, id: r };
   if (SHORT_ID.test(r)) {
     const byId = candidates.filter(c => c.id.toLowerCase().startsWith(r.toLowerCase()));
     if (byId.length === 1) return { ok: true, id: byId[0].id };

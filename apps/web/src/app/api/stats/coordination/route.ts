@@ -10,6 +10,7 @@ import { fetchCoordinationStats } from '@/lib/coordination-stats-query';
 import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
 import { fetchEarlyReleaseStats } from '@/lib/early-release-metrics';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isUuid } from '@/lib/uuid';
 
 /** Read-only aggregate coordination metrics, scoped to the caller's teams. */
 export async function GET(req: NextRequest) {
@@ -23,7 +24,7 @@ export async function GET(req: NextRequest) {
   const window = params.get('window') ?? '7d';
   if (!['24h', '7d', '30d'].includes(window)) return NextResponse.json({ error: 'Invalid window' }, { status: 400 });
   const missionId = params.get('missionId') ?? params.get('mission') ?? undefined;
-  if (missionId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(missionId)) {
+  if (missionId && !isUuid(missionId)) {
     return NextResponse.json({ error: 'missionId must be a full UUID' }, { status: 400 });
   }
   const metric = params.get('metric');
