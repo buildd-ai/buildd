@@ -108,3 +108,19 @@ describe('RunnerKeysSection: Remove a runner from another team', () => {
     expect(all('foreign-runner-row').length).toBe(0);
   });
 });
+
+describe('workspace picks', () => {
+  it('collapses the list behind a count, closed by default', async () => {
+    const picked: Key = {
+      ...key,
+      picks: [
+        { workspaceId: 'w1', workspaceName: 'web', teamId: 't1', teamName: 'Team One', reachable: true, removedByAdmin: false },
+        { workspaceId: 'w2', workspaceName: 'api', teamId: 't1', teamName: 'Team One', reachable: true, removedByAdmin: false },
+      ],
+    } as Key;
+    await act(async () => { root.render(createElement(RunnerKeysSection, { keys: [picked], foreign: [] })); });
+    const d = q('runner-key-picks') as HTMLDetailsElement;
+    expect(d.open).toBe(false);
+    expect(d.querySelector('summary')?.textContent).toBe('2 workspaces');
+  });
+});

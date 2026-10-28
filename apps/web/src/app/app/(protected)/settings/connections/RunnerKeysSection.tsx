@@ -144,21 +144,26 @@ export default function RunnerKeysSection({
                 {k.picks == null ? (
                   <p className="text-meta text-text-muted">Takes work from the open workspaces of {k.homeTeamName}. Edit to choose workspaces.</p>
                 ) : (
-                  groupPicks(k.picks).map((g) => (
-                    <div key={g.teamId}>
-                      <p className="text-meta text-text-muted" data-testid="runner-key-team">{g.teamName}</p>
-                      <ul className="divide-y divide-[var(--line-soft)]">
-                        {g.picks.map((p) => (
-                          <li key={p.workspaceId} className="flex min-h-11 items-center justify-between gap-3" data-testid="runner-key-pick" data-reachable={p.reachable}>
-                            <span className="min-w-0 break-words text-body text-text-primary">{p.workspaceName}</span>
-                            {p.removedByAdmin
-                              ? <span className="text-meta text-text-muted">Removed by a team admin</span>
-                              : !p.reachable && <span className="text-meta text-text-muted">No longer reachable</span>}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))
+                  <details className="group" data-testid="runner-key-picks">
+                    <summary className="flex min-h-11 cursor-pointer items-center text-meta text-text-muted md:min-h-8">
+                      {k.picks.length} {k.picks.length === 1 ? 'workspace' : 'workspaces'}
+                    </summary>
+                    {groupPicks(k.picks).map((g) => (
+                      <div key={g.teamId}>
+                        <p className="text-meta text-text-muted" data-testid="runner-key-team">{g.teamName}</p>
+                        <ul className="divide-y divide-[var(--line-soft)]">
+                          {g.picks.map((p) => (
+                            <li key={p.workspaceId} className="flex min-h-11 items-center justify-between gap-3" data-testid="runner-key-pick" data-reachable={p.reachable}>
+                              <span className="min-w-0 break-words text-body text-text-primary">{p.workspaceName}</span>
+                              {p.removedByAdmin
+                                ? <span className="text-meta text-text-muted">Removed by a team admin</span>
+                                : !p.reachable && <span className="text-meta text-text-muted">No longer reachable</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </details>
                 )}
               </div>
             ))}
