@@ -4,9 +4,9 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (88)
+## Active (87)
 
-### auth (9)
+### auth (8)
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
@@ -16,8 +16,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-05
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
-- [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-10-16
-  A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 - [Deployment Actions](./deployment-actions.md) · @max — verified 2026-10-05
   A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 - [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-23
@@ -233,10 +231,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workspace Routing and Reach](./workspace-routing-and-reach.md) · @max — verified 2026-10-19
   Every task MUST be filed into the workspace its subject lives in, with the reason recorded, and MUST reach any other workspace only through a named, person-granted delegation checked before it runs.
 
-## Superseded (9)
+## Superseded (10)
 
 - [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-22
   Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract. → replaced by Living Spec `75217f55`
+- [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-10-28
+  buildd no longer stores, refreshes or serves a subscription login, so there is nothing for it to rotate; the machine that owns a login refreshes it. → replaced by Living Spec `model-credentials`
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-15
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped. → replaced by `agent-question-protocol`
 - [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-27
