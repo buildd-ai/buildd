@@ -5,6 +5,7 @@ import {
   formatVerdictLines,
   inferCriteriaFailureReading,
   formatCriteriaEscalationBody,
+  hasPendingCriteria,
   MAX_REARM_CYCLES,
 } from './criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
@@ -153,6 +154,40 @@ describe('decideCriteriaRearm', () => {
     const d = decideCriteriaRearm({ ...fresh, previousFingerprint: 'fp-OLD', cycles: 9, alreadyEscalated: true });
     expect(d.action).toBe('rearm');
     expect(d.nextCycles).toBe(1);
+  });
+
+  // df808193 replay: the living_spec criterion read PENDING ("final verification is open") on two
+  // consecutive ticks; the second tick escalated it as "the organizer filed no work against it".
+  // A verdict in flight is nothing the organizer or the owner can act on: the loop waits for it.
+  describe('a verdict still in flight (df808193)', () => {
+    const pendingFp = 'UNVERIFIED|living_spec:x=PENDING';
+    it('is not handed to the organizer on the first tick', () => {
+      const d = decideCriteriaRearm({ ...fresh, fingerprint: pendingFp, pending: true });
+      expect(d.action).toBe('wait');
+      expect(d.nextCycles).toBe(0);
+      expect(d.reason).toMatch(/in flight/i);
+    });
+    it('is never escalated while unchanged on the next tick', () => {
+      const d = decideCriteriaRearm({ ...fresh, fingerprint: pendingFp, previousFingerprint: pendingFp, cycles: 1, pending: true });
+      expect(d.action).toBe('wait');
+      expect(d.nextCycles).toBe(1);
+    });
+    it('is never escalated even once the cycle budget is spent', () => {
+      const d = decideCriteriaRearm({ ...fresh, fingerprint: pendingFp, previousFingerprint: pendingFp, cycles: MAX_REARM_CYCLES, pending: true });
+      expect(d.action).toBe('wait');
+    });
+    it('a settled verdict goes through the ordinary decision again', () => {
+      const d = decideCriteriaRearm({ ...fresh, fingerprint: 'UNVERIFIED|living_spec:x=UNVERIFIED', previousFingerprint: pendingFp, cycles: 1, pending: false });
+      expect(d.action).toBe('rearm');
+    });
+  });
+});
+
+describe('hasPendingCriteria', () => {
+  it('is true only while some criterion is PENDING', () => {
+    expect(hasPendingCriteria(null)).toBe(false);
+    expect(hasPendingCriteria({ overall: 'UNVERIFIED', criteria: [{ index: 0, type: 'living_spec', verdict: 'UNVERIFIED' }] } as any)).toBe(false);
+    expect(hasPendingCriteria({ overall: 'UNVERIFIED', criteria: [{ index: 0, type: 'living_spec', verdict: 'PENDING' }] } as any)).toBe(true);
   });
 });
 
