@@ -149,6 +149,24 @@ export async function surfaceAuditWaived(
 }
 
 /**
+ * The mode the mission's Visual Review policy resolves to, or null when it
+ * cannot be read. Callers that loosen a hold on `automatic` treat null as
+ * "keep holding".
+ */
+export async function visualReviewModeOf(
+  mission: { autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
+): Promise<VisualReviewPolicyMode | null> {
+  try {
+    return resolveVisualReviewPolicy({
+      workspace: mission.workspaceId ? await workspacePolicy(mission.workspaceId) : null,
+      mission: { autoSurfaceAudit: mission.autoSurfaceAudit },
+    }).mode;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The newest waiver a person recorded (the mission page shows it): reason,
  * who set it and when. Null when none. Same person-only rule as `hasWaiver`.
  */

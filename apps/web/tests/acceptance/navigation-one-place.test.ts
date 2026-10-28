@@ -257,7 +257,7 @@ describe('the mission page, r5: the header, the bar, the Build stage, the stages
     const { historyRaised } = await import('../../src/lib/mission-decisions');
     const { missionDetailCompactFixture } = await import('../../src/app/app/dev/fixtures/mission-detail-compact-fixtures');
     const f = missionDetailCompactFixture('eleven', null);
-    expect(historyRaised(f.model, [{ type: 'question', status: 'open', title: 'Keep the legacy export?' }])).toEqual({ kind: 'decision', text: 'Decision open: Keep the legacy export?', taskId: null });
+    expect(historyRaised(f.model, [{ type: 'question', status: 'open', title: 'Keep the legacy export?' }])).toEqual({ kind: 'decision', text: 'Decision open: Keep the legacy export?', taskId: null, noteId: null });
     matches(overview(), /mission-history-raised/);
   });
 
