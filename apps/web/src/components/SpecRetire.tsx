@@ -7,6 +7,7 @@ import Disclosure from '@/components/ui/Disclosure';
 import Notice from '@/components/ui/Notice';
 import { Select } from '@/components/ui/Select';
 import type { RetirementView } from '@/lib/specs/retire';
+import { withPasskey } from '@/lib/passkeys/client';
 
 const NONE = 'none';
 
@@ -15,7 +16,8 @@ const NONE = 'none';
  * <reason>" or "Replaced by <spec>", with Restore for a person who may. A live
  * one offers that person Retire, folded away among the secondary actions:
  * a reason and an optional replacement. Both post to /api/specs/[id]/retire.
- * While the PR on its repo file is open (R-78), the page names it.
+ * While the PR on its repo file is open (R-78), the page names it. A team
+ * that requires a passkey asks for it after the click (b7fc9316 R-20).
  */
 export default function SpecRetire({ specId, retirement, canRetire, targets = [] }: {
   specId: string;
@@ -32,13 +34,12 @@ export default function SpecRetire({ specId, retirement, canRetire, targets = []
   async function send(method: 'POST' | 'DELETE', body: Record<string, unknown>) {
     setBusy(true);
     setError(null);
-    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/retire`, {
-      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    }).catch(() => null);
-    const json = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
+    const { res, body: json } = await withPasskey((presence) => fetch(`/api/specs/${encodeURIComponent(specId)}/retire`, {
+      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, ...(presence ? { presence } : {}) }),
+    }));
     setBusy(false);
     if (res?.ok) router.refresh();
-    else setError(json?.error ?? 'That did not work. Try again.');
+    else setError(json.error ?? 'That did not work. Try again.');
   }
 
   if (retirement) {

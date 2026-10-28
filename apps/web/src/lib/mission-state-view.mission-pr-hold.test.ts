@@ -32,6 +32,14 @@ for (const [path, extra] of [['completion gate', viaGate], ['rows', viaRows]] as
       expect(view.displayState).not.toBe('blocked');
     });
 
+    it('a queued recapture: waiting, a new screenshot is coming, no owner and no decide or skip', () => {
+      const view = deriveMissionStateView({ ...base, ...extra, visualReview: { ...visualSystem, recaptureComing: true } });
+      if (!isGated(view) || view.waitingOn.kind !== 'landing_blocked') throw new Error('expected landing_blocked');
+      expect(view.waitingOn.owner).not.toBe('person');
+      expect(view.waitingOn.nextAction).toContain('new screenshot is on its way');
+      expect(view.waitingOn.nextAction).not.toMatch(/decide|skip/i);
+    });
+
     it('a visual review a person must decide: the person is asked, never ready to merge', () => {
       const view = deriveMissionStateView({ ...base, ...extra, visualReview: visualOwner });
       if (!isGated(view) || view.waitingOn.kind !== 'landing_blocked') throw new Error('expected landing_blocked');

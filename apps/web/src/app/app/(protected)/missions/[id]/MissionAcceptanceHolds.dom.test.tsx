@@ -37,25 +37,35 @@ const all = (sel: string) => [...document.querySelectorAll(sel)] as HTMLElement[
 const flush = async () => { await act(async () => { await new Promise(r => setTimeout(r, 0)); }); };
 
 describe('MissionAcceptanceHolds', () => {
-  it('shows one row per flagged task with the PR, the files and a link to the diff', () => {
+  it('shows one row per flagged task with the PR, the files and a link to the diff', async () => {
     act(() => root.render(<MissionAcceptanceHolds holds={twoFlaggedEdits} />));
+    await flush();
     const rows = all('[data-testid="acceptance-hold"]');
     expect(rows).toHaveLength(2);
     expect(rows[0].textContent).toContain('PR #5708');
     expect(rows[0].textContent).toContain('tests/acceptance/queue.test.ts');
-    expect((rows[0].querySelector('[data-testid="acceptance-hold-diff"]') as HTMLAnchorElement).href).toContain('/pull/5708/files');
+    const diffLinks = rows[0].querySelectorAll('[data-testid="acceptance-hold-diff"]');
+    expect(diffLinks).toHaveLength(1);
+    const link = diffLinks[0] as HTMLAnchorElement;
+    expect(link.href).toBe('https://github.com/example/repo/pull/5708/files#diff-3eb7b6953021505b04c6227eb1837aa7c37031e8d7557f5b30ae327997aa462b');
+    expect(link.textContent).toBe('See changes in queue.test.ts');
     expect(rows[1].textContent).toContain('PR #5709');
     expect(rows[1].textContent).toContain('2 tests');
+    expect(rows[1].querySelectorAll('[data-testid="acceptance-hold-diff"]')).toHaveLength(2);
     expect(all('[data-testid="acceptance-hold-accept"]')).toHaveLength(2);
   });
 
-  it('Accept posts to the accept route for that task, then the row goes and the page refreshes', async () => {
+  it('Accept posts to the accept route for that task and shows confirmed state on only that row', async () => {
     act(() => root.render(<MissionAcceptanceHolds holds={twoFlaggedEdits} />));
-    await act(async () => { all('[data-testid="acceptance-hold-accept"]')[0].click(); });
+    const acceptButtons = all('[data-testid="acceptance-hold-accept"]');
+    await act(async () => { acceptButtons[0].click(); });
     await flush();
     expect(calls).toEqual([{ url: `/api/tasks/${twoFlaggedEdits[0].taskId}/accept-acceptance-edit`, method: 'POST' }]);
-    expect(all('[data-testid="acceptance-hold"]')).toHaveLength(1);
-    expect(refreshed).toBe(1);
+    const holds = all('[data-testid="acceptance-hold"]');
+    expect(holds).toHaveLength(2);
+    expect(holds[0].querySelector('[data-testid="acceptance-hold-confirmed"]')).toBeTruthy();
+    expect(holds[1].querySelector('[data-testid="acceptance-hold-confirmed"]')).toBeFalsy();
+    expect(refreshed).toBe(0);
   });
 
   it('shows a refusal and keeps the row', async () => {

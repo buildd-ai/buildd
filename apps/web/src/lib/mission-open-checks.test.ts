@@ -28,3 +28,15 @@ describe('summarizeVisualReview', () => {
     expect(summarizeVisualReview({ status: 'queued', holdReason: 'budget_paused' } as never)?.holdReason).toBe('budget_paused');
   });
 });
+
+describe('summarizeVisualReview: a recapture coming', () => {
+  it('asks no one while the new screenshot is queued, and says so', () => {
+    const s = summarizeVisualReview({
+      status: 'queued', blocksMerge: true, nextActor: 'system', recapture: { next: 'queued', screens: ['/app/x'], routes: ['/app/x'] },
+      policy: { mode: 'auto', origin: 'default', waiverAllowed: true, locked: false },
+      branch: { headSha: 'a', base: 'dev', integrationPr: { number: 1, state: 'open', ready: false, blocked: false } },
+    } as never);
+    expect(s?.needsOwner).toBe(false);
+    expect(s?.recaptureComing).toBe(true);
+  });
+});

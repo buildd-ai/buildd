@@ -876,6 +876,19 @@ function ShotPanel({ cell, focused, paired, decided, zoomed, onFocus, onImageCli
         {review?.note && <p className="mt-2 pl-3 text-body text-text-secondary">Note: {review.note}</p>}
       </div>
 
+      {cell.earlier && cell.earlier.length > 0 && (
+        <details data-testid="deck-earlier" className="order-5 border-2 border-border-default bg-surface-2 px-3 py-2">
+          <summary className="cursor-pointer text-body text-text-secondary">
+            Earlier: {cell.earlier.length === 1 ? '1 older screenshot' : `${cell.earlier.length} older screenshots`} of this screen
+          </summary>
+          <div className="mt-2 flex flex-col gap-2">
+            {cell.earlier.map(e => (
+              <ShotImage key={e.shot.id} shot={e.shot} alt={`Earlier screenshot of ${cell.route}`} className="block h-auto w-full max-w-[240px]" />
+            ))}
+          </div>
+        </details>
+      )}
+
       {fix && (
         <div data-testid="deck-fix" className="order-3 flex flex-col gap-1 border-2 border-border-default bg-surface-2 px-3 py-2.5">
           <p className="flex items-center gap-2">

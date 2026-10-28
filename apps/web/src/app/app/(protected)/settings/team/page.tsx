@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import SettingsPage from '../_components/SettingsPage';
 import TimezoneSection from '../TimezoneSection';
 import TeamDetailClient from './TeamDetailClient';
+import SpecPasskeySetting from './SpecPasskeySetting';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { roleHas } from '@/lib/permission-registry';
 import PrimaryAction from '@/components/ui/PrimaryAction';
@@ -21,7 +22,7 @@ import { isPersonalTeam } from '@/lib/personal-team';
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings › Team › Members: a team's people and its timezone. Shows the active team, or `?team=<id>` when the
+ * Settings › Team › Members: a team's people, its timezone and whether spec approvals need a passkey. Shows the active team, or `?team=<id>` when the
  * person is a member of it, so a link to another team (the old
  * /app/teams/[id]) lands on that team's members.
  * `?new=1` opens the New team sheet (the old /app/settings/team/new redirects here).
@@ -59,7 +60,7 @@ export default async function TeamSettingsPage({
   const [team, members] = await Promise.all([
     db.query.teams.findFirst({
       where: sqlWhere(eq(teams.id, shown.id)),
-      columns: { id: true, name: true, slug: true, personalUserId: true, createdAt: true },
+      columns: { id: true, name: true, slug: true, personalUserId: true, createdAt: true, specPasskeyRequired: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
       where: sqlWhere(eq(teamMembers.teamId, shown.id)),
@@ -76,6 +77,7 @@ export default async function TeamSettingsPage({
     <>
       {/* This team only: another team's timezone is on its own Members page. */}
       <TimezoneSection teams={[{ id: shown.id, name: shown.name }]} currentTeamId={shown.id} />
+      {team ? <SpecPasskeySetting teamId={team.id} initial={team.specPasskeyRequired} canChange={perms.require_spec_passkey} /> : null}
     </>
   );
 
