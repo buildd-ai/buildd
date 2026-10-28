@@ -151,18 +151,25 @@ export function decisionFromQuestion(input: {
   mission?: DecisionView['mission'];
   askedAt: number | null;
   waits?: QuestionWaits | null;
+  /** Names of the tasks that wait on this decision, named in the summary. */
+  dependents?: readonly string[];
   answer: DecisionAnswer;
 }): DecisionView {
   const q = input.question;
   const why = (q.context ?? q.body ?? '').replace(/\s+/g, ' ').trim();
   const waits = input.waits ?? null;
+  const names = (input.dependents ?? []).map(n => n.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const waiting = names.length
+    ? `${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`} ${names.length === 1 ? 'waits' : 'wait'} on this.`
+    : '';
+  const summary = [why ? endsSentence(why) : '', waiting].filter(Boolean).join(' ');
   return {
     key: input.key,
     kind: 'decision',
     task: input.task,
     mission: input.mission ?? null,
     askedAt: input.askedAt,
-    summary: why ? endsSentence(why) : null,
+    summary: summary || null,
     waits,
     question: q.headline.trim(),
     options: structuredOptions(decisionOptions(q.options, waits)),

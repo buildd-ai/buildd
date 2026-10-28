@@ -91,8 +91,16 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    `dashboard`).
    Several revisions waiting? `buildd action=manage_specs params={ action: "awaiting_approval" }`
    (read-only) gives the count and the person's inbox link, where they
-   review and approve each one with a click. Hand that link on too. An API
-   key's 403 names the same link.
+   review and approve each one with a click, or all of them from its
+   Review all page. Hand that link on too. An API key's 403 names the same
+   link.
+   A revision of an approved spec that changes no criterion line (R/AC/D/I
+   with its `check:`, `screen:`, `verify:` and `replaces:` lines, in the
+   same order and section) and no design binding is approved by
+   `check:no-criteria-change` as it is written, when the gate passes; the
+   `revise` reply says so. No person approved it and it is recorded that
+   way. Nothing you send turns this on or off, so do not reword prose to
+   reach it or claim a person approved it.
 5. **Pin:** file work with `create_task` and
    `context: { specSource: { specId, criteria, revision } }`. The server pins
    the approved revision itself. `criteria` (optional, 1 to 50 `R-n`/`AC-n`
