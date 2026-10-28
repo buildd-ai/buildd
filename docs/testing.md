@@ -547,7 +547,10 @@ it('works correctly', ...)
 6. **PRs without tests for behavioral changes will be sent back** - Docs/config-only changes are exempt
 
 **Spec acceptance files that need Postgres run in the same job.** The DB
-architecture job (`build.yml`) follows `bun run test:db` with a second step that
+architecture suite (`build.yml`) runs as four shards (`bun run test:db --shard i/4`,
+each on its own runner and database, balanced by `scripts/db-test-durations.json`),
+aggregated under the `DB architecture (real Postgres)` check. Shard 1
+(`DB architecture shard 1/4`) follows its `bun run test:db` with a second step that
 passes four files from `apps/web/tests/acceptance/` (`spec-corpus-duplicates`,
 `spec-similarity-from-corpus`, `spec-replaces`, `mcp-specs-replaces`) to
 `scripts/run-db-tests.ts`. Other acceptance files are not run by that job; add

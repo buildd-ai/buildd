@@ -101,7 +101,7 @@ describe('workflows use the GHCR mirror', () => {
   const mirror: any = Bun.YAML.parse(readFileSync('.github/workflows/mirror-ci-images.yml', 'utf8'));
 
   test('DB architecture pulls postgres through the fallback script, GHCR first', () => {
-    const job = build.jobs['db-architecture'];
+    const job = build.jobs['db-architecture-shards'];
     expect(job.permissions.packages).toBe('read');
     const step = job.steps.find((s: any) => s.name === 'Start Postgres (pgvector)');
     expect(step.run).toContain('scripts/ci/pull-image.sh');
