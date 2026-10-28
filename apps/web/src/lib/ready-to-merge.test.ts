@@ -152,3 +152,36 @@ describe('every merge door consults the mission gate', () => {
     expect(unknown).toEqual([]);
   });
 });
+
+describe('decideReadyToMerge: exhausted review by policy', () => {
+  const exhaustedReviews = {
+    'round cap exhausted': { ...reviewed, phase: 'needs_you' as const, effectiveIssues: 2, roundCapOpen: true, needsYouReason: 'round_cap' },
+    'leftover decide cells': { ...reviewed, phase: 'needs_you' as const, effectiveIssues: 1, needsYouReason: 'fix_check', recapture: { next: 'decide' as const, screens: ['/app/x'], routes: ['/app/x'] } },
+  };
+  for (const [label, review] of Object.entries(exhaustedReviews)) {
+    it(`automatic: ${label} no longer blocks the merge and nobody is asked`, () => {
+      const v = visual({ audit, review, auditedSha: 'aaaa1111', policy: resolveVisualReviewPolicy({ workspace: 'automatic' }) });
+      expect(v.findings?.carried).toBe(true);
+      expect(v.nextActor).toBe('none');
+      expect(decide(v)).toMatchObject({ ready: true, blockers: [] });
+    });
+    for (const mode of ['strict', 'ask'] as const) {
+      it(`${mode}: ${label} still blocks on the owner`, () => {
+        const v = visual({ audit, review, auditedSha: 'aaaa1111', policy: resolveVisualReviewPolicy({ workspace: mode }) });
+        expect(v.findings?.carried).toBeUndefined();
+        const d = decide(v);
+        expect(d.ready).toBe(false);
+        expect(d.blockers[0]).toMatchObject({ code: 'visual_review_findings', nextActor: 'owner' });
+      });
+    }
+    it(`off: ${label} is never required`, () => {
+      const v = visual({ audit, review, auditedSha: 'aaaa1111', policy: resolveVisualReviewPolicy({ workspace: 'off' }) });
+      expect(decide(v).ready).toBe(true);
+    });
+  }
+
+  it('automatic: findings that are not exhausted (a fix in progress) still block', () => {
+    const v = visual({ audit, review: { ...reviewed, phase: 'fixing' as const, effectiveIssues: 1, openFixes: 1 }, auditedSha: 'aaaa1111' });
+    expect(decide(v).blockers[0]).toMatchObject({ code: 'visual_review_findings', nextActor: 'system' });
+  });
+});
