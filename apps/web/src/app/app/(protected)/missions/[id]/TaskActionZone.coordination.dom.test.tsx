@@ -42,9 +42,9 @@ const laneHold = makeWaitingReason('lane', {
 });
 // A limit: what Force start is for.
 const prHold = makeWaitingReason('mission_concurrent', {
-  because: 'the mission starts a task at most every 10 min',
-  blocker: { type: 'mission', id: 'm1', label: 'mission limit', href: '/app/missions/m1' },
-  provenance: { source: 'probe', derivedFrom: 'missions.pacingMode' },
+  because: 'the mission runs at most 1 task at once and 1 is running',
+  blocker: { type: 'mission', id: 'm1', label: 'the mission limit', href: '/app/missions/m1' },
+  provenance: { source: 'probe', derivedFrom: 'missions.maxConcurrentTasks' },
 });
 const capHold = makeWaitingReason('mission_concurrent', {
   because: 'the mission runs at most 2 tasks at once and 2 are running',
@@ -137,10 +137,10 @@ describe('TaskActionZone: coordination holds', () => {
     await click('[data-action="run_now"]');
     const refusal = q('[data-testid="task-start-refusal"]');
     expect(refusal?.dataset.gate).toBe('coordination_hold');
-    expect(refusal?.textContent).toContain('Waiting on mission limit');
+    expect(refusal?.textContent).toContain('Waiting on the mission limit');
     const confirm = q('[data-testid="task-force-confirm"]')!;
     expect(confirm.textContent).toContain('Force start “Fix schema”?');
-    expect(confirm.textContent).toContain('Skips: Mission concurrency limit: the mission starts a task at most every 10 min');
+    expect(confirm.textContent).toContain('Skips: Mission concurrency limit: the mission runs at most 1 task at once and 1 is running');
     expect(confirm.textContent).toContain('Still enforced:');
     expect(confirm.textContent).toContain('Files another agent is editing stay locked');
     expect(container.textContent).not.toMatch(/runners? online|no runner has responded/i);
@@ -216,18 +216,28 @@ describe('TaskActionZone: coordination holds', () => {
     expect([...posts[0].body.force.kinds].sort()).toEqual(['mission_concurrent', 'mission_local']);
   });
 
+  const declaredHold = () => makeWaitingReason('dep_declared', {
+    because: 'it was declared as a dependency',
+    blocker: { type: 'task', id: 'd1', label: '“design first”', href: '/app/tasks/d1' },
+    provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+  });
+
   it('a declared dependency beside a lane stays: blocked panel says so and offers neither Start anyway nor Force start', async () => {
-    hold = [migrationEdge('h1'), makeWaitingReason('dep_declared', {
-      because: 'it was declared as a dependency',
-      blocker: { type: 'task', id: 'd1', label: '“design first”', href: '/app/tasks/d1' },
-      provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
-    })];
+    hold = [declaredHold()];
+    await render({ isBlocked: true, blockedByCount: 1 });
+    expect(q('[data-testid="task-blocked-waiting"]')!.textContent).toContain('Waiting on “design first”');
+    // A person may start it anyway: the agent assesses first (spec 36df686b).
+    expect(q('[data-action="force_start_offer"]')).toBeNull();
+  });
+
+  it('a declared dependency beside a lane: counted apart, and no start is offered while the lane holds', async () => {
+    hold = [migrationEdge('h1'), declaredHold()];
     await render({ isBlocked: true, blockedByCount: 2 });
     const text = q('[data-testid="task-blocked-waiting"]')!.textContent!;
-    // Counted apart: the declared dependency is the headline, the overlap edge is not a dependency.
+    // Counted apart: the declared dependency is the headline, the lane is not a dependency.
     expect(text).toContain('Waiting on 1 declared dependency');
     expect(text).not.toMatch(/2 dependencies/);
-    // A lane beside it is never forced (Health › Queue R-10), so nothing is offered.
+    // A lane is never forced (spec: Overlap scheduling), so Start anyway could not lift the wait.
     expect(q('[data-action="force_start_offer"]')).toBeNull();
   });
 

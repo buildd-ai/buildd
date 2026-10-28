@@ -22,6 +22,11 @@ const LANE_PR = makeWaitingReason('lane', {
   lane: { lane: 'migration', holderTaskId: 'holder', position: null },
   provenance: { source: 'probe', derivedFrom: 'claim layer 1' },
 });
+const MISSION_BUDGET = makeWaitingReason('mission_budget', {
+  because: 'the mission spent its $20.00 budget',
+  blocker: { type: 'mission', id: 'm', label: 'the mission budget', href: '#' },
+  provenance: { source: 'probe', derivedFrom: 'missions.budgetUsd' },
+});
 const MISSION_CAP = makeWaitingReason('mission_concurrent', {
   because: 'the mission runs at most 2 tasks at once and 2 are running',
   blocker: { type: 'mission', id: 'm', label: 'the mission limit', href: '#' },
@@ -78,7 +83,7 @@ export default function CoordinationHoldFixture() {
           <CoordinationRefusal refusal={refusalOf([MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} taskTitle="PR scope verification" />
         </Panel>
         <Panel label="Two limits">
-          <CoordinationRefusal refusal={refusalOf([MISSION_CAP, ROLE_GAP])} pending={null} onForce={noop} onCancel={noop} />
+          <CoordinationRefusal refusal={refusalOf([MISSION_BUDGET, MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} />
         </Panel>
         <Panel label="Local mission + mission limit: one Force start lifts both">
           <CoordinationRefusal refusal={refusalOf([LOCAL, MISSION_CAP])} pending={null} onForce={noop} onCancel={noop} taskTitle="Add the run evidence table" />

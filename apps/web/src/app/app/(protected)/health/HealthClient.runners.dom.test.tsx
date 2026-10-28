@@ -120,26 +120,41 @@ const q = (id: string) => container.querySelector(`[data-testid="${id}"]`);
 const qa = (id: string) => [...container.querySelectorAll(`[data-testid="${id}"]`)];
 
 describe('Health › Runners at first glance', () => {
-  it('shows the runner-slot chart with its numbers, without any tap', async () => {
-    await mount(1);
-    const chart = q('health-section-occupancy');
-    expect(chart).not.toBeNull();
-    expect(chart!.textContent).toContain('Runner slots');
-    expect(chart!.textContent).toContain('In use now');
-    expect(chart!.querySelector('svg[aria-label^="Runner slots in use over the past 24 hours"]')).not.toBeNull();
+  it('leads with the shared Capacity block: running, runners and sessions, peak and average, the picker, one chart', async () => {
+    await mount(2);
+    const cap = q('capacity')!;
+    expect(cap).not.toBeNull();
+    expect(cap.textContent).toContain('1 of 3 slots in use');
+    expect(cap.textContent).toContain('1 of 1 runner online · plus 2 Claude Code sessions');
+    expect(q('capacity-peak')!.textContent).toContain('over 24h');
+    expect(q('capacity-peak')!.textContent).toContain('Peak 1');
+    expect(q('capacity-chart')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="capacity-chart"]').length).toBe(1);
+    // Capacity comes before the runner sections.
+    const order = [...container.querySelectorAll('[data-testid="capacity"], [data-testid="health-section-runners"]')].map(e => e.getAttribute('data-testid'));
+    expect(order).toEqual(['capacity', 'health-section-runners']);
+    // Nothing is idle while work waits, so no alert.
+    expect(q('idle-alert')).toBeNull();
   });
 
-  it('shows interactive sessions, as a chart and as rows in words, without any tap', async () => {
+  it('keeps the per-owner usage chart one tap away, with sessions charted separately', async () => {
+    await mount(1);
+    expect(q('health-section-occupancy')).toBeNull();
+    const toggle = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('Usage by owner'))!;
+    await act(async () => { toggle.click(); });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    expect(q('health-section-occupancy')!.textContent).toContain('In use now');
+    expect(q('occupancy-sessions')!.textContent).toContain('Interactive sessions');
+  });
+
+  it('lists interactive sessions as rows in words without any tap, and not the runners (the rows below say those)', async () => {
     await mount(2);
-    const sessionsChart = q('occupancy-sessions');
-    expect(sessionsChart).not.toBeNull();
-    expect(sessionsChart!.textContent).toContain('Interactive sessions');
     const groups = qa('running-now-group');
-    const sessions = groups.find(g => g.textContent?.includes('Your sessions'));
-    expect(sessions).toBeDefined();
-    expect(sessions!.querySelectorAll('[data-testid="running-now-row"]').length).toBe(2);
-    expect(sessions!.textContent).toContain('Working');
-    expect(sessions!.textContent).toContain('session task number 1');
+    expect(groups.length).toBe(1);
+    expect(groups[0].textContent).toContain('Your sessions');
+    expect(groups[0].querySelectorAll('[data-testid="running-now-row"]').length).toBe(2);
+    expect(groups[0].textContent).toContain('Working');
+    expect(groups[0].textContent).toContain('session task number 1');
   });
 
   it('a long sessions list shows the first few and "Show all N" opens the rest in place', async () => {
@@ -155,26 +170,43 @@ describe('Health › Runners at first glance', () => {
     expect(location.href).toBe(href);
   });
 
-  it('the runner list names and counts each runner the way Running now does', async () => {
+  it('the runner row names and counts the runner from the fleet', async () => {
     await mount(1);
-    const group = qa('running-now-group').find(g => !g.textContent?.includes('Your sessions'))!;
-    expect(group.textContent).toContain('runner-one');
-    expect(group.textContent).toContain('1 of 3 busy');
     const row = q('health-runner-row')!;
     expect(row.querySelector('[data-testid="health-runner-name"]')!.textContent).toBe('runner-one');
     // The token's own name is secondary, so the row can still be found under Runner tokens.
     expect(row.textContent).toContain('Runner one');
-    expect(row.textContent).toContain('1 of 3 busy');
+    expect(row.textContent).toContain('1 of 3 slots in use');
     expect(row.textContent).not.toContain('agents running');
   });
 
   it('the per-slot timeline stays folded until opened', async () => {
     await mount(1);
     expect(q('runner-lanes-chart')).toBeNull();
-    const toggle = [...q('health-section-lanes')!.querySelectorAll('button')].find(b => b.textContent?.includes('Timeline'))!;
+    const toggle = [...q('health-section-lanes')!.querySelectorAll('button')].find(b => b.textContent?.includes('Timeline by slot'))!;
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { toggle.click(); });
     expect(q('runner-lanes-chart')).not.toBeNull();
+  });
+});
+
+describe('Health › Runners idle alert (R-16)', () => {
+  it('shows the shared IdleAlert under Capacity only while an idle stretch with waiting work is open', async () => {
+    const withIdle = (to: number) => ({ ...lanes(0), idle: [{ from: NOW - 3_600_000, to, waited: 3 }] });
+    const render = async (l: unknown) => {
+      await act(async () => {
+        root.render(
+          <HealthClient page="runners" orphanedPrs={[]} runners={DEFAULT_RUNNERS as never} usageStats={null} consumption={null} schedules={[]} recentFailures={[]} credentialHealth={[]} strandedBackends={[]} wsFilter={null} budgetForecast={null} failureAnalytics={null} window="7d" subagentDelegation={null} errorPatterns={null} now={NOW} runnerLanes={l as never} {...({} as never)} />,
+        );
+      });
+      for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    };
+    await render(withIdle(NOW));
+    expect(q('idle-alert')!.textContent).toContain('3 tasks could start');
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    await render(withIdle(NOW - 2 * H));
+    expect(q('idle-alert')).toBeNull();
   });
 });
 

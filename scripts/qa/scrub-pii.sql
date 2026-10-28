@@ -546,7 +546,8 @@ UPDATE worker_heartbeats SET
   local_ui_url = 'http://qa-' || replace(id::text, '-', '') || '.localhost:8766',
   viewer_token = CASE WHEN viewer_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(id::text) END,
   environment = pg_temp.qa_json(environment),
-  desired_slots_set_by = CASE WHEN desired_slots_set_by IS NULL THEN NULL ELSE 'QA user' END; -- a person's display name
+  desired_slots_set_by = CASE WHEN desired_slots_set_by IS NULL THEN NULL ELSE 'QA user' END, -- a person's display name
+  desired_pause_set_by = CASE WHEN desired_pause_set_by IS NULL THEN NULL ELSE 'QA user' END; -- a person's display name
 
 -- ---------------------------------------------------------------------------
 -- Work: missions, initiatives, tasks, workers

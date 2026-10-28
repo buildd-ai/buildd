@@ -100,6 +100,10 @@ const TABLE: Row[] = [
     task: task(), facts: facts({ ledger: ledger('managed_runner_hours') }), kind: 'limit', extra: { limit: 'plan' }, headline: 'Waiting: plan limit',
   },
   {
+    name: 'limit: seats (one Codex task per workspace)',
+    task: task(), facts: facts({ ledger: ledger('codex_single_flight') }), kind: 'limit', extra: { limit: 'seats' }, headline: 'Waiting: seats in use',
+  },
+  {
     name: 'limit: a person paused it (claim WHERE)',
     task: task({}, ['taskHeld']), kind: 'limit', extra: { limit: 'task_paused', forceable: false }, headline: 'Waiting: paused',
   },

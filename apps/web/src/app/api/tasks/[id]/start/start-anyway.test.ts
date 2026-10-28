@@ -152,12 +152,6 @@ const localReason = (): WaitingReason => makeWaitingReason('mission_local', {
   blocker: { type: 'mission', id: 'mission-1', label: 'a mission run from your session' },
   provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
-const migrationEdge = (id: string): WaitingReason => makeWaitingReason('dep_inferred', {
-  because: 'both change migrations in core/db',
-  blocker: { type: 'task', id, label: `task ${id}`, live: true },
-  overlap: { areas: [{ area: 'core/db', count: 1 }], pathCount: 1, paths: ['packages/core/db/schema.ts'], basis: 'declared', overlapKind: 'migration' },
-  provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
-});
 const declaredEdge = (id: string): WaitingReason => makeWaitingReason('dep_declared', {
   because: 'it was declared as a dependency',
   blocker: { type: 'task', id, label: `task ${id}` },

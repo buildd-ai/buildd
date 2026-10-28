@@ -29,7 +29,7 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain, planDrain, resumingSnapshot } from './update-drain';
-import { initRunnerHold, currentRunnerHold } from './runner-hold';
+import { initRunnerHold, currentRunnerHold, holdOriginLine } from './runner-hold';
 import { installRunnerShutdown, NO_LAUNCHER_WARNING, restartLauncherKnown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
@@ -729,14 +729,17 @@ function buildProviderConfig(): ProviderConfig | undefined {
   };
 }
 
+// Slots saved in config.json; 0 is a real setting (claims nothing, spec 97b1bd0b R-18), so not `||`.
+const savedSlots = typeof savedConfig.maxConcurrent === 'number' && Number.isInteger(savedConfig.maxConcurrent) && savedConfig.maxConcurrent >= 0 ? savedConfig.maxConcurrent : null;
+
 // Build runtime config
 const config: LocalUIConfig = {
   projectRoots, // All roots
   builddServer: resolveBuilddServer({ env: process.env, saved: savedConfig.builddServer }),
   apiKey: resolvedApiKey,
-  maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
+  maxConcurrent: savedSlots ?? parseInt(process.env.MAX_CONCURRENT || '3'),
   // Who set it and when, so the heartbeat can say and the later change wins (spec 34a48877 R-21).
-  slotsChangedAt: savedConfig.maxConcurrent && typeof savedConfig.slotsSetAt === 'number' ? savedConfig.slotsSetAt : undefined,
+  slotsChangedAt: savedSlots !== null && typeof savedConfig.slotsSetAt === 'number' ? savedConfig.slotsSetAt : undefined,
   slotsOrigin: savedConfig.slotsOrigin === 'dashboard' ? 'dashboard' : savedConfig.slotsSetAt ? 'machine' : undefined,
   slotsSetBy: savedConfig.slotsSetBy ?? null,
   slotsConfigFile: CONFIG_FILE,
@@ -2220,7 +2223,10 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // `buildd hold` / `buildd resume` / `h` in top (runner-hold.ts, R-32/R-33).
     if (path === '/api/hold' && req.method === 'GET') {
-      return Response.json({ hold: currentRunnerHold(), running: liveAgentCount() }, { headers: corsHeaders });
+      const hold = currentRunnerHold();
+      // Who last paused or resumed it: "paused on buildd.dev by Max, 10:44" (spec 97b1bd0b R-18).
+      const origin = runnerHold ? holdOriginLine(runnerHold.changeMeta(), hold !== null, Date.now()) : null;
+      return Response.json({ hold, running: liveAgentCount(), origin }, { headers: corsHeaders });
     }
     if (path === '/api/hold' && req.method === 'POST') {
       if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });

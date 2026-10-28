@@ -29,7 +29,7 @@ export function parseHealthQueueParams(p: HealthQueueParams): { filter: HealthQu
   return { filter, page };
 }
 
-export async function loadHealthQueueFor(userId: string, teamCookie: string | null | undefined, params: HealthQueueParams): Promise<HealthQueueLoad> {
+export async function loadHealthQueueFor(userId: string, teamCookie: string | null | undefined, params: HealthQueueParams, now?: Date): Promise<HealthQueueLoad> {
   const teamId = await resolveActiveTeamId(userId, teamCookie);
   if (!teamId) return { kind: 'no-team' };
   const teamWorkspaces = await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(eq(workspaces.teamId, teamId));
@@ -46,6 +46,7 @@ export async function loadHealthQueueFor(userId: string, teamCookie: string | nu
     missionId: mission,
     filter,
     page,
+    now,
   });
   return { kind: 'ok', view, workspace, mission, workspaces: teamWorkspaces };
 }

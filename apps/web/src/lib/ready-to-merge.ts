@@ -101,7 +101,9 @@ export function decideReadyToMerge(facts: ReadyToMergeFacts): ReadyToMergeDecisi
     } else if (v.staleEvidence) {
       blockers.push({
         code: 'visual_review_stale',
-        reason: `The last visual review looked at an older commit than this one${where}. A new review of this commit is required before it merges.`,
+        reason: v.uiDeltaLine
+          ? `${v.uiDeltaLine}${where}. A new review of this commit is required before it merges.`
+          : `The last visual review looked at an older commit than this one${where}. A new review of this commit is required before it merges.`,
         nextActor: BLOCKED_ACTOR(v),
       });
       scheduleVisualReview = true;

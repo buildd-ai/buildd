@@ -1484,7 +1484,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
   });
   const probeWith = (snap: CoordinationSnapshot) =>
     mockProbe.mockImplementation(async (task: any) => evaluateCoordinationGates(task, snap));
-  // A limit Force start may lift (Health › Queue R-10): mission limit on a mission task.
+  // A limit Force start may lift (Health › Queue R-10): the mission's concurrency cap on a mission task.
   const cappedMission = { status: 'active', maxConcurrentTasks: 1 };
   const probeLimit = (over: Partial<CoordinationSnapshot> = {}) => {
     mockTasksFindFirst.mockResolvedValue({ ...overlapTask, missionId: 'm-1' });
@@ -1572,8 +1572,8 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
   it('409 when the blocker changed between the refusal and the confirmation', async () => {
     probeLimit();
     const first = await (await callHandler(createMockRequest(), 'task-123')).json();
-    // The cap no longer holds it, but another PR now holds a lane on its files.
-    probeLimit({ mission: { status: 'active', maxConcurrentTasks: 5 }, missionActiveCount: 1, openPrTasks: [{ taskId: 'pr-task', pathManifest: overlapTask.pathManifest, prNumber: 1, prUrl: 'https://github.com/o/r/pull/1', workerStatus: 'running', prLifecycle: 'open', branch: 'b', prBaseRef: 'dev' } as any] });
+    // The cap lifted; the mission's budget holds it instead.
+    mockProbe.mockResolvedValue([makeWaitingReason('mission_budget', { because: 'the mission spent its budget', blocker: { type: 'mission', id: 'm-1', label: 'the mission budget' }, provenance: { source: 'probe', derivedFrom: 'missions.budgetUsd' } })]);
 
     const res = await callHandler(createMockRequest({
       body: { force: { kinds: first.force?.kinds ?? [], reasonsDigest: first.reasonsDigest } },
@@ -1582,7 +1582,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     const body = await res.json();
     expect(body.reasonsChanged).toBe(true);
     expect(body.gateReason).toBe('reasons_changed');
-    expect(body.waitingReasons[0].kind).toBe('lane');
+    expect(body.waitingReasons[0].kind).toBe('mission_budget');
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
@@ -1619,10 +1619,10 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     probeLimit();
     const first = await (await callHandler(createMockRequest(), 'task-123')).json();
     const res = await callHandler(createMockRequest({
-      body: { force: { kinds: ['mission_concurrent', 'mission_local'], reasonsDigest: first.reasonsDigest } },
+      body: { force: { kinds: ['mission_concurrent', 'mission_budget'], reasonsDigest: first.reasonsDigest } },
     }), 'task-123');
     expect(res.status).toBe(422);
-    expect((await res.json()).rejectedKinds).toEqual(['mission_local']);
+    expect((await res.json()).rejectedKinds).toEqual(['mission_budget']);
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 

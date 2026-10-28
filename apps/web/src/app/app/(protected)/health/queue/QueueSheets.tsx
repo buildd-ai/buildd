@@ -6,17 +6,16 @@ import { ordinal, type HealthQueueLane, type HealthQueueWaitingRow } from '@buil
 import Sheet from '@/components/ui/Sheet';
 import Chip from '@/components/ui/Chip';
 import PrimaryAction from '@/components/ui/PrimaryAction';
+import StageMeter from '@/components/ui/StageMeter';
 
 /**
- * Health › Queue's sheets (spec "Health › Queue", R-9 to R-11): Force start
- * past a limit (the Force Start contract: GET /waiting for the digest, POST
- * /start with it), a declared dependency (the blocker's next step, Remove with
- * a reason), and a lane's order (holder first, Release when stuck). Each body
+ * Health › Queue's sheets (spec "Health › Queue", R-9, R-11): a declared
+ * dependency (the blocker's next step, Remove with a reason) and a lane's
+ * order (holder first with its StageMeter, Release when stuck). Force start
+ * and Start anyway are the shared start action (./QueueStartSheet). Each body
  * is a pure component so it renders in a test without a DOM.
  */
 
-const CHECK_FAILED = 'Could not check what holds it. Try again.';
-const START_FAILED = 'Could not start it. Try again.';
 const REMOVE_FAILED = 'Could not remove it. Try again.';
 const RELEASE_FAILED = 'Could not release the lane. Try again.';
 
@@ -70,106 +69,6 @@ export async function releaseLaneRequest(workspaceId: string, lane: string, hold
   } catch {
     return RELEASE_FAILED;
   }
-}
-
-// ── Force start ─────────────────────────────────────────────────────────────
-
-export type ForceState =
-  | { kind: 'loading' }
-  | { kind: 'ready'; skips: string[]; stillEnforced: string[]; canForce: boolean; kinds: string[]; digest: string | null; notForceable: string[] }
-  | { kind: 'started' }
-  | { kind: 'error'; message: string };
-
-export function ForceStartBody({ row, state, busy, onConfirm, onClose }: { row: HealthQueueWaitingRow; state: ForceState; busy: boolean; onConfirm: () => void; onClose: () => void }) {
-  return (
-    <div className="space-y-4" data-testid="queue-force-sheet">
-      <p className="text-title font-semibold text-text-primary">{row.title}</p>
-      {state.kind === 'loading' && <p className="text-body text-text-muted">Checking what holds it…</p>}
-      {state.kind === 'error' && <p className="text-body text-status-error" role="alert">{state.message}</p>}
-      {state.kind === 'started' && <p className="text-body text-status-success" role="status">Started. The next free runner takes it.</p>}
-      {state.kind === 'ready' && (
-        <>
-          <Rows rows={[
-            ['Skips', <Lines key="s" items={state.skips} />],
-            ['Still enforced', <Lines key="e" items={state.stillEnforced} />],
-            ...(state.notForceable.length > 0 ? [['Cannot skip', <Lines key="n" items={state.notForceable} />] as [string, React.ReactNode]] : []),
-          ]} />
-          <div className="flex gap-2">
-            <PrimaryAction pending={busy} disabled={!state.canForce || !state.digest} onClick={onConfirm} data-testid="queue-force-confirm" className="flex-1 md:flex-none">
-              Force start
-            </PrimaryAction>
-            <button type="button" className="btn btn-lg h-11 md:h-10" onClick={onClose}>Cancel</button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-type WaitingBody = {
-  reasonsDigest?: string;
-  canForce?: boolean;
-  force?: { kinds?: string[]; gates?: string[]; railsRemaining?: string[]; checklist?: Array<{ gate: string; sentence: string }> } | null;
-  notForceable?: string[];
-  error?: string;
-};
-
-export function forceStateOf(body: WaitingBody): ForceState {
-  const checklist = body.force?.checklist ?? [];
-  return {
-    kind: 'ready',
-    skips: checklist.length > 0 ? checklist.map(c => `${c.gate}: ${c.sentence}`) : body.force?.gates ?? [],
-    stillEnforced: body.force?.railsRemaining ?? [],
-    canForce: !!body.canForce && !!body.force,
-    kinds: body.force?.kinds ?? [],
-    digest: body.reasonsDigest ?? null,
-    notForceable: body.notForceable ?? [],
-  };
-}
-
-export function ForceStartSheet({ row, onClose, onDone }: { row: HealthQueueWaitingRow | null; onClose: () => void; onDone: () => void }) {
-  const [state, setState] = useState<ForceState>({ kind: 'loading' });
-  const [busy, setBusy] = useState(false);
-
-  async function load(id: string) {
-    setState({ kind: 'loading' });
-    try {
-      const res = await fetch(`/api/tasks/${id}/waiting`);
-      const body = (await res.json().catch(() => ({}))) as WaitingBody;
-      setState(res.ok ? forceStateOf(body) : { kind: 'error', message: body.error ?? CHECK_FAILED });
-    } catch {
-      setState({ kind: 'error', message: CHECK_FAILED });
-    }
-  }
-
-  useEffect(() => { if (row) void load(row.id); }, [row?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function confirmForce() {
-    if (!row || state.kind !== 'ready' || !state.digest) return;
-    setBusy(true);
-    try {
-      const res = await fetch(`/api/tasks/${row.id}/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force: { kinds: state.kinds, reasonsDigest: state.digest } }),
-      });
-      const body = (await res.json().catch(() => ({}))) as WaitingBody;
-      if (res.ok) { setState({ kind: 'started' }); onDone(); return; }
-      // 409: what holds it changed since the sheet opened; show the new reasons.
-      if (res.status === 409) setState(forceStateOf(body));
-      else setState({ kind: 'error', message: body.error ?? START_FAILED });
-    } catch {
-      setState({ kind: 'error', message: START_FAILED });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Sheet open={!!row} onClose={onClose} title="Force start" trapFocus testId="queue-force">
-      {row && <ForceStartBody row={row} state={state} busy={busy} onConfirm={confirmForce} onClose={onClose} />}
-    </Sheet>
-  );
 }
 
 // ── Declared dependency ─────────────────────────────────────────────────────
@@ -290,6 +189,7 @@ export function LaneBody({ lane, confirming, busy, error, onRelease, onConfirm, 
         {lane.holder && (
           <li className="flex min-h-11 items-center gap-3 py-2" data-testid="queue-lane-holder">
             <span className="w-10 shrink-0 text-meta text-text-muted">Holds</span>
+            {lane.holder.meter && <StageMeter state={lane.holder.meter.state} stage="build" data-testid="queue-lane-holder-meter" />}
             <Link href={`/app/tasks/${lane.holder.taskId}`} className="min-w-0 flex-1 truncate text-body font-medium text-text-primary hover:underline">{lane.holder.title}</Link>
             <Chip tone={lane.stuckFor ? 'error' : 'running'} variant="soft">{lane.holder.state}</Chip>
             {lane.holder.age && <span className="shrink-0 font-mono text-meta text-text-muted">{lane.holder.age}</span>}

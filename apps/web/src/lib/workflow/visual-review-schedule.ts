@@ -21,6 +21,7 @@
  *    when that work completes (spec 072de598 I-14).
  */
 import { MAX_TOTAL_SURFACE_AUDIT_ROUNDS } from '@buildd/core/surface-audit';
+import type { ReviewCarry } from './visual-review-carry';
 import type { MissionVisualReviewState, VisualReviewCaptureConfigError, VisualReviewNextActor } from './visual-review-state';
 
 /** Automatic attempts per head SHA before a person is told (the first attempt counts). */
@@ -42,6 +43,8 @@ export interface ScheduleAudit {
   round: number;
   /** `readAuditedSha(context)`: the head the audit is stamped for. */
   headSha: string | null;
+  /** `readReviewCarry(context)`: the path-diff judgement of this audit against a later head. */
+  carry?: ReviewCarry | null;
   updatedAt: number;
   /** A named capture setup error in a failed audit's result (`captureConfigErrorFrom`). */
   captureConfigError?: VisualReviewCaptureConfigError | null;
