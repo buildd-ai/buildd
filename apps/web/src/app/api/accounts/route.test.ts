@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { TOKEN_SCOPES } from '@buildd/core/token-scopes';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
@@ -59,11 +59,6 @@ mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   workspaces: {teamId: "teamId"},
 }));
 
-const mockSetOAuthToken = mock(() => Promise.resolve());
-mock.module('@buildd/core/secrets', () => ({
-  setOAuthToken: mockSetOAuthToken,
-}));
-
 const originalNodeEnv = process.env.NODE_ENV;
 
 import { GET, POST } from './route';
@@ -113,7 +108,6 @@ describe('POST /api/accounts', () => {
     mockAccountsInsert.mockReset();
     mockGetUserTeamIds.mockReset();
     mockGetUserDefaultTeamId.mockReset();
-    mockSetOAuthToken.mockReset();
     mockGetUserTeamRole.mockReset();
     mockGetUserTeamRole.mockResolvedValue('owner');
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
@@ -198,8 +192,6 @@ describe('POST /api/accounts', () => {
     expect(res.status).toBe(200);
     // oauthToken must not be written to the accounts column
     expect(capturedValues?.oauthToken).toBeUndefined();
-    // setOAuthToken must not be called — credentials belong in Agent Backends, not here
-    expect((mockSetOAuthToken as Mock<any>).mock.calls.length).toBe(0);
   });
 });
 

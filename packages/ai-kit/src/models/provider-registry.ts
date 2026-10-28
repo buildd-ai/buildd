@@ -33,9 +33,7 @@ export const CREDENTIAL_SCOPES = ['team', 'workspace', 'personal'] as const;
 export type CredentialScope = (typeof CREDENTIAL_SCOPES)[number];
 
 export const PROVIDER_IDS = [
-  'claude-subscription',
   'anthropic',
-  'codex-subscription',
   'openai',
   'openrouter',
   'litellm',
@@ -51,10 +49,7 @@ export type ModelCredentialPurpose =
   | 'inference_key'
   | 'anthropic_api_key'
   | 'decision_key'
-  | 'oauth_token'
-  | 'claude_credential'
   | 'openai_api_key'
-  | 'codex_credential'
   | 'agent_endpoint';
 
 /** The model-tier registry's providers (buildd's `TierProvider`; core asserts equality). */
@@ -90,13 +85,11 @@ export interface CredentialStorage {
 }
 
 export interface CredentialShape {
-  id: 'api_key' | 'setup_token' | 'oauth_managed' | 'gateway' | 'endpoint';
+  id: 'api_key' | 'gateway' | 'endpoint';
   /** Canonical storage. Writes go here only. */
   storage: CredentialStorage;
   /** Read-only aliases, still read by some surface until they are consolidated. */
   legacy: readonly CredentialStorage[];
-  /** A refresh family (the server rotates it), not a static value. */
-  refreshes: boolean;
 }
 
 export type SurfaceSupport =
@@ -106,32 +99,25 @@ export type SurfaceSupport =
 export interface ProviderDescriptor {
   id: ProviderId;
   label: string;
-  /** ai-kit wire facts; absent for subscription seats and custom endpoints. */
+  /** ai-kit wire facts; absent for custom endpoints. */
   route?: RouteId;
   shapes: readonly CredentialShape[];
   /** Per surface: served (and how), or why not, rendered verbatim by UI, API and MCP. */
   surfaces: Readonly<Record<Surface, SurfaceSupport>>;
   scopes: readonly CredentialScope[];
-  /** Scopes the registry allows but buildd does not deliver yet. */
-  pendingScopes?: readonly CredentialScope[];
   /** Tier-registry providers this one satisfies, and on which surfaces. */
   tierProviders: ReadonlyArray<{ provider: TierProviderId; surfaces: readonly Surface[] }>;
   /** Failover backend whose "configured" check counts this provider's stored credentials. */
   backend?: AgentBackendId;
-  settingsCard: { id: string; order: number; connectFlow: 'paste' | 'oauth' | 'form' };
+  settingsCard: { id: string; order: number; connectFlow: 'paste' | 'form' };
   mcp: { action: 'manage_providers'; provider: ProviderId };
 }
 
 // ── Reasons (one string per impossible pair, shown verbatim) ────────────────
 
 const R = {
-  seatNotServer: 'A subscription seat signs in a runner; buildd’s server never spends a seat.',
-  claudeSeatCloud: 'Cloud containers never receive a seat; only an owner seat set on your own Cloudflare Worker can.',
-  codexHostOnly: 'Codex runs on host runners only.',
   codexWire: 'The Codex CLI speaks the OpenAI wire; this provider does not serve it.',
   claudeWire: 'Claude Code speaks the Anthropic Messages API; OpenAI has no Anthropic-compatible endpoint.',
-  claudeSeatCodex: 'A Claude subscription signs in Claude Code; the Codex CLI cannot use it.',
-  codexSeatClaude: 'A ChatGPT login signs in the Codex CLI; Claude Code cannot use it.',
   openAiCloud: 'Cloud runs reach models through an Anthropic-compatible route only, and OpenAI has none.',
   endpointChat: 'An endpoint is a route for agents, not a chat provider.',
   endpointCodex: 'The endpoint speaks only the Anthropic Messages API (no OpenAI root).',
@@ -149,41 +135,10 @@ function routeScopes(route: RouteId): readonly CredentialScope[] {
 // ── The registry ─────────────────────────────────────────────────────────────
 
 /**
- * Array order is backend credential order: for one backend, a seat is listed
- * before an API key (what `credentialPurposes` has always listed first).
+ * Array order is backend credential order.
  * Display order is `settingsCard.order`.
  */
 export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
-  {
-    id: 'claude-subscription',
-    label: 'Claude subscription',
-    shapes: [
-      {
-        id: 'oauth_managed',
-        storage: { purpose: 'claude_credential', readBy: ['agent-claude'] },
-        legacy: [],
-        refreshes: true,
-      },
-      {
-        id: 'setup_token',
-        storage: { purpose: 'oauth_token', readBy: ['agent-claude'] },
-        legacy: [],
-        refreshes: false,
-      },
-    ],
-    surfaces: {
-      chat: no(R.seatNotServer, ['anthropic']),
-      'agent-claude': via('Claude Code signed in with the seat'),
-      'agent-codex': no(R.claudeSeatCodex, ['codex-subscription', 'openai']),
-      'cloud-egress': no(R.claudeSeatCloud, ['anthropic']),
-    },
-    scopes: ['team', 'workspace', 'personal'],
-    pendingScopes: ['personal'],
-    tierProviders: [{ provider: 'anthropic', surfaces: ['agent-claude'] }],
-    backend: 'claude',
-    settingsCard: { id: 'claude-subscription', order: 2, connectFlow: 'oauth' },
-    mcp: { action: 'manage_providers', provider: 'claude-subscription' },
-  },
   {
     id: 'anthropic',
     label: 'Anthropic',
@@ -196,7 +151,6 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
         // alike, canonical first within a scope (@buildd/core/providers/agent-keys).
         storage: { purpose: 'inference_key', label: 'anthropic', readBy: ['chat', 'agent-claude', 'cloud-egress'] },
         legacy: [{ purpose: 'anthropic_api_key', readBy: ['chat', 'agent-claude', 'cloud-egress'] }],
-        refreshes: false,
       },
     ],
     surfaces: {
@@ -212,30 +166,6 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
     mcp: { action: 'manage_providers', provider: 'anthropic' },
   },
   {
-    id: 'codex-subscription',
-    label: 'Codex (ChatGPT)',
-    shapes: [
-      {
-        id: 'oauth_managed',
-        storage: { purpose: 'codex_credential', readBy: ['agent-codex'] },
-        legacy: [],
-        refreshes: true,
-      },
-    ],
-    surfaces: {
-      chat: no(R.seatNotServer, ['openai']),
-      'agent-claude': no(R.codexSeatClaude, ['claude-subscription', 'anthropic']),
-      'agent-codex': via('Codex CLI signed in with the ChatGPT login, host runners only'),
-      'cloud-egress': no(R.codexHostOnly),
-    },
-    scopes: ['team', 'workspace', 'personal'],
-    pendingScopes: ['personal'],
-    tierProviders: [{ provider: 'openai-codex', surfaces: ['agent-codex'] }],
-    backend: 'codex',
-    settingsCard: { id: 'codex-subscription', order: 4, connectFlow: 'oauth' },
-    mcp: { action: 'manage_providers', provider: 'codex-subscription' },
-  },
-  {
     id: 'openai',
     label: 'OpenAI',
     route: 'openai',
@@ -245,7 +175,6 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
         // Codex runs read the canonical key and the legacy alias, canonical first.
         storage: { purpose: 'inference_key', label: 'openai', readBy: ['chat', 'agent-codex'] },
         legacy: [{ purpose: 'openai_api_key', readBy: ['agent-codex'] }],
-        refreshes: false,
       },
     ],
     surfaces: {
@@ -272,7 +201,6 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
         id: 'api_key',
         storage: { purpose: 'inference_key', label: 'openrouter', readBy: ['chat'] },
         legacy: [{ purpose: 'decision_key', readBy: ['chat'] }],
-        refreshes: false,
       },
     ],
     surfaces: {
@@ -298,7 +226,6 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
         // row of kind `gateway`, which references this credential.
         storage: { purpose: 'inference_key', label: 'litellm', readBy: ['chat', 'agent-claude', 'agent-codex', 'cloud-egress'] },
         legacy: [],
-        refreshes: false,
       },
     ],
     surfaces: {
@@ -325,7 +252,6 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
         // (they have an OpenAI root); an `anthropic-compatible` row it refuses.
         storage: { purpose: 'agent_endpoint', readBy: ['agent-claude', 'cloud-egress'] },
         legacy: [],
-        refreshes: false,
       },
     ],
     surfaces: {

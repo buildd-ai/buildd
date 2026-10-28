@@ -455,7 +455,7 @@ describe('stableCodexHomeIsolatedPath (codex-auth)', () => {
   });
 });
 
-describe('isolatedClaudeConfigDirPath (claude-auth)', () => {
+describe('isolatedClaudeConfigDirPath', () => {
   test('scopes claude config under <isolationRoot>/<workspaceId>/claude/<workerId>/', () => {
     const result = isolatedClaudeConfigDirPath('ws-001', 'worker-abc', '/isolation');
     expect(result).toBe(join('/isolation', 'ws-001', 'claude', 'worker-abc'));

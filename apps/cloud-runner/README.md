@@ -849,7 +849,7 @@ be path-scoped and relies on the token's own scope.
 The container is started with `BUILDD_EXECUTOR=cloud`, so the claim response
 carries no credential material (`CLAIM_CREDENTIAL_FIELDS` in
 `packages/shared/src/executor.ts`: model credentials, Codex credentials, MCP
-secrets and connectors, role env secrets, credential-refresh ids). Consequence
+secrets and connectors, role env secrets). Consequence
 for phase 1: roles that need MCP connectors or role env secrets run without
 them on the cloud runner.
 

@@ -66,13 +66,6 @@ describe('shared self-hosted runner', () => {
     const f = facts({ runners: [runner({ createdByUserId: null }), runner({ id: 'runner-2', createdByUserId: ADMIN })] });
     expect(holdersOf(f)).toEqual([ADMIN]);
   });
-
-  it('a sign-in the team still saved in buildd is the team admins\' to remove, never to paste again', () => {
-    const f = facts({ teamHasSavedSignIn: true });
-    expect(holdersOf(f)).toEqual([ADMIN]);
-    const [s] = view(f, ADMIN).statuses;
-    expect(s.action).toEqual({ kind: 'reconnect', label: 'Remove the saved sign-in', href: SIGN_INS_HREF });
-  });
 });
 
 describe('self-hosted runner with an API key, key rejected', () => {
@@ -113,7 +106,7 @@ describe('hosted runner', () => {
         expect(s.action?.kind).not.toBe('reconnect');
       }
     }
-    expect(resolveHolder({ classification: 'credential_expired' }, hosted[0], { memberIds: new Set([OWNER]), teamHasProviderKey: false, teamHasSavedSignIn: false }))
+    expect(resolveHolder({ classification: 'credential_expired' }, hosted[0], { memberIds: new Set([OWNER]), teamHasProviderKey: false }))
       .toEqual({ holder: { kind: 'team_admins' }, remedy: 'replace_team_key', href: SIGN_INS_HREF });
   });
 

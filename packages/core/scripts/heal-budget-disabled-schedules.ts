@@ -21,8 +21,7 @@
  * not match, because of (1) and (5).
  *
  * Lives under packages/core/scripts/ because `drizzle-orm` resolves there;
- * root-level scripts/ cannot import it (scripts/backfill-seat-ids.ts has the
- * same latent problem).
+ * root-level scripts/ cannot import it.
  *
  * Reports only by default:
  *   bun run packages/core/scripts/heal-budget-disabled-schedules.ts

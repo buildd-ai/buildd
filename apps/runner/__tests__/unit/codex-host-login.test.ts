@@ -10,7 +10,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { decideCodexLogin, localCodexAuthPath, resolveLocalCodexHome } from '../../src/host-seat';
 import {
-  codexAuthIsMachineLink, linkMachineCodexAuth, seedCodexAuthIfMissing, writeCodexApiKeyToHome, writeCodexAuthJson,
+  codexAuthIsMachineLink, linkMachineCodexAuth, writeCodexApiKeyToHome,
 } from '../../src/codex-auth';
 
 const MACHINE_LOGIN = JSON.stringify({ OPENAI_API_KEY: null, tokens: { access_token: 'machine-a', refresh_token: 'machine-r', account_id: 'acct', id_token: 'id' } });
@@ -106,15 +106,6 @@ describe('per-worker isolation keeps working, linked to the real login', () => {
       writeCodexApiKeyToHome(workerHome, 'sk-team-key');
       expect(readFileSync(authPath, 'utf8')).toBe(MACHINE_LOGIN);
       expect(codexAuthIsMachineLink(workerHome)).toBe(false);
-
-      linkMachineCodexAuth(workerHome, authPath);
-      writeCodexAuthJson(workerHome, { credentialType: 'oauth', accessToken: 'srv-a', refreshToken: 'srv-r', accountId: 'a', idToken: 'i', expiresAt: null } as any);
-      expect(readFileSync(authPath, 'utf8')).toBe(MACHINE_LOGIN);
-
-      linkMachineCodexAuth(workerHome, authPath);
-      seedCodexAuthIfMissing('w-link', { credentialType: 'oauth', accessToken: 'srv-a', refreshToken: 'srv-r', accountId: 'a', idToken: 'i', expiresAt: null } as any, workerHome);
-      expect(readFileSync(authPath, 'utf8')).toBe(MACHINE_LOGIN);
-      expect(JSON.parse(readFileSync(join(workerHome, 'auth.json'), 'utf8')).tokens.access_token).toBe('srv-a');
     } finally {
       rmSync(home, { recursive: true, force: true });
       rmSync(workerHome, { recursive: true, force: true });

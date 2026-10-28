@@ -234,8 +234,7 @@ for indexing at upload stays skipped after it is settled.
   (`apps/runner/src/workers.ts`) from `buildWorkerSecretValues`
   (`apps/runner/src/evidence-writer.ts`): `BUILDD_API_KEY`, `worker.mcpSecrets`,
   `worker.roleEnvSecrets`, and the agent-backend credentials the claim delivers
-  (`serverApiKey`, `serverOauthToken`, `claudeAccessToken`, `codexCredential`
-  tokens), plus the team agent model endpoint's `authToken`
+  (`serverApiKey`, `codexCredential` API key), plus the team agent model endpoint's `authToken`
   (`worker.modelEndpoint.authToken`, labelled `modelEndpointAuthToken`; the
   rest of `modelEndpoint` is not secret). It does exact-value matching (including JSON-escaped forms) plus the
   generic credential patterns on free text. Evidence uses the same instance.

@@ -23,10 +23,8 @@
  * 4. **Rank**, most specific scope first:
  *    - agent surfaces: personal > workspace > account > team. A revoked row
  *      never shadows a live one (it is a last resort, as
- *      `pickMostSpecificCredential` has it); a dead refresh family
- *      (`claude_credential` with no expiry, or any revoked refresh family) and a
- *      revoked endpoint are dropped. Within a scope an `agent_endpoint` row
- *      precedes direct keys and seats (the endpoint wins a tie), then provider
+ *      `pickMostSpecificCredential` has it); a revoked endpoint is dropped. Within a scope an `agent_endpoint` row
+ *      precedes direct keys (the endpoint wins a tie), then provider
  *      order, then canonical over legacy storage, then newest.
  *    - chat: personal > account > workspace > team > an account-scoped row for
  *      a caller with no account (legacy), then the provider env var outside
@@ -173,7 +171,6 @@ export interface ProviderCredentialRow {
 // ── Eligible providers ───────────────────────────────────────────────────────
 
 const ENDPOINT_PURPOSE = 'agent_endpoint' as const;
-const REFRESH_FAMILIES: readonly string[] = ['claude_credential', 'codex_credential'];
 
 /** Provider an endpoint blob routes to. */
 const ENDPOINT_KIND_PROVIDER: Readonly<Record<AgentEndpointKind, ProviderId>> = {
@@ -208,7 +205,7 @@ export function eligibleProviders(surface: Surface, preference?: readonly Provid
 
 /** May this provider's credential sit in the personal scope, and is that delivered yet? */
 export function personalScopeDelivered(p: ProviderDescriptor): boolean {
-  return p.scopes.includes('personal') && !(p.pendingScopes ?? []).includes('personal');
+  return p.scopes.includes('personal');
 }
 
 interface StorageMatch {
@@ -428,12 +425,8 @@ export function selectProviderCredential(
       continue;
     }
     const revoked = row.healthStatus === 'revoked';
-    if (agent && (isEndpoint || REFRESH_FAMILIES.includes(row.purpose)) && revoked) {
+    if (agent && isEndpoint && revoked) {
       why.push(`${placed.scope} ${name}: skipped, revoked`);
-      continue;
-    }
-    if (agent && row.purpose === 'claude_credential' && !row.tokenExpiresAt) {
-      why.push(`${placed.scope} ${name}: skipped, dead refresh family (no expiry)`);
       continue;
     }
     candidates.push({ row, match, scope: placed.scope, rank: placed.rank, fine: placed.fine ?? 0, revoked });

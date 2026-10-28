@@ -37,11 +37,11 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `claude_credential`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `codex_credential` (an API key blob), `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
 | `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
-| `tokenExpiresAt` | Nullable. Set for token credentials that expire (`codex_credential`, `oauth_token`). Enables efficient "expiring soon" cron queries. |
+| `tokenExpiresAt` | Nullable. Set for token credentials that expire (MCP connector credentials). Enables efficient "expiring soon" cron queries. |
 | `lastRefreshedAt` | Nullable. Set for token credentials that auto-refresh. Doubles as the optimistic-lock column for refresh (see below). |
 
 ### Scoping precedence (most specific wins)
@@ -98,13 +98,12 @@ through `can()`:
 
 - `manage_team_model_keys` — `inference_key`, `decision_key`, `cloudflare_token`.
 - `manage_team_credentials` — every other purpose `/api/secrets` stores, and the
-  workspace Claude/Codex connect, OAuth/device-login and delete routes.
+  delete routes.
 
 Both default to owner and admin, and to an admin-level API key. `/api/secrets`
 never writes a personal (`userId`) row, so a plain member writes nothing there.
 A `workspaceId` in the body must belong to the target team. Listing stays open
-to members (metadata only, never values). Refreshing an existing Claude/Codex
-credential rotates it in place and stays open to any member of the team.
+to members (metadata only, never values).
 
 ### API-token model keys (chat, inference, decision calls)
 
@@ -303,8 +302,8 @@ its agents. "Its own login" means `CLAUDE_CODE_OAUTH_TOKEN` in the runner's
 environment (on `RUNNER_ENV_PASSTHROUGH`, `apps/runner/src/agent-env.ts`) or a
 `claude login` under the runner user's `$HOME`; a stub `~/.claude.json` does not
 count. Detection and precedence: `applyMachineLoginPolicy` in
-`apps/runner/src/host-seat.ts`, then `applyModelEnv` /
-`shouldUseClaudeCredential` in `apps/runner/src/agent-model-env.ts`.
+`apps/runner/src/host-seat.ts`, then `applyModelEnv` in
+`apps/runner/src/agent-model-env.ts`.
 
 The machine's own login is used when present, with no switch. The
 `personal_only` rule (`runnerLocalAllowed: false`) separately prevents local
@@ -342,34 +341,20 @@ write-back call. Those rows are deleted only in a later step an owner approves.
 Setup per environment (local, service, container): `apps/runner/README.md`,
 "Model login on the runner machine".
 
-## Multi-field credentials (Codex)
+## Multi-field credentials
 
 `secrets.encryptedValue` holds a single string, so a credential with several fields is
-stored as an **encrypted JSON blob**:
-
-```jsonc
-// plaintext, before encrypt() — purpose = 'codex_credential'
-{ "access_token": "...", "refresh_token": "...", "account_id": "..." }
-```
+stored as an **encrypted JSON blob** (a Cloudflare token, an agent model endpoint, a
+Codex API key as `{ "api_key": "..." }`).
 
 - `tokenExpiresAt` and `lastRefreshedAt` are stored as **real columns** (not inside the
-  blob) so the refresh cron can query expiry in SQL and the refresh lock can be atomic.
-- `account_id` is not secret but lives in the blob for atomicity; surface it to the UI by
-  decrypting (status endpoint).
+  blob) so a refresh cron can query expiry in SQL and the refresh lock can be atomic.
+  Only MCP connector credentials use them today (`mcp-connector-refresh.ts`).
 
-**Input normalization.** `normalizeCodexAuthJson()` accepts what the user actually pastes:
-the raw `~/.codex/auth.json` (credential fields nested under a `tokens` object) **or** an
-already-flat object. Expiry is resolved from explicit `expires_in` / `expiry`, else decoded
-from the access-token JWT `exp` claim; if none is derivable the credential is still stored
-with no expiry. Keep this normalization **server-side** — never push format-wrangling (jq,
-JWT base64url decoding, clipboard tools) into the UI, where it rots across CLI versions and
-operating systems.
+### Refresh lock (connector credentials)
 
-### Token refresh + rotation lock
-
-OpenAI rotates the refresh token on every use, so a refresh must always persist the new
-refresh token. Concurrency is controlled with a DB-level optimistic lock on
-`lastRefreshedAt`:
+Rotating tokens must persist the new refresh token on every use. Concurrency is controlled
+with a DB-level optimistic lock on `lastRefreshedAt`:
 
 ```
 UPDATE secrets
@@ -380,8 +365,7 @@ RETURNING *
 ```
 
 Only the caller whose `UPDATE ... RETURNING` returns a row holds the lock and performs the
-network refresh; concurrent callers get `locked`. This is the same pattern the retired
-`codex_credentials` table used — preserved, just keyed off `secrets`.
+network refresh; concurrent callers get `locked`.
 
 > Per CLAUDE.md, do **not** use `db.transaction()` with the neon-http driver. The atomic
 > `UPDATE ... WHERE ... RETURNING` above is the locking mechanism.
@@ -461,10 +445,9 @@ exactly like `anthropic_api_key`. This is **not** the same credential as
   chat-oriented precedence to fit agent-task scoping. A credential that
   authenticates a CLI subprocess is not the same thing as a key that pays for
   one inference call, even though both happen to be OpenAI keys.
-- **Why not just extend `codex_credential`?** `codex_credential` already
-  can still hold a plain API key (a `{ api_key }` blob; a stored ChatGPT login
-  is no longer read or served) — see "Multi-field credentials (Codex)" above.
-  But that is a JSON blob with its own shape, which is overkill for a team that just wants to paste a key
+- **Why not just extend `codex_credential`?** `codex_credential` can still hold
+  a plain API key (a `{ api_key }` blob; a stored ChatGPT login is never read or
+  served). That is a JSON blob with its own shape, which is overkill for a team that just wants to paste a key
   the way they already do for Anthropic. `openai_api_key` is that simpler path
   through the generic `/api/secrets` route, with the same `RAW_STRING_PURPOSES`
   quote-stripping and `REQUIRED_PREFIXES` sanity check as `anthropic_api_key`.
@@ -493,8 +476,8 @@ today.
    `secrets.purpose` `$type<...>` union in `packages/core/db/schema.ts`. (Both are text —
    no DB enum migration needed for the purpose itself.)
 2. If the credential has multiple fields, store an encrypted JSON blob in `encryptedValue`.
-3. If it expires/refreshes, set `tokenExpiresAt` / `lastRefreshedAt` and reuse the refresh
-   lock pattern above.
+3. If it expires/refreshes (a connector token, never a subscription login), set
+   `tokenExpiresAt` / `lastRefreshedAt` and reuse the refresh lock pattern above.
 4. Resolve it in the claim route using the scoping precedence query — do not add a new
    lookup path.
 5. Surface it in the unified Agent Backends settings section with the shared scope selector
