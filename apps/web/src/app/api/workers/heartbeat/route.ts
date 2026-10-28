@@ -13,7 +13,10 @@ import {
   nextUpdateCheckAt,
   parseRunnerSlots,
   reconcileDesiredSlots,
+  reconcileDesiredPause,
+  reportedRunnerPause,
   type DesiredSlots,
+  type DesiredPause,
 } from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
@@ -40,8 +43,18 @@ import { redisRunnerBeatStateStore, runnerBeatId, RUNNER_BEAT_TTL_MS } from '@/l
  * changes, when a new worker is named, or once per
  * LIVENESS_DB_WRITE_INTERVAL_MS. Without Redis every beat writes, as before.
  */
-/** The stored desired-slots columns of a heartbeat row. */
-type DesiredRow = { desiredSlots: number | null; desiredSlotsOrigin: 'dashboard' | 'machine' | null; desiredSlotsSetBy: string | null; desiredSlotsSetAt: Date | null };
+/** A finite epoch-ms number from the body, else null. */
+const epochOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+/** The stored desired-slots and desired-pause columns of a heartbeat row. */
+type DesiredRow = {
+  desiredSlots: number | null; desiredSlotsOrigin: 'dashboard' | 'machine' | null; desiredSlotsSetBy: string | null; desiredSlotsSetAt: Date | null;
+  desiredPaused: boolean | null; desiredPauseOrigin: 'dashboard' | 'machine' | null; desiredPauseSetBy: string | null; desiredPauseSetAt: Date | null;
+};
+const DESIRED_COLUMNS = {
+  desiredSlots: true, desiredSlotsOrigin: true, desiredSlotsSetBy: true, desiredSlotsSetAt: true,
+  desiredPaused: true, desiredPauseOrigin: true, desiredPauseSetBy: true, desiredPauseSetAt: true,
+} as const;
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -116,6 +129,8 @@ export async function POST(req: NextRequest) {
       maxConcurrent: rawMaxConcurrent = undefined,
       /** Epoch ms of the runner's own last change of its slots (config.json `slotsSetAt`); the later change wins. */
       slotsChangedAt: rawSlotsChangedAt = undefined,
+      /** Epoch ms of the runner's own last hold or resume (config.json `holdChangedAt`); Pause follows the slots' rule. */
+      holdChangedAt: rawHoldChangedAt = undefined,
     } = body;
     const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
     const codexAuthSource = isRunnerCodexAuthSource(rawCodexAuthSource) ? rawCodexAuthSource : null;
@@ -168,7 +183,7 @@ export async function POST(req: NextRequest) {
             eq(workerHeartbeats.accountId, account.id),
             eq(workerHeartbeats.localUiUrl, localUiUrl),
           )),
-          columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true, desiredSlots: true, desiredSlotsOrigin: true, desiredSlotsSetBy: true, desiredSlotsSetAt: true },
+          columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true, ...DESIRED_COLUMNS },
         });
 
     // Generate token on first registration, reuse on subsequent heartbeats
@@ -324,6 +339,7 @@ export async function POST(req: NextRequest) {
     // dashboard value newer than the runner's own is handed back in the reply.
     // Never for a `--once` run, which holds one task and exits.
     let desiredSlots: { slots: number; setBy: string | null; setAt: number } | null = null;
+    let desiredPause: { paused: boolean; setBy: string | null; setAt: number } | null = null;
     // A beat that wrote nothing cannot have a new dashboard value waiting: the
     // dashboard forgets the runner's cached state when it sets one (forgetRunnerBeatState).
     if (writeDb && !fleet.ephemeral && !account.taskScope) {
@@ -333,7 +349,7 @@ export async function POST(req: NextRequest) {
             eq(workerHeartbeats.accountId, account.id),
             eq(workerHeartbeats.localUiUrl, localUiUrl),
           )),
-          columns: { desiredSlots: true, desiredSlotsOrigin: true, desiredSlotsSetBy: true, desiredSlotsSetAt: true },
+          columns: DESIRED_COLUMNS,
         }) : (existing as DesiredRow | null | undefined);
         const current: DesiredSlots | null = row?.desiredSlots != null && row.desiredSlotsSetAt
           ? { slots: row.desiredSlots, origin: row.desiredSlotsOrigin ?? 'machine', setBy: row.desiredSlotsSetBy ?? null, setAt: row.desiredSlotsSetAt.getTime() }
@@ -341,23 +357,46 @@ export async function POST(req: NextRequest) {
         const verdict = reconcileDesiredSlots({
           desired: current,
           reported: reportedSlots,
-          reportedChangedAt: typeof rawSlotsChangedAt === 'number' && Number.isFinite(rawSlotsChangedAt) ? rawSlotsChangedAt : null,
+          reportedChangedAt: epochOrNull(rawSlotsChangedAt),
           now: now.getTime(),
         });
+        // Pause (spec 97b1bd0b R-18) under the same rule: the runner's hold as it reports it.
+        const currentPause: DesiredPause | null = row?.desiredPaused != null && row.desiredPauseSetAt
+          ? { paused: row.desiredPaused, origin: row.desiredPauseOrigin ?? 'machine', setBy: row.desiredPauseSetBy ?? null, setAt: row.desiredPauseSetAt.getTime() }
+          : null;
+        const pauseVerdict = reconcileDesiredPause({
+          desired: currentPause,
+          reported: reportedRunnerPause(environment, now.getTime()),
+          reportedChangedAt: epochOrNull(rawHoldChangedAt),
+          now: now.getTime(),
+        });
+        const set: Partial<DesiredRow> = {};
         if (verdict.write && verdict.desired) {
+          Object.assign(set, {
+            desiredSlots: verdict.desired.slots,
+            desiredSlotsOrigin: verdict.desired.origin,
+            desiredSlotsSetBy: verdict.desired.setBy,
+            desiredSlotsSetAt: new Date(verdict.desired.setAt),
+          });
+        }
+        if (pauseVerdict.write && pauseVerdict.desired) {
+          Object.assign(set, {
+            desiredPaused: pauseVerdict.desired.paused,
+            desiredPauseOrigin: pauseVerdict.desired.origin,
+            desiredPauseSetBy: pauseVerdict.desired.setBy,
+            desiredPauseSetAt: new Date(pauseVerdict.desired.setAt),
+          });
+        }
+        if (Object.keys(set).length > 0) {
           await db.update(workerHeartbeats)
-            .set({
-              desiredSlots: verdict.desired.slots,
-              desiredSlotsOrigin: verdict.desired.origin,
-              desiredSlotsSetBy: verdict.desired.setBy,
-              desiredSlotsSetAt: new Date(verdict.desired.setAt),
-            })
+            .set(set)
             .where(and(
               eq(workerHeartbeats.accountId, account.id),
               eq(workerHeartbeats.localUiUrl, localUiUrl),
             ));
         }
         if (verdict.deliver) desiredSlots = { slots: verdict.deliver.slots, setBy: verdict.deliver.setBy, setAt: verdict.deliver.setAt };
+        if (pauseVerdict.deliver) desiredPause = { paused: pauseVerdict.deliver.paused, setBy: pauseVerdict.deliver.setBy, setAt: pauseVerdict.deliver.setAt };
       } catch (err) {
         // Best effort: the next beat reconciles again.
         console.error('[heartbeat] slots reconcile failed:', err);
@@ -433,7 +472,7 @@ export async function POST(req: NextRequest) {
       // Best effort: a missed nudge is picked up by the runner's own interval.
     }
 
-    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, workersUnvouched, budgetProbeRequestedAt, desiredSlots });
+    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, workersUnvouched, budgetProbeRequestedAt, desiredSlots, desiredPause });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to process heartbeat' }, { status: 500 });

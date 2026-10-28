@@ -27,8 +27,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig, WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
-import { classifyManifestOverlap, findBlockingPr, isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
-import { overlapTouchesSerializedSurface } from '@/lib/change-intent';
+import { findBlockingPr, isDownstreamOf } from '@buildd/core/path-overlap';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notifyTeamOf } from '@/lib/notify';
@@ -1323,76 +1322,9 @@ export async function dispatchConflictRetry(
     return { dispatched: false, exhausted: true };
   }
 
-  // Path-overlap serialization — same rule as POST /api/tasks (partitionOverlapEdges):
-  // only a same-file, migration or serialized-surface overlap becomes a stored
-  // dependsOn edge (which blocks until the upstream is completed AND merged);
-  // a prefix-only overlap is soft evidence on pathDeclaration.softOverlaps,
-  // decided at claim time. A repo-wide sentinel ('**') on either side produces
-  // nothing. Keeping this identical to the tasks route is deliberate — the two
-  // paths must not drift.
-  const resolvedDependsOn: string[] = [];
-  let softOverlaps: SoftOverlapEdge[] = [];
-  if (
-    retryTask.pathManifest &&
-    retryTask.pathManifest.length > 0 &&
-    !isAdvisoryManifest(retryTask.pathManifest)
-  ) {
-    // Not filtered to tasks with a pathManifest (unlike the tasks-route query this
-    // otherwise mirrors): a candidate can be downstream of taskId through an
-    // intermediate task that declares no manifest at all, and isDownstreamOf needs
-    // every live dependsOn edge in the workspace to walk that chain.
-    const inFlightTasks = await db.query.tasks.findMany({
-      where: sqlWhere(and(
-        eq(tasks.workspaceId, workspaceId),
-        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-      )),
-      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true, status: true },
-    });
-    const dependsOnById = new Map<string, readonly string[] | null | undefined>(
-      inFlightTasks.map((t) => [t.id, t.dependsOn as string[] | null]),
-    );
-    const byId = new Map(inFlightTasks.map(t => [t.id, t]));
-    const gitConfig = workspace.gitConfig ?? null;
-    const split = partitionOverlapEdges(
-      retryTask.pathManifest,
-      inFlightTasks.map(t => ({ id: t.id, pathManifest: t.pathManifest as string[] | null })),
-      {
-        skip: (id) => {
-          const t = byId.get(id)!;
-          // This attempt must run before its own PR can merge. Depending on that
-          // PR's task (or another attempt on it) makes the repair unclaimable.
-          if (t.id === taskId || t.subjectPrNumber === prNumber || t.conflictRetryPrNumber === prNumber) return true;
-          // t is already waiting (directly or transitively) on the task this repair
-          // exists to unblock — an edge (hard or soft) repair→t would make the
-          // repair wait on something that is itself waiting on the repair's own
-          // subject, a structural deadlock rather than real serialization.
-          if (isDownstreamOf(t.id, taskId, dependsOnById)) return true;
-          // A collision repair edits only its own PR's branch, so a migration/schema-only
-          // overlap with work that has not started is not real serialization — every
-          // schema-touching task overlaps `drizzle/**`, and waiting on them all meant a
-          // mechanical renumber never ran. Admitted (running) work keeps its edge: it can
-          // land first and move the free index. Also kept: the PR it collides with, and
-          // workspace-declared serialized surfaces.
-          const collidingPr = migrationCollision?.otherPrNumber;
-          if (migrationCollision && t.status === 'pending' && (collidingPr == null || (t.subjectPrNumber !== collidingPr && t.conflictRetryPrNumber !== collidingPr))) {
-            const overlap = classifyManifestOverlap(retryTask.pathManifest!, t.pathManifest as string[] | null);
-            if (overlap.kind === 'migration' && !overlapTouchesSerializedSurface(overlap.paths, gitConfig, overlap.kind)) return true;
-          }
-          // Pending work with no stored edge can still wait on this PR through
-          // the claim route's open-PR backstop. Reuse that exact predicate before
-          // storing either a hard edge or soft evidence in the reverse direction.
-          // Already-admitted work can finish without this PR landing, so keep its
-          // genuine migration / serialized-surface ordering.
-          return t.status === 'pending' && !!findBlockingPr(t.pathManifest ?? [], [
-            { pathManifest: task.pathManifest as string[] | null, prNumber },
-          ]);
-        },
-        isSerialized: (paths, kind) => overlapTouchesSerializedSurface(paths, gitConfig, kind),
-      },
-    );
-    resolvedDependsOn.push(...split.hard);
-    softOverlaps = split.soft;
-  }
+  // No dependency is guessed from overlapping manifests (spec: Overlap
+  // scheduling, R-1), same as POST /api/tasks: a repair attempt is filed with
+  // no dependsOn. Lanes and the edit-time lease serialize the actual work.
 
   // An attempt inherits the backend, role, routing kind and phase (mission-legibility R-7)
   // of the task it re-attempts.
@@ -1420,17 +1352,12 @@ export async function dispatchConflictRetry(
       subjectBranch: worker.branch,
       subjectDedupeScope: 'active',
       pathManifest: retryTask.pathManifest,
-      ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
-      // Provenance for the inferred edges (all of this attempt's are inferred)
-      // and the soft evidence the claim route decides on.
       ...(retryTask.pathManifest && retryTask.pathManifest.length > 0 ? {
         pathDeclaration: {
           declared: retryTask.pathManifest,
           source: 'creation' as const,
           snapshotAt: new Date().toISOString(),
-          ...(resolvedDependsOn.length > 0 ? { inferredDependsOn: [...resolvedDependsOn] } : {}),
           overlapPolicy: 'v2' as const,
-          ...(softOverlaps.length > 0 ? { softOverlaps } : {}),
         },
       } : {}),
     })

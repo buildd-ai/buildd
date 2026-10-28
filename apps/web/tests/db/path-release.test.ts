@@ -13,9 +13,11 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import {
+  acquirePathClaims,
   findStaleClaimHolderTaskIds,
   narrowPathClaims,
   registerClaimDeferralWaiters,
+  registerWaiter,
   releaseLeaseRows,
   releaseClaims,
 } from '@buildd/core/path-claim';
@@ -134,6 +136,27 @@ describe('release wakes pending waiters in the same statement', () => {
     const out = await releaseLeaseRows({ workspaceId, taskId: holder, leaseIds: [row.id], keepStatuses: [] });
     expect(out.kind).toBe('released');
     expect(await releaseWakes(waiting)).toHaveLength(1);
+  });
+});
+
+// AC-8 (spec: Overlap scheduling): with no claim-time hold on a non-lane file,
+// the edit-time lock is what keeps two agents off it. Both tasks are running;
+// the second's declaration is refused with a waiter, and the first ending wakes it.
+describe('AC-8: the edit-time lock on a non-lane file still refuses and wakes', () => {
+  test('the second declaration conflicts and waits; the first worker ending wakes it', async () => {
+    const path = 'apps/web/src/lib/ac8-widget.ts';
+    const first = await seedTask(workspaceId, { status: 'in_progress' });
+    const second = await seedTask(workspaceId, { status: 'in_progress' });
+
+    expect((await acquirePathClaims({ workspaceId, taskId: first, paths: [path], declare: true })).kind).toBe('acquired');
+    const refused = await acquirePathClaims({ workspaceId, taskId: second, paths: [path], declare: true });
+    expect(refused).toMatchObject({ kind: 'conflict', conflict: { blockingTaskId: first, blockingPath: path } });
+    expect(await registerWaiter(first, second, path, workspaceId)).toEqual({ registered: true });
+
+    const released = await releaseClaims(first);
+    expect(released?.notifiedWaiters).toEqual([second]);
+    expect(released?.waiters).toEqual([{ waitingTaskId: second, blockedPath: path }]);
+    expect((await acquirePathClaims({ workspaceId, taskId: second, paths: [path], declare: true })).kind).toBe('acquired');
   });
 });
 

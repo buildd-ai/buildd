@@ -15,6 +15,7 @@
  * (lib/mission-summary-store.ts). It is scoped by mission id only; whoever
  * reads the stored summary scopes that read to the caller.
  */
+import type { QueueWait } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers } from '@buildd/core/db/schema';
 import { sqlExtras, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -87,7 +88,7 @@ export async function loadMissionSummaryInputs(
     .filter(m => summaryReadsVisualReview({ ...m, tasks: taskRows.filter(t => t.missionId === m.id) }))
     .map(m => m.id);
   const pendingIds = taskRows.filter(t => t.status === 'pending').map(t => t.id);
-  const [workerRows, deliveries, deliveryViews, foreignDeps, releasedEdges, liveRows, visualReviews, verdicts, claimHolds] = await Promise.all([
+  const [workerRows, deliveries, deliveryViews, foreignDeps, releasedEdges, liveRows, visualReviews, verdicts, claimHolds, queueWaits] = await Promise.all([
     taskIds.length > 0
       ? db.select({
           id: workers.id, taskId: workers.taskId, status: workers.status,
@@ -116,6 +117,10 @@ export async function loadMissionSummaryInputs(
     loadVerdicts(missionRows),
     // Navigation R-14: each pending task's newest claim refusal, with the blocker it named.
     loadClaimHolds(pendingIds).catch(() => new Map<string, ClaimHoldFacts>()),
+    // ...and the one wait the claim route's own query and gates give now, which decides (spec: Overlap scheduling, AC-10).
+    pendingIds.length > 0
+      ? import('./queue-wait-load').then(m => m.loadQueueWaitMap(pendingIds)).catch(() => new Map<string, QueueWait>())
+      : new Map<string, QueueWait>(),
   ]);
 
   // The rows the pending tasks wait behind (an overlap deferral's blocker, a
@@ -126,6 +131,9 @@ export async function loadMissionSummaryInputs(
     const d = claimHolds.get(t.id)?.detail;
     const blocker = [d?.blockingTaskId, d?.holderTaskId].find((v): v is string => typeof v === 'string' && v.length > 0);
     if (blocker && blocker !== t.id) holderIds.add(blocker);
+    const w = queueWaits.get(t.id);
+    const waitBlocker = w?.kind === 'lane' ? w.holderTaskId ?? w.aheadTaskId : w?.kind === 'declared' ? w.blockerId : null;
+    if (waitBlocker && waitBlocker !== t.id) holderIds.add(waitBlocker);
     for (const id of Array.isArray(t.dependsOn) ? t.dependsOn : []) holderIds.add(id);
   }
   const known = new Map<string, HolderSourceRow>();
@@ -157,6 +165,7 @@ export async function loadMissionSummaryInputs(
       releasedEdges: new Map((releasedEdges as ReadonlyMap<string, unknown[]>).has(m.id) ? [[m.id, (releasedEdges as ReadonlyMap<string, unknown[]>).get(m.id)!]] : []),
       liveWorkers: live.get(m.id) ?? 0,
       claimHolds: pick(claimHolds),
+      queueWaits: pick(queueWaits),
       holders,
       ...(visualReviews.has(m.id) ? { visualReview: visualReviews.get(m.id) ?? null } : {}),
       escalationGateVerdict: verdicts.get(m.id) ?? null,

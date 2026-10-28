@@ -22,6 +22,18 @@ import {
   planPreMerge,
 } from '../../src/merge-drivers';
 
+/**
+ * Best-effort temp-dir cleanup. On Windows a git process that has only just
+ * exited can keep a handle open past every retry (EBUSY); a leftover temp dir
+ * on a CI runner is harmless, a failed test over it is not.
+ */
+function cleanup(path: string | undefined): void {
+  if (!path) return;
+  try {
+    rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch {}
+}
+
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 }
@@ -121,7 +133,7 @@ describe('planMergeDrivers', () => {
 
 describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
   let dir: string;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  afterEach(() => { cleanup(dir); });
 
   test('derived-only conflict: merged, regenerated and committed with no agent work left', async () => {
     dir = conflictedRepo();
@@ -219,7 +231,7 @@ describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
 
 describe('mergiraf (real git)', () => {
   let dir: string;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  afterEach(() => { cleanup(dir); });
 
   function mergirafPath(): string | null {
     try {
@@ -273,8 +285,8 @@ describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (rea
   let dir: string;
   let bin: string;
   afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    if (bin) rmSync(bin, { recursive: true, force: true });
+    cleanup(dir);
+    cleanup(bin);
   });
 
   /** A stand-in for mergiraf: optionally slow, takes theirs, reports a solve on stderr like the real one. */
@@ -371,8 +383,8 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
   let dir: string;
   let remote: string;
   afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    if (remote) rmSync(remote, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    cleanup(dir);
+    cleanup(remote);
   });
 
   /** A derived-only conflict merged by the runner, with `feature` tracking a bare origin. */
@@ -430,7 +442,7 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
       expect(finish.error).toBeTruthy();
       expect(git(remote, 'rev-parse', 'refs/heads/feature')).toBe(theirs);
     } finally {
-      rmSync(other, { recursive: true, force: true });
+      cleanup(other);
     }
   });
 

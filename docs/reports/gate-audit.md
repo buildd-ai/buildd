@@ -362,6 +362,12 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |------|------|---------|---------|
 | `apps/web/src/lib/failure-incident-recovery.ts:assessIncident` (via `failure-incident-recovery-events.ts`) | `incident_recovery` | accepted / rejected | One row per repair action key, written after the repair's existing writer ran (`accepted`) or threw (`rejected`). Not a refusal: the audit trail the operator recovery queue counts attempts from. `detail` is fixed-shape: `actionKey`, `incidentId`, `causeKey`, `capability` (a RepairKind), `generation`, `attempt`, `subject`, `actor`, `verify { predicate, passed, evidenceRevision }`, `costUsd`. `verify.passed` is null until the next assessment re-checks the repair, then set in place once. Pruned after 180 days, the only gate that is. |
 
+### Serial lanes (Living Spec "Overlap scheduling: serial lanes and file locks", I-7)
+
+| Site | Gate | Outcome | Meaning |
+|------|------|---------|---------|
+| `apps/web/src/app/api/workspaces/[id]/lanes/release/route.ts:POST` | `serial_lane` | bypassed | A person released a stuck lane's holder: its row ends `released` with who did it, its open PR stops holding the lane, and position 1 may claim. `detail`: `lane`, `holderTaskId`, `userId`, `reason`. Claim-time lane waits are `claim_loop_deferral` reason `path_overlap` with `detail.lane` and `detail.position`. |
+
 ### Early release of dependents (`docs/design/early-release.md`)
 
 | Site | Gate | Outcome | Meaning |

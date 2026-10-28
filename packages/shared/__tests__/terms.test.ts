@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  BANNED_WORDS, MISSION_STAGE_STEPS, NOUNS, TERMS, bannedWordsIn, displayTitle, findTerm, missionGateTerm, slotsInUse, termFor,
+  BANNED_WORDS, MISSION_STAGE_STEPS, NOUNS, TERMS, bannedWordsIn, displayTitle, findTerm, missionGateTerm, runningOfCap, termFor,
   titleWithAttempt,
   type InternalKind, type TermKey,
 } from '../src/terms';
@@ -58,8 +58,8 @@ describe('terms catalog: held splits by cause (§2.1)', () => {
     ['task_held', 'Paused'],
     ['start_deferred', 'Scheduled'],
     ['budget_paused', 'Usage limit'],
-    ['lease_overlap', 'Waiting for files'],
-    ['pr_overlap_live', 'Waiting for files'],
+    ['lane', 'Waiting in line'],
+    ['lease_stale', 'Waiting in line'],
     ['unknown', 'Not started: reason unknown'],
   ])('waiting kind %s reads %s', (value, word) => {
     expect(termFor({ kind: 'waiting', value }).word).toBe(word);
@@ -145,22 +145,28 @@ describe('terms catalog: building, verifying, working (§2.4)', () => {
     expect(TERMS['pr.checking'].word).toBe('Checking');
   });
 
-  it('capacity reads "N of M slots in use"', () => {
-    expect(slotsInUse(2, 3)).toBe('2 of 3 slots in use');
-    expect(slotsInUse(1, 1)).toBe('1 of 1 slot in use');
-    expect(slotsInUse(0, 4, 'short')).toBe('0/4 in use');
+  it('capacity reads as a stat: "Running 3/9"', () => {
+    expect(runningOfCap(3, 9)).toBe('Running 3/9');
+    expect(runningOfCap(0, 4, 'short')).toBe('0/4');
+  });
+
+  it('the Queue words are in the catalog', () => {
+    for (const [key, word] of [
+      ['queue.blocked', 'Blocked'], ['queue.lane', 'Lane'], ['queue.limit', 'Limit'], ['queue.dependency', 'Dependency'],
+      ['queue.needs_review', 'Needs review'], ['queue.retrying', 'Retrying'], ['queue.retried', 'Retried'],
+    ] as const) expect(TERMS[key].word).toBe(word);
   });
 });
 
 describe('BANNED_WORDS (slice 2)', () => {
   it.each([
     'Auditing', 'In audit', 'Repairing', 'Pending', 'Never started', 'Assigned', 'Starting', 'Running now',
-    'waiting for a worker', '3 of 6 busy', 'every slot is busy',
+    'waiting for a worker', '3 of 6 busy', 'every slot is busy', 'Parked', 'Declared',
   ])('bans "%s"', (s) => {
     expect(bannedWordsIn(s).length).toBeGreaterThan(0);
   });
 
-  it.each(['Queued', 'Running', 'Waiting on a task', 'Checking', 'Fixing', '2 of 3 slots in use', 'Waiting for an agent', 'a fix is queued behind CI'])(
+  it.each(['Queued', 'Running', 'Waiting on a task', 'Checking', 'Fixing', 'Running 3/9', 'Needs review', 'Dependency', 'Ready to merge', 'Waiting for an agent', 'a fix is queued behind CI'])(
     'allows "%s"', (s) => { expect(bannedWordsIn(s)).toEqual([]); });
 });
 
@@ -255,7 +261,7 @@ describe('terms catalog: runner, slot, agent (§2.7)', () => {
 
   it.each([
     'Clef runs on Workers AI', 'Create one with Workers Scripts edit access', 'Uploading Worker…',
-    'GET /api/workers', 'workers.prUrl + workers.mergedAt', '2 of 3 slots in use',
+    'GET /api/workers', 'workers.prUrl + workers.mergedAt', 'Running 3/9',
   ])('allows "%s" (a Cloudflare product name, a path or a column)', (s) => {
     expect(bannedWordsIn(s)).toEqual([]);
   });

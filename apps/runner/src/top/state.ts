@@ -344,7 +344,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
         ...state,
         runner: {
           ...state.runner,
-          maxConcurrent: typeof e.maxConcurrent === 'number' && e.maxConcurrent > 0 ? e.maxConcurrent : state.runner.maxConcurrent,
+          maxConcurrent: typeof e.maxConcurrent === 'number' && e.maxConcurrent >= 0 ? e.maxConcurrent : state.runner.maxConcurrent,
           // An older runner sends none: keep what we had.
           slotsNote: typeof e.slotsNote === 'string' ? e.slotsNote : e.slotsNote === null ? null : state.runner.slotsNote,
           builddServer: e.builddServer ?? state.runner.builddServer,
@@ -415,7 +415,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       return { ...state, lookingForWork: !!(event as any).looking };
     case 'slots': {
       const n = (event as any).maxConcurrent;
-      return typeof n === 'number' && n > 0 ? { ...state, runner: { ...state.runner, maxConcurrent: n } } : state;
+      return typeof n === 'number' && n >= 0 ? { ...state, runner: { ...state.runner, maxConcurrent: n } } : state;
     }
     case 'connection': {
       const online = !!(event as any).online;

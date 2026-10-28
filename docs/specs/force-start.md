@@ -7,7 +7,7 @@ summary: A dashboard Start MUST name the real waiting reasons, and Force start M
 domain: tasks
 surfaces: [apps/web/src/app/api/tasks/[id]/start/route.ts, packages/core/waiting-reason.ts, apps/web/src/lib/force-start.ts, apps/web/src/lib/coordination-probe.ts]
 related: [claim-ordering, mission-task-lifecycle, orchestration-decisions-shadow]
-keywords: [run now, force start, forceStart, forceStartHistory, reasons_changed, reasonsDigest, coordination_hold, WaitingReason, inferred dependency, migration slot, human_force_start]
+keywords: [run now, force start, forceStart, forceStartHistory, reasons_changed, reasonsDigest, coordination_hold, WaitingReason, serial lane, migration slot, human_force_start]
 verified_by: [apps/web/src/app/api/tasks/[id]/start/start-anyway.test.ts, apps/web/tests/db/start-anyway-lifecycle.test.ts, packages/core/__tests__/start-anyway-assessment.test.ts, apps/web/src/lib/path-claim-check.test.ts, apps/web/src/lib/force-start-assess.test.ts, apps/web/src/app/api/workers/claim/start-anyway-gate.test.ts, packages/core/__tests__/start-anyway.test.ts, packages/core/__tests__/start-anyway-waiting-reason.test.ts, packages/core/__tests__/start-anyway-queue.test.ts, apps/web/src/lib/start-anyway.test.ts, apps/web/src/lib/task-wait-exit.test.ts, apps/web/tests/db/start-anyway-gate.test.ts, apps/runner/__tests__/unit/start-anyway-prompt.test.ts, apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/lib/force-start.test.ts, apps/web/src/lib/coordination-probe.test.ts, packages/core/__tests__/waiting-reason.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.coordination.dom.test.tsx, packages/core/__tests__/start-outcome-grade.test.ts]
 assertions:
   - id: start-route
@@ -59,41 +59,34 @@ producer, `lib/coordination-probe.ts`, read by `/start` and `GET /api/tasks/[id]
 
 | Source | Kind(s) | Forceable (human) | How it is lifted |
 |---|---|---|---|
-| open PR / live path lease overlapping the manifest | `pr_overlap_live`, `pr_overlap_ended`, `lease_overlap` | yes | claim-loop key `path_overlap` |
-| creation-time overlap edge (`pathDeclaration.inferredDependsOn`, incl. migration overlap) | `dep_inferred` | yes | dependency-gate arm: `context.forceStart.liftDependsOn` |
-| soft overlap (`pathDeclaration.softOverlaps`): migration / hard surface | `serialized_surface` | yes | claim-loop key `soft_overlap` |
-| soft overlap: same file / prefix, last verdict HOLD | `soft_overlap` | yes | claim-loop key `soft_overlap` |
-| mission cap | `mission_concurrent` | yes | claim-loop key |
-| planner order | `ordered_behind` (soft) | yes (human only) | claim planner off for the task |
+| mission concurrency cap | `mission_concurrent` | yes | claim-loop key |
 | local-session mission | `mission_local` | yes | `bypassHeldGate` (the claim's local prefilter) |
+| serial lane (schema, migrations or a configured hard surface) | lane wait | **never** | the holder releases the lane and the next task takes its turn |
 | declared `dependsOn` | `dep_declared` | yes: **Start anyway** (below) | `context.forceStart.assessDependsOn`, admitted by the dependency gate's `assess_start` arm; the edge is kept |
 | capability, budget pause, seats, provider, task hold, unknown | various | **never** | the blocker's own fix action |
 | session reservation (`context.reservedBy`) | none: a claim exclusion `task_reserved`, not a `WaitingKind` | **never** | the reserving session claims or releases it, or it lapses |
 
-Dependency edges and soft overlaps are fed from what `explain` already reports
-(`loadTaskCoordinationHolds` → `buildCoordinationHolds`); whether an edge still holds is the
-claim's own per-edge SQL predicate (`dependencySatisfied`).
+Declared dependencies use the claim's own per-edge check (`dependencySatisfied`).
+Lane waits follow the stored lane order in approved Living Spec 75217f55,
+**Overlap scheduling: serial lanes and file locks**. A shared non-lane file,
+an open PR on non-lane paths, or undeclared scope creates no claim-time wait.
 
 **Invariants**:
 
-- `/start` never returns `started: true` while a hard `WaitingReason` holds the task, unless
-  that request is a confirmed Force start over it (or the legacy `forceOverride` lifts a
-  policy gate it names).
-- Force is offered only when every hard reason is forceable. One non-forceable reason
-  (capability, seat, budget pause, provider, task hold, unknown) means
-  no Force start anywhere; the surface shows that blocker's fix instead.
+- `/start` never returns `started: true` while a hard `WaitingReason` holds the task,
+  unless a confirmed Force start lifts that forceable reason.
+- Force start lifts only mission concurrency and the local-session mission restriction;
+  a declared dependency is started past as Start anyway.
+- Force is offered only when every hard reason is forceable. A lane wait, capability,
+  seat, budget, provider, task hold or unknown reason means no Force start; the
+  surface shows how to clear that reason instead.
 - A declared `dependsOn` edge is never deleted or marked satisfied. Start anyway admits one
-  claim for assessment; the inferred-edge arm (`liftDependsOn`) still requires the id to be in
-  `pathDeclaration.inferredDependsOn`.
-- Forcing an inferred or migration overlap changes claim order only. The edit-time path lease
-  (including the migration anchor) still applies, so migration numbering stays serialized.
-- The admin MCP `claim_task {force: true}` keeps its own gate set.
-- Declaring no files is not a waiting reason, so there is nothing to force for it
-  (`claim-overlap-scheduling` I-46). The retired `scope_undeclared_mutex` kind stays in
-  the model only so older recorded reasons still render.
-- Declared dependencies and coordination-only holds are counted apart in every headline:
-  incidental overlap ordering reads "Waiting on migration slot · N tasks also editing {area}",
-  never "waiting on N dependencies".
+  claim for assessment.
+- Lane waits are never lifted, including by an admin force claim. Edit-time file locks
+  still apply.
+- Declaring no files is not a waiting reason.
+- A lane wait names the lane, its holder and the task's position. It is shown
+  separately from declared dependencies.
 
 ## Start anyway (declared dependencies)
 
@@ -149,7 +142,7 @@ kind `dep_declared`:
 `POST /api/tasks/[id]/start` with:
 
 ```json
-{ "force": { "kinds": ["dep_inferred", "mission_local"], "reasonsDigest": "…", "note": "optional" } }
+{ "force": { "kinds": ["mission_concurrent", "mission_local"], "reasonsDigest": "…", "note": "optional" } }
 ```
 
 Server steps:
@@ -160,7 +153,7 @@ Server steps:
    not see.
 3. A kind not listed, or not forceable → **422** with `rejectedKinds`.
 4. Write `context.forceStart = { id, at, expiresAt (+15 min), userId, accountId, kinds,
-   loopKeys, prefilterLifts, liftDependsOn?, reasonsDigest, blockers }`; a forced local
+   loopKeys, prefilterLifts, reasonsDigest, blockers }`; a forced local
    mission also writes `bypassHeldGate`.
 5. Record the request (below), then wake the task. This route creates no worker and makes no
    claim.
@@ -178,12 +171,9 @@ mission strip drawer and the Activity card's blocked panel render the same thing
 
 > **Force start “{title}”?**
 > **Skips:** {gate}: {blocker sentence} — a pre-checked checklist when more than one gate.
-> **Still enforced:** files another agent is editing stay locked ({n} files in {areas}) ·
-> declared dependencies · budgets, seats and plan limits · runner capability · task holds.
-> **Risk:** {areas} overlap · {basis}.
-> *(migration overlap)* Migration numbering stays serialized; this agent can't take the next
-> index until {holder} releases it.
-> This start and how it lands are recorded and used to tune automatic holds.
+> **Still enforced:** serial lanes and their stored order, file locks, declared
+> dependencies, budgets, seats and plan limits, runner capability and task holds.
+> This start and how it lands are recorded.
 > [Force start] [Keep waiting]
 
 ## Recording
@@ -214,18 +204,18 @@ is `scored: false`: observational evidence, never a model error or success.
 
 **Acceptance criteria**:
 
-- AC-1: GIVEN an idle runner and a pending task whose manifest overlaps an open PR WHEN
-  `/start` is called THEN it returns 422 `coordination_hold` naming the PR, and nothing is
+- AC-1: GIVEN a pending task waiting for a serial lane WHEN `/start` is called
+  THEN it returns 422 `coordination_hold` naming the lane wait, and nothing is
   stamped or woken.
-- AC-2: GIVEN that refusal WHEN `/start` is called with `force {kinds, reasonsDigest}` THEN it
-  returns 200 with `forced`, writes `context.forceStart`, fires one `force_start` gate event,
-  and the next runner claim takes the task past `path_overlap` and consumes the intent.
+- AC-2: GIVEN a task held only by a mission concurrency cap WHEN `/start` is called
+  with confirmed `force {kinds, reasonsDigest}` THEN it returns 200 with `forced`,
+  writes `context.forceStart`, records the request, and the next runner claim
+  lifts that cap and consumes the intent.
 - AC-3: GIVEN a stale `reasonsDigest` WHEN `/start` is forced THEN it returns 409
   `reasons_changed` with the fresh reasons.
-- AC-4: GIVEN a local mission task held only by inferred migration edges WHEN one Force start
-  confirms all listed kinds THEN `forceStart.liftDependsOn` names every edge,
-  `prefilterLifts` is `[inferred_deps, local_mission]`, and the refusal carried the
-  migration red line.
+- AC-4: GIVEN a local mission task with a lane wait WHEN a forced request names
+  the local mission restriction THEN it returns 422 and leaves the lane order
+  and declared dependencies unchanged.
 - AC-5: GIVEN a declared dependency or a capability reason in the set THEN `canForce` is false
   and a forced request returns 422.
 - AC-6: GIVEN a blocker that clears before the person acts WHEN `/start` is called THEN the
@@ -245,6 +235,6 @@ is `scored: false`: observational evidence, never a model error or success.
 - Route: `apps/web/src/app/api/tasks/[id]/start/route.ts` (`POST`), `apps/web/src/app/api/tasks/[id]/waiting/route.ts` (`GET`)
 - Model: `packages/core/waiting-reason.ts` (`WAITING_KIND_SPEC`, `coordinationHoldBody`, `forceDialog`, `waitingSummary`, `readForceStart`)
 - Probe: `apps/web/src/lib/coordination-probe.ts` (`probeCoordination`), `apps/web/src/app/api/workers/claim/coordination-gates.ts`
-- Claim: `apps/web/src/app/api/workers/claim/route.ts` (`bypassOrDefer`, `liftedByForce`), `apps/web/src/app/api/workers/claim/deps-gate.ts` (`forceStartLiftsEdge`)
+- Claim: `apps/web/src/app/api/workers/claim/route.ts` (`bypassOrDefer`, `liftedByForce`), `apps/web/src/app/api/workers/claim/deps-gate.ts` (declared dependency checks)
 - Recording: `apps/web/src/lib/force-start.ts` (`recordForceStartRequest`, `recordForceStartClaim`, `recordOverrideStart`), `packages/core/orchestration-outcomes.ts` (`gradeStart`, `startActorOf`)
 - UI: `apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.tsx` (`CoordinationRefusal`), `apps/web/src/components/tasks/WaitingLine.tsx`

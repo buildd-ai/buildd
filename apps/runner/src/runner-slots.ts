@@ -19,7 +19,8 @@ import { UnreadableConfigError } from './runner-name';
 import { RUNNER_SOCKET_TIMEOUT_MS, terminalConfirm } from './runner-hold';
 import type { SocketProbe } from './runner-socket';
 
-export const MIN_SLOTS = 1;
+/** 0 is a real setting: the runner claims nothing, running agents finish (spec 97b1bd0b R-18). */
+export const MIN_SLOTS = 0;
 /** The same bound the heartbeat accepts. */
 export const MAX_SLOTS = 50;
 
@@ -30,7 +31,7 @@ export interface SlotsMeta { changedAt: number; origin: 'dashboard' | 'machine';
 
 /** Where N comes from: config.json wins, then MAX_CONCURRENT, then the default (3). */
 export function slotsSource(saved: { maxConcurrent?: unknown }, env: Record<string, string | undefined>): SlotsSource {
-  if (typeof saved.maxConcurrent === 'number' && saved.maxConcurrent > 0) return 'config';
+  if (typeof saved.maxConcurrent === 'number' && Number.isInteger(saved.maxConcurrent) && saved.maxConcurrent >= 0) return 'config';
   if (env.MAX_CONCURRENT && Number.parseInt(env.MAX_CONCURRENT, 10) > 0) return 'env';
   return 'default';
 }
@@ -74,6 +75,7 @@ export function slotsChangeLine(slots: number, running: number, mode: ExtrasMode
   if (mode === 'abort' && acted > 0) {
     return `Slots now ${slots}: ended the ${acted === 1 ? 'newest agent' : `${acted} newest agents`}.`;
   }
+  if (slots === 0) return `${running} running, slots now 0: they finish, nothing new starts.`;
   const until = slots - 1 === 0 ? 'none run' : `${slots - 1} run`;
   return `${running} running, slots now ${slots}: they finish, nothing new starts until ${until}.`;
 }

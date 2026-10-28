@@ -229,3 +229,86 @@ describe('claim loop under a hold', () => {
     expect((manager as any).heartbeatEnvironment().hold).toBeNull();
   });
 });
+
+describe('Pause and concurrency 0 from buildd.dev (spec 97b1bd0b R-18, AC-12)', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+  const quiet = { log: () => {}, warn: () => {} };
+
+  afterAll(() => cleanupTestWorkspace());
+  beforeEach(() => {
+    initTestWorkspace();
+    mockClaimTask.mockReset();
+    mockClaimTask.mockImplementation(async () => ({ workers: [] }));
+  });
+  afterEach(() => {
+    manager?.destroy();
+    initRunnerHold(null);
+  });
+
+  test('a dashboard Pause: the poll claims nothing and the running agents are left to finish', async () => {
+    const store = initRunnerHold({ io: memoryHold(), logger: quiet })!;
+    manager = new WorkerManager(makeConfig({ maxConcurrent: 3 }));
+    const running = [
+      { id: 'w-a', status: 'working', taskTitle: 'a' },
+      { id: 'w-b', status: 'working', taskTitle: 'b' },
+    ];
+    for (const w of running) (manager as any).workers.set(w.id, { ...w });
+    expect(manager.applyServerHold({ paused: true, setBy: 'Max', setAt: Date.now() })).toBe(true);
+    expect(store.isHeld()).toBe(true);
+    expect(store.changeMeta()).toMatchObject({ origin: 'dashboard', setBy: 'Max' });
+    expect(await manager.claimPendingTasks()).toEqual([]);
+    expect(mockClaimTask).not.toHaveBeenCalled();
+    // Nothing was stopped or paused: both still work until they finish.
+    expect([...(manager as any).workers.values()].map((w: any) => w.status)).toEqual(['working', 'working']);
+    // The slots stay as they were, so Resume brings them back.
+    expect((manager as any).config.maxConcurrent).toBe(3);
+  });
+
+  test('a dashboard Resume lifts the hold and the next poll claims again, at the slots it had', async () => {
+    const store = initRunnerHold({ io: memoryHold(), logger: quiet })!;
+    store.hold(null, { changedAt: 1000, origin: 'dashboard', setBy: 'Max' });
+    manager = new WorkerManager(makeConfig({ maxConcurrent: 3 }));
+    expect(manager.applyServerHold({ paused: false, setBy: 'Max', setAt: 2000 })).toBe(true);
+    expect(store.isHeld()).toBe(false);
+    await manager.claimPendingTasks();
+    expect(mockClaimTask).toHaveBeenCalledTimes(1);
+    expect((manager as any).config.maxConcurrent).toBe(3);
+  });
+
+  test('a `buildd resume` made after the dashboard Pause is not overwritten', async () => {
+    const store = initRunnerHold({ io: memoryHold(), logger: quiet })!;
+    store.hold(null, { changedAt: 1000, origin: 'dashboard', setBy: 'Max' });
+    store.resume(); // on this machine, now
+    manager = new WorkerManager(makeConfig());
+    expect(manager.applyServerHold({ paused: true, setBy: 'Max', setAt: 1000 })).toBe(false);
+    expect(store.isHeld()).toBe(false);
+  });
+
+  test('concurrency 0: the poll claims nothing and never asks the server', async () => {
+    initRunnerHold({ io: memoryHold(), logger: quiet });
+    manager = new WorkerManager(makeConfig({ maxConcurrent: 0 }));
+    expect(await manager.claimPendingTasks()).toEqual([]);
+    expect(mockClaimTask).not.toHaveBeenCalled();
+  });
+
+  test('a dashboard 0 is applied and starts no claim', async () => {
+    initRunnerHold({ io: memoryHold(), logger: quiet });
+    manager = new WorkerManager(makeConfig({ maxConcurrent: 3 }));
+    expect(manager.applyServerSlots({ slots: 0, setBy: 'Max', setAt: Date.now() + 1000 })).toBe(true);
+    expect((manager as any).config.maxConcurrent).toBe(0);
+    expect(await manager.claimPendingTasks()).toEqual([]);
+    expect(mockClaimTask).not.toHaveBeenCalled();
+  });
+
+  test('the heartbeat carries the time of the last hold or resume', async () => {
+    const store = initRunnerHold({ io: memoryHold(), logger: quiet })!;
+    store.hold(null, { changedAt: 4242, origin: 'machine', setBy: null });
+    manager = new WorkerManager(makeConfig());
+    (manager as any).environment = { tools: [], envKeys: [], mcp: [], labels: {}, scannedAt: new Date().toISOString() };
+    const send = (manager as any).buildd.sendHeartbeat;
+    send.mockClear();
+    await (manager as any).sendHeartbeat();
+    const args = send.mock.calls.at(-1) as any[];
+    expect(args.at(-1)).toBe(4242);
+  });
+});

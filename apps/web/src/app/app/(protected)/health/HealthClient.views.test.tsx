@@ -199,37 +199,33 @@ describe('HealthClient — pages', () => {
     expect(html).toContain('aria-label="Window"');
   });
 
-  it('Runners & capacity shows only what sets capacity, and no window picker', () => {
+  it('Runners & capacity shows only what sets capacity, and no page-level window picker', () => {
     const html = render({ ...everything, page: 'runners' });
-    for (const id of ['health-section-slot-history', 'health-section-runners', 'health-section-credentials']) {
+    for (const id of ['health-section-capacity', 'health-section-runners', 'health-section-credentials']) {
       expect(has(html, id)).toBe(true);
     }
     expect(has(html, 'health-section-agent-access')).toBe(false);
     expect(has(html, 'health-section-schedules')).toBe(false);
     expect(has(html, 'health-section-problems')).toBe(false);
     expect(has(html, 'health-section-failure-analytics')).toBe(false);
-    expect(html).not.toContain('aria-label="Window"');
+    // No page-level window; the one picker is the Capacity block's own.
+    expect(html.split('aria-label="Window"').length - 1).toBe(1);
   });
 
-  it('Runners leads with what is running in words, then the slot chart open; only the timeline is folded', () => {
+  it('Runners leads with the Capacity block, then the runner rows; the per-slot timeline is folded below', () => {
     const fleet = {
       runners: [{ id: 'r1', name: 'atlas', slots: [{ lane: { bars: [{ id: 'b1', start: NOW - HOUR, end: NOW - 30 * 60_000, label: 'x', color: null, state: 'done' }] } }] }],
       live: 0, capacity: 1, window: { from: NOW - 2 * HOUR, to: NOW },
     };
     const html = render({ ...everything, page: 'runners', runnerLanes: { fleet, idle: [], missions: {} } });
     const at = (id: string) => html.indexOf(`data-testid="${id}"`);
-    expect(at('health-section-running-now')).toBeGreaterThan(-1);
-    // The slot chart (runner slots and interactive sessions) is on the page at
-    // first glance, not behind a disclosure.
-    expect(at('health-section-running-now')).toBeLessThan(at('health-section-slot-history'));
-    expect(has(html, 'health-section-occupancy')).toBe(true);
-    expect(html).not.toContain('Slot history over 24 hours');
-    // The per-slot timeline is the long diagnostic: still folded, its chart
-    // mounts only when opened.
-    expect(at('health-section-slot-history')).toBeLessThan(at('health-section-lanes'));
-    expect(html).toContain('Timeline: each slot over the last hours');
+    expect(at('capacity')).toBeGreaterThan(-1);
+    expect(at('capacity')).toBeLessThan(at('health-section-runners'));
+    // The per-slot timeline is the long diagnostic: folded, behind its link.
+    expect(html).toContain('Timeline by slot');
     expect(has(html, 'runner-lanes-chart')).toBe(false);
-    expect(at('health-section-lanes')).toBeLessThan(at('health-section-runners'));
+    expect(at('health-section-runners')).toBeLessThan(at('health-section-lanes'));
+    expect(has(html, 'health-section-occupancy')).toBe(false);
   });
 
   it('a failing schedule on Overview links to where it is configured', () => {
@@ -268,7 +264,7 @@ describe('HealthClient — pages', () => {
   });
 
   it('every section that renders on the single page renders on exactly one route', () => {
-    const ids = ['health-section-problems', 'health-section-slot-history', 'health-section-runners', 'health-section-credentials', 'health-section-agent-access',
+    const ids = ['health-section-problems', 'health-section-capacity', 'health-section-runners', 'health-section-credentials', 'health-section-agent-access',
       'health-section-failure-analytics', 'health-section-failure-groups', 'health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs'];
     const all = render({ ...everything });
     for (const id of ids) {

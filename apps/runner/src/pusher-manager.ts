@@ -171,7 +171,8 @@ export class PusherManager {
 
   /**
    * The account's runner channel carries one nudge, `runner:slots`, with no
-   * data: the new number comes back on the heartbeat reply, never over Pusher.
+   * data: the new slots or Pause (spec 97b1bd0b R-18) come back on the
+   * heartbeat reply, never over Pusher.
    * Best effort; without it the next 30 s beat picks the change up.
    */
   private async subscribeToSlotNudges(): Promise<void> {
