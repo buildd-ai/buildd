@@ -538,9 +538,8 @@ describe('finalizeExpiredQualityScoutRuns', () => {
 });
 
 describe('scout runner-host window', () => {
-  test('is the shared "demonstrably up" window, not a hand-typed number', async () => {
-    const { RUNNER_RECENTLY_SEEN_MS } = await import('@buildd/shared');
+  test('stays 15 minutes (deliberately wider than the shared 10-minute recently-seen window)', async () => {
     const { SCOUT_RUNNER_HOST_WINDOW_MS } = await import('./quality-scout-trigger');
-    expect(SCOUT_RUNNER_HOST_WINDOW_MS).toBe(RUNNER_RECENTLY_SEEN_MS);
+    expect(SCOUT_RUNNER_HOST_WINDOW_MS).toBe(15 * 60_000);
   });
 });

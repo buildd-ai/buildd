@@ -1,6 +1,5 @@
 'use client';
 
-import { PR_PILL, derivePrDisplayState } from '@/lib/pr-presentation';
 import { useState } from 'react';
 import Link from 'next/link';
 import TaskCard from '@/components/TaskCard';
@@ -139,8 +138,12 @@ export type CondensedTimelineProps = {
 
 // ─── PR status line — single PR reference for open-PR rows ──────────────────
 
-// The four open-PR states this line distinguishes; wording and tone come from PR_PILL.
-const PR_STATUS_LIFECYCLES: ReadonlySet<string> = new Set(['ci_running', 'ci_failed', 'conflict', 'pr_open']);
+const PR_STATUS: Record<string, { label: string; cls: string }> = {
+  ci_running: { label: 'CI…',       cls: 'text-status-info' },
+  ci_failed:  { label: 'CI ✗',      cls: 'text-status-error' },
+  conflict:   { label: 'conflict',  cls: 'text-status-warning' },
+  pr_open:    { label: 'open',      cls: 'text-accent-text' },
+};
 
 function PrStatusLine({
   task,
@@ -189,9 +192,7 @@ function PrStatusLine({
   }
 
   const isWaitingMerge = task.status === 'completed';
-  const statusEntry = lw.prLifecycleStatus && PR_STATUS_LIFECYCLES.has(lw.prLifecycleStatus)
-    ? PR_PILL[derivePrDisplayState(lw.prLifecycleStatus, null)]
-    : null;
+  const statusEntry = lw.prLifecycleStatus ? PR_STATUS[lw.prLifecycleStatus] : null;
   const statusWord = isWaitingMerge && !statusEntry ? 'ready to merge' : (statusEntry?.label ?? 'open');
   const statusCls  = isWaitingMerge && !statusEntry ? 'text-accent-text' : (statusEntry?.cls ?? 'text-accent-text');
 
@@ -206,7 +207,7 @@ function PrStatusLine({
         #{lw.prNumber}
       </a>
       <span className="text-[11px] md:text-[10px] text-text-muted">·</span>
-      <span className={`rounded-sm px-1 text-[11px] md:text-[10px] ${statusCls}`}>{statusWord}</span>
+      <span className={`text-[11px] md:text-[10px] ${statusCls}`}>{statusWord}</span>
       {isWaitingMerge && (
         <MergeConfirmButton
           prNumber={lw.prNumber}
