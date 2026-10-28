@@ -3,10 +3,13 @@ import { incrWindow } from '@/lib/redis';
 import { reservedNameAllowed } from '@/lib/oauth/client-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient, isSafeRedirectUri } from '@/lib/oauth/storage';
+import { countClientsCreatedSince, createClient, isSafeRedirectUri } from '@/lib/oauth/storage';
 
 const REGISTER_LIMIT = 10;
 const WINDOW_SECONDS = 3600;
+// Registrations per hour across every caller, counted in the clients table,
+// while the per-IP limiter is unavailable.
+const FALLBACK_GLOBAL_LIMIT = 100;
 
 export const dynamic = 'force-dynamic';
 
@@ -38,13 +41,18 @@ export async function POST(req: NextRequest) {
   const key = createHash('sha256').update(ip).digest('hex');
   const count = await incrWindow(`oauth:register:${window}:${key}`, WINDOW_SECONDS);
   // Open registration stays public, but must not bypass its shared limit
-  // during a Redis outage.
+  // during a Redis outage. It falls back to a global hourly cap counted in the
+  // clients table rather than refusing everyone: a connector setup (claude.ai,
+  // Claude Desktop, any DCR client) cannot finish without registering.
   if (count === null) {
-    return NextResponse.json({ error: 'temporarily_unavailable' }, {
-      status: 503, headers: { 'Retry-After': '60' },
-    });
+    const recent = await countClientsCreatedSince(new Date(Date.now() - WINDOW_SECONDS * 1000)).catch(() => null);
+    if (recent === null || recent >= FALLBACK_GLOBAL_LIMIT) {
+      return NextResponse.json({ error: 'temporarily_unavailable' }, {
+        status: 503, headers: { 'Retry-After': '60' },
+      });
+    }
   }
-  if (count > REGISTER_LIMIT) {
+  if (count !== null && count > REGISTER_LIMIT) {
     const retryAfter = WINDOW_SECONDS - Math.floor(Date.now() / 1000) % WINDOW_SECONDS;
     return NextResponse.json({ error: 'rate_limit_exceeded' }, {
       status: 429, headers: { 'Retry-After': String(Math.max(1, retryAfter)) },

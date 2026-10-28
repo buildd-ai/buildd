@@ -15,7 +15,7 @@ export async function GET() {
     authorization_servers: [getIssuer()],
     scopes_supported: ACCOUNT_SCOPES_SUPPORTED,
     bearer_methods_supported: ['header'],
-  });
+  }, { headers: { 'Access-Control-Allow-Origin': '*' } });
 }
 
 export async function OPTIONS() {

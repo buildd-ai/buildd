@@ -1301,11 +1301,22 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
 
 // ── Next.js Route Handlers ───────────────────────────────────────────────────
 
-export async function GET(_req: Request): Promise<Response> {
+export async function GET(req: Request): Promise<Response> {
+  // A connector setup check (claude.ai's "Add custom connector") probes with a
+  // plain GET before signing in; it needs the same OAuth challenge a POST gets
+  // to find out how this server signs in. A bare 405 reads as "couldn't check".
+  if (!extractBearerToken(req)) return unauthorizedResponse("Missing Authorization header");
   // Stateless server — no SSE notifications to push.
   // Returning 405 stops MCP clients from polling the SSE endpoint
   // (which otherwise reconnects every ~1s on serverless, burning invocations).
   return new Response("SSE not supported on stateless server", { status: 405 });
+}
+
+// Next would derive HEAD from GET anyway; it is explicit so the challenge a
+// reachability probe sees is pinned by a test, not by framework behaviour.
+export async function HEAD(req: Request): Promise<Response> {
+  const res = await GET(req);
+  return new Response(null, { status: res.status, headers: res.headers });
 }
 
 export async function POST(req: Request): Promise<Response> {

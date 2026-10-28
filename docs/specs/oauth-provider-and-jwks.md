@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/app/api/oauth/token/route.ts, apps/web/src/lib/signing-keys.ts, apps/web/src/lib/signing-key-windows.ts, apps/web/src/app/api/.well-known/jwks.json/route.ts]
 related: [auth-oauth-boundaries, credential-isolation, external-cron-triggers, mcp-action-contracts]
 keywords: [rfc 7591, dynamic client registration, rfc 9728, resource_metadata, jwks, kid, es256, hs256, code_challenge, signing_key, assertion grant]
-verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/lib/oauth/storage.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts, apps/web/src/app/api/auth/device/approve/route.test.ts, apps/web/src/app/app/device/page.test.tsx, apps/web/src/lib/self-origin.test.ts, apps/web/tests/db/agent-connection-owner.test.ts, apps/web/src/lib/worker-owner.test.ts, apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/lib/oauth/resource-binding.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts, apps/web/tests/db/mcp-grant-team-access.test.ts, apps/web/src/app/app/(protected)/settings/connections/connections-view.test.ts, packages/core/__tests__/list-workspaces-team-name.test.ts]
+verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/lib/oauth/client-metadata-document.test.ts, apps/web/src/app/api/oauth/register/route.test.ts, apps/web/src/app/api/mcp/route.scope.test.ts, apps/web/src/lib/oauth/storage.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts, apps/web/src/app/api/auth/device/approve/route.test.ts, apps/web/src/app/app/device/page.test.tsx, apps/web/src/lib/self-origin.test.ts, apps/web/tests/db/agent-connection-owner.test.ts, apps/web/src/lib/worker-owner.test.ts, apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/lib/oauth/resource-binding.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts, apps/web/tests/db/mcp-grant-team-access.test.ts, apps/web/src/app/app/(protected)/settings/connections/connections-view.test.ts, packages/core/__tests__/list-workspaces-team-name.test.ts]
 assertions:
   - id: jwks-route-get
     type: route
@@ -109,7 +109,15 @@ system.
 - `GET /.well-known/oauth-authorization-server` MUST advertise
   `code_challenge_methods_supported: ['S256']` and
   `token_endpoint_auth_methods_supported: ['none']` — the provider registers
-  public clients only and no code path issues a `client_secret`.
+  public clients only and no code path issues a `client_secret`. It MUST also
+  advertise `client_id_metadata_document_supported: true` (see "Client ID
+  metadata documents" below): Claude's hosted apps and Claude Code identify
+  themselves that way only when both values are present.
+- Protected-resource metadata for `/api/mcp` MUST be served at
+  `/.well-known/oauth-protected-resource/api/mcp` and at the root fallback
+  `/.well-known/oauth-protected-resource` (the order an MCP client probes when
+  it has no `resource_metadata` hint). Every metadata `GET` MUST carry
+  `Access-Control-Allow-Origin: *` so browser-based clients can read it.
 - `GET /.well-known/oauth-protected-resource/api/mcp-oauth/<workspace>` MUST
   return `resource` equal to `${issuer}/api/mcp-oauth/<workspace>` — the same
   string used as the `aud` claim by `getResourceUrl()`, so metadata and token
@@ -117,13 +125,21 @@ system.
 - On an unauthenticated MCP call, `/api/mcp-oauth/[workspace]` MUST return HTTP
   401 carrying `WWW-Authenticate: Bearer realm="buildd",
   resource_metadata="<protected-resource URL>"` (RFC 9728) so a client can
-  autodiscover the authorization server with no static configuration.
+  autodiscover the authorization server with no static configuration. On
+  `/api/mcp` this holds for an unauthenticated `GET` and `HEAD` as well as
+  `POST`: a connector setup check probes with them before signing in. A
+  signed-in `GET` stays 405 (stateless; no SSE).
 - `POST /api/oauth/register` MUST reject a body without at least one parseable
   URL in `redirect_uris` with HTTP 400 `invalid_client_metadata`.
 - Registration is unauthenticated by design (RFC 7591 open registration). The
   registered `client_id` alone therefore proves nothing; client identity rests
   entirely on PKCE, exact `redirect_uri` matching, and the interactive consent
   step below.
+- Registration is limited to 10 per caller IP per hour (Redis). When that
+  limiter is unavailable it MUST NOT lift the limit and MUST NOT refuse
+  everyone: it falls back to a global cap of 100 registrations per hour counted
+  in `oauth_clients`, and answers a retryable 503 only above that cap or when
+  the count itself fails.
 - On Vercel production, `getIssuer()` MUST return the canonical
   `https://buildd.dev` and MUST NOT return a per-deploy `VERCEL_URL` host —
   clients cache the issuer, and a preview host rots when that deployment is
@@ -163,9 +179,10 @@ system.
   failures return a plain-text HTTP 400 and MUST NOT redirect (an unvalidated
   redirect target is never followed).
 - `isRegisteredRedirectUri()` MUST match non-loopback URIs by exact string.
-  Loopback URIs (`localhost`, `127.0.0.1`, `[::1]`, `::1`) MUST match only when
-  protocol, port, path, and query are all equal — hostname is the only
-  component allowed to differ.
+  Loopback URIs (`localhost`, `127.0.0.1`, `[::1]`, `::1`) MUST match when
+  protocol, path, and query are all equal — hostname and port may differ
+  (RFC 8252 §7.3: a native app binds an ephemeral port per sign-in, and Claude
+  Code's metadata document declares `http://localhost/callback` with no port).
 - `response_type` other than `code`, a missing `code_challenge`, or
   `code_challenge_method !== 'S256'` MUST fail. `plain` PKCE is unreachable
   even though the parameter defaults to `'plain'` when omitted.
@@ -202,9 +219,10 @@ system.
 - AC-6: GIVEN a client registered with `http://localhost:41776/callback/x` WHEN
   authorize is called with `redirect_uri=http://127.0.0.1:41776/callback/x`
   THEN `isRegisteredRedirectUri` returns `true`.
-- AC-7: GIVEN the same client WHEN the requested `redirect_uri` differs in port
-  or path THEN `isRegisteredRedirectUri` returns `false` and the route returns
-  HTTP 400 `redirect_uri not registered for this client`.
+- AC-7: GIVEN the same client WHEN the requested `redirect_uri` differs in
+  path THEN `isRegisteredRedirectUri` returns `false` and the route returns
+  HTTP 400 `redirect_uri not registered for this client`; a different port
+  alone is accepted.
 - AC-8: GIVEN a registered `redirect_uri` and a logged-in session WHEN
   `code_challenge_method=plain` is supplied THEN the response is a redirect to
   the client carrying `error=invalid_request` and no `oauthCodes` row is created.
@@ -856,11 +874,19 @@ unchanged apart from the advertised scopes.
   grant as in "Account-level MCP grants". Cancel redirects with
   `access_denied` and the client's `state`.
 
-**Client ID metadata documents (CIMD)**: not supported. Accepting an https URL
-as `client_id` needs a server-side fetch with SSRF protection and caching,
-redirect validation against the fetched document and a consent display of the
-document's origin; that is not small. Clients keep using dynamic client
-registration (`/api/oauth/register`).
+**Client ID metadata documents (CIMD)**: supported
+(`apps/web/src/lib/oauth/client-metadata-document.ts`,
+`storage.ts: resolveClient()`). An HTTPS `client_id` with a path is fetched at
+authorize time: default port only, a DNS name (never an IP literal) whose every
+address is public, no redirects followed, 5 s timeout, 5 KB cap, good
+documents cached in process for five minutes. The document's `client_id` MUST
+equal the URL, its `redirect_uris` MUST pass `isSafeRedirectUri()`, its
+`token_endpoint_auth_method` MUST be absent or `none`, and a reserved
+`client_name` is held to its hosts as at registration. The client is then
+upserted into `oauth_clients` under the URL, so codes, grants and refresh
+tokens reference it like a registered client. The document never makes a
+client verified: that stays decided by redirect host (`clientIdentity()`).
+A document that cannot be fetched or validated is `unknown client_id` (400).
 
 **Acceptance criteria**:
 - AC-42: GIVEN an authorize request for the account resource WHEN the page
