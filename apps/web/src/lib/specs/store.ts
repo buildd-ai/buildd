@@ -22,6 +22,7 @@ import { criterionHashes, retiredIdRefusal, writeCriterionRecords } from './crit
 import { acceptanceRoleRefusal } from './verdict-guards';
 import { parseReplaces, replacesRefusal } from './replaces';
 import { parseExplanation } from '@buildd/spec-contract/explanation';
+import type { AutoApproval } from './auto-approve';
 
 /**
  * Living Specs store (G1): create a draft, revise it under a version check,
@@ -59,7 +60,9 @@ export const author = (c: SpecCaller) => (c.kind === 'user'
   ? { authorKind: 'user' as const, authorId: c.userId, label: `user:${c.userId}` }
   : { authorKind: 'agent' as const, authorId: c.account.id, label: `account:${c.account.id}` });
 
-export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string; duplicates?: DuplicateCandidate[]; gate?: SpecGateResult;
+export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number;
+  /** On a stale approval: the head the spec is at now (Review all names it, b7fc9316 R-25). */
+  headRevision?: number; code?: string; duplicates?: DuplicateCandidate[]; gate?: SpecGateResult;
   /** A team requires a passkey for this act (passkeys/guard.ts): the pin to ask one for, and where to add one. */
   presence?: import('@/lib/passkeys/binding').PresenceAsk };
 export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
@@ -133,9 +136,15 @@ export const importedRefusal = (spec: Pick<SpecRow, 'repoSource'>): SpecError | 
   : null);
 export type SpecRevisionRow = typeof specRevisions.$inferSelect;
 
-/** Test seam: runs after a revise has inserted its revision, before that revision's criteria are derived. */
-export const specStoreDeps: { afterRevisionInsert: (specId: string) => Promise<void> } = {
+/**
+ * Test seams. afterRevisionInsert: runs after a revise has inserted its
+ * revision, before that revision's criteria are derived. autoApprove: the
+ * no-criteria-change check (./auto-approve.ts, b7fc9316 R-21) a revise runs
+ * on the head it wrote.
+ */
+export const specStoreDeps: { afterRevisionInsert: (specId: string) => Promise<void>; autoApprove: (specId: string) => Promise<AutoApproval> } = {
   afterRevisionInsert: async () => {},
+  autoApprove: async (specId) => (await import('./auto-approve')).autoApproveNoCriteriaChange(specId),
 };
 
 /**
@@ -268,7 +277,9 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   imported?: SpecRevisionImport & { importedAt: string };
   /** The duplicate check on added or changed criteria (R-105); false skips it (a copy). Never refuses. */
   duplicates?: DuplicateCheckDeps | false;
-} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean; duplicateCheck?: DuplicateCheck | null } | SpecError> {
+  /** false: never run the no-criteria-change check (a copy: copying never approves). */
+  autoApprove?: false;
+} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean; duplicateCheck?: DuplicateCheck | null; autoApproval?: AutoApproval | null } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
   const body = checkBody(input.body);
@@ -388,8 +399,16 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   const duplicateCheck = hash === head.contentHash || opts.imported || opts.duplicates === false
     ? null
     : await reviseDuplicateCheck(caller, spec, head, body, opts.duplicates ?? {});
+  // R-21: a revision that changes no criterion and no design binding stands
+  // approved by the check, never by whoever wrote it. Fail-open: the revision
+  // is written either way, and a person approves it as before.
+  const autoApproval = opts.imported || opts.autoApprove === false ? null : await specStoreDeps.autoApprove(specId).catch((err): AutoApproval => {
+    console.error(`[specs] check:no-criteria-change on ${specId} failed:`, err instanceof Error ? err.message : err);
+    return { approved: false, reason: 'the check could not run' };
+  });
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  return { ok: true, spec: after, revision, unchanged: false, duplicateCheck };
+  const [stamped] = autoApproval?.approved ? await db.select().from(specRevisions).where(eq(specRevisions.id, revision.id)).limit(1) : [revision];
+  return { ok: true, spec: after, revision: stamped ?? revision, unchanged: false, duplicateCheck, autoApproval };
 }
 
 /**
