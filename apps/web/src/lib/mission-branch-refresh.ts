@@ -110,7 +110,7 @@ import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch
 import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
 import { integrationRefreshOf, verifyRefreshLanded } from '@/lib/integration-refresh';
 import { detectRefreshMigrationFork, type MigrationFork } from '@/lib/refresh-migration-fork';
-import { mergeTrunkRegeneratingMigrations, type RegeneratedMigrations, type RegenerateRefusal } from '@/lib/refresh-migration-reparent';
+import type { RegeneratedMigrations, RegenerateRefusal } from '@/lib/refresh-migration-reparent';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import type { EpochEffectHandlers, RefreshTrigger } from '@/lib/workflow/epoch-effects';
 
@@ -456,6 +456,9 @@ export async function refreshMissionIntegrationBranch(
     /** The fork the landed merge still has: `undefined` until read. */
     let forkLeft: MigrationFork | null | undefined;
     if (forkAhead && missionHeadSha) {
+      // Loaded at call time: a static edge to the reparent kit reshapes Turbopack's
+      // server chunk graph into an output-path collision (the class #5341 hit).
+      const { mergeTrunkRegeneratingMigrations } = await import('@/lib/refresh-migration-reparent');
       const r = await mergeTrunkRegeneratingMigrations({
         installationId, repoFullName: repo.fullName, branch, trunk, trunkSha, missionHeadSha, fork: forkAhead,
       });
