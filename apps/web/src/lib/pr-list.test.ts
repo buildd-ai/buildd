@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { buildPrListWhere, kernelPrStatuses, needsAttention, parsePrListState, prSignals, rankPrs, shapePrRows, waitingReason, type KernelPr, type PrListRow } from './pr-list';
+import { deriveDeliveryView } from './workflow/projections';
+import type { DeliverySnapshot } from './workflow/types';
 
 /** WHERE clauses rendered through PgDialect, so their shape is observable. */
 const dialect = new PgDialect();
@@ -84,6 +86,14 @@ const row = (over: Partial<PrListRow>): PrListRow => ({
   lastCheckedAt: null, conflictDetectedAt: null, startedAt: new Date('2026-09-20T00:00:00Z'),
   workspaceId: 'ws-a', workspaceName: 'a', taskId: 't', taskTitle: 'T', missionId: null, missionTitle: null, baseRef: null, missionWorkingBranch: null, missionIntegration: null,
   ...over,
+});
+
+const delivery = (o: Partial<DeliverySnapshot>): DeliverySnapshot => ({
+  id: 'd1', workspaceId: 'ws-a', ownerTaskId: 't-1', repoFullName: 'o/r', prNumber: 1, baseRef: 'dev',
+  state: 'WORKING', stateReason: null, version: 3, currentHeadSha: 'H1', currentRound: 1, maxRounds: 3,
+  boundAttemptId: null, resumeState: null, trunkIncidentId: null, approvedHeads: [], approvalBasis: null,
+  compositionHeads: [], ci: null, ciHeadSha: null, mergeable: null, mergeableHeadSha: null, mergedAt: null,
+  mergeCommitSha: null, supersededByPr: null, ...o,
 });
 
 describe('shapePrRows', () => {
@@ -242,6 +252,33 @@ describe('prSignals', () => {
   it('into a mission branch, not the trunk', () => {
     const r = shapePrRows([row({ baseRef: 'mission/x', missionWorkingBranch: 'mission/x', missionIntegration: true, lastCheckedAt: now })], 'open')[0];
     expect(prSignals(r, noAttention, now)).toEqual({ intoMissionBranch: 'mission/x' });
+  });
+
+  // 36f5fc74: list_prs said "NEEDS YOU (approved, merge is yours)" while explain
+  // said REPAIRING, queued to land behind another PR, owner platform.
+  describe('a delivery queued in the landing lane', () => {
+    const queued = deriveDeliveryView({
+      view: { delivery: delivery({ state: 'REPAIRING', stateReason: 'behind', approvedHeads: ['H1'] }), rounds: [], attempts: [] },
+      laneWait: { behindPr: 5810, position: 2 },
+    })!;
+    const r = shapePrRows([row({ workerId: 'a', taskId: 't-1', status: 'ci_green', lastCheckedAt: now })], 'open')[0];
+
+    it('is never needs-you, even with a stale legacy inbox entry', () => {
+      const s = prSignals(r, { ...noAttention, inbox: new Map([['a', 'approved, merge is yours']]), deliveries: new Map([['t-1', queued]]) }, now);
+      expect(s.waitingOnYou).toBeUndefined();
+      expect(needsAttention({ status: 'ci_green', ...s })).toBe(false);
+    });
+
+    it('says where it is in the queue, in explain\'s words', () => {
+      const s = prSignals(r, { ...noAttention, deliveries: new Map([['t-1', queued]]) }, now);
+      expect(s).toEqual({ builddOwns: 'PR #1 is queued to land behind PR #5810, position 2' });
+    });
+
+    it('a delivery that asks a person still pages', () => {
+      const escalated = deriveDeliveryView({ view: { delivery: delivery({ state: 'ESCALATED', stateReason: 'landing_needs_human' }), rounds: [], attempts: [] } })!;
+      const s = prSignals(r, { ...noAttention, inbox: new Map([['a', 'landing waiting on you']]), deliveries: new Map([['t-1', escalated]]) }, now);
+      expect(s.waitingOnYou).toBe('landing waiting on you');
+    });
   });
 
   it('a state last checked over an hour ago says how old it is', () => {
