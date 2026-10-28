@@ -86,7 +86,20 @@ export async function refreshMcpConnectorCredential(secretId: string): Promise<M
 
   const blob = decodeBlob(claimed.encryptedValue);
   const currentRefreshToken = blob.refresh_token;
-  if (!currentRefreshToken) return 'no_credential';
+  if (!currentRefreshToken) {
+    // The provider never issued a refresh token (many require `offline_access`,
+    // or simply do not rotate). Say so on the row: otherwise it just sits
+    // expired with a bare `token_refresh_pending` and nothing explains why no
+    // sweep ever heals it.
+    await db
+      .update(secrets)
+      .set({
+        lastVerificationError: 'no_refresh_token: the provider issued no refresh token, so this login cannot renew itself — reconnect when it expires',
+        updatedAt: sql`NOW()`,
+      })
+      .where(teamCredentialWhere({ purpose: PURPOSE }, eq(secrets.id, secretId)));
+    return 'no_credential';
+  }
 
   // label = connector ID (set at token-exchange time)
   const connectorId = claimed.label;

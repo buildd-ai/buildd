@@ -857,11 +857,22 @@ describe('38442d17: a CI repair that ended without a push while its head reads g
     expect((await ciAttempts(deliveryId)).length).toBeGreaterThan(1);
   });
 
-  test('a completed repair does not take the branch, even on a green head', async () => {
+  // #5796: a completed repair with nothing local on the unmoved head is a no-change end, not a push
+  // to wait for: it resumes like a cancelled one, and a green head lands it.
+  test('a completed repair with nothing local on the unmoved green head ends noop and resumes', async () => {
     const { deliveryId, task, workerId } = await repairingWithCiTask();
     checks = { complete: true, failing: [] };
     green = true;
     await attemptEnded({ task, workerId, status: 'completed', localHeadSha: null, commitCount: 0, source: 'runner' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('APPROVED');
+    expect((await ciAttempts(deliveryId)).map((a) => a.outcome)).toEqual(['noop']);
+  });
+
+  test('a completed repair with a local commit it never pushed does not resume, even on a green head', async () => {
+    const { deliveryId, task, workerId } = await repairingWithCiTask();
+    checks = { complete: true, failing: [] };
+    green = true;
+    await attemptEnded({ task, workerId, status: 'completed', localHeadSha: 'L2', commitCount: 1, source: 'runner' }, deps);
     expect((await loadView({ deliveryId })).delivery!.state).not.toBe('APPROVED');
   });
 });
