@@ -3,7 +3,7 @@
  *
  * `POST` hands a pull request to a reviewer agent — including a PR buildd did
  * not open, which is adopted as a task + worker first (see
- * `@/lib/pr-review-request`). `GET` reports where that review is, optionally
+ * `@/lib/request-pr-review`, shared with the PR webhook's auto-review). `GET` reports where that review is, optionally
  * long-polling until it settles.
  *
  * The review then runs on exactly the same rails as a worker PR's review: the
@@ -14,51 +14,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { tasks, workers, workspaces, githubRepos } from '@buildd/core/db/schema';
+import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, taskScopeTaskLinksPr, taskScopeHoldsWorkspaceReviewReach, type TaskScope } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
-import { resolvePolicy } from '@/lib/merge-policy';
-import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/lib/reviewer';
-import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
-import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
-import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { doorErrorResponse, isDoorError, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
 import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
-import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
-import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
-import {
-  findPrOwningWorker,
-  findReviewTaskForPr,
-  findLiveReviewTaskForPr,
-  listWorkspaceRoles,
-  resolveOrAdoptPrOwner,
-  waitForPrReviewStatus,
-} from '@/lib/pr-review-request';
-import {
-  derivePrReviewStatus,
-  isReviewBudgetSpent,
-  pickReviewerRole,
-  MAX_REVIEW_WAIT_SECONDS,
-  type PrReviewWaitFor,
-} from '@/lib/pr-review-status';
+import { findPrOwningWorker, waitForPrReviewStatus } from '@/lib/pr-review-request';
+import { MAX_REVIEW_WAIT_SECONDS, type PrReviewWaitFor } from '@/lib/pr-review-status';
+import { autoMergeExpectedFor, requestPrReview, resolveEffectivePolicy } from '@/lib/request-pr-review';
 import { requestingPerson } from '@/lib/request-person';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { decisionRefusalReason } from '@buildd/workflow-kernel/decision-refusal';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
-
-/**
- * 2ded4e88: the review rounds are spent and the PR waits on a person. Says where a person acts
- * rather than "pass force": an interactive session reading the hint would just retry with it.
- */
-const REVIEW_BUDGET_SPENT_HINT = 'the review rounds for this PR are spent and it waits on a person; a person can request one more review from the PR\'s page, or approve it';
-const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, which is a person\'s call: ask the owner, or re-review from the dashboard. Without force, a review is requested once the PR head moves.';
 
 /**
  * Which workspaces a caller may resolve a PR in. An API key reaches its own
@@ -183,28 +155,6 @@ async function resolveRepo(workspace: ResolvedTarget['workspace']) {
   return { fullName: repo.fullName as string, installationId: repo.installation.installationId as number };
 }
 
-/**
- * Would buildd itself merge this PR once the reviewer approves?
- *
- * Mirrors the verdict handler: `approve-only` leaves the merge to a human, and
- * a `human` tier never auto-merges. Surfaced to the caller so a merge-waiter
- * knows whether waiting is pointless.
- */
-function autoMergeExpectedFor(policy: { tier: string; agentReview?: { gateCondition?: string } }): boolean {
-  if (policy.tier === 'human') return false;
-  return policy.agentReview?.gateCondition !== 'approve-only';
-}
-
-async function resolveEffectivePolicy(
-  workspace: ResolvedTarget['workspace'],
-  missionId: string | null,
-) {
-  const mission = missionId
-    ? await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { mergePolicy: true } })
-    : null;
-  return resolvePolicy(workspace as never, mission as never);
-}
-
 export async function POST(req: NextRequest) {
   // A per-task token may ask for review only of its own task's PR.
   const account = await authenticateTaskScopedCaller(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
@@ -267,353 +217,29 @@ export async function POST(req: NextRequest) {
     return bad('A task token may request review only of its own PR, or one its task\'s records link', 403);
   }
 
-  // A PR the workflow kernel owns is reviewed only in kernel rounds: the request
-  // is T5 (ReviewRequested) against the live head. `force` re-reviews a head
-  // that already has a verdict; it never stacks a second reviewer on a round.
+  // A PR the workflow kernel owns is reviewed only in kernel rounds; any other
+  // PR is adopted and handed to a reviewer (lib/request-pr-review.ts, the one
+  // request path this route and the PR webhook's auto-review share).
   const person = requestingPerson(null, account);
-  const kernel = await requestKernelReview({
-    workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
-    forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
-    ...(callbackUrl ? { reviewCallback: { url: callbackUrl, on: callbackOn } } : {}),
-  }, { principal: kernelPrincipalOf({ person, account }) }).catch((err) => {
-    // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
-    if (isDoorError(err)) return err;
-    console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
-    return null;
-  });
-  if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
-  // §8.1: the reviewer that answers is the round's at the live head, never the
-  // newest reviewer row of the PR number (§14 Slice A retired that rule here).
-  // A reviewTaskId whose row is gone is no review task at all: fall through and
-  // queue one rather than report "already under review" with no status.
-  const kernelReviewTask = kernel?.handled && kernel.reviewTaskId
-    ? (await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, kernel.reviewTaskId)),
-        columns: { id: true, status: true, result: true, context: true },
-      })) ?? null
-    : null;
-  // Only an accepted result may fall through: a refusal (escalation, force) keeps its 409.
-  const kernelAccepted = !!kernel?.handled && (kernel.result.result === 'applied'
-    || (kernel.result.result === 'rejected' && (kernel.result.reason === 'review_in_flight' || kernel.result.reason === 'head_already_reviewed')));
-  const kernelReviewTaskMissing = kernelAccepted && !!kernel?.reviewTaskId && !kernelReviewTask;
-  if (kernel?.handled && !kernelReviewTaskMissing) {
-    const r = kernel.result;
-    const accepted = kernelAccepted;
-    if (!accepted && r.result !== 'applied') {
-      return bad(`Review not requested: ${decisionRefusalReason(r.reason)}`, 409, {
-        code: r.reason, current: r.current, kernel: true,
-        ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
-        ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
-        ...(r.reason === 'review_budget_spent' ? { hint: REVIEW_BUDGET_SPENT_HINT } : {}),
-      });
-    }
-    const latest = kernelReviewTask;
-    if (latest && callbackUrl && r.result === 'applied') {
-      await db.update(tasks)
-        .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('reviewCallback', ${JSON.stringify({ url: callbackUrl, on: callbackOn })}::jsonb)` })
-        .where(eq(tasks.id, latest.id));
-    }
-    const kernelPolicy = await resolveEffectivePolicy(workspace, null);
-    // 1bd26ae7: never "already under review" with nothing behind it. A round with no reviewer task
-    // yet says so, with the live head it is for; the seam has re-queued its dispatch when every
-    // earlier one finished without filing a reviewer.
-    const noReviewer = !latest
-      ? { state: 'queued' as const, headSha: (pr.head?.sha as string | undefined) ?? null, reason: r.result === 'applied'
-          ? 'a review round is queued at this head; buildd is filing its reviewer now'
-          : `no reviewer task exists for this head yet (${r.reason})` }
-      : null;
-    return NextResponse.json({
-      ok: true,
-      kernel: true,
-      alreadyRequested: r.result !== 'applied',
-      ...(noReviewer ? { queued: noReviewer } : {}),
-      ...(r.result === 'rejected' && r.reason === 'head_already_reviewed'
-        ? { hint: person ? 'this head already has a verdict; pass force to re-review' : 'this head already has a verdict; a new round starts when the PR head moves (a forced re-review is a person\'s call)' }
-        : {}),
-      prNumber,
-      reviewTaskId: latest?.id ?? null,
-      taskId: existingWorker?.taskId ?? null,
-      autoMergeExpected: autoMergeExpectedFor(kernelPolicy),
-      callback: callbackUrl && r.result === 'applied' ? { url: callbackUrl, on: callbackOn } : null,
-      status: latest
-        ? derivePrReviewStatus({ reviewTask: latest, worker: existingWorker ?? null, autoMergeExpected: autoMergeExpectedFor(kernelPolicy) })
-        : null,
-    }, { status: r.result === 'applied' ? 201 : 200 });
-  }
-  const existingReview = await findReviewTaskForPr(workspace.id, prNumber);
-  const inFlight = existingReview?.status === 'pending' || existingReview?.status === 'in_progress';
-  const force = body.force === true;
-
-  // A forced re-review of the head that already has a verdict is a person's
-  // call here too. An agent may force a review of a head nobody has judged yet
-  // (the head moved, or the last reviewer left no verdict).
-  if (force && !person && !inFlight) {
-    const prior = resolvePriorVerdict(existingReview);
-    if (prior && prior.headSha === (pr.head?.sha ?? '')) {
-      return bad(`Review not requested: ${decisionRefusalReason('force_requires_human')}`, 409, { code: 'force_requires_human', hint: FORCE_NEEDS_PERSON });
-    }
-  }
-
-  // 2ded4e88: the round budget is the PR's. Spent, force does not file a reviewer from here, at the
-  // judged head or a moved one; a person asks from the PR's page (the dashboard re-review route).
-  if (force && !inFlight && existingReview
-    && isReviewBudgetSpent(derivePrReviewStatus({ reviewTask: existingReview, worker: existingWorker ?? null, autoMergeExpected: false }))) {
-    return bad(`Review not requested: ${decisionRefusalReason('review_budget_spent')}`, 409, { code: 'review_budget_spent', hint: REVIEW_BUDGET_SPENT_HINT });
-  }
-
-  // Idempotency: one reviewer per PR at a time. `force` re-reviews a finished
-  // review but never stacks a second agent onto a running one — two reviewers
-  // on one PR race each other's verdicts.
-  if (existingReview && (inFlight || !force)) {
-    const policy = await resolveEffectivePolicy(workspace, null);
-    // Deferred, not rejected: the caller's request is honoured by the reviewer
-    // already running. The count answers "how often is a second review asked
-    // for", which is the signal that a review is stuck without failing.
-    fireGateEvent({
-      gate: GATE_SLUGS.REVIEWER_SINGLE_FLIGHT,
+  const out = await requestPrReview({
+    workspace, repo, pr, prNumber, existingWorker: existingWorker ?? null,
+    requester: {
+      person,
+      actor: person ? `human:${person}` : `agent:${account.id}`,
+      principal: kernelPrincipalOf({ person, account }),
+      accountId: account.id,
+      teamId: account.teamId,
+      creationSource: 'mcp',
       surface: 'POST /api/github/pr/review',
-      outcome: 'deferred',
-      reason: inFlight
-        ? 'a reviewer is already working this PR'
-        : 'this PR already has a review; pass force to re-review',
-      workspaceId: workspace.id,
-      taskId: existingWorker?.taskId ?? null,
-      workerId: existingWorker?.id ?? null,
-      callerOrigin: 'api',
-      detail: { prNumber, inFlight, force, reviewTaskId: existingReview.id },
-    });
-    return NextResponse.json({
-      ok: true,
-      alreadyRequested: true,
-      prNumber,
-      reviewTaskId: existingReview.id,
-      taskId: existingWorker?.taskId ?? null,
-      autoMergeExpected: autoMergeExpectedFor(policy),
-      status: derivePrReviewStatus({
-        reviewTask: existingReview,
-        worker: existingWorker ?? null,
-        autoMergeExpected: autoMergeExpectedFor(policy),
-      }),
-    });
-  }
-
-  // A force re-review of a PR that already carries a terminal verdict at a
-  // DIFFERENT head is a delta review: the reviewer gets the delta plus its
-  // own prior verdict instead of re-reading the whole PR. Same head (or no
-  // recorded verdict) falls through to the full review below unchanged.
-  const priorVerdict: PriorVerdict | undefined = force
-    ? (resolvePriorVerdict(existingReview) ?? undefined)
-    : undefined;
-  const deltaPriorVerdict = priorVerdict && priorVerdict.headSha !== (pr.head?.sha ?? '')
-    ? priorVerdict
-    : undefined;
-
-  // An approval whose PR diff is unchanged since it was given (the head only
-  // moved by a rebase or base merge) needs no second agent: record that it
-  // covers the new head and return it, instead of paying for a delta review
-  // of an empty delta. Only an approve carries forward.
-  if (existingReview && deltaPriorVerdict?.verdict === 'approve' && pr.base?.ref && pr.head?.sha) {
-    const carry = await carryForwardApprovalIfUnchanged({
-      installationId: repo.installationId,
-      repoFullName: repo.fullName,
-      workspaceId: workspace.id,
-      prNumber,
-      baseRef: pr.base.ref,
-      headSha: pr.head.sha,
-    }).catch((err) => {
-      console.warn(`[pr-review] carry-forward check failed for PR #${prNumber}:`, err);
-      return { carried: false, reason: 'carry-forward check failed' };
-    });
-    if (carry.carried) {
-      const policy = await resolveEffectivePolicy(workspace, null);
-      return NextResponse.json({
-        ok: true,
-        alreadyRequested: true,
-        carriedForward: true,
-        carriedForwardReason: carry.reason,
-        prNumber,
-        reviewTaskId: existingReview.id,
-        taskId: existingWorker?.taskId ?? null,
-        autoMergeExpected: autoMergeExpectedFor(policy),
-        status: derivePrReviewStatus({
-          reviewTask: existingReview,
-          worker: existingWorker ?? null,
-          autoMergeExpected: autoMergeExpectedFor(policy),
-        }),
-      });
-    }
-  }
-
-  // Adopt the PR when buildd has no worker for it: every downstream surface
-  // keys off "the worker that owns this PR", so adoption is what lets an
-  // externally-authored PR use the existing review rails unchanged.
-  const { adopted, ownerWorker, originalTask } = await resolveOrAdoptPrOwner({
-    workspaceId: workspace.id,
-    installationId: repo.installationId,
-    repoFullName: repo.fullName,
-    prNumber,
-    pr,
-    creationSource: 'mcp',
-    accountId: account.id,
-  });
-
-  // Automatic adoption skips dependency-bot PRs; an explicit request is the
-  // one door that adopts them. Recorded as a bypass so the ledger shows how
-  // often that happens. The push paths still refuse the bot's branch.
-  if (adopted && isDependencyBotAuthor(pr.user)) {
-    fireGateEvent({
-      gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
-      surface: 'POST /api/github/pr/review',
-      outcome: 'bypassed',
-      reason: 'explicit review request adopted a dependency-bot PR — reviewed, never pushed to',
-      workspaceId: workspace.id,
-      taskId: ownerWorker.taskId,
-      workerId: ownerWorker.id,
-      callerOrigin: 'api',
-      detail: { prNumber, author: pr.user?.login ?? null, stage: 'adoption' },
-    });
-  }
-
-  const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
-  const roles = await listWorkspaceRoles(workspace.id, account.teamId);
-  const picked = pickReviewerRole({
-    requested: typeof body.reviewerRole === 'string' ? body.reviewerRole : null,
-    policyRole: policy.agentReview?.reviewerRole ?? null,
-    available: roles,
-  });
-  if (!picked.role) return bad(picked.error ?? 'No reviewer role available', 400);
-
-  const reviewerTask = await createReviewerTask({
-    workspaceId: workspace.id,
-    originalTaskId: originalTask.id,
-    originalTask: {
-      title: originalTask.title,
-      description: originalTask.description,
-      backend: originalTask.backend,
-      missionId: originalTask.missionId,
-      pathManifest: originalTask.pathManifest ?? null,
-      iteration: originalTask.iteration ?? 0,
-      maxIterations: originalTask.maxIterations ?? 3,
+      origin: 'api',
     },
-    worker: { branch: ownerWorker!.branch ?? `pr-${prNumber}` },
-    prNumber,
-    prUrl: pr.html_url,
-    headSha: pr.head?.sha ?? '',
-    reviewerRole: picked.role,
-    confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
-    installationId: repo.installationId,
-    repoFullName: repo.fullName,
-    policyConfig: (workspace.gitConfig as any)?.policyConfig,
-    // Already fetched — the reviewer reads it for its lede only.
-    prBody: typeof pr.body === 'string' ? pr.body : null,
-    baseRef: typeof pr.base?.ref === 'string' ? pr.base.ref : null,
-    ...(callbackUrl ? { reviewCallback: { url: callbackUrl, on: callbackOn } } : {}),
-    ...(deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
+    force: body.force === true,
+    reviewerRole: typeof body.reviewerRole === 'string' ? body.reviewerRole : null,
+    callbackUrl,
+    callbackOn,
   });
-
-  if (!reviewerTask?.id) {
-    // This may occur if a concurrent caller (e.g., create_pr's auto-review
-    // request and the explicit review request in the same milliseconds) both
-    // tried to create a reviewer task for the same PR. The first wins due to
-    // the DB constraint; if the winner was not found by the fallback lookup
-    // in createReviewerTask, try a broader lookup as a last resort.
-    console.warn(`[pr-review] createReviewerTask returned null for PR #${prNumber}; attempting fallback lookup`);
-
-    // Retry with a live-task-only lookup that doesn't require head SHA match.
-    // This catches cases where the concurrent winner was created just after
-    // our insert failed but before we found it. Only returns pending/assigned/in_progress
-    // tasks — never completed ones from prior heads.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt > 0) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      const fallback = await findLiveReviewTaskForPr(workspace.id, prNumber);
-      if (fallback?.id) {
-        console.log(`[pr-review] Fallback lookup found live reviewer task ${fallback.id} for PR #${prNumber}`);
-        const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
-        return NextResponse.json(
-          {
-            ok: true,
-            adopted,
-            alreadyRequested: true,
-            prNumber,
-            prUrl: pr.html_url,
-            repoFullName: repo.fullName,
-            workspaceId: workspace.id,
-            taskId: originalTask.id,
-            reviewTaskId: fallback.id,
-            deduplicated: true,
-            reviewerRole: picked.role,
-            reviewerRoleSource: picked.source,
-            autoMergeExpected: autoMergeExpectedFor(policy),
-            callback: callbackUrl ? { url: callbackUrl, on: callbackOn } : null,
-            status: derivePrReviewStatus({
-              reviewTask: fallback as any,
-              worker: ownerWorker ?? null,
-              autoMergeExpected: autoMergeExpectedFor(policy),
-            }),
-          },
-          { status: 200 },
-        );
-      }
-    }
-
-    console.error(`[pr-review] Failed to create or find reviewer task for PR #${prNumber} in workspace ${workspace.id}`);
-    return bad('Could not create the reviewer task (or find concurrent writer; see logs)', 500);
-  }
-
-  // A live reviewer task already owns this PR generation — return it rather than
-  // putting a second agent on the same commit. Dispatch and the PR activity
-  // entry both belong to the filing that won.
-  if (!reviewerTask.deduplicated) {
-    await announceTaskCreated(
-      {
-        id: reviewerTask.id,
-        title: `Review PR #${prNumber}: ${originalTask.title}`,
-        description: null,
-        workspaceId: workspace.id,
-        missionId: originalTask.missionId,
-        backend: originalTask.backend,
-        roleSlug: picked.role,
-      },
-      workspace as never,
-    );
-    await wakeTask(reviewerTask.id, 'task.created');
-
-    // Say so on the PR itself, exactly as the webhook path does.
-    await appendPrActivity({
-      installationId: repo.installationId,
-      repoFullName: repo.fullName,
-      prNumber,
-      entry: { kind: 'review_queued' },
-      workspaceId: workspace.id,
-    });
-  }
-
-  const autoMergeExpected = autoMergeExpectedFor(policy);
-  return NextResponse.json(
-    {
-      ok: true,
-      adopted,
-      prNumber,
-      prUrl: pr.html_url,
-      repoFullName: repo.fullName,
-      workspaceId: workspace.id,
-      taskId: originalTask.id,
-      reviewTaskId: reviewerTask.id,
-      deduplicated: reviewerTask.deduplicated ?? false,
-      reviewerRole: picked.role,
-      reviewerRoleSource: picked.source,
-      autoMergeExpected,
-      callback: callbackUrl ? { url: callbackUrl, on: callbackOn } : null,
-      status: derivePrReviewStatus({
-        reviewTask: { id: reviewerTask.id, status: 'pending', result: null, context: { prNumber } },
-        worker: ownerWorker ?? null,
-        autoMergeExpected,
-      }),
-    },
-    { status: 201 },
-  );
+  if (out.kind === 'response') return out.response as NextResponse;
+  return NextResponse.json(out.body, { status: out.status });
 }
 
 // Auth: API key, or the dashboard session (GET only — POST dispatches a

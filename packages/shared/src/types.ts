@@ -500,6 +500,18 @@ export interface MergePolicy {
    * on GitHub. 'off': nobody; the findings have to be fixed, waived or deferred.
    */
   reviewOverride?: ReviewOverridePolicy;
+
+  /**
+   * Ask for buildd's own review of an open PR buildd did not open (a person's,
+   * or an agent's `gh pr create`), on the PR webhook, so it goes through the same
+   * review, verdict and merge-policy path as a buildd PR instead of reading
+   * "Review not requested" until someone asks. Drafts, bots' PRs and release
+   * candidates are never auto-reviewed. Each review is a reviewer agent run, so
+   * it spends model budget per PR. Unset: on under tier 'agent-review' (the team
+   * already chose agent review for its PRs), off otherwise
+   * (`autoReviewUnownedEnabled`).
+   */
+  autoReviewUnowned?: boolean;
 }
 
 export type DataMigrationsPolicy = 'person' | 'agent-review';
@@ -516,6 +528,19 @@ export function agentReviewsDataMigrations(mergePolicy: unknown): boolean {
   if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return false;
   const mp = mergePolicy as Record<string, unknown>;
   return mp.tier === 'agent-review' && mp.dataMigrations === 'agent-review';
+}
+
+/**
+ * Whether a PR buildd did not open asks for buildd's review on its own
+ * (`mergePolicy.autoReviewUnowned`). An explicit boolean wins; unset, it follows
+ * the tier: on under 'agent-review', off otherwise. Tolerates any stored shape
+ * (a missing or malformed policy is the default policy, which is off).
+ */
+export function autoReviewUnownedEnabled(mergePolicy: unknown): boolean {
+  if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return false;
+  const mp = mergePolicy as Record<string, unknown>;
+  if (typeof mp.autoReviewUnowned === 'boolean') return mp.autoReviewUnowned;
+  return mp.tier === 'agent-review';
 }
 
 /**
@@ -599,7 +624,7 @@ export function visualReviewPolicyOf(gitConfig: unknown): VisualReviewPolicyMode
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride', 'autoReviewUnowned']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -701,6 +726,10 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       error: `mergePolicy.reviewOverride must be one of: ${VALID_REVIEW_OVERRIDE.join(', ')}`,
       field: 'reviewOverride',
     };
+  }
+
+  if (obj.autoReviewUnowned !== undefined && typeof obj.autoReviewUnowned !== 'boolean') {
+    return { ok: false, error: 'mergePolicy.autoReviewUnowned must be a boolean', field: 'autoReviewUnowned' };
   }
 
   if (obj.threshold !== undefined) {

@@ -13,7 +13,13 @@
  *    newest-version-wins rule decides what is written (never this sweep);
  *  - a frozen release candidate: the release gate's answer at its SHA;
  *  - anything else (no delivery, a delivery that has not seen this head, one
- *    that is over): pending, "Review not requested" or "Review in progress".
+ *    that is over): pending, "Review not requested" or "Review in progress";
+ *  - except a *foreign* PR (buildd has no record of it, `isForeignPr`) with no
+ *    review asked for: nothing at all, whatever the workspace's
+ *    `mergePolicy.autoReviewUnowned` says. buildd is not going to review it, so
+ *    it puts no required status on it. When auto-review does take one, the PR
+ *    webhook requests the review first (lib/auto-review-unowned.ts): the PR is
+ *    adopted, so it is no longer foreign and reads "Review in progress".
  * The host writes the last two only when GitHub shows something else, so a
  * second pass writes nothing. Then it re-reads the context on every head and
  * reports coverage: a head still without it is listed and counted as an error
@@ -40,6 +46,8 @@ export interface LinkedRepo {
   installationId: number;
   repoFullName: string;
   releaseConfig: WorkspaceReleaseConfig | null;
+  /** The workspace's gitConfig (`mergePolicy.autoReviewUnowned`, `branchPrefix`); absent reads as none. */
+  gitConfig?: unknown;
 }
 
 /** An open PR as GitHub's list returns it (the fields read here). */
@@ -82,6 +90,8 @@ export interface OpenPrStatusDeps {
   enqueueRepublish?: (deliveryId: string, version: number) => Promise<boolean>;
   drain?: (deliveryId: string) => Promise<unknown>;
   reviews?: () => Promise<OpenPrReviews>;
+  /** Whether buildd has no record of this PR at all (lib/auto-review-unowned.ts `isForeignPr`). */
+  foreign?: (links: LinkedRepo[], repoFullName: string, pr: OpenPull) => Promise<boolean>;
 }
 
 export interface OpenPrStatusSummary {
@@ -97,7 +107,8 @@ export interface OpenPrStatusSummary {
   candidates: number;
   /** Heads skipped due to repo or permission issues (not counted as errors). */
   skipped: number;
-  skipReasons: { noStatusesPermission: number; noDelivery: number };
+  /** `foreign`: a PR buildd has no record of and was not asked to review carries no status at all. */
+  skipReasons: { noStatusesPermission: number; noDelivery: number; foreign: number };
   errors: number;
   coverage: StatusCoverage;
 }
@@ -105,7 +116,7 @@ export interface OpenPrStatusSummary {
 /** Linked repos: a workspace with a GitHub repo on an installation that is not suspended. */
 export function linkedReposSql() {
   return sql`-- workflow:open_pr_status_repos
-SELECT w.id AS workspace_id, gi.installation_id, gr.full_name AS repo_full_name, w.release_config
+SELECT w.id AS workspace_id, gi.installation_id, gr.full_name AS repo_full_name, w.release_config, w.git_config
 FROM workspaces w
 JOIN github_repos gr ON gr.id = w.github_repo_id
 JOIN github_installations gi ON gi.id = gr.installation_id
@@ -114,10 +125,11 @@ ORDER BY gr.full_name, w.created_at, w.id`;
 }
 
 export async function linkedRepos(exec: Exec = dbExec): Promise<LinkedRepo[]> {
-  const rows = ((await exec(linkedReposSql())).rows ?? []) as Array<{ workspace_id: string; installation_id: number | string; repo_full_name: string; release_config: unknown }>;
+  const rows = ((await exec(linkedReposSql())).rows ?? []) as Array<{ workspace_id: string; installation_id: number | string; repo_full_name: string; release_config: unknown; git_config?: unknown }>;
   return rows.map((r) => ({
     workspaceId: String(r.workspace_id), installationId: Number(r.installation_id), repoFullName: String(r.repo_full_name),
     releaseConfig: (r.release_config ?? null) as WorkspaceReleaseConfig | null,
+    gitConfig: r.git_config ?? null,
   }));
 }
 
@@ -176,7 +188,7 @@ interface HeadRun {
   skipUnowned?: boolean;
 }
 
-type HeadResult = { shown: boolean; by: OpenHeadAnswer['by'] | null; wrote: boolean; republished: boolean; unchanged: boolean; skippedNoDelivery: boolean };
+type HeadResult = { shown: boolean; by: OpenHeadAnswer['by'] | null; wrote: boolean; republished: boolean; unchanged: boolean; skippedNoDelivery: boolean; skippedForeign: boolean };
 
 /** Error thrown when publish fails due to statuses:write permission denied. */
 class StatusesPermissionDeniedError extends Error {
@@ -198,7 +210,10 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
     ((await exec(enqueueEffectSql(id, version, { kind: 'publish_landing_status', dedupeKey: republishKey(id, version), payload: { version } }))).rows ?? []).length > 0);
   const drain = deps.drain ?? (async (id) => (await import('./seam')).drainDelivery(id));
 
-  const out: HeadResult = { shown: false, by: null, wrote: false, republished: false, unchanged: false, skippedNoDelivery: false };
+  const out: HeadResult = { shown: false, by: null, wrote: false, republished: false, unchanged: false, skippedNoDelivery: false, skippedForeign: false };
+  const foreign = deps.foreign ?? (async (ls, repo, p) => (await import('@/modules')).isForeignPr({
+    workspaces: ls.map((l) => ({ id: l.workspaceId, gitConfig: l.gitConfig ?? null })), repoFullName: repo, prNumber: p.number, headRef: p.head?.ref ?? null,
+  }));
   const read = () => statusOf(installationId, repoFullName, sha, LANDING_STATUS_CONTEXT).catch(() => null);
   const matches = (cur: Shown, want: LandingStatus) => !!cur && cur.state === want.state && cur.description === want.description;
   const ownerOf = async () => {
@@ -223,6 +238,16 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
   // Only what the answer needs: the kernel's own answer reads no review state.
   const kernelHere = openHeadStatus({ sha, view });
   const review = kernelHere.by === 'kernel' || candidateLink ? undefined : await reviews.review({ workspaceId, prNumber: pr.number });
+  // A PR buildd has no record of and nobody asked buildd to review (auto-review off, or it did not take
+  // this one: a draft, a bot's, another base): buildd puts no required status on it at all. One it did
+  // take is adopted before this runs, so it is not foreign. Coverage counts the skip as answered.
+  if (!owner && !candidateLink && review === 'not_requested'
+    && !links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts))
+    && await foreign(links, repoFullName, pr)) {
+    out.skippedForeign = true;
+    out.shown = true;
+    return out;
+  }
   // No live delivery, no review asked for, not a bot's, a draft or a (possible) release candidate: a stale
   // ordinary PR nobody in buildd is working on. The floor leaves it alone rather than writing pending on it.
   if (run.skipUnowned && !owner && !candidateLink && review === 'not_requested' && !pr.draft
@@ -280,7 +305,7 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
 
   const s: Omit<OpenPrStatusSummary, 'coverage'> = {
     repos: 0, checked: 0, published: 0, republished: 0, unchanged: 0, candidates: 0, skipped: 0,
-    skipReasons: { noStatusesPermission: 0, noDelivery: 0 }, errors: 0,
+    skipReasons: { noStatusesPermission: 0, noDelivery: 0, foreign: 0 }, errors: 0,
   };
   const heads: Array<OpenHead & { shown: boolean }> = [];
 
@@ -325,6 +350,12 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
       try {
         const r = await publishHead(run, links, pr, sha);
         shown = r.shown;
+        if (r.skippedForeign) {
+          s.skipped++;
+          s.skipReasons.foreign++;
+          heads.push({ ...head, shown });
+          continue;
+        }
         if (r.skippedNoDelivery) {
           s.skipped++;
           s.skipReasons.noDelivery++;
@@ -353,7 +384,7 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
   return { ...s, coverage: statusCoverage(heads) };
 }
 
-export type PrEventOutcome = 'published' | 'unchanged' | 'skipped_not_open' | 'skipped_stale_head' | 'skipped_unlinked' | 'skipped_not_candidate';
+export type PrEventOutcome = 'published' | 'unchanged' | 'skipped_foreign' | 'skipped_not_open' | 'skipped_stale_head' | 'skipped_unlinked' | 'skipped_not_candidate';
 
 /** The PR facts a release candidate is classified on, read off a pull. */
 function prFacts(pr: OpenPull, sha: string, repoFullName: string): ReleasePrFacts {
@@ -416,6 +447,7 @@ export async function publishOpenPrHead(
     if (!sha || (p.sha && p.sha !== sha && i === 0)) return i === 0 ? 'skipped_stale_head' : outcome;
     if (p.candidatesOnly && i === 0 && !links.some((l) => reviews.isCandidate(l.releaseConfig, prFacts(pr, sha, links[0]!.repoFullName)))) return 'skipped_not_candidate';
     const r = await publishHead(run, linked, pr, sha);
+    if (r.skippedForeign) return i === 0 ? 'skipped_foreign' : outcome;
     if (!r.wrote) return outcome;
     outcome = 'published';
     // It wrote: derive again, so inputs that moved while it wrote are not left behind.
