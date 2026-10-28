@@ -807,7 +807,7 @@ Each criterion is checkable against a board model built from fixtures
   `LandedStrip`, `stripReason`
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx` —
   `LandedMeter`, `StripCells`, `StripCell`, `STRIP_CELL_CLASS`,
-  `STATUS_WORDS`, `MAX_NUMBERED_TICKS`, `stripTone`
+  `statusWord`, `MAX_NUMBERED_TICKS`, `stripTone`
 - `apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.tsx` — the
   "waiting on N dependencies" line
 - `apps/web/src/app/app/(protected)/missions/[id]/mission-page-query.ts` —
