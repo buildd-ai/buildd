@@ -25,8 +25,9 @@
  * answer: a parked worker through the one answer path every surface shares
  * (`useAnswerSubmit`), an organizer's note through the mission's reply
  * route, an approval by linking to where it is decided. After an answer the
- * card collapses to `You chose <option> · <when>`. ⌘⏎ (Ctrl⏎) picks the
- * focused card's primary option, never on an approval.
+ * card collapses to `You chose <option> · Undo`, showing an Undo button to
+ * re-open the card and change the answer. ⌘⏎ (Ctrl⏎) picks the focused
+ * card's primary option, never on an approval.
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -276,13 +277,27 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     const next = open.find(c => !!(el.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING)) ?? open[0];
     next?.querySelector<HTMLElement>('button, a[href]')?.focus();
   }, [isAnswered]);
+  const handleUndo = useCallback(() => {
+    submit.reset();
+    setNoteOutcome(null);
+    setNoteError(null);
+  }, [submit]);
+
   if (chosen != null) {
     const lines = submit.outcome ? answerOutcomeLines(submit.outcome) : null;
     const already = submit.outcome?.kind === 'already_answered';
     return (
       <article ref={cardRef} data-testid={testId ?? 'decision-card'} data-kind={view.kind} data-answered="true" className="flex min-w-0 flex-col gap-1 border-t border-[var(--line-soft)] py-3 text-body">
-        <p className="text-text-primary [overflow-wrap:anywhere]">
-          {already ? 'Already answered' : 'You chose'} <span className="font-semibold">{chosen}</span> · just now
+        <p className="flex items-center gap-1 text-text-primary [overflow-wrap:anywhere]">
+          <span>{already ? 'Already answered' : 'You chose'} <span className="font-semibold">{chosen}</span> ·</span>
+          <button
+            type="button"
+            onClick={handleUndo}
+            data-testid="decision-undo"
+            className={TEXT_BUTTON}
+          >
+            Undo
+          </button>
         </p>
         {lines?.detail && <p className="text-meta text-text-muted [overflow-wrap:anywhere]">{lines.detail}</p>}
       </article>

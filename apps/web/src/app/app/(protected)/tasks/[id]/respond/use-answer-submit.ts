@@ -36,6 +36,8 @@ export interface AnswerSubmitState {
   outcome: AnswerOutcome | null;
   /** A failure. Without `stale` the question is still open, so retry is the same tap. */
   error: AnswerSubmitFailure | null;
+  /** Clears the recorded outcome and error, allowing the card to be re-answered. */
+  reset: () => void;
 }
 
 export function useAnswerSubmit(opts: {
@@ -88,5 +90,10 @@ export function useAnswerSubmit(opts: {
     }
   }, [workerId, taskId, noteId, send, markAnswerSent, onAnswered, onError]);
 
-  return { submit, sending, outcome, error };
+  const reset = useCallback(() => {
+    setOutcome(null);
+    setError(null);
+  }, []);
+
+  return { submit, sending, outcome, error, reset };
 }

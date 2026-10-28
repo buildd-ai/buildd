@@ -144,7 +144,7 @@ describe('DecisionCard', () => {
     expect(qa('[data-testid="decision-option"]')[0].getAttribute('aria-describedby')).toBe(tip.id);
   });
 
-  it('tapping an option answers the worker and the card collapses to You chose', async () => {
+  it('tapping an option answers the worker and the card collapses to You chose · Undo', async () => {
     act(() => root.render(<DecisionCard view={decision()} now={T0} />));
     await act(async () => { qa('[data-testid="decision-option"]')[1].click(); });
     await flush();
@@ -153,7 +153,21 @@ describe('DecisionCard', () => {
     const card = q('[data-testid="decision-card"]')!;
     expect(card.getAttribute('data-answered')).toBe('true');
     expect(card.textContent).toContain("You chose I'll set them myself");
+    expect(q('[data-testid="decision-undo"]')).not.toBeNull();
     expect(refreshed).toBe(1);
+  });
+
+  it('tapping Undo re-opens the card to be answered again', async () => {
+    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    await act(async () => { qa('[data-testid="decision-option"]')[1].click(); });
+    await flush();
+    expect(q('[data-testid="decision-card"]')!.getAttribute('data-answered')).toBe('true');
+    const undoBtn = q('[data-testid="decision-undo"]');
+    expect(undoBtn).not.toBeNull();
+    await act(async () => { undoBtn!.click(); });
+    await flush();
+    expect(q('[data-testid="decision-card"]')!.getAttribute('data-answered')).toBeNull();
+    expect(q('[data-testid="decision-option"]')).not.toBeNull();
   });
 
   it('after an answer, focus moves into the next open card, whatever its testId', async () => {
@@ -189,6 +203,7 @@ describe('DecisionCard', () => {
     await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
     await flush();
     expect(q('[data-testid="decision-card"]')!.getAttribute('data-answered')).toBe('true');
+    expect(q('[data-testid="decision-undo"]')).not.toBeNull();
   });
 
   it('⌘⏎ picks the primary of the focused card only', async () => {
@@ -276,6 +291,7 @@ describe('DecisionCard', () => {
     expect(calls[0].url).toBe('/api/missions/m1/notes/n1/reply');
     expect(calls[0].body).toEqual({ type: 'reply', title: 'Keep' });
     expect(q('[data-testid="decision-card"]')!.textContent).toContain('You chose Keep');
+    expect(q('[data-testid="decision-undo"]')).not.toBeNull();
   });
 
   it('visual review: fixes merged, awaiting a person: the real options, no stale note, Mark all fixed is handed to the host', async () => {
@@ -303,6 +319,7 @@ describe('DecisionCard', () => {
     await flush();
     expect(acted).toEqual(['Mark all fixed']);
     expect(q('[data-answered="true"]')!.textContent).toContain('You chose Mark all fixed');
+    expect(q('[data-testid="decision-undo"]')).not.toBeNull();
   });
   it('criteria escalation: the asking task and its age, the requirements in words, a short question, Answer differently files the answer as mission work', async () => {
     const { criteriaEscalationDecision } = await import('@/lib/mission-decisions');
@@ -334,5 +351,6 @@ describe('DecisionCard', () => {
     expect(calls[0].url).toBe('/api/tasks');
     expect(calls[0].body).toMatchObject({ workspaceId: 'w1', missionId: 'm1', title: 'Check the install step by hand on a clean machine' });
     expect(q('[data-answered="true"]')!.textContent).toContain('You chose Check the install step by hand on a clean machine');
+    expect(q('[data-testid="decision-undo"]')).not.toBeNull();
   });
 });
