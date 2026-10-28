@@ -38,7 +38,7 @@ export default function MissionFinalScreens({
 
   return (
     <section data-testid="mission-final-screens" aria-label="Final screens" className="mt-6">
-      <h2 className="text-eyebrow font-mono uppercase text-text-muted">Final screens</h2>
+      <h2 className="text-meta text-text-muted">Final screens</h2>
       <ul className="mt-2 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
         {screens.map(s => {
           const f = filed[s.key] ?? { state: 'idle' as const };
