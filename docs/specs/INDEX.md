@@ -4,9 +4,9 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (84)
+## Active (85)
 
-### auth (8)
+### auth (9)
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
@@ -16,6 +16,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-05
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
+- [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-10-16
+  A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 - [Deployment Actions](./deployment-actions.md) · @max — verified 2026-10-05
   A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 - [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-23
@@ -67,7 +69,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### missions (6)
 
-- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-24
+- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-28
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-17
   Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
@@ -224,17 +226,15 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-26
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
-- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-19
+- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-28
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 - [Workspace Routing and Reach](./workspace-routing-and-reach.md) · @max — verified 2026-10-19
   Every task MUST be filed into the workspace its subject lives in, with the reason recorded, and MUST reach any other workspace only through a named, person-granted delegation checked before it runs.
 
-## Superseded (10)
+## Superseded (9)
 
 - [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-22
   Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract. → replaced by Living Spec `75217f55`
-- [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-10-28
-  buildd no longer stores, refreshes or serves a subscription login, so there is nothing for it to rotate; the machine that owns a login refreshes it. → replaced by Living Spec `model-credentials`
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-15
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped. → replaced by `agent-question-protocol`
 - [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-27

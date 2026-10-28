@@ -139,6 +139,7 @@ mock.module('@/lib/criteria-escalation', () => ({ resolveCriteriaEscalation: moc
 // rule are the thing under test, not a stub of them.
 import { ensureCriteriaVerdict, evaluateCriteriaNow, ON_DEMAND_NOTE_TITLE } from './mission-criteria-eval';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import { criteriaFingerprint } from './criteria-fingerprint';
 
 const realFetch = globalThis.fetch;
 const originalApiKey = process.env.ANTHROPIC_API_KEY;
@@ -1465,13 +1466,111 @@ describe('living_spec criterion (mission-selected outcome spec)', () => {
     taskRows = [{ id: 't1', status: 'completed', title: 'Build it', taskClass: 'work', mode: 'execution', result: null }];
     specStanding = standing('UNVERIFIED');
     mockEnsureFinalVerification.mockImplementationOnce(async () => ({ kind: 'open', taskId: 'final-verify-1' }) as any);
-    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(state!.criteria[1].verdict).toBe('PENDING');
     expect(mockResolveCriteriaEscalation).not.toHaveBeenCalled();
+  });
+
+  // ── df808193 replay ───────────────────────────────────────────────────────
+  //
+  // Every PR merged; the final verification ran at the integrated target and
+  // finished; the fold stayed UNVERIFIED (acceptance test results held, runner
+  // check runs never recorded). The evaluator kept answering PENDING ("Final
+  // verification is open") for a verification that was over, the heartbeat
+  // escalated that PENDING as a decision, and the escalation stood the
+  // heartbeat down — so nothing could ever move the mission again.
+  describe('a final verification that already finished at this target (df808193)', () => {
+    const built = () => { taskRows = [{ id: 't1', status: 'completed', title: 'Build it', taskClass: 'work', mode: 'execution', result: null }]; };
+    const open = [{ criterionId: 'R-1', standing: 'pass', headSha: target.headSha, source: 'review' }, { criterionId: 'R-2', standing: 'pass', headSha: target.headSha, source: 'review', reason: 'test held' }];
+
+    it('is not in flight: the criterion keeps the fold\'s verdict and names the finished verification, never PENDING', async () => {
+      mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+      built();
+      specStanding = standing('UNVERIFIED', open);
+      mockEnsureFinalVerification.mockImplementationOnce(async () => ({ kind: 'done', taskId: 'final-verify-9', settled: 0 }) as any);
+      const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+      expect(state!.criteria[1].verdict).toBe('UNVERIFIED');
+      expect(state!.criteria[1].evidence).toContain('UNVERIFIED evidence');
+      expect(state!.criteria[1].evidence).toMatch(/final verification final-ve.* finished/i);
+      expect(state!.criteria[1].workerTaskId).toBeUndefined();
+      expect(state!.overall).toBe('UNVERIFIED');
+    });
+
+    it('check runs settled by the verification step are read back in the same evaluation: the mission passes', async () => {
+      mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+      built();
+      mockReadMissionSpecStanding.mockImplementationOnce(async () => standing('UNVERIFIED', open));
+      mockReadMissionSpecStanding.mockImplementationOnce(async () => standing('pass', open.map((s) => ({ ...s, source: 'test', reason: undefined }))));
+      mockEnsureFinalVerification.mockImplementationOnce(async () => ({ kind: 'done', taskId: 'final-verify-9', settled: 20 }) as any);
+      const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+      expect(mockReadMissionSpecStanding).toHaveBeenCalledTimes(2);
+      expect(state!.criteria[1].verdict).toBe('pass');
+      expect(state!.criteria[1].spec?.standings.every((s) => s.source === 'test')).toBe(true);
+      expect(state!.overall).toBe('pass');
+    });
+
+    /** The stored verdict shape an escalation was raised on: the spec criterion at `verdict`, the task criterion passing. */
+    const escalatedOn = (verdict: string) => {
+      const state = { overall: 'UNVERIFIED', evaluatedAt: new Date(Date.now() - 3_600_000).toISOString(), criteria: [
+        { index: 0, type: 'no_open_tasks', verdict: 'pass', fingerprint: criterionFingerprint({ type: 'no_open_tasks' } as any) },
+        { index: 1, type: 'living_spec', verdict, fingerprint: criterionFingerprint(SEL as any), ...(verdict === 'PENDING' ? { workerTaskId: 'final-verify-9' } : {}) },
+      ] } as any;
+      return { goalCriteriaState: state, criteriaEscalatedAt: new Date(Date.now() - 1_800_000), criteriaRearmFingerprint: criteriaFingerprint(state) };
+    };
+
+    it('a changed verdict clears a standing escalation here, since the escalation stood the heartbeat down', async () => {
+      mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL], ...escalatedOn('PENDING') });
+      built();
+      specStanding = standing('UNVERIFIED', open);
+      mockEnsureFinalVerification.mockImplementationOnce(async () => ({ kind: 'done', taskId: 'final-verify-9', settled: 0 }) as any);
+      const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+      expect(state!.criteria[1].verdict).toBe('UNVERIFIED');
+      expect(mockResolveCriteriaEscalation).toHaveBeenCalledTimes(1);
+      expect(mockResolveCriteriaEscalation.mock.calls[0][0]).toBe('m1');
+      expect(mockResolveCriteriaEscalation.mock.calls[0][1]).toBe('verdict_changed');
+    });
+
+    it('an unchanged verdict leaves the escalation standing: the owner still owes the decision', async () => {
+      mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL], ...escalatedOn('UNVERIFIED') });
+      built();
+      specStanding = standing('UNVERIFIED', open);
+      mockEnsureFinalVerification.mockImplementationOnce(async () => ({ kind: 'done', taskId: 'final-verify-9', settled: 0 }) as any);
+      await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+      expect(mockResolveCriteriaEscalation).not.toHaveBeenCalled();
+    });
   });
 
   it('waits for the build before filing the final verification', async () => {
     mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
     taskRows = [{ id: 't1', status: 'pending', title: 'Build it', taskClass: 'work', mode: 'execution', result: null }];
+    specStanding = standing('UNVERIFIED');
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockEnsureFinalVerification).not.toHaveBeenCalled();
+    expect(state!.criteria[1].evidence).toContain('once the build work is done');
+  });
+
+  it('build complete dispatch does not count failed repair tasks — only build tasks', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    taskRows = [
+      // Build task completed
+      { id: 't1', status: 'completed', title: 'Build feature', taskClass: 'work', mode: 'execution', result: null, context: undefined, roleSlug: null },
+      // Repair task failed — must not prevent final verification dispatch
+      { id: 't2', status: 'failed', title: 'Fix issue', taskClass: 'work', mode: 'execution', result: null, context: { specRepair: { specId: 's1', revision: 1 } }, roleSlug: null },
+    ];
+    specStanding = standing('UNVERIFIED');
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockEnsureFinalVerification).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[1].verdict).toBe('PENDING');
+  });
+
+  it('build incomplete — pending build task blocks final verification dispatch', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    taskRows = [
+      // Build task pending
+      { id: 't1', status: 'pending', title: 'Build feature', taskClass: 'work', mode: 'execution', result: null, context: undefined, roleSlug: null },
+      // Completed repair task does not count toward build
+      { id: 't2', status: 'completed', title: 'Fix issue', taskClass: 'work', mode: 'execution', result: null, context: { specRepair: { specId: 's1', revision: 1 } }, roleSlug: null },
+    ];
     specStanding = standing('UNVERIFIED');
     const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
     expect(mockEnsureFinalVerification).not.toHaveBeenCalled();

@@ -397,6 +397,19 @@ describe('refreshMcpConnectorCredential', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('records why when the blob has no refresh_token, instead of leaving the row silently expired', async () => {
+    const { secondSet } = setupSuccessfulClaim(
+      secretRow({ encryptedValue: blob('at_only') }),
+      oauthConnector(),
+    );
+    globalThis.fetch = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })) as any;
+
+    await refreshMcpConnectorCredential('s-1');
+
+    const setArg = secondSet.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(String(setArg?.lastVerificationError)).toContain('no_refresh_token');
+  });
+
   it('returns error when connector has no token_endpoint in metadata', async () => {
     setupSuccessfulClaim(
       secretRow(),
