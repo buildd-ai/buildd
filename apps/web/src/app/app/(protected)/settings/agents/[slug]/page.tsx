@@ -255,6 +255,7 @@ export default async function RoleProfilePage({
   return (
     <SettingsPage
       title={role.name}
+      titleOnMobile
       readOnly={!canEdit}
       description={
         <span className="flex flex-col gap-1">
