@@ -26,12 +26,10 @@ export interface QueueBoardProps {
   hrefFor?: (row: HealthQueueWaitingRow) => string;
 }
 
-/** R-4: idle capacity first, then a stuck lane; with nothing wrong, only the phone says so. */
+/** R-4: idle capacity first, then a stuck lane; with nothing wrong, nothing renders. */
 export function QueueAlert({ view }: { view: HealthQueueResponse }) {
   const stuck = view.lanes.filter(l => l.stuckFor);
-  if (!view.idle && stuck.length === 0) {
-    return <p data-testid="queue-calm" className="text-body text-text-muted md:hidden">Nothing held that could run</p>;
-  }
+  if (!view.idle && stuck.length === 0) return null;
   return (
     <div className="flex flex-col gap-2" data-testid="queue-alert">
       {view.idle && (
