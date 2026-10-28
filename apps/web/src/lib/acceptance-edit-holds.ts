@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { acceptanceEditOf, pendingAcceptance } from '@buildd/spec-contract/acceptance-edit';
+import { acceptanceEditOf, heldReasons, pendingAcceptance } from '@buildd/spec-contract/acceptance-edit';
 import { isBuildingRole } from '@/lib/acceptance-edit-sync';
 
 /** One building task whose PR edits acceptance tests nobody has accepted yet (spec 1dc6cc39 R-80, AC-126). */
@@ -11,6 +11,8 @@ export interface AcceptanceHold {
   /** The PR's diff page, when the PR is known. */
   diffUrl: string | null;
   paths: string[];
+  /** Which check got weaker, per path, in plain words (from the strictness check). Empty when it did not run. */
+  weakened: Array<{ path: string; text: string }>;
 }
 
 /**
@@ -22,10 +24,12 @@ export function acceptanceHolds(
   prs: ReadonlyMap<string, { prNumber: number | null; prUrl: string | null }>,
 ): AcceptanceHold[] {
   return rows.filter((t) => isBuildingRole(t.roleSlug)).flatMap((t) => {
-    const paths = pendingAcceptance(acceptanceEditOf(t.context));
+    const flag = acceptanceEditOf(t.context);
+    const paths = pendingAcceptance(flag);
     if (!paths.length) return [];
+    const weakened = paths.flatMap((path) => heldReasons(flag, path).map((text) => ({ path, text })));
     const pr = prs.get(t.id);
-    return [{ taskId: t.id, prNumber: pr?.prNumber ?? null, diffUrl: pr?.prUrl ? `${pr.prUrl.replace(/\/+$/, '')}/files` : null, paths }];
+    return [{ taskId: t.id, prNumber: pr?.prNumber ?? null, diffUrl: pr?.prUrl ? `${pr.prUrl.replace(/\/+$/, '')}/files` : null, paths, weakened }];
   }).sort((a, b) => (a.prNumber ?? 0) - (b.prNumber ?? 0));
 }
 
