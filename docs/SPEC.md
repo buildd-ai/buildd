@@ -576,7 +576,7 @@ when `artifactId` + `artifactTitle` are present. This contract is tested in
 `apps/web/src/components/artifact-helpers.test.ts` (`buildCreateTaskUrl` suite).
 - **GitHub:** `github/{install,callback,installations,installations/[id]/repos,pr,webhook}`.
 - **MCP:** `mcp` (HTTP dispatch), `mcp/registry`.
-- **Cron:** `cron/{schedules,codex-token-refresh,routing-calibration,feedback-digest}`.
+- **Cron:** `cron/{schedules,connector-token-refresh,routing-calibration,feedback-digest}`.
 - **Integrations:** `integrations/{slack,discord}`, `webhooks/ingest`.
 - **Releases:** `releases/{status,trigger}`.
 - **Misc:** `version`, `feedback`, `memory/quickstart`, `admin/refresh-model-aliases`.

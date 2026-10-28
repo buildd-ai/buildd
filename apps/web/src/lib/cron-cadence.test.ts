@@ -74,7 +74,7 @@ describe('sweepLookaheadMinutes', () => {
   it('covers a full poll interval plus margin', () => {
     // The bug this replaces: a 10-minute lookahead on a 4-hour cron, so a
     // credential expiring in (10min, 4h] was never refreshed before it died.
-    const interval = cronIntervalMinutes(CRON_SCHEDULES['codex-token-refresh']);
+    const interval = cronIntervalMinutes(CRON_SCHEDULES['connector-token-refresh']);
     expect(sweepLookaheadMinutes()).toBeGreaterThanOrEqual(interval);
   });
 

@@ -3,7 +3,7 @@ title: Scheduled maintenance jobs
 status: draft
 owner: max
 last_verified: 2026-10-28
-summary: The fourteen background cron routes that keep derived state, alerts and hygiene current MUST each declare what they do, their cadence and what degrades when they stop, so a silently dead job is recognisable.
+summary: The thirteen background cron routes that keep derived state, alerts and hygiene current MUST each declare what they do, their cadence and what degrades when they stop, so a silently dead job is recognisable.
 domain: integrations
 surfaces: [cron-manifest.json, apps/web/src/app/api/cron/orchestration-readout/route.ts, apps/web/src/app/api/cron/role-outcomes/route.ts, apps/web/src/app/api/cron/mission-summaries/route.ts, apps/web/src/app/api/cron/feedback-digest/route.ts, apps/web/src/app/api/cron/chat-retro/route.ts, apps/web/src/app/api/cron/page-budget-health/route.ts, apps/web/src/app/api/cron/experiment-health/route.ts, apps/web/src/app/api/cron/memory-digest-guardrail/route.ts, apps/web/src/app/api/cron/runner-update-notify/route.ts, apps/web/src/app/api/cron/visual-review-schedule/route.ts, apps/web/src/app/api/cron/post-session-quality/route.ts, apps/web/src/app/api/cron/stall-notify/route.ts, apps/web/src/app/api/cron/task-archive/route.ts]
 related: [external-cron-triggers, runner-liveness]
@@ -101,6 +101,10 @@ manifest wins and this table is stale. Every route authenticates with
 - The schedules tick, core maintenance and other already-specced cron routes.
 
 ## Known gaps
+
+- `lease-expiry-guard` is gone: it watched server-held subscription-login
+  leases, and that custody path was removed. Its old AC-1 is retired rather
+  than renumbered.
 
 - `stall-notify` is declared in the manifest but its note says no trigger has
   ever existed; confirm before relying on it.

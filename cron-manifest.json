@@ -115,10 +115,10 @@
       "enabled": false
     },
     {
-      "$comment": "Refreshes expiring MCP-connector OAuth credentials and pings the team Anthropic API key for liveness. Keeps its original path and slug (the external trigger and cron_runs are keyed on them); it no longer touches a subscription login, which buildd does not store. Cadence is load-bearing \u2014 apps/web/src/lib/cron-cadence.ts derives the connector sweep's lookahead window from this expression, so changing it here changes the window. Deliberately NOT restricted to daytime: OAuth tokens expire overnight too, and the sweep window is derived from an EVEN interval \u2014 an hour-restricted schedule leaves an 8h night gap the 5h window cannot cover. 6 runs/day is a negligible share of Neon wake time next to the */30 schedules tick.",
-      "title": "Buildd: Credential Refresh",
+      "$comment": "Refreshes expiring MCP-connector OAuth credentials and pings the team Anthropic API key for liveness. Was /api/cron/codex-token-refresh until it stopped refreshing subscription logins, which buildd no longer stores; that path stays as an alias until `bun run cron:sync --prune` moves the live job here. Cadence is load-bearing \u2014 apps/web/src/lib/cron-cadence.ts derives the connector sweep's lookahead window from this expression, so changing it here changes the window. Deliberately NOT restricted to daytime: OAuth tokens expire overnight too, and the sweep window is derived from an EVEN interval \u2014 an hour-restricted schedule leaves an 8h night gap the 5h window cannot cover. 6 runs/day is a negligible share of Neon wake time next to the */30 schedules tick.",
+      "title": "Buildd: Connector Token Refresh",
       "profile": "core",
-      "path": "/api/cron/codex-token-refresh",
+      "path": "/api/cron/connector-token-refresh",
       "schedule": "0 */4 * * *",
       "method": "GET"
     },

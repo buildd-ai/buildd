@@ -746,7 +746,7 @@ The first cut of this warned on "expires within 24h", which was permanently true
 for a 24h-lifetime token: a never-clearing Home card plus an alert after every
 reconnect. Approaching expiry is deliberately silent.
 
-**Refresh sweep** (`/api/cron/codex-token-refresh`):
+**Refresh sweep** (`/api/cron/connector-token-refresh`):
 
 - The lookahead is **derived from the cron's own cadence**
   (`lib/cron-cadence.ts`, `MCP_REFRESH_LOOKAHEAD_MINUTES` overrides), never
@@ -796,7 +796,7 @@ reconnect. Approaching expiry is deliberately silent.
 - Cadence: `apps/web/src/lib/cron-cadence.ts`, `cron-manifest.json`
 - Queue: `apps/web/src/lib/action-queue.ts` (`reconnect` kind → `RECONNECT` chip)
 - Home: `apps/web/src/app/app/(protected)/home/page.tsx`
-- Sweep: `apps/web/src/app/api/cron/codex-token-refresh/route.ts`
+- Sweep: `apps/web/src/app/api/cron/connector-token-refresh/route.ts`
 - Notify: `apps/web/src/app/api/cron/connector-block-notify/route.ts`
 - Alert copy: `apps/web/src/app/api/workers/claim/connector-block-notify.ts`
 - Refresh: `apps/web/src/lib/mcp-connector-refresh.ts`
