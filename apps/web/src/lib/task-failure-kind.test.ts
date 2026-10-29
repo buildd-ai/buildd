@@ -135,6 +135,7 @@ describe('troubleLine', () => {
     expect(troubleLine({ kind: 'waiting', on: { taskId: 'b', title: 'Runner image' } })?.text).toBe('Waiting on “Runner image”. It starts by itself when that task merges.');
   });
   it('exposes the resume time of a buildd retry', () => {
+    expect(troubleLine({ kind: 'retrying', cause: 'infra', resumesAt: '2026-10-22T13:00:00.000Z' })?.text).toMatch(/^Fixing · /);
     expect(troubleLine({ kind: 'retrying', cause: 'infra', resumesAt: '2026-10-22T13:00:00.000Z' })).toMatchObject({ resumesAt: '2026-10-22T13:00:00.000Z' });
   });
   it('says a dead blocker leaves the task to a person', () => {

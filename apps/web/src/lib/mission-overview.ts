@@ -341,10 +341,15 @@ export function overviewStatus(model: Model, id: string): OverviewStatus {
         ? out(FIXING, 'act', latestStep ?? prCause(t.pr?.state), live)
         : out(FIXING, 'act', prCause(t.pr?.state), { retryAt: t.startAt ?? null });
     case 'ci_failed':
-      return out(FAILED, 'bad', prCause(t.pr?.state) ?? termWord('pr.ci_failed'), { retryAt: t.startAt ?? null });
+      // A retry buildd has scheduled is Fixing; Failed is only for a person to act on.
+      return t.startAt != null
+        ? out(FIXING, 'act', prCause(t.pr?.state) ?? termWord('pr.ci_failed'), { retryAt: t.startAt })
+        : out(FAILED, 'bad', prCause(t.pr?.state) ?? termWord('pr.ci_failed'));
     case 'failed':
       // What to change, from the task's error evidence (R-20); a dependency failure names its task in the row.
-      return out(FAILED, 'bad', t.failureCause ?? null, { retryAt: t.startAt ?? null });
+      return t.startAt != null
+        ? out(FIXING, 'act', t.failureCause ?? null, { retryAt: t.startAt })
+        : out(FAILED, 'bad', t.failureCause ?? null);
     case 'ready': case 'blocked': case 'queued': {
       const wait = overviewWaitCause(model, id);
       return out(STATES[state].word, 'q', wait ? waitWord(model, id, wait) : null);
