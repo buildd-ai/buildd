@@ -56,8 +56,9 @@ describe('RealTimeWorkerView — needs-input answering', () => {
     const html = render(
       baseWorker({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Which approach?', options: [] } }),
     );
-    expect(html).toContain('worker-needs-input-freetext');
-    expect(html).not.toContain('worker-needs-input-options');
+    // The one decision card: no options, so Answer differently is the way to answer.
+    expect(html).toContain('decision-answer-differently');
+    expect(html).not.toContain('data-testid="decision-options"');
   });
 
   test('options present renders both the options list and the free-text box', () => {
@@ -67,8 +68,8 @@ describe('RealTimeWorkerView — needs-input answering', () => {
         waitingFor: { type: 'question', prompt: 'Pick one', options: ['A', 'B'] },
       }),
     );
-    expect(html).toContain('worker-needs-input-options');
-    expect(html).toContain('worker-needs-input-freetext');
+    expect(html).toContain('data-testid="decision-options"');
+    expect(html).toContain('decision-answer-differently');
   });
 
   test('error status with a retained question does not render an answer box', () => {
@@ -104,7 +105,9 @@ describe('RealTimeWorkerView — needs-input answering', () => {
       }),
     );
     expect(html).toContain('does a');
-    expect(html.match(/data-recommended="true"/g)?.length).toBe(1);
+    // The recommended option leads, as the primary.
+    expect(html.match(/data-primary="true"/g)?.length).toBe(1);
+    expect(html.indexOf('>B<')).toBeLessThan(html.indexOf('>A<'));
   });
 
   test('a linked question note supplies the headline and marks its default choice recommended', () => {
@@ -118,12 +121,11 @@ describe('RealTimeWorkerView — needs-input answering', () => {
       />,
     );
     expect(html).toContain('Round per line?');
-    expect(html).toContain('The builder asks');
-    expect(html).toContain('7s ago');
-    expect(html.match(/data-recommended="true"/g)?.length).toBe(1);
-    expect(html.indexOf('data-recommended="true"')).toBeLessThan(html.indexOf('Total only'));
+    expect(html).toMatch(/asked (just now|\d+[mhd] ago)/);
+    expect(html.match(/data-primary="true"/g)?.length).toBe(1);
+    expect(html.indexOf('Per line')).toBeLessThan(html.indexOf('Total only'));
     // One question surface, not two.
-    expect(html.match(/data-testid="worker-needs-input-prompt"/g)?.length).toBe(1);
+    expect(html.match(/data-testid="decision-question"/g)?.length).toBe(1);
   });
 
   test('a permission prompt left on an ended worker is not offered as a live card', () => {
