@@ -297,6 +297,25 @@ describe('strict workspace resolution', () => {
     expect(await res.text()).not.toContain(s.outside.workspaceId);
   });
 
+  test('a full task id needs no workspaceId: its granted workspace serves the call', async () => {
+    const s = await setup();
+    const taskB = await seedTask(s.b.workspaceId, { title: `tb-${rand()}` });
+    const r = await callTool(s.jwt, { action: 'get_task', params: { taskId: taskB } });
+    expect(r.isError).toBe(false);
+    expect([...new Set(selfCalls.map((c) => c.bound))]).toEqual([s.b.workspaceId]);
+  });
+
+  test('a task id outside the grant is refused like no workspace at all, without naming it', async () => {
+    const s = await setup();
+    for (const ws of [s.sibling, s.outside.workspaceId]) {
+      const taskId = await seedTask(ws, { title: `tx-${rand()}` });
+      const r = await callTool(s.jwt, { action: 'get_task', params: { taskId } });
+      expect(JSON.parse(r.text).error).toBe('workspace_required');
+      expect(r.text).not.toContain(ws);
+    }
+    expect(selfCalls).toEqual([]);
+  });
+
   test('a grant with one workspace needs no workspaceId', async () => {
     const userId = await user();
     const a = await seedWorkspace();
