@@ -142,9 +142,9 @@ function OverviewView({
   // Build tasks only (P-2): fixes, audits and refreshes are no cells and never count.
   const buildIds = useMemo(() => layout.order, [layout]);
   const doneCount = layout.groups.find(g => g.key === 'done')?.ids.length ?? 0;
-  // Repairs are no cells, but they stay Verify's evidence: read from the whole strip, not the build cells.
-  const repairs = useMemo(() => stripOrder(model).filter(id => model.tasks[id].deliverableRole === 'repair').map(id => ({
-    id, title: displayTaskTitle(model.tasks[id].title), done: BOARD_LANDED.has(model.tasks[id].status) && !isClosedUnshipped(model, id),
+  // Repairs are no cells, but they stay Verify's evidence: read from model.checks, not the build cells.
+  const repairs = useMemo(() => Object.values(model.checks ?? {}).filter(t => t.deliverableRole === 'repair').map(t => ({
+    id: t.id, title: displayTaskTitle(t.title), done: BOARD_LANDED.has(t.status) && t.delivery?.tone !== 'closed',
   })), [model]);
   const build = { done: doneCount, total: buildIds.length };
   const handoff = useMemo(

@@ -119,6 +119,27 @@ describe('GET /api/explain — subject selection', () => {
     expect(mockResolveWorkerByPrNumber.mock.calls[0][2]).toBe(WS);
   });
 
+  // An account-level MCP connection names a workspace on every call, so
+  // `explain {taskId, workspaceId}` must explain the task, not refuse it.
+  it('treats workspaceId alongside taskId or missionId as the scope it must be in', async () => {
+    const task = await GET(req(`taskId=${TASK}&workspaceId=${WS}`));
+    expect(task.status).toBe(200);
+    expect(mockExplainTask).toHaveBeenCalledTimes(1);
+    const mission = await GET(req(`missionId=${MISSION}&workspaceId=${WS}`));
+    expect(mission.status).toBe(200);
+    expect(mockExplainMission).toHaveBeenCalledTimes(1);
+    expect(mockExplainWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('404s a task or mission outside the workspaceId passed with it', async () => {
+    const OTHER = '44444444-4444-4444-4444-444444444444';
+    mockGetTeamWorkspaceIds.mockImplementation(async () => [WS, OTHER]);
+    expect((await GET(req(`taskId=${TASK}&workspaceId=${OTHER}`))).status).toBe(404);
+    expect((await GET(req(`missionId=${MISSION}&workspaceId=${OTHER}`))).status).toBe(404);
+    expect(mockExplainTask).not.toHaveBeenCalled();
+    expect(mockExplainMission).not.toHaveBeenCalled();
+  });
+
   it('a PR no worker row holds answers UNKNOWN - check GitHub, never nothing', async () => {
     mockResolveWorkerByPrNumber.mockImplementation(async () => ({ status: 404, error: 'PR not found' }) as Row);
     const res = await GET(req('prNumber=5157'));

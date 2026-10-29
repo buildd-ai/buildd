@@ -90,7 +90,7 @@ import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence
 import { evidenceViewOf } from '@/lib/task-evidence';
 import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import TaskPageActionZone from './TaskPageActionZone';
-import { taskActionSet } from '@/lib/task-actions';
+import { taskActionSet } from '@/lib/task-action-set';
 import HeldTaskMenuActions from './HeldTaskMenuActions';
 import { auditTaskIdFor, loadTaskFailure, taskPageTrouble } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
