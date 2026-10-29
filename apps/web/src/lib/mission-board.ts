@@ -592,6 +592,10 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     backend: str(t.backend),
     startAt: epoch(t.startAt),
     loopWebhookWait: !!(t.contextDigest as { loopWebhookWait?: unknown } | null | undefined)?.loopWebhookWait,
+    // The deliverable-role markers (`deliverableRole`, `isHelperRun`): without
+    // them a final verification or criterion check becomes a bar cell (Navigation R-12).
+    // The mission page loads the column's digest as `contextDigest`; other callers pass `context`.
+    context: t.context ?? t.contextDigest ?? null,
     // The page's digest under its own key: a caller that loads no result (Home's cards) never touches `result`.
     result: t.resultDigest ?? null,
     delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
