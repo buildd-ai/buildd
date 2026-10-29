@@ -205,4 +205,11 @@ describe('AC-14 and R-7: Queued rows in claim order', () => {
     expect(v.ready[0]).toMatchObject({ missionTitle: 'Health', createdAt: rows[0].createdAt, note: 'Starts now' });
     expect(v.ready.slice(1).map(r => r.note)).toEqual(['Next free slot', 'Next free slot']);
   });
+
+  it('adds ~time from measured run ends, earliest first, and none when nothing is measured', () => {
+    const rows = [task(slot), task(slot), task(slot)];
+    const now = 10_000_000;
+    const v = buildHealthQueueView(input({ now, slots: 2, teamBusy: 2, runEnds: [now + 30 * 60_000, now + 5 * 60_000], tasks: rows }));
+    expect(v.ready.map(r => r.note)).toEqual(['Next free slot ~5m', 'Next free slot ~30m', 'Next free slot']);
+  });
 });

@@ -445,6 +445,8 @@ export interface MissionBoardModel {
   /** Set only while no deliverable exists yet and a planning task does. */
   planning: BoardPlanning | null;
   tasks: Record<string, BoardTask>;
+  /** Non-build rows keyed by id: Verify's evidence and lane workers, never cells or counts. */
+  checks: Record<string, BoardTask>;
   landed: { done: number; total: number };
   criteria: BoardCriterion[];
   criteriaPassed: number;
@@ -592,6 +594,10 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     backend: str(t.backend),
     startAt: epoch(t.startAt),
     loopWebhookWait: !!(t.contextDigest as { loopWebhookWait?: unknown } | null | undefined)?.loopWebhookWait,
+    // The deliverable-role markers (`deliverableRole`, `isHelperRun`): without
+    // them a final verification or criterion check becomes a bar cell (Navigation R-12).
+    // The mission page loads the column's digest as `contextDigest`; other callers pass `context`.
+    context: t.context ?? t.contextDigest ?? null,
     // The page's digest under its own key: a caller that loads no result (Home's cards) never touches `result`.
     result: t.resultDigest ?? null,
     delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
@@ -769,6 +775,8 @@ const TICKER_MAX = 6;
  */
 export interface BoardCells {
   tasks: Record<string, BoardTask>;
+  /** Non-build rows (audits, fixes, refreshes): no cells, but Verify's evidence and their workers' lanes. */
+  checks: Record<string, BoardTask>;
   phases: BoardPhase[];
   /** Folded deliverable rows, cancelled ones excluded, in pulse order. */
   cellRows: DeliverableRow<BoardTaskInput>[];
@@ -806,7 +814,7 @@ export function buildBoardCells(
   // shared adjacency, judged by the claim gate on the raw id each names (an
   // attempt's own row, another mission's task), then folded onto its cell.
   const skipped = new Set(ordered.filter(r => deriveFeedTaskState(r).state === 'skipped').map(r => r.task.id));
-  const cellRows = ordered.filter(r => !skipped.has(r.task.id));
+  const liveRows = ordered.filter(r => !skipped.has(r.task.id));
   const externalById = new Map((input.externalDeps ?? []).flatMap(d => (d.id ? [[d.id, d] as const] : [])));
   const gateRow = (id: string): AdjacencyGateRow | undefined => {
     const own = allById.get(id);
@@ -816,13 +824,18 @@ export function buildBoardCells(
     return undefined;
   };
   const adjacency = buildMissionAdjacency(
-    cellRows.map(r => ({ ...r.task, workers: [] })),
+    liveRows.map(r => ({ ...r.task, workers: [] })),
     { lookup: gateRow, resolveId: id => rowIdFor.get(id) ?? id, releasedBy: releasedByOf(input.gateFacts) },
   );
-  const reach = cellRows.map(r => ({ id: r.task.id, dependsOn: adjacency.blockersOf.get(r.task.id)!.map(e => e.id) }));
+  const reach = liveRows.map(r => ({ id: r.task.id, dependsOn: adjacency.blockersOf.get(r.task.id)!.map(e => e.id) }));
 
+  // Only build deliverables are cells (Navigation R-12/AC-5, as mission-overview does):
+  // audits, final verification, spec-criterion checks, fixes and refreshes feed Verify.
+  // They still take part in the adjacency above, so ordering and gates see them.
+  const cellRows = liveRows.filter(r => r.deliverableRole === 'build');
   const tasks: Record<string, BoardTask> = {};
-  for (const r of cellRows) {
+  const checks: Record<string, BoardTask> = {};
+  for (const r of liveRows) {
     const t = r.task;
     const deps: BoardDep[] = adjacency.blockersOf.get(t.id)!.map(e => ({ id: e.id, ...labelOf.get(e.id)!, satisfied: e.satisfied, ...(e.releasedBy ? { releasedBy: e.releasedBy } : {}) }));
     const blockers = deps.filter(d => !d.satisfied).map(d => d.id);
@@ -839,7 +852,7 @@ export function buildBoardCells(
     const role = t.roleSlug ? roles.get(t.roleSlug) : undefined;
     const kind = deriveWorkKind({ kind: t.kind ?? null, roleSlug: t.roleSlug ?? null });
     const prState = deriveFeedPrState(t.worker, t.delivery);
-    tasks[t.id] = {
+    (r.deliverableRole === 'build' ? tasks : checks)[t.id] = {
       id: t.id,
       title: t.title,
       deliverableRole: r.deliverableRole,
@@ -909,14 +922,14 @@ export function buildBoardCells(
     };
   });
 
-  return { tasks, phases, cellRows, rowIdFor, skipped, labelOf };
+  return { tasks, checks, phases, cellRows, rowIdFor, skipped, labelOf };
 }
 
 export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   const { now } = input;
   const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
   const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
-  const { tasks, phases, cellRows: rows, rowIdFor, skipped, labelOf } = buildBoardCells(input);
+  const { tasks, checks, phases, cellRows: rows, rowIdFor, skipped, labelOf } = buildBoardCells(input);
 
   const all = Object.values(tasks);
   const landedN = all.filter(t => BOARD_LANDED.has(t.status)).length;
@@ -950,7 +963,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       const start = w.startedAt ?? (live ? w.createdAt ?? w.updatedAt ?? now : null);
       if (start == null || !w.runner) continue;
       const end = live ? null : w.completedAt ?? w.updatedAt ?? start;
-      const rowMerged = (rowId ? tasks[rowId] : undefined)?.status === 'merged';
+      const rowMerged = (rowId ? tasks[rowId] ?? checks[rowId] : undefined)?.status === 'merged';
       const stopped = !live && (w.status === 'failed' || w.status === 'cancelled') && !w.prNumber;
       // A run the platform failed later, with no completion of its own: its
       // runner went away and the bar's end is when someone noticed.
@@ -987,7 +1000,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
         retry,
         endMark: endGlyph,
         waits: w.status === 'waiting_input' && w.updatedAt != null ? [{ start: w.updatedAt, end: null }] : [],
-        deps: rowId && !retry ? tasks[rowId]?.deps.map(d => d.id) ?? [] : [],
+        deps: rowId && !retry ? (tasks[rowId] ?? checks[rowId])?.deps.map(d => d.id) ?? [] : [],
       });
     }
   }
@@ -1011,7 +1024,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     const d = runnerDisplay.get(id) ?? resolveRunnerDisplay({ runner: id })!;
     const a = assignSlots(byRunner.get(id)!);
     for (const b of byRunner.get(id)!) {
-      const bt = tasks[b.taskId];
+      const bt = tasks[b.taskId] ?? checks[b.taskId];
       if (bt && bt.workerId === b.id) bt.slot = a.slotOf.get(b.id) ?? null;
     }
     const occ = occupiedSlots(a, now).map(s =>
@@ -1048,7 +1061,8 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   // Side rail.
   // Needs you: an agent's question, or a delivery whose next move is a
   // person's (the same reading Home's Needs You admits, S36).
-  const needsYou = all.filter(t => t.status === 'waiting' || t.delivery?.needsYou).map(t => t.id);
+  // A parked audit is an ask too, though it is no cell: the checks count here.
+  const needsYou = [...all, ...Object.values(checks)].filter(t => t.status === 'waiting' || t.delivery?.needsYou).map(t => t.id);
   const inReview = all.filter(t => !t.delivery?.needsYou && (t.status === 'review' || t.status === 'ci_failed' || t.status === 'fixing')).map(t => t.id);
   const upNext = rows.map(r => r.task.id).filter(id => BOARD_QUEUED.has(tasks[id].status));
 
@@ -1056,7 +1070,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   const ticker: TickerEvent[] = [];
   const tag = (bt: BoardTask) => bt.scope ?? bt.label;
   for (const b of bars) {
-    const bt = tasks[b.taskId];
+    const bt = tasks[b.taskId] ?? checks[b.taskId];
     if (!bt || b.tone === 'plan' || b.tone === 'side') continue;
     ticker.push({ kind: 'claimed', at: b.start, taskId: bt.id, text: `${b.retry ? `${tag(bt)} fix` : tag(bt)} → ${runnerDisplay.get(b.runnerId)?.initial ?? b.runner.slice(0, 1).toUpperCase()}` });
     if (b.tone === 'waiting' && b.waits[0]) ticker.push({ kind: 'asked', at: b.waits[0].start, taskId: bt.id, text: `${tag(bt)} asked you` });
@@ -1070,11 +1084,11 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       : { kind: 'done', at: w.completedAt, taskId: bt.id, text: `${tag(bt)} done` });
   }
   for (const m of merges) {
-    const bt = tasks[m.taskId];
+    const bt = tasks[m.taskId] ?? checks[m.taskId];
     if (bt) ticker.push({ kind: 'merged', at: m.at, taskId: bt.id, text: `#${m.pr} ${tag(bt)} merged` });
   }
   for (const f of ciFails) {
-    const bt = tasks[f.taskId];
+    const bt = tasks[f.taskId] ?? checks[f.taskId];
     if (bt) ticker.push({ kind: 'ci_failed', at: f.at, taskId: bt.id, text: `${f.pr ? `#${f.pr} ` : ''}CI failed` });
   }
   ticker.sort((a, b) => b.at - a.at);
@@ -1128,6 +1142,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     phases,
     planning,
     tasks,
+    checks,
     landed: { done: buildLanded, total: build.length },
     criteria,
     criteriaPassed: criteria.filter(c => c.state === 'pass').length,

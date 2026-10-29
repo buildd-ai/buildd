@@ -363,6 +363,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
             questionNote={questionNote}
             workerError={worker.error}
             role={roleName}
+            askedAt={askedTs ?? null}
             askedAgo={askedTs != null ? `${ageLabel(nowMs - askedTs)} ago` : null}
             stateNote="paused"
             enableKeys

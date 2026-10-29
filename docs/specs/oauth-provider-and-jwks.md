@@ -1161,10 +1161,13 @@ deprecated.
   The workspace a request acts in is, in order: the workspace a tool call
   names (`params.workspaceId`, or `workspaceId` on `recall` / `learn`), the
   connection's `?workspace=` / `?repo=`, the workspace of its `?worker=`, the
-  only granted workspace. A reference (UUID, `owner/repo`, repo name or
-  workspace name) is matched among the granted workspaces only.
-- No reference with more than one granted workspace is refused
-  (`workspace_required`); a name matching several granted workspaces is
+  only granted workspace, the workspace of the call's full `taskId`,
+  `missionId` or `workerId` when that workspace is granted. A reference
+  (UUID, `owner/repo`, repo name or workspace name) is matched among the
+  granted workspaces only.
+- No reference (and no granted subject) with more than one granted workspace
+  is refused (`workspace_required`), the same for a subject in an ungranted
+  workspace; a name matching several granted workspaces is
   refused (`workspace_ambiguous`); anything else is `workspace_not_granted`.
   Each refusal lists granted workspaces only and never echoes the reference,
   so an ungranted or unknown workspace reads the same. A connection URL naming
@@ -1214,7 +1217,9 @@ deprecated.
   user leaves one team, only the other.
 - AC-50: GIVEN that grant WHEN a call names no workspace THEN it is refused
   with `workspace_required` and the two granted choices, and nothing is
-  written.
+  written; GIVEN a call naming no workspace but the full id of a task in a
+  granted workspace THEN it acts in that workspace, and a task in an
+  ungranted one is refused the same way without naming it.
 - AC-51: GIVEN a name shared by two granted workspaces and two ungranted ones
   WHEN a call names it THEN the refusal lists only the two granted; GIVEN a
   name unique among granted workspaces THEN it resolves even though an

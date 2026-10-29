@@ -105,7 +105,10 @@ describe('overviewLayout', () => {
   });
 
   it('leaves audit, fix and refresh rows out of every group and cell (R-12)', () => {
-    const audit = Object.values(ten.tasks).find(t => t.deliverableRole !== 'build')!;
+    const { tasks } = overviewWavesInput(10);
+    const buildIds = new Set(Object.keys(ten.tasks));
+    const audit = tasks.find(t => !buildIds.has(t.id))!;
+    expect(audit).toBeDefined();
     expect(groupOf(audit.id)).toBeUndefined();
     expect(layout.order).not.toContain(audit.id);
     expect(layout.order.every(id => ten.tasks[id].deliverableRole === 'build')).toBe(true);
@@ -312,6 +315,14 @@ describe('overviewStatus', () => {
     expect(cell.word).toBe('Fixing · CI failed');
     expect(overviewWaitCause(m, pendingId)).toBeNull();
     expect(m.tasks[pendingId].waitingKind).toBeUndefined();
+  });
+
+  it('Failed never carries a retry time, whatever start time the rows hold', () => {
+    const m = board(tasks.map(t => ({ ...t, status: t.id === pendingId ? 'failed' : t.status, startAt: NOW + BACKOFF, failureCause: 'Tests failing' })));
+    for (const id of Object.keys(m.tasks)) {
+      const st = overviewStatus(m, id);
+      if (st.word === 'Failed') expect(st.retryAt).toBeNull();
+    }
   });
 
   it('a merge conflict names its cause', () => {

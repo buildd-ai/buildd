@@ -84,14 +84,15 @@ describe('QueueBoard', () => {
     expect(view.ready.map(r => r.note)).toEqual(['Starts now', 'Starts now', 'Starts now']);
   });
 
-  it('R-4: the shared IdleAlert when slots idle while work could start; otherwise only the phone line', () => {
+  it('R-4: the shared IdleAlert when slots idle while work could start; otherwise nothing', () => {
     const html = render({ slots: 2, tasks: [t({ kind: 'slot', noRunnerReason: 'no reviewer runner online' })] });
     expect(html).toContain('data-testid="idle-alert"');
     expect(html).toContain('2 idle slots, 1 task could start.');
     expect(html).toContain('no reviewer runner online');
     const calm = render({ slots: 0, tasks: [] });
     expect(calm).not.toContain('idle-alert');
-    expect(calm).toMatch(/data-testid="queue-calm"[^>]*md:hidden|md:hidden[^"]*"[^>]*>Nothing held/);
+    expect(calm).not.toContain('queue-calm');
+    expect(calm).not.toContain('queue-alert');
   });
 
   it('AC-5: no Lanes card when no lane is in use; one with the holder\'s StageMeter when a lane is', () => {
