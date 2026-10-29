@@ -16,6 +16,7 @@ import { join } from 'path';
 
 import {
   isUpdateTargetReachable,
+  classifyUpdateTarget,
   isNoProgressUpdate,
   canAttemptAutoUpdate,
   shouldShowUpdateAvailable,
@@ -210,4 +211,19 @@ describe('reapChild', () => {
     const result = await reapChild(proc, { termGraceMs: 50, killGraceMs: 50 });
     expect(result).toEqual({ exited: true, escalated: false });
   }, 15_000);
+});
+
+describe('classifyUpdateTarget', () => {
+  test('stale origin ref after a failed fetch is unknown, not unreachable', () => {
+    // origin/main is still A (fetch timed out); server advertises newer B.
+    expect(classifyUpdateTarget(SHA_B, false, SHA_A, SHA_A)).toBe('unknown');
+  });
+
+  test('a mismatch against a freshly fetched ref is unreachable', () => {
+    expect(classifyUpdateTarget(SHA_B, true, SHA_C, SHA_A)).toBe('unreachable');
+  });
+
+  test('fetched head equal to the advertised commit is reachable', () => {
+    expect(classifyUpdateTarget(SHA_B, true, SHA_B, SHA_A)).toBe('reachable');
+  });
 });

@@ -143,6 +143,26 @@ export function isUpdateTargetReachable(
   return target !== currentCommit;
 }
 
+export type UpdateTargetVerdict = 'reachable' | 'unreachable' | 'unknown';
+
+/**
+ * Reachability against a ref that may be stale. `origin/$BRANCH` only moves on
+ * a successful fetch, so when the fetch failed (timeout, network) a mismatch
+ * proves nothing: the remote may well have the advertised commit. That is
+ * `unknown` — retry later, never abandon. Only a mismatch against a freshly
+ * fetched ref is `unreachable`.
+ */
+export function classifyUpdateTarget(
+  target: string | null,
+  fetchSucceeded: boolean,
+  trackedBranchHead: string | null,
+  currentCommit: string | null,
+): UpdateTargetVerdict {
+  if (isUpdateTargetReachable(target, trackedBranchHead, currentCommit)) return 'reachable';
+  if (!fetchSucceeded) return 'unknown';
+  return 'unreachable';
+}
+
 /**
  * **The second invariant: an update that did not move the commit is a FAILURE.**
  *
