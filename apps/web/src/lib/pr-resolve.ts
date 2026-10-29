@@ -4,7 +4,7 @@ import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getTeamWorkspaceIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { DEPENDENCY_BOT_UNTRACKED_HINT } from '@/lib/dependency-bot-hint';
+import { DEPENDENCY_BOT_UNTRACKED_HINT } from '@/lib/untracked-bot-hint';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.

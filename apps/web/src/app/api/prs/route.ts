@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
-import { DEPENDENCY_BOT_UNTRACKED_HINT } from '@/lib/dependency-bot-hint';
+import { DEPENDENCY_BOT_UNTRACKED_HINT } from '@/lib/untracked-bot-hint';
 import { DEFAULT_MERGED_WINDOW_DAYS, listPrsQuery, parsePrListState } from '@/lib/pr-list';
 
 /**

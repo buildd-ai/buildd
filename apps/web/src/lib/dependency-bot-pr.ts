@@ -86,4 +86,4 @@ export function workerNotDependencyBotPr(): SQL {
   return sql`not exists (select 1 from "tasks" "bot_pr_task" where "bot_pr_task"."id" = ${workers.taskId} and lower("bot_pr_task"."context"->'adoptedPr'->>'author') in (${logins}))`;
 }
 
-export { DEPENDENCY_BOT_UNTRACKED_HINT } from '@/lib/dependency-bot-hint';
+export { DEPENDENCY_BOT_UNTRACKED_HINT } from '@/lib/untracked-bot-hint';
