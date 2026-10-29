@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "reach_all_workspaces" boolean DEFAULT false NOT NULL;

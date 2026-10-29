@@ -16,6 +16,7 @@ import { groupRunnerTokens } from './_lib/runner-token-groups';
 import { modelAuthLabel, codexAuthLabel } from './_lib/model-auth-label';
 import type { RunnerModelAuthSource, RunnerCodexAuthSource } from '@buildd/shared';
 import { shortAgo } from '@/lib/mission-list-card';
+import ReachAllToggle from './ReachAllToggle';
 import HostRunnerToggle from './HostRunnerToggle';
 import RunnerSlotsControl from '@/components/RunnerSlotsControl';
 
@@ -53,6 +54,8 @@ interface Account {
   }>;
   /** Trusted as a long-lived host runner (team credential access). */
   hostRunner?: boolean;
+  /** Claims from every workspace its creator can reach, now or later. */
+  reachAllWorkspaces?: boolean;
   /**
    * The viewer holds manage_team_keys in this token's team, so may change
    * hostRunner and the worker limit, and regenerate or delete the token.
@@ -293,6 +296,12 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                     {canAdmin ? 'No workspace linked. This token can\'t claim or create tasks.' : 'No workspace linked. This runner can\'t start or create tasks.'}
                                   </p>
                                 )}
+
+                                <ReachAllToggle
+                                  accountId={account.id}
+                                  reachAll={account.reachAllWorkspaces === true}
+                                  canManage={canAdmin}
+                                />
 
                                 <HostRunnerToggle
                                   accountId={account.id}
