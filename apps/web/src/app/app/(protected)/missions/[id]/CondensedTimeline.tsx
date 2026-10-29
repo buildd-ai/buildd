@@ -441,14 +441,14 @@ function TaskRow({
           }
           return (
             <div className="pl-7 pb-1 mt-1">
-              <div className="bg-[#D97706]/5 border border-[#D97706]/20 rounded px-2.5 py-1.5">
+              <div className="bg-status-warning/5 border border-status-warning/20 rounded px-2.5 py-1.5">
                 <div className="flex items-center gap-1.5 mb-0.5">
                   {reviewerTaskHref ? (
-                    <Link href={reviewerTaskHref} className="text-[#D97706] text-[11px] font-semibold hover:underline">Changes requested</Link>
+                    <Link href={reviewerTaskHref} className="text-status-warning text-[11px] font-semibold hover:underline">Changes requested</Link>
                   ) : (
-                    <span className="text-[#D97706] text-[11px] font-semibold">Changes requested</span>
+                    <span className="text-status-warning text-[11px] font-semibold">Changes requested</span>
                   )}
-                  {iteration && <span className="text-[11px] md:text-[10px] text-[#D97706]/70">(iteration {iteration})</span>}
+                  {iteration && <span className="text-[11px] md:text-[10px] text-status-warning/70">(iteration {iteration})</span>}
                 </div>
                 <p className="text-[11px] text-text-secondary leading-relaxed line-clamp-2" title={note.body ?? note.title}>{note.body ?? note.title}</p>
                 {retryLine}
