@@ -105,7 +105,10 @@ describe('overviewLayout', () => {
   });
 
   it('leaves audit, fix and refresh rows out of every group and cell (R-12)', () => {
-    const audit = Object.values(ten.tasks).find(t => t.deliverableRole !== 'build')!;
+    const { tasks } = overviewWavesInput(10);
+    const buildIds = new Set(Object.keys(ten.tasks));
+    const audit = tasks.find(t => !buildIds.has(t.id))!;
+    expect(audit).toBeDefined();
     expect(groupOf(audit.id)).toBeUndefined();
     expect(layout.order).not.toContain(audit.id);
     expect(layout.order.every(id => ten.tasks[id].deliverableRole === 'build')).toBe(true);
