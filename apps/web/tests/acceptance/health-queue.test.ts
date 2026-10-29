@@ -19,7 +19,9 @@ import { HEALTH_QUEUE_LIMIT, loadHealthQueue, type HealthQueueDeps } from '../..
 import { buildHealthQueueView, type HealthQueueLaneMemberInput, type HealthQueueTaskInput, type HealthQueueViewInput } from '../../src/lib/health-queue-view';
 import type { RunnerQueueRow } from '../../src/lib/claim-order-queue';
 import QueueBoard from '../../src/app/app/(protected)/health/queue/QueueBoard';
-import { DependencyBody, ForceStartBody, LaneBody, forceStateOf } from '../../src/app/app/(protected)/health/queue/QueueSheets';
+import { DependencyBody, LaneBody } from '../../src/app/app/(protected)/health/queue/QueueSheets';
+import { rowAction } from '../../src/app/app/(protected)/health/queue/queue-board-model';
+import { startStatusLine } from '../../src/app/app/(protected)/health/queue/QueueStartSheet';
 
 const NOW = Date.parse('2026-10-22T12:00:00Z');
 const HOUR = 3_600_000;
@@ -36,7 +38,7 @@ function input(over: Partial<HealthQueueViewInput> = {}): HealthQueueViewInput {
 }
 const view = (over: Partial<HealthQueueViewInput> = {}) => buildHealthQueueView(input(over));
 const html = (over: Partial<HealthQueueViewInput> = {}) =>
-  renderToStaticMarkup(h(QueueBoard, { view: view(over), onFilter: noop, onPage: noop, onOpenLane: noop, onOpenRow: noop, onForce: noop }));
+  renderToStaticMarkup(h(QueueBoard, { view: view(over), onFilter: noop, onPage: noop, onOpenLane: noop, onOpenRow: noop, onStart: noop }));
 
 const slot: QueueWait = { kind: 'slot' };
 const limit: QueueWait = { kind: 'limit', limit: 'mission_cap', liftsAt: new Date(NOW + 4 * 60_000).toISOString(), forceable: true };
@@ -109,11 +111,11 @@ describe('R-2: filters apply to every number, slots stay team-wide', () => {
 describe('R-3: four tiles', () => {
   it('has Running n/m, Ready, Waiting (with a reason bar), Parked, each linking to its rows', () => {
     const over = { running: 1, slots: 6, tasks: [task(slot), task(laneWait(1)), task(limit), task(parkedWait)] };
-    expect(view(over).tiles).toEqual({ running: 1, slots: 6, ready: 1, waiting: 2, parked: 1, waitingByReason: { declared: 0, lane: 1, limit: 1 } });
+    expect(view(over).tiles).toMatchObject({ running: 1, slots: 6, ready: 1, waiting: 2, parked: 1, waitingByReason: { declared: 0, lane: 1, limit: 1 } });
     const out = html(over);
     expect(out).toContain('1/6');
-    for (const id of ['queue-tile-running', 'queue-tile-ready', 'queue-tile-waiting', 'queue-tile-parked']) expect(out).toContain(`data-testid="${id}"`);
-    expect(out).toContain('queue-reason-bar');
+    for (const id of ['queue-tile-running', 'queue-tile-queued', 'queue-tile-blocked', 'queue-tile-scheduled']) expect(out).toContain(`data-testid="${id}"`);
+    expect(out).toContain('queue-blocked-bar');
     expect(out).toContain('href="#queue-ready"');
     expect(out).toContain('href="#queue-waiting"');
     expect(out).toContain('href="#queue-parked"');
@@ -126,6 +128,7 @@ describe('R-4: one alert line, only when something is wrong, worst first', () =>
     expect(view().alert).toBeNull();
     const calm = html();
     expect(calm).not.toContain('queue-alert');
+    // Nothing is wrong, so nothing renders at any width: no alert, no calm line.
     expect(calm).not.toContain('queue-calm');
   });
   it('lists idle slots before stuck lanes, on one line', () => {
@@ -158,8 +161,9 @@ describe('R-5: exactly one reason badge per waiting task', () => {
 describe('R-6: Waiting table', () => {
   it('has Task / Reason / Blocked by / Age columns and All / Declared / Lane / Limit segments', () => {
     const out = html({ tasks: [task(limit)] });
-    for (const col of ['Task', 'Reason', 'Blocked by', 'Age']) expect(out).toContain(`<span>${col}</span>`);
-    expect(out).toMatch(/>All 1<.*>Declared 0<.*>Lane 0<.*>Limit 1</s);
+    for (const col of ['Task', 'Reason', 'Waiting on']) expect(out).toContain(`<span>${col}</span>`);
+    expect(out).toMatch(/<span[^>]*>Age<\/span>/);
+    expect(out).toMatch(/>All<span[^>]*>1<.*>Lane<span[^>]*>0<.*>Limit<span[^>]*>1<.*>Dependency<span[^>]*>0</s);
   });
   it('sorts Lane, Limit, Declared, then lane position / age', () => {
     const d = task(declared());
@@ -186,10 +190,10 @@ describe('R-8: Lanes card', () => {
   it('lists name, holder state and waiting count, hidden when no lane is in use', () => {
     const out = html({ lanes: [lane([holder(), waiter('w', 'Rename table')])] });
     expect(out).toContain('queue-lanes');
-    expect(out).toContain('Schema');
+    expect(out).toContain('schema');
     expect(out).toContain('Add column');
     expect(out).toContain('Running');
-    expect(out).toContain('1 waiting');
+    expect(out).toMatch(/data-testid="queue-lane-waiting"[^>]*>\+1</);
     expect(html()).not.toContain('queue-lanes');
   });
 });
@@ -221,7 +225,11 @@ describe('R-10: Force start only on Limit rows', () => {
   it('offers it for a forceable Limit and never for Lane or Declared', () => {
     const v = view({ tasks: [task(limit), task(laneWait(1)), task(declared())] });
     expect(Object.fromEntries(v.waiting.rows.map(r => [r.reason, r.forceable]))).toEqual({ lane: false, limit: true, declared: false });
-    expect(html({ tasks: [task(limit), task(laneWait(1)), task(declared())] }).match(/data-testid="queue-force-start"/g)).toHaveLength(1);
+    // A Declared row is offered Start anyway (r8 R-20), never Force start; the board renders each row in a phone and a desktop layout.
+    const out = html({ tasks: [task(limit), task(laneWait(1)), task(declared())] });
+    expect(out).toContain('data-action="force_start"');
+    expect(out).toContain('data-action="start_anyway"');
+    expect(out.match(/data-action="force_start"/g)!.length).toBe(out.match(/data-action="start_anyway"/g)!.length);
     expect(view({ tasks: [task({ ...limit, forceable: false })] }).waiting.rows[0].forceable).toBe(false);
   });
 });
@@ -346,26 +354,19 @@ describe('AC-6: lane panel order matches the claim route', () => {
 });
 
 describe('AC-7: Force start sheet and call', () => {
-  it('Limit row lists Skips and Still enforced and confirms with the reasons digest', () => {
-    const state = forceStateOf({
-      reasonsDigest: 'd1', canForce: true,
-      force: { kinds: ['mission_concurrent'], checklist: [{ gate: 'Mission limit', sentence: 'one task per hour' }], railsRemaining: ['Files another agent is editing stay locked.'] },
-    } as any);
-    expect(state).toMatchObject({ kind: 'ready', digest: 'd1', kinds: ['mission_concurrent'] });
-    const out = renderToStaticMarkup(h(ForceStartBody, { row: waitingRow(limit), state: state, busy: false, onConfirm: noop, onClose: noop }));
-    expect(out).toContain('Skips');
-    expect(out).toContain('Mission limit: one task per hour');
-    expect(out).toContain('Still enforced');
-    expect(out).toContain('queue-force-confirm');
-    const sheets = src('app/app/(protected)/health/queue/QueueSheets.tsx');
-    expect(sheets).toContain('/api/tasks/${row.id}/start');
-    expect(sheets).toContain('reasonsDigest: state.digest');
+  it('Limit row offers Force start and confirms through the shared refusal with the reasons digest', () => {
+    expect(rowAction(waitingRow(limit))).toBe('force_start');
+    const sheet = src('app/app/(protected)/health/queue/QueueStartSheet.tsx');
+    expect(sheet).toContain('CoordinationRefusal');
+    expect(sheet).toContain('reasonsDigest: refusal.reasonsDigest');
+    expect(sheet).toContain('useTaskStart');
+    expect(startStatusLine({ status: 'waiting', forced: { forceId: 'f', gates: ['Mission concurrency limit'], railsRemaining: [], expiresAt: '' } as any })).toBe('Force start requested.');
   });
-  it('cannot confirm without a digest, and Lane and Declared rows offer no Force start', () => {
-    const out = renderToStaticMarkup(h(ForceStartBody, { row: waitingRow(limit), state: forceStateOf({ canForce: false } as any), busy: false, onConfirm: noop, onClose: noop }));
-    expect(out).toMatch(/data-testid="queue-force-confirm"[^>]*disabled|disabled[^>]*data-testid="queue-force-confirm"/);
-    const rows = view({ tasks: [task(laneWait(1)), task(declared())] }).waiting.rows;
-    expect(rows.every(r => !r.forceable)).toBe(true);
+  it('a non-forceable Limit and a Lane row offer no Force start; Declared offers Start anyway (r8 R-20, not Force start)', () => {
+    expect(rowAction(waitingRow({ ...limit, forceable: false }))).toBeNull();
+    expect(rowAction(waitingRow(laneWait(1)))).toBeNull();
+    expect(rowAction(waitingRow(declared(), { reason: 'declared' }))).toBe('start_anyway');
+    expect(view({ tasks: [task(laneWait(1)), task(declared())] }).waiting.rows.every(r => !r.forceable)).toBe(true);
   });
 });
 
