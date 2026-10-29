@@ -33,19 +33,20 @@ describe('mission board visual fixture', () => {
     expect(parseMissionBoardVisualParams(new URLSearchParams('complete=1&shipped=nope')).shipped).toBeNull();
   });
 
-  it('every linked state puts the audit on the board, under its own id', () => {
+  it('every linked state keeps the audit as Verify evidence, under its own id, never a cell', () => {
     for (const l of missionBoardVisualLinks()) {
       const p = parseMissionBoardVisualParams(new URLSearchParams(l.href.slice(1)));
       const visual = buildVisualReviewFixtureModel(p.phase, p.options);
       expect(visual.phase).toBe(p.phase);
       const board = missionBoardVisualFixture(visual, { complete: p.complete });
       const auditId = visual.audit!.id;
-      expect(board.phases.some(ph => ph.taskIds.includes(auditId))).toBe(true);
-      expect(board.tasks[auditId].roleSlug).toBe('visual-auditor');
+      expect(board.phases.some(ph => ph.taskIds.includes(auditId))).toBe(false);
+      expect(board.tasks[auditId]).toBeUndefined();
+      expect(board.checks[auditId].roleSlug).toBe('visual-auditor');
     }
   });
 
-  it('a parked audit is a Needs-you ask on the board, as on a real mission', () => {
+  it('a parked audit is still a Needs-you ask, though it is no cell', () => {
     const visual = buildVisualReviewFixtureModel('boot_failed');
     const board = missionBoardVisualFixture(visual);
     expect(board.needsYou).toEqual([visual.audit!.id]);

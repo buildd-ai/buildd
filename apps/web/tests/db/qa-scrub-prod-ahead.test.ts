@@ -10,17 +10,21 @@
  * (migration *_artifact_revisions_trigger), so a branch that predated it
  * failed the scrub, the clone never booted and every capture failed.
  *
+ * The scrub walks every row of every table, so it runs in a scratch database
+ * migrated from this checkout and holding only what this file seeds: what other
+ * test files leave in the shared database (a 300x slowdown once) can't reach it.
+ *
  * Each run swaps the script's COMMIT for checks plus a ROLLBACK: the test
  * database is left as it was, and what the scrub did is asserted from inside
  * its own transaction.
  */
-import { beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedWorkspace } from './harness';
+import pg from 'pg';
+import { assertDbConfigured, withDb } from './harness';
 
 const ROOT = join(import.meta.dir, '..', '..', '..', '..');
 const SCRUB = readFileSync(join(ROOT, 'scripts/qa/scrub-pii.sql'), 'utf8');
@@ -30,8 +34,25 @@ const SHAPE = JSON.stringify(schemaShape(JSON.parse(readFileSync(latestSnapshotP
 
 // Matches nothing a seeded row holds; the scrub refuses an empty pattern.
 const IDS = 'qa-scrub-test-never-matches';
-// The whole scrub runs per test, over whatever earlier files left in the database.
 const SCRUB_TIMEOUT_MS = 120_000;
+
+const CORE = join(ROOT, 'packages', 'core');
+const BASE_URL = new URL(process.env.DATABASE_URL ?? 'postgres://localhost/x');
+const SCRATCH = `qa_scrub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+const scratchUrl = () => {
+  const u = new URL(BASE_URL.toString());
+  u.pathname = `/${SCRATCH}`;
+  return u.toString();
+};
+async function admin(sqlText: string) {
+  const c = new pg.Client({ connectionString: BASE_URL.toString() });
+  await c.connect();
+  try {
+    await c.query(sqlText);
+  } finally {
+    await c.end();
+  }
+}
 
 /** Run a variant of the scrub; `checks` replaces COMMIT and must end in ROLLBACK. */
 function runScrub(opts: { script: string; known: string[] }) {
@@ -40,7 +61,7 @@ function runScrub(opts: { script: string; known: string[] }) {
   writeFileSync(file, opts.script);
   try {
     return spawnSync('psql', [
-      process.env.DATABASE_URL!, '-X', '-q',
+      scratchUrl(), '-X', '-q',
       '-v', 'ON_ERROR_STOP=1', '-v', `ids=${IDS}`, '-v', `known=${opts.known.join(',')}`,
       '-v', `shape=${SHAPE}`, '-f', file,
     ], { encoding: 'utf8' });
@@ -69,10 +90,23 @@ beforeAll(async () => {
   assertDbConfigured();
   const which = spawnSync('psql', ['--version'], { encoding: 'utf8' });
   if (which.status !== 0) throw new Error('psql is required: the scrub is a psql script (meta-commands, -v vars)');
-  const { workspaceId } = await seedWorkspace();
+  await admin(`CREATE DATABASE ${SCRATCH}`);
+  const m = spawnSync('bun', ['db/migrate.ts'], {
+    cwd: CORE, encoding: 'utf8', timeout: 10 * 60_000,
+    env: { ...process.env, DATABASE_URL: scratchUrl() },
+  });
+  if (m.status !== 0) throw new Error(`scratch migrate failed (${m.status}):\n${`${m.stdout}\n${m.stderr}`.slice(-3000)}`);
   // A body makes revision 1, the row the immutability trigger guards.
-  await q(sql`INSERT INTO artifacts (workspace_id, type, title, content)
-    VALUES (${workspaceId}::uuid, 'content', 'qa scrub', 'a body only the scrub may touch')`);
+  await withDb(scratchUrl(), async (c) => {
+    const { rows: [team] } = await c.query(`INSERT INTO teams (name, slug) VALUES ('qa-scrub', 'qa-scrub') RETURNING id`);
+    const { rows: [ws] } = await c.query(`INSERT INTO workspaces (name, team_id) VALUES ('qa-scrub', $1) RETURNING id`, [team.id]);
+    await c.query(`INSERT INTO artifacts (workspace_id, type, title, content)
+      VALUES ($1, 'content', 'qa scrub', 'a body only the scrub may touch')`, [ws.id]);
+  });
+}, 12 * 60_000);
+
+afterAll(async () => {
+  await admin(`DROP DATABASE IF EXISTS ${SCRATCH} WITH (FORCE)`);
 });
 
 describe('scrub-pii.sql under the artifact revision triggers', () => {

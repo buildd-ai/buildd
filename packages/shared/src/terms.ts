@@ -315,6 +315,8 @@ export function termFor(ref: InternalRef): Term {
   return findTerm(ref) ?? TERMS['wait.unknown'];
 }
 
+/** The finished Deliver stage's line (Navigation R-15, AC-9): `Delivered into <branch>`. Lives here because the ratchet bans the literal word outside the catalog. */
+export const deliveredInto = (branch: string): string => `Delivered into ${branch}`;
 /** A word, by key. */
 export const termWord = (key: TermKey): string => TERMS[key].word;
 /** A terminal form, by key. */

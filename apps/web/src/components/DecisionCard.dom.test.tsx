@@ -216,6 +216,31 @@ describe('DecisionCard', () => {
     expect(q('[data-testid="decision-undo"]')).toBeNull();
   });
 
+  it('the collapsed answer says when: You chose <option> · just now', async () => {
+    act(() => root.render(<DecisionCard view={decision()} now={T0} undoMs={0} />));
+    await act(async () => { qa('[data-testid="decision-option"]')[1].click(); });
+    await flush();
+    const card = q('[data-testid="decision-card"]')!;
+    expect(card.textContent).toContain("You chose I'll set them myself ·");
+    expect(q('[data-testid="decision-answered-when"]')!.textContent).toBe('just now');
+  });
+
+  it('a card for the same decision on another open page folds to Answered on <device> · <option>', async () => {
+    act(() => root.render(
+      <>
+        <DecisionCard view={{ ...decision(), key: 'q:shared' }} now={T0} undoMs={0} testId="a" />
+        <DecisionCard view={{ ...decision(), key: 'q:shared' }} now={T0} undoMs={0} testId="b" />
+      </>,
+    ));
+    await act(async () => { q('[data-testid="a"]')!.querySelectorAll<HTMLElement>('[data-testid="decision-option"]')[0].click(); });
+    await flush();
+    const other = q('[data-testid="b"]')!;
+    expect(other.getAttribute('data-elsewhere')).toBe('true');
+    expect(other.textContent).toMatch(/^Answered on (desktop|phone) · Provide a token$/);
+    // The answering card keeps its own `You chose` line.
+    expect(q('[data-testid="a"]')!.textContent).toContain('You chose Provide a token');
+  });
+
   it('after an answer, focus moves into the next open card, whatever its testId', async () => {
     act(() => root.render(
       <>
