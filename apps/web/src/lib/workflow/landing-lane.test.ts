@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import {
-  acquireLaneSql, laneHolderSql, laneOutcome, releaseSettledLanesSql, resolveLandingLaneMode, wakeNextWaiterSql,
+  acquireLaneSql, holdingSql, laneHolderSql, laneOutcome, releaseSettledLanesSql, resolveLandingLaneMode, wakeNextWaiterSql,
   LANE_HOLD_MS, LANE_MAX_TENURE_MS, LANE_PARKED_OUTCOME,
 } from './landing-lane';
 
@@ -18,6 +18,15 @@ const TENURE = 'l.granted_at > now() - make_interval(secs =>';
 const key = { repoFullName: 'acme/x', baseRef: 'dev' };
 
 describe('landing lane SQL', () => {
+  test('holding keeps a lane only for a live, in-window, landable delivery', () => {
+    const { sql } = render(holdingSql());
+    expect(sql).toContain('l.lease_until > now()');
+    expect(sql).toContain(TENURE);
+    expect(sql).toContain(HOLDING);
+    expect(sql).toContain(NOT_RED);
+    expect(sql).toContain(NO_FIX);
+  });
+
   test('acquire takes a free or settled lane, or renews its own, by compare-and-set', () => {
     const { sql, params } = render(acquireLaneSql({ ...key, deliveryId: 'd1', headSha: 'H1' }));
     expect(sql).toContain('ON CONFLICT (repo_full_name, base_ref) DO UPDATE');

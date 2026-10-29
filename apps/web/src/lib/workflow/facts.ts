@@ -280,6 +280,14 @@ export async function carryForwardReading(
   if (!d || !d.currentHeadSha || live.headSha === d.currentHeadSha) return none;
   // BLOCKED_ON_TRUNK resuming APPROVED: its §6.4 row keeps the approval only on this evidence (47be5f6c).
   const blockedApproved = d.state === 'BLOCKED_ON_TRUNK' && d.resumeState === 'APPROVED';
+  // A head waiting on its review after an approval of an earlier one (a dependency bot rebased the
+  // branch): the diff is compared with the approved head, not with the head that was never reviewed.
+  if (d.state === 'AWAITING_REVIEW' && d.approvalBasis === 'verdict' && live.baseRef && github?.contentEquivalent) {
+    const from = deltaApprovalSource(view);
+    if (!from || openFindings(view).some((f) => f.required)) return none;
+    const same = await github.contentEquivalent(repoFullName, live.baseRef, from, live.headSha).catch(() => null);
+    return { evidence: same === true ? 'content_equivalent' : null, diffChanged: same === false };
+  }
   if (d.state !== 'APPROVED' && d.state !== 'LANDING' && d.state !== 'REPAIRING' && !blockedApproved) return none;
   // A policy approval is not a review; the reducer keeps it on any head without evidence.
   if (d.approvalBasis === 'policy') return none;

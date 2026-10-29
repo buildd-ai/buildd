@@ -13,7 +13,7 @@ import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { toAttemptSnapshot, toDeliverySnapshot, toFindingSnapshot, toRoundSnapshot, type Exec } from './kernel';
 import { workspaceKernelOnSql } from './authority';
-import { LANE_PARKED_OUTCOME } from './landing-lane';
+import { holdingSql, LANE_PARKED_OUTCOME } from './landing-lane';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
 import type { EscalationBriefPermissions } from '@buildd/workflow-kernel/escalation-brief';
 import { deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
@@ -81,7 +81,10 @@ SELECT to_jsonb(d.*) AS delivery,
        (SELECT count(*) FROM workflow_effects e2 JOIN workflow_deliveries d2 ON d2.id = e2.delivery_id
          WHERE e2.kind = 'refresh_branch' AND e2.status = 'pending' AND e2.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
            AND d2.repo_full_name = d.repo_full_name AND d2.base_ref = d.base_ref
-           AND (e2.created_at, e2.id) <= (e.created_at, e.id)))
+           AND d2.state = 'REPAIRING' AND d2.state_reason = 'behind'
+           AND (e2.created_at, e2.id) <= (e.created_at, e.id)),
+       'holder', (SELECT lh.pr_number FROM landing_lanes l JOIN workflow_deliveries lh ON lh.id = l.delivery_id
+         WHERE l.repo_full_name = d.repo_full_name AND l.base_ref = d.base_ref AND lh.id <> d.id AND ${holdingSql()}))
      FROM workflow_effects e
      WHERE e.delivery_id = d.id AND e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
      ORDER BY e.created_at DESC LIMIT 1) AS lane_wait,
@@ -159,7 +162,9 @@ export function laneWaitFrom(raw: unknown): { behindPr: number | null; position?
   const outcome = row ? row.outcome : raw;
   if (typeof outcome !== 'string' || !outcome.startsWith(LANE_PARKED_OUTCOME)) return null;
   const m = /#(\d+)$/.exec(outcome);
-  const behindPr = m ? Number(m[1]) : null;
+  // The holder now, when the loader read it: the outcome names whoever held at the last park, who
+  // may have merged since.
+  const behindPr = row && 'holder' in row ? (row.holder == null ? null : Number(row.holder)) : m ? Number(m[1]) : null;
   if (!row) return { behindPr };
   const position = Number(row.position);
   return { behindPr, position: Number.isInteger(position) && position > 0 ? position : null };
