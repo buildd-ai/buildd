@@ -12,7 +12,7 @@
  */
 import { countDistinctPrs } from '@buildd/core/pr-shipped';
 import { deriveMissionProgressSubline, type MissionIntegrationPrView } from './mission-integration-pr';
-import { isBuildComplete } from './mission-checks';
+import { isBuildComplete } from './build-complete';
 import type { ReleaseState } from './release-state';
 import type { VisualReviewModel } from '@buildd/shared';
 import { describeVisualPhase } from './visual-review-model';

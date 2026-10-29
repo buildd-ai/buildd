@@ -24,7 +24,7 @@ import { prShipState } from '@buildd/core/pr-shipped';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
 import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, TERMS } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
-import { isBuildComplete } from './mission-checks';
+import { isBuildComplete } from './build-complete';
 import { displayTaskTitle } from './task-title';
 import { claimHoldPhrase } from './claim-hold-phrase';
 import { quietLabel, strandAt } from './local-strand';

@@ -1,6 +1,6 @@
 /**
  * Navigation R-15: one predicate decides "build complete" for every surface.
- * `isBuildComplete` (lib/mission-checks.ts) is it. A second copy of
+ * `isBuildComplete` (lib/build-complete.ts) is it. A second copy of
  * `total > 0 && done >= total` drifts from it (an empty mission, an off-by-one),
  * so any such comparison fails here: call isBuildComplete instead.
  */
@@ -17,7 +17,7 @@ const PATTERNS = [
 ];
 // Sites that legitimately compare a different pair of numbers.
 const ALLOWED = new Set([
-  'lib/mission-checks.ts', // isBuildComplete itself
+  'lib/build-complete.ts', // isBuildComplete itself
   'lib/initiative-view.ts', // counts an initiative's missions, not a mission's tasks
 ]);
 

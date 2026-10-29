@@ -22,7 +22,7 @@ import {
   missionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
-import { isBuildComplete } from './mission-checks';
+import { isBuildComplete } from './build-complete';
 import { prOutcome } from './pr-presentation';
 
 export type MissionIntegrationPrState =
