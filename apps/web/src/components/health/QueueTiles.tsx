@@ -45,7 +45,7 @@ function Tile({ href, value, label, children, testId }: { href: string; value: s
     <Link
       href={href}
       data-testid={testId}
-      className="card flex min-h-[44px] flex-col gap-1 text-text-primary no-underline"
+      className="card flex min-h-[44px] flex-col gap-1 p-3 text-text-primary no-underline"
     >
       <span className="font-mono text-heading font-semibold leading-[1.1]">{value}</span>
       <span className="text-sm text-text-muted">{label}</span>
