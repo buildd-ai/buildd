@@ -62,5 +62,7 @@ test('R-2: also here', () => expect(true).toBe(true));`);
     expect(acceptanceRunExit(1, 'Killed test after 1000ms wall-clock')).toBe(125);
     // A DB-backed acceptance test on a host with no database never ran: inconclusive, not a fail.
     expect(acceptanceRunExit(1, 'error: DB tests need DATABASE_URL and NEON_LOCAL_FETCH_ENDPOINT (loopback). Run via `bun run test:db`.')).toBe(125);
+    // The same missing database, as the core db client words it when a test imports it directly.
+    expect(acceptanceRunExit(1, "19 |       throw new Error('DATABASE_URL is required');\nerror: DATABASE_URL is required\n 0 pass\n 1 fail")).toBe(125);
   });
 });

@@ -7,9 +7,12 @@ export function acceptancePattern(id: string): string {
   return `(?<![A-Za-z0-9-])${id}(?![A-Za-z0-9-])`;
 }
 
+/** A run that never reached its test: no Bun, killed, or no database on this host (both wordings). */
+const UNSTARTABLE = /Failed to launch Bun for |Killed .* wall-clock|DB tests need DATABASE_URL|DATABASE_URL is required/;
+
 /** A missing test is an unstartable run, never a vacuous pass. */
 export function acceptanceRunExit(exitCode: number, output: string): number {
-  if (/Failed to launch Bun for |Killed .* wall-clock|matched 0 tests|DB tests need DATABASE_URL/.test(output)) return 125;
+  if (UNSTARTABLE.test(output) || /matched 0 tests/.test(output)) return 125;
   if (exitCode !== 0) return exitCode;
   return /\b[1-9]\d* pass\b/.test(output) ? 0 : 125;
 }
@@ -31,7 +34,7 @@ if (import.meta.main) {
       // one of the listed files, so a file with no test for it neither passes nor
       // blocks; only "no listed file ran a test for it" is inconclusive.
       if (code === 0) passed = true;
-      else if (/Failed to launch Bun for |Killed .* wall-clock|DB tests need DATABASE_URL/.test(result.output)) unstartable = true;
+      else if (UNSTARTABLE.test(result.output)) unstartable = true;
       else if (code !== 125 && failure === 0) failure = code;
     }
   } catch (error) { console.error(error); unstartable = true; }

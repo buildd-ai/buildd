@@ -13,6 +13,7 @@ const recordCalls: any[] = [];
 let recordResult: any = { ok: true };
 const gateEvents: any[] = [];
 let sweepRows: Array<{ id: string; prUrl: string }> = [];
+let lastWhereCondition: any = null; // Captures what was passed to where() in the sweep query
 /** Worker rows findFirst hands out in order (one per detect run), before falling back to `workerRow`. */
 let workerQueue: any[] = [];
 /** A GitHub path that never answers: it settles only when the caller's AbortSignal fires. */
@@ -32,7 +33,13 @@ mock.module('@buildd/core/db', () => ({
     update: () => ({ set: (set: any) => ({ where: () => { scanWrites.push(set); return Promise.resolve(); } }) }),
     // The sweep's candidate query: from → innerJoin → where → orderBy → limit.
     select: () => {
-      const chain: any = { from: () => chain, innerJoin: () => chain, where: () => chain, orderBy: () => chain, limit: () => Promise.resolve(sweepRows) };
+      const chain: any = {
+        from: () => chain,
+        innerJoin: () => chain,
+        where: (condition: any) => { lastWhereCondition = condition; return chain; },
+        orderBy: () => chain,
+        limit: () => Promise.resolve(sweepRows)
+      };
       return chain;
     },
   },
@@ -78,7 +85,7 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mock((e: any) => { gateEvents.push(e); return 'id'; }),
 }));
 
-import { detectPrSupersession, prRefsIn, rescanOnMerge, sweepClosedUnsupersededPrs, verifyPrCarriedBy, RESCAN_AFTER_MS, RESCAN_ON_MERGE_CAP } from './pr-supersession-detect';
+import { detectPrSupersession, findTaskLineageForSupersession, prRefsIn, rescanOnMerge, sweepClosedUnsupersededPrs, verifyPrCarriedBy, RESCAN_AFTER_MS, RESCAN_ON_MERGE_CAP } from './pr-supersession-detect';
 
 const DOC_LINES = [
   '# Strategy notes',
@@ -87,6 +94,31 @@ const DOC_LINES = [
   'Supersession records where closed work actually landed.',
 ];
 const patch = (...lines: string[]) => ['@@ -0,0 +1 @@', ...lines.map(l => `+${l}`)].join('\n');
+
+/**
+ * Collect the raw SQL text chunks and bound param values of a drizzle SQL
+ * fragment. Column/table objects carry no `value`, so they are skipped — we
+ * only want the literals the query itself contributes.
+ */
+function sqlLiterals(node: any, out: string[] = []): string[] {
+  if (node === null || node === undefined) return out;
+  if (typeof node === 'string' || typeof node === 'number') {
+    out.push(String(node));
+    return out;
+  }
+  if (typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const item of node) sqlLiterals(item, out);
+    return out;
+  }
+  if (Array.isArray(node.queryChunks)) {
+    sqlLiterals(node.queryChunks, out);
+    return out;
+  }
+  // StringChunk ({ value: string[] }) and Param ({ value: unknown }).
+  if ('value' in node) sqlLiterals(node.value, out);
+  return out;
+}
 
 function closedPr(repo: string, n: number, over: Record<string, any> = {}) {
   gh[`${repo}/pulls/${n}`] = { number: n, merged: false, state: 'closed', body: '', created_at: '2026-09-01T00:00:00Z', commits: 2, head: { sha: `head${n}` }, ...over };
@@ -600,6 +632,76 @@ describe('rescanOnMerge', () => {
   it('never throws when GitHub or the database fails', async () => {
     sweepRows = null as any;
     expect(await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: null })).toEqual({ nominated: 0, results: [] });
+  });
+
+  it('a closed attempt PR nominated via lineage is recorded as superseded by the merged PR', async () => {
+    // Task 9e379e31: when a later attempt's PR merges, earlier closed attempt PRs should be recorded superseded.
+    // mergedPr sets up #9 (merged); we nominate #6 (closed) via task lineage, not PR body reference.
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
+    closedPr('org/kb', 6);
+    // The merged PR belongs to task 't-9'; the closed PR belongs to task 't-6' (an attempt).
+    // When findTaskLineageForSupersession runs on 't-9', it finds no parent but returns siblings (other attempts).
+    // The closed PR is nominated because its worker task 't-6' is in the lineage of 't-9' (a sibling attempt).
+    // In this case, task 't-9' has parentTaskId 'p-1' (it's an attempt of p-1),
+    // and task 't-6' also has parentTaskId 'p-1' (sibling attempt).
+    // relatedTaskIds = ['t-9', 'p-1', 't-6'] is what findTaskLineageForSupersession returns.
+    mergedTask = { parentTaskId: 'p-1', taskClass: 'attempt' };
+    siblingTasks = [{ id: 't-6', parentTaskId: 'p-1', taskClass: 'attempt' }];
+    // The sweep's where() clause includes the lineage filter: inArray(tasks.id, relatedTaskIds).
+    // By capturing lastWhereCondition, we verify that the filter is present in the query.
+    sweepRows = [{ id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' }];
+
+    const r = await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: 't-9' });
+
+    // Walk the Drizzle SQL object's bound params/literals to prove the lineage
+    // ids ('t-9', 'p-1', 't-6') actually reach the sweep's where() clause —
+    // not just that where() was called with something.
+    const literals = sqlLiterals(lastWhereCondition);
+    expect(literals).toContain('t-9');
+    expect(literals).toContain('p-1');
+    expect(literals).toContain('t-6');
+
+    // The closed PR #6 should be nominated and recorded as superseded
+    expect(r.nominated).toBe(1);
+    expect(r.results[0]).toMatchObject({ prUrl: 'https://github.com/org/kb/pull/6', outcome: 'recorded' });
+    expect(recordCalls[0]).toMatchObject({ workerId: 'w-6', supersedingPrNumber: 9 });
+    expect(gateEvents[0]).toMatchObject({ outcome: 'accepted', surface: 'webhook pull_request.closed (merged)' });
+  });
+});
+
+// Task 9e379e31: most of the closed-unmerged backlog was retries whose PR closed
+// because a later attempt (or the task it replaced) merged — not named in any PR
+// body, not a mission sibling. findTaskLineageForSupersession is what rescanOnMerge
+// now asks, on top of claims and mission siblings, before falling back to file overlap.
+describe('findTaskLineageForSupersession', () => {
+  it('includes the task itself, its parent (the task it is an attempt of), and its attempt children', async () => {
+    mergedTask = { parentTaskId: 'p-1', taskClass: 'attempt' };
+    siblingTasks = [{ id: 'a-1' }, { id: 'a-2' }];
+    const ids = await findTaskLineageForSupersession('t-9');
+    expect(ids).toEqual(['t-9', 'p-1', 'a-1', 'a-2']);
+  });
+
+  it('is just the task itself when it has no parent and no attempt children', async () => {
+    mergedTask = { parentTaskId: null, taskClass: 'work' };
+    siblingTasks = [];
+    expect(await findTaskLineageForSupersession('t-9')).toEqual(['t-9']);
+  });
+
+  it('is just the task itself when the task row cannot be found', async () => {
+    mergedTask = null;
+    expect(await findTaskLineageForSupersession('t-9')).toEqual(['t-9']);
+  });
+
+  it('adds only the parent when there are no attempt children', async () => {
+    mergedTask = { parentTaskId: 'p-1', taskClass: 'attempt' };
+    siblingTasks = [];
+    expect(await findTaskLineageForSupersession('t-9')).toEqual(['t-9', 'p-1']);
+  });
+
+  it('adds only the attempt children when the task has no parent', async () => {
+    mergedTask = { parentTaskId: null, taskClass: 'work' };
+    siblingTasks = [{ id: 'a-1' }];
+    expect(await findTaskLineageForSupersession('t-9')).toEqual(['t-9', 'a-1']);
   });
 });
 

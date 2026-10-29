@@ -110,3 +110,18 @@ describe('decideWaitExit: a task started anyway (spec 36df686b R-8, R-11)', () =
     expect(code(decide({ startAnyway: { parks: 0 }, edges: new Map([[B, [T]]]) }))).toBe('cycle');
   });
 });
+
+// Navigation AC-12: a task parked behind a prerequisite is claimable again with no person involved.
+describe('parked task wakes without a person', () => {
+  it('by default (flag unset) a Start anyway park is allowed and the prerequisite lands in dependsOn, which the claim gate releases on merge', async () => {
+    expect(waitExitEnabled(undefined)).toBe(false);
+    const d = decide({ enabled: waitExitEnabled(undefined), startAnyway: { parks: 0 } });
+    expect(d).toEqual({ ok: true, dependsOn: [B] });
+    const { DEP_SATISFYING_STATUSES } = await import('./dep-gate-contract');
+    expect(DEP_SATISFYING_STATUSES).toContain('completed');
+  });
+
+  it('without Start anyway and without the flag a worker cannot park', () => {
+    expect(decide({ enabled: waitExitEnabled(undefined) }).ok).toBe(false);
+  });
+});

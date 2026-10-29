@@ -74,6 +74,8 @@ export function answerResetKey(workerId: string | null | undefined, phase: TaskP
 }
 
 export interface TaskActionZoneProps {
+  /** The host's ⋯ menu carries Start now anyway and Cancel for a held task (R-20); the zone keeps only the line saying what holds it. */
+  heldActionsInMenu?: boolean;
   taskId: string;
   workspaceId: string;
   /** Canonical phase from `deriveTaskPhase`. */
@@ -147,6 +149,7 @@ const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 
 const QUIET_BTN = 'inline-flex min-h-11 items-center px-3 font-mono text-meta text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-50';
 
 export default function TaskActionZone({
+  heldActionsInMenu = false,
   deliveryReading = null,
   taskId,
   workspaceId,
@@ -474,7 +477,7 @@ export default function TaskActionZone({
       })()}
 
       {/* Waiting on another task (R-20): it starts by itself when that merges; a person may start it past the wait or drop it */}
-      {has('start_anyway') && start.status === 'idle' && (
+      {has('start_anyway') && !heldActionsInMenu && start.status === 'idle' && (
         <div data-testid="task-waiting-on-task" className="flex flex-wrap items-center gap-2">
           <button type="button" data-action="start_anyway" onClick={() => start.start({ forceOverride: true })} disabled={starting || acting !== null} className={SECONDARY_BTN}>
             {start.pending === 'start' ? 'Starting…' : 'Start now anyway'}
