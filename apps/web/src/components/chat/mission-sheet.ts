@@ -7,6 +7,7 @@
  * viewer (complete with goal criteria unchecked, everything landed but not
  * complete, a task waiting on you). Only then is anything drawn copper.
  */
+import { isBuildComplete } from '@/lib/mission-checks';
 import type { CanvasSuggestion } from './canvas-empty';
 
 export interface MissionSheetState {
@@ -46,7 +47,7 @@ export function missionSheetState(view: MissionSheetSource): MissionSheetState {
 export interface MissionInsight { text: string; disagrees: boolean }
 
 const unchecked = (s: MissionSheetState) => s.goal.total - s.goal.passed;
-const allLanded = (s: MissionSheetState) => s.landed.total > 0 && s.landed.done >= s.landed.total;
+const allLanded = (s: MissionSheetState) => isBuildComplete(s.landed);
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 export function missionInsight(s: MissionSheetState): MissionInsight | null {

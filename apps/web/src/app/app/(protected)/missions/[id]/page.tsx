@@ -949,7 +949,7 @@ async function MissionDetailBody({
   }], newestEstimate, new Map())[0]?.tasks ?? [];
   // Waiting on another mission is an outside wait: no time promise (R-24).
   const waitsOnMission = !!(mission as { dependsOnMissionId?: string | null }).dependsOnMissionId;
-  const missionPrCard = (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total })
+  const missionPrCard = (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: isBuildComplete(feedCounts) })
     || (missionIntegrationPr?.shippedDeliveries?.length ?? 0) > 0) && missionIntegrationPr
     // Mission integration PR (Option A′): the mission's review gate, and a
     // different object from the task PRs that fed the branch. With delivery
