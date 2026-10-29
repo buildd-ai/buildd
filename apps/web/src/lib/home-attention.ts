@@ -6,6 +6,7 @@ import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import type { RedCheckView } from './red-check-cause';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
+import { missionTaskHref } from './mission-task-href';
 
 export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start' | 'access';
 export interface AttentionLink { label: string; href: string }
@@ -169,7 +170,7 @@ export function checkLine(red: RedCheckView | null, waitingMinutes?: number | nu
 export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
   const text = (v?: string | null) => v?.trim() || null;
   const subject = text(i.taskTitle) ?? text(i.missionTitle) ?? text(i.connectorName) ?? (i.prNumber != null ? `PR #${i.prNumber}` : null);
-  const taskHref = i.taskId ? `/app/tasks/${i.taskId}` : null;
+  const taskHref = i.taskId ? missionTaskHref({ missionId: i.missionId, taskId: i.taskId }) : null;
   const subjectHref = i.missionId ? `/app/missions/${i.missionId}` : taskHref;
   const meta = i.prNumber != null ? `#${i.prNumber}` : i.workspaceName ?? '';
   const make = (r: { label: string; tone: HomeAttentionItem['tone']; title: string | null; sentence: string | null; detail?: string | null; actionType: AttentionActionType; primary: AttentionLink | null; details?: AttentionLink | null }): Resolved | null => {

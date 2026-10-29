@@ -17,6 +17,7 @@ import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import type { MissionIntegrationPrView } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
 import { planMissions, type PlanTask } from './mission-plan';
+import { missionTaskHref } from './mission-task-href';
 import { countWord, outcomeSpecView, type CriterionLine } from './mission-outcome-spec-view';
 import { standardsGateEnforced, standardsLine, type StandardItemStatus, type StandardsLine } from './specs/mission-standards-gate';
 
@@ -78,6 +79,8 @@ export interface MissionChecks {
 export type MergeTier = 'auto-threshold' | 'agent-review' | 'human';
 
 export interface MissionChecksInput {
+  /** The mission, so links to its tasks carry the back link (R-1). */
+  missionId?: string | null;
   /** Build tasks only (P-2): repair, verification and maintenance never count. */
   build: { done: number; total: number };
   branch: 'mission-branch' | 'direct';
@@ -128,7 +131,7 @@ const EARLY: ReadonlySet<CheckStatus> = new Set(['running', 'finding', 'owner', 
  * The visual review row, from `presentVisualReview`. Advisory unless it holds
  * up the merge or the finish. A pass on an older commit is stale, never passed.
  */
-export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: MergeTier; repairs?: readonly CheckRepair[]; evidence?: readonly { label: string; href: string }[] }): CheckRow {
+export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: MergeTier; missionId?: string | null; repairs?: readonly CheckRepair[]; evidence?: readonly { label: string; href: string }[] }): CheckRow {
   const p = presentVisualReview(state, { ownerMergesIntegration: opts.mergeTier === 'human' });
   const blocks = state.blocksMerge || state.blocksCompletion;
   const base = {
@@ -172,7 +175,7 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   if (state.status === 'queued' && state.waitingOn) {
     return {
       ...row('queued', 'waiting on failed work', p.detail, 'none'),
-      evidence: [...base.evidence, { label: 'Open the failed task', href: `/app/tasks/${encodeURIComponent(state.waitingOn.taskId)}` }],
+      evidence: [...base.evidence, { label: 'Open the failed task', href: missionTaskHref({ missionId: opts.missionId, taskId: state.waitingOn.taskId }) }],
     };
   }
   // I-15: a merged fix waiting for its screen to be shot again, named.
@@ -328,7 +331,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   const missionPr = branch === 'mission-branch' ? input.integrationPr : null;
   const prMerged = missionPr?.state === 'merged';
 
-  const visual = input.visual ? visualCheck(input.visual, { mergeTier: input.mergeTier, repairs: input.repairs, evidence: input.evidence?.visual }) : null;
+  const visual = input.visual ? visualCheck(input.visual, { mergeTier: input.mergeTier, missionId: input.missionId, repairs: input.repairs, evidence: input.evidence?.visual }) : null;
   const visualHolds = !!visual && input.visual!.blocksMerge && !SETTLED.has(visual.status);
   const criteria = criteriaChecks(input.criteria, input.criteriaState, { branch, prMerged, target, buildComplete, standardsEnforced: input.standardsEnforced });
   const pr = missionPr ? missionPrCheck(missionPr, { mergeTier: input.mergeTier, target, buildComplete, visualHolds }) : null;
