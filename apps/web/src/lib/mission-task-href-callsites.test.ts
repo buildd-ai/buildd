@@ -42,6 +42,7 @@ const CALL_SITES = [
   'lib/mission-checks.ts',
   'lib/activity-delivery.ts',
   'lib/task-origin.ts',
+  'lib/attempt-strip.ts',
 ];
 
 const HAND_BUILT_TASK_LINK = /`\/app\/tasks\/\$\{/;

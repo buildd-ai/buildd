@@ -270,7 +270,7 @@ export function deriveTaskOrigin(task: TaskOriginRow, ctx: TaskOriginContext = {
   // ── Links, in render order: worker → mission → schedule → parent → PR → run.
   if (!isEmpty) {
     if (task.createdByWorkerId && ctx.creatorWorkerTaskId) {
-      links.push({ key: 'worker', label: str(ctx.creatorWorkerTaskTitle) ?? 'Agent run', href: missionTaskHref({ missionId: null, taskId: ctx.creatorWorkerTaskId }) });
+      links.push({ key: 'worker', label: str(ctx.creatorWorkerTaskTitle) ?? 'Agent run', href: missionTaskHref({ missionId: task.missionId, taskId: ctx.creatorWorkerTaskId }) });
     }
     if (task.missionId) {
       links.push({

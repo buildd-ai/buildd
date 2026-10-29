@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { deriveTaskOrigin, type TaskOriginRow } from './task-origin';
+import { missionTaskHref } from './mission-task-href';
 
 // Illustrative IDs only — never real task/worker ids (public repo).
 const WORKER_ID = '00000000-0000-4000-8000-000000000001';
@@ -61,7 +62,7 @@ describe('deriveTaskOrigin — agent-created via worker', () => {
 
   it('links the worker run, the mission and the schedule', () => {
     expect(origin.links.map(l => l.key)).toEqual(['worker', 'mission', 'schedule']);
-    expect(origin.links.find(l => l.key === 'worker')?.href).toBe(`/app/tasks/${CREATOR_TASK_ID}`);
+    expect(origin.links.find(l => l.key === 'worker')?.href).toBe(missionTaskHref({ missionId: origin.links.find(l => l.key === "mission")?.href.split("/").pop(), taskId: CREATOR_TASK_ID }));
     expect(origin.links.find(l => l.key === 'mission')?.href).toBe(`/app/missions/${MISSION_ID}`);
     expect(origin.links.find(l => l.key === 'mission')?.label).toBe('Checkout rewrite');
     expect(origin.links.find(l => l.key === 'schedule')?.href).toBe(`/app/workspaces/${WORKSPACE_ID}/schedules`);
