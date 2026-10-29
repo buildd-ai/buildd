@@ -1071,7 +1071,13 @@ recorded as such, never as an approval.
   notice; a `held` that is not lasting returns to `APPROVED`. Before the merge
   call, `merge_call` publishes the head's `success` under both names when
   GitHub does not already show it and reads it back; a success GitHub does not
-  show yet parks the row the same way (`held:own_status:…`). A green check
+  show yet parks the row the same way (`held:own_status:…`). Nothing wakes
+  that park (buildd's own contexts are skipped by the `status` wake), so while
+  the delivery is `LANDING` the status is `merge_call`'s: `publish_landing_status`
+  does not write a status that is short of success only for want of a recorded
+  CI reading (`skipped:merge_call_publishes`), and a read-back showing another
+  status (a drain holding an older read wrote over it) is written once more
+  before the row parks. A green check
   suite (`observeCiGreen`) or a commit status `success` on a `LANDING` head
   (the webhook's `status` case, buildd's own contexts skipped) wakes the held
   row (`Store.wakeHeldMerges`) and drains the delivery where the kernel is

@@ -64,6 +64,19 @@ async function publishStatusOn(writes: GithubWrites, repoFullName: string, s: { 
 }
 
 /**
+ * A LANDING delivery's status is the merge effect's to publish: its rails read CI at the head
+ * and it publishes the success, read back, before it calls GitHub. A status effect run by another
+ * drain meanwhile reads only the CI the kernel recorded, which may lag, and its "waiting for CI"
+ * written between that publish and the read-back parks the merge on its own status with nothing
+ * to wake it. So a status that is short of success only for want of a CI reading is not written
+ * here while the delivery lands; anything else (an open finding, a verdict) still is.
+ */
+function mergeEffectOwns(view: Parameters<typeof landingStatusOf>[0], status: LandingStatus): boolean {
+  return view.delivery?.state === 'LANDING' && status.state !== 'success'
+    && landingStatusOf(view, { ciPassed: true })?.state === 'success';
+}
+
+/**
  * e07ee9cf: a behind refresh that waits in the landing lane (enforce, another delivery holds it)
  * is queued, not in progress. The status names the PR ahead, whichever of the refresh and this
  * publish drains first. Null when not waiting, or when lane or policy cannot be read.
@@ -179,8 +192,14 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const own = landingStatusOf(view, { ciPassed: true });
     const ownReady = own?.state === 'success' && own.sha === headSha;
     if (own && ownReady && staleStatus(await shownStatus(github, d.repoFullName, own), own, targetUrl)) {
-      await publishStatusOn(writes, d.repoFullName, own, targetUrl);
-      const back = github.statusOf ? await github.statusOf(d.repoFullName, headSha, LANDING_STATUS_CONTEXT).catch(() => null) : { state: 'success' };
+      let back: { state: string } | null = null;
+      // Twice at most: a read-back showing another status is a drain still holding an older read
+      // that wrote over this one (it stops at its next re-read), not GitHub being slow; write again.
+      for (let pass = 0; pass < 2 && back?.state !== 'success'; pass++) {
+        if (pass > 0 && !back) break;
+        await publishStatusOn(writes, d.repoFullName, own, targetUrl);
+        back = github.statusOf ? await github.statusOf(d.repoFullName, headSha, LANDING_STATUS_CONTEXT).catch(() => null) : { state: 'success' };
+      }
       if (back?.state !== 'success') {
         return hold(LANDING_STATUS_CONTEXT, 'own_status', `GitHub has not shown "${LANDING_STATUS_CONTEXT}" as success on ${headSha.slice(0, 7)} after ${waited()} of publishing it`);
       }
@@ -223,6 +242,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const detail = (typeof e.payload.detail === 'string' ? e.payload.detail : null) ?? await laneWaitDetail(ports, d);
     let status = landingStatusOf(view, { detail });
     if (!status) return { outcome: `skipped:state_${d.state}` };
+    if (mergeEffectOwns(view, status)) return { outcome: 'skipped:merge_call_publishes' };
     const github = await githubOf(ports, d.workspaceId);
     const writes = github?.writes;
     if (!github || !writes) throw new Error(NO_INSTALLATION);
@@ -246,7 +266,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
         if (!again.delivery || again.delivery.version === seen) break;
         seen = again.delivery.version;
         const next = landingStatusOf(again, { detail: again.delivery.version === version ? detail : await laneWaitDetail(ports, again.delivery) });
-        if (!next) break;
+        if (!next || mergeEffectOwns(again, next)) break;
         status = next;
       }
     } catch (err) {

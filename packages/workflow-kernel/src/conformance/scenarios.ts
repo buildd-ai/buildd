@@ -968,6 +968,48 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'merge holds: the landing version\'s status effect, run by another drain between the merge effect\'s publish and its read-back, does not park the merge (nothing would wake it)',
+    async run(host) {
+      // CI is not recorded green on H1: only the merge effect's rails read it. Three doors landing at
+      // once drain the LANDING transition's merge_call and publish_landing_status in parallel.
+      const s = await (await new Delivery(host, 47).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      const h = kernelEffectHandlers(f.ports);
+      const statusRow = (await host.effects(s.deliveryId)).filter((e) => e.kind === 'publish_landing_status').at(-1)!;
+      let raced = false;
+      f.github.onStatus = async (p) => {
+        if (raced || p.state !== 'success') return;
+        raced = true;
+        await h.publish_landing_status!({ ...(await direct(host, s, 'publish_landing_status')), payload: statusRow.payload, dedupeKey: statusRow.dedupeKey });
+      };
+      eq(await h.merge_call!(await direct(host, s, 'merge_call')), { outcome: 'ok:merged:applied' }, 'merged, not held on its own status');
+      ok(raced, 'the status effect ran inside the merge effect\'s publish');
+      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'one merge call, pinned to H1');
+      const shown = await f.github.statusOf(s.repo, 'H1', LANDING_STATUS_CONTEXT);
+      eq(shown?.state, 'success', 'GitHub is left showing the success');
+
+      // A drain still holding the APPROVED read writes its "waiting for CI" over the success.
+      const t = await (await new Delivery(host, 48).open()).approvedAt('H1');
+      const stale = (await host.effects(t.deliveryId)).filter((e) => e.kind === 'publish_landing_status').at(-1)!;
+      const before = await host.store.loadView({ deliveryId: t.deliveryId });
+      applied(await t.land('H1'), 'LANDING', 'landing');
+      const g = fakePorts(host);
+      g.github.setPr(t.repo, t.prNumber, t.live('H1'));
+      let late = false;
+      g.github.onStatus = async (p) => {
+        if (late || p.state !== 'success') return;
+        late = true;
+        const older = landingStatusOf(before)!;
+        eq({ state: older.state, version: stale.payload.version }, { state: 'pending', version: before.delivery!.version }, 'the older read says pending');
+        await g.github.writes.publishStatus({ repoFullName: t.repo, sha: older.sha, context: LANDING_STATUS_CONTEXT, state: older.state, description: older.description });
+      };
+      eq(await kernelEffectHandlers(g.ports).merge_call!(await direct(host, t, 'merge_call')), { outcome: 'ok:merged:applied' }, 'merged past the straggler');
+      eq((await g.github.statusOf(t.repo, 'H1', LANDING_STATUS_CONTEXT))?.state, 'success', 'the success is written again');
+    },
+  },
+  {
     name: 'merge holds: a hold past its bound escalates to a person naming the check; the review check on a head buildd has not approved escalates at once',
     async run(host) {
       const s = await (await new Delivery(host, 45).open()).approvedAt('H1');
