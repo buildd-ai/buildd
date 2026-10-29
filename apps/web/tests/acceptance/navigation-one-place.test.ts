@@ -287,10 +287,9 @@ describe('the mission page, r5: the header, the bar, the Build stage, the stages
     for (const rel of ['lib/explain.ts', 'lib/mission-card-view.ts', 'app/app/(protected)/missions/[id]/MissionOverview.tsx']) {
       matches(code(read(join(SRC, rel))), /\bisBuildComplete\(/);
     }
-    // The catalog retires "delivered" as a state word (terms.ts BANNED_WORDS), so the line is the catalog's Done plus the branch.
+    // The catalog retires "delivered" as a state word (terms.ts BANNED_WORDS), so the line is the catalog's deliveredInto(branch).
     matches(overview(), /mission-delivered-line/);
-    matches(overview(), /termWord\('mission\.done'\)/);
-    matches(overview(), /merged into \$\{/);
+    matches(overview(), /deliveredInto\(/);
     for (const [, text] of sources(SRC)) expect(code(text)).not.toMatch(/progress\s*>=\s*100,?\s*\n?\s*\}\)/);
   });
 
