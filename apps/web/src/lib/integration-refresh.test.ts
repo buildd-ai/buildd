@@ -16,6 +16,7 @@ import {
   refreshFiledFor,
   requeueBranchContext,
   refreshPrIsEmpty,
+  isAncestor,
 } from './integration-refresh';
 
 const REFRESH_CTX = { requireMergeCommit: true, refreshTrunk: 'dev', refreshTrunkSha: 'dev-2', refreshMissionHeadSha: 'm-1' };
@@ -253,5 +254,49 @@ describe('verifyRefreshLanded', () => {
     });
     expect(verdict.ok).toBe(false);
     if (!verdict.ok) expect(verdict.transient).toBe(true);
+  });
+});
+
+describe('isAncestor: a settled answer between two commits is read from GitHub once', () => {
+  const A = 'a'.repeat(40);
+  const B = 'b'.repeat(40);
+  const counting = (status: string | (() => never)) => {
+    const calls: string[] = [];
+    const api = async (_i: number, path: string) => {
+      calls.push(path);
+      if (typeof status === 'function') return status();
+      return { status };
+    };
+    return { api, calls };
+  };
+
+  it('asks once for the same pair of commit SHAs, whatever the answer', async () => {
+    for (const status of ['ahead', 'diverged']) {
+      const { api, calls } = counting(status);
+      const first = await isAncestor(1, 'o/r', A, B, api);
+      expect(await isAncestor(1, 'o/r', A, B, api)).toBe(first);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it('asks again for a branch name, which can move', async () => {
+    const { api, calls } = counting('ahead');
+    await isAncestor(1, 'o/r', A, 'dev', api);
+    await isAncestor(1, 'o/r', A, 'dev', api);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('asks again after a failed read', async () => {
+    const { api, calls } = counting(() => { throw new Error('timeout'); });
+    expect(await isAncestor(1, 'o/r', A, B, api)).toBeNull();
+    expect(await isAncestor(1, 'o/r', A, B, api)).toBeNull();
+    expect(calls).toHaveLength(2);
+  });
+
+  it('keeps each repo apart', async () => {
+    const { api, calls } = counting('ahead');
+    await isAncestor(1, 'o/r', A, B, api);
+    await isAncestor(1, 'o/other', A, B, api);
+    expect(calls).toHaveLength(2);
   });
 });
