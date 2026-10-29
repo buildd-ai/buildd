@@ -10,6 +10,8 @@
  * Every client POST to `/api/tasks/[id]/start` goes through `requestTaskStart`
  * and every POST to `/api/tasks/[id]/reassign` through `requestTaskRetry`.
  */
+import { deriveTaskPhase, type TaskPhase } from './task-presentation';
+import type { TaskFailureKind, TaskTrouble } from './task-failure-kind';
 import type { ForceChecklistItem, WaitingKind, WaitingReason } from '@buildd/core/waiting-reason';
 import { MISSION_START_COPY, type MissionStartState } from './mission-start-state';
 
@@ -63,13 +65,11 @@ export interface ForcedStart {
   expiresAt: string;
 }
 
-// ── Action set ───────────────────────────────────────────────────────────────
-
-export {
-  STARTABLE_PHASES, backendDisplayName, otherBackendOf, taskActionSet, taskActionPhase,
-  type Backend, type MissionExecutor, type TaskActionId, type TaskActionState,
-} from './task-action-set';
+import { STARTABLE_PHASES, backendDisplayName, otherBackendOf, taskActionSet, taskActionPhase } from './task-action-set';
+export { STARTABLE_PHASES, backendDisplayName, otherBackendOf, taskActionSet, taskActionPhase };
+export type { Backend, MissionExecutor, TaskActionId, TaskActionState } from './task-action-set';
 import type { Backend } from './task-action-set';
+
 
 /** What a person types in their own session to take a local mission's task. */
 export function claimTaskCommand(taskId: string): string {

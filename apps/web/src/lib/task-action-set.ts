@@ -1,11 +1,8 @@
-/**
- * Which actions a task's state offers, as plain data: no fetches, no React.
- * Kept out of the "use client" task-actions module so a server component (the
- * full task page) can call `taskActionSet` without crossing the client
- * boundary; task-actions re-exports all of it for the client renderers.
- */
+/** Server-safe: the pure action-set derivation behind `task-actions` (a 'use client' module). */
 import { deriveTaskPhase, type TaskPhase } from './task-presentation';
 import type { TaskFailureKind, TaskTrouble } from './task-failure-kind';
+
+// ── Action set ───────────────────────────────────────────────────────────────
 
 export type Backend = 'claude' | 'codex';
 export type MissionExecutor = 'runner' | 'local';
@@ -120,4 +117,3 @@ export function taskActionPhase(i: {
   });
   return { phase, isBlocked };
 }
-
