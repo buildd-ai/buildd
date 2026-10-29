@@ -18,6 +18,9 @@ import Section from '@/components/ui/Section';
 import InlineConfirm from './InlineConfirm';
 import type { ForeignRunner, RunnerKeySummary } from '@/lib/runner-picks';
 
+/** Workspace groups shown before the rest sit behind "Show all". */
+const FOREIGN_GROUPS_SHOWN = 5;
+
 const ROWS = 'divide-y divide-border-default border-y border-border-default';
 
 function groupPicks(picks: NonNullable<RunnerKeySummary['picks']>) {
@@ -80,6 +83,7 @@ export default function RunnerKeysSection({
   const [foreign, setForeign] = useState(initialForeign);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAllForeign, setShowAllForeign] = useState(false);
   /** The row whose destructive action is waiting on a second tap. */
   const [confirm, setConfirm] = useState<string | null>(null);
 
@@ -103,6 +107,8 @@ export default function RunnerKeysSection({
     if (!res.ok) return setError(res.error);
     setForeign((list) => list.filter((x) => !(x.accountId === r.accountId && x.workspaceId === r.workspaceId)));
   }
+
+  const foreignGroups = groupForeign(foreign);
 
   return (
     <div data-testid="runner-keys">
@@ -184,8 +190,9 @@ export default function RunnerKeysSection({
       <Section title="Runners from other teams" count={foreign.length}>
         {foreign.length > 0 && (
           <div className="space-y-2" data-testid="foreign-runners">
-            {groupForeign(foreign).map((g, i, all) => (
-              <details key={g.workspaceId} className="group" open={all.length === 1} data-testid="foreign-runner-group">
+            {(showAllForeign ? foreignGroups : foreignGroups.slice(0, FOREIGN_GROUPS_SHOWN)).map((g) => {
+              return (
+              <details key={g.workspaceId} className="group" open={foreignGroups.length === 1} data-testid="foreign-runner-group">
                 <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 text-body text-text-primary md:min-h-8">
                   <span className="min-w-0 break-words">{g.workspaceName}</span>
                   <span className="shrink-0 text-meta text-text-muted">{g.runners.length} {g.runners.length === 1 ? 'runner' : 'runners'}</span>
@@ -233,7 +240,13 @@ export default function RunnerKeysSection({
                   })}
                 </ul>
               </details>
-            ))}
+              );
+            })}
+            {!showAllForeign && foreignGroups.length > FOREIGN_GROUPS_SHOWN && (
+              <button type="button" className="btn btn-quiet btn-sm h-11 md:h-8" onClick={() => setShowAllForeign(true)} data-testid="foreign-runners-show-all">
+                Show all {foreignGroups.length} workspaces
+              </button>
+            )}
           </div>
         )}
       </Section>
