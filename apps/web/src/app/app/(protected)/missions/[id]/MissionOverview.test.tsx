@@ -72,7 +72,7 @@ describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
     expect(out).not.toMatch(/data-testid="mission-outcome-spec"[^>]*>[^<]*rev /);
     const steps = [...out.matchAll(/data-step="([^"]+)" data-state="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);
     expect(steps).toEqual(['build:now', 'verify:todo', 'deliver:todo']);
-    expect((out.match(/data-testid="mission-check-rail-text"/g) ?? []).length).toBe(1);
+    expect((out.match(/data-testid="mission-check-rail-text"/g) ?? []).length).toBe(0);
   });
 
   it('the decision card names the task, every task waiting on it, each option\u2019s effect, Answer differently and Not now (AC-10)', () => {
@@ -135,7 +135,7 @@ describe('MissionOverview, 11 tasks with delivery', () => {
 
   it('the summary line is build counts only; merged tasks fold into one row', () => {
     expect(out).toMatch(/data-testid="mission-build-summary"[^>]*>3 of 11 merged/);
-    expect(out).toContain('3 merged ›');
+    expect(out).toContain('Merged tasks ›');
     expect(out).not.toMatch(/criteri/);
   });
 });

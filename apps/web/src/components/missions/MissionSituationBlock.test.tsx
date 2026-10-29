@@ -124,7 +124,7 @@ describe('provenance stays out of the reader’s view', () => {
 });
 
 describe('the why, with its hard ref linked', () => {
-  it('renders the top of the causal chain and links its PR', () => {
+  it('says a ready-to-merge PR once, in the headline, with the button', () => {
     const view = deriveMissionStateView({
       ...base,
       completion: {
@@ -144,9 +144,12 @@ describe('the why, with its hard ref linked', () => {
       <MissionSituationBlock missionId="m-1" situation={view.situation} because={because} />,
     );
 
-    expect(html).toContain('Wire the route');
-    expect(html).toContain('#9001');
+    // The headline names the PR once and the button opens it; the body does not repeat either.
+    expect(html).toContain('PR #9001 is ready to merge');
     expect(html).toContain('https://example.invalid/pr/9001');
+    expect(html).not.toContain('Wire the route');
+    expect(html).not.toContain('has not merged');
+    expect(html.match(/#9001/g)?.length).toBe(1);
   });
 
   it('a why whose only ref is a raw task id is dropped from the primary notice (spec 8e137fdb I-14, I-16)', () => {

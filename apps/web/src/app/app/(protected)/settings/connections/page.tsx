@@ -27,7 +27,7 @@ export default async function ConnectionsSettingsPage() {
     listForeignRunners(user.id),
   ]);
   return (
-    <SettingsPage title="Connected apps" description="Apps you connected to buildd.">
+    <SettingsPage title="Apps signed in as you" description="Apps you signed in to buildd with.">
       <ConnectionsSection initial={{ connections, legacy, teams: consentTeams }} />
       <RunnerKeysSection keys={runnerKeys} foreign={foreignRunners} />
     </SettingsPage>

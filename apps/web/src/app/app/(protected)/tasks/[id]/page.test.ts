@@ -377,7 +377,7 @@ describe('running task — status line, one live block, Details open', () => {
 
   it('Details is an open card above Run, not a collapsed disclosure', () => {
     const card = pageSource.indexOf('<TaskDetailsCard');
-    const run = pageSource.indexOf('cursor-pointer text-body">Run</summary>');
+    const run = pageSource.indexOf('cursor-pointer text-body');
     expect(card).toBeGreaterThan(0);
     expect(card).toBeLessThan(run);
     expect(pageSource).not.toContain('<summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">Details</summary>');

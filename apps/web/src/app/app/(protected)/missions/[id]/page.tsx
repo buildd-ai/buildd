@@ -269,7 +269,7 @@ async function MissionDetailBody({
     // R-6, R-16): the open organizer questions, bounded (spec 3ef37387).
     openQuestionNotes: layout === 'board' ? db.query.missionNotes.findMany({
       where: sqlWhere(and(onMissionOrItsTasks, eq(missionNotes.type, 'question' as any), eq(missionNotes.status, 'open'))),
-      columns: { id: true, type: true, status: true, title: true, body: true, taskId: true, workerId: true, defaultChoice: true, createdAt: true },
+      columns: { id: true, type: true, status: true, title: true, body: true, taskId: true, workerId: true, defaultChoice: true, options: true, subjectTaskId: true, createdAt: true },
       orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
       limit: 20,
     }) : null,
@@ -1265,7 +1265,7 @@ async function MissionDetailBody({
   // R-6, R-16), over the board and the open organizer questions read above.
   const openQuestionNotes: OpenQuestionNote[] = (r1.openQuestionNotes ?? []).map(n => ({
     id: n.id, type: n.type as string, status: n.status as string, title: n.title, body: n.body ?? null,
-    workerId: n.workerId ?? null, taskId: n.taskId ?? null, defaultChoice: n.defaultChoice ?? null,
+    workerId: n.workerId ?? null, taskId: n.taskId ?? null, defaultChoice: n.defaultChoice ?? null, options: n.options ?? null,
     subjectTaskId: (n as { subjectTaskId?: string | null }).subjectTaskId ?? null,
     createdAt: new Date(n.createdAt).getTime(),
   }));

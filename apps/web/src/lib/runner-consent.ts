@@ -129,7 +129,7 @@ export function isSameOriginPost(req: NextRequest): boolean {
 
 const FOOTNOTE = 'The runner claims work only from the workspaces ticked here, and only while you are on their team. '
   + 'Restricted workspaces show for teams you own or administer. Workspaces created later are not added on their own: '
-  + 'change the list in Settings, Connected apps.';
+  + 'change the list in Settings, Apps signed in as you.';
 
 function hostOf(url: string): string {
   try {
