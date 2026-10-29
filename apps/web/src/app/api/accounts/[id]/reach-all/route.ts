@@ -18,7 +18,8 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * for a runner key (accounts.reach_all_workspaces, resolved at claim time in
  * lib/claim-order.ts). Turning it on also clears the key's own workspace
  * list, which would otherwise keep cutting the reach. Session only, team
- * owners and admins only. The key needs a recorded creator: reach is theirs.
+ * owners and admins only. The key needs a recorded creator: reach is theirs,
+ * so only that creator may turn it on; any owner or admin may turn it off.
  */
 export async function PUT(
   req: NextRequest,
@@ -60,6 +61,15 @@ export async function PUT(
 
   if (body.reachAll && !account.createdByUserId) {
     return NextResponse.json({ error: 'This key has no recorded creator, so it has no reach to follow' }, { status: 409 });
+  }
+
+  // Reach follows the creator's teams, including ones the caller is not in,
+  // so only the creator can turn it on. Any owner or admin can turn it off.
+  if (body.reachAll && account.createdByUserId !== user.id) {
+    return NextResponse.json(
+      { error: "Only the person who created this key can extend it to every workspace they reach" },
+      { status: 403 },
+    );
   }
 
   await db.update(accounts)

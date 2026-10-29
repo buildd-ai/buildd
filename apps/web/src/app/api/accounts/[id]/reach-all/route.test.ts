@@ -70,6 +70,19 @@ describe('PUT /api/accounts/[id]/reach-all', () => {
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });
 
+  it("refuses to turn on reach for a key someone else created: it would follow that person's teams", async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: ID, teamId: 'team-1', apiKey: 'hash-1', createdByUserId: 'user-2' });
+    const res = await PUT(req({ reachAll: true }), { params });
+    expect(res.status).toBe(403);
+    expect(mockUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('lets an owner turn off reach on a key someone else created', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: ID, teamId: 'team-1', apiKey: 'hash-1', createdByUserId: 'user-2' });
+    expect((await PUT(req({ reachAll: false }), { params })).status).toBe(200);
+    expect(mockUpdateSet).toHaveBeenCalledWith({ reachAllWorkspaces: false });
+  });
+
   it('refuses a team member who is not an owner or admin', async () => {
     mockGetUserTeamRole.mockResolvedValue('member');
     const res = await PUT(req({ reachAll: true }), { params });
