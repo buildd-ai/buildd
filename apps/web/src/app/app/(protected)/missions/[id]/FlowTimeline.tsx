@@ -13,6 +13,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useMissionFocusSnapshot, useMissionFocusStore } from '@/components/missions/mission-focus-context';
+import Card from '@/components/ui/Card';
 import { STATES } from '@/components/ui/states';
 import type { MissionBoardModel } from '@/lib/mission-board';
 import {
@@ -249,7 +250,7 @@ function SelectedTask({ model, timeline, id, link }: { model: MissionBoardModel;
   const reason = reasonOf(stripSelectionReason(model, id, tickOf));
   const meta = [ft.tick, `level ${t.level} of ${t.levels}`, t.roleName].filter(Boolean).join(' · ');
   return (
-    <section data-testid="selected-task" aria-live="polite" className="flex flex-col gap-2 rounded-[var(--radius-card)] border border-border-default bg-card px-3.5 py-3.5 md:px-4">
+    <Card as="section" data-testid="selected-task" aria-live="polite" className="flex flex-col gap-2">
       <div className="font-mono text-meta text-text-muted">{meta}</div>
       <h2 className="text-lede font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">{t.title}</h2>
       {t.currentAction && <p className="text-title text-text-secondary">{t.currentAction}</p>}
@@ -257,6 +258,6 @@ function SelectedTask({ model, timeline, id, link }: { model: MissionBoardModel;
       <a href={boardTaskHref(link, id)} data-task-id={id} className="inline-flex min-h-11 items-center self-start text-meta text-text-secondary hover:text-text-primary md:min-h-0">
         Open task ›
       </a>
-    </section>
+    </Card>
   );
 }
