@@ -28,10 +28,13 @@ import { isUuid } from '@/lib/uuid';
  *   prNumber    — a PR number; pass workspaceId too when the same number exists
  *                 in more than one of the team's repos
  *
- * `workspaceId` doubles as the PR disambiguator, so it is the one param that
- * may accompany `prNumber`. Every other pair is rejected rather than
- * silently preferring one: "explain this" with two subjects is a caller bug,
- * and guessing which one they meant is how a confident wrong answer gets made.
+ * `workspaceId` is a subject only on its own. Beside `prNumber` it
+ * disambiguates; beside `taskId` or `missionId` it is the scope the subject
+ * must be in (a subject elsewhere 404s), because an account-level MCP
+ * connection has to name a workspace on every call. Every other pair is
+ * rejected rather than silently preferring one: "explain this" with two
+ * subjects is a caller bug, and guessing which one they meant is how a
+ * confident wrong answer gets made.
  *
  * Auth: an API key (scope = the key's team), or the dashboard session (scope =
  * the user's teams; an optional `teamId` param pins it to one of them, and a
@@ -68,14 +71,15 @@ export async function GET(req: NextRequest) {
     const workspaceId = searchParams.get('workspaceId');
     const prNumberRaw = searchParams.get('prNumber');
 
-    // workspaceId is the PR disambiguator, so it does not count as a second
-    // subject when prNumber is present.
+    // workspaceId beside another subject scopes it (the PR disambiguator, or
+    // the workspace a task or mission must be in), so it is not a second one.
     const subjects = [
       taskId ? 'taskId' : null,
       missionId ? 'missionId' : null,
       prNumberRaw ? 'prNumber' : null,
-      workspaceId && !prNumberRaw ? 'workspaceId' : null,
     ].filter(Boolean) as string[];
+    if (workspaceId && subjects.length === 0) subjects.push('workspaceId');
+    const scopeWorkspaceId = workspaceId && !prNumberRaw && subjects[0] !== 'workspaceId' ? workspaceId : null;
 
     if (subjects.length === 0) {
       return NextResponse.json(
@@ -188,7 +192,8 @@ export async function GET(req: NextRequest) {
         where: sqlWhere(eq(tasks.id, taskId)),
         columns: { id: true, workspaceId: true },
       });
-      if (!row || !row.workspaceId || !teamWsIds.includes(row.workspaceId) || !(await reaches(row.workspaceId))) {
+      if (!row || !row.workspaceId || !teamWsIds.includes(row.workspaceId) || !(await reaches(row.workspaceId))
+        || (scopeWorkspaceId && row.workspaceId !== scopeWorkspaceId)) {
         return NextResponse.json({ error: 'Task not found or not in your team' }, { status: 404 });
       }
       const result = await explainTask(taskId, actor, viewer);
@@ -213,7 +218,8 @@ export async function GET(req: NextRequest) {
       // A workspace-scoped mission inherits its workspace's restriction for keys;
       // a team-level mission (no workspace) is gated by team alone.
       if (!hasAccess || (row.workspaceId && !(await reaches(row.workspaceId)))
-        || (account && !taskScopeAllowsWorkspace(account, row.workspaceId))) {
+        || (account && !taskScopeAllowsWorkspace(account, row.workspaceId))
+        || (scopeWorkspaceId && row.workspaceId && row.workspaceId !== scopeWorkspaceId)) {
         return NextResponse.json({ error: 'Mission not found or not in your team' }, { status: 404 });
       }
       const result = await explainMission(missionId, { viewer });

@@ -3,7 +3,7 @@ import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CRITERION_BATCH_CHECKOUT_FAILED_EXIT, type CriterionBatchMarker } from '@buildd/shared';
-import { runCriterionBatch, type BatchExec } from '../../src/criterion-batch';
+import { runCriterionBatch, summarizeCriterionBatch, type BatchExec } from '../../src/criterion-batch';
 import { VERIFICATION_COMMAND_TIMEOUT_MS } from '../../src/runner-verification';
 
 const SHA = 'a'.repeat(40);
@@ -73,6 +73,32 @@ describe('one runner job checks every criterion of a mission target', () => {
     expect(ev.results.map((r) => [r.criterionId, r.outcome, r.exitCode])).toEqual([
       ['AC-1', 'failed', CRITERION_BATCH_CHECKOUT_FAILED_EXIT], ['AC-2', 'failed', CRITERION_BATCH_CHECKOUT_FAILED_EXIT],
     ]);
+  });
+
+  it("installs the repo's declared dependencies at the head before the first criterion runs", async () => {
+    // A fresh checkout with no node_modules made every DB-free test die on
+    // "Cannot find package" (exit 1), read as 25 real failures.
+    const ran: string[] = [];
+    const exec: BatchExec = async (command) => { ran.push(command); return { outcome: 'ok', exitCode: 0, durationMs: 1 }; };
+    await runCriterionBatch({ workerId: 'w', cwd: '/x', installCommand: 'bun install --frozen-lockfile', marker: marker([
+      { criterionId: 'AC-1', command: 'bun run a', timeoutMs: 60_000 },
+    ]) }, exec);
+    expect(ran).toEqual([expect.stringContaining('git checkout'), 'bun install --frozen-lockfile', 'bun run a']);
+  });
+
+  it('an install that fails runs no criterion and reports every one as not prepared, never as failed', async () => {
+    const ran: string[] = [];
+    const exec: BatchExec = async (command) => {
+      ran.push(command);
+      return command.startsWith('git ') ? { outcome: 'ok', exitCode: 0, durationMs: 1 } : { outcome: 'failed', exitCode: 1, durationMs: 5, stderr: 'lockfile had changes' };
+    };
+    const ev = await runCriterionBatch({ workerId: 'w', cwd: '/x', installCommand: 'bun install --frozen-lockfile', marker: marker([
+      { criterionId: 'AC-1', command: 'bun run a', timeoutMs: 60_000 },
+    ]) }, exec);
+    expect(ran).toHaveLength(2);
+    expect(ev.checkout).toBe('failed');
+    expect(ev.results).toEqual([expect.objectContaining({ criterionId: 'AC-1', exitCode: CRITERION_BATCH_CHECKOUT_FAILED_EXIT, stderr: expect.stringContaining('Dependency install failed') })]);
+    expect(summarizeCriterionBatch(ev)).toContain('no criterion command ran');
   });
 
   it('keeps the tail of a long output, where a test run prints its verdict', async () => {
