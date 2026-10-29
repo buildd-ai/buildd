@@ -499,9 +499,9 @@ describe('buildMissionBoard — a mission open for weeks', () => {
 
 
 describe('buildMissionBoard: the visual review (docs/design/visual-qa-human-review.md)', () => {
-  it('an audit tile carries the observation glyph (visual-auditor maps to observation)', () => {
+  it('an audit row is no cell: it feeds Verify, not the board (Navigation R-12/AC-5)', () => {
     const m = board([task('audit', { roleSlug: 'visual-auditor', title: '[surface audit] Example', outputRequirement: 'none' })]);
-    expect(m.tasks.audit.glyph).toBe(WORK_KIND_GLYPHS.observation.glyph);
+    expect(m.tasks.audit).toBeUndefined();
   });
 
   it('Needs you counts the screens awaiting a human, on top of the waiting tasks', () => {
@@ -605,18 +605,28 @@ describe('releasedByOf', () => {
 });
 
 describe('buildMissionBoard — deliverable roles and closed PRs (spec f7f67f1a P-2, R-2, R-14)', () => {
-  it('audit, fix and refresh tiles carry their role and stay out of the landed count', () => {
+  it('audit, fix and refresh rows are not cells and stay out of the counts (Navigation R-12/AC-5)', () => {
     const merged = task('db', { status: 'completed', workers: [worker({ status: 'completed', prNumber: 11, prUrl: 'u11', mergedAt: min(6), prLifecycleStatus: 'merged' })] });
     const open = task('api');
     const audit = task('au', { title: '[surface audit] Example mission', roleSlug: 'visual-auditor' });
     const fix = task('fx', { title: '[surface fix] /app/x: tidy the header', status: 'completed', workers: [worker({ status: 'completed', prNumber: 12, prUrl: 'u12', mergedAt: min(7), prLifecycleStatus: 'merged' })] });
     const refresh = task('rf', { title: 'chore(mission): merge dev into the Example integration branch', status: 'completed', context: { requireMergeCommit: true } });
     const m = board([merged, open, audit, fix, refresh]);
-    expect([m.tasks.db.deliverableRole, m.tasks.api.deliverableRole, m.tasks.au.deliverableRole, m.tasks.fx.deliverableRole, m.tasks.rf.deliverableRole])
-      .toEqual(['build', 'build', 'verification', 'repair', 'maintenance']);
+    expect(Object.keys(m.tasks).sort()).toEqual(['api', 'db']);
+    expect([m.tasks.db.deliverableRole, m.tasks.api.deliverableRole]).toEqual(['build', 'build']);
     expect(m.landed).toEqual({ done: 1, total: 2 });
     const phase = m.phases[0];
     expect({ done: phase.done, total: phase.total }).toEqual({ done: 1, total: 2 });
+    expect(phase.taskIds.sort()).toEqual(['api', 'db']);
+  });
+
+  it('an audit row is no cell but its worker still shows on a lane and in Needs you', () => {
+    const audit = task('au', { title: '[surface audit] Example mission', roleSlug: 'visual-auditor', status: 'in_progress', workers: [worker({ status: 'waiting_input', runner: 'r1', startedAt: min(1) })] });
+    const m = board([task('api'), audit]);
+    expect(m.tasks.au).toBeUndefined();
+    expect(m.checks.au.deliverableRole).toBe('verification');
+    expect(m.bars.some(b => b.taskId === 'au')).toBe(true);
+    expect(m.needsYou).toContain('au');
   });
 
   it('a completed task whose PR closed with no supersession is not landed', () => {
