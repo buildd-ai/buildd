@@ -320,9 +320,21 @@ describe('CONTROL: races the kernel handles', () => {
       const pr = await w.openPr({ branch: `feat/land-race-${i}`, files: { 'src/a.ts': 'export const a = 2;\n' } });
       await w.approve(pr);
       const h = w.gh.pr(w.repo, pr.prNumber).headSha;
-      await Promise.all([w.land(pr, h), w.land(pr, h), w.land(pr, h)]);
+      const answers = await Promise.all([w.land(pr, h), w.land(pr, h), w.land(pr, h)]);
+      // applyCommand re-decides once on a CAS miss, then answers `stale` (cas_conflict): the door's
+      // answer is "come back", and the landing sweep does. With three doors racing one version, and
+      // webhook-driven writes still settling after approve(), all three can miss. Ask again the way
+      // the sweep would, so the invariant under test (one merge, never two) is not hostage to who
+      // won the first round. Any other answer with no merge is a real failure and is reported.
+      const seen = answers.map((a) => `${a?.outcome}/${a?.reason}`);
+      let last = answers;
+      for (let again = 0; again < 5 && w.mergeCalls(pr).length === 0 && last.every((a) => a?.outcome === 'stale' && a.reason === 'cas_conflict'); again++) {
+        last = [await w.land(pr, h)];
+        seen.push(`retry:${last[0]?.outcome}/${last[0]?.reason}`);
+      }
       await w.deliver();
-      expect(w.mergeCalls(pr).filter((c) => c.status === 200)).toHaveLength(1);
+      const merged = w.mergeCalls(pr).filter((c) => c.status === 200);
+      if (merged.length !== 1) throw new Error(`expected one merge call, got ${merged.length}; land answers: ${seen.join(' | ')}`);
       expect(w.mergeCalls(pr)).toHaveLength(1);
       expect((await w.commands(pr)).filter((c) => c === 'PrMerged')).toHaveLength(1);
       w.dispose();
