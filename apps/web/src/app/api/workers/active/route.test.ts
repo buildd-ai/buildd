@@ -692,6 +692,36 @@ describe('GET /api/workers/active', () => {
       expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
     });
 
+    it('a grant session (account-level MCP connection) sees its granted workspace, restricted or not, and nothing else', async () => {
+      // No account_workspaces link: a grant reaches a restricted workspace by
+      // the member's consent (lib/grant-scope.ts), not by the shared account's links.
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-a', teamId: 'team-a', oauthGrantId: 'g-1', workspaceIds: ['ws-a'] });
+      mockHeartbeatsFindMany.mockResolvedValue([{
+        localUiUrl: 'http://runner-a', viewerToken: 'secret-viewer', accountId: 'runner-a',
+        maxConcurrentWorkers: 2, activeWorkerCount: 0, lastHeartbeatAt: new Date(),
+        account: { id: 'runner-a', name: 'Runner A', maxConcurrentWorkers: 2, teamId: 'team-a' },
+      }]);
+      mockGetAccountWorkspacePermissions.mockImplementation(async (id: string) =>
+        id === 'runner-a' ? [{ workspaceId: 'ws-a', canClaim: true, canCreate: false }] : []);
+      const req = (qs: string) => new NextRequest(`http://localhost:3000/api/workers/active${qs}`, { headers: { authorization: 'Bearer grant-jwt' } });
+
+      const own = await GET(req('?workspaceId=ws-a'));
+      expect(own.status).toBe(200);
+      const data = await own.json();
+      expect(data.activeLocalUis.map((r: any) => r.workspaceIds)).toEqual([['ws-a']]);
+      expect(data.activeLocalUis[0].viewerToken).toBeNull();
+      // The team's open workspace is not on the grant.
+      expect((await GET(req('?workspaceId=ws-a-open'))).status).toBe(404);
+    });
+
+    it('a workspace-restricted key is narrowed to its list, open workspaces included', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-a', teamId: 'team-a', scopes: ['analytics:read'], workspaceIds: ['ws-a-open'] });
+      expect((await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-a-open', { headers: { authorization: 'Bearer bld_test' } }))).status).toBe(200);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-a', teamId: 'team-a', scopes: ['analytics:read'], workspaceIds: ['ws-a'] });
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-a', canClaim: true, canCreate: false }]);
+      expect((await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-a-open', { headers: { authorization: 'Bearer bld_test' } }))).status).toBe(404);
+    });
+
     it('a session user does not get another team\'s open workspace added to their list', async () => {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-a' });
       mockGetUserWorkspaceIds.mockResolvedValue(['ws-a', 'ws-a-open']);

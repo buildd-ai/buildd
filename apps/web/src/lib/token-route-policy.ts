@@ -103,8 +103,11 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
       };
       if (!filters[url.pathname]?.some(name => url.searchParams.get(name))) return false;
     }
-    const unfilteredCollections = ['/api/workers/active', '/api/artifacts', '/api/roles', '/api/connectors', '/api/connectors/mounted'];
+    const unfilteredCollections = ['/api/artifacts', '/api/roles', '/api/connectors', '/api/connectors/mounted'];
     if (unfilteredCollections.includes(url.pathname)) return false;
+    // list_runners: the route narrows a confined token to its own workspaces,
+    // but only with the workspace named (the check above holds it to them).
+    if (url.pathname === '/api/workers/active' && !queryWorkspace) return false;
     // Listing workspaces is filtered to the token's own (listReachableWorkspaceIds),
     // so name-to-id resolution works; creating one would escape the restriction.
     if (url.pathname === '/api/workspaces' && request.method !== 'GET' && request.method !== 'HEAD') return false;
