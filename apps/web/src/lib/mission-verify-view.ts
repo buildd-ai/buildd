@@ -27,6 +27,7 @@
 import type { GoalCriteriaState, GoalCriterion, LivingSpecCriterionStanding, LivingSpecGoalCriterion } from '@buildd/shared';
 import { criterionFingerprint, isStandardCriterion } from '@buildd/core/mission-helpers';
 import type { RepairInFlight, VerdictEvidence } from './specs/mission-evidence';
+import { missionTaskHref } from './mission-task-href';
 
 type StateEntry = GoalCriteriaState['criteria'][number];
 type Standing = LivingSpecCriterionStanding['standing'];
@@ -123,7 +124,7 @@ function specTitle(c: LivingSpecGoalCriterion, titles: Readonly<Record<string, s
 function evidenceLinks(s: LivingSpecCriterionStanding, ev: VerdictEvidence | undefined, specHref: string, missionId: string): VerifyLink[] {
   if (!ev) return [];
   const task = ev.recordedBy ? TASK_IN_RECORDER.exec(ev.recordedBy)?.[1] ?? null : null;
-  const where = task ? `/app/tasks/${task}` : `${specHref}#${encodeURIComponent(s.criterionId)}`;
+  const where = task ? missionTaskHref({ missionId, taskId: task }) : `${specHref}#${encodeURIComponent(s.criterionId)}`;
   const out: VerifyLink[] = [];
   if (ev.stdoutExcerpt) out.push({ label: 'Test output', href: where });
   const shots = ev.refs.filter(r => r.kind === 'screenshot').length;
@@ -132,8 +133,8 @@ function evidenceLinks(s: LivingSpecCriterionStanding, ev: VerdictEvidence | und
   return out;
 }
 
-function repairAction(r: RepairInFlight, now: number, own: boolean): VerifyAction {
-  const href = `/app/tasks/${r.taskId}`;
+function repairAction(r: RepairInFlight, now: number, own: boolean, missionId: string): VerifyAction {
+  const href = missionTaskHref({ missionId, taskId: r.taskId });
   // Finished with its PR still open, or another criterion's repair: the check runs again once it merges.
   if (!own || r.status === 'completed') {
     return { kind: 'rechecks', taskId: r.taskId, title: r.title, href, detail: null, text: `rechecks after ${r.title} merges` };
@@ -142,14 +143,14 @@ function repairAction(r: RepairInFlight, now: number, own: boolean): VerifyActio
   return { kind: 'fixing', taskId: r.taskId, title: r.title, href, detail, text: `Fixing: ${r.title}, ${detail}` };
 }
 
-function actionFor(specId: string, criterionId: string, evidence: VerifyEvidence | null, now: number): VerifyAction | null {
+function actionFor(specId: string, criterionId: string, evidence: VerifyEvidence | null, now: number, missionId: string): VerifyAction | null {
   if (!evidence) return null;
   const own = evidence.repairs.find(r => r.criterionId === criterionId && r.specId === specId)
     ?? evidence.repairs.find(r => r.criterionId === criterionId && r.specId === null);
-  if (own) return repairAction(own, now, true);
+  if (own) return repairAction(own, now, true, missionId);
   // Another requirement's repair changes the merged result: this one is checked again after it.
   const other = evidence.repairs.find(r => r.specId === specId) ?? evidence.repairs[0];
-  return other ? repairAction(other, now, false) : null;
+  return other ? repairAction(other, now, false, missionId) : null;
 }
 
 /** One selected spec as a Verify group. `entry` is its evaluated state, or null before the first check. */
@@ -176,7 +177,7 @@ export function specGroup(
       text: s.text ?? null,
       result: UNMET_WORDS[s.standing as keyof typeof UNMET_WORDS],
       evidence: evidenceLinks(s, s.verdictId ? ctx.evidence?.verdicts.get(s.verdictId) : undefined, href, ctx.missionId),
-      action: actionFor(c.specId, s.criterionId, ctx.evidence, ctx.now),
+      action: actionFor(c.specId, s.criterionId, ctx.evidence, ctx.now, ctx.missionId),
     }));
   const total = checked ? counted.length : narrowed > 0 ? narrowed : null;
 

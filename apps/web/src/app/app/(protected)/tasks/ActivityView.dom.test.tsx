@@ -177,7 +177,7 @@ it('AC-18: a new mission that started at once shows once, with no New pill and n
     // Its tag is the mission, and its row links to the task page that carries its creation.
     const row = container.querySelector('[data-testid="activity-now-row"][data-row="fx-new-1"]')!;
     expect(row.querySelector('[data-testid="delivery-tag"]')?.textContent).toBe(NEW_MISSION.title);
-    expect(row.querySelector('a')?.getAttribute('href')).toBe('/app/tasks/fx-new-1');
+    expect(row.querySelector('a')?.getAttribute('href')).toBe('/app/tasks/fx-new-1?from=mission&missionId=fx-new');
     // The mission is in the rail once.
     expect([...container.querySelectorAll('[data-testid="activity-rail-mission"]')].filter(m => m.textContent?.includes(NEW_MISSION.title))).toHaveLength(1);
   } finally { act(() => root.unmount()); }

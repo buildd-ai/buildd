@@ -922,6 +922,7 @@ async function MissionDetailBody({
   // same visual review state, criteria, mission PR and release status this page already reads.
   const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
   const overviewChecks: MissionChecksSource = {
+    missionId: id,
     branch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? 'mission-branch' : 'direct',
     target: (typeof trunkName === 'string' && trunkName ? trunkName : null) ?? visualReviewState?.branch.base ?? null,
     mergeTier: effectivePolicy.tier as MissionChecksSource['mergeTier'],
