@@ -40,7 +40,7 @@ import { askedAgo, type DecisionOption, type DecisionView } from '@/lib/needs-yo
 import { waitsFooter, waitsSummary } from '@buildd/core/question-waits';
 import WaitsParts from '@/components/WaitsParts';
 import type { AnswerSubmitState } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
-import { announceAnswered, useAnsweredElsewhere } from '@/lib/decision-answered-elsewhere';
+import { announceAnswered, useAnsweredElsewhere } from '@/components/answered-elsewhere';
 
 export interface DecisionCardProps {
   view: DecisionView;
