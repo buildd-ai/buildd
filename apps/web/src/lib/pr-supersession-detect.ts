@@ -1062,12 +1062,44 @@ export function prRefsIn(text: string | null | undefined, defaultRepo: string): 
 }
 
 /**
+ * Task ids whose closed-unmerged PRs are owed a look when `taskId`'s PR merges
+ * (task 9e379e31): `taskId` itself (a retry that reopened under the same
+ * task), the task it is an attempt OF (`parentTaskId`, when `taskId` is the
+ * attempt that finally landed), and every attempt CHILD of `taskId`
+ * (`taskClass='attempt'`, `parentTaskId=taskId` — earlier retries that closed
+ * before this one merged). Most of the backlog this was written against was
+ * exactly this shape: a retry's PR closes because a later attempt merges, and
+ * nothing before this nominated the earlier one.
+ */
+export async function findTaskLineageForSupersession(taskId: string): Promise<string[]> {
+  const relatedTasks: string[] = [taskId];
+
+  const task = await db.query.tasks.findFirst({
+    where: sqlWhere(eq(tasks.id, taskId)),
+    columns: { parentTaskId: true, taskClass: true },
+  });
+  if (!task) return relatedTasks;
+
+  if (task.parentTaskId) relatedTasks.push(task.parentTaskId);
+
+  const children = await db.query.tasks.findMany({
+    where: sqlWhere(and(eq(tasks.parentTaskId, taskId), eq(tasks.taskClass, 'attempt'))),
+    columns: { id: true },
+  });
+  for (const child of children) relatedTasks.push(child.id);
+
+  return relatedTasks;
+}
+
+/**
  * A PR merged: look again at the closed-unmerged PRs whose work it may carry. The scan at close
  * time runs before a re-land exists (audit case: the re-land opened and merged after the close,
  * so its scan deferred and nothing re-ran it for days). Nominated, never assumed:
  *  - a closed PR the merged one names in its title or body ("re-land of #n"),
  *  - a closed PR whose last scan already suggested this one,
- *  - a closed PR of a sibling task in the merged task's mission.
+ *  - a closed PR of a sibling task in the merged task's mission,
+ *  - a closed PR of the task's own attempt lineage (parent or attempt children:
+ *    `findTaskLineageForSupersession`, task 9e379e31) — the common retry case.
  * Each is then scanned in full, so an edge is still recorded only when the content verifies.
  * Never throws.
  */
@@ -1096,9 +1128,13 @@ export async function rescanOnMerge(p: {
       sql`${workers.supersessionScan}->'suggestion'->>'prNumber' = ${String(p.prNumber)}`,
       sql`lower(${workers.supersessionScan}->'suggestion'->>'repo') = ${repo.toLowerCase()}`,
     );
+
+    const relatedTaskIds = p.taskId ? await findTaskLineageForSupersession(p.taskId) : [];
+
     const nominee = or(
       and(eq(workers.workspaceId, p.workspaceId), or(suggestedThis, ...(named.length ? [inArray(workers.prUrl, named)] : []))),
       ...(missionId ? [eq(tasks.missionId, missionId)] : []),
+      ...(relatedTaskIds.length ? [inArray(tasks.id, relatedTaskIds)] : []),
     );
     const rows = await db
       .select({ id: workers.id, prUrl: workers.prUrl, missionId: tasks.missionId })
