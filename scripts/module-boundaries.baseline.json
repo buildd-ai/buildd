@@ -307,6 +307,9 @@
     "apps/web/src/lib/home-fleet.ts": {
       "apps/web/src/lib/fleet-view.ts": "health-quality"
     },
+    "apps/web/src/lib/incident-view.ts": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
     "apps/web/src/lib/local-strand.ts": {
       "apps/web/src/lib/mission-helpers.ts": "missions"
     },
@@ -360,6 +363,9 @@
       "packages/core/decision-ledger.ts": "jev-decisions",
       "packages/core/question-gate-decision.ts": "jev-decisions"
     },
+    "apps/web/src/lib/queue-wait-load.ts": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
+    },
     "apps/web/src/lib/refresh-redrive.ts": {
       "apps/web/src/lib/base-refresh.ts": "reviews-merge",
       "apps/web/src/lib/surface-ordering-wake.ts": "missions"
@@ -369,6 +375,9 @@
     },
     "apps/web/src/lib/session-transcript.ts": {
       "apps/web/src/lib/evidence-read.ts": "knowledge"
+    },
+    "apps/web/src/lib/specs/delivery.ts": {
+      "apps/web/src/lib/mission-task-href.ts": "missions"
     },
     "apps/web/src/lib/stale-workers.ts": {
       "apps/web/src/lib/auto-merge.ts": "reviews-merge",

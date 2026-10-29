@@ -37,6 +37,7 @@ import { claimHoldPhrase } from '@/lib/claim-hold-phrase';
 import { dependencySatisfied } from '@/app/api/workers/claim/deps-gate';
 import { evaluateCoordinationGates, type MissionCoordination, type OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
 import { lanesOf } from '@/lib/serial-lanes';
+import { missionTaskHref } from '@/lib/mission-task-href';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import type { LaneRead } from '@/lib/serial-lanes-store';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -127,7 +128,7 @@ export function sqlGateReasons(t: QueueWaitTask, deps: UnmetDependency[]): Waiti
         ...(d.id ? {
           blocker: {
             type: 'task' as const, id: d.id, label: d.title ? `“${d.title.length > 60 ? `${d.title.slice(0, 57)}…` : d.title}”` : `task ${d.id.slice(0, 8)}`,
-            href: `/app/tasks/${d.id}`, live: d.status === 'assigned' || d.status === 'in_progress', ...(d.status ? { status: d.status } : {}),
+            href: missionTaskHref({ missionId: t.missionId, taskId: d.id }), live: d.status === 'assigned' || d.status === 'in_progress', ...(d.status ? { status: d.status } : {}),
           },
         } : {}),
         provenance: prov('tasks.dependsOn (claim WHERE, dependencySatisfied)'),

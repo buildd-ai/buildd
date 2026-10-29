@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { missions, specCriterionRecords, specOutcomeVerdicts, specs, tasks, users } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
+import { missionTaskHref } from '@/lib/mission-task-href';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { governedOutcomesFor, taskVerdictRows, type OutcomeView } from './outcome';
 import { reach, type SpecCaller, type SpecRow } from './store';
@@ -106,7 +107,7 @@ const selectsSpec = (specId: string) => sql`exists (
  */
 export async function pinnedTaskRows(workspaceId: string, specId: string, opts: { limit: number; cursor?: Cursor | null }) {
   return db.select({
-    id: tasks.id, title: tasks.title, status: tasks.status, createdAt: tasks.createdAt,
+    id: tasks.id, missionId: tasks.missionId, title: tasks.title, status: tasks.status, createdAt: tasks.createdAt,
     // Only the pin: the rest of a task's context is never shown here.
     context: sql<Record<string, unknown>>`jsonb_build_object('specSource', ${tasks.context}->'specSource')`,
   })
@@ -124,7 +125,7 @@ export async function pinnedTaskRows(workspaceId: string, specId: string, opts: 
 }
 
 /** Evidence a verdict cites, as links the reader can open. Anything without a safe link is left out. */
-export function evidenceLinks(evidence: unknown): DeliveryEvidence[] {
+export function evidenceLinks(evidence: unknown, missionId?: string | null): DeliveryEvidence[] {
   const e = asRecord(evidence);
   if (!e) return [];
   const out: DeliveryEvidence[] = [];
@@ -135,8 +136,8 @@ export function evidenceLinks(evidence: unknown): DeliveryEvidence[] {
     if (/^https:\/\//.test(ref.ref)) out.push({ label: ref.kind, href: ref.ref });
     else if (isUuid(ref.ref) && /artifact|screenshot|report/.test(ref.kind)) out.push({ label: ref.kind, href: `/app/artifacts/${ref.ref}` });
   }
-  if (typeof e.verificationTaskId === 'string' && isUuid(e.verificationTaskId)) out.push({ label: 'Check run', href: `/app/tasks/${e.verificationTaskId}` });
-  if (typeof e.auditTaskId === 'string' && isUuid(e.auditTaskId)) out.push({ label: 'Visual audit', href: `/app/tasks/${e.auditTaskId}` });
+  if (typeof e.verificationTaskId === 'string' && isUuid(e.verificationTaskId)) out.push({ label: 'Check run', href: missionTaskHref({ missionId, taskId: e.verificationTaskId }) });
+  if (typeof e.auditTaskId === 'string' && isUuid(e.auditTaskId)) out.push({ label: 'Visual audit', href: missionTaskHref({ missionId, taskId: e.auditTaskId }) });
   return out.slice(0, 4);
 }
 
@@ -215,14 +216,14 @@ async function taskEntries(rows: Awaited<ReturnType<typeof pinnedTaskRows>>, app
     const criteria: DeliveryCriterion[] = ((outcome?.criteria ?? []) as ReadonlyArray<OutcomeView['criteria'][number]>).map((c) => ({
       criterionId: c.criterionId, text: c.text,
       mark: wordingMark(markOf(c), wordingChanged(w, approved, builtTo, c.criterionId, pin.criterionHashes)),
-      evidence: evidenceLinks(evidence.get(`${r.id}:${c.criterionId}`)),
+      evidence: evidenceLinks(evidence.get(`${r.id}:${c.criterionId}`), r.missionId),
     }));
     const state: DeliveryOutcome = outcome?.outcome ?? 'unverified';
     const links: DeliveryEvidence[] = view?.prNumber && view.repoFullName
       ? [{ label: `PR #${view.prNumber}`, href: `https://github.com/${view.repoFullName}/pull/${view.prNumber}` }]
       : [];
     return {
-      kind: 'task', id: r.id, title: r.title, href: `/app/tasks/${r.id}`,
+      kind: 'task', id: r.id, title: r.title, href: missionTaskHref({ missionId: r.missionId, taskId: r.id }),
       builtTo, provisional, delivered,
       deliveredText: deliveredSentence({ builtTo, provisional, delivered }),
       standing: standingSentence({ builtTo, approved, outcome: state, criteria }),
@@ -290,14 +291,14 @@ async function missionEntries(rows: Awaited<ReturnType<typeof selectingMissionRo
       return {
         criterionId: ref.id, text: ref.text,
         mark: waived.has(ref.id) ? 'waived' : wordingMark(missionMark(s, v?.verdict), wordingChanged(w, approved, criterion.revision, ref.id)),
-        evidence: evidenceLinks(v?.evidence),
+        evidence: evidenceLinks(v?.evidence, r.id),
       };
     });
     const outcome: DeliveryOutcome = state?.verdict === 'pass' ? 'verified' : state?.verdict === 'fail' ? 'fail' : 'unverified';
     const waivedBy = (criterion.waived ?? []).map((w) => ({ criterionId: w.criterionId, by: names.get(personId(w.by) ?? '') ?? 'a person' }));
     const delivered = r.status === 'completed';
     const links: DeliveryEvidence[] = state?.workerTaskId && isUuid(state.workerTaskId)
-      ? [{ label: 'Final verification', href: `/app/tasks/${state.workerTaskId}` }]
+      ? [{ label: 'Final verification', href: missionTaskHref({ missionId: r.id, taskId: state.workerTaskId }) }]
       : [];
     return {
       kind: 'mission', id: r.id, title: r.title, href: `/app/missions/${r.id}`,
