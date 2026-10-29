@@ -22,6 +22,7 @@ import {
   missionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
+import { isBuildComplete } from './mission-checks';
 import { prOutcome } from './pr-presentation';
 
 export type MissionIntegrationPrState =
@@ -184,7 +185,7 @@ export function deriveMissionProgressSubline(args: {
     ? `${completedTasks}/${totalTasks} done · ${awaitingMerge} awaiting merge`
     : `${completedTasks} of ${totalTasks} tasks complete`;
 
-  const missionPart = missionIntegrationPrSuffix(integrationPr, { workLanded: completedTasks >= totalTasks && totalTasks > 0 });
+  const missionPart = missionIntegrationPrSuffix(integrationPr, { workLanded: isBuildComplete({ done: completedTasks, total: totalTasks }) });
   return missionPart ? `${tasksPart} · ${missionPart}` : tasksPart;
 }
 

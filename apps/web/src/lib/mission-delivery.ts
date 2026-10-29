@@ -12,6 +12,7 @@
  */
 import { countDistinctPrs } from '@buildd/core/pr-shipped';
 import { deriveMissionProgressSubline, type MissionIntegrationPrView } from './mission-integration-pr';
+import { isBuildComplete } from './mission-checks';
 import type { ReleaseState } from './release-state';
 import type { VisualReviewModel } from '@buildd/shared';
 import { describeVisualPhase } from './visual-review-model';
@@ -143,7 +144,7 @@ export const BUDGET_WARN_FRACTION = 0.8;
 export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
   const steps: DeliveryStep[] = [];
   const { totalTasks, completedTasks } = input;
-  const workLanded = totalTasks > 0 && completedTasks >= totalTasks;
+  const workLanded = isBuildComplete({ done: completedTasks, total: totalTasks });
 
   if (totalTasks > 0) {
     const missionPrPending = input.integrationPr != null && input.integrationPr.state !== 'merged';
