@@ -68,6 +68,14 @@ describe('TaskActionZone — waiting on a task', () => {
     expect(container.querySelector('[data-testid="task-trouble-line"]')?.textContent).toContain('Waiting on “Runner image”');
   });
 
+  it('with the host menu carrying the actions, the zone keeps the line and drops the buttons', async () => {
+    await mount({ phase: 'blocked', isBlocked: true, blockedByCount: 1, trouble: { kind: 'waiting', on }, heldActionsInMenu: true });
+    await flush();
+    expect(button('Start now anyway')).toBeUndefined();
+    expect(button('Cancel')).toBeUndefined();
+    expect(container.querySelector('[data-testid="task-trouble-line"]')?.textContent).toContain('Waiting on “Runner image”');
+  });
+
   it('a blocker that was cancelled says a person must act', async () => {
     await mount({ trouble: { kind: 'needs_person', cause: 'blocker_cancelled', on } });
     await flush();
