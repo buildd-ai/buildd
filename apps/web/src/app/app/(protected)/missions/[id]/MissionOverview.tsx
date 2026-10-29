@@ -23,7 +23,7 @@
 import { displayTaskTitle } from '@/lib/task-title';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
-import { termWord, type VisualReviewModel } from '@buildd/shared';
+import { deliveredInto, termWord, type VisualReviewModel } from '@buildd/shared';
 import TaskStrip from '@/components/ui/TaskStrip';
 import DecisionCard from '@/components/DecisionCard';
 import { useVisualDecisionAct } from './visual-decision-act';
@@ -260,10 +260,10 @@ function OverviewView({
       )}
       {stage === 'deliver' && handoff && (
         <>
-          {/* The Deliver stage, done: the catalog's word for it (terms.ts `mission.done`), then the branch it merged into. */}
+          {/* The Deliver stage, done: the catalog's word for it (terms.ts `mission.done`), `Delivered into <branch>` (R-15). */}
           <p data-testid="mission-delivered-line" className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-title font-semibold text-text-primary">
             <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 self-center rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
-            {`${termWord('mission.done')} · merged into ${checksSource?.target ?? where}`}
+            {deliveredInto(checksSource?.target ?? where)}
           </p>
           {situation?.verify}
           {notice}
