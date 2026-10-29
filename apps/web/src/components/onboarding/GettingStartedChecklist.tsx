@@ -125,10 +125,10 @@ export default function GettingStartedChecklist({ checklist, chatSetupHref, head
   if (checklist.doneCount >= 2 && current) {
     return (
       <details className="card group mb-6 p-0" data-testid="getting-started" data-collapsed="true" aria-labelledby={headingId}>
-        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 px-4 py-2 md:px-5 [&::-webkit-details-marker]:hidden">
+        <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 min-[360px]:flex-nowrap md:px-5 [&::-webkit-details-marker]:hidden">
           <Eyebrow as="h2" id={headingId} tone="accent" className="shrink-0">Get started · {checklist.doneCount} of {total}</Eyebrow>
-          <span className="min-w-0 flex-1 truncate text-body text-text-primary">Next: {TITLES[current.id]}</span>
-          <span aria-hidden="true" className="shrink-0 font-mono text-meta text-text-muted transition-transform group-open:rotate-90">›</span>
+          <span className="order-3 min-w-0 basis-full text-body text-text-primary min-[360px]:order-none min-[360px]:flex-1 min-[360px]:basis-0 min-[360px]:truncate">Next: {TITLES[current.id]}</span>
+          <span aria-hidden="true" className="ml-auto shrink-0 font-mono text-meta text-text-muted transition-transform min-[360px]:ml-0 group-open:rotate-90">›</span>
         </summary>
         {steps}
         {footer}
