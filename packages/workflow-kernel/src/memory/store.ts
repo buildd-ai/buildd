@@ -431,7 +431,7 @@ export class MemoryStore implements Store {
       .filter((e) => {
         const d = this.deliveries.get(e.deliveryId);
         return e.kind === 'refresh_branch' && e.status === 'pending' && (e.outcome ?? '').startsWith(LANE_PARKED_OUTCOME)
-          && d?.repoFullName === k.repoFullName && d?.baseRef === k.baseRef && refreshTakesLane(d, this.attemptsOf(e.deliveryId));
+          && d?.repoFullName === k.repoFullName && d?.baseRef === k.baseRef && d.state === 'REPAIRING' && d.stateReason === 'behind' && refreshTakesLane(d, this.attemptsOf(e.deliveryId));
       })
       .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || a.seq - b.seq)[0];
     if (!next) return null;

@@ -22,6 +22,7 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { constrainToGranted, isGrantSession, type GrantScopedAccount } from '@/lib/grant-scope';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
+import { reachAllWorkspaceIds } from '@/lib/reach-all-workspaces';
 
 type OrderOps = { desc: (c: any) => any; asc: (c: any) => any };
 
@@ -68,7 +69,13 @@ export function compareLaneOrder(
   return a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0;
 }
 
-export type ClaimScopeAccount = GrantScopedAccount & { id: string; teamId: string };
+export type ClaimScopeAccount = GrantScopedAccount & {
+  id: string;
+  teamId: string;
+  /** Opt-in: also every workspace the key's creator can reach, read now. */
+  reachAllWorkspaces?: boolean | null;
+  createdByUserId?: string | null;
+};
 
 /**
  * Workspaces this account can claim from, optionally narrowed to one.
@@ -79,6 +86,9 @@ export type ClaimScopeAccount = GrantScopedAccount & { id: string; teamId: strin
  *      within the team), plus any workspace with an explicit canClaim link that
  *      still exists and is not revoked, cut to a workspace-restricted token's
  *      own list.
+ *   3. A key with `reachAllWorkspaces` also reaches every workspace its
+ *      creator can reach right now (lib/reach-all-workspaces.ts); revoked
+ *      picks and a token list still cut it.
  */
 export async function claimableWorkspaceIds(account: ClaimScopeAccount, workspaceId?: string | null): Promise<string[]> {
   // A grant session claims only inside its granted workspaces (lib/grant-scope.ts).
@@ -119,10 +129,13 @@ export async function claimableWorkspaceIds(account: ClaimScopeAccount, workspac
   }
 
   const openIds = openWorkspaces.map((ws) => ws.id);
+  const reachAllIds = account.reachAllWorkspaces && account.createdByUserId
+    ? await reachAllWorkspaceIds(account.createdByUserId, workspaceId)
+    : [];
 
   // A workspace-restricted token claims only inside its own list, whatever
   // the team's open workspaces or canClaim links would otherwise allow.
-  return [...new Set([...openIds, ...restrictedIds])]
+  return [...new Set([...openIds, ...restrictedIds, ...reachAllIds])]
     .filter((id) => !revokedIds.has(id))
     .filter((id) => tokenWorkspaceAllowed(account.workspaceIds, id));
 }

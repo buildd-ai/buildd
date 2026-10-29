@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
+import { DEPENDENCY_BOT_UNTRACKED_HINT } from '@/lib/untracked-bot-hint';
 import { DEFAULT_MERGED_WINDOW_DAYS, listPrsQuery, parsePrListState } from '@/lib/pr-list';
 
 /**
@@ -56,5 +57,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: `list_prs failed: ${message}`, state: parsed.state }, { status: 500 });
   }
 
-  return NextResponse.json({ state: parsed.state, workspaceCount: workspaceIds.length, ...(since ? { sinceDays: days } : {}), prs });
+  return NextResponse.json({ state: parsed.state, workspaceCount: workspaceIds.length, note: DEPENDENCY_BOT_UNTRACKED_HINT, ...(since ? { sinceDays: days } : {}), prs });
 }

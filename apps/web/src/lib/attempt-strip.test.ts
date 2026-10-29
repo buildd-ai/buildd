@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { attachAttempts } from '@buildd/core/mission-helpers';
+import { missionTaskHref } from './mission-task-href';
 import { deriveTaskOrigin } from './task-origin';
 import {
   ATTEMPT_KINDS,
@@ -139,6 +140,13 @@ describe('buildAttemptStrips — per-attempt reason comes from deriveTaskOrigin'
 
   it('orders attempts oldest first so the dots read left to right in time', () => {
     expect(strip.attempts.map(a => a.id)).toEqual(['a1', 'a2', 'a3']);
+  });
+
+  it('carries the mission context on each attempt href so the task page can link back', () => {
+    const inMission = MISSION.map(t => ({ ...t, missionId: 'm1' })) as AttemptSourceTask[];
+    const href = buildAttemptStrips(inMission).get('w1')!.attempts[0].href;
+    expect(href).toBe(missionTaskHref({ missionId: 'm1', taskId: 'a1' }));
+    expect(href).toContain('missionId=m1');
   });
 
   it('links each attempt to its own task page and its PR when the repo is known', () => {

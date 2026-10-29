@@ -36,9 +36,9 @@ describe('R-2 / AC-2: a five-generation review/repair chain reads as one outcome
     expect(row.children.map(c => c.role)).toEqual(['review', 'repair', 'review', 'repair', 'repair']);
     const byId = new Map(chain.map(t => [t.id, t]));
     for (const c of row.children) {
-      expect(c.href).toBe(`/app/tasks/${c.id}`);
+      expect(c.href).toBe(`/app/tasks/${c.id}?from=mission&missionId=m-chain`);
       expect(c.parent.id).toBe(byId.get(c.id)!.parentTaskId!);
-      expect(c.parent.href).toBe(`/app/tasks/${c.parent.id}`);
+      expect(c.parent.href).toBe(`/app/tasks/${c.parent.id}?from=mission&missionId=m-chain`);
       expect(c.missionHref).toBe('/app/missions/m-chain');
     }
     expect(row.children.filter(c => c.live).map(c => c.id)).toEqual(['fx-chain-g5']);
@@ -87,7 +87,7 @@ describe('R-1: Now shows the root outcome, the current task and the last meaning
   it('groups by mission: the group is the root outcome, the row the current task', () => {
     expect(f.now.groups.map(g => g.missionId).sort()).toEqual(['fx-flaky', 'fx-new', null].sort() as Array<string | null>);
     expect(group('fx-new').title).toBe(NEW_MISSION.title);
-    expect(group('fx-new').current).toMatchObject({ id: 'fx-new-1', href: '/app/tasks/fx-new-1' });
+    expect(group('fx-new').current).toMatchObject({ id: 'fx-new-1', href: '/app/tasks/fx-new-1?from=mission&missionId=fx-new' });
   });
 
   it('the transition is the last canonical event, with its time: not a worker heartbeat', () => {

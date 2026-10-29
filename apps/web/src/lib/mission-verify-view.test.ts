@@ -72,14 +72,14 @@ describe('missionVerifyView: Requirements grouped by spec (Navigation R-17, AC-1
 
   it('links the evidence: test output to the task that ran it, screenshots to the screens', () => {
     const [ac1, ac8, ac9] = view.groups[0].unmet;
-    expect(ac1.evidence).toEqual([{ label: 'Test output', href: `/app/tasks/${TASK}` }]);
+    expect(ac1.evidence).toEqual([{ label: 'Test output', href: `/app/tasks/${TASK}?from=mission&missionId=m1` }]);
     expect(ac8.evidence).toEqual([]);
     expect(ac9.evidence).toEqual([{ label: '2 screenshots', href: '/app/missions/m1?visualReview=1' }]);
   });
 
   it('says what is being done: the repair running, and what rechecks after it merges', () => {
     const [ac1, ac8] = view.groups[0].unmet;
-    expect(ac1.action).toMatchObject({ kind: 'fixing', title: 'Publish the bundle on release', href: `/app/tasks/${REPAIR}`, text: 'Fixing: Publish the bundle on release, running 8m' });
+    expect(ac1.action).toMatchObject({ kind: 'fixing', title: 'Publish the bundle on release', href: `/app/tasks/${REPAIR}?from=mission&missionId=m1`, text: 'Fixing: Publish the bundle on release, running 8m' });
     expect(ac8.action?.text).toBe('rechecks after Publish the bundle on release merges');
   });
 

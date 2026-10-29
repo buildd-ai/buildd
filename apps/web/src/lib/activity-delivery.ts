@@ -23,6 +23,7 @@ import { deriveTaskChecks, roundReading, type CheckRow, type ChecksInput } from 
 import { repairPhaseOf } from './workflow/projections';
 import type { VerificationClaim } from './activity-verification';
 import { UNATTRIBUTED, matchesWho, type ActivityWho, type Attribution } from './activity-attribution';
+import { missionTaskHref } from './mission-task-href';
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
@@ -265,7 +266,7 @@ export function reviewOf(result: unknown, context: unknown): { verdict: ReviewEv
 const LIVE: ReadonlySet<string> = new Set(LIVE_WORKER_STATUSES);
 const ms = (v: string | null | undefined): number | null => (v ? new Date(v).getTime() : null);
 const short = (sha: string | null | undefined) => (sha ? sha.trim().slice(0, 7) : null);
-const taskHref = (id: string) => `/app/tasks/${id}`;
+const taskHref = (id: string, missionId?: string | null) => missionTaskHref({ missionId, taskId: id });
 
 /** Relative age, as Activity prints it: `now`, `12m`, `3h`, `2d`. */
 export function age(atMs: number, nowMs: number): string {
@@ -642,11 +643,11 @@ function childrenOf(d: Delivery): DerivedChild[] {
       return {
         id: t.id,
         title: t.title,
-        href: taskHref(t.id),
+        href: taskHref(t.id, t.missionId ?? d.root.missionId),
         role: reviews.has(t.id) ? 'review' as const : 'repair' as const,
         status: t.status,
         generation,
-        parent: { id: parent.id, title: parent.title, href: taskHref(parent.id) },
+        parent: { id: parent.id, title: parent.title, href: taskHref(parent.id, d.root.missionId) },
         missionHref: missionHref(t.missionId ?? d.root.missionId),
         live: t.workers.some(agentLive),
       };
@@ -670,7 +671,7 @@ function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
   return {
     id: d.root.id,
     title: d.root.title,
-    href: taskHref(d.root.id),
+    href: taskHref(d.root.id, d.root.missionId),
     delivery,
     live: !!liveWorker,
     quietHold,
@@ -955,7 +956,7 @@ export function buildActivityEpisodes(input: {
       return [{
         id: d.root.id,
         title: d.root.title,
-        href: taskHref(d.root.id),
+        href: taskHref(d.root.id, d.root.missionId),
         missionId: d.root.missionId,
         missionTitle: mission?.title ?? d.root.missionTitle ?? null,
         kind,
@@ -1014,7 +1015,7 @@ export function latestTask(tasks: readonly ActivityTaskInput[], rules: MissionTa
   let best: LatestTask | null = null;
   for (const d of foldDeliveries(tasks, rules)) {
     const at = latestAt(d);
-    if (!best || at > best.at || (at === best.at && d.root.id < best.id)) best = { id: d.root.id, title: d.root.title, href: taskHref(d.root.id), at };
+    if (!best || at > best.at || (at === best.at && d.root.id < best.id)) best = { id: d.root.id, title: d.root.title, href: taskHref(d.root.id, d.root.missionId), at };
   }
   return best;
 }

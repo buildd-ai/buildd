@@ -23,7 +23,7 @@ import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-onc
 import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
-  isUpdateTargetReachable, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
+  isUpdateTargetReachable, classifyUpdateTarget, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
   reapChild, withTimeout, TRACKED_BRANCH, setRunnerUpdateSnapshotProvider, type RunnerUpdateSnapshot } from './updater';
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
@@ -1101,9 +1101,22 @@ async function adoptLatestCommit(sha: string) {
     // origin/$BRANCH` will ever land on it. Refusing here — rather than only
     // at apply time — is what keeps an old or misconfigured server from
     // starting the loop at all. See isUpdateTargetReachable.
-    await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000).catch(() => {});
+    let fetchSucceeded = true;
+    await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000).catch((err) => {
+      fetchSucceeded = false;
+      console.warn(`[update] fetch of origin/${BRANCH} failed: ${err?.message ?? err}`);
+    });
     const branchHead = await getTrackedBranchHead();
-    const reachable = isUpdateTargetReachable(sha, branchHead, updateState.currentCommit);
+    const verdict = classifyUpdateTarget(sha, fetchSucceeded, branchHead, updateState.currentCommit);
+    if (verdict === 'unknown') {
+      // The local origin/$BRANCH is stale because the fetch failed, so it
+      // cannot say whether `sha` is reachable. Do not abandon: forget that we
+      // saw it so the next poll re-evaluates against a fresh fetch.
+      console.warn(`[update] cannot verify advertised commit ${sha.slice(0, 7)} (fetch failed); will re-check on the next poll`);
+      updateState.latestCommit = null;
+      return;
+    }
+    const reachable = verdict === 'reachable';
     if (!reachable) {
       // Logged once per advertised SHA (this function early-returns on a repeat).
       console.error(

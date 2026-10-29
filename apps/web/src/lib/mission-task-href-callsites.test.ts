@@ -37,6 +37,15 @@ const CALL_SITES = [
   'app/app/(protected)/missions/page.tsx',
   'app/app/(protected)/tasks/[id]/page.tsx',
   'lib/chat/answer-link.ts',
+  'lib/mission-verify-view.ts',
+  'lib/home-attention.ts',
+  'lib/mission-checks.ts',
+  'lib/activity-delivery.ts',
+  'lib/task-origin.ts',
+  'lib/attempt-strip.ts',
+  'lib/specs/delivery.ts',
+  'lib/queue-wait-load.ts',
+  'lib/incident-view.ts',
 ];
 
 const HAND_BUILT_TASK_LINK = /`\/app\/tasks\/\$\{/;

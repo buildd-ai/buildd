@@ -11,6 +11,8 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const findMany = mock(async (_args: any): Promise<any[]> => []);
 const permissions = mock(async (_id: string, _o?: unknown): Promise<any[]> => []);
 mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany } } } }));
+const reachAll = mock(async (_u: string, _w?: string | null): Promise<string[]> => []);
+mock.module('@/lib/reach-all-workspaces', () => ({ reachAllWorkspaceIds: reachAll }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: permissions }));
 
 const { activeWorkerGate, claimableWorkspaceIds, laneOrderBy, runnerCooldownGate, runnerPreferenceGate, roleSlugGate } = await import('./claim-order');
@@ -51,6 +53,22 @@ describe('claimableWorkspaceIds', () => {
     ]);
     expect(await claimableWorkspaceIds({ id: 'acc-1', teamId: 'team-1' })).toEqual(['ws-open', 'ws-linked']);
     expect(dialect.sqlToQuery(findMany.mock.calls[1]![0].where.RAW(workspaces)).params).toEqual(['ws-linked', 'ws-gone']);
+  });
+
+  it('reachAllWorkspaces adds what the creator reaches now, minus revoked ids', async () => {
+    findMany.mockResolvedValueOnce([{ id: 'ws-open' }]);
+    reachAll.mockResolvedValueOnce(['ws-other-team', 'ws-revoked']);
+    permissions.mockResolvedValueOnce([{ workspaceId: 'ws-revoked', canClaim: false, revoked: true }]);
+    const acc = { id: 'acc-1', teamId: 'team-1', reachAllWorkspaces: true, createdByUserId: 'user-1' };
+    expect(await claimableWorkspaceIds(acc, 'ws-other-team')).toEqual(['ws-open', 'ws-other-team']);
+    expect(reachAll).toHaveBeenCalledWith('user-1', 'ws-other-team');
+  });
+
+  it('without the flag, or a creator, the reach read never runs', async () => {
+    reachAll.mockClear();
+    await claimableWorkspaceIds({ id: 'acc-1', teamId: 'team-1', createdByUserId: 'user-1' });
+    await claimableWorkspaceIds({ id: 'acc-1', teamId: 'team-1', reachAllWorkspaces: true });
+    expect(reachAll).not.toHaveBeenCalled();
   });
 
   it("a workspace-restricted token claims only inside its own list", async () => {

@@ -26,6 +26,7 @@
  * `release_tasks` → `releases.state = 'healthy'` join.
  */
 import { isAttempt } from '@buildd/core/mission-helpers';
+import { missionTaskHref } from './mission-task-href';
 
 export type TaskOriginMechanism =
   | 'ci_retry'
@@ -269,7 +270,7 @@ export function deriveTaskOrigin(task: TaskOriginRow, ctx: TaskOriginContext = {
   // ── Links, in render order: worker → mission → schedule → parent → PR → run.
   if (!isEmpty) {
     if (task.createdByWorkerId && ctx.creatorWorkerTaskId) {
-      links.push({ key: 'worker', label: str(ctx.creatorWorkerTaskTitle) ?? 'Agent run', href: `/app/tasks/${ctx.creatorWorkerTaskId}` });
+      links.push({ key: 'worker', label: str(ctx.creatorWorkerTaskTitle) ?? 'Agent run', href: missionTaskHref({ missionId: task.missionId, taskId: ctx.creatorWorkerTaskId }) });
     }
     if (task.missionId) {
       links.push({
@@ -286,7 +287,7 @@ export function deriveTaskOrigin(task: TaskOriginRow, ctx: TaskOriginContext = {
       links.push({
         key: 'parentTask',
         label: str(ctx.parentTaskTitle) ?? 'Parent task',
-        href: `/app/tasks/${task.parentTaskId}`,
+        href: missionTaskHref({ missionId: task.missionId, taskId: task.parentTaskId }),
       });
     }
 

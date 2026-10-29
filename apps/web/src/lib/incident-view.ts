@@ -9,6 +9,7 @@
  * the push all read it, so none of them decides ownership on its own (I-6).
  * Pure: no DB, no clock unless `now` is omitted.
  */
+import { taskPageHref } from './mission-task-href';
 import type {
   FailureIncidentAffectedRefs,
   FailureIncidentRecovery,
@@ -50,7 +51,7 @@ export function incidentAffected(refs: FailureIncidentAffectedRefs | null | unde
   const taskIds = refs?.taskIds ?? [];
   const prNumbers = refs?.prNumbers ?? [];
   return {
-    tasks: taskIds.slice(0, LIMIT).map(id => ({ id, label: titles.get(id) ?? `Task ${short(id)}`, href: `/app/tasks/${id}` })),
+    tasks: taskIds.slice(0, LIMIT).map(id => ({ id, label: titles.get(id) ?? `Task ${short(id)}`, href: taskPageHref({ taskId: id }) })),
     moreTasks: Math.max(0, taskIds.length - LIMIT),
     prs: prNumbers.slice(0, LIMIT).map(n => ({ label: `PR #${n}` })),
   };
@@ -392,10 +393,10 @@ function optionView(
     case 'cancel_attempt':
     case 'narrow_blocker_manifest':
       if (blocker?.kind === 'pr') { href = opts.prHref?.(Number(blocker.id)) ?? null; where = `PR #${blocker.id}`; }
-      else if (blocker?.kind === 'task') { href = `/app/tasks/${blocker.id}`; where = `task ${short(blocker.id)}`; }
+      else if (blocker?.kind === 'task') { href = taskPageHref({ taskId: blocker.id }); where = `task ${short(blocker.id)}`; }
       break;
     case 'narrow_subject_manifest':
-      if (subject) { href = `/app/tasks/${subject.id}`; where = `task ${short(subject.id)}`; }
+      if (subject) { href = taskPageHref({ taskId: subject.id }); where = `task ${short(subject.id)}`; }
       break;
   }
   if (href) return { ...base, mode: 'link', href };

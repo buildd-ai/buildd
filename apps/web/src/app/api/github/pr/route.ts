@@ -1663,7 +1663,7 @@ export async function PATCH(req: NextRequest) {
       const resolved = await resolveWorkerByPrNumber(account, prNumber, prWorkspaceId);
       if (typeof resolved.status === 'number') {
         return NextResponse.json(
-          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { error: resolved.error, ...(resolved.hint ? { hint: resolved.hint } : {}), ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
           { status: resolved.status },
         );
       }
@@ -2036,7 +2036,7 @@ export async function PUT(req: NextRequest) {
       const resolved = await resolveWorkerByPrNumber(account, prNumber, workspaceId);
       if (typeof resolved.status === 'number') {
         return NextResponse.json(
-          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { error: resolved.error, ...(resolved.hint ? { hint: resolved.hint } : {}), ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
           { status: resolved.status },
         );
       }
@@ -2854,7 +2854,7 @@ export async function GET(req: NextRequest) {
       // 'error' in resolved is always true for DB rows because the error column always exists.
       if (typeof resolved.status === 'number') {
         return NextResponse.json(
-          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { error: resolved.error, ...(resolved.hint ? { hint: resolved.hint } : {}), ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
           { status: resolved.status },
         );
       }

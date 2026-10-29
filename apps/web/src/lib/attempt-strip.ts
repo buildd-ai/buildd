@@ -23,6 +23,7 @@
  */
 import { attachAttempts } from '@buildd/core/mission-helpers';
 import { deriveTaskOrigin, type TaskOriginRow, type TaskOriginLink } from './task-origin';
+import { missionTaskHref } from './mission-task-href';
 
 /**
  * Attempt kinds the strip counts separately, in display order.
@@ -238,7 +239,7 @@ export function buildAttemptStrips(
         settled: SETTLED_STATUSES.has(attempt.status),
         iteration: counter(attempt.context, keys.iteration),
         maxIterations: counter(attempt.context, keys.max),
-        href: `/app/tasks/${attempt.id}`,
+        href: missionTaskHref({ missionId: attempt.missionId, taskId: attempt.id }),
         prLink: origin.links.find(l => l.key === 'pr') ?? null,
         updatedAt: iso(attempt.updatedAt),
       };
