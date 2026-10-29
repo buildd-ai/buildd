@@ -620,6 +620,15 @@ describe('buildMissionBoard — deliverable roles and closed PRs (spec f7f67f1a 
     expect(phase.taskIds.sort()).toEqual(['api', 'db']);
   });
 
+  it('an audit row is no cell but its worker still shows on a lane and in Needs you', () => {
+    const audit = task('au', { title: '[surface audit] Example mission', roleSlug: 'visual-auditor', status: 'in_progress', workers: [worker({ status: 'waiting_input', runner: 'r1', startedAt: min(1) })] });
+    const m = board([task('api'), audit]);
+    expect(m.tasks.au).toBeUndefined();
+    expect(m.checks.au.deliverableRole).toBe('verification');
+    expect(m.bars.some(b => b.taskId === 'au')).toBe(true);
+    expect(m.needsYou).toContain('au');
+  });
+
   it('a completed task whose PR closed with no supersession is not landed', () => {
     const closed = task('cl', { status: 'completed', workers: [worker({ status: 'completed', prNumber: 21, prUrl: 'u21', prLifecycleStatus: 'closed' })] });
     const m = board([closed]);
