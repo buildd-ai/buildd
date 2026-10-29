@@ -7,6 +7,7 @@
  */
 import { describeMissionDelivery, MISSION_PR_STATE_LABEL, type MissionIntegrationPrView } from '@/lib/mission-integration-pr';
 import type { ScopeUpdateLine } from '@/lib/mission-scope-view';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 export function MissionPrLine({ pr }: { pr: MissionIntegrationPrView }) {
   const words = describeMissionDelivery(pr);
@@ -34,13 +35,13 @@ export function MissionPrLine({ pr }: { pr: MissionIntegrationPrView }) {
   );
 }
 
-export function MissionScopeUpdates({ lines }: { lines: ScopeUpdateLine[] }) {
+export function MissionScopeUpdates({ lines, missionId }: { lines: ScopeUpdateLine[]; missionId: string }) {
   if (lines.length === 0) return null;
   return (
     <ul data-testid="mission-scope-updates" className="space-y-0.5 text-meta text-text-secondary">
       {lines.map((u) => (
         <li key={u.key} className={u.needsDecision ? 'text-text-primary' : undefined}>
-          {u.taskId ? <a href={`/app/tasks/${u.taskId}`} className="hover:text-text-primary">{u.text}</a> : u.text}
+          {u.taskId ? <a href={missionTaskHref({ missionId, taskId: u.taskId })} className="hover:text-text-primary">{u.text}</a> : u.text}
         </li>
       ))}
     </ul>

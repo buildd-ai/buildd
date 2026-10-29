@@ -67,6 +67,7 @@ import MissionOverview, { type MissionChecksSource } from './MissionOverview';
 import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
+import { loadPendingHolderFacts, type HolderSourceRow } from '@/lib/mission-task-hold-load';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
 import { buildActivityEpisodes } from '@/lib/activity-delivery';
 import { missionHistoryInputs } from '@/lib/mission-history-input';
@@ -135,7 +136,7 @@ import { explainMission } from '@/lib/explain';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { missionOpenQuestions } from '@/lib/open-ask';
 import { loadDependencyRows } from '@/lib/dependency-rows';
-import { loadMissionGateFacts } from '@/lib/mission-board-waiting';
+import { loadMissionGateFacts, missionHoldCauses } from '@/lib/mission-board-waiting';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
@@ -949,7 +950,7 @@ async function MissionDetailBody({
   }], newestEstimate, new Map())[0]?.tasks ?? [];
   // Waiting on another mission is an outside wait: no time promise (R-24).
   const waitsOnMission = !!(mission as { dependsOnMissionId?: string | null }).dependsOnMissionId;
-  const missionPrCard = (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total })
+  const missionPrCard = (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: isBuildComplete(feedCounts) })
     || (missionIntegrationPr?.shippedDeliveries?.length ?? 0) > 0) && missionIntegrationPr
     // Mission integration PR (Option A′): the mission's review gate, and a
     // different object from the task PRs that fed the branch. With delivery
@@ -960,7 +961,7 @@ async function MissionDetailBody({
   const acceptanceBlock = acceptanceTests.length > 0 || acceptanceHolds.length > 0
     ? <>{acceptanceHolds.length > 0 && <MissionAcceptanceHolds holds={acceptanceHolds} readonly={isTerminal} />}{acceptanceTests.length > 0 && <MissionAcceptanceTests tests={acceptanceTests} />}</>
     : null;
-  const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
+  const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} missionId={mission.id} /> : null;
 
   // The task PRs behind Delivery's count line (spec 072de598 I-23).
   const deliveryTasks = allTasks
@@ -1191,6 +1192,19 @@ async function MissionDetailBody({
   // ── Board / Flow (MissionBoard, FlowTimeline) ─────────────────────────────
   // One model for both, from the same rows the feed reads; `buildMissionBoard`
   // folds and states them with the feed's own rules, so the counts agree.
+  // Why each queued task waits, in words, from the one decision the claim route's
+  // own wait feeds (`derivePendingTaskHold`): a lane names the task it runs after.
+  const holdWaits = Object.values(gateFacts.queueWaits ?? {});
+  const holderIds = holdWaits.flatMap(w => [w.holderTaskId, w.aheadTaskId]).filter((x): x is string => !!x);
+  const holderFactsById = await loadPendingHolderFacts(
+    holderIds,
+    new Map((mission.tasks ?? []).map(t => [t.id, t as unknown as HolderSourceRow] as const)),
+  );
+  const holdCauses = missionHoldCauses(gateFacts, {
+    now: renderedAt,
+    runnerOnline: typeof fleetCapacity === 'number' ? fleetCapacity > 0 : null,
+    holders: holderFactsById,
+  });
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
     fleetCapacity,
@@ -1206,7 +1220,7 @@ async function MissionDetailBody({
     humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
     // Another mission's dependency is judged by the claim gate, not dropped.
     externalDeps: [...foreignDeps.values()],
-    gateFacts,
+    gateFacts: { ...gateFacts, holds: holdCauses },
   });
   // Flow: the same-files waits Buildd added, and each task's expected size.
   const flowSameFiles = sameFilesFromRows(allTasks as Array<{ id: string; pathDeclaration?: unknown }>);

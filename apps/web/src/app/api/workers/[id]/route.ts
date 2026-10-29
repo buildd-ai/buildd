@@ -3050,11 +3050,16 @@ async function patchWorker(
   // every later one misses — but the equality form also lost to benign,
   // non-terminal status changes (the runner's own concurrent startup PATCHes),
   // turning a real failure report into a bare `abort` that killed the session.
+  //
+  // The report rides this write: it is the one that makes the row terminal, so
+  // a request that ends before the final write below (a slow completion hook,
+  // a runner that timed out) still leaves the report a batch's verdicts settle
+  // from (settleFinishedCheckRuns), and a late copy is refused as terminal.
   let terminalTransitionReserved = false;
   if (isTerminalStatus && worker.status !== status) {
     const [reserved] = await db
       .update(workers)
-      .set({ status, updatedAt: new Date() })
+      .set({ status, updatedAt: new Date(), ...(updates.verificationEvidence ? { verificationEvidence: updates.verificationEvidence } : {}) })
       .where(and(eq(workers.id, id), not(inArray(workers.status, TERMINAL_WORKER_STATUSES))))
       .returning({ id: workers.id });
 

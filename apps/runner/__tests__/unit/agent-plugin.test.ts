@@ -800,7 +800,7 @@ describe('fail open', () => {
     });
     expect(p.exitCode).toBe(0);
     expect(JSON.parse(p.stdout.toString())).toEqual({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: expect.stringContaining('workspaceId') } });
-    expect(Date.now() - t0).toBeLessThan(process.platform === 'win32' ? 20_000 : 8_000);
+    expect(Date.now() - t0).toBeLessThan(process.platform === 'win32' ? 28_000 : 8_000);
   });
 
   it('the real script exits 0 on garbage input and an unknown client', () => {

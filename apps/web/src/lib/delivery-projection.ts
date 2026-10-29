@@ -24,6 +24,7 @@ import { prShipState } from '@buildd/core/pr-shipped';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
 import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, TERMS } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
+import { isBuildComplete } from './build-complete';
 import { displayTaskTitle } from './task-title';
 import { claimHoldPhrase } from './claim-hold-phrase';
 import { quietLabel, strandAt } from './local-strand';
@@ -546,7 +547,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   }
 
   const tasks = deliveries.map(d => ({ id: d.t.id, title: d.t.title, delivery: d.delivery }));
-  const allLanded = progress.totalTasks > 0 && progress.completedTasks >= progress.totalTasks;
+  const allLanded = isBuildComplete({ done: progress.completedTasks, total: progress.totalTasks });
   const anyLive = deliveries.some(d => [...d.workers, ...d.reviewers].some(w => LIVE.has(w.status)));
   const complete = m.status === 'completed';
   const onTrunk = m.integrationBranch ? complete || (allLanded && missionPrMerged) : null;

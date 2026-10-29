@@ -161,7 +161,7 @@ export function buildRowLine(model: Model, id: string, state: BuildRowState, now
       // The hold's cause, when the claim gate recorded one that is not another task (R-14).
       // A start time names when it starts, not that it is scheduled.
       const startsAt = t.waitingKind === 'start_deferred' && t.startAt != null && t.startAt > now ? t.startAt : null;
-      const hold = startsAt != null ? `starts ${whenLabel(startsAt, now)}` : wait === 'hold' && s.cause ? lower(s.cause) : null;
+      const hold = startsAt != null ? `starts ${whenLabel(startsAt, now)}` : t.holdCause ? lower(t.holdCause) : wait === 'hold' && s.cause ? lower(s.cause) : null;
       return { line: `Queued ${age}${hold ? ` · ${hold}` : ''}`, detail: null, age: null };
     }
     default:

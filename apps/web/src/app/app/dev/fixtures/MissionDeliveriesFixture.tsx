@@ -43,7 +43,7 @@ export default function MissionDeliveriesFixture() {
       })}
       <section className="space-y-2 border border-border-default p-3">
         <h2 className="text-meta font-semibold text-text-muted">Scope updates</h2>
-        <MissionScopeUpdates lines={SCOPE} />
+        <MissionScopeUpdates lines={SCOPE} missionId="fx-mission" />
       </section>
     </div>
   );

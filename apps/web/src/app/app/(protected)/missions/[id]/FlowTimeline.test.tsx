@@ -150,9 +150,9 @@ describe('FlowTimeline', () => {
     expect(text).not.toMatch(/\bGraph\b/);
   });
 
-  it('the selected task opens in the task sheet from its card', () => {
+  it('the selected task opens on the task page from its card', () => {
     const f = mount('small');
-    const open = container.querySelector<HTMLAnchorElement>('[data-testid="focus-card"] a[data-task-id]');
+    const open = container.querySelector<HTMLAnchorElement>('[data-testid="selected-task"] a[data-task-id]');
     expect(open?.dataset.taskId).toBe(f.idOf(4));
   });
 });

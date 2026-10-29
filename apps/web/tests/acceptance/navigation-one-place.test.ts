@@ -57,6 +57,23 @@ describe('one task view', () => {
     expect(code(read(join(MISSION_DIR, 'MissionOverview.tsx')))).not.toMatch(/\bFocusCard\b/);
   });
 
+  it('R-1: FocusCard is gone from the whole source tree', () => {
+    expect(existsSync(join(SRC, 'components/ui/FocusCard.tsx'))).toBe(false);
+    const users = sources(SRC).filter(([, text]) => /\bFocusCard\b/.test(code(text))).map(([rel]) => rel);
+    expect(users).toEqual([]);
+  });
+
+  it('R-1: no mission page file hand-builds a task href; they go through missionTaskHref', () => {
+    // These files render links to tasks of a mission, so the link must carry
+    // the mission back-link context. (Links outside the mission page, such as
+    // health, queue, release or schedule lists, name no mission and may use
+    // the plain task path.)
+    const handBuilt = sources(MISSION_DIR)
+      .filter(([, text]) => /['"`]\/app\/tasks\/(\$\{|['"`])/.test(code(text)))
+      .map(([rel]) => rel);
+    expect(handBuilt).toEqual([]);
+  });
+
   it('AC-1: missionTaskHref opens the task page from every origin', () => {
     for (const from of [undefined, 'home', 'missions', 'initiative'] as const) {
       const href = missionTaskHref({ missionId: 'm1', taskId: 't1', from, initiativeId: 'i1' });
@@ -270,10 +287,9 @@ describe('the mission page, r5: the header, the bar, the Build stage, the stages
     for (const rel of ['lib/explain.ts', 'lib/mission-card-view.ts', 'app/app/(protected)/missions/[id]/MissionOverview.tsx']) {
       matches(code(read(join(SRC, rel))), /\bisBuildComplete\(/);
     }
-    // The catalog retires "delivered" as a state word (terms.ts BANNED_WORDS), so the line is the catalog's Done plus the branch.
+    // The catalog retires "delivered" as a state word (terms.ts BANNED_WORDS), so the line is the catalog's deliveredInto(branch).
     matches(overview(), /mission-delivered-line/);
-    matches(overview(), /termWord\('mission\.done'\)/);
-    matches(overview(), /merged into \$\{/);
+    matches(overview(), /deliveredInto\(/);
     for (const [, text] of sources(SRC)) expect(code(text)).not.toMatch(/progress\s*>=\s*100,?\s*\n?\s*\}\)/);
   });
 
@@ -303,6 +319,63 @@ describe('the mission page, r5: the header, the bar, the Build stage, the stages
     expect(queued.line).toMatch(/^Queued \d+[mhd]/);
     expect(queued.line).not.toMatch(/Running|Next in line/);
     expect(rows.find(r => r.state === 'fixing')!.line).toMatch(/^Fixing · CI failed · resumes \d\d:\d\d$/);
+  });
+
+  it('AC-14: a task held behind another\u2019s migration and a task no online runner can claim read Queued <age> · <hold> naming the cause, and a retry on a schedule reads Fixing · resumes <time>', async () => {
+    const { buildMissionBoard } = await import('../../src/lib/mission-board');
+    const { combineGateFacts, missionHoldCauses } = await import('../../src/lib/mission-board-waiting');
+    const { holderFacts } = await import('../../src/lib/mission-task-hold');
+    const { buildStage } = await import('../../src/lib/mission-build-stage');
+    const T0 = Date.UTC(2026, 9, 22, 12);
+    const NOW = T0 + 120 * 60_000;
+    const min = (n: number) => T0 + n * 60_000;
+    const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    const w = (over: Record<string, unknown>) => ({
+      id: `w-${Math.random().toString(36).slice(2, 8)}`, status: 'completed', runner: 'atlas', startedAt: min(1), completedAt: min(8), updatedAt: min(8),
+      mergedAt: null, prNumber: null, prUrl: null, prLifecycleStatus: null, currentAction: null, waitingFor: null, milestones: [], linesAdded: null, linesRemoved: null, ...over,
+    }) as any;
+    const t = (n: number, title: string, over: Record<string, unknown> = {}) => {
+      const workers = (over.workers as any[]) ?? [];
+      const wk = workers[0];
+      return {
+        id: id(n), title, status: 'pending', taskClass: 'work', createdAt: new Date(T0 + n * 1000), missionPhaseIndex: 1, missionPhaseLabel: 'Build',
+        roleSlug: 'builder', outputRequirement: 'pr_required', workers,
+        worker: wk ? { status: wk.status, startedAt: wk.startedAt ? new Date(wk.startedAt) : null, updatedAt: wk.updatedAt ? new Date(wk.updatedAt) : null, prNumber: wk.prNumber, prUrl: wk.prUrl, prLifecycleStatus: wk.prLifecycleStatus, mergedAt: null } : null,
+        ...over,
+      } as any;
+    };
+    const [HOLDER, LANE, NORUNNER, RETRY] = [30, 31, 32, 33];
+    const tasks = [
+      t(HOLDER, 'Add the billing column', { status: 'in_progress', workers: [w({ status: 'running', startedAt: min(100), completedAt: null, updatedAt: min(119) })] }),
+      t(LANE, 'Backfill the billing column', { createdAt: new Date(NOW - 60 * 60_000) }),
+      t(NORUNNER, 'Document the billing column', { createdAt: new Date(NOW - 60 * 60_000) }),
+      t(RETRY, 'Settings shows each deploy step', {
+        startAt: min(120 + 232),
+        workers: [w({ startedAt: min(60), completedAt: min(70), updatedAt: min(70), prNumber: 450, prUrl: 'https://example.test/pull/450', prLifecycleStatus: 'ci_failed' })],
+      }),
+    ];
+    const facts = combineGateFacts({
+      edges: [], pending: [LANE, NORUNNER].map(n => ({ id: id(n), deferred: false, held: false })), deferrals: [],
+      mission: { held: false, local: false, budgetExhausted: false },
+      queueWaits: new Map<string, any>([[id(LANE), { kind: 'lane', lane: 'migration', holderTaskId: id(HOLDER) }], [id(NORUNNER), { kind: 'slot' }]]),
+    });
+    const holders = new Map([[id(HOLDER), holderFacts({ id: id(HOLDER), title: 'Add the billing column', status: 'in_progress' })]]);
+    const holds = missionHoldCauses(facts, { now: NOW, runnerOnline: false, holders });
+    const model = buildMissionBoard({ tasks, now: NOW, missionCreatedAt: T0, missionStatus: 'active', roles: [{ slug: 'builder', name: 'Builder', color: 'var(--c)' }], gateFacts: { ...facts, holds } } as any);
+    const clock = (ts: number) => new Date(ts).toISOString().slice(11, 16);
+    const rows = buildStage(model, NOW, { hrefFor: x => x, clock }).rows;
+    const line = (n: number) => rows.find(r => r.id === id(n))!.line;
+    expect(line(LANE)).toBe('Queued 1h · in the schema lane: runs after Add the billing column');
+    expect(line(NORUNNER)).toBe('Queued 1h · no runner can take it: none is online');
+    expect(line(LANE) + line(NORUNNER)).not.toMatch(/Running|Next in line/);
+    expect(line(RETRY)).toMatch(/^Fixing · .*resumes \d\d:\d\d$/);
+  });
+
+  it('R-5: the Waiting on <name> group row is a toggle (aria-expanded) that lists its member rows once open', () => {
+    const src = code(read(join(MISSION_DIR, 'MissionBuildStage.tsx')));
+    matches(src, /data-testid="mission-waiting-group-toggle"/);
+    matches(src, /aria-expanded=\{open\}/);
+    matches(src, /\{open && <ul data-testid="mission-waiting-group-list"[^>]*>\{members\.map\(r => <Row key=\{r\.id\} row=\{r\} \/>\)\}<\/ul>\}/);
   });
 
   it('AC-18: the summary ends finish depends on <first>, then <second> → <third> when the whole path is estimated, Flow names the same first task, and one missing estimate drops the clause', async () => {

@@ -12,6 +12,7 @@ import { Select } from '@/components/ui/Select';
 import { humanPickableRoles, type LivingSpecGoalCriterion } from '@buildd/shared';
 import MissionDecisionSheet, { type SurfaceAuditDecision } from './MissionDecisionSheet';
 import OutcomeSpecPicker from './OutcomeSpecPicker';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -507,7 +508,7 @@ export default function MissionSettings({
         </>
       )}
 
-      {!isTerminal && <RunOutcomeStrip outcome={runOutcome} onDismiss={() => setRunOutcome({ kind: 'idle' })} />}
+      {!isTerminal && <RunOutcomeStrip missionId={missionId} outcome={runOutcome} onDismiss={() => setRunOutcome({ kind: 'idle' })} />}
 
       {/* ── Capabilities, behind a disclosure ──
           Plan now, Disarm, Edit schedule, Complete and Delete are things this
@@ -768,9 +769,11 @@ export default function MissionSettings({
 function RunOutcomeStrip({
   outcome,
   onDismiss,
+  missionId,
 }: {
   outcome: RunOutcome;
   onDismiss: () => void;
+  missionId: string;
 }) {
   if (outcome.kind === 'idle') return null;
 
@@ -784,7 +787,7 @@ function RunOutcomeStrip({
 
   const taskLink = (taskId: string | null, label: string) =>
     taskId ? (
-      <Link href={`/app/tasks/${taskId}`} className="font-medium text-primary hover:underline">
+      <Link href={missionTaskHref({ missionId, taskId })} className="font-medium text-primary hover:underline">
         {label}
       </Link>
     ) : null;
