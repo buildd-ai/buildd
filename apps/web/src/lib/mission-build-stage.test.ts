@@ -6,6 +6,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardInput } from './mission-board';
+import { combineGateFacts, missionHoldCauses } from './mission-board-waiting';
+import { holderFacts } from './mission-task-hold';
 import { missionFinishClause } from './flow-timeline';
 import { buildFoldLine, buildRowState, buildStage, buildSummaryLine, mergedFoldLine, WAITING_GROUP_FROM } from './mission-build-stage';
 
@@ -264,5 +266,48 @@ describe('row words (R-5, R-14): steps in words, updated on every running row, n
     const line = lineOf(tasks, 2);
     expect(line).not.toContain('[');
     expect(line.startsWith('Waiting on ')).toBe(true);
+  });
+});
+
+describe('queued holds come from the claim gates (R-14, AC-14)', () => {
+  const HOLDER = 30; const LANE = 31; const NORUNNER = 32; const RETRY = 33;
+  const tasks = [
+    task(HOLDER, 'Add the billing column', { status: 'in_progress', workers: [worker({ status: 'running', startedAt: min(100), completedAt: null, updatedAt: min(119) })] }),
+    task(LANE, 'Backfill the billing column', { createdAt: new Date(NOW - 60 * 60_000) }),
+    task(NORUNNER, 'Document the billing column', { createdAt: new Date(NOW - 60 * 60_000) }),
+    task(RETRY, 'Settings shows each deploy step', {
+      status: 'pending', startAt: min(120 + 232),
+      workers: [worker({ status: 'completed', startedAt: min(60), completedAt: min(70), updatedAt: min(70), prNumber: 450, prUrl: 'https://example.test/pull/450', prLifecycleStatus: 'ci_failed' })],
+    }),
+  ];
+  const queueWaits = new Map<string, any>([
+    [id(LANE), { kind: 'lane', lane: 'migration', holderTaskId: id(HOLDER) }],
+    [id(NORUNNER), { kind: 'slot' }],
+  ]);
+  const facts = combineGateFacts({
+    edges: [], pending: [LANE, NORUNNER].map(n => ({ id: id(n), deferred: false, held: false })), deferrals: [],
+    mission: { held: false, local: false, budgetExhausted: false }, queueWaits,
+  });
+  const holders = new Map([[id(HOLDER), holderFacts({ id: id(HOLDER), title: 'Add the billing column', status: 'in_progress' })]]);
+  const holds = missionHoldCauses(facts, { now: NOW, runnerOnline: false, holders });
+  const stage = buildStage(board(tasks, { gateFacts: { ...facts, holds } }), NOW, { hrefFor, clock });
+  const line = (n: number) => stage.rows.find(r => r.id === id(n))!;
+
+  it('a task held behind another’s migration names the task it runs after', () => {
+    expect(line(LANE).state).toBe('queued');
+    expect(line(LANE).line).toBe('Queued 1h · in the schema lane: runs after Add the billing column');
+  });
+
+  it('a task no online runner can claim says so, not Next in line', () => {
+    expect(line(NORUNNER).line).toBe('Queued 1h · no runner can take it: none is online');
+    expect(stage.rows.some(r => /Running|Next in line/.test(line(NORUNNER).line))).toBe(false);
+  });
+
+  it('a retry waiting on a schedule reads Fixing · resumes <time>', () => {
+    expect(line(RETRY).line).toMatch(/^Fixing · .*resumes \d\d:\d\d$/);
+  });
+
+  it('a slot wait with a runner online has no hold to name', () => {
+    expect(missionHoldCauses(facts, { now: NOW, runnerOnline: true, holders })[id(NORUNNER)]).toBeUndefined();
   });
 });

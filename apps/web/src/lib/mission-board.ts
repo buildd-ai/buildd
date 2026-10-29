@@ -18,7 +18,7 @@
 import type { DeliverableRole } from '@buildd/core/mission-helpers';
 import { pickTaskView } from './task-view-pick';
 import { BOARD_MILESTONES_MAX, BOARD_MILESTONE_LABEL_MAX } from './mission-board-limits';
-import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, type QueueWait, type VisualReviewModel } from '@buildd/shared';
 import { screensToReview } from './visual-review-model';
 import { assignSlots, occupiedSlots } from '@/components/fleet/slot-lanes-layout';
 import { groupTasksByPhase } from './flight-strip-nav';
@@ -179,6 +179,10 @@ export interface MissionGateFacts {
   releasedEdges: readonly ReleasedEdge[];
   /** One cause per waiting task; a task with no known cause is absent. */
   waitingKinds: Readonly<Record<string, WaitingKind>>;
+  /** The claim route's own wait for each pending task (`loadQueueWaitMap`); the hold causes are derived from it. */
+  queueWaits?: Readonly<Record<string, QueueWait>>;
+  /** Each held task's cause in words (`derivePendingTaskHold`, via `missionHoldCauses`); a slot wait has none. */
+  holds?: Readonly<Record<string, string>>;
 }
 
 /** The adjacency's `releasedBy` over loaded facts. */
@@ -312,6 +316,8 @@ export interface BoardTask {
   waitingFor: BoardWaitingFor | null;
   /** Why a queued task is not running (`MissionGateFacts.waitingKinds`); absent when unknown. */
   waitingKind?: WaitingKind;
+  /** The hold's cause in words (`held: runs after <task>`, `no runner can take it: none is online`), from the claim gates; absent when nothing holds it. */
+  holdCause?: string;
   /**
    * The raw row the Landed drawer's task actions derive their phase from
    * (`taskActionPhase`, the same function the task sheet uses): the task's own
@@ -897,6 +903,7 @@ export function buildBoardCells(
       attempt: 1 + r.attempts.filter(a => a.workers.length > 0 || a.status !== 'pending').length,
       waitingFor: status === 'waiting' ? activeWorker?.waitingFor ?? null : null,
       ...(BOARD_QUEUED.has(status) && input.gateFacts?.waitingKinds[t.id] ? { waitingKind: input.gateFacts.waitingKinds[t.id] } : {}),
+      ...(BOARD_QUEUED.has(status) && input.gateFacts?.holds?.[t.id] ? { holdCause: input.gateFacts.holds[t.id] } : {}),
       taskStatus: t.status,
       taskMode: t.mode ?? null,
       workerStatus: own?.status ?? null,

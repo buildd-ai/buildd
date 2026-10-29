@@ -59,6 +59,7 @@ export default function MissionBuildStage({ model, now, hrefFor, revealTaskId = 
   const finish = useMemo(() => (expectedMinutes ? missionFinishClause(model, now, expectedMinutes) : null), [model, now, expectedMinutes]);
   const stage = buildStage(model, now, { hrefFor, clock, finish });
   const [mergedOpen, setMergedOpen] = useState(false);
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set());
   const reveal = revealTaskId != null && stage.merged.ids.includes(revealTaskId);
   const showMerged = mergedOpen || reveal;
   const listed = stage.waitingGroups ? stage.rows.filter(r => r.state !== 'waiting') : stage.rows;
@@ -68,12 +69,25 @@ export default function MissionBuildStage({ model, now, hrefFor, revealTaskId = 
       {(listed.length > 0 || stage.waitingGroups || stage.merged.count > 0) && (
         <ul data-testid="mission-task-list" className="flex min-w-0 flex-col">
           {listed.map(r => <Row key={r.id} row={r} />)}
-          {stage.waitingGroups?.map(g => (
-            <li key={g.blockerId} data-testid="mission-waiting-group" className={ROW}>
-              <span className="min-w-0 text-text-primary [overflow-wrap:anywhere]">{g.line}</span>
-              <span className="font-mono text-meta text-text-muted md:text-right">{g.ids.length === 1 ? '1 task' : `${g.ids.length} tasks`}</span>
-            </li>
-          ))}
+          {stage.waitingGroups?.map(g => {
+            const open = openGroups.has(g.blockerId);
+            const members = stage.rows.filter(r => g.ids.includes(r.id));
+            return (
+              <li key={g.blockerId} data-testid="mission-waiting-group" className="border-t border-[var(--line-soft)]">
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  data-testid="mission-waiting-group-toggle"
+                  onClick={() => setOpenGroups(prev => { const next = new Set(prev); if (!next.delete(g.blockerId)) next.add(g.blockerId); return next; })}
+                  className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)] items-start gap-x-4 gap-y-0.5 py-2.5 text-left text-body hover:bg-card-hover md:grid-cols-[minmax(0,1fr)_auto] md:items-baseline"
+                >
+                  <span className="min-w-0 text-text-primary [overflow-wrap:anywhere]">{g.line}</span>
+                  <span className="font-mono text-meta text-text-muted md:text-right">{g.ids.length === 1 ? '1 task' : `${g.ids.length} tasks`}</span>
+                </button>
+                {open && <ul data-testid="mission-waiting-group-list" className="flex flex-col pl-4">{members.map(r => <Row key={r.id} row={r} />)}</ul>}
+              </li>
+            );
+          })}
           {stage.merged.count > 0 && (
             <li data-testid="mission-merged-fold" className="border-t border-[var(--line-soft)]">
               <button
