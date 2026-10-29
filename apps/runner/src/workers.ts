@@ -87,7 +87,7 @@ import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-sessio
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
-import { runProvisionGate } from './env-verify';
+import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
@@ -6902,8 +6902,12 @@ export class WorkerManager {
    */
   private async finishCriterionBatchWithoutAgent(worker: LocalWorker, cwd: string, marker: CriterionBatchMarker): Promise<void> {
     this.addMilestone(worker, { type: 'status', label: `Running ${marker.checks.length} criterion check(s) at ${marker.headSha.slice(0, 7)}; no agent needed`, ts: Date.now() });
+    // A declared repo's install belongs to the provision gate, which only an agent
+    // session runs (setupWorktree skips it), so this path has to run it itself.
+    const declared = resolveManifest(cwd);
+    const installCommand = declared.source === 'manifest' ? declared.manifest?.install?.command : undefined;
     const evidence = await runCriterionBatch({
-      workerId: worker.id, cwd, marker,
+      workerId: worker.id, cwd, marker, installCommand,
       onCheck: (criterionId, i) => {
         worker.currentAction = `Checking ${criterionId} (${i + 1} of ${marker.checks.length})`;
         this.emit({ type: 'worker_update', worker });
