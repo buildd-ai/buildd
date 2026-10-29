@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Runners: opt-in for a runner key to claim from every workspace its creator can reach (#5871)
+- Explain: attempt-lineage PRs are superseded automatically and stale closed PRs age out (#5778)
+
+### Changed
+
+- UI: status and content-measure tokens replace hard-coded values (#5874)
+- Database: `credential_leases` and `accounts.oauth_token` are dropped (#5859)
+
+### Fixed
+
+- Landing: approval survives a same-diff rebase, stale lane waits are dropped, and untracked bot PRs are explained (#5884)
+- Workflow: a landing's status effect no longer parks its merge on its own status (#5883)
+- MCP: `explain`, `get_task` and `list_runners` work from an account-level connection (#5872)
+- Tasks: hold actions live in the menu, Fixing shows on the task page, and Failed never carries a retry time (#5877)
+- Navigation: one decision card on the task page, mission-owned task links go through `missionTaskHref` (#5879, #5875)
+- Mission board: only build deliverables are board cells, and task context is forwarded (#5876, #5817)
+- Mission: merged fold, delivered line and Re-check copy match the Navigation spec (#5878)
+- Runner: mission criterion checks install dependencies first, and a missing database is never a fail (#5869)
+- Home: the Get started next-step label wraps below 360px (#5880)
+
 ## [0.382.0] - 2026-10-26
 
 ### Added
