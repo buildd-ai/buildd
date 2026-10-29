@@ -15,6 +15,7 @@ import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats
 import { withLiveRunnerBeats } from '@/lib/runner-beats';
 import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS, isOnceRunnerUrl, runnerFleetIdentity, runnerUpdateState } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 
 // "Not dead" window (2.5× the poll cycle): a runner listed here may be quiet,
 // but has not been presumed dead. Presence is judged separately below with
@@ -72,7 +73,9 @@ const CALLER_WS_COLUMNS = { id: true, name: true, teamId: true, accessMode: true
  * The workspaces the caller can see, by the same rule every workspace list
  * uses (lib/workspace-access.ts): "open" means open within the owning team.
  *
- * - API account: its explicit links, plus its own team's open workspaces.
+ * - Grant session (account-level MCP connection): its granted workspaces.
+ * - API account: its explicit links, plus its own team's open workspaces,
+ *   narrowed to its workspace list when it has one.
  * - Session: every workspace of the user's teams, which already includes those
  *   teams' open workspaces. Another team's open workspace is not one of them.
  */
@@ -80,7 +83,17 @@ async function getWorkspaceIdsAndNames(
   auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>,
 ): Promise<CallerWorkspace[]> {
   let rows: CallerWorkspace[];
-  if (auth.type === 'api') {
+  if (auth.type === 'api' && isGrantSession(auth.account)) {
+    // An account-level MCP connection reaches exactly its granted workspaces,
+    // whatever their access mode (lib/grant-scope.ts), and nothing else.
+    const grantedIds = constrainToGranted(auth.account, auth.account.workspaceIds ?? []);
+    rows = grantedIds.length > 0
+      ? (await db.query.workspaces.findMany({
+          where: sqlWhere(inArray(workspaces.id, grantedIds)),
+          columns: CALLER_WS_COLUMNS,
+        })) as CallerWorkspace[]
+      : [];
+  } else if (auth.type === 'api') {
     const permissions = await getAccountWorkspacePermissions(auth.account.id);
     const linkedWsIds = permissions.map(p => p.workspaceId);
     const [linkedWs, openWs] = await Promise.all([
@@ -92,7 +105,9 @@ async function getWorkspaceIdsAndNames(
         : Promise.resolve([]),
       listOpenWorkspaces([auth.account.teamId], CALLER_WS_COLUMNS),
     ]);
-    rows = ([...linkedWs, ...openWs] as CallerWorkspace[]).filter(w => taskScopeAllowsWorkspace(auth.account, w.id));
+    // A workspace-restricted key sees runners of its own workspaces only.
+    const granted = new Set(constrainToGranted(auth.account, [...linkedWs, ...openWs].map(w => w.id)));
+    rows = ([...linkedWs, ...openWs] as CallerWorkspace[]).filter(w => granted.has(w.id) && taskScopeAllowsWorkspace(auth.account, w.id));
   } else {
     const teamWsIds = await getUserWorkspaceIds(auth.user.id);
     rows = teamWsIds.length > 0
@@ -229,8 +244,9 @@ export async function GET(req: NextRequest) {
 
         return {
           localUiUrl: hb.localUiUrl,
-          // The runner UI's proxy credential: never handed to a per-task token.
-          viewerToken: auth.type === 'api' && auth.account.taskScope ? null : hb.viewerToken,
+          // The runner UI's proxy credential: never handed to a per-task or
+          // workspace-confined token.
+          viewerToken: auth.type === 'api' && (auth.account.taskScope || auth.account.workspaceIds != null || isGrantSession(auth.account)) ? null : hb.viewerToken,
           accountId: hb.accountId,
           accountName: hb.account?.name || 'Unknown',
           maxConcurrent,

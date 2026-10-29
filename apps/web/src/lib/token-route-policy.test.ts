@@ -37,6 +37,17 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/workspaces/ws-b/config', 'PATCH'))).toBe(false);
   });
+  test('list_runners: a confined token or grant session reaches /api/workers/active for its own workspace only', () => {
+    // An account-level MCP connection is a grant session confined to the
+    // workspace the call names; it was refused outright, so list_runners 401ed.
+    const grant = { scopes: null, workspaceIds: ['ws-a'], oauthGrantId: 'g-1' };
+    const scoped = { scopes: ['analytics:read'], workspaceIds: ['ws-a'] };
+    for (const token of [grant, scoped]) {
+      expect(canAccessTokenRoute(token, request('/api/workers/active?workspaceId=ws-a'))).toBe(true);
+      expect(canAccessTokenRoute(token, request('/api/workers/active?workspaceId=ws-b'))).toBe(false);
+      expect(canAccessTokenRoute(token, request('/api/workers/active'))).toBe(false);
+    }
+  });
   test('workspace-restricted tokens reach the all-workspace lists, which scope to their own workspaces', () => {
     // /api/workspaces/across/* is not a workspace id: the route narrows the
     // list to the token's workspaceIds (listReachableWorkspaceIds) instead.
