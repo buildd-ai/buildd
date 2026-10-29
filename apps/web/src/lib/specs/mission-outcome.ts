@@ -99,6 +99,8 @@ async function missionRepo(mission: MissionRow): Promise<{ installationId: numbe
   return { installationId, fullName: repo.fullName, trunk: ws.gitConfig?.targetBranch || ws.gitConfig?.defaultBranch || repo.defaultBranch || 'main' };
 }
 
+const ANCESTRY_READS_AT_ONCE = 8;
+
 /**
  * The mission's integrated target, as GitHub reports it now (never a runner's
  * word). mission-branch: the integration branch's head, or once the mission PR
@@ -128,8 +130,10 @@ export async function resolveMissionTarget(mission: MissionRow, candidateHeads: 
   const validHeads = new Set<string>();
   for (const head of new Set(candidateHeads.map((h) => h.toLowerCase()))) {
     let all = true;
-    for (const m of mergeShas) {
-      if ((await isAncestor(repo.installationId, repo.fullName, m, head, api)) !== true) { all = false; break; }
+    // A few compares at once: one at a time, a mission with many merged PRs outran the function timeout.
+    for (let i = 0; all && i < mergeShas.length; i += ANCESTRY_READS_AT_ONCE) {
+      const answers = await Promise.all(mergeShas.slice(i, i + ANCESTRY_READS_AT_ONCE).map((m) => isAncestor(repo.installationId, repo.fullName, m, head, api)));
+      all = answers.every((a) => a === true);
     }
     if (all) validHeads.add(head);
   }

@@ -157,9 +157,20 @@ export async function effectiveDeltaFiles(
   }
 }
 
+const COMMIT_SHA = /^[0-9a-f]{40}$/i;
+const ANCESTRY_CACHE_MAX = 5000;
+/**
+ * Settled answers per api, keyed `repo ancestor head`. Ancestry between two
+ * commits never changes, and a mission's target is resolved several times per
+ * request, once per merged PR each time: one compare (about a second) each
+ * pushed a large mission's verify past the function timeout.
+ */
+const ancestryCache = new WeakMap<Api, Map<string, boolean>>();
+
 /**
  * Is `ancestor` reachable from `head`? GitHub's compare `ancestor...head` says
- * `ahead` or `identical` exactly when it is. Null when the read fails.
+ * `ahead` or `identical` exactly when it is. Null when the read fails. An
+ * answer between two commit SHAs is kept; a branch name can move, so it is not.
  */
 export async function isAncestor(
   installationId: number,
@@ -168,11 +179,21 @@ export async function isAncestor(
   head: string,
   api: Api = githubApi,
 ): Promise<boolean | null> {
+  const key = COMMIT_SHA.test(ancestor) && COMMIT_SHA.test(head) ? `${repoFullName} ${ancestor.toLowerCase()} ${head.toLowerCase()}` : null;
+  let cache = ancestryCache.get(api);
+  const known = key ? cache?.get(key) : undefined;
+  if (known !== undefined) return known;
   try {
     const data = await api(installationId, `/repos/${repoFullName}/compare/${ancestor}...${head}`);
     const status = data?.status;
     if (typeof status !== 'string') return null;
-    return status === 'ahead' || status === 'identical';
+    const answer = status === 'ahead' || status === 'identical';
+    if (key) {
+      if (!cache) ancestryCache.set(api, (cache = new Map()));
+      if (cache.size >= ANCESTRY_CACHE_MAX) cache.clear();
+      cache.set(key, answer);
+    }
+    return answer;
   } catch {
     return null;
   }
