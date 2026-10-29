@@ -76,6 +76,11 @@ function deps(over: Partial<HealthQueueDeps> = {}): HealthQueueDeps {
     titles: mock(async () => new Map<string, string>()),
     live: mock(async (ws: string[]) => (ws.length > 1 ? 5 : 2)),
     slots: mock(async () => 6),
+    // No DB here: these read as unavailable, as a failed read does. Left to the real
+    // readers they hit the DB, and the leaked rejection marks a passing run inconclusive.
+    capacity: mock(async () => { throw new Error('no db in this test'); }),
+    runEnds: mock(async () => { throw new Error('no db in this test'); }),
+    edges: mock(async () => { throw new Error('no db in this test'); }),
     ...over,
   };
 }
