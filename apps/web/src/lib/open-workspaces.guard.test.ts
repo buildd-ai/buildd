@@ -30,6 +30,7 @@ const ALLOWED: Record<string, string> = {
   'apps/web/src/lib/claim-order.ts': "claimableWorkspaceIds, the claim route's reach moved here unchanged: ANDs eq(teamId, account.teamId); pinned in claim/route.test.ts and claim-order.test.ts",
   'apps/web/src/lib/subscriptions.ts': 'raw SQL joins the owner to w."team_id" before the open arm',
   'apps/web/src/lib/granted-links.ts': 'the open arm sits behind the granting person\'s membership of the workspace\'s own team; pinned in granted-links.test.ts and tests/db/runner-picks-reach.test.ts',
+  'apps/web/src/lib/reach-all-workspaces.ts': "the open arm sits behind the key creator's membership of the workspace's own team (inner join on team_members); pinned in claim-order.test.ts",
   'apps/web/src/lib/runner-picks.ts': 'listRunnerKeys: the open arm needs the person\'s role in the workspace\'s own team (display only)',
   'apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx': 'form radio state',
 };
