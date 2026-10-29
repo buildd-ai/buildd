@@ -1680,6 +1680,7 @@ async function TaskDetailPage({
           <div className="mb-6" data-testid="task-page-action-zone">
             <TaskPageActionZone
               taskId={task.id}
+              missionId={task.missionId}
               workspaceId={task.workspaceId}
               phase={phase}
               isBlocked={isBlocked}

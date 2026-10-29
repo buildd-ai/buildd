@@ -16,6 +16,7 @@
 import { useState } from 'react';
 import type { GoalCriteriaState, LivingSpecGoalCriterion } from '@buildd/shared';
 import { outcomeSpecView } from '@/lib/mission-outcome-spec-view';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 const ACTION = 'min-h-11 md:min-h-0 inline-flex items-center text-meta text-text-muted hover:text-text-primary underline underline-offset-2 touch-manipulation disabled:opacity-40';
 
@@ -120,7 +121,7 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
         </ul>
       )}
       {v.verificationTaskId && (
-        <a href={`/app/tasks/${v.verificationTaskId}`} className={ACTION}>
+        <a href={missionTaskHref({ missionId, taskId: v.verificationTaskId })} className={ACTION}>
           Final verification {v.verificationTaskId.slice(0, 8)}
         </a>
       )}

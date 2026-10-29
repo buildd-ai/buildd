@@ -6,14 +6,12 @@
  */
 import { useState } from 'react';
 import Criteria from '@/components/ui/Criteria';
-import FocusCard from '@/components/ui/FocusCard';
 import Lifecycle from '@/components/ui/Lifecycle';
 import MissionRow from '@/components/ui/MissionRow';
 import Segmented from '@/components/ui/Segmented';
 import StatePill from '@/components/ui/StatePill';
 import TaskStrip, { type TaskStripCell } from '@/components/ui/TaskStrip';
 import { STATE_KEYS, type StateKey } from '@/components/ui/states';
-import { reasonLine } from '@/components/ui/task-strip';
 import { ActionQueueCard } from '../../(protected)/home/ActionQueueCard';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
@@ -64,10 +62,6 @@ export default function RefinedComponentsFixture() {
   const relation = held ? task.upstream : task.downstream;
   const direct = DIRECT[sel] ?? [];
   const marks = Object.fromEntries(relation.map(id => [id, direct.includes(id) ? 'direct' : 'transitive'] as const));
-  const named = held
-    ? direct.map(id => `${id} ${TASKS.find(t => t.id === id)!.title}`)
-    : direct;
-  const reason = reasonLine(held ? 'upstream' : 'downstream', named, relation.length);
 
   return (
     <main className="min-h-screen p-4 md:p-8" data-testid="refined-components-fixture">
@@ -85,18 +79,8 @@ export default function RefinedComponentsFixture() {
           ))}
         </Block>
 
-        <Block title="TaskStrip lg + FocusCard">
+        <Block title="TaskStrip lg">
           <TaskStrip cells={TASKS} selectedId={sel} onSelect={setSel} marks={marks} label="Mission tasks" />
-          <FocusCard
-            meta={`${task.id} · builder`}
-            title={task.title ?? ''}
-            state={task.state}
-            next={held ? 'Starts by itself when its dependencies land' : 'Review starts automatically when CI passes'}
-            reason={reason}
-            estimate={task.state === 'running' ? { p50: 60, p80: 100, actual: 18 } : task.state === 'review' ? { p50: 40, p80: 70, actual: 48 } : null}
-            needs="Nothing"
-            note="Buildd freed this task's agent while CI runs. It comes back if CI fails."
-          />
         </Block>
 
         <Block title="TaskStrip sm">

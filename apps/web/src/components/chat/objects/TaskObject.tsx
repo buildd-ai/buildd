@@ -14,8 +14,7 @@ import { RunnerAvatar, ScopeChip, useNow } from '@/app/app/(protected)/missions/
 import type { BuilddObjectRef } from '../chat-contract';
 import { useChatActions } from '../ChatActions';
 import type { TaskObjectView } from './object-views';
-import FocusCard from '@/components/ui/FocusCard';
-import { OpenButton, StateChip, toneState, type Tone } from './parts';
+import { OpenButton, StateChip, type Tone } from './parts';
 
 /**
  * A kernel-owned delivery's words for the tile (§17.5). Null for `working`:
@@ -104,18 +103,9 @@ export function TaskPane({ view, variant = 'pane' }: { view: TaskObjectView; var
   const href = taskPageHref({ taskId: view.id, missionId: view.missionId });
   return (
     <div data-testid="object-pane" data-kind="task" className={variant === 'pane' ? 'px-6 pb-10 pt-5' : 'pb-6'}>
-      <FocusCard
-        focused={false}
-        meta={<>{view.missionTitle ? `Task · ${view.missionTitle}` : 'Task'} · <ScopeChip scope={view.scope} /></>}
-        title={<>{view.label} <StateChip label={st.label} tone={st.tone} pulse={st.live} /></>}
-        state={toneState(st.tone)}
-        next={view.title}
-        footer={
-          <Link href={href} className="inline-flex min-h-10 items-center self-start rounded-[var(--radius-card)] border border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
-            Open task →
-          </Link>
-        }
-      >
+      <section className="flex flex-col gap-2.5 rounded-[var(--radius-card)] border border-border-default bg-card px-3.5 py-3.5 md:gap-3 md:px-4 md:py-[18px]">
+        <div className="font-mono text-meta text-text-muted">{view.missionTitle ? `Task · ${view.missionTitle}` : 'Task'} · <ScopeChip scope={view.scope} /></div>
+        <h2 className="text-lede font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] md:text-[18px]">{view.label} <StateChip label={st.label} tone={st.tone} pulse={st.live} /></h2>
         {view.now && st.live ? (
           <NowStrip now={view.now} nowMs={nowMs} />
         ) : (
@@ -125,7 +115,11 @@ export function TaskPane({ view, variant = 'pane' }: { view: TaskObjectView; var
               : 'No agent is on this task right now.'}
           </div>
         )}
-      </FocusCard>
+        <p className="text-title">{view.title}</p>
+        <Link href={href} className="inline-flex min-h-10 items-center self-start rounded-[var(--radius-card)] border border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
+          Open task →
+        </Link>
+      </section>
     </div>
   );
 }
