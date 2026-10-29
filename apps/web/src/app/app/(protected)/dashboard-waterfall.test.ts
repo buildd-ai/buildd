@@ -26,8 +26,10 @@ const CEILINGS: Record<string, number> = {
   // Chat availability is read from its cache, never awaited (spec 3ef37387 R-17).
   'layout.tsx': 2,
   'missions/page.tsx': 11,
-  // 17: the live-region wrapper awaits its params and the body once each (not reads).
-  'missions/[id]/page.tsx': 17,
+  // 18: the live-region wrapper awaits its params and the body once each (not reads);
+  // one more for the queued-hold holders, which can only be read once the gate facts
+  // name them (R-5/R-14: a queued row says which task it runs after).
+  'missions/[id]/page.tsx': 18,
   // Task page no longer loads sibling navigation or execution-plan chains.
   'tasks/[id]/page.tsx': 14,
 };
