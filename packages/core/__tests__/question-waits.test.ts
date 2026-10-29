@@ -121,6 +121,18 @@ describe('AC-6: effects', () => {
   });
 });
 
+describe('option consequences', () => {
+  test('the same consequence on every option is left out, only the kind stays', () => {
+    const o = optionOutcomes([{ label: 'Ship', outcome: 'finishes' }, { label: 'Stop', outcome: 'stops' }], waits({ waiting: [] }));
+    expect(o.map(x => x.effect)).toEqual(['Finishes the task', 'Stops the task']);
+  });
+
+  test('a consequence that differs between options is kept', () => {
+    const o = optionOutcomes([{ label: 'Ship', outcome: 'finishes' }, { label: 'Stop', outcome: 'stops' }], waits());
+    expect(o[0].effect).toContain(': ');
+  });
+});
+
 describe('the card lines', () => {
   test('spans read in two units', () => {
     expect(formatSpan(30 * 60_000)).toBe('30 minutes');

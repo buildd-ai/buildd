@@ -89,9 +89,11 @@ export function RunningNow({ fleet, now, missions = {} }: { fleet: FleetSnapshot
   };
   const sessions = part(m => m === undefined || m === true);
   const teamSessions = part(m => m === false || m === null);
+  const working = fleet.runners.filter(r => r.slots.some(sl => sl.worker) || r.update);
+  if (working.length === 0 && !sessions && !teamSessions) return null;
   return (
     <div data-testid="running-now" className="divide-y divide-border-default">
-      {fleet.runners.map(r => <Group key={r.id} runner={r} now={now} missions={missions} />)}
+      {working.map(r => <Group key={r.id} runner={r} now={now} missions={missions} />)}
       {sessions && <Group runner={sessions} now={now} missions={missions} heading="Your sessions" />}
       {teamSessions && <Group runner={teamSessions} now={now} missions={missions} heading="Team sessions" others />}
     </div>

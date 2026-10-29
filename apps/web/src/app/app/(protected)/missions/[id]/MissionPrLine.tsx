@@ -13,14 +13,13 @@ export function MissionPrLine({ pr }: { pr: MissionIntegrationPrView }) {
   return (
     <div data-testid="mission-pr-line" className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
       <p className="min-w-0 text-body text-text-secondary">
-        <span className="font-semibold text-text-primary">{words.heading}</span>
+        <span title={pr.branch} className="font-semibold text-text-primary">{words.heading}</span>
         {/* With delivery records the sentence says the state; no chip competes with it. */}
         {!pr.delivery && (
-          <span className={`ml-2 font-mono text-meta ${pr.state === 'merged' ? 'text-status-success' : pr.state === 'closed' ? 'text-status-error' : 'text-text-muted'}`}>
+          <span className={`ml-2 text-meta ${pr.state === 'merged' ? 'text-status-success' : pr.state === 'closed' ? 'text-status-error' : 'text-text-muted'}`}>
             {MISSION_PR_STATE_LABEL[pr.state]}
           </span>
         )}
-        <span className="ml-2 font-mono text-meta text-text-muted [overflow-wrap:anywhere]">{pr.branch}</span>
         <span className="mt-0.5 block">{words.line}</span>
         {words.earlier && (
           <span data-testid="mission-shipped-deliveries" className="mt-0.5 block text-meta text-text-muted">{words.earlier}</span>

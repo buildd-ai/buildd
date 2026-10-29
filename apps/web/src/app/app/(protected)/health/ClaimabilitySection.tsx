@@ -13,13 +13,9 @@ export function ClaimabilitySection({ health, now }: { health: ClaimPlanHealth |
   return (
     <div data-testid="health-section-claimability" className="mb-6">
       <h3 className="text-xs font-medium text-text-secondary mb-1">Claimability</h3>
-      <p className="text-meta text-text-muted mb-3">
-        What the scheduler could start, from its recorded plans. Separate from slots in use: workspace limits,
-        entitlements and provider capacity also decide what starts.
-      </p>
       {health.plans === 0 ? (
         <p data-testid="claimability-empty" className="text-xs text-text-muted">
-          No claim plans recorded in this window. Claimability unknown.
+          Nothing recorded in this window.
         </p>
       ) : (
         <div className="card p-4 space-y-3">

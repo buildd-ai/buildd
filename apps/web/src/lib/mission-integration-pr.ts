@@ -235,10 +235,10 @@ export function shouldRenderMissionPrBlock(
 
 /** Human label for the mission-PR card's state chip. */
 export const MISSION_PR_STATE_LABEL: Record<MissionIntegrationPrState, string> = {
-  open: 'AWAITING MERGE',
-  merged: 'MERGED',
-  closed: 'CLOSED UNMERGED',
-  not_opened: 'NOT OPENED',
+  open: 'Ready to merge',
+  merged: 'Merged',
+  closed: 'Closed, not merged',
+  not_opened: 'Not opened',
 };
 
 /**

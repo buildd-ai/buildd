@@ -276,7 +276,7 @@ function NowView({ now, nowMs, sessions }: { now: ActivityNow; nowMs: number; se
   return (
     <>
       <div data-testid="activity-now-phone" className="mt-4 flex flex-col md:hidden">
-        <YouStrip waiting={waiting} />
+        <YouStrip waiting={waiting} scope="this team" />
         <Pipeline deliveries={deliveries} hrefFor={s => `#now-${s}`} className="mt-5" />
         {NOW_STAGE_ORDER.filter(s => s !== 'queued' && byStage[s].length > 0).map(s => (
           <section key={s} id={`now-${s}`} data-testid="activity-stage" data-stage={s} aria-label={NOW_STAGE_LABEL[s]} className="mt-6">
@@ -303,8 +303,8 @@ function NowView({ now, nowMs, sessions }: { now: ActivityNow; nowMs: number; se
           </div>
           <aside aria-label="Your attention and missions" data-testid="activity-rail" className="flex min-w-0 max-w-[320px] flex-[1_1_260px] flex-col gap-6">
             <div data-testid="activity-rail-waiting" className="flex flex-col gap-2">
-              <h2 className="text-meta font-semibold text-text-muted">Waiting on you</h2>
-              <YouStrip waiting={waiting} />
+              <h2 className="text-meta font-semibold text-text-muted">Waiting on you in this team</h2>
+              <YouStrip waiting={waiting} scope="this team" />
             </div>
             <MissionsInMotion missions={missions} />
           </aside>

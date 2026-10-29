@@ -30,6 +30,17 @@ function groupPicks(picks: NonNullable<RunnerKeySummary['picks']>) {
   return [...groups.entries()].map(([teamId, g]) => ({ teamId, ...g }));
 }
 
+/** One disclosure per workspace, so the same name is not repeated down the page. */
+function groupForeign(foreign: ForeignRunner[]) {
+  const groups = new Map<string, { workspaceId: string; workspaceName: string; runners: ForeignRunner[] }>();
+  for (const r of foreign) {
+    const g = groups.get(r.workspaceId) ?? { workspaceId: r.workspaceId, workspaceName: r.workspaceName, runners: [] };
+    g.runners.push(r);
+    groups.set(r.workspaceId, g);
+  }
+  return [...groups.values()];
+}
+
 /** The two calls the section makes. The dev fixture swaps in a local one. */
 export interface RunnerKeysApi {
   disconnect(accountId: string): Promise<{ ok: true } | { ok: false; error: string }>;
@@ -144,21 +155,26 @@ export default function RunnerKeysSection({
                 {k.picks == null ? (
                   <p className="text-meta text-text-muted">Takes work from the open workspaces of {k.homeTeamName}. Edit to choose workspaces.</p>
                 ) : (
-                  groupPicks(k.picks).map((g) => (
-                    <div key={g.teamId}>
-                      <p className="text-meta text-text-muted" data-testid="runner-key-team">{g.teamName}</p>
-                      <ul className="divide-y divide-[var(--line-soft)]">
-                        {g.picks.map((p) => (
-                          <li key={p.workspaceId} className="flex min-h-11 items-center justify-between gap-3" data-testid="runner-key-pick" data-reachable={p.reachable}>
-                            <span className="min-w-0 break-words text-body text-text-primary">{p.workspaceName}</span>
-                            {p.removedByAdmin
-                              ? <span className="text-meta text-text-muted">Removed by a team admin</span>
-                              : !p.reachable && <span className="text-meta text-text-muted">No longer reachable</span>}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))
+                  <details className="group" data-testid="runner-key-picks">
+                    <summary className="flex min-h-11 cursor-pointer items-center text-meta text-text-muted md:min-h-8">
+                      {k.picks.length} {k.picks.length === 1 ? 'workspace' : 'workspaces'}
+                    </summary>
+                    {groupPicks(k.picks).map((g) => (
+                      <div key={g.teamId}>
+                        <p className="text-meta text-text-muted" data-testid="runner-key-team">{g.teamName}</p>
+                        <ul className="divide-y divide-[var(--line-soft)]">
+                          {g.picks.map((p) => (
+                            <li key={p.workspaceId} className="flex min-h-11 items-center justify-between gap-3" data-testid="runner-key-pick" data-reachable={p.reachable}>
+                              <span className="min-w-0 break-words text-body text-text-primary">{p.workspaceName}</span>
+                              {p.removedByAdmin
+                                ? <span className="text-meta text-text-muted">Removed by a team admin</span>
+                                : !p.reachable && <span className="text-meta text-text-muted">No longer reachable</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </details>
                 )}
               </div>
             ))}
@@ -167,48 +183,58 @@ export default function RunnerKeysSection({
       </Section>
       <Section title="Runners from other teams" count={foreign.length}>
         {foreign.length > 0 && (
-          <ul className={ROWS} data-testid="foreign-runners">
-            {foreign.map((r) => {
-              const id = `${r.accountId}:${r.workspaceId}`;
-              return (
-                <li key={id} className="space-y-2 py-2" data-testid="foreign-runner-row">
-                  <div className="flex min-h-11 items-center justify-between gap-3">
-                    <span className="min-w-0 break-words text-body text-text-primary">
-                      {r.workspaceName}
-                      <span className="block text-meta text-text-muted">
-                        {r.accountName}, connected by {r.ownerName}, home team {r.homeTeamName}
-                      </span>
-                    </span>
-                    {confirm !== id && (
-                      <button
-                        type="button"
-                        className="btn btn-quiet btn-sm h-11 md:h-8"
-                        disabled={busy !== null}
-                        aria-label={`Remove ${r.accountName} from ${r.workspaceName}`}
-                        onClick={() => setConfirm(id)}
-                        data-testid="foreign-runner-remove"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                  {confirm === id && (
-                    <InlineConfirm
-                      testId="foreign-runner-remove-confirm"
-                      confirmTestId="foreign-runner-remove-yes"
-                      question={`Remove ${r.accountName} from ${r.workspaceName}? That runner stops taking work from this workspace.`}
-                      confirmLabel="Remove"
-                      busyLabel="Removing…"
-                      busy={busy === id}
-                      disabled={busy !== null}
-                      onKeep={() => setConfirm(null)}
-                      onConfirm={() => void removeForeign(r)}
-                    />
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <div className="space-y-2" data-testid="foreign-runners">
+            {groupForeign(foreign).map((g, i, all) => (
+              <details key={g.workspaceId} className="group" open={all.length === 1} data-testid="foreign-runner-group">
+                <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 text-body text-text-primary md:min-h-8">
+                  <span className="min-w-0 break-words">{g.workspaceName}</span>
+                  <span className="shrink-0 text-meta text-text-muted">{g.runners.length} {g.runners.length === 1 ? 'runner' : 'runners'}</span>
+                </summary>
+                <ul className={ROWS}>
+                  {g.runners.map((r) => {
+                    const id = `${r.accountId}:${r.workspaceId}`;
+                    return (
+                      <li key={id} className="space-y-2 py-2" data-testid="foreign-runner-row">
+                        <div className="flex min-h-11 items-center justify-between gap-3">
+                          <span className="min-w-0 break-words text-body text-text-primary">
+                            {r.accountName}
+                            <span className="block text-meta text-text-muted">
+                              connected by {r.ownerName}, home team {r.homeTeamName}
+                            </span>
+                          </span>
+                          {confirm !== id && (
+                            <button
+                              type="button"
+                              className="btn btn-quiet btn-sm h-11 md:h-8"
+                              disabled={busy !== null}
+                              aria-label={`Remove ${r.accountName} from ${r.workspaceName}`}
+                              onClick={() => setConfirm(id)}
+                              data-testid="foreign-runner-remove"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        {confirm === id && (
+                          <InlineConfirm
+                            testId="foreign-runner-remove-confirm"
+                            confirmTestId="foreign-runner-remove-yes"
+                            question={`Remove ${r.accountName} from ${r.workspaceName}? That runner stops taking work from this workspace.`}
+                            confirmLabel="Remove"
+                            busyLabel="Removing…"
+                            busy={busy === id}
+                            disabled={busy !== null}
+                            onKeep={() => setConfirm(null)}
+                            onConfirm={() => void removeForeign(r)}
+                          />
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </details>
+            ))}
+          </div>
         )}
       </Section>
     </div>

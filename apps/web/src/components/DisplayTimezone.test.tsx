@@ -44,7 +44,7 @@ for (const processTz of ['UTC', 'Pacific/Auckland']) {
           />
         </DisplayTimezoneProvider>,
       );
-      expect(html).toContain('Iteration 1');
+      expect(html).toContain('Attempt 1');
       expect(html).toContain('Sep 24, 2026, 7:55:46 AM EDT');
       expect(visibleText(html)).not.toContain('11:55:46');
       expect(visibleText(html)).not.toContain('9/24/2026');

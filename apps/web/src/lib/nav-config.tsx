@@ -82,14 +82,16 @@ export interface HealthNavItem {
   operatorOnly?: boolean;
   /** Only people holding view_team_usage in the active team see this item. */
   teamAdminOnly?: boolean;
+  /** A core workflow: the visual-QA manifest must cover it (visual-qa-routes.test.ts). */
+  core?: boolean;
 }
 
 export const HEALTH_INDEX_HREF = '/app/health';
 
 export const HEALTH_NAV: readonly HealthNavItem[] = [
-  { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF },
+  { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF, core: true },
   { id: 'failures', label: 'Failures', href: '/app/health/failures' },
-  { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners' },
+  { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners', core: true },
   { id: 'queue', label: 'Queue', href: '/app/health/queue' },
   { id: 'estimates', label: 'Estimates', href: '/app/health/estimates' },
   { id: 'usage', label: 'Usage', href: '/app/health/usage' },
@@ -110,6 +112,9 @@ export function healthItemFor(pathname: string): HealthNavItem | null {
 /** `/app/workspaces/:id/memory` — a workspace sub-page that needs a phone title and a way back. */
 const WORKSPACE_MEMORY_PATH = /^\/app\/workspaces\/([^/]+)\/memory$/;
 
+/** The specs hub, a workspace's specs, a spec and the approvals list: they open on the same header, not a blank band. Approve and retire are forms with their own spacing. */
+const SPECS_PATH = /^\/app\/(specs(\/approvals|\/[^/]+)?|workspaces\/[^/]+\/specs)\/?$/;
+
 /**
  * Top-level pages get a mobile header (title + team switcher + account menu).
  * Detail pages return null — they render their own headers.
@@ -120,7 +125,7 @@ export function mobilePageTitle(pathname: string, opts: { billing?: boolean } = 
   if (pathname === '/app/missions') return 'Missions';
   if (pathname === '/app/missions/plan') return 'Plan';
   if (pathname === '/app/releases') return 'Releases';
-  if (pathname === '/app/specs') return 'Specs';
+  if (SPECS_PATH.test(pathname)) return 'Specs';
   if (pathname === '/app/workspaces') return 'Workspaces';
   if (pathname === '/app/tasks') return 'Activity';
   if (pathname === '/app/team') return 'Team';

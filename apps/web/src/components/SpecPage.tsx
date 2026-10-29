@@ -681,7 +681,11 @@ export default function SpecPage({ view }: { view: Ok }) {
       ) : null}
       <div ref={article} className="[&_h2]:scroll-mt-20 md:[&_h2]:scroll-mt-6">
         <Card as="article" className="md:p-8" data-testid="spec-page-body" aria-label={`Revision ${view.reading.revision} of the spec`}>
-          {rendered}
+          {body.trim() ? rendered : (
+            <p className="text-body text-text-secondary" data-testid="spec-page-body-empty" role="status">
+              This revision has no text to show. Either it was saved empty or it could not be loaded; reload the page to try again.
+            </p>
+          )}
         </Card>
       </div>
     </>

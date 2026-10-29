@@ -77,7 +77,7 @@ describe('mobilePageTitle', () => {
   it('names the billing page the way its sub-nav entry does: Budgets while billing is off', () => {
     expect(mobilePageTitle('/app/settings/billing', { billing: true })).toBe('Billing and budgets');
     expect(mobilePageTitle('/app/settings/billing', { billing: false })).toBe('Budgets');
-    expect(mobilePageTitle('/app/settings/integrations', { billing: false })).toBe('Integrations');
+    expect(mobilePageTitle('/app/settings/integrations', { billing: false })).toBe('Repos and storage');
   });
 
   it('titles every primary nav surface so the mobile header renders there', () => {
@@ -89,6 +89,10 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/missions/plan')).toBe('Plan');
     expect(mobilePageTitle('/app/releases')).toBe('Releases');
     expect(mobilePageTitle('/app/specs')).toBe('Specs');
+    expect(mobilePageTitle('/app/specs/abc')).toBe('Specs');
+    expect(mobilePageTitle('/app/specs/approvals')).toBe('Specs');
+    expect(mobilePageTitle('/app/workspaces/ws-1/specs')).toBe('Specs');
+    expect(mobilePageTitle('/app/specs/abc/approve')).toBeNull();
     expect(mobilePageTitle('/app/tasks')).toBe('Activity');
     expect(mobilePageTitle('/app/team')).toBe('Team');
     expect(mobilePageTitle('/app/health')).toBe('Health');

@@ -88,7 +88,7 @@ function RowHead({ row }: { row: Pick<CheckRow, 'name' | 'state' | 'result'> }) 
   const g = GLYPH[row.state];
   return (
     <>
-      <span aria-hidden="true" className={`w-4 shrink-0 text-center ${g.cls}`}>{g.glyph}</span>
+      <span aria-hidden="true" className={`w-4 shrink-0 text-center leading-none ${g.cls}`}>{g.glyph}</span>
       <span className="w-28 shrink-0 font-medium text-text-primary">{row.name}</span>
       <span className="min-w-0 flex-1 text-text-secondary [overflow-wrap:anywhere]">
         <span className="sr-only">{g.label}: </span>{row.result}
@@ -108,7 +108,7 @@ function rowDetail(row: CheckRow, p: { findings: Findings; findingsUnavailable: 
   return parts.length ? parts : null;
 }
 
-const ROW_CLS = 'flex min-h-11 items-center gap-3 py-2 text-body';
+const ROW_CLS = 'flex min-h-11 items-baseline gap-3 py-2 text-body';
 
 export default function TaskChecks({
   checks,

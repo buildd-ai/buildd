@@ -157,7 +157,6 @@ const OWNER_LABELS: Record<OccupancyOwner, string> = { mine: 'Yours', others: 'T
 function OwnerSplit({ by, coverage }: { by: OccupancyBreakdown; coverage?: OccupancyCoverage }) {
   const gaps = coverage ? [
     coverage.ownerMissing > 0 && `${coverage.ownerMissing} of ${coverage.total} have no recorded owner`,
-    coverage.runnerMissing > 0 && `${coverage.runnerMissing} ran on a runner with no recorded owner`,
   ].filter(Boolean) : [];
   return (
     <div className="mb-3">
@@ -168,7 +167,7 @@ function OwnerSplit({ by, coverage }: { by: OccupancyBreakdown; coverage?: Occup
       </div>
       {gaps.length > 0 && (
         <p data-testid="occupancy-coverage-note" className="mt-2 text-meta text-text-muted">
-          Of {coverage!.total} runner jobs: {gaps.join('; ')}.
+          {gaps.join('; ')}.
         </p>
       )}
     </div>
@@ -269,13 +268,12 @@ function LevelChart({ series, avg, peak, height, hover, setHover, label, tone }:
  * out: on paused runners (online, but they start nothing new) and on offline ones.
  */
 export function slotsNowNote(slots: FleetSlotCounts): string {
-  const minutes = Math.round(slots.windowMs / 60_000);
-  const parts = [`Now: runners that checked in within ${minutes} minute${minutes === 1 ? '' : 's'}`];
+  const parts: string[] = [];
   const held = slots.online - slots.schedulable;
   if (held > 0) parts.push(`${held} on paused runners`);
   const offline = slots.configured - slots.online;
   if (offline > 0) parts.push(`${offline} more on offline runners`);
-  return `${parts.join(' · ')}.`;
+  return parts.length > 0 ? `${parts.join(' · ')}.` : '';
 }
 
 /** The charts for one loaded window; no fetching, so it renders in a test. */
@@ -308,7 +306,7 @@ export function OccupancyPlot({ series, capacityNow, busyNow, slots }: { series:
         <Metric label="In use now" value={String(busyNow)} />
         <Metric label="Slots online" value={String(capacityNow)} testId="occupancy-slots-online" />
       </div>
-      {slots && <p data-testid="occupancy-now-note" className="-mt-1 mb-3 text-meta text-text-muted">{slotsNowNote(slots)}</p>}
+      {slots && slotsNowNote(slots) && <p data-testid="occupancy-now-note" className="-mt-1 mb-3 text-meta text-text-muted">{slotsNowNote(slots)}</p>}
       {noHistory ? (
         <p data-testid="occupancy-empty" className="py-2 text-body text-text-muted">No agents ran in the {words}.</p>
       ) : (<>

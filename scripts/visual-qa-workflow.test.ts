@@ -27,7 +27,7 @@ const step = (name: RegExp) => {
 describe('visual-qa.yml dispatch contract', () => {
   test('workflow_dispatch exposes routes / viewport / mission_id / task_id / judge', () => {
     const inputs = on.workflow_dispatch?.inputs ?? {};
-    for (const k of ['routes', 'plan', 'viewport', 'mission_id', 'task_id']) {
+    for (const k of ['routes', 'plan', 'viewport', 'mission_id', 'task_id', 'spec_id']) {
       expect(inputs[k]?.type).toBe('string');
       expect(inputs[k]?.required).toBe(false);
     }
@@ -42,6 +42,7 @@ describe('visual-qa.yml dispatch contract', () => {
     expect(capture.env.QA_VIEWPORT).toContain('inputs.viewport');
     expect(capture.env.QA_MISSION_ID).toContain('inputs.mission_id');
     expect(capture.env.QA_TASK_ID).toContain('inputs.task_id');
+    expect(capture.env.QA_SPEC_ID).toContain('inputs.spec_id');
     expect(capture.run).not.toContain('inputs.');
   });
 
