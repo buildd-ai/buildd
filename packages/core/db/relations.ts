@@ -178,10 +178,6 @@ export const relations = defineRelations(schema, (r) => ({
     team: r.one.teams({ from: r.secrets.teamId, to: r.teams.id, optional: false }),
     account: r.one.accounts({ from: r.secrets.accountId, to: r.accounts.id }),
     workspace: r.one.workspaces({ from: r.secrets.workspaceId, to: r.workspaces.id }),
-    lease: r.many.credentialLeases({ from: r.secrets.id, to: r.credentialLeases.credentialId }),
-  },
-  credentialLeases: {
-    credential: r.one.secrets({ from: r.credentialLeases.credentialId, to: r.secrets.id, optional: false }),
   },
   notificationPreferences: {
     team: r.one.teams({ from: r.notificationPreferences.teamId, to: r.teams.id, optional: false }),

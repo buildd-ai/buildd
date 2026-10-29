@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   boardNeedsYouCount,
+  buildBoardCells,
   buildMissionBoard,
   concurrencyBins,
   formatAge,
@@ -13,6 +14,7 @@ import {
   type MissionBoardInput,
 } from './mission-board';
 import { boardTaskLabel } from './mission-board-label';
+import { overviewProgress } from './mission-overview';
 import { pickTaskView } from './task-view-pick';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { WORK_KIND_GLYPHS } from './task-presentation';
@@ -378,6 +380,24 @@ describe('helpers', () => {
     const base = { id: 'x', title: 'feat(x): y', status: 'pending', createdAt: new Date(T0).toISOString(), workers: [] };
     expect(toBoardTaskInput({ ...base, contextDigest: { loopWebhookWait: { prNumber: 7 } } }).loopWebhookWait).toBe(true);
     expect(toBoardTaskInput(base).loopWebhookWait).toBe(false);
+  });
+
+  // Navigation R-12: mission-level checks are never bar cells, so the
+  // deliverable-role markers must survive the board conversion.
+  it('forwards the task context, or the page\'s context digest, so helper markers survive (R-12)', () => {
+    const base = { id: 'x', title: '[final verification] Mission', status: 'in_progress', createdAt: new Date(T0).toISOString(), workers: [] };
+    expect(toBoardTaskInput({ ...base, context: { finalVerification: {} } }).context).toEqual({ finalVerification: {} });
+    expect(toBoardTaskInput({ ...base, contextDigest: { specCriterionCheck: {} } }).context).toEqual({ specCriterionCheck: {} });
+    expect(toBoardTaskInput(base).context).toBeNull();
+    const cells = buildBoardCells({
+      tasks: [
+        toBoardTaskInput({ ...base, id: 'b', title: 'feat: build' }),
+        toBoardTaskInput({ ...base, id: 'fv', context: { finalVerification: {} } }),
+        toBoardTaskInput({ ...base, id: 'cc', title: 'Check spec criterion R-3', contextDigest: { specCriterionCheck: {} } }),
+      ],
+      externalDeps: [],
+    });
+    expect(overviewProgress(cells)).toHaveLength(1);
   });
 
   // The board, the mission sheet and the task page show one worker per task:

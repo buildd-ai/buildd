@@ -330,7 +330,7 @@ $f$;
 -- a page, and most of it is secret.
 -- ---------------------------------------------------------------------------
 
-DELETE FROM secrets;             -- cascades credential_leases
+DELETE FROM secrets;
 -- Evidence storage: backend configuration holds S3 bucket details and
 -- evidence objects hold real bucket paths; wiped like credentials.
 DELETE FROM evidence_objects;    -- cascades to anything referencing objects
@@ -488,7 +488,6 @@ UPDATE accounts a SET
   api_key = 'bld_scrubbed_' || replace(a.id::text, '-', ''),
   api_key_prefix = 'bld_scr',
   github_id = NULL,
-  oauth_token = NULL,
   seat_id = NULL
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM accounts) s WHERE a.id = s.id;
 
