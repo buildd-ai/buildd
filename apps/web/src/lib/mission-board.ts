@@ -810,7 +810,7 @@ export function buildBoardCells(
   // shared adjacency, judged by the claim gate on the raw id each names (an
   // attempt's own row, another mission's task), then folded onto its cell.
   const skipped = new Set(ordered.filter(r => deriveFeedTaskState(r).state === 'skipped').map(r => r.task.id));
-  const cellRows = ordered.filter(r => !skipped.has(r.task.id));
+  const liveRows = ordered.filter(r => !skipped.has(r.task.id));
   const externalById = new Map((input.externalDeps ?? []).flatMap(d => (d.id ? [[d.id, d] as const] : [])));
   const gateRow = (id: string): AdjacencyGateRow | undefined => {
     const own = allById.get(id);
@@ -820,11 +820,15 @@ export function buildBoardCells(
     return undefined;
   };
   const adjacency = buildMissionAdjacency(
-    cellRows.map(r => ({ ...r.task, workers: [] })),
+    liveRows.map(r => ({ ...r.task, workers: [] })),
     { lookup: gateRow, resolveId: id => rowIdFor.get(id) ?? id, releasedBy: releasedByOf(input.gateFacts) },
   );
-  const reach = cellRows.map(r => ({ id: r.task.id, dependsOn: adjacency.blockersOf.get(r.task.id)!.map(e => e.id) }));
+  const reach = liveRows.map(r => ({ id: r.task.id, dependsOn: adjacency.blockersOf.get(r.task.id)!.map(e => e.id) }));
 
+  // Only build deliverables are cells (Navigation R-12/AC-5, as mission-overview does):
+  // audits, final verification, spec-criterion checks, fixes and refreshes feed Verify.
+  // They still take part in the adjacency above, so ordering and gates see them.
+  const cellRows = liveRows.filter(r => r.deliverableRole === 'build');
   const tasks: Record<string, BoardTask> = {};
   for (const r of cellRows) {
     const t = r.task;
