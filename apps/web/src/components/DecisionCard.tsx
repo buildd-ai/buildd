@@ -39,6 +39,8 @@ import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/sub
 import { askedAgo, type DecisionOption, type DecisionView } from '@/lib/needs-you-card';
 import { waitsFooter, waitsSummary } from '@buildd/core/question-waits';
 import WaitsParts from '@/components/WaitsParts';
+import type { AnswerSubmitState } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
+import { announceAnswered, useAnsweredElsewhere } from '@/lib/decision-answered-elsewhere';
 
 export interface DecisionCardProps {
   view: DecisionView;
@@ -56,12 +58,23 @@ export interface DecisionCardProps {
   pageMissionId?: string;
   /** Extra attributes on the article (a surface's own test id). */
   testId?: string;
+  /** A submission the host owns, so the collapsed answer outlives the refetch that drops the question. */
+  submission?: AnswerSubmitState;
 }
 
 // `.btn` is one nowrap line; an option carries its effect too, so it wraps inside the card on a phone.
 const PRIMARY = 'btn btn-ink h-auto min-h-11 min-w-0 max-w-full whitespace-normal flex-col items-start gap-0.5 px-3.5 py-2 text-left';
 const SECONDARY = 'btn h-auto min-h-11 min-w-0 max-w-full whitespace-normal flex-col items-start gap-0.5 px-3.5 py-2 text-left';
 const TEXT_BUTTON = 'inline-flex min-h-11 items-center text-body text-text-secondary underline-offset-4 hover:text-text-primary hover:underline md:min-h-0';
+
+/** `just now` under a minute, else `4m ago`, `2h ago`. */
+function answeredWhen(at: number, now: number): string {
+  const m = Math.floor(Math.max(0, now - at) / 60_000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+}
 
 function useNow(serverNow: number): number {
   const [now, setNow] = useState(serverNow);
@@ -127,7 +140,7 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
 /** How long an answer is held before it is sent, so Undo is real. */
 export const UNDO_MS = 5000;
 
-export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNow, pageMissionId, visualAct, testId, undoMs = UNDO_MS }: DecisionCardProps) {
+export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNow, pageMissionId, visualAct, testId, submission, undoMs = UNDO_MS }: DecisionCardProps) {
   const router = useRouter();
   const now = useNow(serverNow);
   const [more, setMore] = useState(false);
@@ -139,13 +152,17 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
   const [noteSending, setNoteSending] = useState<string | null>(null);
 
   const worker = view.answer.kind === 'worker' ? view.answer : null;
-  const submit = useAnswerSubmit({
+  const ownSubmit = useAnswerSubmit({
     workerId: worker?.workerId ?? null,
     taskId: worker?.taskId ?? null,
     noteId: worker?.noteId ?? null,
     resetKey: view.key,
     onAnswered: (o) => { onAnswered?.(o.answer); router.refresh(); },
   });
+  const submit = submission ?? ownSubmit;
+  const self = useId();
+  const elsewhere = useAnsweredElsewhere(view.key, self);
+  const [chosenAt, setChosenAt] = useState<number | null>(null);
 
   const answerNote = useCallback(async (label: string) => {
     if (view.answer.kind !== 'note' || noteSending) return;
@@ -238,11 +255,11 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
   }, [view.answer, noteSending, onAnswered, router]);
 
   const commit = useCallback((label: string) => {
-    if (view.answer.kind === 'worker') void submit.submit(label);
+    if (view.answer.kind === 'worker') void submit.submit(label, { noteId: worker?.noteId ?? null });
     else if (view.answer.kind === 'note') void answerNote(label);
     else if (view.answer.kind === 'visual') void answerVisual(label);
     else if (view.answer.kind === 'criteria') void (view.options.some(o => o.label === label) ? waive(label) : fileAnswer(label));
-  }, [view.answer.kind, view.options, submit, answerNote, answerVisual, waive, fileAnswer]);
+  }, [view.answer.kind, view.options, submit, worker, answerNote, answerVisual, waive, fileAnswer]);
 
   // The send is held for UNDO_MS so Undo cancels a request that never left, rather than
   // pretending to retract an answer the worker, note or task already has.
@@ -268,6 +285,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     // Opening the review is navigation, not an answer: nothing to hold.
     if (view.answer.kind === 'visual' && label === 'Review screens') { commit(label); return; }
     pendingRef.current = { label, timer: setTimeout(flushPending, undoMs) };
+    setChosenAt(Date.now());
     setPending(label);
   }, [view.answer.kind, commit, flushPending, undoMs]);
 
@@ -301,6 +319,12 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
   // Once answered, focus moves to the next item that still needs the person.
   const isAnswered = chosen != null;
   useEffect(() => {
+    if (!isAnswered) return;
+    setChosenAt(at => at ?? Date.now());
+    // Held for Undo is not yet an answer: tell the other pages once it is committed.
+    if (pending == null) announceAnswered(view.key, chosen ?? '', self);
+  }, [isAnswered, chosen, view.key, pending, self]);
+  useEffect(() => {
     if (!isAnswered || answeredRef.current) return;
     answeredRef.current = true;
     const el = cardRef.current;
@@ -316,15 +340,25 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     clearTimeout(p.timer);
     pendingRef.current = null;
     setPending(null);
+    setChosenAt(null);
   }, []);
 
+  if (chosen == null && elsewhere) {
+    return (
+      <article ref={cardRef} data-testid={testId ?? 'decision-card'} data-kind={view.kind} data-answered="true" data-elsewhere="true" className="flex min-w-0 flex-col gap-1 border-t border-[var(--line-soft)] py-3 text-body">
+        <p className="text-text-primary [overflow-wrap:anywhere]">Answered on {elsewhere.device} · <span className="font-semibold">{elsewhere.label}</span></p>
+      </article>
+    );
+  }
   if (chosen != null) {
+    const when = chosenAt != null ? answeredWhen(chosenAt, now) : null;
     const lines = submit.outcome ? answerOutcomeLines(submit.outcome) : null;
     const already = submit.outcome?.kind === 'already_answered';
     return (
       <article ref={cardRef} data-testid={testId ?? 'decision-card'} data-kind={view.kind} data-answered="true" className="flex min-w-0 flex-col gap-1 border-t border-[var(--line-soft)] py-3 text-body">
         <p className="flex items-center gap-1 text-text-primary [overflow-wrap:anywhere]">
           <span>{already ? 'Already answered' : 'You chose'} <span className="font-semibold">{chosen}</span> ·</span>
+          {pending == null && when && <span data-testid="decision-answered-when" className="text-text-muted">{when}</span>}
           {pending != null && (
             <button
               type="button"

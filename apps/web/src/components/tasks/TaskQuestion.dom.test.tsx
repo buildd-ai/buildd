@@ -14,7 +14,13 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/tasks/t1' });
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+
+mock.module('next/navigation', () => ({
+  useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
+  usePathname: () => '/app/tasks/t1',
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -118,9 +124,10 @@ describe('TaskQuestion', () => {
     expect(container.textContent).not.toContain('[object Object]');
   });
 
-  it('is the page hero at full size and a card when compact', () => {
+  it('is the shared decision card at full size and a card when compact', () => {
     render({ variant: 'full', testId: 'tq' });
-    expect(q('[data-testid="tq"]')?.dataset.density).toBe('hero');
+    expect(q('[data-testid="tq"]')?.dataset.kind).toBe('decision');
+    expect(q('[data-testid="tq"]')?.dataset.density).toBeUndefined();
     render({ variant: 'compact', testId: 'tq' });
     expect(q('[data-testid="tq"]')?.dataset.density).toBe('feed');
   });
