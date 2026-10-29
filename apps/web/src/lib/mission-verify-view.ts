@@ -93,8 +93,6 @@ export interface MissionVerifyView {
   /** `18 of 21 met`, or `Not checked` before any group is checked. */
   summary: string;
   allMet: boolean;
-  /** The Re-verify control: set by the page for a mission a person can re-check; absent = no control. */
-  reverify?: { missionId: string; state: 'idle' | 'queued' | 'running' };
 }
 
 const UNMET_WORDS: Record<Exclude<Standing, 'pass' | 'waived'>, UnmetResult> = {

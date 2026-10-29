@@ -24,7 +24,6 @@ import Card from '@/components/ui/Card';
 import CheckRowView, { CheckIcon } from '@/components/ui/CheckRow';
 import type { DeliveryCheckView, DeliveryView } from '@/lib/mission-delivery-checks';
 import { VISUAL_REVIEW_SKIP_REASONS, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
-import ReverifyButton from './ReverifyButton';
 import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
 import type { CriterionLine } from '@/lib/mission-outcome-spec-view';
@@ -202,7 +201,6 @@ export function RequirementsView({ view }: { view: MissionVerifyView }) {
         <h2 className="text-title font-semibold text-text-primary">Requirements</h2>
         <span className="flex items-baseline gap-3">
           <span data-testid="mission-requirements-summary" className="text-body text-text-muted">{view.summary}</span>
-          {view.reverify && <ReverifyButton missionId={view.reverify.missionId} state={view.reverify.state} />}
         </span>
       </div>
       {view.groups.map(g => <RequirementsGroup key={g.key} g={g} />)}
