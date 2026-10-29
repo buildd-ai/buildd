@@ -60,6 +60,7 @@ import {
 } from '@/lib/task-actions';
 import type { WaitingFor } from '@buildd/shared';
 import type { WaitingKind } from '@buildd/core/waiting-reason';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 /** Phases that mean the agent took the answer and moved on: the confirmation stands down. */
 const MOVED_ON: ReadonlySet<TaskPhase> = new Set<TaskPhase>(['running', 'completed', 'failed', 'plan_review']);
@@ -77,6 +78,8 @@ export interface TaskActionZoneProps {
   /** The host's ⋯ menu carries Start now anyway and Cancel for a held task (R-20); the zone keeps only the line saying what holds it. */
   heldActionsInMenu?: boolean;
   taskId: string;
+  /** The task's mission, so a link to another task keeps the mission back-link. */
+  missionId?: string | null;
   workspaceId: string;
   /** Canonical phase from `deriveTaskPhase`. */
   phase: TaskPhase;
@@ -175,6 +178,7 @@ export default function TaskActionZone({
   framed = true,
   questionShownAbove = false,
   trailing = null,
+  missionId = null,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
   const [retrying, setRetrying] = useState<'same' | 'switch' | null>(null);
@@ -347,7 +351,7 @@ export default function TaskActionZone({
             <p className="font-mono text-meta text-text-secondary [overflow-wrap:anywhere]">{copy.cause}</p>
             <div className="flex flex-wrap items-center gap-2">
               {waitingOn && (
-                <Link href={`/app/tasks/${encodeURIComponent(waitingOn.taskId)}`} data-action="open_failed_dependency" className={SECONDARY_BTN}>
+                <Link href={missionTaskHref({ missionId, taskId: waitingOn.taskId })} data-action="open_failed_dependency" className={SECONDARY_BTN}>
                   Open the failed task
                 </Link>
               )}

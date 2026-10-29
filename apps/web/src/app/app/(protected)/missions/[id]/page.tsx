@@ -961,7 +961,7 @@ async function MissionDetailBody({
   const acceptanceBlock = acceptanceTests.length > 0 || acceptanceHolds.length > 0
     ? <>{acceptanceHolds.length > 0 && <MissionAcceptanceHolds holds={acceptanceHolds} readonly={isTerminal} />}{acceptanceTests.length > 0 && <MissionAcceptanceTests tests={acceptanceTests} />}</>
     : null;
-  const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
+  const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} missionId={mission.id} /> : null;
 
   // The task PRs behind Delivery's count line (spec 072de598 I-23).
   const deliveryTasks = allTasks

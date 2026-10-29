@@ -57,6 +57,23 @@ describe('one task view', () => {
     expect(code(read(join(MISSION_DIR, 'MissionOverview.tsx')))).not.toMatch(/\bFocusCard\b/);
   });
 
+  it('R-1: FocusCard is gone from the whole source tree', () => {
+    expect(existsSync(join(SRC, 'components/ui/FocusCard.tsx'))).toBe(false);
+    const users = sources(SRC).filter(([, text]) => /\bFocusCard\b/.test(code(text))).map(([rel]) => rel);
+    expect(users).toEqual([]);
+  });
+
+  it('R-1: no mission page file hand-builds a task href; they go through missionTaskHref', () => {
+    // These files render links to tasks of a mission, so the link must carry
+    // the mission back-link context. (Links outside the mission page, such as
+    // health, queue, release or schedule lists, name no mission and may use
+    // the plain task path.)
+    const handBuilt = sources(MISSION_DIR)
+      .filter(([, text]) => /['"`]\/app\/tasks\/(\$\{|['"`])/.test(code(text)))
+      .map(([rel]) => rel);
+    expect(handBuilt).toEqual([]);
+  });
+
   it('AC-1: missionTaskHref opens the task page from every origin', () => {
     for (const from of [undefined, 'home', 'missions', 'initiative'] as const) {
       const href = missionTaskHref({ missionId: 'm1', taskId: 't1', from, initiativeId: 'i1' });

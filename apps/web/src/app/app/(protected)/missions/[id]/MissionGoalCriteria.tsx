@@ -14,6 +14,7 @@ import {
 } from '@/lib/goal-criteria-panel';
 import Switch from '@/components/ui/Switch';
 import OutcomeSpecCriterion from './OutcomeSpecCriterion';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 interface Props {
   missionId: string;
@@ -243,7 +244,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
           ) : null}
           {cs?.workerTaskId && c.type !== 'living_spec' && (
             <a
-              href={`/app/tasks/${cs.workerTaskId}`}
+              href={missionTaskHref({ missionId, taskId: cs.workerTaskId })}
               onClick={(e) => e.stopPropagation()}
               className="inline-block text-meta font-mono text-text-muted hover:text-text-primary underline mt-0.5"
             >

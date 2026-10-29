@@ -21,6 +21,7 @@ import AttemptStrip from './AttemptStrip';
 import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 import type { AttemptStrip as AttemptStripData } from '@/lib/attempt-strip';
 import { TaskTitle } from '@/components/tasks/TaskTitle';
+import { missionTaskHref } from '@/lib/mission-task-href';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -292,10 +293,12 @@ function TaskRow({
   task,
   effectivePolicyTier,
   policyLabel,
+  missionId,
 }: {
   task: CondensedTimelineTask;
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
+  missionId: string;
 }) {
   const { latestWorker } = task;
   const isFailed = task.status === 'failed';
@@ -405,7 +408,7 @@ function TaskRow({
           if (retryTask) {
             const attempt = retryTask.title.match(/\[reviewer retry #(\d+)\]/i)?.[1] ?? '1';
             const taskLink = (
-              <Link href={`/app/tasks/${retryTask.id}`} className="underline hover:text-text-primary">
+              <Link href={missionTaskHref({ missionId, taskId: retryTask.id })} className="underline hover:text-text-primary">
                 retry #{attempt}
               </Link>
             );
@@ -518,16 +521,18 @@ function ChainBlock({
   chain,
   effectivePolicyTier,
   policyLabel,
+  missionId,
 }: {
   chain: ChainUnit<CondensedTimelineTask>;
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
+  missionId: string;
 }) {
   return (
     <div>
-      <TaskRow task={chain.head} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
+      <TaskRow task={chain.head} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} missionId={missionId} />
       {chain.tail.map(task => (
-        <TaskRow key={task.id} task={task} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
+        <TaskRow key={task.id} task={task} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} missionId={missionId} />
       ))}
     </div>
   );
@@ -539,15 +544,17 @@ function ChainList({
   chains,
   effectivePolicyTier,
   policyLabel,
+  missionId,
 }: {
   chains: ChainUnit<CondensedTimelineTask>[];
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
+  missionId: string;
 }) {
   return (
     <div className="space-y-0.5">
       {chains.map(chain => (
-        <ChainBlock key={chain.head.id} chain={chain} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} />
+        <ChainBlock key={chain.head.id} chain={chain} effectivePolicyTier={effectivePolicyTier} policyLabel={policyLabel} missionId={missionId} />
       ))}
     </div>
   );
@@ -631,6 +638,7 @@ function WaveBandedDone({
   effectivePolicyTier,
   policyLabel,
   missionCompleted,
+  missionId,
 }: {
   done: ChainUnit<CondensedTimelineTask>[];
   failed: ChainUnit<CondensedTimelineTask>[];
@@ -638,6 +646,7 @@ function WaveBandedDone({
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
   missionCompleted: boolean;
+  missionId: string;
 }) {
   const [expandedBands, setExpandedBands] = useState<Record<string, boolean>>(
     () => (missionCompleted ? { _all: true } : {}) as Record<string, boolean>,
@@ -688,6 +697,7 @@ function WaveBandedDone({
                 <GroupSection title={band.label} taskCount={band.items.length} />
                 <ChainList
                   chains={bandChains}
+                  missionId={missionId}
                   effectivePolicyTier={effectivePolicyTier}
                   policyLabel={policyLabel}
                 />
@@ -729,6 +739,7 @@ function WaveBandedDone({
               <SectionLabel>Failed</SectionLabel>
               <ChainList
                 chains={failed}
+                missionId={missionId}
                 effectivePolicyTier={effectivePolicyTier}
                 policyLabel={policyLabel}
               />
@@ -842,6 +853,7 @@ function TimelineView({
           <SectionLabel>Questions for you</SectionLabel>
           <ChainList
             chains={waitingOnYou}
+            missionId={missionId}
             effectivePolicyTier={effectivePolicyTier}
             policyLabel={policyLabel}
           />
@@ -856,6 +868,7 @@ function TimelineView({
           </SectionLabel>
           <ChainList
             chains={runningSorted}
+            missionId={missionId}
             effectivePolicyTier={effectivePolicyTier}
             policyLabel={policyLabel}
           />
@@ -868,6 +881,7 @@ function TimelineView({
           <SectionLabel>Next queued</SectionLabel>
           <ChainList
             chains={queuedVisible}
+            missionId={missionId}
             effectivePolicyTier={effectivePolicyTier}
             policyLabel={policyLabel}
           />
@@ -878,6 +892,7 @@ function TimelineView({
                 <div className="overflow-hidden transition-all duration-200 ease-out">
                   <ChainList
                     chains={queuedOverflow}
+                    missionId={missionId}
                     effectivePolicyTier={effectivePolicyTier}
                     policyLabel={policyLabel}
                   />
@@ -912,6 +927,7 @@ function TimelineView({
           <SectionLabel>Waiting on dependencies</SectionLabel>
           <ChainList
             chains={blocked}
+            missionId={missionId}
             effectivePolicyTier={effectivePolicyTier}
             policyLabel={policyLabel}
           />
@@ -927,6 +943,7 @@ function TimelineView({
           effectivePolicyTier={effectivePolicyTier}
           policyLabel={policyLabel}
           missionCompleted={missionCompleted}
+          missionId={missionId}
         />
       )}
 
