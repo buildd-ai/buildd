@@ -315,6 +315,22 @@ describe('resolveDispatch', () => {
       .toEqual({ decision: 'skip', why: 'not_in_custody:pending' });
   });
 
+  it('a claim lost to the publish ack re-reads the row instead of answering not_in_custody', async () => {
+    seed(base);
+    const d = testDeps(base);
+    const row = custodyRow(base);
+    let acked = false;
+    const deps: ResolveDeps = {
+      ...d,
+      // The ack lands between the first read and the claim: the claim matches nothing.
+      loadRow: async () => (acked ? row : { ...row, status: 'pending', handedOffAt: null }),
+      claimCustody: async () => { acked = true; return false; },
+    };
+    expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('webhook') }, deps)).body).toMatchObject({ decision: 'deliver' });
+    acked = false;
+    expect((await relayDispatch({ id: ROW_ID, attempt: 1, target: T('runner-wake') }, deps)).body).toMatchObject({ outcome: 'delivered' });
+  });
+
   it('a row out of custody, a non-work intent, or a gone task answers skip so Dispatch closes it', async () => {
     seed(base);
     const d = testDeps(base);
