@@ -135,7 +135,7 @@ describe('MissionOverview, 11 tasks with delivery', () => {
 
   it('the summary line is build counts only; merged tasks fold into one row', () => {
     expect(out).toMatch(/data-testid="mission-build-summary"[^>]*>3 of 11 merged/);
-    expect(out).toContain('Merged tasks ›');
+    expect(out).toMatch(/data-testid="mission-merged-toggle"[^>]*>(?:<[^>]*>)*\d+ merged ›/);
     expect(out).not.toMatch(/criteri/);
   });
 });
@@ -230,7 +230,7 @@ describe('MissionOverview stages (Navigation R-15, AC-9; spec f7f67f1a R-11 to R
     expect(rail(healthy)).toEqual(['build:done', 'verify:done', 'deliver:done']);
     expect(healthy).toContain('data-stage="deliver"');
     // The catalog's word for the delivered state (terms.ts `mission.done`), then the branch.
-    expect(healthy).toMatch(/data-testid="mission-delivered-line"[^>]*>.*Done · merged into dev/);
+    expect(healthy).toMatch(/data-testid="mission-delivered-line"[^>]*>.*Delivered into dev/);
     expect(healthy).toContain('data-testid="mission-requirements-fold"');
     expect(healthy).toMatch(/Requirements.*\d+ of \d+ met ›/);
     expect(healthy).not.toContain('data-testid="mission-build-summary"');

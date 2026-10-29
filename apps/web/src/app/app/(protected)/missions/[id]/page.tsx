@@ -92,7 +92,6 @@ import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import { loadMissionEvidence } from '@/lib/specs/mission-evidence';
 import { missionVerifyView } from '@/lib/mission-verify-view';
-import { readReverifyState } from '@/lib/specs/mission-reverify-state';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection, missionReleaseRow } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionReleaseStatus, missionTrunkMergedAt } from '@/lib/mission-delivery';
@@ -1275,7 +1274,7 @@ async function MissionDetailBody({
     : [];
   // Verify's evidence (R-17) loads in the same wait: a failed read costs the links, never the counts.
   const specEntries = (goalCriteriaStateFull?.criteria ?? []).flatMap(e => (e.spec ? [{ standings: e.spec.standings }] : []));
-  const [waitsByTask, verifyEvidence, reverifyState] = await Promise.all([
+  const [waitsByTask, verifyEvidence] = await Promise.all([
     decisionTaskIds.length > 0
       ? loadQuestionWaitsFor(decisionTaskIds, { kind: 'person', userId: user.id }).catch(() => new Map())
       : Promise.resolve(new Map()),
@@ -1285,9 +1284,6 @@ async function MissionDetailBody({
           return null;
         })
       : Promise.resolve(null),
-    layout === 'board' && !['completed', 'archived'].includes(mission.status)
-      ? readReverifyState(id).catch(() => 'idle' as const)
-      : Promise.resolve('idle' as const),
   ]);
   const criteriaFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
   const criteriaFailingCriterion = criteriaFailingState ? goalCriteria[criteriaFailingState.index] ?? null : null;
@@ -1328,7 +1324,6 @@ async function MissionDetailBody({
     ? missionVerifyView({ missionId: id, criteria: goalCriteria, state: goalCriteriaStateFull, titles: outcomeSpecTitles, evidence: verifyEvidence, now: renderedAt })
     : null;
   // Re-verify: offered on a live mission with a selected spec, reading whether its batched check run is queued or running.
-  if (verifyView && !isTerminal && verifyView.groups.length > 0) verifyView.reverify = { missionId: id, state: reverifyState };
   // Ask is the docked panel, not a header link (Navigation R-3, R-21).
   // The mission's visual review as a mission command (never the task composer),
   // started from ⋯ on any open mission with a workspace to run it in; its screens
