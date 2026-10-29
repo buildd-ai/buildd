@@ -90,6 +90,8 @@ import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence
 import { evidenceViewOf } from '@/lib/task-evidence';
 import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import TaskPageActionZone from './TaskPageActionZone';
+import { taskActionSet } from '@/lib/task-actions';
+import HeldTaskMenuActions from './HeldTaskMenuActions';
 import { auditTaskIdFor, loadTaskFailure, taskPageTrouble } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadServiceStatus } from '@/lib/service-status-loader';
@@ -791,6 +793,8 @@ async function TaskDetailPage({
         phase === 'failed' ? failureRaw ?? null : null,
       )
     : null;
+  // Start now anyway and Cancel for a task held by another task live in the ⋯ menu (R-20).
+  const heldByTask = taskActionSet({ phase, isBlocked, backend: null, hasQuestion: false, hasHistory: false, trouble }).includes('start_anyway');
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
@@ -1550,6 +1554,7 @@ async function TaskDetailPage({
                   claimedBy={task.claimedBy ?? null}
                   startAt={task.startAt?.toISOString() ?? null}
                 />
+                {heldByTask && <HeldTaskMenuActions taskId={task.id} workspaceId={task.workspaceId} />}
                 {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
                 {task.externalUrl && (
                   <a
@@ -1684,6 +1689,7 @@ async function TaskDetailPage({
               failureKind={failureKind}
               waitingOn={failureWaitingOn}
               trouble={trouble}
+              heldActionsInMenu
               auditTaskId={auditTaskIdFor(task, failureKind)}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}

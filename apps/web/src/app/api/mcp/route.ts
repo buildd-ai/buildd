@@ -71,7 +71,7 @@ import {
   type GrantWorkspaceResolution,
 } from "@/lib/mcp-grants";
 import type { ToolResult, WorkspaceListing } from "@buildd/core/mcp-tools";
-import { callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
+import { callSubjectWorkspace, callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { isUuid } from '@/lib/uuid';
@@ -1152,7 +1152,8 @@ function grantJsonError(status: number, body: Record<string, unknown>): Response
  *    name), matched among the granted workspaces only;
  *  - else the connection's `?workspace=` / `?repo=`, matched the same way;
  *  - else the workspace of the `?worker=` the session acts as;
- *  - else the only granted workspace.
+ *  - else the only granted workspace;
+ *  - else the granted workspace of the call's taskId, missionId or workerId.
  * Anything else is a structured refusal listing granted workspaces only.
  * The session then acts as that workspace's team account at the user's role
  * there, confined to that workspace, and every internal self-call carries the
@@ -1214,9 +1215,15 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
     const args = call.params?.arguments;
     if (args?.action === 'list_workspaces') continue;
     const { ref, holder } = callWorkspaceRef(args);
-    const r: GrantWorkspaceResolution = ref
+    let r: GrantWorkspaceResolution = ref
       ? resolveGrantWorkspaceRef(choices, ref)
       : connectionDefault ? { kind: 'ok', workspace: connectionDefault } : resolveGrantWorkspaceRef(choices, null);
+    // No workspace named, but a full task, mission or worker id: that id
+    // names its workspace, if it is one the grant covers.
+    if (r.kind === 'required') {
+      const subject = await callSubjectWorkspace(args, choices);
+      if (subject) r = { kind: 'ok', workspace: subject };
+    }
     if (r.kind !== 'ok') { refusal = grantWorkspaceRefusal(r); break; }
     // Downstream sees the resolved id, never the name: no second, wider
     // name lookup can happen behind this one.
@@ -1233,7 +1240,7 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   const readOnly = !grant.scopes.includes('write');
   const instructions = `**Account-level connection:** reaches ${choices.length} workspace${choices.length === 1 ? '' : 's'}${teamCount > 1 ? ` across ${teamCount} teams` : ''}${readOnly ? ', read only' : ''}, as ${grant.actsAs === 'agent' ? 'your agent (person-only actions are refused)' : 'you'}. `
     + (choices.length > 1 && !connectionDefault
-      ? 'Call `list_workspaces`, then pass workspaceId (UUID, owner/repo or name) on every other action; a call without one is refused with the choices, never routed to a default.'
+      ? 'Call `list_workspaces`, then pass workspaceId (UUID, owner/repo or name) on every other action (a full taskId, missionId or workerId names its own); a call without one is refused with the choices, never routed to a default.'
       : `Calls act in "${(connectionDefault ?? choices[0]).name}" unless they pass another workspaceId.`);
 
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
