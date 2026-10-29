@@ -409,6 +409,12 @@ export const accounts = pgTable('accounts', {
   // team: a self-hosted runner key is false and no commercial limit applies to it.
   managedRunner: boolean('managed_runner').default(false).notNull(),
 
+  // Opt-in: this key claims from every workspace its creator can reach now or
+  // later (their teams' open workspaces, and restricted ones where they are
+  // owner or admin), resolved at claim time (lib/claim-order.ts), never copied
+  // into account_workspaces. Off = the per-workspace list only.
+  reachAllWorkspaces: boolean('reach_all_workspaces').default(false).notNull(),
+
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
   totalTasks: integer('total_tasks').default(0).notNull(),

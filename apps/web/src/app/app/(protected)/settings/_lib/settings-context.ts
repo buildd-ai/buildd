@@ -110,6 +110,7 @@ export const RUNNER_ACCOUNT_COLUMNS = {
   createdAt: true,
   // The host-runner toggle: its state, and which team decides it.
   hostRunner: true,
+  reachAllWorkspaces: true,
   teamId: true,
   // Who minted it: they may delete it without manage_team_keys.
   createdByUserId: true,
@@ -130,6 +131,7 @@ export interface RunnerAccountDto {
   budgetResetsAt: Date | string | null;
   createdAt: Date | string | null;
   hostRunner: boolean;
+  reachAllWorkspaces: boolean;
   teamId: string;
   createdByUserId: string | null;
   team: { name: string } | null;
@@ -180,6 +182,7 @@ export async function loadTeamRunnerAccounts(teamId: string): Promise<RunnerAcco
     budgetResetsAt: a.budgetResetsAt ?? null,
     createdAt: a.createdAt ?? null,
     hostRunner: a.hostRunner === true,
+    reachAllWorkspaces: a.reachAllWorkspaces === true,
     teamId: a.teamId,
     createdByUserId: a.createdByUserId ?? null,
     team: a.team ? { name: a.team.name } : null,
