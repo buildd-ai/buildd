@@ -26,6 +26,7 @@ import { taskNotHeld } from '@/app/api/workers/claim/held-gate';
 import { DEP_EDGE_RELEASE_ARMS, type DepEdgeReleaseArm, type DepReleaseArm } from '@/lib/dep-gate-contract';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import type { MissionGateFacts, ReleasedEdge } from '@/lib/mission-board';
+import { derivePendingTaskHold, type PendingHolderFacts } from '@/lib/mission-task-hold';
 
 export type { MissionGateFacts, ReleasedEdge };
 
@@ -178,7 +179,26 @@ export function combineGateFacts(input: {
     }, input.mission);
     if (kind) waitingKinds[p.id] = kind;
   }
-  return { releasedEdges, waitingKinds };
+  const queueWaits = input.queueWaits && input.queueWaits.size > 0 ? Object.fromEntries(input.queueWaits) : undefined;
+  return { releasedEdges, waitingKinds, ...(queueWaits ? { queueWaits } : {}) };
+}
+
+/**
+ * Each pending task's hold cause in words, from the one decision every surface
+ * reads (`derivePendingTaskHold`) over the claim route's own wait. Only a cause
+ * a person can act on is kept: a dependency (the row says it) and plain "next
+ * in line" have none. Pure.
+ */
+export function missionHoldCauses(
+  facts: MissionGateFacts | null | undefined,
+  opts: { now: number; runnerOnline?: boolean | null; holders?: ReadonlyMap<string, PendingHolderFacts> | null },
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [id, wait] of Object.entries(facts?.queueWaits ?? {})) {
+    const h = derivePendingTaskHold({ now: opts.now, wait, holders: opts.holders ?? null, runnerOnline: opts.runnerOnline ?? null });
+    if (h.cause && h.kind !== 'next_in_line' && h.kind !== 'dependency') out[id] = h.cause;
+  }
+  return out;
 }
 
 async function rows<T>(query: SQL): Promise<T[]> {
