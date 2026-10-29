@@ -203,7 +203,7 @@ export function troubleLine(t: TaskTrouble | null): { text: string; on: { taskId
   const name = (on: { title: string | null }) => (on.title?.trim() ? `“${on.title.trim()}”` : 'the task it depends on');
   if (t.kind === 'waiting') return { text: `Waiting on ${name(t.on)}. It starts by itself when that task merges.`, on: t.on, resumesAt: null };
   if (t.kind === 'retrying') {
-    return { text: t.resumesAt ? 'buildd retries this by itself. Resumes at' : 'buildd retries this by itself.', on: null, resumesAt: t.resumesAt };
+    return { text: t.resumesAt ? 'Fixing · buildd retries this by itself. Resumes at' : 'Fixing · buildd retries this by itself.', on: null, resumesAt: t.resumesAt };
   }
   if (t.on) {
     const how = t.cause === 'blocker_cancelled' ? 'was cancelled' : 'failed';
