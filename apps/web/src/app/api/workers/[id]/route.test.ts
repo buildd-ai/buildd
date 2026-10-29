@@ -14733,6 +14733,33 @@ describe('PATCH /api/workers/[id]', () => {
       expect(workerSetCalls.some((u: any) => JSON.stringify(u.verificationEvidence) === JSON.stringify({ ...evidence, reportedVia: 'runner' }))).toBe(true);
     });
 
+    // A mission criterion batch has no agent: the runner's one completing PATCH
+    // is the only copy of its report, and the batch verdicts settle from the
+    // stored row (settleFinishedCheckRuns). The write that makes the worker
+    // terminal is the one that lands first, so the report goes with it, not
+    // with the final write after the completion work.
+    it('stores a criterion batch report in the write that marks the worker completed', async () => {
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker());
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({
+        loopConfig: null,
+        context: { specCriterionBatch: { missionId: 'mission-1', subjectTaskId: 'task-0', headSha: 'a'.repeat(40), checks: [] } },
+      }));
+
+      const report = { conditionType: 'criterion_batch', headSha: 'a'.repeat(40), results: [{ criterionId: 'AC-1', command: 'bun test x', outcome: 'ok', exitCode: 0 }] };
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Checked 1 criterion.', summarySource: 'agent', verificationEvidence: report },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const terminal = workerSetCalls.find((u: any) => u.status === 'completed');
+      expect(terminal?.verificationEvidence).toEqual({ ...report, reportedVia: 'runner' });
+    });
+
     // The agent session holds a per-task token and may PATCH its own worker.
     // Its evidence is stamped as such, whatever it claims, and never replaces
     // the runner's (lib/verification-provenance.ts).
