@@ -35,7 +35,7 @@ export {
  * The lane row `l` still holds: lease running, tenure not spent, and its delivery in the
  * refresh window and not about to need a fix (the package's `holdsLane`).
  */
-function holdingSql(): SQL {
+export function holdingSql(): SQL {
   return sql`(l.lease_until > now() AND l.granted_at > now() - make_interval(secs => ${LANE_MAX_TENURE_MS}::int / 1000.0) AND EXISTS (
     SELECT 1 FROM workflow_deliveries hd
     WHERE hd.id = l.delivery_id
@@ -97,6 +97,7 @@ WHERE id = (
   SELECT e.id FROM workflow_effects e JOIN workflow_deliveries d ON d.id = e.delivery_id
   WHERE e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
     AND d.repo_full_name = ${k.repoFullName}::text AND d.base_ref = ${k.baseRef}::text
+    AND d.state = 'REPAIRING' AND d.state_reason = 'behind'
     AND NOT ${notLandableSoonSql(sql`d`)}
   ORDER BY e.created_at, e.id
   LIMIT 1

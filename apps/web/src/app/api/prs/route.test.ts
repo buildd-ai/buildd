@@ -44,7 +44,7 @@ describe('GET /api/prs', () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(mockListPrs.mock.calls[0][0]).toMatchObject({ workspaceIds: ['ws-a', 'ws-b'], state: 'open' });
-    expect(await res.json()).toMatchObject({ state: 'open', workspaceCount: 2, prs: [] });
+    expect(await res.json()).toMatchObject({ state: 'open', workspaceCount: 2, prs: [], note: expect.stringContaining('dependency bot') });
   });
 
   it('a requested workspace is intersected with reach, never widened', async () => {

@@ -24,7 +24,7 @@ import type {
   LivePr,
   RoundOp,
 } from './commands';
-import { deltaApprovalEligibility, emptyDeltaCarry, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
+import { deltaApprovalEligibility, deltaApprovalSource, emptyDeltaCarry, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
 import {
   addressFindings, applyVerdictToFindings, byRemedyRoute, describeFinding, evidenceRoundFindingIds, isEvidenceRound, isOpenFinding, isTaskId,
   openRequiredFindings, remedyOf, remedyRoute, isRoundFinding,
@@ -2342,8 +2342,20 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
       }
       return toReview({ attempts, effects, evidence: ev });
     }
-    case 'AWAITING_REVIEW':
+    case 'AWAITING_REVIEW': {
+      // A rebase of a PR whose last review approved: the review a newer head is waiting on is for
+      // the same change (the host's compare says so against the approved head), so the approval
+      // stands and the round it superseded ends. Anything else is reviewed as before.
+      const from = cmd.carryForward && d.approvalBasis === 'verdict' ? deltaApprovalSource(c.view) : null;
+      if (from && openRequiredFindings(c.view).length === 0) {
+        return c.apply(key, 'APPROVED', {
+          patch: { approvedHeads: [...d.approvedHeads, h], currentHeadSha: h, stateReason: null, boundAttemptId: null },
+          rounds: c.openRounds().map((r): RoundOp => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded', endReason: 'superseded_by_push' } })),
+          evidence: { ...evidence, carryForward: cmd.carryForward, carriedFrom: from, reviewPending: true },
+        });
+      }
       return toReview();
+    }
     case 'CHANGES_REQUESTED': {
       // The fix tasks this head makes moot, named, so the cancellation never reaches a later one.
       // A row not yet linked to its task (filed, link pending) leaves the role-wide cancel, as before.

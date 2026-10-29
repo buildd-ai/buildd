@@ -76,4 +76,22 @@ describe('landing lane tenure', () => {
     expect(await host.store.laneHolder(k)).toBeNull();
     expect(await acquireLaneOn(host.store, { ...k, deliveryId: b.deliveryId, headSha: 'B1' })).toEqual({ acquired: true });
   });
+  test('a release wakes the oldest parked refresh that is still waiting, not one of a PR that has left the lane', async () => {
+    const host = memoryHost();
+    const a = await (await new Delivery(host, 11).open()).approvedAt('A1');
+    const gone = await (await new Delivery(host, 12).open()).approvedAt('G1');
+    const waiting = await (await new Delivery(host, 13).open()).approvedAt('W1');
+    const store = host.kernel.store;
+    // `gone` parked first, then merged; its pending row was never cleared. `waiting` is still behind.
+    store.deliveries.get(gone.deliveryId)!.state = 'MERGED';
+    store.deliveries.get(waiting.deliveryId)!.state = 'REPAIRING';
+    store.deliveries.get(waiting.deliveryId)!.stateReason = 'behind';
+    const parked = (deliveryId: string, seq: number) => ({
+      id: `e${seq}`, deliveryId, transitionId: `t${seq}`, kind: 'refresh_branch' as const, dedupeKey: `refresh:${seq}`, payload: {},
+      notBefore: '2999-01-01T00:00:00.000Z', status: 'pending' as const, attemptCount: 0, leaseUntil: null,
+      outcome: 'parked:lane_busy:#11', lastError: null, createdAt: store.clock.now(), seq,
+    });
+    store.effectLog.push(parked(gone.deliveryId, 1000), parked(waiting.deliveryId, 1001));
+    expect(await host.store.wakeNextLaneWaiter({ repoFullName: a.repo, baseRef: 'dev' })).toBe(waiting.deliveryId);
+  });
 });

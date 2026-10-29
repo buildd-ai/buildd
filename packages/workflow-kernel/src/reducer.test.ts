@@ -268,6 +268,20 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(dec.patch.approvedHeads).toEqual(['H1', 'H2']);
     expect(dec.idempotencyKey).toBe(`head:${REPO}#7:H1->H2@v5`);
   });
+  test('AWAITING_REVIEW after an approval: a rebase with the same diff keeps the approval; a changed one is reviewed', () => {
+    const approved = R({ id: 'r1', round: 1, headSha: 'H1', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+    const waiting = R({ id: 'r2', round: 2, headSha: 'H2', status: 'queued' });
+    const v = V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, approvedHeads: ['H1'], approvalBasis: 'verdict' }), [approved, waiting]);
+    const dec = applied(h(v, 'H3', { carryForward: 'content_equivalent' }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch.approvedHeads).toEqual(['H1', 'H3']);
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'update', roundId: 'r2', set: expect.objectContaining({ status: 'superseded' }) }));
+    expect(dec.rounds.some((r) => r.op === 'insert')).toBe(false);
+    expect(applied(h(v, 'H3')).toState).toBe('AWAITING_REVIEW');
+    // A review that asked for changes last is not an approval to carry.
+    const rc = V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, approvedHeads: ['H1'], approvalBasis: 'verdict' }), [approved, R({ id: 'r2', round: 2, headSha: 'H2', status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })]);
+    expect(applied(h(rc, 'H3', { carryForward: 'content_equivalent' })).toState).toBe('AWAITING_REVIEW');
+  });
   test('LANDING: aborts landing to a new round when not equivalent', () => {
     expect(applied(h(V(D({ state: 'LANDING', approvedHeads: ['H1'] })))).toState).toBe('AWAITING_REVIEW');
   });

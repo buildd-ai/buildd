@@ -6693,6 +6693,8 @@ describe('GET /api/github/pr', () => {
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error).toBe('PR not found');
+    // A dependency bot's PR is not adopted on its own: a miss says how to track it.
+    expect(data.hint).toContain('request_pr_review');
     expect(data.error).not.toContain('merged');
   });
 

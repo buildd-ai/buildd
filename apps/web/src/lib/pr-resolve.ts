@@ -4,6 +4,7 @@ import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getTeamWorkspaceIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { DEPENDENCY_BOT_UNTRACKED_HINT } from '@/lib/dependency-bot-hint';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -25,7 +26,7 @@ export async function resolveWorkerByPrNumber(
   prNumber: number,
   workspaceId: string | null | undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
+): Promise<{ error: string; status: number; candidates?: string[]; hint?: string } | Record<string, any>> {
   // A grant session or a workspace-restricted key resolves a PR number only
   // among the workspaces it may reach, never across its whole team.
   return resolveWorkerByPrNumberInWorkspaces(constrainToGranted(account, await getTeamWorkspaceIds(account.teamId)), prNumber, workspaceId);
@@ -43,7 +44,7 @@ export async function resolveWorkerByPrNumberInWorkspaces(
   prNumber: number,
   workspaceId: string | null | undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
+): Promise<{ error: string; status: number; candidates?: string[]; hint?: string } | Record<string, any>> {
   if (wsIds.length === 0) {
     return { error: 'No workspaces found for account', status: 403 };
   }
@@ -88,7 +89,8 @@ export async function resolveWorkerByPrNumberInWorkspaces(
   });
 
   if (matchingWorkers.length === 0) {
-    return { error: 'PR not found', status: 404 };
+    // `error` stays the string callers match on (explain); `hint` says why a real PR can be missing.
+    return { error: 'PR not found', status: 404, hint: DEPENDENCY_BOT_UNTRACKED_HINT };
   }
 
   const distinctWorkspaceIds = new Set(matchingWorkers.map((w) => w.workspaceId));
@@ -117,7 +119,7 @@ export async function resolveOpenWorkerForUser(
   prNumber: number,
   workspaceId: string | null | undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
+): Promise<{ error: string; status: number; candidates?: string[]; hint?: string } | Record<string, any>> {
   const wsIds = await getUserWorkspaceIds(userId);
   if (wsIds.length === 0) {
     return { error: 'No workspaces found', status: 403 };
