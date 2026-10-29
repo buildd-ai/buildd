@@ -19,6 +19,8 @@ import QuestionHero from '@/app/app/(protected)/tasks/[id]/QuestionHero';
 import { unifyWorkerQuestion, type BriefedWaitingFor, type QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import { answerOutcomeLines, type AnswerOutcome } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
 import { useAnswerSubmit, type AnswerSubmitFailure, type AnswerSubmitState } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
+import DecisionCard from '@/components/DecisionCard';
+import { decisionFromQuestion } from '@/lib/needs-you-card';
 import { useQuestionWaits } from '@/components/use-question-waits';
 import type { QuestionWaits } from '@buildd/core/question-waits';
 
@@ -37,6 +39,8 @@ export interface TaskQuestionProps {
   variant?: 'full' | 'compact';
   /** Short age, e.g. "7s ago". */
   askedAgo?: string | null;
+  /** When it was asked, epoch ms: the full variant's decision card ticks its own age from it. */
+  askedAt?: number | null;
   /** Extra eyebrow clause, e.g. "paused". */
   stateNote?: string | null;
   /** Extra eyebrow content on the right (the task's scope). */
@@ -69,6 +73,7 @@ export default function TaskQuestion({
   role = null,
   variant = 'compact',
   askedAgo,
+  askedAt,
   stateNote,
   aside,
   enableKeys = false,
@@ -89,10 +94,24 @@ export default function TaskQuestion({
   });
   const { submit, sending, outcome, error } = hosted ?? own;
 
+  // The task page's question is the one decision card (Navigation R-16); the hosted
+  // submission keeps its collapsed answer on screen through the refetch that drops the question.
+  if (variant === 'full') {
+    const view = decisionFromQuestion({
+      key: `question:${taskId}`,
+      question,
+      task: null,
+      askedAt: askedAt ?? null,
+      waits,
+      answer: { kind: 'worker', workerId: workerId ?? '', taskId, noteId: question.noteId },
+    });
+    return <DecisionCard view={view} now={Date.now()} submission={{ submit, sending, outcome, error }} testId={testId} />;
+  }
+
   return (
     <QuestionHero
       testId={testId}
-      density={variant === 'full' ? 'hero' : 'feed'}
+      density="feed"
       question={question}
       askerLabel={`The ${(role || 'agent').toLowerCase()} asks`}
       askedAgo={askedAgo}
