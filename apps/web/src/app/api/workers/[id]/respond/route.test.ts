@@ -106,7 +106,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
-  channels: { worker: (id: string) => `worker-${id}`, task: (id: string) => `task-${id}` },
+  channels: { workerActivity: (id: string) => `worker-${id}-activity`, workspaceActivity: (id: string) => `workspace-${id}-activity`, worker: (id: string) => `worker-${id}`, task: (id: string) => `task-${id}` },
   events: { WORKER_COMMAND: 'worker:command', WORKER_PROGRESS: 'worker:progress' },
 }));
 
@@ -1162,7 +1162,7 @@ describe('POST /api/workers/[id]/respond', () => {
       await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
 
       const calls = mockTriggerEvent.mock.calls as any[];
-      const toWorker = calls.find(([ch, ev]) => ch === `worker-${WORKER_ID}` && ev === 'worker:progress');
+      const toWorker = calls.find(([ch, ev]) => ch === `worker-${WORKER_ID}-activity` && ev === 'worker:progress');
       const toTask = calls.find(([ch, ev]) => ch === 'task-task-1' && ev === 'worker:progress');
       expect(toWorker?.[2]).toMatchObject({ workerId: WORKER_ID, status: 'running' });
       expect(toTask?.[2]).toMatchObject({ status: 'running' });
@@ -1283,7 +1283,7 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(res.status).toBe(200);
 
     const calls = mockTriggerEvent.mock.calls as any[];
-    const toWorker = calls.find(([ch]) => ch === `worker-${WORKER_ID}`);
+    const toWorker = calls.find(([ch]) => ch === `worker-${WORKER_ID}-activity`);
     const toTask = calls.find(([ch]) => ch === 'task-task-1');
     expect(toWorker?.[1]).toBe('worker:progress');
     expect(toWorker?.[2]).toMatchObject({ workerId: WORKER_ID, status: 'superseded' });

@@ -48,7 +48,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Each tier x surface cell MUST serve its primary until the team's own graded coding outcomes show an alternate keeps up within the dial's tolerance, and MUST revert, recorded, when it slips.
 - [Standalone Model Policy](./model-policy.md) · @max — verified 2026-10-05
   A caller MUST get provider, model and effort from surface (chat or coding) plus tier alone, locally or from the policy service, with a fallback answer always and no provider secret ever crossing the boundary.
-- [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-10-15
+- [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-10-30
   The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 - [Work Tracker Integration](./work-tracker-integration.md) · @max — verified 2026-07-18
   A workspace MUST route tracker updates through one provider-dispatched WorkTrackerProvider interface, closing the linked Linear or GitHub issue on PR merge and creating tasks from labeled issues idempotently.

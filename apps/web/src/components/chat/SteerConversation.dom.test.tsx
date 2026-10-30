@@ -16,6 +16,7 @@ const channels = new Map<string, Map<string, Handler[]>>();
 function emit(channel: string, event: string, data: unknown) {
   for (const fn of channels.get(channel)?.get(event) ?? []) fn(data);
 }
+const { channelForEvent } = await import('@buildd/shared');
 mock.module('@/lib/pusher-client', () => ({
   CHANNEL_PREFIX: '',
   subscribeToChannel: (name: string) => {
@@ -28,6 +29,17 @@ mock.module('@/lib/pusher-client', () => ({
   },
   unsubscribeFromChannel: () => {},
   getSubscribedChannel: () => null,
+  // Real routing: worker:progress lands on the channel's -activity twin.
+  bindChannelEvents: (name: string, bindings: ReadonlyArray<readonly [string, Handler]>) => {
+    const at = (e: string) => {
+      const ch = channelForEvent(name, e);
+      const handlers = channels.get(ch) ?? new Map<string, Handler[]>();
+      channels.set(ch, handlers);
+      return handlers;
+    };
+    for (const [e, fn] of bindings) at(e).set(e, [...(at(e).get(e) ?? []), fn]);
+    return () => { for (const [e, fn] of bindings) at(e).set(e, (at(e).get(e) ?? []).filter(f => f !== fn)); };
+  },
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -164,13 +176,20 @@ describe('SteerConversation — message status', () => {
 });
 
 describe('SteerConversation — listens instead of polling (spec 3ef37387 R-21)', () => {
-  it('a worker:progress on its worker\'s channel reloads the messages', async () => {
+  it('a worker:progress on its worker\'s activity channel reloads the messages', async () => {
     await render();
     const before = messageReads;
     expect(before).toBe(1);
-    await act(async () => { emit(`worker-${WORKER_ID}`, 'worker:progress', { workerId: WORKER_ID }); });
+    await act(async () => { emit(`worker-${WORKER_ID}-activity`, 'worker:progress', { workerId: WORKER_ID }); });
     await act(async () => { await new Promise(r => setTimeout(r, 700)); });
     expect(messageReads).toBe(before + 1);
+  });
+
+  it('does not listen for worker:progress on the worker channel runners hold', async () => {
+    await render();
+    await act(async () => { emit(`worker-${WORKER_ID}`, 'worker:progress', { workerId: WORKER_ID }); });
+    await act(async () => { await new Promise(r => setTimeout(r, 700)); });
+    expect(messageReads).toBe(1);
   });
 
   it('does not re-read every 5 s while nothing happens', async () => {

@@ -240,7 +240,7 @@ then refetches so the stale card goes away.
 
 **Other open views are told.** The cold path supersedes the worker outside the
 PATCH route, so it emits its own `worker:progress` with `status: 'superseded'`
-on the worker and task channels. That is the status change open views refresh on
+on the worker activity and task channels. That is the status change open views refresh on
 immediately. Before this, a second device kept showing a question that had
 already been answered.
 

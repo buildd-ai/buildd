@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { bindChannelEvents, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { useRegionRefresher } from '@/components/LiveRegion';
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
 
@@ -104,8 +104,6 @@ export default function TaskAutoRefresh({
     if (isTerminalLeaf) return;
 
     const channelName = `${CHANNEL_PREFIX}workspace-${workspaceId}`;
-    const channel = subscribeToChannel(channelName);
-    if (!channel) return;
 
     const {
       handleClaimed,
@@ -116,26 +114,19 @@ export default function TaskAutoRefresh({
       handleTaskUpdated,
     } = createEventHandlers(router, taskId, stableDepIds);
 
-    channel.bind('task:claimed', handleClaimed);
-    channel.bind('task:updated', handleTaskUpdated);
-    // worker:progress is the steady ~10s-per-worker heartbeat — debounced.
-    // worker:completed/failed are terminal — refreshed immediately.
-    channel.bind('worker:progress', handleWorkerEvent);
-    channel.bind('worker:completed', handleWorkerTerminal);
-    channel.bind('worker:failed', handleWorkerTerminal);
-    channel.bind('task:unblocked', handleTaskUnblocked);
-    channel.bind('task:children_completed', handleChildrenCompleted);
-
-    return () => {
-      channel.unbind('task:claimed', handleClaimed);
-      channel.unbind('task:updated', handleTaskUpdated);
-      channel.unbind('worker:progress', handleWorkerEvent);
-      channel.unbind('worker:completed', handleWorkerTerminal);
-      channel.unbind('worker:failed', handleWorkerTerminal);
-      channel.unbind('task:unblocked', handleTaskUnblocked);
-      channel.unbind('task:children_completed', handleChildrenCompleted);
-      unsubscribeFromChannel(channelName);
-    };
+    const release = bindChannelEvents(channelName, [
+      ['task:claimed', handleClaimed],
+      ['task:updated', handleTaskUpdated],
+      // worker:progress is the steady ~10s-per-worker heartbeat — debounced.
+      // It arrives on the workspace's activity channel (bindChannelEvents routes it).
+      // worker:completed/failed are terminal — refreshed immediately.
+      ['worker:progress', handleWorkerEvent],
+      ['worker:completed', handleWorkerTerminal],
+      ['worker:failed', handleWorkerTerminal],
+      ['task:unblocked', handleTaskUnblocked],
+      ['task:children_completed', handleChildrenCompleted],
+    ]);
+    return release ?? undefined;
   }, [taskId, workspaceId, taskStatus, taskMode, stableDepIds, hasSubTasks, workerHasOpenPr, router]);
 
   return null;

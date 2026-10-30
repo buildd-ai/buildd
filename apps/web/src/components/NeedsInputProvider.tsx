@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { bindChannelEvents, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { needsInputEventAction } from '@/lib/realtime-throttle';
 import { subscribeCatchUp } from '@/lib/app-freshness';
 import { taskAnswerHref } from '@/lib/mission-task-href';
@@ -99,19 +99,13 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
       }
     }] as const);
 
-    const bound = channelNames.map((channelName) => {
-      const channel = subscribeToChannel(channelName);
-      for (const [event, handler] of handlers) channel?.bind(event, handler);
-      return { channelName, channel };
-    });
+    // worker:progress arrives on each workspace's activity channel; bindChannelEvents routes it.
+    const releases = channelNames.map((channelName) => bindChannelEvents(channelName, handlers));
 
-    // Channels are shared with the other layout providers, so this handler must
-    // be unbound explicitly — releasing the subscription no longer drops it.
+    // Channels are shared with the other layout providers, so the cleanup
+    // unbinds this provider's handlers explicitly before releasing its holds.
     return () => {
-      for (const { channelName, channel } of bound) {
-        for (const [event, handler] of handlers) channel?.unbind(event, handler);
-        unsubscribeFromChannel(channelName);
-      }
+      for (const release of releases) release?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceIdsKey, fetchWaitingTasks]);

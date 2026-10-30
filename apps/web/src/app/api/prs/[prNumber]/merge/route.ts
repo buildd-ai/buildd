@@ -365,7 +365,7 @@ export async function POST(
     }
 
     // Trigger real-time update
-    await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
+    await triggerEvent(channels.workspaceActivity(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });
 

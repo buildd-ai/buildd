@@ -76,7 +76,7 @@ mock.module('@/lib/gate-ledger', () => ({
 }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
-  channels: { workspace: (id: string) => `workspace-${id}` },
+  channels: { workerActivity: (id: string) => `worker-${id}-activity`, workspaceActivity: (id: string) => `workspace-${id}-activity`, workspace: (id: string) => `workspace-${id}` },
   events: { WORKER_PROGRESS: 'worker:progress' },
 }));
 
