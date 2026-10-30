@@ -3874,6 +3874,11 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // Which Codex login this runner's Codex agents use (same spec, R-10..R-13).
   // A label from a fixed list, never a credential; null = not reported.
   codexAuthSource: text('codex_auth_source').$type<'machine_login' | 'api_key' | 'none'>(),
+  // Pusher presence (docs/specs/runner-heartbeat.md): written only by the
+  // webhook, only on a state change. Null = never connected (an older runner
+  // build: judged by its beat alone); false = was connected, is not now.
+  presenceConnected: boolean('presence_connected'),
+  presenceChangedAt: timestamp('presence_changed_at', { withTimezone: true }),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

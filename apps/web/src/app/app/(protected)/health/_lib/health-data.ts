@@ -670,7 +670,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   const protectedWorkPending = pendingIsolation.length > 0;
   // Only runners seen recently are listed and counted; a long-gone one is not part of the fleet.
   const runners = heartbeats.filter(r => isRunnerRecentlySeen(r.lastHeartbeatAt, now));
-  const onlineRunners = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
+  const onlineRunners = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected));
   const isolationStranded = isolationStrandedCount(onlineRunners.map(r => r.isolation), pendingIsolation);
   for (const r of runners) r.isolationBlocked = isolationBlockedCounts(r.isolation, pendingIsolation);
 

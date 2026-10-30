@@ -14,6 +14,8 @@ import type { RunnerClass } from './runner-ownership';
 
 import {
   RUNNER_LIVE_WINDOW_MS,
+  runnerOnlineNow,
+  RUNNER_ONLINE_CANDIDATE_WINDOW_MS,
   RUNNER_ONLINE_THRESHOLD_MS,
   beatWithin,
   isIsolationRecordCurrent,
@@ -28,6 +30,8 @@ export interface RunnerHeartbeat {
   accountId: string;
   accountName: string | null;
   lastHeartbeatAt: string;
+  /** Pusher presence: true connected, false was connected and is not, null/absent never joined (older build, judged by its beat). */
+  presenceConnected?: boolean | null;
   activeWorkerCount: number;
   maxConcurrentWorkers: number;
   /** How the runner connects: push_only = no inbound HTTP (headless/NAT), reachable = has inbound HTTP server. */
@@ -227,8 +231,8 @@ export const RUNNER_ONLINE_WINDOW_MS = RUNNER_LIVE_WINDOW_MS;
  * pinned `now`; only genuinely client-only, event-driven call sites (e.g. a
  * button-click handler) should pass a fresh `Date.now()`.
  */
-export function isRunnerOnline(lastHeartbeatAt: string | Date, now: number): boolean {
-  return beatWithin(lastHeartbeatAt, now, RUNNER_ONLINE_WINDOW_MS);
+export function isRunnerOnline(lastHeartbeatAt: string | Date, now: number, presenceConnected?: boolean | null): boolean {
+  return runnerOnlineNow(lastHeartbeatAt, presenceConnected, now);
 }
 
 /**

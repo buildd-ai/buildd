@@ -289,6 +289,7 @@ export async function GET(req: NextRequest) {
             ? hb.diskCommit === deployedSha
             : null,
           lastUpdated: hb.lastHeartbeatAt,
+          presenceConnected: hb.presenceConnected ?? null,
         };
       })
     );
@@ -312,7 +313,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         activeLocalUis: validLocalUis.map(r => {
           const canClaimInWorkspace = claimers ? claimers.has(r.accountId) : null;
-          return { ...r, canClaimInWorkspace, browserOnline: r.browser && isRunnerOnline(r.lastUpdated, now) && canClaimInWorkspace === true };
+          return { ...r, canClaimInWorkspace, browserOnline: r.browser && isRunnerOnline(r.lastUpdated, now, r.presenceConnected) && canClaimInWorkspace === true };
         }),
         onlineWindowMs: RUNNER_ONLINE_WINDOW_MS,
         workspace: { id: askedWorkspaceId, name: workspaceNameMap.get(askedWorkspaceId) ?? null },
@@ -321,7 +322,7 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({
-      activeLocalUis: validLocalUis.map(r => ({ ...r, browserOnline: r.browser && isRunnerOnline(r.lastUpdated, now) })),
+      activeLocalUis: validLocalUis.map(r => ({ ...r, browserOnline: r.browser && isRunnerOnline(r.lastUpdated, now, r.presenceConnected) })),
       onlineWindowMs: RUNNER_ONLINE_WINDOW_MS,
     });
   } catch (error) {

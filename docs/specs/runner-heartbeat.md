@@ -188,7 +188,7 @@ supersedes: []
 
 ---
 
-## Presence channel (revision, pending owner approval)
+## Presence channel (revision, approved; server half shipped)
 
 **Capability statement**: A runner's reachability MUST be asserted by a Pusher
 presence connection and recorded server-side only on state change, so an idle

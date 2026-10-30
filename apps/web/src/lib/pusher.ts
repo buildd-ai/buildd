@@ -10,7 +10,8 @@ export function _resetPusher(client: Pusher | null = null): void {
   pusher = client;
 }
 
-function getPusher(): Pusher | null {
+/** The server client, or null when Pusher is not configured. */
+export function getPusher(): Pusher | null {
   if (pusher) return pusher;
 
   const appId = process.env.PUSHER_APP_ID;
@@ -166,6 +167,8 @@ export const channels = {
   mission: (id: string) => `${CHANNEL_PREFIX}mission-${id}`,
   // One runner account's runners: a nudge to beat now (slots set on the dashboard). No data rides on it.
   runner: (accountId: string) => `${CHANNEL_PREFIX}runner-${accountId}`,
+  // Membership only, nothing is ever triggered on it: a runner is a member while its socket is up.
+  runnerPresence: (accountId: string) => `${CHANNEL_PREFIX}presence-runner-${accountId}`,
   // Agent chat: pings only, never message text (see @buildd/shared chat.ts).
   conversation: (id: string) => `${CHANNEL_PREFIX}${conversationChannelName(id)}`,
 } as const;
