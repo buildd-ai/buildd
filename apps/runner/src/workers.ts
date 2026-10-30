@@ -20,7 +20,7 @@ import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, typ
 import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './dependency-manifest';
 import { emitPhase } from './phase-lines';
 import { ClaimHandoffTracker } from './claim-handoff';
-import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS, DEFAULT_LOGIN_MODE, type LoginMode, type RunnerLoginUse } from '@buildd/shared';
+import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS, fallbackPingDelayMs, DEFAULT_LOGIN_MODE, type LoginMode, type RunnerLoginUse } from '@buildd/shared';
 import { loginUseFor } from './runner-logins';
 import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
@@ -56,7 +56,7 @@ import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
 import { startScopedGitHubSession, hostHasGitHubCredentials, type ScopedGitHubSession } from './agent-github-credentials';
-import { PusherManager } from './pusher-manager';
+import { PusherManager, getPresenceState } from './pusher-manager';
 import {
   authContextOf,
   classifyClaimError,
@@ -837,6 +837,9 @@ export class WorkerManager {
   private terminalWorktreeSweepRunning = false;
   private heartbeatInterval?: Timer;
   private livenessInterval?: Timer;
+  /** Content of the last heartbeat sent, and when the fallback ping next falls due (liveness tick). */
+  private lastBeatFingerprint?: string;
+  private nextFallbackBeatAt = 0;
   private evictionInterval?: Timer;
   private diskPersistInterval?: Timer;
   // One-shot timer that wakes the runner to poll the moment an exhausted OAuth
@@ -1128,11 +1131,13 @@ export class WorkerManager {
         this.pollIdleJobs(active);
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
 
-      // Liveness ping: a pure "I'm alive" heartbeat every 60s, separate from the
-      // task-poll cycle. isRunnerOnline on the Health tab keys off this so an idle
-      // runner never shows "stale" while it is reachable.
+      // Liveness tick: a local check every 60s that sends a beat only when one is due
+      // (see sendHeartbeat's `onlyIfDue`). Presence on Pusher says the runner is up, so
+      // an idle runner beats on change and on the slow fallback ping; a runner that is
+      // not a presence member (older server, no Pusher) or holds workers (their leases
+      // renew on the beat) keeps the 60s cadence.
       this.livenessInterval = setInterval(() => {
-        this.sendHeartbeat();
+        this.sendHeartbeat({ onlyIfDue: true });
       }, LIVENESS_PING_INTERVAL_MS);
     }
 
@@ -1526,7 +1531,8 @@ export class WorkerManager {
     return describeBudgetProbeRun(await this.budgetWallProber.probeNow(trigger));
   }
 
-  private async sendHeartbeat() {
+  private async sendHeartbeat(opts: { onlyIfDue?: boolean } = {}) {
+    let fingerprint: string | undefined;
     try {
       // A paused worker holds no slot (pause.ts), nor a question whose session
       // ended; one asked inside a live session still does.
@@ -1546,7 +1552,20 @@ export class WorkerManager {
       // whether Claude is confined here, not whether bwrap is installed, so a
       // macOS runner on Seatbelt no longer reads as "user namespaces denied".
       const sandboxEnabled = probeAt !== null ? isConfined(getIsolationRecord().claude) : null;
-      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots, desiredPause } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent, this.config.singleTask ? undefined : this.config.slotsChangedAt, this.config.singleTask ? undefined : getRunnerHold()?.changeMeta()?.changedAt);
+      const environment = this.heartbeatEnvironment();
+      const redactions = getRedactionCounts();
+      const runnerCommit = getRunnerCommit();
+      const updateSnapshot = getRunnerUpdateSnapshot();
+      const modelAuth = { ...this.refreshModelAuth(), codexSource: this.codexAuth };
+      const slots = this.config.singleTask ? undefined : this.config.maxConcurrent;
+      const slotsChangedAt = this.config.singleTask ? undefined : this.config.slotsChangedAt;
+      const holdChangedAt = this.config.singleTask ? undefined : getRunnerHold()?.changeMeta()?.changedAt;
+      // What the server stores from a beat. The claim handoff is left out: the server leaves it out of its own fingerprint.
+      fingerprint = JSON.stringify([activeCount, activeWorkerIds, environment, redactions, sandboxEnabled, probeAt, runnerCommit, RUNNER_VERSION, updateSnapshot, modelAuth, slots, slotsChangedAt, holdChangedAt]);
+      if (opts.onlyIfDue && !this.heartbeatDue(fingerprint, activeWorkerIds.length, Date.now())) return;
+      this.lastBeatFingerprint = fingerprint;
+      this.nextFallbackBeatAt = Date.now() + fallbackPingDelayMs();
+      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots, desiredPause } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, environment, redactions, sandboxEnabled, probeAt, activeWorkerIds, runnerCommit, RUNNER_VERSION, updateSnapshot, this.handoff().snapshot(), modelAuth, slots, slotsChangedAt, holdChangedAt);
       // A slot change made on buildd.dev, newer than this runner's own (spec 34a48877 R-20).
       if (!this.config.singleTask) this.applyServerSlots(desiredSlots);
       if (!this.config.singleTask) this.applyServerHold(desiredPause);
@@ -1573,8 +1592,20 @@ export class WorkerManager {
         }
       }
     } catch {
-      // Non-fatal - heartbeat is best-effort
+      // Non-fatal - heartbeat is best-effort. A beat that did not land is owed again on the next tick.
+      if (fingerprint !== undefined && this.lastBeatFingerprint === fingerprint) this.lastBeatFingerprint = undefined;
     }
+  }
+
+  /**
+   * Whether the liveness tick owes a beat (spec runner-heartbeat, "Presence channel"):
+   * the content changed, a worker's lease needs renewing, the slow fallback ping is
+   * due, or this runner is not a presence member and so is still judged by a 60s beat.
+   */
+  private heartbeatDue(fingerprint: string, activeWorkers: number, now: number): boolean {
+    const presence = getPresenceState();
+    if (presence === 'none' || presence === 'failed') return true;
+    return activeWorkers > 0 || fingerprint !== this.lastBeatFingerprint || now >= this.nextFallbackBeatAt;
   }
 
   // Periodically call the cleanup API to handle stale workers/tasks
