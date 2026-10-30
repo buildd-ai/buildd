@@ -113,7 +113,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Failure Alerts](./runner-failure-alerts.md) · @max — verified 2026-10-15
   Systemic runner failures MUST alert operations only when enabled and MUST never block claiming work.
-- [Runner Heartbeat and Version](./runner-heartbeat.md) · @max — verified 2026-10-18
+- [Runner Heartbeat and Version](./runner-heartbeat.md) · @max — verified 2026-10-30
   A runner heartbeat MUST report current presence and version information without exposing its local UI token.
 - [Runner Pre-Merge, Derived Files and Mergiraf](./runner-pre-merge.md) · @max — verified 2026-10-10
   Before a conflict agent starts, the runner MUST merge the right base with derived-file and mergiraf drivers, MUST record every file mergiraf resolved, and MUST NOT push mergiraf's work without an agent.
