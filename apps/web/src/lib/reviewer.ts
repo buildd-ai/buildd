@@ -154,6 +154,11 @@ export interface ReviewerTaskOutput {
    * on a task whose criteria name screens needs them.
    */
   designChecks?: Array<{ criterionId: string; screen: string; route: string; shotIds: string[]; matches: boolean; fixtureReason?: string }>;
+  /**
+   * One entry per finding the prompt listed as carried from a PR merged over it
+   * (lib/reviewer-carried-findings.ts). An approve needs every one verified, with how.
+   */
+  carriedFindings?: Array<{ id: string; verified: boolean; how?: string }>;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -280,6 +285,21 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
           shotIds: { type: 'array', items: { type: 'string' } },
           matches: { type: 'boolean' },
           fixtureReason: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+    },
+    carriedFindings: {
+      type: 'array',
+      description:
+        'ONLY when the prompt has a "Findings carried from" section: one entry per listed finding. verified is true only when you checked it at this head; how says what you checked (file and line read, test run, screenshot artifact compared).',
+      items: {
+        type: 'object',
+        required: ['id', 'verified'],
+        properties: {
+          id: { type: 'string' },
+          verified: { type: 'boolean' },
+          how: { type: 'string' },
         },
         additionalProperties: false,
       },
@@ -851,6 +871,23 @@ async function loadCopyReviewSection(params: {
 // Retry delays for the duplicate-producer race recovery: 50ms, then 100ms.
 // The first producer's insert blocks, so retries use increasing delays to let
 // the winner's transaction complete and become visible to subsequent reads.
+/**
+ * f8a7a088: the findings a trunk fix carries from a PR merged over them, as the reviewer's
+ * required evidence. Read by task id like the spec source, so no dispatch site passes it; empty
+ * for every other task, and on a failed read (the verdict gate reads the context again).
+ */
+async function loadCarriedFindingsSection(originalTaskId: string): Promise<string> {
+  try {
+    const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, originalTaskId)), columns: { context: true } });
+    const { carriedFindingsOfContext, carriedFindingsSection } = await import('./reviewer-carried-findings');
+    const merged = (row?.context as { mergedPrNumber?: unknown } | null)?.mergedPrNumber;
+    return carriedFindingsSection(carriedFindingsOfContext(row?.context), typeof merged === 'number' ? merged : null);
+  } catch (err) {
+    console.warn(`[reviewer] could not read carried findings for task ${originalTaskId}:`, err);
+    return '';
+  }
+}
+
 const CONCURRENT_INSERT_RETRY_DELAY_MS = 50;
 
 export async function createReviewerTask(
@@ -1007,7 +1044,8 @@ export async function createReviewerTask(
     prNumber,
     files: priorVerdict ? params.deltaFiles : params.prFiles,
   });
-  const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${params.workflowRound ? findingsSection(params.findingsBrief) : ''}${copySection}`;
+  const carriedSection = await loadCarriedFindingsSection(originalTaskId);
+  const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${params.workflowRound ? findingsSection(params.findingsBrief) : ''}${carriedSection}${copySection}`;
 
   const title = reviewerTitle(prNumber, originalTask.title);
 

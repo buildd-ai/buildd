@@ -155,3 +155,31 @@ export function applyEvidenceGate(params: {
     overrideReason: `inconclusive: the reviewer judged ${read}, not the head ${head.slice(0, 7)}`,
   };
 }
+
+const VERDICT_WORDS: Record<ReviewerTaskOutput['verdict'], string> = {
+  approve: 'approve',
+  'request-changes': 'request changes',
+  escalate: 'escalate',
+};
+
+/**
+ * The summary a verdict is shown with once the server's gates have settled it (f8a7a088). The
+ * reviewer's own sentence was written for its own verdict: on an approve the design gate held as
+ * request-changes it reads "the prior approve stands", beside a verdict that says the opposite.
+ * So when a gate changed the verdict, the summary says what settled it, and the reviewer's
+ * sentence is kept apart (`reviewerSummary`), never shown as the verdict's. Unchanged verdicts
+ * keep the reviewer's summary.
+ */
+export function settledSummary(params: {
+  said: ReviewerTaskOutput['verdict'];
+  settled: ReviewerTaskOutput['verdict'];
+  reason: string | null;
+  summary: string;
+}): { summary: string; reviewerSummary: string | null } {
+  if (params.said === params.settled) return { summary: params.summary, reviewerSummary: null };
+  const reason = params.reason?.trim().replace(/[.\s]+$/, '');
+  return {
+    summary: `buildd held the reviewer's ${VERDICT_WORDS[params.said]} as ${VERDICT_WORDS[params.settled]}${reason ? `: ${reason}` : ''}.`,
+    reviewerSummary: params.summary,
+  };
+}

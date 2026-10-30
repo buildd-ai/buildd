@@ -11566,6 +11566,50 @@ describe('PATCH /api/workers/[id]', () => {
       });
     });
 
+    describe('f8a7a088: a trunk fix carries the findings its PR was merged over', () => {
+      const carried = {
+        id: 'aaaaaaaa-1111-2222-3333-444444444444', title: 'No design comparison on the real route', path: null, line: null,
+        remedyClass: 'evidence', evidence: { criterionId: 'AC-3', screen: 'queue', route: '/app/queue' },
+      };
+      function carrying() {
+        const reviewer = mockTasksFindFirst.getMockImplementation()!;
+        mockTasksFindFirst.mockImplementation((opts_?: any) => {
+          if (opts_?.columns?.context && Object.keys(opts_.columns).length === 1) {
+            return Promise.resolve({ context: { externalMergeFix: true, mergedPrNumber: 5534, carriedFindings: [carried] } });
+          }
+          return reviewer(opts_);
+        });
+      }
+      const applied = { handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'CHANGES_REQUESTED' } }, toState: 'CHANGES_REQUESTED' };
+
+      it('an approve that says it could not check the carried design comparison is held: buildd captures it, and the summary says so', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        carrying();
+        mockRecordReviewVerdict.mockResolvedValue(applied);
+        await PATCH(makeReviewerPatchRequest('approve', {
+          confidence: 0.65,
+          summary: "The four-line change is right; the prior approve stands. I couldn't check the design comparisons the review asked for.",
+        }), { params: mockParams });
+        const sent = mockRecordReviewVerdict.mock.calls[0][0];
+        expect(sent).toMatchObject({ verdict: 'approve', effectiveVerdict: 'request-changes' });
+        expect(sent.output.findings).toEqual([expect.objectContaining({ remedyClass: 'evidence', evidence: { criterionId: 'AC-3', screen: 'queue', route: '/app/queue' } })]);
+        expect(sent.output.summary).toStartWith("buildd held the reviewer's approve as request changes");
+        expect(sent.output.summary).not.toContain('approve stands');
+        expect(sent.output.reviewerSummary).toContain('the prior approve stands');
+      });
+
+      it('an approve that reports the carried finding verified, with how, stands', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        carrying();
+        mockRecordReviewVerdict.mockResolvedValue(applied);
+        await PATCH(makeReviewerPatchRequest('approve', {
+          carriedFindings: [{ id: carried.id, verified: true, how: 'compared screenshot art-1 of /app/queue with screen queue' }],
+        }), { params: mockParams });
+        expect(mockRecordReviewVerdict.mock.calls[0][0]).toMatchObject({ verdict: 'approve', effectiveVerdict: 'approve' });
+        expect(mockRecordReviewVerdict.mock.calls[0][0].output.summary).toBe('Test summary');
+      });
+    });
+
     it('non-review task with no structuredOutput is unaffected', async () => {
       setupReviewerTaskCompletion('approve');
       // Same shape, but not a review task — ordinary completions must still pass.

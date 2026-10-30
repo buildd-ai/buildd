@@ -17,7 +17,8 @@ import { EFFECT_MAX_ATTEMPTS, type EffectHandler, type EffectHandlers } from '..
 import { LANDING_STATUS_CONTEXT, landingStatusOf, landingStatusUnknown, reviewGate, type LandingStatus } from '../landing-gate';
 import { heldOutcome, MERGE_HOLD_MAX_MS, mergeHoldDelayMs } from '../merge-hold';
 import { githubOf, type GithubFacts, type GithubWrites, type KernelPorts } from '../ports';
-import type { DeliverySnapshot } from '../types';
+import { describeFinding, openRequiredFindings } from '../findings';
+import type { DeliverySnapshot, FindingSnapshot, KernelView } from '../types';
 import { hasPr, need } from './ports-of';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
@@ -26,18 +27,55 @@ export function externalMergeFixTitle(prNumber: number): string {
   return `fix: address the review left open when #${prNumber} was merged outside buildd`;
 }
 
+/**
+ * A required finding still open when its PR merged outside buildd, carried onto the trunk fix
+ * (`context.carriedFindings`). The fix's own review must verify each one before it approves:
+ * the merge closed nothing, so the finding is only closed by evidence on the fix.
+ */
+export interface CarriedFinding {
+  id: string;
+  title: string;
+  path: string | null;
+  line: number | null;
+  remedyClass: string | null;
+  /** An `evidence` finding: the screen and route buildd captures. */
+  evidence?: { criterionId: string | null; screen: string; route: string | null };
+}
+
+/**
+ * The required findings open at the merge, read from the delivery (the payload names them by id;
+ * one without names carries every open required finding).
+ */
+export function carriedFindingsOf(view: Pick<KernelView, 'findings'>, ids?: readonly string[] | null): CarriedFinding[] {
+  const named = ids?.length ? new Set(ids) : null;
+  return openRequiredFindings(view)
+    .filter((f) => !named || named.has(f.id))
+    .map((f: FindingSnapshot) => ({
+      id: f.id, title: f.title, path: f.path, line: f.line, remedyClass: f.remedyClass ?? null,
+      ...(f.evidence?.screen ? { evidence: { criterionId: f.evidence.criterionId ?? null, screen: f.evidence.screen, route: f.evidence.route ?? null } } : {}),
+    }));
+}
+
 /** The trunk fix for a PR merged over an open verdict: what the review asked, against the base it merged into. */
 export function externalMergeFixDescription(p: {
   repoFullName: string; prNumber: number; baseRef: string | null; round: number | null; reviewedHeadSha: string | null;
   mergeCommitSha: string | null; mergedBy: string | null; feedback: string | null;
+  findings?: readonly CarriedFinding[];
 }): string {
   const base = p.baseRef ?? 'the base branch';
+  const findings = p.findings ?? [];
   return [
     `PR #${p.prNumber} in ${p.repoFullName} was merged into \`${base}\` outside buildd${p.mergedBy ? ` (by ${p.mergedBy})` : ''} while a review verdict on it was still open${p.round != null ? ` (round ${p.round}${p.reviewedHeadSha ? `, at \`${p.reviewedHeadSha.slice(0, 12)}\`` : ''})` : ''}. The merge is recorded as merged over open findings; it approved nothing, and what the review asked for is now on \`${base}\`.`,
     '',
     '## What the review asked for',
     p.feedback?.trim() ? p.feedback.trim() : '(the reviewer left no written feedback; read the review on the PR)',
     '',
+    ...(findings.length ? [
+      '## Findings still open (required evidence)',
+      'Each of these stays open until the review of your PR verifies it. That review cannot approve without verifying every one.',
+      ...findings.map((f) => `- \`${f.id.slice(0, 8)}\` ${describeFinding(f)}${f.remedyClass === 'evidence' && f.evidence ? ` (evidence: a design comparison of screen ${f.evidence.screen}${f.evidence.route ? ` on ${f.evidence.route}` : ''}, which buildd captures)` : ''}`),
+      '',
+    ] : []),
     '## Instructions',
     `1. Branch from the current \`${base}\`${p.mergeCommitSha ? ` (it contains merge commit \`${p.mergeCommitSha.slice(0, 12)}\`)` : ''}.`,
     '2. Fix exactly what the review asked for above. Change nothing unrelated.',
@@ -292,6 +330,9 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const round = view.rounds.find((r) => r.id === e.payload.roundId) ?? null;
     const output = round && ports.reviews ? await ports.reviews.output(round) : {};
     const work = need(ports, 'work', e.kind);
+    const named = Array.isArray(e.payload.findings) ? (e.payload.findings as Array<{ id?: unknown }>).map((f) => String(f?.id ?? '')).filter(Boolean) : null;
+    // Only the findings the merge went over: a payload naming none carries none.
+    const carried = named?.length ? carriedFindingsOf(view, named) : [];
     const str = (k: string): string | null => (typeof e.payload[k] === 'string' ? (e.payload[k] as string) : null);
     const p = {
       round: typeof e.payload.round === 'number' ? e.payload.round : undefined,
@@ -307,11 +348,12 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
         repoFullName: d.repoFullName, prNumber: d.prNumber, baseRef: d.baseRef, round: p.round ?? round?.round ?? null,
         reviewedHeadSha: p.reviewedHeadSha ?? round?.headSha ?? null, mergeCommitSha: p.mergeCommitSha ?? d.mergeCommitSha, mergedBy: p.mergedBy ?? null,
         feedback: output.feedback ?? output.summary ?? null,
+        findings: carried,
       }),
       target: { repoFullName: d.repoFullName, prNumber: null, headSha: p.mergeCommitSha ?? d.mergeCommitSha, baseRef: d.baseRef },
       lineage: { deliveryId: d.id, parentTaskId: d.ownerTaskId },
       dedupeKey: `external_merge_fix:${d.id}`,
-      detail: { prNumber: d.prNumber, roundId: round?.id ?? null, mergedBy: p.mergedBy ?? null, mergedHeadSha: p.mergedHeadSha ?? null },
+      detail: { prNumber: d.prNumber, roundId: round?.id ?? null, mergedBy: p.mergedBy ?? null, mergedHeadSha: p.mergedHeadSha ?? null, findings: carried },
     });
     if (filed.skipped) return { outcome: `skipped:${filed.skipped}` };
     if (filed.created && filed.taskId) await work.wake(filed.taskId, 'task.created');
