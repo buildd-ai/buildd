@@ -167,6 +167,7 @@
       "apps/web/src/lib/pr-review-status.ts": "reviews-merge",
       "apps/web/src/lib/pr-scope-reconcile-trigger.ts": "reviews-merge",
       "apps/web/src/lib/read-only-review.ts": "reviews-merge",
+      "apps/web/src/lib/reviewer-carried-findings.ts": "reviews-merge",
       "apps/web/src/lib/reviewer-evidence.ts": "knowledge",
       "apps/web/src/lib/reviewer-output.ts": "reviews-merge",
       "apps/web/src/lib/reviewer-prose-fallback.ts": "reviews-merge",

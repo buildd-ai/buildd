@@ -66,6 +66,9 @@ export const externalMergeFixWork: WorkBuilder = async (req) => {
         reviewRoundId: detail.roundId ?? null,
         baseBranch: req.target.baseRef ?? null,
         mergeCommitSha: req.target.headSha ?? null,
+        // f8a7a088: the required findings the merge went over. This task's review must verify
+        // each one before it approves (lib/reviewer-carried-findings.ts).
+        ...(Array.isArray(detail.findings) && detail.findings.length ? { carriedFindings: detail.findings } : {}),
       },
     },
   };
