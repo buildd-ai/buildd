@@ -93,7 +93,8 @@ const files = collectFiles(webSrc);
 const clientSources = files
   .filter((f) => {
     const src = readFileSync(f, 'utf8');
-    return src.includes('.bind(') && (src.includes('subscribeToChannel') || src.includes('pusher-client'));
+    return (src.includes('.bind(') && (src.includes('subscribeToChannel') || src.includes('pusher-client')))
+      || src.includes('bindChannelEvents(') || src.includes('useLiveListen(');
   })
   .map((f) => readFileSync(f, 'utf8'))
   .join('\n');

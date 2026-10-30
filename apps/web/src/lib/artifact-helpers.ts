@@ -126,7 +126,7 @@ export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Prom
     const { shareToken: _shareToken, ...broadcastArtifact } = (result || {}) as Record<string, unknown>;
 
     await triggerEvent(
-      channels.worker(workerId),
+      channels.workerActivity(workerId),
       events.WORKER_PROGRESS,
       { artifact: broadcastArtifact }
     );

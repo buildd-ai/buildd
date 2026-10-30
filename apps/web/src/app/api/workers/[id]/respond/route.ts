@@ -455,7 +455,7 @@ async function respondToInteractiveSession(args: {
     updatedAt: claimed.updatedAt ?? new Date().toISOString(),
   };
   await Promise.all([
-    triggerEvent(channels.worker(workerId), events.WORKER_PROGRESS, runningEvent),
+    triggerEvent(channels.workerActivity(workerId), events.WORKER_PROGRESS, runningEvent),
     triggerEvent(channels.task(taskId), events.WORKER_PROGRESS, runningEvent),
   ]).catch(() => { /* a missed push only leaves a stale card, which /respond explains */ });
 
@@ -597,7 +597,7 @@ async function respondByContinuation(args: {
     updatedAt: claimed.updatedAt ?? new Date().toISOString(),
   };
   await Promise.all([
-    triggerEvent(channels.worker(workerId), events.WORKER_PROGRESS, supersededEvent),
+    triggerEvent(channels.workerActivity(workerId), events.WORKER_PROGRESS, supersededEvent),
     triggerEvent(channels.task(taskId), events.WORKER_PROGRESS, supersededEvent),
   ]).catch(() => { /* a missed push only leaves a stale card, which /respond now explains */ });
 

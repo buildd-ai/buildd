@@ -5539,15 +5539,19 @@ async function patchWorker(
   // workspace channel shows delivery.
   const deliveryMoved = !!writeSet && ('instructionHistory' in writeSet || 'pendingInstructions' in writeSet);
 
+  // Progress goes to the activity channels only the dashboard holds: runners
+  // hold the worker and workspace channels for the terminal events and task:*,
+  // and Pusher bills every delivery to every subscriber (lib/pusher.ts).
   await afterReply('publish worker changes', async () => {
   if (shouldPublish) {
-    await triggerEvent(channels.worker(id), eventName, pusherPayload);
+    await triggerEvent(isTerminalEvent ? channels.worker(id) : channels.workerActivity(id), eventName, pusherPayload);
 
     if (worker.workspaceId) {
-      await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+      const workspaceChannel = isTerminalEvent ? channels.workspace(worker.workspaceId) : channels.workspaceActivity(worker.workspaceId);
+      await triggerEvent(workspaceChannel, eventName, pusherPayload);
     }
   } else if (deliveryMoved) {
-    await triggerEvent(channels.worker(id), events.WORKER_PROGRESS, { ...pusherPayload, delivery: true });
+    await triggerEvent(channels.workerActivity(id), events.WORKER_PROGRESS, { ...pusherPayload, delivery: true });
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.

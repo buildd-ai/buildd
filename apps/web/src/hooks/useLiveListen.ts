@@ -9,7 +9,7 @@
  * fallback read, so a surface never goes stale for want of a socket.
  */
 import { useEffect, useRef } from 'react';
-import { subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { bindChannelEvents } from '@/lib/pusher-client';
 import { createLiveListener } from '@/lib/live-listen';
 
 export interface UseLiveListenOptions {
@@ -46,16 +46,13 @@ export function useLiveListen({ channel, events, match, refresh, enabled = true,
       if (matchRef.current && !matchRef.current(data)) return;
       listener.event();
     };
-    const sub = channel ? subscribeToChannel(channel) : null;
-    if (sub) for (const name of names) sub.bind(name, handler);
+    // Each event on the channel it is published on (worker:progress: the activity twin).
+    const release = channel ? bindChannelEvents(channel, names.map(name => [name, handler] as const)) : null;
 
     return () => {
       listener.dispose();
       if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
-      if (sub && channel) {
-        for (const name of names) sub.unbind(name, handler);
-        unsubscribeFromChannel(channel);
-      }
+      release?.();
     };
   }, [channel, eventsKey, enabled, fallback]);
 }

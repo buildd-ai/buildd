@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { bindChannelEvents, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { demandCatchUp } from '@/lib/app-freshness';
 import { requestPageRefresh, type Refresher } from '@/lib/page-refresh';
 import {
@@ -22,7 +22,7 @@ import {
  * every event on a visible workspace can change what's waiting on the user.
  *
  * The PR merge/close webhook publishes `worker:progress` on the workspace
- * channel, so merges reconciled outside the dashboard land here too.
+ * activity channel, so merges reconciled outside the dashboard land here too.
  *
  * Every refresh is a server read (Home's own region when `refresher` is given, else a full render), and runner heartbeats publish
  * `worker:progress` every ~10s per active worker, so heartbeats that don't
@@ -76,18 +76,10 @@ export default function HomeAutoRefresh({ workspaceIds, refresher }: {
       throttle.call({ maxDelayMs: decision === 'urgent' ? HOME_URGENT_MS : undefined });
     }] as const);
 
-    const bound = stableIds.map((wsId) => {
-      const channelName = `${CHANNEL_PREFIX}workspace-${wsId}`;
-      const channel = subscribeToChannel(channelName);
-      for (const [event, handler] of handlers) channel?.bind(event, handler);
-      return { channelName, channel };
-    });
+    const releases = stableIds.map((wsId) => bindChannelEvents(`${CHANNEL_PREFIX}workspace-${wsId}`, handlers));
 
     return () => {
-      for (const { channelName, channel } of bound) {
-        for (const [event, handler] of handlers) channel?.unbind(event, handler);
-        unsubscribeFromChannel(channelName);
-      }
+      for (const release of releases) release?.();
       throttle.cancel();
     };
   }, [stableIds, target]);
