@@ -106,8 +106,44 @@ export const MAX_WATCHED_MISSIONS = 20;
  */
 export const MISSION_WATCH_TTL_MS = 15 * 60_000;
 
+/**
+ * Where the runner stands on its account's presence channel
+ * (docs/specs/runner-heartbeat.md, "Presence channel"):
+ *  - `none`: not attempted (no Pusher config, single-task runner), so the legacy 60 s ping applies;
+ *  - `pending`: joining, or the socket is down and the join is lost until it reconnects;
+ *  - `subscribed`: a member now, so an idle runner beats only on change and the fallback ping;
+ *  - `failed`: the server refused the join (an older server with no auth route), so the legacy ping applies.
+ */
+export type PresenceState = 'none' | 'pending' | 'subscribed' | 'failed';
+
+let presenceState: PresenceState = 'none';
+let pusherConnectedNow = false;
+let pusherConfirmedAt = 0;
+
+export function getPresenceState(): PresenceState {
+  return presenceState;
+}
+
+/**
+ * Latest moment the Pusher connection was confirmed up: now while connected,
+ * else when it last was. The DEGRADED detector reads it beside the last HTTP
+ * response, because a presence-connected idle runner legitimately has no HTTP
+ * traffic for most of its fallback window.
+ */
+export function getPusherConfirmedAt(now: number = Date.now()): number {
+  return pusherConnectedNow ? now : pusherConfirmedAt;
+}
+
+/** Test seam: reset the module-level presence/connection record. */
+export function __resetPresenceForTests(): void {
+  presenceState = 'none';
+  pusherConnectedNow = false;
+  pusherConfirmedAt = 0;
+}
+
 export class PusherManager {
   private pusher?: Pusher;
+  private presenceChannel?: any;
   private pusherChannels = new Map<string, any>();
   private slotChannel?: any;
   private workspaceChannels = new Map<string, any>();
@@ -141,11 +177,30 @@ export class PusherManager {
 
     this.pusher = new Pusher(this.config.pusherKey, {
       cluster: this.config.pusherCluster,
+      // Only the presence channel is authorised (every other channel is public).
+      channelAuthorization: {
+        endpoint: `${this.config.builddServer}/api/pusher/auth`,
+        transport: 'ajax',
+        customHandler: (params: { socketId: string; channelName: string }, callback: (err: Error | null, data: any) => void) => {
+          void this.authorizePresence(params.socketId, params.channelName).then(
+            data => callback(null, data),
+            err => callback(err instanceof Error ? err : new Error(String(err)), null),
+          );
+        },
+      },
     });
     console.log('Pusher connected for command relay');
+    pusherConnectedNow = this.pusher.connection.state === 'connected';
+    if (pusherConnectedNow) pusherConfirmedAt = Date.now();
 
     // On reconnect, send immediate heartbeat and claim any tasks missed during disconnect
     this.pusher.connection.bind('state_change', (states: { previous: string; current: string }) => {
+      const wasConnected = pusherConnectedNow;
+      pusherConnectedNow = states.current === 'connected';
+      if (pusherConnectedNow || wasConnected) pusherConfirmedAt = Date.now();
+      if (!pusherConnectedNow && presenceState === 'subscribed') presenceState = 'pending';
+      // A refused join (an older server) is retried on the next reconnect.
+      if (pusherConnectedNow && presenceState === 'failed') this.joinPresence(true);
       if (states.current === 'connected' && states.previous !== 'initialized') {
         console.log(`Pusher reconnected (was ${states.previous}), sending immediate heartbeat`);
         this.callbacks.sendHeartbeat();
@@ -155,6 +210,13 @@ export class PusherManager {
         }
       }
     });
+
+    // Presence: a member of the account's channel while the socket is up. Nothing is bound on it
+    // but the subscription outcome, and nothing is ever triggered on it.
+    if (!this.config.singleTask) {
+      presenceState = 'pending';
+      void this.joinPresence(false);
+    }
 
     // A slot change made on buildd.dev: beat now so the reply carries it (spec 34a48877 R-20).
     void this.subscribeToSlotNudges();
@@ -169,16 +231,61 @@ export class PusherManager {
     }
   }
 
+  private accountLookup?: Promise<{ id: string; name: string } | null>;
+  /** One /api/accounts/me read at connect serves both account-scoped channels; a miss is retried. */
+  private accountInfo(): Promise<{ id: string; name: string } | null> {
+    this.accountLookup ??= this.buildd.getAccountInfo().then(a => { if (!a) this.accountLookup = undefined; return a; });
+    return this.accountLookup;
+  }
+
+  /** Channel authorization for the presence channel: POST /api/pusher/auth with this runner's key. */
+  private async authorizePresence(socketId: string, channelName: string): Promise<unknown> {
+    const body = new URLSearchParams({ socket_id: socketId, channel_name: channelName, local_ui_url: this.config.localUiUrl });
+    const res = await fetch(`${this.config.builddServer}/api/pusher/auth`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.config.apiKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`presence auth refused: HTTP ${res.status}`);
+    return res.json();
+  }
+
+  /**
+   * Join `presence-runner-<accountId>`. pusher-js re-joins it on its own after a
+   * reconnect; `retry` re-subscribes from scratch after the server refused the join.
+   */
+  private async joinPresence(retry: boolean): Promise<void> {
+    try {
+      if (!this.pusher) return;
+      const account = await this.accountInfo();
+      if (!account?.id) { presenceState = 'failed'; return; }
+      const channelName = `${this.channelPrefix}presence-runner-${account.id}`;
+      if (this.presenceChannel && !retry) return;
+      if (this.presenceChannel) this.pusher.unsubscribe(channelName);
+      presenceState = 'pending';
+      const channel = this.pusher.subscribe(channelName);
+      channel.bind('pusher:subscription_succeeded', () => { presenceState = 'subscribed'; });
+      channel.bind('pusher:subscription_error', () => {
+        if (presenceState !== 'failed') console.warn('Presence join refused; keeping the 60s liveness ping');
+        presenceState = 'failed';
+      });
+      this.presenceChannel = channel;
+    } catch {
+      presenceState = 'failed';
+    }
+  }
+
   /**
    * The account's runner channel carries one nudge, `runner:slots`, with no
    * data: the new slots or Pause (spec 97b1bd0b R-18) come back on the
    * heartbeat reply, never over Pusher.
-   * Best effort; without it the next 30 s beat picks the change up.
+   * Best effort; without it the next beat picks the change up.
    */
   private async subscribeToSlotNudges(): Promise<void> {
     try {
       if (!this.pusher || this.config.singleTask) return;
-      const account = await this.buildd.getAccountInfo();
+      const account = await this.accountInfo();
       if (!account?.id) return;
       const channelName = `${this.channelPrefix}runner-${account.id}`;
       if (this.slotChannel) return;
@@ -546,5 +653,6 @@ export class PusherManager {
     if (this.pusher) {
       this.pusher.disconnect();
     }
+    __resetPresenceForTests();
   }
 }

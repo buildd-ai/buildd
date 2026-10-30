@@ -9,8 +9,11 @@ export const RUNNER_POLL_MIN = Number(
 // This is NOT the liveness ping — it's the task-coordination heartbeat.
 export const RUNNER_HEARTBEAT_INTERVAL_MS = RUNNER_POLL_MIN * 60_000;
 
-// Liveness ping interval: a pure "runner is alive" signal sent every 60s,
-// independent of task activity. isRunnerOnline on the Health tab keys off this.
+// Legacy liveness ping interval (60s). Runners that joined the presence channel
+// no longer send it on a timer (they beat on change plus RUNNER_FALLBACK_PING_MS);
+// it remains the cadence of an old runner build, of a runner whose presence join
+// was refused (an older server), and of a runner holding workers, whose leases
+// renew on it. The server's beat-only "online now" window is derived from it.
 export const LIVENESS_PING_INTERVAL_MS = 60_000;
 
 // The runner's own backstop: no worker session may sit without SDK activity
@@ -115,6 +118,48 @@ export const RUNNER_RECENTLY_SEEN_MS = 10 * LIVENESS_PING_INTERVAL_MS;
 // may be deleted once no live worker names it.
 export const RUNNER_ONLINE_THRESHOLD_MS = 1.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 export const RUNNER_STALE_CUTOFF_MS = 2.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
+
+/**
+ * The slow fallback ping a presence-connected runner sends so a Pusher outage
+ * degrades to slow liveness rather than none (docs/specs/runner-heartbeat.md,
+ * "Presence channel"). Runners jitter it inside 10-15 minutes.
+ */
+export const RUNNER_FALLBACK_PING_MS = 15 * 60_000;
+
+/** The shortest the jittered fallback ping may wait. */
+export const RUNNER_FALLBACK_PING_MIN_MS = 10 * 60_000;
+
+/**
+ * How long a presence-connected runner waits before its next fallback ping:
+ * uniformly inside [RUNNER_FALLBACK_PING_MIN_MS, RUNNER_FALLBACK_PING_MS] so a
+ * fleet restarted together does not beat together. `random` is injectable.
+ */
+export function fallbackPingDelayMs(random: () => number = Math.random): number {
+  const r = Math.min(Math.max(random(), 0), 1);
+  return Math.round(RUNNER_FALLBACK_PING_MIN_MS + r * (RUNNER_FALLBACK_PING_MS - RUNNER_FALLBACK_PING_MIN_MS));
+}
+
+/** "Non-stale beat" for a presence-connected runner: the fallback ping plus slack. */
+export const RUNNER_PRESENCE_BEAT_WINDOW_MS = RUNNER_FALLBACK_PING_MS + 5 * 60_000;
+
+/** The widest "online now" window any runner can be judged by; SQL prefilters use it. */
+export const RUNNER_ONLINE_CANDIDATE_WINDOW_MS = Math.max(RUNNER_LIVE_WINDOW_MS, RUNNER_PRESENCE_BEAT_WINDOW_MS);
+
+/**
+ * "Online now": connected by presence AND a non-stale content beat. A runner
+ * with no presence record (`null`/`undefined`: an older build that never joined
+ * the presence channel and still pings every 60 s) falls back to the beat-only
+ * RUNNER_LIVE_WINDOW_MS. `false` means it was connected once and is not now.
+ * Presence never keeps a worker alive: stale-worker detection does not call this.
+ */
+export function runnerOnlineNow(
+  lastBeat: string | number | Date,
+  presenceConnected: boolean | null | undefined,
+  now: number,
+): boolean {
+  if (presenceConnected == null) return beatWithin(lastBeat, now, RUNNER_LIVE_WINDOW_MS);
+  return presenceConnected && beatWithin(lastBeat, now, RUNNER_PRESENCE_BEAT_WINDOW_MS);
+}
 
 /** Slots a runner can still take: its limit minus what is running, never negative. */
 export function freeSlots(maxConcurrent: number, active: number): number {

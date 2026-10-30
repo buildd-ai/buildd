@@ -40,6 +40,7 @@ const channels = new Map<string, Map<string, Handler[]>>();
 function emit(channel: string, event: string, data: unknown) {
   for (const fn of channels.get(channel)?.get(event) ?? []) fn(data);
 }
+const { channelForEvent } = await import('@buildd/shared');
 mock.module('@/lib/pusher-client', () => ({
   CHANNEL_PREFIX: '',
   subscribeToChannel: (name: string) => {
@@ -52,6 +53,17 @@ mock.module('@/lib/pusher-client', () => ({
   },
   unsubscribeFromChannel: () => {},
   getSubscribedChannel: () => null,
+  // Real routing: worker:progress lands on the channel's -activity twin.
+  bindChannelEvents: (name: string, bindings: ReadonlyArray<readonly [string, Handler]>) => {
+    const at = (e: string) => {
+      const ch = channelForEvent(name, e);
+      const handlers = channels.get(ch) ?? new Map<string, Handler[]>();
+      channels.set(ch, handlers);
+      return handlers;
+    };
+    for (const [e, fn] of bindings) at(e).set(e, [...(at(e).get(e) ?? []), fn]);
+    return () => { for (const [e, fn] of bindings) at(e).set(e, (at(e).get(e) ?? []).filter(f => f !== fn)); };
+  },
 }));
 
 const { act, createElement } = await import('react');
@@ -166,13 +178,15 @@ afterEach(() => {
 });
 
 const workspace = `workspace-${WS}`;
+// worker:progress is published only on the workspace's activity twin.
+const activity = `workspace-${WS}-activity`;
 
 describe('AC-17 with a mocked Pusher', () => {
   it('20 worker:progress heartbeats → 0 refreshes, 20 store patches reach the children', () => {
     render(ids(3), 1);
     const before = snapshots;
     for (let i = 0; i < 20; i++) {
-      act(() => emit(workspace, 'worker:progress', { workerId: 'w1', taskId: 't0', status: 'running', currentAction: `step ${i}` }));
+      act(() => emit(activity, 'worker:progress', { workerId: 'w1', taskId: 't0', status: 'running', currentAction: `step ${i}` }));
       clock.advance(1_000);
     }
     clock.advance(10_000);
@@ -213,7 +227,7 @@ describe('AC-17 with a mocked Pusher', () => {
 
   it('never calls router.push or router.replace', () => {
     render(ids(3), 1);
-    act(() => emit(workspace, 'worker:progress', { taskId: 't2' }));
+    act(() => emit(activity, 'worker:progress', { taskId: 't2' }));
     clock.advance(MISSION_REFRESH_WINDOW_MS);
     expect(routerCalls).toEqual(['refresh']);
   });

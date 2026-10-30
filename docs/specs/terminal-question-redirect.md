@@ -94,7 +94,7 @@ an `ask_human` question MUST withdraw that question.
   `waitingFor: null`, gated on `waitingFor IS NOT NULL`, the gate `/respond`
   uses. Exactly one of buildd answer and terminal answer wins.
 - A withdrawal posts one note ("Answered in the terminal"), emits
-  `worker:progress` on the worker and task channels, and queues nothing.
+  `worker:progress` on the worker activity and task channels, and queues nothing.
 - After a withdrawal the background waiter exits non-zero and `await_answer`
   returns `stillWaiting: false`.
 

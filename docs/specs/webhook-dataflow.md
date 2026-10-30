@@ -2,7 +2,7 @@
 title: Webhook Dataflow
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-30
 summary: The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 domain: integrations
 surfaces: [apps/web/src/lib/pusher.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/task-dependencies.ts, apps/web/src/lib/notify.ts, apps/web/src/lib/notify-rules.ts]
@@ -62,7 +62,7 @@ An optional `PUSHER_CHANNEL_PREFIX` env var isolates events per environment
 | `task:failed` | `workspace-{id}`, `task-{id}` | Worker status → `failed` |
 | `task:assigned` | `workspace-{id}` | Task assigned to specific runner |
 | `worker:started` | `workspace-{id}` | Worker `startedAt` set (first `running`) |
-| `worker:progress` | `worker-{id}` | `update_progress` call |
+| `worker:progress` | `worker-{id}-activity`, `workspace-{id}-activity` (dashboard-only twins: runners hold `worker-{id}` / `workspace-{id}` and are not billed for progress) | `update_progress` call, visible worker change |
 | `worker:completed` | `worker-{id}`, `workspace-{id}` | Worker completes |
 | `worker:failed` | `worker-{id}`, `workspace-{id}` | Worker fails |
 | `worker:command` | `worker-{id}` | Admin sends instruct/recover/abort command |

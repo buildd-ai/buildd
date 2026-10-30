@@ -79,6 +79,10 @@ let flags: any;
 const writes: any[] = [];
 const scopes: any[] = [];
 
+mock.module('@/lib/pusher-usage', () => ({
+  readPusherUsage: async (days: number) => Array.from({ length: days }, (_, i) => ({ day: `2026-10-${30 - i}`, total: 0, onRunnerChannels: 0, byChannelKind: {}, rows: [] })),
+}));
+
 mock.module('@/lib/admin/growth', () => ({
   loadGrowth: async () => ({ asOf: '2031-03-15', totalUsers: 2, mau: 1, days: [] }),
 }));
@@ -169,6 +173,7 @@ const routes = {
   growth: await import('./growth/route'),
   measurements: await import('./decisions/measurements/route'),
   estimates: await import('./estimates/route'),
+  pusherUsage: await import('./pusher-usage/route'),
 };
 
 const req = (path: string, method = 'GET', body?: unknown) => new NextRequest(`http://localhost:3000/api/admin/${path}`, {
@@ -207,6 +212,7 @@ const calls: Call[] = [
   { name: 'GET decisions/measurements', call: () => routes.measurements.GET(req('decisions/measurements')) },
   { name: 'POST decisions/measurements', call: () => routes.measurements.POST(req('decisions/measurements', 'POST', MEASUREMENT)) },
   { name: 'GET estimates', call: () => routes.estimates.GET(req('estimates')) },
+  { name: 'GET pusher-usage', call: () => routes.pusherUsage.GET(req('pusher-usage')) },
 ];
 
 beforeEach(() => {
@@ -252,6 +258,15 @@ describe('the owner gets data on every route', () => {
       expect(body.error).toBeUndefined();
     });
   }
+});
+
+describe('pusher-usage', () => {
+  it('reads the asked-for days and refuses an out-of-range count', async () => {
+    const body = await (await routes.pusherUsage.GET(req('pusher-usage?days=2'))).json();
+    expect(body.days).toHaveLength(2);
+    expect((await routes.pusherUsage.GET(req('pusher-usage?days=0'))).status).toBe(400);
+    expect((await routes.pusherUsage.GET(req('pusher-usage?days=99'))).status).toBe(400);
+  });
 });
 
 describe('scope', () => {

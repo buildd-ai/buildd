@@ -89,7 +89,12 @@ export class ClaimHealth {
 /** Process-wide tracker, fed by BuilddClient.claimTask. */
 export const claimHealth = new ClaimHealth();
 
-/** Heartbeat goes DEGRADED once no HTTP response has arrived for this long. */
+/**
+ * Heartbeat goes DEGRADED once neither an HTTP response nor a Pusher connection
+ * confirmation has arrived for this long. A presence-connected idle runner sends
+ * no HTTP request between fallback pings, so the connection counts as contact
+ * (docs/specs/runner-heartbeat.md); with Pusher down the fallback ping governs.
+ */
 export const SERVER_CONTACT_STALE_MS = 5 * 60_000;
 
 /**
@@ -101,10 +106,12 @@ export function heartbeatState(
   lastOk: number | undefined,
   now: number,
   health: ClaimHealth = claimHealth,
+  pusherConfirmedAt?: number,
 ): { degraded: boolean; reason: string } {
-  const ageMs = lastOk ? now - lastOk : Infinity;
+  const contactAt = Math.max(lastOk ?? 0, pusherConfirmedAt ?? 0);
+  const ageMs = contactAt ? now - contactAt : Infinity;
   if (ageMs >= SERVER_CONTACT_STALE_MS) {
-    const since = lastOk ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
+    const since = contactAt ? `${Math.round(ageMs / 60_000)}m ago` : 'never';
     return { degraded: true, reason: `no successful server contact (last: ${since}); claims are failing` };
   }
   return { degraded: health.isDegraded(), reason: `claim endpoint failing: ${health.describe()}` };

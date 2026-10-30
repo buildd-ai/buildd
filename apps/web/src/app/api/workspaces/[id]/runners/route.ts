@@ -4,7 +4,8 @@ import { workerHeartbeats, accountWorkspaces, workspaces } from '@buildd/core/db
 import { and, eq, gt, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { beatWithin, freeSlots, RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { freeSlots, runnerOnlineNow, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from '@/lib/runner-beats';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -37,8 +38,11 @@ export async function GET(
       columns: { teamId: true, accessMode: true },
     });
 
-    const cutoff = new Date(Date.now() - RUNNER_STALE_CUTOFF_MS);
-    const heartbeats = await db.query.workerHeartbeats.findMany({
+    const now = Date.now();
+    // Listed up to the stale cutoff, which is wider than any "online now" window
+    // (a presence-connected runner's last content beat can be many minutes old).
+    const cutoff = runnerLiveCandidateCutoff(now, RUNNER_STALE_CUTOFF_MS);
+    const rows = await db.query.workerHeartbeats.findMany({
       where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
       with: {
         account: {
@@ -46,6 +50,7 @@ export async function GET(
         },
       },
     });
+    const heartbeats = await withLiveRunnerBeats(rows);
 
     // Filter to heartbeats that have access to this workspace
     const runners = await Promise.all(
@@ -63,8 +68,7 @@ export async function GET(
 
         if (!hasAccess) return null;
 
-        const now = Date.now();
-        const isOnline = beatWithin(hb.lastHeartbeatAt, now, RUNNER_ONLINE_THRESHOLD_MS);
+        const isOnline = runnerOnlineNow(hb.lastHeartbeatAt, hb.presenceConnected, now);
 
         return {
           id: hb.id,

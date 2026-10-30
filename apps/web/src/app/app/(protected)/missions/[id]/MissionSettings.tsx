@@ -4,7 +4,7 @@ import { MISSION_START_COPY, type MissionStartState } from '@/lib/mission-start-
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { bindChannelEvents, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
 import Notice from '@/components/ui/Notice';
 import Spinner from '@/components/Spinner';
@@ -150,8 +150,6 @@ export default function MissionSettings({
     if (!planningTaskId || !workspaceId) return;
 
     const channelName = `${CHANNEL_PREFIX}workspace-${workspaceId}`;
-    const channel = subscribeToChannel(channelName);
-    if (!channel) return;
 
     const matches = (d: { taskId?: string; worker?: { taskId?: string } }) =>
       (d.taskId ?? d.worker?.taskId) === planningTaskId;
@@ -169,16 +167,12 @@ export default function MissionSettings({
       router.refresh();
     };
 
-    channel.bind('worker:progress', onProgress);
-    channel.bind('worker:completed', onDone);
-    channel.bind('worker:failed', onDone);
-
-    return () => {
-      channel.unbind('worker:progress', onProgress);
-      channel.unbind('worker:completed', onDone);
-      channel.unbind('worker:failed', onDone);
-      unsubscribeFromChannel(channelName);
-    };
+    const release = bindChannelEvents(channelName, [
+      ['worker:progress', onProgress],
+      ['worker:completed', onDone],
+      ['worker:failed', onDone],
+    ]);
+    return release ?? undefined;
   }, [planningTaskId, workspaceId, router]);
 
   async function patchMission(body: Record<string, unknown>) {
