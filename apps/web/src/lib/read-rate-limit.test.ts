@@ -84,6 +84,8 @@ describe('classifyApiRead: what is counted', () => {
     expect(classifyApiRead('GET', '/api/auth/session')).toBeNull();
     expect(classifyApiRead('GET', '/api/cron/schedules')).toBeNull();
     expect(classifyApiRead('GET', '/api/webhooks/github')).toBeNull();
+    expect(classifyApiRead('GET', '/api/webhooks/pusher')).toBeNull();
+    expect(classifyApiRead('POST', '/api/pusher/auth')).toBeNull();
     expect(classifyApiRead('GET', '/api/oauth/authorize')).toBeNull();
   });
 

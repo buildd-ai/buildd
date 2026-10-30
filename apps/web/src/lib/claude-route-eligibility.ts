@@ -30,13 +30,13 @@ interface CredentialLike { purpose: string; healthStatus: string }
 const MANAGED_KEY_PURPOSES = new Set(['anthropic_api_key', 'inference_key']);
 
 export function resolveClaudeRoute(
-  runners: readonly Pick<RunnerHeartbeat, 'lastHeartbeatAt' | 'authType'>[],
+  runners: readonly Pick<RunnerHeartbeat, 'lastHeartbeatAt' | 'authType' | 'presenceConnected'>[],
   credentials: readonly CredentialLike[],
   now: number,
   /** Authoritative scheduler decision; without a fresh credential refusal nothing is called blocked. */
   decision?: RouteDecision | null,
 ): ClaudeRouteEligibility {
-  const online = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
+  const online = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected));
   const localLogin = online.some(r => r.authType === 'oauth') ? 'ready' : 'none';
   const keys = credentials.filter(c => MANAGED_KEY_PURPOSES.has(c.purpose));
   const managedKey = keys.length === 0

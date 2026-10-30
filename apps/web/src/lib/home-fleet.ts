@@ -84,6 +84,7 @@ export function fleetHeartbeatsQuery(input: { teamId: string | null; wsIds: stri
       activeWorkerCount: workerHeartbeats.activeWorkerCount,
       environment: workerHeartbeats.environment,
       lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
+      presenceConnected: workerHeartbeats.presenceConnected,
       // An update in progress: "Updating to …" / "Update stuck on …", no free slots (spec 47c97f48).
       updateDrain: workerHeartbeats.updateDrain,
     })
