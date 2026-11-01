@@ -63,6 +63,7 @@ const CAUSE_TEXT: Record<string, string> = {
   'path_overlap.blocker_merged_unreleased': 'A change merged but still holds its files',
   'path_overlap.blocker_stuck': 'A task is waiting on a change that stopped moving',
   'path_overlap.cycle': 'Two pieces of work are waiting on each other',
+  'dispatch.model_fallback': 'Tasks are running on an older model than the one asked for',
   'path_overlap.subject_exempt_violated': 'A task is blocked by the change it is meant to update',
   'path_overlap.spurious_overlap': 'A change claims files it does not touch',
 };
@@ -78,7 +79,7 @@ export function incidentCause(reasonCode: string | null | undefined, rule: Failu
 // ── The projection ─────────────────────────────────────────────────────────
 
 /** Rules whose incidents below critical Buildd recovers on its own: an unassessed one is never the person's. */
-export const BUILDD_RECOVERED_RULES: ReadonlySet<FailureIncidentRule> = new Set(['path_overlap_stall', 'infrastructure_failure']);
+export const BUILDD_RECOVERED_RULES: ReadonlySet<FailureIncidentRule> = new Set(['path_overlap_stall', 'infrastructure_failure', 'model_dispatch_fallback']);
 
 /** An assessment with no observation in this long reads as inconclusive (§5 rule 2, 2× the cron cadence). */
 const STALE_MINUTES = 60;

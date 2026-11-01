@@ -54,9 +54,10 @@ export type RulePolicy = RecoveryPolicyView['perRule'][string];
 
 /**
  * The repair families FIR shipped run automatically; any other family starts
- * in shadow (§9.5) until a `set_policy` turns it on.
+ * in shadow (§9.5) until a `set_policy` turns it on. The model-fallback family
+ * is live from the start: its only repair is filing the one fix task.
  */
-const LIVE_RULES: ReadonlySet<string> = new Set<FailureIncidentRule>(['path_overlap_stall', 'infrastructure_failure']);
+const LIVE_RULES: ReadonlySet<string> = new Set<FailureIncidentRule>(['path_overlap_stall', 'infrastructure_failure', 'model_dispatch_fallback']);
 
 export const DEFAULT_RULE_POLICY: Omit<RulePolicy, 'autoRepair'> = {
   budgetLimit: 3,
