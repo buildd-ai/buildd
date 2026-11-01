@@ -29,7 +29,7 @@ import {
   type ShippedRecord,
 } from '@/lib/mission-shipped';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { outcomePool, type OutcomeArtifact } from '@/lib/mission-outcome';
+import { outcomePool, withPersonPrimaryOutcome, type OutcomeArtifact, type StoredPrimaryOutcome } from '@/lib/mission-outcome';
 
 /**
  * PR-file reads per mission, one page of files each, each cut off after a few
@@ -85,6 +85,25 @@ export function outcomePoolPromptLines(pool: readonly OutcomeArtifact[]): string
     '\n## Outcomes for shipped.primaryOutcome (id — kind: title)',
     ...pool.map(a => `- ${a.id} — ${a.kind}: ${a.title}`),
   ];
+}
+
+/**
+ * A person's choice of the mission's primary outcome (Mission checks I-28 rule
+ * 1), set or cleared on the stored record. Returns the stored field, or
+ * `no_record` when the mission has no What shipped record to carry it.
+ */
+export async function storePersonPrimaryOutcome(
+  missionId: string,
+  choice: { artifactId: string; chosenBy: string } | null,
+): Promise<{ primaryOutcome: StoredPrimaryOutcome | null } | 'no_record'> {
+  const record = await db.query.artifacts.findFirst({
+    where: sqlWhere(and(eq(artifacts.missionId, missionId), eq(artifacts.key, shippedArtifactKey(missionId)))),
+    columns: { id: true, metadata: true },
+  });
+  if (!record) return 'no_record';
+  const metadata = withPersonPrimaryOutcome(record.metadata as Record<string, unknown> | null, choice);
+  await db.update(artifacts).set({ metadata, updatedAt: new Date() }).where(eq(artifacts.id, record.id));
+  return { primaryOutcome: ((metadata.shipped as { primaryOutcome?: StoredPrimaryOutcome }).primaryOutcome) ?? null };
 }
 
 type TaskRow = {

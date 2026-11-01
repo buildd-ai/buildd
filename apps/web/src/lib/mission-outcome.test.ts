@@ -10,6 +10,7 @@ import {
   outcomeTaskLine,
   selectPrimaryOutcome,
   validateNomination,
+  isCloseoutTask,
   withPersonPrimaryOutcome,
   type OutcomeArtifactInput,
   type OutcomeHeroInput,
@@ -234,5 +235,14 @@ describe("withPersonPrimaryOutcome (I-28 rule 1)", () => {
 
   it('clears it', () => {
     expect('primaryOutcome' in (withPersonPrimaryOutcome(meta, null).shipped as object)).toBe(false);
+  });
+});
+
+describe('isCloseoutTask', () => {
+  it('is the bookkeeping Aggregate results task, or an unclassed one from before task classes', () => {
+    expect(isCloseoutTask({ title: 'Aggregate results: Mission X', taskClass: 'bookkeeping' })).toBe(true);
+    expect(isCloseoutTask({ title: 'Aggregate results: Mission X', taskClass: null })).toBe(true);
+    expect(isCloseoutTask({ title: 'Aggregate results: Mission X', taskClass: 'work' })).toBe(false);
+    expect(isCloseoutTask({ title: 'Evaluate mission completion: X', taskClass: 'bookkeeping' })).toBe(false);
   });
 });

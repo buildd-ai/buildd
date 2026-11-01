@@ -15,27 +15,26 @@ let currentUser: any;
 let updates: any[] = [];
 
 mock.module('drizzle-orm', () => ({
-  and: (...a: any[]) => ({ _op: 'and', a }),
   eq: (...a: any[]) => ({ _op: 'eq', a }),
 }));
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'missions.id' },
-  artifacts: { id: 'artifacts.id', missionId: 'artifacts.missionId', key: 'artifacts.key' },
 }));
 mock.module('@buildd/core/db', () => ({
-  db: {
-    query: {
-      missions: { findFirst: () => Promise.resolve(missionRow) },
-      artifacts: { findFirst: () => Promise.resolve(recordRow) },
-    },
-    update: () => ({ set: (values: any) => ({ where: () => { updates.push(values); return Promise.resolve(); } }) }),
-  },
+  db: { query: { missions: { findFirst: () => Promise.resolve(missionRow) } } },
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: () => Promise.resolve(currentUser) }));
 mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: () => Promise.resolve(['team-1']) }));
+// The store's own merge is `withPersonPrimaryOutcome` (mission-outcome.test.ts); here, what reaches it.
+const { withPersonPrimaryOutcome } = await import('@/lib/mission-outcome');
 mock.module('@/lib/mission-shipped-report', () => ({
-  shippedArtifactKey: (id: string) => `mission-shipped-${id}`,
   loadOutcomePool: () => Promise.resolve([{ id: REPORT, title: 'Findings', kind: 'report', taskId: 't-1' }]),
+  storePersonPrimaryOutcome: async (_id: string, choice: { artifactId: string; chosenBy: string } | null) => {
+    if (!recordRow) return 'no_record';
+    const metadata = withPersonPrimaryOutcome(recordRow.metadata, choice);
+    updates.push({ metadata });
+    return { primaryOutcome: (metadata.shipped as any).primaryOutcome ?? null };
+  },
 }));
 
 const { POST } = await import('./route');

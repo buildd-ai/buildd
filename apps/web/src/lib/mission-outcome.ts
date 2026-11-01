@@ -20,6 +20,18 @@ import { deliveredInto } from '@buildd/shared';
 import { isAuditScreenshot, isReviewArtifact, type ArtifactProminenceInput } from '@/lib/artifact-prominence';
 import type { MissionReleaseStatus } from '@/lib/mission-delivery';
 
+/** The title the server gives a mission's closeout (aggregation) task. */
+export const CLOSEOUT_TITLE_PREFIX = 'Aggregate results:';
+
+/**
+ * The mission's closeout task: bookkeeping by class, named by the server
+ * (`task-dependencies.ts`). A row from before task classes were stored has none.
+ */
+export function isCloseoutTask(task: { title?: string | null; taskClass?: string | null }): boolean {
+  if (task.taskClass != null && task.taskClass !== 'bookkeeping') return false;
+  return (task.title ?? '').startsWith(CLOSEOUT_TITLE_PREFIX);
+}
+
 export type OutcomeClass = 'code' | 'mixed' | 'research' | 'spec' | 'none';
 export type OutcomeKind = 'report' | 'spec' | 'design';
 export type PrimaryOutcomeSource = 'person' | 'author' | 'closeout';

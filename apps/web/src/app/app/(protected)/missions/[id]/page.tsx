@@ -4,7 +4,7 @@ import { after } from 'next/server';
 import { scheduleOwedVisualReview } from '@/lib/mission-summary-home';
 import { loadBuildEstimateRows } from '@/lib/mission-build-estimates';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, specs, users } from '@buildd/core/db/schema';
-import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
+import { eq, and, or, inArray, desc, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -39,7 +39,7 @@ import MissionDescription from './MissionDescription';
 import MissionShippedHeader from './MissionShippedHeader';
 import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
-import { buildOutcomeHero, missionOutcome } from '@/lib/mission-outcome';
+import { buildOutcomeHero, isCloseoutTask, missionOutcome } from '@/lib/mission-outcome';
 import MissionOutcomeHero from './MissionOutcomeHero';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import ShellPageMarks from '@/components/ShellPageMarks';
@@ -761,7 +761,23 @@ async function MissionDetailBody({
   const completionNote = mission.status === 'completed' ? r1.completionNote ?? null : null;
   const shippedRow = mission.status === 'completed' ? r1.shippedRow ?? null : null;
   const feedNoteRows = r1.feedNotes ?? [];
-  const [releaseFooterData, carryingReleaseId, surfaceAuditWaiver, visualReviewState, estimateRows, outcomeSpecTitles, waiverNames, acceptanceHolds] = await Promise.all([
+  // What the mission produced (Mission checks I-27, I-28): the class and the primary outcome from
+  // the PR facts, the stored record and the closeout task, never the newest artifact, read off rows
+  // already in hand. Only a completed mission has an outcome to lead with.
+  const deliverablePrTasks = allTasks.filter(t => t.category !== 'review' && t.status !== 'cancelled' && isDeliverableTask(t as never)
+    && !!((t.workers as Array<{ prUrl?: string | null; prNumber?: number | null }> | undefined)?.[0]?.prUrl || (t.workers as Array<{ prNumber?: number | null }> | undefined)?.[0]?.prNumber));
+  const outcomeInput = {
+    missionId: id,
+    artifacts: allArtifacts.map(a => ({
+      id: a.id, title: a.title ?? null, type: a.type, key: a.key ?? null, visibility: (a.visibility as 'private' | 'public' | null) ?? null,
+      storageKey: a.storageKey ?? null, metadata: (a.metadata as Record<string, unknown> | null) ?? null, taskId: a.taskId,
+    })),
+    storedPrimary: ((shippedRow?.metadata as { shipped?: { primaryOutcome?: unknown } } | null)?.shipped)?.primaryOutcome ?? null,
+    closeoutTaskIds: new Set(allTasks.filter(isCloseoutTask).map(t => t.id)),
+    deliverablePrCount: deliverablePrTasks.length,
+  };
+  const outcome = mission.status === 'completed' ? missionOutcome(outcomeInput) : null;
+  const [releaseFooterData, carryingReleaseId, surfaceAuditWaiver, visualReviewState, estimateRows, outcomeSpecTitles, waiverNames, acceptanceHolds, primaryBody] = await Promise.all([
     // The mission reads only its own Shipped fact from this (D6); the
     // workspace queue and the Release now trigger are not rendered here.
     shouldQueryRelease(releaseArchetype) && releaseWorkspace
@@ -804,6 +820,12 @@ async function MissionDetailBody({
     }),
     // Acceptance test holds from acceptance-test edits awaiting approval.
     loadAcceptanceHolds(id).catch(() => []),
+    // The primary outcome's opening, for the hero's excerpt (Navigation R-23): its head only.
+    outcome?.primary
+      ? db.select({ head: sql<string | null>`left(${artifacts.content}, 4000)` }).from(artifacts)
+          .where(eq(artifacts.id, outcome.primary.artifact.id)).limit(1)
+          .then(rows => rows[0]?.head ?? null, () => null)
+      : Promise.resolve(null),
   ]);
   if (surfaceAuditWaiver) surfaceAuditWaiver.actorLabel = waiverActorName(surfaceAuditWaiver.actorLabel, user?.email, waiverNames);
   // An out-of-date review with no audit behind it files the next one now, not at the next sweep.
@@ -921,29 +943,10 @@ async function MissionDetailBody({
     mergedAt: missionMergedAt,
     releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
   });
-  // What the mission produced (Mission checks I-27 to I-30, Navigation R-23 to R-26): the
-  // class and the primary outcome from the PR facts, the stored record and the closeout task,
-  // never the newest artifact. Only a completed mission has an outcome to lead with.
+  // The completed mission's hero (Navigation R-23 to R-26), over the outcome read above.
   const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
-  const deliverablePrTasks = allTasks.filter(t => t.category !== 'review' && t.status !== 'cancelled' && isDeliverableTask(t as never)
-    && !!((t.workers as Array<{ prUrl?: string | null; prNumber?: number | null }> | undefined)?.[0]?.prUrl || (t.workers as Array<{ prNumber?: number | null }> | undefined)?.[0]?.prNumber));
-  const outcomeInput = {
-    missionId: id,
-    artifacts: allArtifacts.map(a => ({
-      id: a.id, title: a.title ?? null, type: a.type, key: a.key ?? null, visibility: (a.visibility as 'private' | 'public' | null) ?? null,
-      storageKey: a.storageKey ?? null, metadata: (a.metadata as Record<string, unknown> | null) ?? null, taskId: a.taskId,
-    })),
-    storedPrimary: ((shippedRow?.metadata as { shipped?: { primaryOutcome?: unknown } } | null)?.shipped)?.primaryOutcome ?? null,
-    closeoutTaskIds: new Set(allTasks.filter(t => t.title?.startsWith('Aggregate results:')).map(t => t.id)),
-    deliverablePrCount: deliverablePrTasks.length,
-  };
-  const outcome = mission.status === 'completed' ? missionOutcome(outcomeInput) : null;
   const outcomeTarget = (typeof trunkName === 'string' && trunkName ? trunkName : null) ?? visualReviewState?.branch.base ?? 'dev';
   const missionBranch = (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true;
-  const primaryBody = outcome?.primary
-    ? await db.query.artifacts.findFirst({ where: sqlWhere(eq(artifacts.id, outcome.primary.artifact.id)), columns: { content: true } })
-        .then(r => r?.content ?? null, () => null)
-    : null;
   const buildTaskRows = (mission.tasks ?? []).filter(t => t.taskClass !== 'attempt' && isDeliverableTask(t as never) && missionHelpers.deliverableRole(t as Parameters<typeof missionHelpers.deliverableRole>[0]) === 'build' && t.status === 'completed');
   const mergedBuild = buildTaskRows.filter(t => !!(t.workers as Array<{ mergedAt?: unknown }> | undefined)?.some(w => !!w.mergedAt)).length;
   const outcomeHero = outcome

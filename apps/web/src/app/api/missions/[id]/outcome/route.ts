@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { artifacts, missions } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { missions } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
-import { loadOutcomePool, shippedArtifactKey } from '@/lib/mission-shipped-report';
-import { withPersonPrimaryOutcome } from '@/lib/mission-outcome';
+import { loadOutcomePool, storePersonPrimaryOutcome } from '@/lib/mission-shipped-report';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -52,19 +51,9 @@ export async function POST(
     }
   }
 
-  const record = await db.query.artifacts.findFirst({
-    where: sqlWhere(and(eq(artifacts.missionId, id), eq(artifacts.key, shippedArtifactKey(id)))),
-    columns: { id: true, metadata: true },
-  });
-  if (!record) {
+  const stored = await storePersonPrimaryOutcome(id, artifactId ? { artifactId, chosenBy: `user:${user.id}` } : null);
+  if (stored === 'no_record') {
     return NextResponse.json({ error: 'This mission has no completion record to store the choice on.' }, { status: 409 });
   }
-
-  const metadata = withPersonPrimaryOutcome(
-    record.metadata as Record<string, unknown> | null,
-    artifactId ? { artifactId, chosenBy: `user:${user.id}` } : null,
-  );
-  await db.update(artifacts).set({ metadata, updatedAt: new Date() }).where(eq(artifacts.id, record.id));
-
-  return NextResponse.json({ primaryOutcome: (metadata.shipped as { primaryOutcome?: unknown }).primaryOutcome ?? null });
+  return NextResponse.json(stored);
 }

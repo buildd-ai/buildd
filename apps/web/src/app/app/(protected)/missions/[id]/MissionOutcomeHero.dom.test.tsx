@@ -112,8 +112,7 @@ describe('no primary outcome (AC-20)', () => {
     act(() => root.render(<MissionOutcomeHero missionId={M} view={view} />));
     expect(q('outcome-words')?.textContent).toBe('Outcome ready · 3 reports');
     expect(Array.from(container.querySelectorAll('[data-testid="outcome-report"]')).map(a => a.textContent)).toEqual(['Beta›', 'Newest›', 'Alpha›']);
-    expect(q('outcome-no-primary')?.textContent).toBe('No primary report chosen');
-    expect(q('outcome-choose')?.textContent).toBe('Choose ›');
+    expect(q('outcome-choose')?.textContent).toBe('Choose the main report ›');
     expect(q('outcome-title')).toBeNull();
     expect(q('outcome-open')).toBeNull();
   });

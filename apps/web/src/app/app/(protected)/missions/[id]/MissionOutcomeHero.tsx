@@ -104,12 +104,9 @@ export default function MissionOutcomeHero({ missionId, view, children }: { miss
               </li>
             ))}
           </ul>
-          <p className="flex flex-wrap items-center gap-x-3 font-mono text-meta text-text-muted">
-            <span data-testid="outcome-no-primary">No primary report chosen</span>
-            <button type="button" data-testid="outcome-choose" onClick={() => openMissionRecords({ missionId })} className="inline-flex min-h-11 items-center text-text-secondary underline-offset-4 hover:text-text-primary hover:underline md:min-h-0">
-              Choose ›
-            </button>
-          </p>
+          <button type="button" data-testid="outcome-choose" onClick={() => openMissionRecords({ missionId })} className="inline-flex min-h-11 items-center self-start text-body text-text-secondary underline-offset-4 hover:text-text-primary hover:underline md:min-h-0">
+            Choose the main report ›
+          </button>
         </div>
       )}
 
