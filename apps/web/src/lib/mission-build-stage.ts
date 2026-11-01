@@ -233,8 +233,12 @@ export function buildStage(model: Model, now: number, opts: BuildStageOptions): 
 }
 
 /** `16 tasks merged ›`: the folded Build stage once every build task landed (R-15). */
-export function buildFoldLine(total: number): string {
-  return `${total} ${total === 1 ? 'task' : 'tasks'} merged ›`;
+export function buildFoldLine(total: number, withoutPr = 0): string {
+  // Navigation R-26: a task that finished with no PR is done, not merged.
+  const done = Math.min(Math.max(0, withoutPr), total);
+  if (done === 0) return `${total} ${total === 1 ? 'task' : 'tasks'} merged ›`;
+  if (done === total) return `${total} ${total === 1 ? 'task' : 'tasks'} done ›`;
+  return `${total - done} merged · ${done} done ›`;
 }
 
 /** The merged fold inside the list: `11 merged ›` (Navigation R-5). */

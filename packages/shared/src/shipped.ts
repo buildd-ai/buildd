@@ -30,6 +30,8 @@ export interface ShippedOutput {
   heroShots?: string[];
   /** At most 2 lines; only when delivered work materially differs from the description. */
   offPlan?: string[];
+  /** One artifact id from the listed outcomes, only when it is the result the person asked for. */
+  primaryOutcome?: string;
 }
 
 export const shippedOutputSchema = {
@@ -62,6 +64,12 @@ export const shippedOutputSchema = {
         'differs and why. A retry, a conflict or CI fix, a rename, or a different implementation with no effect ' +
         'on the outcome is not off-plan. When unsure, omit.',
     },
+    primaryOutcome: {
+      type: 'string',
+      description:
+        'Only if outcomes are listed in your instructions: the ONE id that is the result the person asked for ' +
+        '(a finding, a recommendation, a spec, a design). Never a summary of code work. Otherwise omit.',
+    },
   },
   required: ['lede'],
 } as const satisfies Record<string, unknown>;
@@ -93,6 +101,10 @@ export function shippedPromptText(trigger: 'planning' | 'evaluation'): string {
     `Then at most ${SHIPPED_OFF_PLAN_MAX_LINES} short plain lines, each saying what differs and why. A retry, a conflict or`,
     'CI fix, a rename, or a different implementation with no effect on the outcome is not',
     'off-plan. When unsure, omit it.',
+    '',
+    '`shipped.primaryOutcome`: only if outcomes are listed below, the ONE id that is the result the',
+    'person asked for: a report with the finding or recommendation, a spec, a design. Never a summary',
+    'of code work, never the newest one by default. When none is clearly the result, omit it.',
     '',
     'BAD:  "Fixed mobile layout issue with ProviderOnboardingCard pushing Needs You content',
     '       below the fold. Added hasActionableWork prop and reduced mobile padding from',

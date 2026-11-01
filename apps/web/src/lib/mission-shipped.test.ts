@@ -267,6 +267,41 @@ describe('buildShippedRecord — the fallbacks table', () => {
   });
 });
 
+describe('buildShippedRecord — primary outcome (Mission checks I-28, AC-38)', () => {
+  const OUTCOMES = [
+    { id: 'report-1', title: 'Findings', kind: 'report' as const, taskId: 't1' },
+    { id: 'report-2', title: 'Appendix', kind: 'report' as const, taskId: 't2' },
+  ];
+
+  it('keeps a nomination that is in the pool', () => {
+    const { record } = buildShippedRecord({ ...base, authorShipped: { lede: GOOD_LEDE, primaryOutcome: 'report-1' }, outcomePool: OUTCOMES });
+    expect(record.primaryOutcome).toEqual({ artifactId: 'report-1', source: 'author' });
+  });
+
+  it('drops a nomination outside the pool', () => {
+    const { record } = buildShippedRecord({ ...base, authorShipped: { lede: GOOD_LEDE, primaryOutcome: 'made-up' }, outcomePool: OUTCOMES });
+    expect(record.primaryOutcome).toBeUndefined();
+  });
+
+  it('trusts no nomination from an author whose lede failed', () => {
+    const { record } = buildShippedRecord({ ...base, authorShipped: { lede: 'Added `Foo`.', primaryOutcome: 'report-1' }, outcomePool: OUTCOMES });
+    expect(record.primaryOutcome).toBeUndefined();
+  });
+
+  it("keeps a person's choice through a later completion, manual included", () => {
+    const previous = { artifactId: 'report-2', source: 'person', chosenBy: 'Sam' };
+    expect(buildShippedRecord({ ...base, authorShipped: { lede: GOOD_LEDE, primaryOutcome: 'report-1' }, outcomePool: OUTCOMES, previousPrimaryOutcome: previous }).record.primaryOutcome)
+      .toEqual(previous);
+    expect(buildShippedRecord({ ...base, manual: true, authorShipped: null, outcomePool: OUTCOMES, previousPrimaryOutcome: previous }).record.primaryOutcome)
+      .toEqual(previous);
+  });
+
+  it('writes no field when there is nothing to keep (an older record stays readable)', () => {
+    const { record } = buildShippedRecord({ ...base, authorShipped: { lede: GOOD_LEDE } });
+    expect('primaryOutcome' in record).toBe(false);
+  });
+});
+
 describe('record helpers', () => {
   it('parseShippedRecord accepts only a version-1 record', () => {
     const { record } = buildShippedRecord({ ...base, authorShipped: { lede: GOOD_LEDE } });

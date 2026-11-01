@@ -17,6 +17,7 @@ import {
 import { isUiSurfacePath } from '@buildd/core/surface-audit';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { selectLatestRun, type QaVerdict, type QaViewport, type VisualShot } from './mission-visual-review';
+import { nextStoredPrimaryOutcome, type OutcomeArtifact, type StoredPrimaryOutcome } from './mission-outcome';
 
 export type ShippedChangeType = 'frontend' | 'backend' | 'both' | null;
 export type ShippedOrigin = 'author' | 'no_author' | 'manual';
@@ -38,6 +39,12 @@ export interface ShippedRecord {
   origin: ShippedOrigin;
   /** `missions.completedAt` when written: a reopened mission no longer matches it. */
   completedAt: string;
+  /**
+   * The mission's result (Mission checks 072de598 I-28): a person's choice, or
+   * the author's nomination kept only because it was in the pool. Absent on a
+   * record written before the rule; the page then applies the closeout fallback.
+   */
+  primaryOutcome?: StoredPrimaryOutcome;
 }
 
 // ── Change type ─────────────────────────────────────────────────────────────
@@ -192,6 +199,10 @@ export interface BuildShippedRecordInput {
   /** `dataClass === 'sensitive'`: no prose is stored, only facts. */
   sensitive: boolean;
   completedAt: Date | string;
+  /** The artifacts a primary outcome may name (`outcomePool`). */
+  outcomePool?: readonly OutcomeArtifact[];
+  /** The stored record's `primaryOutcome`, so a person's choice survives this completion. */
+  previousPrimaryOutcome?: unknown;
 }
 
 export function buildShippedRecord(input: BuildShippedRecordInput): { record: ShippedRecord; ledeRejection: string | null } {
@@ -212,6 +223,12 @@ export function buildShippedRecord(input: BuildShippedRecordInput): { record: Sh
 
   const origin: ShippedOrigin = input.manual ? 'manual' : authored ? 'author' : 'no_author';
   const completedAt = typeof input.completedAt === 'string' ? input.completedAt : input.completedAt.toISOString();
+  // Like the hero shots, an untrusted author nominates nothing.
+  const primaryOutcome = nextStoredPrimaryOutcome(
+    input.previousPrimaryOutcome,
+    authored ? shipped?.primaryOutcome : undefined,
+    input.outcomePool ?? [],
+  );
 
   return {
     ledeRejection,
@@ -224,6 +241,7 @@ export function buildShippedRecord(input: BuildShippedRecordInput): { record: Sh
       authorTaskId: input.manual ? null : input.authorTaskId,
       origin,
       completedAt,
+      ...(primaryOutcome ? { primaryOutcome } : {}),
     },
   };
 }

@@ -212,13 +212,13 @@ export function RequirementsView({ view }: { view: MissionVerifyView }) {
  * The folded Build stage once every build task landed (Navigation R-15):
  * one line, `16 tasks merged ›`, that opens the bar. Never says delivered (R-12).
  */
-export function BuildCompleteBar({ done, where, open, onToggle, children }: { done: number; where: string; open: boolean; onToggle: () => void; children?: ReactNode }) {
+export function BuildCompleteBar({ done, withoutPr = 0, where, open, onToggle, children }: { done: number; /** Build tasks finished with no PR (Navigation R-26). */ withoutPr?: number; where: string; open: boolean; onToggle: () => void; children?: ReactNode }) {
   return (
     <div className="flex flex-col gap-3">
       <Card data-testid="build-complete-bar" padding="sm" className="flex flex-wrap items-center gap-x-4 gap-y-2 md:px-4">
         <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
         <button type="button" aria-expanded={open} data-testid="build-complete-toggle" onClick={onToggle} title={`${done} of ${done} in ${where}`} className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left text-title font-medium text-text-primary md:min-h-0">
-          {buildFoldLine(done)}
+          {buildFoldLine(done, withoutPr)}
         </button>
       </Card>
       {open && children}
