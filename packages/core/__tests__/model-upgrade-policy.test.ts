@@ -21,10 +21,10 @@ const entry = (id: string, created: number, input = 1, extra: Partial<CatalogEnt
 const CATALOG = [
   entry('claude-sonnet-5-5', ANCHOR, 3),
   entry('claude-haiku-4-5', ANCHOR - 200 * DAY, 1),
-  entry('claude-haiku-5-5', ANCHOR + 30 * DAY, 1),
+  entry('claude-haiku-6', ANCHOR + 30 * DAY, 1),
 ];
 const cert = (certifiedAt: number): ModelCertification => ({
-  model: 'claude-haiku-5-5', state: 'certified', certifiedAt: new Date(certifiedAt).toISOString(), minVerifiedCliVersion: '2.1.290', probe: { attempts: 1 },
+  model: 'claude-haiku-6', state: 'certified', certifiedAt: new Date(certifiedAt).toISOString(), minVerifiedCliVersion: '2.1.290', probe: { attempts: 1 },
 });
 
 describe('policy inheritance', () => {
@@ -58,11 +58,11 @@ describe('buildUpgradePolicy / adoptPolicy', () => {
 });
 
 describe('explainTierAdoption', () => {
-  const certs = new Map([['claude-haiku-5-5', cert(NOW - 3_600_000)]]);
+  const certs = new Map([['claude-haiku-6', cert(NOW - 3_600_000)]]);
 
   it('latest-compatible on the newest model: nothing newer, nothing withheld', () => {
     const r = explainTierAdoption({
-      tier: 'budget', current: { model: 'claude-haiku-5-5', source: 'catalog' },
+      tier: 'budget', current: { model: 'claude-haiku-6', source: 'catalog' },
       policy: { policy: { mode: 'latest-compatible' }, source: 'default' }, catalog: CATALOG, certifications: certs, now: NOW,
     });
     expect(r.newer).toBeNull();
@@ -76,7 +76,7 @@ describe('explainTierAdoption', () => {
       policy: { policy: { mode: 'manual', adoptedThrough: new Date(NOW - DAY * 1000).toISOString() }, source: 'team' },
       catalog: CATALOG, certifications: certs, now: NOW,
     });
-    expect(r.newer?.model).toBe('claude-haiku-5-5');
+    expect(r.newer?.model).toBe('claude-haiku-6');
     expect(r.withheld).toEqual({ reason: 'manual', eligibleAt: null });
   });
 

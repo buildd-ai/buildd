@@ -316,10 +316,10 @@ describe('resolveTierEntry — certified releases and upgrade policy', () => {
   const catalog = () => [
     catalogEntry({ id: 'claude-sonnet-5-5', created: ANCHOR, input: 3 }),
     catalogEntry({ id: 'claude-haiku-4-5', created: ANCHOR - 200 * DAY, input: 1 }),
-    catalogEntry({ id: 'claude-haiku-5-5', created: HAIKU_55_RELEASE, input: 1 }),
+    catalogEntry({ id: 'claude-haiku-6', created: HAIKU_55_RELEASE, input: 1 }),
   ];
   const certified = (certifiedAt: string, extra: Record<string, unknown> = {}) => ({
-    model: 'claude-haiku-5-5',
+    model: 'claude-haiku-6',
     state: 'certified',
     certifiedAt,
     minVerifiedCliVersion: '2.1.290',
@@ -340,50 +340,50 @@ describe('resolveTierEntry — certified releases and upgrade policy', () => {
   });
 
   it('latest-compatible adopts a certified release with no code change', async () => {
-    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
+    mockCertifications = new Map([['claude-haiku-6', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
     const entry = await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300');
-    expect(entry.model).toBe('claude-haiku-5-5');
+    expect(entry.model).toBe('claude-haiku-6');
     expect(entry.source).toBe('catalog');
   });
 
   it('a runner below the certified floor gets the previous in-band model, not a deferral', async () => {
-    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date().toISOString(), { minCliVersion: '2.1.295' })]]);
+    mockCertifications = new Map([['claude-haiku-6', certified(new Date().toISOString(), { minCliVersion: '2.1.295' })]]);
     expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.290')).model).toBe('claude-haiku-4-5');
-    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.295')).model).toBe('claude-haiku-5-5');
+    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.295')).model).toBe('claude-haiku-6');
   });
 
   it('a runner that reports no CLI version is not handed a certified-only model', async () => {
-    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date().toISOString())]]);
+    mockCertifications = new Map([['claude-haiku-6', certified(new Date().toISOString())]]);
     expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', undefined)).model).toBe('claude-haiku-4-5');
   });
 
   it('a failed or incompatible certification never serves the model', async () => {
     for (const state of ['failed', 'incompatible', 'probing']) {
-      mockCertifications = new Map([['claude-haiku-5-5', { ...certified(new Date().toISOString()), state }]]);
+      mockCertifications = new Map([['claude-haiku-6', { ...certified(new Date().toISOString()), state }]]);
       expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300')).model).toBe('claude-haiku-4-5');
     }
   });
 
   it('manual teams stay on what they had when they chose manual', async () => {
     const setAt = new Date(Date.now() - 2 * 86_400_000).toISOString();
-    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
+    mockCertifications = new Map([['claude-haiku-6', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
     mockUpgradePolicy = { policy: { mode: 'manual', adoptedThrough: setAt, setAt }, source: 'team' };
     expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300')).model).toBe('claude-haiku-4-5');
 
     // Adopting moves the line forward.
     mockUpgradePolicy = { policy: { mode: 'manual', adoptedThrough: new Date().toISOString() }, source: 'team' };
-    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300')).model).toBe('claude-haiku-5-5');
+    expect((await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300')).model).toBe('claude-haiku-6');
   });
 
   it('soak teams adopt only after the soak window, restarted by a compatibility incident', async () => {
     mockUpgradePolicy = { policy: { mode: 'soak', soakHours: 48 }, source: 'workspace' };
-    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 24 * 3_600_000).toISOString())]]);
+    mockCertifications = new Map([['claude-haiku-6', certified(new Date(Date.now() - 24 * 3_600_000).toISOString())]]);
     expect((await resolveTierEntry('budget', TEAM_A, WS_A, 'agent', '2.1.300')).model).toBe('claude-haiku-4-5');
 
-    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 72 * 3_600_000).toISOString())]]);
-    expect((await resolveTierEntry('budget', TEAM_A, WS_A, 'agent', '2.1.300')).model).toBe('claude-haiku-5-5');
+    mockCertifications = new Map([['claude-haiku-6', certified(new Date(Date.now() - 72 * 3_600_000).toISOString())]]);
+    expect((await resolveTierEntry('budget', TEAM_A, WS_A, 'agent', '2.1.300')).model).toBe('claude-haiku-6');
 
-    mockCertifications = new Map([['claude-haiku-5-5', certified(
+    mockCertifications = new Map([['claude-haiku-6', certified(
       new Date(Date.now() - 72 * 3_600_000).toISOString(),
       { lastIncidentAt: new Date(Date.now() - 3_600_000).toISOString() },
     )]]);
@@ -394,7 +394,7 @@ describe('resolveTierEntry — certified releases and upgrade policy', () => {
     mockFindMany.mockResolvedValue([
       { teamId: TEAM_A, workspaceId: null, tier: 'budget', provider: 'anthropic', model: 'claude-haiku-4-5', surface: null },
     ]);
-    mockCertifications = new Map([['claude-haiku-5-5', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
+    mockCertifications = new Map([['claude-haiku-6', certified(new Date(Date.now() - 3_600_000).toISOString())]]);
     const entry = await resolveTierEntry('budget', TEAM_A, null, 'agent', '2.1.300');
     expect(entry.model).toBe('claude-haiku-4-5');
     expect(entry.source).toBe('team');

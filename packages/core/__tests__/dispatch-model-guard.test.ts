@@ -3,6 +3,7 @@ import {
   checkDispatchModel,
   guardDispatchModel,
   describeDispatchModelRejection,
+  parseDispatchModelRejection,
   tierForModelId,
 } from '../dispatch-model-guard';
 import { TIER_DEFAULTS } from '../model-tier-defaults';
@@ -110,5 +111,44 @@ describe('tierForModelId', () => {
     expect(tierForModelId('claude-opus-5-5')).toBe('premium');
     expect(tierForModelId('claude-haiku-4-5')).toBe('budget');
     expect(tierForModelId('claude-sonnet-5-5')).toBe('standard');
+  });
+});
+
+// The incident shape: a budget registry row naming Haiku 5.5, the newest
+// release in the catalog. Before its floor was recorded every claim refused it
+// as newer_than_floor_table and served Haiku 4.5.
+describe('a registry row naming claude-haiku-5-5', () => {
+  const WITH_HAIKU = [...CATALOG.filter(e => e.id !== 'claude-sonnet-6'), entry('claude-haiku-5-5', D(30), 0.1)];
+
+  it('is served as requested', () => {
+    expect(checkDispatchModel('claude-haiku-5-5', WITH_HAIKU)).toEqual({ ok: true });
+    const g = guardDispatchModel({
+      resolved: 'claude-haiku-5-5', source: 'tier_row', tier: 'budget',
+      fallbacks: [{ model: 'claude-haiku-5-5', source: 'tier_row' }], catalog: WITH_HAIKU,
+    });
+    expect(g).toEqual({ model: 'claude-haiku-5-5', source: 'tier_row', rejection: null });
+  });
+
+  it('a release newer than it is still refused and served by the safe fallback', () => {
+    const catalog = [...WITH_HAIKU, entry('claude-haiku-6', D(40), 0.1)];
+    expect(checkDispatchModel('claude-haiku-6', catalog)).toEqual({ ok: false, reason: 'newer_than_floor_table' });
+    const g = guardDispatchModel({
+      resolved: 'claude-haiku-6', source: 'tier_row', tier: 'budget',
+      fallbacks: [{ model: 'claude-haiku-6', source: 'tier_row' }], catalog,
+    });
+    expect(g.model).toBe(TIER_DEFAULTS.budget.model);
+    expect(g.rejection).toMatchObject({ rejected: 'claude-haiku-6', reason: 'newer_than_floor_table', source: 'tier_row' });
+  });
+});
+
+describe('parseDispatchModelRejection', () => {
+  it('reads back exactly what describeDispatchModelRejection wrote', () => {
+    const r = { rejected: 'claude-haiku-5-5', reason: 'newer_than_floor_table', source: 'tier_row', fallback: 'claude-haiku-4-5-20251001' } as const;
+    expect(parseDispatchModelRejection(describeDispatchModelRejection(r))).toEqual(r);
+  });
+
+  it('returns null for any other line', () => {
+    expect(parseDispatchModelRejection('dispatch refused model')).toBeNull();
+    expect(parseDispatchModelRejection('')).toBeNull();
   });
 });
