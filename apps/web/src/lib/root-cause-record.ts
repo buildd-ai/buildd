@@ -73,7 +73,7 @@ export function classifyRunnerFailure(
 
 /**
  * Sweep rules whose subject is buildd's own machinery (stuck gates, retry
- * lineage, path claims, provider attribution): no one on the team holds the
+ * lineage, path claims, provider attribution, model dispatch): no one on the team holds the
  * fix. Every other rule (repeated failures, a failure-rate spike, unmet output)
  * says work is failing without establishing why, so it is `unknown`.
  */
@@ -83,6 +83,7 @@ const PLATFORM_RULES: ReadonlySet<string> = new Set([
   'stranded_gate',
   'path_overlap_stall',
   'provider_attribution_mismatch',
+  'model_dispatch_fallback',
 ]);
 
 export function classifyPattern(rule: string): RootCauseClassification {

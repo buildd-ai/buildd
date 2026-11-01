@@ -253,6 +253,7 @@ const RULE_LABEL: Record<FailureIncidentRule, string> = {
   provider_attribution_mismatch: 'Provider attribution mismatch',
   failure_rate_spike: 'Failure-rate spike',
   output_unmet_boundary: 'Output unmet at one boundary',
+  model_dispatch_fallback: 'Model served by fallback',
 };
 
 const SCOPE_UNIT: Partial<Record<FailureIncidentRule, string>> = {
