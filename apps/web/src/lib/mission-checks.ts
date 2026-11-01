@@ -101,9 +101,15 @@ export interface MissionChecksInput {
    * reads it and passes it on: a client component cannot see the flag.
    */
   standardsEnforced?: boolean;
+  /**
+   * What the mission delivered (Mission checks I-27, I-29): `ready` once it is
+   * completed and its outcome opens. Absent or `code`: the checks read as before.
+   */
+  outcome?: { class: OutcomeClass; ready: boolean } | null;
 }
 
 import { isBuildComplete } from './build-complete';
+import type { OutcomeClass } from './mission-outcome';
 export { isBuildComplete };
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -319,14 +325,17 @@ export function releaseCheck(status: MissionReleaseStatus, label?: string | null
 export function missionChecks(input: MissionChecksInput): MissionChecks {
   const { build, branch, target } = input;
   const buildComplete = isBuildComplete(build);
-  const missionPr = branch === 'mission-branch' ? input.integrationPr : null;
+  // A research or spec outcome has no merge or release to wait for (I-30).
+  const noCode = input.outcome?.class === 'research' || input.outcome?.class === 'spec';
+  const outcomeHeld = !!input.outcome && input.outcome.class !== 'code' && !input.outcome.ready;
+  const missionPr = branch === 'mission-branch' && !noCode ? input.integrationPr : null;
   const prMerged = missionPr?.state === 'merged';
 
   const visual = input.visual ? visualCheck(input.visual, { mergeTier: input.mergeTier, missionId: input.missionId, repairs: input.repairs, evidence: input.evidence?.visual }) : null;
   const visualHolds = !!visual && input.visual!.blocksMerge && !SETTLED.has(visual.status);
   const criteria = criteriaChecks(input.criteria, input.criteriaState, { branch, prMerged, target, buildComplete, standardsEnforced: input.standardsEnforced });
   const pr = missionPr ? missionPrCheck(missionPr, { mergeTier: input.mergeTier, target, buildComplete, visualHolds }) : null;
-  const release = releaseCheck(input.release, input.releaseLabel, input.evidence?.release);
+  const release = noCode ? null : releaseCheck(input.release, input.releaseLabel, input.evidence?.release);
   const rows = [visual, pr, ...criteria, release].filter((r): r is CheckRow => r != null);
 
   // Verify: the visual review and the criteria. Deliver: the mission PR and the release.
@@ -335,8 +344,11 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   const verifyDone = verifyOpen.length === 0;
   // On a mission branch, criteria judged after the merge do not hold up the merge (R-13).
   const onlyAfterMerge = verifyOpen.length > 0 && verifyOpen.every(r => r.kind === 'criterion' && r.state === 'after merge');
-  const merged = branch === 'direct' ? buildComplete : prMerged;
-  const deliverDone = merged && (!release || release.status === 'passed');
+  const merged = branch === 'direct' || noCode ? buildComplete : prMerged;
+  // Research and spec end on outcome ready; mixed needs the outcome and the code (I-29).
+  const deliverDone = noCode
+    ? buildComplete && verifyDone && !outcomeHeld
+    : merged && (!release || release.status === 'passed') && !outcomeHeld;
   const deliverHeld = pr?.status === 'unable' || release?.status === 'finding' || release?.status === 'unable';
 
   const buildStep: RailStep = build.total === 0
@@ -368,7 +380,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   const deliverReady = buildComplete && (verifyDone || onlyAfterMerge);
   const deliverOpen = [pr, release].find(r => r && !SETTLED.has(r.status)) ?? null;
   const deliverStep: RailStep = deliverDone
-    ? { key: 'deliver', label: 'Deliver', state: 'done', text: release ? 'released, healthy' : `merged into ${into}` }
+    ? { key: 'deliver', label: 'Deliver', state: 'done', text: noCode ? 'outcome ready' : release ? 'released, healthy' : `merged into ${into}` }
     : deliverHeld
       ? { key: 'deliver', label: 'Deliver', state: 'held', text: deliverOpen?.state ?? 'held' }
       : deliverReady || (merged && !!release)

@@ -184,6 +184,10 @@ describe('lines', () => {
     expect(buildSummaryLine({ total: 10, merged: 6, running: 1, fixing: 0, failed: 0, decision: 0, approval: 1, waiting: 0 })).toBe('6 of 10 merged · 1 running · 1 approval required');
     expect(buildFoldLine(16)).toBe('16 tasks merged ›');
     expect(buildFoldLine(1)).toBe('1 task merged ›');
+    // Navigation R-26: tasks that finished with no PR are done, not merged.
+    expect(buildFoldLine(8, 8)).toBe('8 tasks done ›');
+    expect(buildFoldLine(8, 3)).toBe('5 merged · 3 done ›');
+    expect(buildFoldLine(16, 0)).toBe('16 tasks merged ›');
     expect(mergedFoldLine(11)).toBe('11 merged ›');
   });
 

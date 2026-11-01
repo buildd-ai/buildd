@@ -832,8 +832,9 @@ export function CompletionRecord({ model, text, visual }: { model: MissionBoardM
   // visual review is. One compact card, like the Lanes side card: the summary
   // across the top, the numbers in one row under it.
   const stats: Array<{ label: string; value: string; testId: string; sub?: string; subCls?: string }> = [
-    { label: 'PRs merged', value: String(r.prsMerged), testId: 'record-prs' },
-    { label: 'Lines', value: `+${r.linesAdded.toLocaleString()}`, testId: 'record-lines' },
+    // A mission that merged nothing has no PR or line count to report (Navigation r10, Revises).
+    ...(r.prsMerged > 0 ? [{ label: 'PRs merged', value: String(r.prsMerged), testId: 'record-prs' }] : []),
+    ...(r.linesAdded > 0 ? [{ label: 'Lines', value: `+${r.linesAdded.toLocaleString()}`, testId: 'record-lines' }] : []),
     ...(r.ciFixes > 0 ? [{ label: 'CI auto-fix', value: String(r.ciFixes), testId: 'record-ci-fixes' }] : []),
     ...(review
       ? [{ label: 'Screens reviewed', value: String(review.shots), testId: 'record-screens', sub: effectiveScreensLine(review), subCls: review.effectiveOk === review.shots ? 'text-status-success' : 'text-text-secondary' }]

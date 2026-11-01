@@ -14,6 +14,7 @@ import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
 import MissionTaskStripFixture from './MissionTaskStripFixture';
+import MissionOutcomeFixture from './MissionOutcomeFixture';
 import MissionPlanFixture from './MissionPlanFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
 import GoalCriteriaFixture from './GoalCriteriaFixture';
@@ -92,6 +93,7 @@ import {
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     MISSION_TASK_STRIP_FIXTURE_STATE,
+    MISSION_OUTCOME_FIXTURE_STATE,
     MISSION_PLAN_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
     GOAL_CRITERIA_FIXTURE_STATE,
@@ -178,6 +180,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_TASK_STRIP_FIXTURE_STATE) {
         return <MissionTaskStripFixture />;
+    }
+
+    if (state === MISSION_OUTCOME_FIXTURE_STATE) {
+        return <MissionOutcomeFixture />;
     }
 
     if (state === MISSION_PLAN_FIXTURE_STATE) {

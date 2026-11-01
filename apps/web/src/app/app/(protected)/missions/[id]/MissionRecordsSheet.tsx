@@ -14,6 +14,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { fetchRecordsContent } from '@/lib/mission-records-content';
+import { MISSION_RECORDS_OPEN_EVENT, type MissionRecordsOpenRequest } from '@/lib/mission-records-open';
 import SideSheet from '@/components/SideSheet';
 import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import type { ArtifactViewerItem } from '@/components/ArtifactViewer';
@@ -43,6 +44,22 @@ export interface MissionRecordsSheetProps {
   defaultOpen?: boolean;
   /** Test seam: the body fetch. Defaults to `/api/missions/[id]/artifacts/content`. */
   loadContent?: (missionId: string, ids: string[]) => Promise<Record<string, string | null>>;
+  /**
+   * A completed mission's outcome choice (Mission checks I-28 rule 1): the
+   * current primary outcome and the artifacts that may be one. Absent: no choice.
+   */
+  outcome?: { primaryId: string | null; eligibleIds: readonly string[] } | null;
+  /** Test seam: the choice's POST. */
+  chooseOutcome?: (missionId: string, artifactId: string | null) => Promise<boolean>;
+}
+
+async function postOutcomeChoice(missionId: string, artifactId: string | null): Promise<boolean> {
+  const res = await fetch(`/api/missions/${encodeURIComponent(missionId)}/outcome`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artifactId }),
+  }).catch(() => null);
+  return !!res?.ok;
 }
 
 /** Ids in `shown` whose body has not been fetched yet. */
@@ -69,15 +86,38 @@ export default function MissionRecordsSheet({
   initialArtifactId,
   defaultOpen = false,
   loadContent = fetchRecordsContent,
+  outcome = null,
+  chooseOutcome = postOutcomeChoice,
 }: MissionRecordsSheetProps) {
   const initial = resolveInitialRecordsView(initialArtifactId, records, allArtifacts);
   const [open, setOpen] = useState(defaultOpen || initial.open);
   const [showAll, setShowAll] = useState(initial.showAll);
+  // An in-place open from the outcome hero: which artifact, which one left out,
+  // and a counter that remounts the list so its viewer opens on that artifact.
+  const [asked, setAsked] = useState<{ artifactId: string | null; exclude: string | null; n: number }>({ artifactId: null, exclude: null, n: 0 });
+
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const req = (e as CustomEvent<MissionRecordsOpenRequest>).detail;
+      if (!req || req.missionId !== missionId) return;
+      const inRecords = !req.artifactId || records.some(r => r.id === req.artifactId);
+      setShowAll(!inRecords);
+      setAsked(prev => ({ artifactId: req.artifactId ?? null, exclude: req.exclude ?? null, n: prev.n + 1 }));
+      setOpen(true);
+    };
+    window.addEventListener(MISSION_RECORDS_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(MISSION_RECORDS_OPEN_EVENT, onOpen);
+  }, [missionId, records]);
+
+  const choice = useMemo(() => (outcome
+    ? { primaryId: outcome.primaryId, eligibleIds: new Set(outcome.eligibleIds), choose: (artifactId: string | null) => chooseOutcome(missionId, artifactId) }
+    : undefined), [outcome, chooseOutcome, missionId]);
   const [fetched, setFetched] = useState<Record<string, string | null>>({});
   const [loadState, setLoadState] = useState<'idle' | 'loading' | 'error'>('idle');
   const [attempt, setAttempt] = useState(0);
 
-  const shown = showAll ? allArtifacts : records;
+  const listed = useMemo(() => (asked.exclude ? records.filter(r => r.id !== asked.exclude) : records), [records, asked.exclude]);
+  const shown = showAll ? allArtifacts : listed;
   const missing = open ? idsNeedingContent(shown, fetched) : [];
   const missingKey = missing.join(',');
 
@@ -98,7 +138,7 @@ export default function MissionRecordsSheet({
     return () => { cancelled = true; };
   }, [missionId, missingKey, loadContent, attempt]);
 
-  const recordsWithContent = useMemo(() => withContent(records, fetched), [records, fetched]);
+  const recordsWithContent = useMemo(() => withContent(listed, fetched), [listed, fetched]);
   const allWithContent = useMemo(() => withContent(allArtifacts, fetched), [allArtifacts, fetched]);
 
   if (allArtifacts.length === 0) return null;
@@ -116,8 +156,8 @@ export default function MissionRecordsSheet({
       </button>
       <SideSheet
         open={open}
-        onClose={() => setOpen(false)}
-        title="Records"
+        onClose={() => { setOpen(false); setAsked(prev => ({ artifactId: null, exclude: null, n: prev.n })); }}
+        title={asked.exclude ? 'Supporting reports' : 'Records'}
         testId="mission-records-sheet"
       >
         {/* Mounted while the sheet is open so screen readers hear the change. */}
@@ -136,22 +176,25 @@ export default function MissionRecordsSheet({
             </button>
           )}
         </div>
-        {records.length > 0 ? (
+        {listed.length > 0 ? (
           <MissionArtifacts
+            key={`records-${asked.n}`}
             artifacts={recordsWithContent}
             baseUrl={baseUrl}
             missionId={missionId}
-            initialOpenArtifactId={initial.open && !initial.showAll ? initialArtifactId : null}
+            initialOpenArtifactId={asked.n > 0 ? (showAll ? null : asked.artifactId) : initial.open && !initial.showAll ? initialArtifactId : null}
+            outcomeChoice={choice}
           />
         ) : (
           <p className="mb-4 font-mono text-[12px] text-text-muted">No records to review.</p>
         )}
         {showAll ? (
           <MissionArtifacts
+            key={`all-${asked.n}`}
             artifacts={allWithContent}
             baseUrl={baseUrl}
             missionId={missionId}
-            initialOpenArtifactId={initial.showAll ? initialArtifactId : null}
+            initialOpenArtifactId={asked.n > 0 ? asked.artifactId : initial.showAll ? initialArtifactId : null}
           />
         ) : (
           <button

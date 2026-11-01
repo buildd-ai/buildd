@@ -763,6 +763,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
         for (const shot of pool) descParts.push(`- ${shot.artifactId} — ${shot.route}, ${shot.viewport}`);
       }
     } catch { /* optional context */ }
+    // The outcomes the author may name in shipped.primaryOutcome (Mission checks I-28).
+    try {
+      const { loadOutcomePool, outcomePoolPromptLines } = await import('./mission-shipped-report');
+      descParts.push(...outcomePoolPromptLines(await loadOutcomePool(missionId)));
+    } catch { /* optional context */ }
   }
 
   // PR awareness for build missions

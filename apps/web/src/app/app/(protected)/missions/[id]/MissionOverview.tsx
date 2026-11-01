@@ -86,6 +86,10 @@ export interface MissionOverviewProps extends BoardLinkContext {
   verify?: MissionVerifyView | null;
 }
 
+/** A research or spec outcome: no merge or release applies (Mission checks I-30). */
+const isNoCodeOutcome = (source: MissionChecksSource | null) =>
+  source?.outcome?.class === 'research' || source?.outcome?.class === 'spec';
+
 /**
  * `?criteria=open` and `#mission-criteria` open Verify (Navigation R-2, R-18):
  * on arrival, and on a tap of any link to the anchor. A delegated click
@@ -147,6 +151,10 @@ function OverviewView({
     id: t.id, title: displayTaskTitle(t.title), done: BOARD_LANDED.has(t.status) && t.delivery?.tone !== 'closed',
   })), [model]);
   const build = { done: doneCount, total: buildIds.length };
+  // Navigation R-26: a build task that finished with no merged PR is done, not merged.
+  const doneIds = layout.groups.find(g => g.key === 'done')?.ids ?? [];
+  const withoutPr = doneIds.filter(id => model.tasks[id] && !model.tasks[id].pr).length;
+  const noCode = isNoCodeOutcome(checksSource);
   const handoff = useMemo(
     () => (checksSource ? missionChecks({ ...checksSource, build, repairs }) : null),
     [checksSource, build.done, build.total, repairs], // eslint-disable-line react-hooks/exhaustive-deps
@@ -197,7 +205,7 @@ function OverviewView({
     const criteria = legacyCriteria(rows);
     return (
       <>
-        <DeliveryChecks checks={views} delivery={withDelivery ? deliveryBlock(deliveryTasks) : null} timelineHref={`/app/missions/${encodeURIComponent(link.missionId)}?layout=feed`} onOpenTask={openTask} />
+        <DeliveryChecks checks={views} delivery={withDelivery && !noCode ? deliveryBlock(deliveryTasks) : null} timelineHref={`/app/missions/${encodeURIComponent(link.missionId)}?layout=feed`} onOpenTask={openTask} />
         {criteria.length > 0 && <ChecksCard rows={criteria} onOpenTask={openTask} />}
       </>
     );
@@ -244,7 +252,7 @@ function OverviewView({
       )}
       {stage === 'verify' && (
         <>
-          <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
+          <BuildCompleteBar done={buildIds.length} withoutPr={withoutPr} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
             {bar}
             {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
           </BuildCompleteBar>
@@ -258,7 +266,32 @@ function OverviewView({
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
       )}
-      {stage === 'deliver' && handoff && (
+      {stage === 'deliver' && handoff && noCode && (
+        <>
+          {/* A research or spec outcome (Navigation R-26): the hero above says what it produced; under it, the
+              tasks that did it and Verify's one line. Nothing of the merge or release pipeline (I-30). */}
+          <BuildCompleteBar done={buildIds.length} withoutPr={withoutPr} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
+            {bar}
+            {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
+          </BuildCompleteBar>
+          {situation?.verify}
+          {notice}
+          {(verify || handoff.rows.length > 0) && (
+            <details data-testid="mission-requirements-fold" className="group" open={verifyAsked || undefined}>
+              <summary className="flex min-h-11 cursor-pointer list-none items-baseline gap-x-2 text-body md:min-h-0">
+                <span className="text-text-muted">Requirements</span>
+                <span className="font-mono text-meta text-text-muted">{verify?.summary ?? requirementsCount(handoff.rows)} ›</span>
+              </summary>
+              <div className="mt-2 flex flex-col gap-3">
+                {verifyBlock(false)}
+                {handoff.rows.length > 0 && checksBlock(handoff.rows, false)}
+              </div>
+            </details>
+          )}
+          {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
+        </>
+      )}
+      {stage === 'deliver' && handoff && !noCode && (
         <>
           {/* The Deliver stage, done: the catalog's word for it (terms.ts `mission.done`), `Delivered into <branch>` (R-15). */}
           <p data-testid="mission-delivered-line" className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-title font-semibold text-text-primary">
@@ -273,7 +306,7 @@ function OverviewView({
               <span className="font-mono text-meta text-text-muted">{verify?.summary ?? requirementsCount(handoff.rows)} ›</span>
             </summary>
             <div className="mt-2 flex flex-col gap-3">
-              <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>{bar}</BuildCompleteBar>
+              <BuildCompleteBar done={buildIds.length} withoutPr={withoutPr} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>{bar}</BuildCompleteBar>
               {verifyBlock(false)}
               {checksBlock(handoff.rows, true)}
             </div>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import ArtifactViewer, { type ArtifactViewerItem } from '@/components/ArtifactViewer';
+import OutcomeChoiceButton, { type OutcomeChoice } from './OutcomeChoiceButton';
 
 interface Props {
   artifacts: ArtifactViewerItem[];
@@ -9,6 +10,8 @@ interface Props {
   missionId?: string;
   /** If set, open the viewer at this artifact on mount (from ?artifact= param). */
   initialOpenArtifactId?: string | null;
+  /** A completed mission's outcome choice, beside each row that may be one. */
+  outcomeChoice?: OutcomeChoice;
 }
 
 /** `prev` with each artifact's `content` taken from `next`; everything else (share state) kept. */
@@ -24,7 +27,7 @@ export function mergeArtifactContent(prev: ArtifactViewerItem[], next: readonly 
   return changed ? out : prev;
 }
 
-export default function MissionArtifacts({ artifacts, baseUrl, missionId, initialOpenArtifactId }: Props) {
+export default function MissionArtifacts({ artifacts, baseUrl, missionId, initialOpenArtifactId, outcomeChoice }: Props) {
   const [items, setItems] = useState<ArtifactViewerItem[]>(artifacts);
   const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
@@ -54,15 +57,15 @@ export default function MissionArtifacts({ artifacts, baseUrl, missionId, initia
       <h2 className="section-label mb-3">Artifacts ({items.length})</h2>
       <div className="space-y-1.5">
         {items.map((a, i) => (
+          <div key={a.id} className="flex flex-col items-end gap-0.5 md:flex-row md:items-center md:gap-2">
           <button
-            key={a.id}
             type="button"
             onClick={() => {
               setIndex(i);
               setOpen(true);
             }}
             data-testid="mission-artifact-row"
-            className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg bg-card border border-card-border hover:border-border-hover transition-colors"
+            className="w-full min-w-0 md:flex-1 text-left flex items-center gap-3 px-3 py-2.5 rounded-lg bg-card border border-card-border hover:border-border-hover transition-colors"
           >
             <svg className="w-4 h-4 text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
@@ -82,6 +85,8 @@ export default function MissionArtifacts({ artifacts, baseUrl, missionId, initia
               </svg>
             </span>
           </button>
+          {outcomeChoice?.eligibleIds.has(a.id) && <OutcomeChoiceButton artifactId={a.id} title={a.title || 'Untitled'} choice={outcomeChoice} />}
+          </div>
         ))}
       </div>
 

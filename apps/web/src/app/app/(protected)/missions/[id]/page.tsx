@@ -39,6 +39,8 @@ import MissionDescription from './MissionDescription';
 import MissionShippedHeader from './MissionShippedHeader';
 import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
+import { buildOutcomeHero, missionOutcome } from '@/lib/mission-outcome';
+import MissionOutcomeHero from './MissionOutcomeHero';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import ShellPageMarks from '@/components/ShellPageMarks';
 import { LiveRegion } from '@/components/LiveRegion';
@@ -699,7 +701,7 @@ async function MissionDetailBody({
   // Collect all artifacts
   const allArtifacts = mission.tasks?.flatMap((t) =>
     t.workers?.flatMap((w) =>
-      (w.artifacts || []).map((a) => ({ ...a, taskTitle: t.title, workerStatus: w.status }))
+      (w.artifacts || []).map((a) => ({ ...a, taskId: t.id, taskTitle: t.title, workerStatus: w.status }))
     ) || []
   ) || [];
 
@@ -919,9 +921,46 @@ async function MissionDetailBody({
     mergedAt: missionMergedAt,
     releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
   });
+  // What the mission produced (Mission checks I-27 to I-30, Navigation R-23 to R-26): the
+  // class and the primary outcome from the PR facts, the stored record and the closeout task,
+  // never the newest artifact. Only a completed mission has an outcome to lead with.
+  const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
+  const deliverablePrTasks = allTasks.filter(t => t.category !== 'review' && t.status !== 'cancelled' && isDeliverableTask(t as never)
+    && !!((t.workers as Array<{ prUrl?: string | null; prNumber?: number | null }> | undefined)?.[0]?.prUrl || (t.workers as Array<{ prNumber?: number | null }> | undefined)?.[0]?.prNumber));
+  const outcomeInput = {
+    missionId: id,
+    artifacts: allArtifacts.map(a => ({
+      id: a.id, title: a.title ?? null, type: a.type, key: a.key ?? null, visibility: (a.visibility as 'private' | 'public' | null) ?? null,
+      storageKey: a.storageKey ?? null, metadata: (a.metadata as Record<string, unknown> | null) ?? null, taskId: a.taskId,
+    })),
+    storedPrimary: ((shippedRow?.metadata as { shipped?: { primaryOutcome?: unknown } } | null)?.shipped)?.primaryOutcome ?? null,
+    closeoutTaskIds: new Set(allTasks.filter(t => t.title?.startsWith('Aggregate results:')).map(t => t.id)),
+    deliverablePrCount: deliverablePrTasks.length,
+  };
+  const outcome = mission.status === 'completed' ? missionOutcome(outcomeInput) : null;
+  const outcomeTarget = (typeof trunkName === 'string' && trunkName ? trunkName : null) ?? visualReviewState?.branch.base ?? 'dev';
+  const missionBranch = (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true;
+  const primaryBody = outcome?.primary
+    ? await db.query.artifacts.findFirst({ where: sqlWhere(eq(artifacts.id, outcome.primary.artifact.id)), columns: { content: true } })
+        .then(r => r?.content ?? null, () => null)
+    : null;
+  const buildTaskRows = (mission.tasks ?? []).filter(t => t.taskClass !== 'attempt' && isDeliverableTask(t as never) && missionHelpers.deliverableRole(t as Parameters<typeof missionHelpers.deliverableRole>[0]) === 'build' && t.status === 'completed');
+  const mergedBuild = buildTaskRows.filter(t => !!(t.workers as Array<{ mergedAt?: unknown }> | undefined)?.some(w => !!w.mergedAt)).length;
+  const outcomeHero = outcome
+    ? buildOutcomeHero({
+        ...outcomeInput,
+        tasks: { merged: mergedBuild, done: buildTaskRows.length - mergedBuild },
+        lede: shippedView?.lede ?? null,
+        primaryContent: primaryBody,
+        shipped: deliverablePrTasks.every(t => !!(t.workers as Array<{ mergedAt?: unknown }> | undefined)?.some(w => !!w.mergedAt))
+          && (!missionBranch || missionIntegrationPr?.state === 'merged'),
+        target: outcomeTarget,
+        release: releaseStatus,
+      })
+    : null;
+
   // Overview's checks after the build (spec f7f67f1a R-11 to R-22): a projection over the
   // same visual review state, criteria, mission PR and release status this page already reads.
-  const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
   const overviewChecks: MissionChecksSource = {
     missionId: id,
     branch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? 'mission-branch' : 'direct',
@@ -933,6 +972,7 @@ async function MissionDetailBody({
     integrationPr: missionIntegrationPr,
     release: releaseStatus,
     standardsEnforced: standardsGateEnforced(),
+    outcome: outcome ? { class: outcome.class, ready: true } : null,
     evidence: {
       ...(visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : {}),
       // The Checks release row is the one place release state shows on the board.
@@ -950,7 +990,8 @@ async function MissionDetailBody({
   }], newestEstimate, new Map())[0]?.tasks ?? [];
   // Waiting on another mission is an outside wait: no time promise (R-24).
   const waitsOnMission = !!(mission as { dependsOnMissionId?: string | null }).dependsOnMissionId;
-  const missionPrCard = (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: isBuildComplete(feedCounts) })
+  const noCodeOutcome = outcome?.class === 'research' || outcome?.class === 'spec';
+  const missionPrCard = !noCodeOutcome && (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: isBuildComplete(feedCounts) })
     || (missionIntegrationPr?.shippedDeliveries?.length ?? 0) > 0) && missionIntegrationPr
     // Mission integration PR (Option A′): the mission's review gate, and a
     // different object from the task PRs that fed the branch. With delivery
@@ -1408,6 +1449,7 @@ async function MissionDetailBody({
         records={recordItems}
         allArtifacts={artifactItems}
         initialArtifactId={initialOpenArtifactId ?? null}
+        outcome={outcome && outcome.pool.length > 0 ? { primaryId: outcome.primary?.artifact.id ?? null, eligibleIds: outcome.pool.map(a => a.id) } : null}
       />
     </>
   );
@@ -1419,7 +1461,14 @@ async function MissionDetailBody({
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
     >
-      {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
+      {/* The outcome leads a completed mission (Navigation R-23); a code mission keeps What shipped. */}
+      {outcomeHero
+        ? (
+          <MissionOutcomeHero missionId={id} view={outcomeHero}>
+            {outcomeHero.class === 'mixed' && shippedView && shippedView.heroShots.length > 0 && <MissionShippedHeader missionId={id} view={{ ...shippedView, lede: null, offPlan: [] }} embedded />}
+          </MissionOutcomeHero>
+        )
+        : shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
       {missionMergedAt.length > 0 && <MissionFinalScreens missionId={id} screens={finalScreens(boardVisual)} />}
       {content}

@@ -70,6 +70,16 @@ async function loadHeroPoolSafely(missionId: string) {
   }
 }
 
+/** The outcomes the author may nominate in `shipped.primaryOutcome`; none on failure. */
+async function loadOutcomePromptSafely(missionId: string): Promise<string[]> {
+  try {
+    const { loadOutcomePool, outcomePoolPromptLines } = await import('@/lib/mission-shipped-report');
+    return outcomePoolPromptLines(await loadOutcomePool(missionId));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Build the context payload for a mission evaluation task.
  * Gathers mission goal, all task statuses, and produces the evaluation prompt.
@@ -182,6 +192,7 @@ export async function buildEvaluationContext(missionId: string): Promise<{
     descParts.push(`\nScreenshots you may nominate in \`shipped.heroShots\` (id — page, viewport):`);
     for (const s of pool) descParts.push(`- ${s.artifactId} — ${s.route}, ${s.viewport}`);
   }
+  descParts.push(...await loadOutcomePromptSafely(missionId));
 
   const contextData: Record<string, unknown> = {
     missionId: mission.id,

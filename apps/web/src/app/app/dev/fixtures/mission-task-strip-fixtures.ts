@@ -525,3 +525,6 @@ export function outcomeSpecFixture(variant: OutcomeSpecVariant, base: { now: num
   } as GoalCriteriaState;
   return { ...handoff, checks: { ...handoff.checks!, criteria, criteriaState } };
 }
+
+/** The row builders, for fixtures of other surfaces built on the same board (the outcome hero). */
+export { task as stripTask, worker as stripWorker, landed as stripLanded };

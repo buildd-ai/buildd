@@ -460,3 +460,55 @@ describe('Verify as Requirements and Standards (Navigation R-17 to R-19, AC-11)'
     expect(legacy).not.toContain('data-testid="mission-requirements"');
   });
 });
+
+describe('A completed mission led by its outcome (Navigation R-23 to R-26, Mission checks I-30, AC-21, AC-23, AC-40)', async () => {
+  const { missionOutcomeFixture } = await import('@/app/app/dev/fixtures/mission-outcome-fixtures');
+  const { default: MissionOutcomeHero } = await import('./MissionOutcomeHero');
+  const page = (variant: Parameters<typeof missionOutcomeFixture>[0]) => {
+    const f = missionOutcomeFixture(variant);
+    return {
+      f,
+      hero: f.hero ? renderToStaticMarkup(<MissionOutcomeHero missionId={f.missionId} view={f.hero} />) : '',
+      overview: renderToStaticMarkup(<MissionOverview model={f.model} missionId={f.missionId} checks={f.checks} />),
+    };
+  };
+  const rail = (markup: string) => [...markup.matchAll(/data-step="([^"]+)" data-state="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);
+
+  it('the research mission shows no merge or release pipeline, and Deliver is done on its outcome (AC-40)', () => {
+    const { overview, hero } = page('research');
+    expect(overview).toContain('data-stage="deliver"');
+    expect(rail(overview)).toEqual(['build:done', 'verify:done', 'deliver:done']);
+    const all = hero + overview;
+    for (const word of ['Merge into dev', 'Release', 'Mission PR', 'Not opened', 'no PR', 'Queued', 'PRs merged', 'tasks merged', 'Delivered into']) {
+      expect(all).not.toContain(word);
+    }
+    expect(overview).not.toContain('data-testid="mission-checks"');
+    expect(overview).not.toContain('data-testid="mission-delivered-line"');
+  });
+
+  it('beneath the hero: the tasks read done, not merged, and each still opens its task page (AC-21)', () => {
+    const { overview, hero } = page('research');
+    expect(hero).toContain('Supporting reports · 9 ›');
+    expect(overview).toContain('8 tasks done ›');
+    expect(overview).toContain('data-testid="build-complete-toggle"');
+  });
+
+  it('a mixed mission keeps its code checks and counts merged and done apart (AC-22)', () => {
+    const { overview, hero } = page('mixed');
+    expect(hero).toContain('Delivered into dev · release queued');
+    expect(overview).toContain('3 merged · 1 done ›');
+    expect(overview).toMatch(/data-testid="mission-check" data-kind="release" data-status="queued"/);
+    expect(overview).not.toContain('data-testid="mission-delivered-line"');
+  });
+
+  it('a delivered code mission reads as before: Delivered into the branch, no outcome hero (AC-23)', () => {
+    for (const variant of ['engineering', 'legacy'] as const) {
+      const { f, overview } = page(variant);
+      expect(f.hero).toBeNull();
+      expect(overview).toContain('data-stage="deliver"');
+      expect(overview).toMatch(/data-testid="mission-delivered-line"[^>]*>.*Delivered into dev/);
+    }
+    expect(page('engineering').f.shipped?.lede).toContain('Billing exports now run on a schedule');
+    expect(page('legacy').f.shipped).toBeNull();
+  });
+});

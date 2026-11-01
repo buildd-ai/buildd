@@ -12,20 +12,25 @@ import { useMissionVisualReview } from './MissionVisualReview';
 
 const THUMB_WIDTH = { mobile: 'w-20', desktop: 'w-40' } as const;
 
-export default function MissionShippedHeader({ missionId, view }: { missionId: string; view: ShippedHeaderView }) {
+/**
+ * `embedded`: inside a mixed mission's outcome hero (Navigation R-23), which
+ * carries the section, the id and the heading; only the shots and facts show.
+ */
+export default function MissionShippedHeader({ missionId, view, embedded = false }: { missionId: string; view: ShippedHeaderView; embedded?: boolean }) {
   const review = useMissionVisualReview(missionId);
   const cellOf = (artifactId: string) =>
     review?.model.cells.find(c => c.history.some(h => h.shot.id === artifactId)) ?? null;
 
   return (
     <section
-      id={SHIPPED_HEADER_ID}
+      id={embedded ? undefined : SHIPPED_HEADER_ID}
       data-testid="mission-shipped-header"
       data-variant={view.lede ? 'lede' : 'mechanical'}
-      aria-labelledby="what-shipped-label"
-      className="mt-[18px] flex scroll-mt-4 flex-col gap-3 border-2 border-border-strong bg-card px-[18px] py-4 shadow-[var(--card-shadow)]"
+      aria-labelledby={embedded ? undefined : 'what-shipped-label'}
+      aria-label={embedded ? 'What changed' : undefined}
+      className={embedded ? 'flex flex-col gap-3' : 'mt-[18px] flex scroll-mt-4 flex-col gap-3 border-2 border-border-strong bg-card px-[18px] py-4 shadow-[var(--card-shadow)]'}
     >
-      <div className="flex flex-wrap items-center gap-2">
+      {!embedded && <div className="flex flex-wrap items-center gap-2">
         <h2 id="what-shipped-label" className="font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-status-success">
           What changed
         </h2>
@@ -39,7 +44,7 @@ export default function MissionShippedHeader({ missionId, view }: { missionId: s
             Completed by hand
           </span>
         )}
-      </div>
+      </div>}
 
       {view.lede && (
         <p data-testid="shipped-lede" className="max-w-[60ch] text-[19px] font-semibold leading-snug text-text-primary md:text-[24px]">
