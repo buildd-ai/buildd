@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import SpecReplacedChoice, { approvalResultText, retireChoice, type ApprovalRetirementReply } from '@/components/SpecReplacedChoice';
@@ -67,7 +67,23 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
   const toggleOpen = (key: string) => setOpened((o) => { const n = new Set(o); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   // R-18: what still has to be opened before Approve; none when the explanation covers everything.
   const coverage = view.state === 'ready' ? view.coverage : null;
-  const unopened = coverage && !coverage.passed ? coverage.notExplained.filter((i) => !opened.has(i.key)).length : 0;
+  const required = coverage && !coverage.passed ? coverage.notExplained : [];
+  const unopened = required.filter((i) => !opened.has(i.key)).length;
+  const decisionRef = useRef<HTMLDivElement>(null);
+  const [revealed, setRevealed] = useState<{ key: string; n: number } | null>(null);
+  // Jump to the next change still to open: open it (which counts it as viewed) and bring it into view.
+  const revealNext = () => {
+    const next = required.find((i) => !opened.has(i.key));
+    if (!next) return;
+    setOpened((o) => new Set(o).add(next.key));
+    setRevealed((r) => ({ key: next.key, n: (r?.n ?? 0) + 1 }));
+  };
+  useEffect(() => {
+    if (!revealed) return;
+    const item = [...(decisionRef.current?.querySelectorAll<HTMLElement>('[data-testid="spec-explain-item"]') ?? [])].find((e) => e.dataset.key === revealed.key);
+    item?.scrollIntoView?.({ block: 'nearest' });
+    item?.querySelector<HTMLElement>('[data-testid="spec-explain-toggle"]')?.focus({ preventScroll: true });
+  }, [revealed]);
   const passkey = view.state === 'ready' && view.passkey;
   const { shown: result, retry, approve } = useOptimisticApprove(async (update) => {
     const override = refused ? { overrideReason: reason.trim() } : {};
@@ -110,13 +126,13 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
 
   const needsReason = refused && reason.trim().length < MIN_REASON;
   return (
-    <div className="flex flex-col gap-4" data-testid="spec-approval-decision">
+    <div ref={decisionRef} className="flex flex-col gap-4" data-testid="spec-approval-decision">
       {heading}
       <Lede>
         {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : 'Nothing is approved yet.'}
       </Lede>
       {coverage ? (
-        <SpecExplanationCheck explanation={view.explanation} coverage={coverage} sectionWords={view.sectionWords} opened={opened} onToggle={toggleOpen} />
+        <SpecExplanationCheck explanation={view.explanation} coverage={coverage} sectionWords={view.sectionWords} opened={opened} onToggle={toggleOpen} onReveal={unopened > 0 ? revealNext : undefined} />
       ) : null}
       {view.changes ? (
         <section aria-label="Every change" className="flex flex-col gap-2 border-t border-border-default pt-4">
@@ -182,6 +198,16 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
                   ? 'Give an override reason of at least 10 characters to approve.'
                   : coverage ? coverage.line : `Revision ${view.revision}`}
             </p>
+            {required.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1" data-testid="spec-approval-progress">
+                <span className="text-meta text-text-secondary">Opened {required.length - unopened} of {required.length} not explained</span>
+                {unopened > 0 ? (
+                  <button type="button" onClick={revealNext} className="inline-flex min-h-11 items-center text-meta font-semibold text-accent-text underline underline-offset-2 md:min-h-0" data-testid="spec-approval-reveal">
+                    Show next change
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <div className="shrink-0">
               <PrimaryAction onClick={approve} disabled={needsReason || unopened > 0} fullWidthOnMobile data-testid="spec-approval-approve">
                 {refused ? `Override and approve revision ${view.revision}` : replacing.some((r) => checked.has(r.id)) ? 'Approve and retire' : `Approve revision ${view.revision}`}

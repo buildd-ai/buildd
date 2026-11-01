@@ -34,7 +34,7 @@ function Label({ item }: { item: CoverageItem }) {
 function ItemLine({ item, open, onToggle, sectionWords }: { item: CoverageItem; open: boolean; onToggle: () => void; sectionWords: Record<string, WordOp[]> }) {
   const panel = `spec-explain-${item.kind}-${item.key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
   return (
-    <li className="py-1" data-testid="spec-explain-item" data-key={item.key} data-explained={item.explanation !== null ? 'yes' : 'no'} data-open={open ? 'yes' : 'no'}>
+    <li className="scroll-mb-40 scroll-mt-20 py-1" data-testid="spec-explain-item" data-key={item.key} data-explained={item.explanation !== null ? 'yes' : 'no'} data-open={open ? 'yes' : 'no'}>
       <button
         type="button"
         aria-expanded={open}
@@ -80,12 +80,14 @@ function Group({ title, testid, children }: { title: string; testid: string; chi
  * revision does not change are listed apart. Nothing here is written by a
  * model when the page loads.
  */
-export default function SpecExplanationCheck({ explanation, coverage, sectionWords, opened, onToggle }: {
+export default function SpecExplanationCheck({ explanation, coverage, sectionWords, opened, onToggle, onReveal }: {
   explanation: SpecExplanation | null;
   coverage: ExplanationCoverage;
   sectionWords: Record<string, WordOp[]>;
   opened: ReadonlySet<string>;
   onToggle: (key: string) => void;
+  /** Opens the next change that still has to be read and scrolls to it; absent when none is left. */
+  onReveal?: () => void;
 }) {
   const explained = coverage.items.filter((i) => i.explanation !== null);
   const line = (i: CoverageItem) => (
@@ -100,6 +102,11 @@ export default function SpecExplanationCheck({ explanation, coverage, sectionWor
         <p className={`text-body font-semibold ${coverage.passed ? 'text-status-success' : 'text-status-warning'}`} data-testid="spec-explain-coverage" data-passed={coverage.passed ? 'yes' : 'no'}>
           {coverage.line}
         </p>
+        {onReveal ? (
+          <button type="button" onClick={onReveal} className="inline-flex min-h-11 items-center self-start text-body font-semibold text-accent-text underline underline-offset-2 md:min-h-0" data-testid="spec-explain-reveal">
+            Show the next change not explained
+          </button>
+        ) : null}
         {coverage.total > 0 ? <p className="text-meta text-text-muted" data-testid="spec-explain-honesty">{COVERAGE_HONESTY}</p> : null}
       </div>
       {coverage.notExplained.length ? (
