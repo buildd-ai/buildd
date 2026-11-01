@@ -27,6 +27,11 @@
       "automerge": false
     },
     {
+      "matchPackageNames": ["@anthropic-ai/claude-agent-sdk"],
+      "rangeStrategy": "bump",
+      "description": "The SDK bundles the Claude Code CLI the runner launches, and the CLI version decides which models a runner can serve. Under the default strategy a new 0.3.x release already satisfies ^0.3.x, so Renovate proposes nothing and the lockfile stays on an old CLI while new models ship (Sonnet 5.5 and Haiku 5.5 were both held back that way). Bumping the range moves the lockfile with every release."
+    },
+    {
       "matchPackageNames": ["drizzle-orm", "drizzle-kit"],
       "groupName": "drizzle",
       "automerge": false,

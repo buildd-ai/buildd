@@ -5304,7 +5304,9 @@ export type FailureIncidentRule =
   | 'failure_rate_spike'
   | 'output_unmet_boundary'
   /** Buildd's own machinery failed: a rejected credential, lost sessions, a capture step (failure-incident-recovery §16, §18). */
-  | 'infrastructure_failure';
+  | 'infrastructure_failure'
+  /** Claims keep refusing the model they resolved and serving a fallback: the run succeeds, degraded. */
+  | 'model_dispatch_fallback';
 
 /** A pointer at an existing row — never a copy of it. */
 export interface FailureIncidentEvidenceRef {

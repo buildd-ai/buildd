@@ -38,13 +38,13 @@ const entry = (id: string, created: number, input = 1, extra: Partial<CatalogEnt
 const CATALOG = [
   entry('claude-sonnet-5-5', ANCHOR, 3), // newest row of MODEL_MIN_CLI_VERSION
   entry('claude-haiku-4-5', ANCHOR - 200 * DAY, 1),
-  entry('claude-haiku-5-5', ANCHOR + 30 * DAY, 1),
+  entry('claude-haiku-6', ANCHOR + 30 * DAY, 1),
 ];
 
 const VERSION_GATE_ERROR =
   'API Error: 400 Claude Code 2.1.284 does not support this model; version 2.1.291 or newer is required.';
 
-const leased = (): ModelCertification => leaseCertification(newCertification('claude-haiku-5-5', CATALOG[2]), 'lease-1', NOW);
+const leased = (): ModelCertification => leaseCertification(newCertification('claude-haiku-6', CATALOG[2]), 'lease-1', NOW);
 
 describe('probe error parsing', () => {
   it('reads the floor from the provider version gate', () => {
@@ -69,7 +69,7 @@ describe('certification state machine', () => {
   });
 
   it('a version-gate error marks the model incompatible with the provider floor', () => {
-    const r = applyProbeReport(leased(), { model: 'claude-haiku-5-5', cliVersion: '2.1.284', ok: false, error: VERSION_GATE_ERROR }, NOW);
+    const r = applyProbeReport(leased(), { model: 'claude-haiku-6', cliVersion: '2.1.284', ok: false, error: VERSION_GATE_ERROR }, NOW);
     expect(r.state).toBe('incompatible');
     expect(r.minCliVersion).toBe('2.1.291');
     // A runner below the floor is not asked again; one at the floor is.
@@ -78,7 +78,7 @@ describe('certification state machine', () => {
   });
 
   it('a transient failure is failed with backoff, and never blocks other models', () => {
-    const r = applyProbeReport(leased(), { model: 'claude-haiku-5-5', cliVersion: '2.1.290', ok: false, error: 'ECONNRESET' }, NOW);
+    const r = applyProbeReport(leased(), { model: 'claude-haiku-6', cliVersion: '2.1.290', ok: false, error: 'ECONNRESET' }, NOW);
     expect(r.state).toBe('failed');
     expect(needsProbe(r, '2.1.290', NOW)).toBe(false);
     expect(needsProbe(r, '2.1.290', NOW + 2 * 3_600_000)).toBe(true);
@@ -86,13 +86,13 @@ describe('certification state machine', () => {
   });
 
   it('a transient failure never uncertifies a certified model', () => {
-    const ok = applyProbeReport(leased(), { model: 'claude-haiku-5-5', cliVersion: '2.1.290', ok: true }, NOW);
+    const ok = applyProbeReport(leased(), { model: 'claude-haiku-6', cliVersion: '2.1.290', ok: true }, NOW);
     const again = applyProbeReport(leaseCertification(ok, 'l2', NOW), { model: ok.model, cliVersion: '2.1.280', ok: false, error: 'timeout' }, NOW);
     expect(again.state).toBe('certified');
   });
 
   it('a certified model is re-probed by an older runner to learn whether the floor is lower', () => {
-    const ok = applyProbeReport(leased(), { model: 'claude-haiku-5-5', cliVersion: '2.1.290', ok: true }, NOW);
+    const ok = applyProbeReport(leased(), { model: 'claude-haiku-6', cliVersion: '2.1.290', ok: true }, NOW);
     expect(needsProbe(ok, '2.1.295', NOW)).toBe(false);
     expect(needsProbe(ok, '2.1.285', NOW)).toBe(true);
     const lower = applyProbeReport(leaseCertification(ok, 'l2', NOW), { model: ok.model, cliVersion: '2.1.285', ok: true }, NOW);
@@ -106,7 +106,7 @@ describe('certification state machine', () => {
   });
 
   it('a worker incident restarts soak and only ever raises the floor', () => {
-    const ok = applyProbeReport(leased(), { model: 'claude-haiku-5-5', cliVersion: '2.1.290', ok: true }, NOW);
+    const ok = applyProbeReport(leased(), { model: 'claude-haiku-6', cliVersion: '2.1.290', ok: true }, NOW);
     const hit = applyCompatibilityIncident(ok, VERSION_GATE_ERROR, NOW + 1000);
     expect(hit.minCliVersion).toBe('2.1.291');
     expect(hit.lastIncidentAt).toBe(new Date(NOW + 1000).toISOString());
@@ -125,7 +125,7 @@ describe('certification state machine', () => {
 
 describe('runner capability against certification', () => {
   const cert: ModelCertification = {
-    model: 'claude-haiku-5-5', state: 'certified', minCliVersion: '2.1.291', certifiedAt: new Date(NOW).toISOString(), probe: { attempts: 1 },
+    model: 'claude-haiku-6', state: 'certified', minCliVersion: '2.1.291', certifiedAt: new Date(NOW).toISOString(), probe: { attempts: 1 },
   };
   const certs = new Map([[cert.model, cert]]);
 
@@ -136,38 +136,38 @@ describe('runner capability against certification', () => {
   });
 
   it('the claim-time capability gate uses the learned floor for a model the static table never named', () => {
-    expect(checkModelClientCapability('claude-haiku-5-5', '2.1.290')).toEqual({ ok: true });
-    expect(checkModelClientCapability('claude-haiku-5-5', '2.1.290', certs)).toEqual({ ok: false, requiredVersion: '2.1.291' });
+    expect(checkModelClientCapability('claude-haiku-6', '2.1.290')).toEqual({ ok: true });
+    expect(checkModelClientCapability('claude-haiku-6', '2.1.290', certs)).toEqual({ ok: false, requiredVersion: '2.1.291' });
   });
 
   it('the catalog servability check admits a certified newer-than-table release', () => {
     const without = makeCatalogServabilityCheck(CATALOG, '2.1.300');
     const withCerts = makeCatalogServabilityCheck(CATALOG, '2.1.300', { certifications: certs });
-    expect(without('claude-haiku-5-5')).toBe(false);
-    expect(withCerts('claude-haiku-5-5')).toBe(true);
-    expect(makeCatalogServabilityCheck(CATALOG, '2.1.290', { certifications: certs })('claude-haiku-5-5')).toBe(false);
+    expect(without('claude-haiku-6')).toBe(false);
+    expect(withCerts('claude-haiku-6')).toBe(true);
+    expect(makeCatalogServabilityCheck(CATALOG, '2.1.290', { certifications: certs })('claude-haiku-6')).toBe(false);
   });
 
   it('the dispatch guard accepts a certified id it would otherwise refuse', () => {
-    expect(checkDispatchModel('claude-haiku-5-5', CATALOG)).toEqual({ ok: false, reason: 'newer_than_floor_table' });
-    expect(checkDispatchModel('claude-haiku-5-5', CATALOG, certs)).toEqual({ ok: true });
+    expect(checkDispatchModel('claude-haiku-6', CATALOG)).toEqual({ ok: false, reason: 'newer_than_floor_table' });
+    expect(checkDispatchModel('claude-haiku-6', CATALOG, certs)).toEqual({ ok: true });
   });
 });
 
 describe('probe candidates and the certification view', () => {
   it('only unrecognized in-band releases are probed; baseline models never are', () => {
     const ids = probeCandidates(CATALOG, new Map(), '2.1.290', NOW).map((e) => e.id);
-    expect(ids).toEqual(['claude-haiku-5-5']);
+    expect(ids).toEqual(['claude-haiku-6']);
   });
 
   it('a retired release is not probed', () => {
-    const retiring = [...CATALOG.slice(0, 2), entry('claude-haiku-5-5', ANCHOR + 30 * DAY, 1, { expiresAt: Math.floor(NOW / 1000) - 10 })];
+    const retiring = [...CATALOG.slice(0, 2), entry('claude-haiku-6', ANCHOR + 30 * DAY, 1, { expiresAt: Math.floor(NOW / 1000) - 10 })];
     expect(probeCandidates(retiring, new Map(), '2.1.290', NOW)).toHaveLength(0);
   });
 
   it('describes baseline, discovered and catalog-deprecated models', () => {
     expect(describeCertification('claude-haiku-4-5', CATALOG, new Map(), NOW).state).toBe('baseline');
-    expect(describeCertification('claude-haiku-5-5', CATALOG, new Map(), NOW).state).toBe('discovered');
+    expect(describeCertification('claude-haiku-6', CATALOG, new Map(), NOW).state).toBe('discovered');
     const expiring = [entry('claude-sonnet-5-5', ANCHOR, 3), entry('claude-haiku-4-5', ANCHOR - 200 * DAY, 1, { expiresAt: Math.floor(NOW / 1000) + 30 * DAY })];
     const view = describeCertification('claude-haiku-4-5', expiring, new Map(), NOW);
     expect(view.deprecated?.source).toBe('catalog');

@@ -160,3 +160,22 @@ export function guardDispatchModel(args: {
 export function describeDispatchModelRejection(r: DispatchModelRejection): string {
   return `dispatch refused model "${r.rejected}" from ${r.source} (${r.reason}); served "${r.fallback}" instead`;
 }
+
+const REJECTION_LINE = /^dispatch refused model "([^"]+)" from ([a-z_]+) \(([a-z_]+)\); served "([^"]+)" instead$/;
+
+/**
+ * The inverse of describeDispatchModelRejection: a trace excerpt back into its
+ * parts, or null for any other line. The Failure Pattern Sentinel reads the
+ * traces this way, so a claim that succeeded on a fallback model is still
+ * counted as degradation.
+ */
+export function parseDispatchModelRejection(line: string): DispatchModelRejection | null {
+  const m = REJECTION_LINE.exec(line.trim());
+  if (!m) return null;
+  return {
+    rejected: m[1],
+    source: m[2] as DispatchModelSource,
+    reason: m[3] as DispatchModelRejectReason,
+    fallback: m[4],
+  };
+}

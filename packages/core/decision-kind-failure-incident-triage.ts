@@ -51,6 +51,7 @@ export const FAILURE_INCIDENT_TRIAGE_RULES = [
   'failure_rate_spike',
   'output_unmet_boundary',
   'infrastructure_failure',
+  'model_dispatch_fallback',
 ] as const;
 
 const SEVERITIES = ['low', 'medium', 'high', 'critical'] as const;
