@@ -5935,6 +5935,8 @@ async function handleReviewerOutcomeIfNeeded(
   let effectiveVerdict = output.verdict;
   let serverOverrideReason: string | null = null;
   let serverOverrideSource: 'files' | 'confidence' | 'evidence' | null = null;
+  // Why a gate below changed the verdict without escalating it (copy, design, carried findings).
+  let heldReason: string | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
     // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
     let currentFiles: Array<{ filename: string }> | null = null;
@@ -6044,6 +6046,7 @@ async function handleReviewerOutcomeIfNeeded(
     if (copyGate.verdict !== effectiveVerdict) {
       console.log(`[reviewer] PR #${prNumber}: copy review turned ${effectiveVerdict} into ${copyGate.verdict}`);
       effectiveVerdict = copyGate.verdict;
+      heldReason = copyGate.reason ?? 'copy review';
     }
     await db
       .update(tasks)
@@ -6085,6 +6088,7 @@ async function handleReviewerOutcomeIfNeeded(
     if (designGate.reason) {
       console.log(`[reviewer] PR #${prNumber}: design gate held the approval: ${designGate.findings.map((f) => f.remedyClass).join(', ')}`);
       effectiveVerdict = designGate.verdict;
+      heldReason = designGate.reason;
       output.feedback = designGate.feedback ?? undefined;
       // The kernel reads the findings off the reviewer's structured output (seam verdictFindingsOf).
       const findings = [...(Array.isArray((output as { findings?: unknown }).findings) ? (output as { findings: unknown[] }).findings : []), ...designGate.findings];
@@ -6099,6 +6103,44 @@ async function handleReviewerOutcomeIfNeeded(
         .catch((err: unknown) =>
           console.error(`[reviewer] could not persist the design review for PR #${prNumber}:`, err),
         );
+    }
+  }
+
+  // f8a7a088: a trunk fix filed for a PR merged over open findings carries them
+  // (context.carriedFindings). Its approve stands only when the reviewer reported
+  // each one verified, with how, and did not say it could not check something:
+  // a missing design comparison is captured by buildd (an evidence finding, as
+  // the design gate raises), anything else goes to a person. After the design
+  // gate, before the evidence gate, which still wins.
+  if (effectiveVerdict === 'approve') {
+    const { applyCarriedFindingsGate, carriedFindingsOfContext, parseCarriedFindingChecks } = await import('@/lib/reviewer-carried-findings');
+    const owner = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, originalTaskId)), columns: { context: true } });
+    const carriedGate = applyCarriedFindingsGate({
+      verdict: effectiveVerdict,
+      carried: carriedFindingsOfContext(owner?.context),
+      checks: parseCarriedFindingChecks(output),
+      said: [output.summary, output.feedback],
+    });
+    if (carriedGate.reason) {
+      console.log(`[reviewer] PR #${prNumber}: carried findings held the approval as ${carriedGate.verdict}: ${carriedGate.reason}`);
+      effectiveVerdict = carriedGate.verdict;
+      heldReason = carriedGate.reason;
+      if (carriedGate.verdict === 'escalate') {
+        serverOverrideReason = carriedGate.reason;
+      } else {
+        const findings = [...(Array.isArray((output as { findings?: unknown }).findings) ? (output as { findings: unknown[] }).findings : []), ...carriedGate.findings];
+        (output as { findings?: unknown[] }).findings = findings;
+        await db
+          .update(tasks)
+          .set({
+            result: sql`jsonb_set(COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${carriedGate.reason}::text), '{structuredOutput,findings}', ${JSON.stringify(findings)}::jsonb, true)`,
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, reviewerTaskId))
+          .catch((err: unknown) =>
+            console.error(`[reviewer] could not persist the carried-findings hold for PR #${prNumber}:`, err),
+          );
+      }
     }
   }
 
@@ -6124,6 +6166,29 @@ async function handleReviewerOutcomeIfNeeded(
     effectiveVerdict = evidenceGate.verdict;
     serverOverrideReason = evidenceGate.overrideReason;
     serverOverrideSource = 'evidence';
+  }
+
+  // f8a7a088: a summary written for the reviewer's own verdict ("the prior approve stands") is
+  // never shown beside a verdict a gate changed. It says what settled the verdict; the
+  // reviewer's sentence is kept as `reviewerSummary`. Persisted on the structured output the
+  // kernel and the PR activity read.
+  {
+    const { settledSummary } = await import('@/lib/reviewer-output');
+    const settled = settledSummary({ said: output.verdict, settled: effectiveVerdict, reason: serverOverrideReason ?? heldReason, summary: output.summary });
+    if (settled.reviewerSummary !== null) {
+      output.summary = settled.summary;
+      (output as { reviewerSummary?: string }).reviewerSummary = settled.reviewerSummary;
+      await db
+        .update(tasks)
+        .set({
+          result: sql`jsonb_set(jsonb_set(COALESCE(${tasks.result}, '{}'::jsonb), '{structuredOutput,summary}', to_jsonb(${settled.summary}::text), true), '{structuredOutput,reviewerSummary}', to_jsonb(${settled.reviewerSummary}::text), true)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, reviewerTaskId))
+        .catch((err: unknown) =>
+          console.error(`[reviewer] could not persist the settled summary for PR #${prNumber}:`, err),
+        );
+    }
   }
 
   if (serverOverrideReason) {

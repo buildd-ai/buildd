@@ -618,6 +618,7 @@ opportunities is `inconclusive`, and inconclusive never resolves.
 | `failure_rate_spike` | The failure rate over the last 2 hours with at least 20 terminal tasks is under 2× the baseline. |
 | `provider_attribution_mismatch` | The last 20 runs that charged a provider ran on the provider they were charged to. |
 | `output_unmet_boundary` | At least 10 completions crossed that boundary since release with no unmet-output rejection. |
+| `model_dispatch_fallback` | At least 20 claims in the workspace served the refused model as requested after the newest `dispatch_model_rejected` refusal for it. A task that succeeded on the fallback model is not an opportunity. Built in `failure-incident-recovery-model-fallback.ts`. |
 | `reported` | The fix task's reported `verificationCommand` (or the regression test named in its PR) passes on the released head, **and**, where the signature is a gate or worker-failure key, the opportunity check for that key passes. An owner report with no key resolves on the test alone. |
 
 Under these checks, the stale retry-fork and lineage incidents in §2 item 5

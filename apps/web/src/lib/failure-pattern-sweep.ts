@@ -41,6 +41,7 @@ import {
   detectFailurePatterns,
   FAILURE_PATTERN_DETECTOR_VERSION,
   type BlockerPrState,
+  type DispatchFallbackFact,
   type IncidentCandidate,
   type PathOverlapObservation,
   type SentinelFacts,
@@ -81,6 +82,7 @@ import {
 import { pathOverlapRecoveryFamily } from './failure-incident-recovery-path-overlap';
 import { createInfrastructureRecoveryFamily } from './failure-incident-recovery-infrastructure';
 import { dispatchRecoveryFamily } from './failure-incident-recovery-dispatch';
+import { modelFallbackRecoveryFamily } from './failure-incident-recovery-model-fallback';
 import { readCredentialHold } from './task-recovery-hold';
 import { isBookkeepingExit, isInfrastructureExit } from './worker-exit-taxonomy';
 import { dbRecoveryEvents, pruneRecoveryEvents, writeSentinelLastRun, type SentinelLastRun } from './failure-incident-recovery-events';
@@ -107,6 +109,9 @@ export const SWEEP_LOOKBACK_MINUTES = {
   retryLineage: 10_080,
   failureRateRecent: 60,
   failureRateBaseline: 1440,
+  // A fallback is a degradation that repeats on every claim of the route: a
+  // day of claims shows the pattern without a sudden-spike window.
+  dispatchFallbacks: 1440,
 } as const;
 
 export interface SweepFloors {
@@ -116,6 +121,7 @@ export interface SweepFloors {
   retrySince: string;
   failureRateRecentSince: string;
   failureRateBaselineSince: string;
+  dispatchFallbacksSince: string;
 }
 
 export function minutesBeforeIso(iso: string, minutes: number): string {
@@ -143,6 +149,7 @@ export function computeSweepFloors(watermark: string | null, now: string): Sweep
       now,
       SWEEP_LOOKBACK_MINUTES.failureRateRecent + SWEEP_LOOKBACK_MINUTES.failureRateBaseline,
     ),
+    dispatchFallbacksSince: effectiveFloor(watermark, now, SWEEP_LOOKBACK_MINUTES.dispatchFallbacks),
   };
 }
 
@@ -1046,7 +1053,52 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
     workerInfra,
     captureFailures,
     stuckLanes: await collectStuckLanes(workspaceId, now),
+    dispatchFallbacks: await collectDispatchFallbacks(workspaceId, floors.dispatchFallbacksSince),
   };
+}
+
+/**
+ * The claim route's `dispatch_model_rejected` traces: claims that served a
+ * fallback model. Their workers did not fail, so the worker-failure read never
+ * sees them. A trace whose line does not parse is skipped; a failed read
+ * reports none (it opens nothing and resolves nothing).
+ */
+async function collectDispatchFallbacks(workspaceId: string, since: string): Promise<DispatchFallbackFact[]> {
+  try {
+    return await readDispatchFallbacks(workspaceId, since);
+  } catch (err) {
+    console.warn(`[failure-pattern-sweep] dispatch fallback read failed for workspace ${workspaceId}:`, (err as Error)?.message ?? err);
+    return [];
+  }
+}
+
+async function readDispatchFallbacks(workspaceId: string, since: string): Promise<DispatchFallbackFact[]> {
+  const { db } = await import('@buildd/core/db');
+  const { tasks, workerErrorTraces } = await import('@buildd/core/db/schema');
+  const { and, eq, gte, desc } = await import('drizzle-orm');
+  const { DISPATCH_MODEL_REJECTED_PATTERN, parseDispatchModelRejection } = await import('@buildd/core/dispatch-model-guard');
+  const rows = await db
+    .select({ id: workerErrorTraces.id, workerId: workerErrorTraces.workerId, taskId: workerErrorTraces.taskId, excerpt: workerErrorTraces.excerpt, ts: workerErrorTraces.ts })
+    .from(workerErrorTraces)
+    .innerJoin(tasks, eq(tasks.id, workerErrorTraces.taskId))
+    .where(and(
+      eq(workerErrorTraces.pattern, DISPATCH_MODEL_REJECTED_PATTERN),
+      eq(tasks.workspaceId, workspaceId),
+      gte(workerErrorTraces.ts, new Date(since)),
+    ))
+    .orderBy(desc(workerErrorTraces.ts))
+    .limit(SWEEP_MAX_ROWS);
+  const out: DispatchFallbackFact[] = [];
+  for (const r of rows) {
+    const parsed = parseDispatchModelRejection(r.excerpt);
+    if (!parsed) continue;
+    out.push({
+      traceId: r.id, workerId: r.workerId, taskId: r.taskId,
+      rejectedModel: parsed.rejected, source: parsed.source, reason: parsed.reason, servedModel: parsed.fallback,
+      occurredAt: r.ts.toISOString(),
+    });
+  }
+  return out;
 }
 
 /** Stuck serial lanes (I-7), from the claim route's own lane read. A failed read reports none. */
@@ -1342,7 +1394,7 @@ export function productionSweepDeps(): SweepDeps {
     selectActiveWorkspaces: dbSelectActiveWorkspaces,
     collectFacts: dbCollectFacts,
     recovery: {
-      families: [pathOverlapRecoveryFamily, createInfrastructureRecoveryFamily(), dispatchRecoveryFamily],
+      families: [pathOverlapRecoveryFamily, createInfrastructureRecoveryFamily(), dispatchRecoveryFamily, modelFallbackRecoveryFamily],
       effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents(), operator: productionOperatorRecoveryDeps(),
     },
     recordLastRun: writeSentinelLastRun,

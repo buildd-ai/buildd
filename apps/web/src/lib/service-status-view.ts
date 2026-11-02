@@ -80,6 +80,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   retry_fork: 'Task retries',
   path_overlap_stall: 'Task starts',
   provider_attribution_mismatch: 'Task starts',
+  model_dispatch_fallback: 'Task starts',
 };
 const platformLabel = (component: string | null) => (component && PLATFORM_LABELS[component]) || 'Task starts';
 

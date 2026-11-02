@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseReviewerOutput, applyConfidenceGate, applyEvidenceGate, reviewerEvidenceSha, DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
+import { parseReviewerOutput, applyConfidenceGate, applyEvidenceGate, reviewerEvidenceSha, settledSummary, DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
 
 describe('parseReviewerOutput', () => {
   const valid = { verdict: 'approve', confidence: 0.9, summary: 'Looks right' };
@@ -177,5 +177,27 @@ describe('0230612e: the reviewer\'s checkout as the verdict\'s evidence', () => 
       }
     }
     expect(applyEvidenceGate({ verdict: 'approve', evidenceSha: null, headSha: head }).overrideReason).toContain('no reported checkout');
+  });
+});
+
+describe('settledSummary (f8a7a088)', () => {
+  it('a gate that held an approve: the summary names the settled verdict, not "the prior approve stands"', () => {
+    const s = settledSummary({
+      said: 'approve',
+      settled: 'request-changes',
+      reason: 'No design comparison on the real route yet for AC-3: queue; buildd captures it.',
+      summary: 'The delta is a CI fix; the prior approve stands.',
+    });
+    expect(s.summary).toBe("buildd held the reviewer's approve as request changes: No design comparison on the real route yet for AC-3: queue; buildd captures it.");
+    expect(s.summary).not.toContain('approve stands');
+    expect(s.reviewerSummary).toBe('The delta is a CI fix; the prior approve stands.');
+  });
+
+  it('an unchanged verdict keeps the reviewer\'s summary', () => {
+    expect(settledSummary({ said: 'approve', settled: 'approve', reason: null, summary: 'Fine.' })).toEqual({ summary: 'Fine.', reviewerSummary: null });
+  });
+
+  it('a held verdict with no reason still says it was held', () => {
+    expect(settledSummary({ said: 'approve', settled: 'escalate', reason: null, summary: 'ok' }).summary).toBe("buildd held the reviewer's approve as escalate.");
   });
 });

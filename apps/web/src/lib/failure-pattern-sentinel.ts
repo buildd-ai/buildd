@@ -9,7 +9,8 @@
  * signatures (`normalizeErrorSignature`, the same normalizer
  * `get_failure_analytics` and `gate_events.reason` use), `gate_events` rows,
  * retry lineage (`ciRetryPrNumber` / `reviewerRetryPrNumber` /
- * `conflictRetryPrNumber` + `context.rootTaskId`). This module never re-derives
+ * `conflictRetryPrNumber` + `context.rootTaskId`), and the claim's
+ * `dispatch_model_rejected` traces (a run that succeeded on a fallback model). This module never re-derives
  * a signature; collectors pass the stored one through. Persisting a candidate
  * is `failure-incident-store.ts`; deciding whether to page is not here at all.
  *
@@ -72,6 +73,9 @@ export const DEFAULT_SENTINEL_THRESHOLDS = {
   outputUnmetWindowMinutes: 360,
   outputUnmetMinTasks: 3,
   outputUnmetHighTasks: 8,
+  /** Distinct tasks served a fallback for one requested model, source and reason. */
+  modelFallbackMinTasks: 3,
+  modelFallbackHighTasks: 10,
 } as const;
 
 export type SentinelThresholds = { [K in keyof typeof DEFAULT_SENTINEL_THRESHOLDS]: number };
@@ -233,6 +237,26 @@ export interface CaptureFailureFact {
   headSha?: string | null;
 }
 
+/**
+ * One claim that refused the model it resolved and served another
+ * (`dispatch_model_rejected`, written by the claim route). The worker runs and
+ * may well succeed: this is degradation, never a failure, which is why the
+ * worker-failure facts never see it.
+ */
+export interface DispatchFallbackFact {
+  /** worker_error_traces.id. */
+  traceId: string;
+  workerId: string;
+  taskId: string | null;
+  rejectedModel: string;
+  /** Where the refused id came from: tier_row, pin, tier_pool_arm, ... */
+  source: string;
+  /** newer_than_floor_table, not_in_catalog, ... */
+  reason: string;
+  servedModel: string;
+  occurredAt: string;
+}
+
 /** Worker components of the `infrastructure_failure` family (§18.4). Closed. */
 export type WorkerInfraComponent = 'worker.auth' | 'worker.session_lost';
 
@@ -250,6 +274,7 @@ export interface SentinelFacts {
   workerInfra?: WorkerInfraFact[];
   captureFailures?: CaptureFailureFact[];
   stuckLanes?: StuckLaneFact[];
+  dispatchFallbacks?: DispatchFallbackFact[];
 }
 
 /**
@@ -798,6 +823,62 @@ function ruleStuckLane(facts: SentinelFacts): IncidentCandidate[] {
   return out;
 }
 
+/** The identity of a model fallback: what was asked for, from where, and why it was refused. Never the served model. */
+export function modelDispatchFallbackSignature(
+  workspaceId: string | null,
+  key: { rejectedModel: string; source: string; reason: string },
+): string {
+  return [
+    'model_dispatch_fallback',
+    wsPart(workspaceId),
+    `model=${seg(key.rejectedModel)}`,
+    `source=${seg(key.source)}`,
+    `reason=${seg(key.reason)}`,
+  ].join('|');
+}
+
+/** `model=`, `source=` and `reason=` out of a model-fallback signature; null for any other. */
+export function parseModelDispatchFallbackSignature(signature: string): { rejectedModel: string; source: string; reason: string } | null {
+  const parts = signature.split('|');
+  if (parts[0] !== 'model_dispatch_fallback') return null;
+  const get = (k: string) => parts.find(p => p.startsWith(`${k}=`))?.slice(k.length + 1) ?? null;
+  const rejectedModel = get('model'), source = get('source'), reason = get('reason');
+  if (!rejectedModel || !source || !reason) return null;
+  return { rejectedModel, source, reason };
+}
+
+/**
+ * Claims that keep serving a fallback for the same requested model. Each run
+ * succeeds on the substitute, so nothing fails and no other rule sees it; the
+ * team is still not getting the model it configured. Counted by distinct
+ * task, so a task re-claimed several times counts once.
+ */
+function ruleModelDispatchFallback(facts: SentinelFacts, t: SentinelThresholds): IncidentCandidate[] {
+  const rows = newestFirst(facts.dispatchFallbacks ?? [], r => r.occurredAt, r => r.traceId)
+    .filter(r => r.occurredAt <= facts.now);
+  const out: IncidentCandidate[] = [];
+  for (const group of groupBy(rows, r => `${r.rejectedModel}\u0000${r.source}\u0000${r.reason}`).values()) {
+    const tasks = new Set(group.map(r => r.taskId ?? `worker:${r.workerId}`));
+    if (tasks.size < t.modelFallbackMinTasks) continue;
+    const { rejectedModel, source, reason, servedModel } = group[0];
+    out.push(buildCandidate(facts, {
+      rule: 'model_dispatch_fallback',
+      reasonCode: 'dispatch.model_fallback',
+      signature: modelDispatchFallbackSignature(facts.workspaceId, { rejectedModel, source, reason }),
+      severity: tasks.size >= t.modelFallbackHighTasks ? 'high' : 'medium',
+      title: `${tasks.size} tasks asked for ${rejectedModel} (${source}) and ran on ${servedModel}: ${reason}`,
+      occurrences: group.map(r => ({ kind: 'worker' as const, id: r.workerId, at: r.occurredAt })),
+      affected: {
+        taskIds: boundedUnique(group.map(r => r.taskId)),
+        workerIds: boundedUnique(group.map(r => r.workerId)),
+        prNumbers: [],
+      },
+      impact: { fallbackClaims: group.length, distinctTasks: tasks.size },
+    }));
+  }
+  return out;
+}
+
 const RULES = [
   ruleStuckLane,
   ruleRetryFork,
@@ -810,6 +891,7 @@ const RULES = [
   ruleOutputUnmetBoundary,
   ruleWorkerInfrastructure,
   ruleCaptureFailure,
+  ruleModelDispatchFallback,
 ];
 
 /**

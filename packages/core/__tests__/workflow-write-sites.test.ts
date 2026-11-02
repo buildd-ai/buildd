@@ -523,6 +523,8 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
     { at: /\.set\(\{ status: 'failed', updatedAt: new Date\(\) \}\)[\s\S]*not\(eq\(tasks\.status, 'cancelled'\)\)/, kind: 'NOT_OWNER', predicate: true, why: 'a sandbox mount gap whose cost exhausts its mission fails the requeued task; an owner is refused by AttemptWithdrawn(failed, no claim) (AC-1 slice 9)' },
     { at: /'effectiveVerdictReason', \$\{copyGate\.reason/, kind: 'NO_STATUS', why: 'the copy review\'s verdict on the reviewer task\'s result' },
     { at: /'effectiveVerdictReason', \$\{designGate\.reason\}/, kind: 'NO_STATUS', why: 'the design gate\'s verdict on the reviewer task\'s result' },
+    { at: /'effectiveVerdictReason', \$\{carriedGate\.reason\}/, kind: 'NO_STATUS', why: 'the carried-findings hold (f8a7a088) on the reviewer task\'s result' },
+    { at: /'\{structuredOutput,reviewerSummary\}'/, kind: 'NO_STATUS', why: 'the settled summary of a verdict a gate changed, on the reviewer task\'s result (f8a7a088)' },
     { at: /'effectiveVerdictReason', \$\{serverOverrideReason\}/, kind: 'NO_STATUS', why: 'the server\'s escalation on the reviewer task\'s result' },
     { at: /'evidenceSha', \$\{evidenceSha\}/, kind: 'NO_STATUS', why: 'the commit the reviewer read its verdict at, on the reviewer task\'s result' },
     { at: /'settledVerdict', \$\{effectiveVerdict\}/, kind: 'NO_STATUS', why: 'the verdict once every gate ran, on the reviewer task\'s result (a later delivery open adopts it)' },

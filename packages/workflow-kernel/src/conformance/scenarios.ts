@@ -2231,6 +2231,13 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(await s.findingStates(), { 'z.ts': 'open' }, 'still open, attached to the merged PR');
       const fx = (await host.effects(s.deliveryId)).find((e) => e.kind === 'dispatch_external_merge_fix')!;
       eq((fx.payload.findings as Array<{ path: string }>).map((f) => f.path), ['z.ts'], 'the trunk fix names it');
+      // The fix carries the open finding as evidence its own review must verify (f8a7a088).
+      const ff = fakePorts(host);
+      await drainKernel(host, s, ff.ports);
+      const filed = ff.work.filed.find((w) => w.role === 'external_merge_fix')!;
+      eq((filed.detail?.findings as Array<{ id: string; path: string; title: string }>).map((f) => pick(f, ['path', 'title'])), [{ path: 'z.ts', title: 'off by one' }], 'carried onto the fix task');
+      eq((filed.detail?.findings as Array<{ id: string }>)[0]!.id, (await s.view()).findings![0]!.id, 'by the delivery\'s own finding id');
+      ok(filed.description!.includes('Findings still open (required evidence)') && filed.description!.includes('off by one'), 'and named in its description');
 
       // The newest round approved, but without verifying the finding: it is still open, so the merge is still over it.
       const u = await new Delivery(host, 66).open();

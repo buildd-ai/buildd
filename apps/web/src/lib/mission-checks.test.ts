@@ -566,3 +566,53 @@ describe('standards in Verify (Living Specs D-43, Navigation R-17)', () => {
     expect(missionStandardsLine(input({ criteria: [unitTests] }), {})).toBeNull();
   });
 });
+
+describe('outcome and delivery (Mission checks I-29, I-30, AC-39 to AC-41)', () => {
+  // A mission shaped like the research mission that triggered this: mission branch,
+  // a release configured, no PR, nothing visual, its outcome ready.
+  const research = (over: Partial<MissionChecksInput> = {}) => input({
+    visual: null, criteria: [], release: 'waiting',
+    integrationPr: { branch: 'mission/x', state: 'not_opened', prNumber: null, prUrl: null, taskId: null } as never,
+    outcome: { class: 'research', ready: true },
+    ...over,
+  });
+
+  it('a research or spec outcome has no merge or release row, and Deliver is done', () => {
+    for (const cls of ['research', 'spec'] as const) {
+      const c = missionChecks(research({ outcome: { class: cls, ready: true } }));
+      expect(c.rows.map(r => r.kind)).toEqual([]);
+      expect(c.delivered).toBe(true);
+      expect(c.rail.find(s => s.key === 'deliver')).toMatchObject({ state: 'done', text: 'outcome ready' });
+      expect(c.checkpoint).toBe('done');
+    }
+  });
+
+  it('a research outcome that is not ready yet does not read delivered', () => {
+    const c = missionChecks(research({ outcome: { class: 'research', ready: false } }));
+    expect(c.delivered).toBe(false);
+    expect(c.rows.some(r => r.kind === 'release' || r.kind === 'mission_pr')).toBe(false);
+  });
+
+  it('criteria still hold a research outcome in Verify', () => {
+    const c = missionChecks(research({ criteria: [unitTests], criteriaState: criteriaState([{ index: 0, type: 'command', verdict: 'fail', fingerprint: criterionFingerprint(unitTests) }]) }));
+    expect(c.rows.map(r => r.kind)).toEqual(['criterion']);
+    expect(c.delivered).toBe(false);
+  });
+
+  it('a mixed outcome keeps the code checks and is delivered only once the release is healthy too', () => {
+    const merged = { branch: 'mission/x', state: 'merged', prNumber: 128, prUrl: 'https://example.test/pr/128', taskId: 't-pr' } as never;
+    const waiting = missionChecks(input({ visual: null, criteria: [], integrationPr: merged, release: 'waiting', outcome: { class: 'mixed', ready: true } }));
+    expect(waiting.rows.map(r => r.kind)).toEqual(['mission_pr', 'release']);
+    expect(waiting.delivered).toBe(false);
+    const healthy = missionChecks(input({ visual: null, criteria: [], integrationPr: merged, release: 'healthy', outcome: { class: 'mixed', ready: true } }));
+    expect(healthy.delivered).toBe(true);
+    const notReady = missionChecks(input({ visual: null, criteria: [], integrationPr: merged, release: 'healthy', outcome: { class: 'mixed', ready: false } }));
+    expect(notReady.delivered).toBe(false);
+  });
+
+  it('a code mission, or no outcome at all, reads exactly as before (AC-41)', () => {
+    const before = missionChecks(input({ release: 'waiting' }));
+    expect(missionChecks(input({ release: 'waiting', outcome: { class: 'code', ready: true } }))).toEqual(before);
+    expect(missionChecks(input({ release: 'waiting', outcome: null }))).toEqual(before);
+  });
+});

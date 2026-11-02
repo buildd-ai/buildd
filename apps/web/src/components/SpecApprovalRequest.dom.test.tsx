@@ -366,6 +366,58 @@ describe('SpecApprovalRequest: the explanation and its check', () => {
     expect(approveButton()!.disabled).toBe(false);
   });
 
+  it('AC-14: the reveal buttons open the next unexplained change, mark it viewed, show progress and enable Approve at once', async () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith({ 'R-1': 'a', 'AC-1': 'd' })} />));
+    expect(q('spec-approval-progress')!.textContent).toContain('Opened 0 of 2 not explained');
+    expect(approveButton()!.disabled).toBe(true);
+    // The tappable "not explained" action in the check opens exactly one change, R-2 first.
+    await act(async () => { q('spec-explain-reveal')!.click(); });
+    const item = (key: string) => container.querySelector(`[data-testid="spec-explain-item"][data-key="${key}"]`)!;
+    expect(item('R-2').getAttribute('data-open')).toBe('yes');
+    expect(item('R-2').querySelector('[data-testid="spec-explain-words"]')).not.toBeNull();
+    expect(item('R-3').getAttribute('data-open')).toBe('no');
+    expect(toggleFor('R-2').getAttribute('aria-controls')).toBe(item('R-2').querySelector('[data-testid="spec-explain-words"]')!.id);
+    expect(document.activeElement).toBe(toggleFor('R-2'));
+    expect(q('spec-approval-progress')!.textContent).toContain('Opened 1 of 2 not explained');
+    expect(approveButton()!.disabled).toBe(true);
+    // The bar's own button opens the last one; Approve enables with no further step and the buttons go.
+    await act(async () => { q('spec-approval-reveal')!.click(); });
+    expect(item('R-3').getAttribute('data-open')).toBe('yes');
+    expect(approveButton()!.disabled).toBe(false);
+    expect(q('spec-approval-reveal')).toBeNull();
+    expect(q('spec-explain-reveal')).toBeNull();
+    expect(q('spec-approval-progress')!.textContent).toContain('Opened 2 of 2 not explained');
+  });
+
+  it('a fully explained revision has no reveal action or progress', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith(all)} />));
+    expect(q('spec-explain-reveal')).toBeNull();
+    expect(q('spec-approval-progress')).toBeNull();
+  });
+
+  it('disabled to opened to enabled to approved, over the pin, for a not-explained change', async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    globalThis.fetch = (async (url: string, init: { body: string }) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as never;
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} view={viewWith({ 'R-1': 'a', 'R-2': 'b', 'AC-1': 'd' })} />));
+    expect(approveButton()!.disabled).toBe(true);
+    await act(async () => { approveButton()!.click(); });
+    expect(calls.length).toBe(0);
+    await act(async () => { q('spec-approval-reveal')!.click(); });
+    expect(approveButton()!.disabled).toBe(false);
+    await act(async () => { approveButton()!.click(); });
+    expect(calls.length).toBe(1);
+    expect(calls[0].url).toContain('/approve/inbox');
+    expect((calls[0].body as { revision: number }).revision).toBe(3);
+  });
+
+  it('the changes clear the sticky bar and the phone tab bar when scrolled to', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith({ 'R-1': 'a' })} />));
+    expect(container.querySelector('[data-testid="spec-explain-item"]')!.className).toContain('scroll-mb-40');
+  });
+
   it('AC-15: a line naming a criterion that did not change is shown apart', () => {
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith({ ...all, 'R-9': 'ghost' })} />));
     const extra = q('spec-explain-extra')!;

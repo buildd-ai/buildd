@@ -98,8 +98,8 @@ describe('makeCatalogServabilityCheck — unknown models fail closed', () => {
   });
 
   it('treats a same-day sibling of the newest recorded model as recognized', () => {
-    const catalog = [newestKnown, entry('claude-haiku-5-5', T0 + 60)];
-    expect(makeCatalogServabilityCheck(catalog, '2.1.280')('claude-haiku-5-5')).toBe(true);
+    const catalog = [newestKnown, entry('claude-sonnet-6', T0 + 60)];
+    expect(makeCatalogServabilityCheck(catalog, '2.1.280')('claude-sonnet-6')).toBe(true);
   });
 
   it('still applies the recorded floor to a known model', () => {
@@ -182,5 +182,32 @@ describe('claude-sonnet-5-5 floor', () => {
     const catalog = [{ id: 'claude-sonnet-5-5', canonicalId: null, created: 1_790_000_000 }];
     expect(makeCatalogServabilityCheck(catalog, '2.1.283')('claude-sonnet-5-5')).toBe(false);
     expect(makeCatalogServabilityCheck(catalog, '2.1.284')('claude-sonnet-5-5')).toBe(true);
+  });
+});
+
+// Haiku 5.5 first shipped in Claude Code 2.1.293:
+// https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21293
+// Without the row, a registry row naming it was refused as newer_than_floor_table
+// on every claim and silently served Haiku 4.5.
+describe('claude-haiku-5-5 floor', () => {
+  it('refuses a runner immediately below the first supporting CLI release', () => {
+    expect(checkModelClientCapability('claude-haiku-5-5', '2.1.292')).toEqual({
+      ok: false, requiredVersion: '2.1.293',
+    });
+    expect(checkModelClientCapability('claude-haiku-5-5', '2.1.290')).toEqual({
+      ok: false, requiredVersion: '2.1.293',
+    });
+  });
+
+  it('allows runners at or above the floor', () => {
+    for (const version of ['2.1.293', '2.1.296', '2.1.310']) {
+      expect(checkModelClientCapability('claude-haiku-5-5', version)).toEqual({ ok: true });
+    }
+  });
+
+  it('applies the floor when selecting a catalog model', () => {
+    const catalog = [{ id: 'claude-haiku-5-5', canonicalId: null, created: 1_795_000_000 }];
+    expect(makeCatalogServabilityCheck(catalog, '2.1.292')('claude-haiku-5-5')).toBe(false);
+    expect(makeCatalogServabilityCheck(catalog, '2.1.293')('claude-haiku-5-5')).toBe(true);
   });
 });

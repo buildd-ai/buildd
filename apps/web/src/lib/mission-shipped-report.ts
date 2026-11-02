@@ -12,7 +12,7 @@
  */
 import { db } from '@buildd/core/db';
 import { artifacts, githubRepos, missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { githubApi } from '@/lib/github';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
@@ -29,6 +29,7 @@ import {
   type ShippedRecord,
 } from '@/lib/mission-shipped';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { outcomePool, withPersonPrimaryOutcome, type OutcomeArtifact, type StoredPrimaryOutcome } from '@/lib/mission-outcome';
 
 /**
  * PR-file reads per mission, one page of files each, each cut off after a few
@@ -50,6 +51,59 @@ export async function loadShippedHeroPool(missionId: string): Promise<ShippedHer
     console.error(`[mission-shipped] hero pool failed for ${missionId}:`, e);
     return [];
   }
+}
+
+/**
+ * The artifacts a primary outcome may name (Mission checks 072de598 I-28): the
+ * mission's own tasks' review artifacts and designs, in task order. Empty on
+ * failure: no list means no nomination, never a guess.
+ */
+export async function loadOutcomePool(missionId: string): Promise<OutcomeArtifact[]> {
+  try {
+    const rows = await db
+      .select({
+        id: artifacts.id, title: artifacts.title, type: artifacts.type, key: artifacts.key,
+        visibility: artifacts.visibility, storageKey: artifacts.storageKey, metadata: artifacts.metadata,
+        missionId: artifacts.missionId, taskId: workers.taskId, createdAt: tasks.createdAt,
+      })
+      .from(artifacts)
+      .innerJoin(workers, eq(artifacts.workerId, workers.id))
+      .innerJoin(tasks, eq(workers.taskId, tasks.id))
+      .where(and(eq(tasks.missionId, missionId)));
+    rows.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    return outcomePool(rows, missionId);
+  } catch (e) {
+    console.error(`[mission-shipped] outcome pool failed for ${missionId}:`, e);
+    return [];
+  }
+}
+
+/** The pool as prompt lines for the completion author (empty: nothing to nominate). */
+export function outcomePoolPromptLines(pool: readonly OutcomeArtifact[]): string[] {
+  if (pool.length === 0) return [];
+  return [
+    '\n## Outcomes for shipped.primaryOutcome (id — kind: title)',
+    ...pool.map(a => `- ${a.id} — ${a.kind}: ${a.title}`),
+  ];
+}
+
+/**
+ * A person's choice of the mission's primary outcome (Mission checks I-28 rule
+ * 1), set or cleared on the stored record. Returns the stored field, or
+ * `no_record` when the mission has no What shipped record to carry it.
+ */
+export async function storePersonPrimaryOutcome(
+  missionId: string,
+  choice: { artifactId: string; chosenBy: string } | null,
+): Promise<{ primaryOutcome: StoredPrimaryOutcome | null } | 'no_record'> {
+  const record = await db.query.artifacts.findFirst({
+    where: sqlWhere(and(eq(artifacts.missionId, missionId), eq(artifacts.key, shippedArtifactKey(missionId)))),
+    columns: { id: true, metadata: true },
+  });
+  if (!record) return 'no_record';
+  const metadata = withPersonPrimaryOutcome(record.metadata as Record<string, unknown> | null, choice);
+  await db.update(artifacts).set({ metadata, updatedAt: new Date() }).where(eq(artifacts.id, record.id));
+  return { primaryOutcome: ((metadata.shipped as { primaryOutcome?: StoredPrimaryOutcome }).primaryOutcome) ?? null };
 }
 
 type TaskRow = {
@@ -192,12 +246,18 @@ export async function storeMissionShippedReport(
   })) as TaskRow[];
   const deliverables = taskRows.filter(isDeliverableTask);
 
-  const [authorShipped, changeType, pool] = await Promise.all([
+  const [authorShipped, changeType, pool, outcomes, previous] = await Promise.all([
     !manual && opts.authorTaskId
       ? readAuthorShipped(missionId, opts.authorTaskId).catch(() => null)
       : Promise.resolve(null),
     computeChangeType(workspace, deliverables),
     loadShippedHeroPool(missionId),
+    loadOutcomePool(missionId),
+    // A person's choice of outcome survives a later completion (I-28 rule 1).
+    (async () => db.query.artifacts.findFirst({
+      where: sqlWhere(and(eq(artifacts.workspaceId, workspaceId), eq(artifacts.key, shippedArtifactKey(missionId)))),
+      columns: { metadata: true },
+    }))().catch(() => null),
   ]);
 
   const { record, ledeRejection } = buildShippedRecord({
@@ -208,6 +268,8 @@ export async function storeMissionShippedReport(
     pool,
     sensitive: workspace.dataClass === 'sensitive',
     completedAt: opts.completedAt,
+    outcomePool: outcomes,
+    previousPrimaryOutcome: ((previous?.metadata as { shipped?: { primaryOutcome?: unknown } } | null)?.shipped)?.primaryOutcome,
   });
   if (ledeRejection) {
     console.warn(`[mission-shipped] lede for ${missionId} not shown (${ledeRejection}); falling back to mechanical facts`);

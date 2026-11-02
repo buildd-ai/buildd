@@ -24,7 +24,7 @@ export { activityHandlers } from './activity';
 export { ciEvidenceFactKey, ciHandlers } from './ci';
 export { conflictHandlers } from './conflict';
 export { handOffToLegacyOn } from './hand-off';
-export { externalMergeFixDescription, externalMergeFixTitle, landingHandlers } from './landing';
+export { carriedFindingsOf, externalMergeFixDescription, externalMergeFixTitle, landingHandlers, type CarriedFinding } from './landing';
 export { postReviewBody, pushRecoveryFollowupKey, reviewHandlers } from './review';
 export { supersessionHandlers } from './supersession';
 export { trunkFixDescription, trunkFixTitle, trunkHandlers, trunkSteerNote } from './trunk';
