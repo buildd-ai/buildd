@@ -2,7 +2,7 @@
 title: Runner Heartbeat and Version
 status: active
 owner: max
-last_verified: 2026-10-18
+last_verified: 2026-10-30
 summary: A runner heartbeat MUST report current presence and version information without exposing its local UI token.
 domain: runners
 surfaces: [apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts]
@@ -39,16 +39,21 @@ supersedes: []
 ## Runner Heartbeat Protocol
 
 **Invariants**:
-- Runners MUST call `POST /api/workers/heartbeat` with `localUiUrl` on each
-  `BUILDD_RUNNER_POLL_MIN`-minute cycle (default **60 minutes**; configured via
-  the same env var on both the runner host and server). The exported constant is
-  `RUNNER_HEARTBEAT_INTERVAL_MS` from `packages/shared/src/runner-liveness.ts`.
-  To change the interval, update `BUILDD_RUNNER_POLL_MIN` on both runner and
-  server so liveness thresholds scale together.
-- **Note:** Pusher delivers realtime task notifications to runners. The heartbeat
-  interval is NOT a polling frequency for new tasks — Pusher handles task
-  delivery. The heartbeat exists solely to register the runner as alive and to
-  maintain the liveness window used by stale-detection.
+- **Presence is carried by Pusher, content by the heartbeat.** A runner is
+  *online now* only when BOTH hold: (a) it is a member of its account's
+  presence channel (see "Presence channel" below) and (b) its last content beat
+  is non-stale. Runners MUST call `POST /api/workers/heartbeat` with
+  `localUiUrl` (1) at startup, (2) whenever beat content changes (slots, busy
+  count, version/commit, update state, workers named), and (3) as a slow
+  fallback ping every RUNNER_FALLBACK_PING_MS (10-15 minutes, jittered) so a
+  Pusher outage degrades to slow liveness rather than none. An idle, unchanged
+  runner on a healthy Pusher connection sends nothing between fallback pings.
+  This replaces the former "MUST heartbeat each cycle" rule and the fixed
+  `LIVENESS_PING_INTERVAL_MS` (60 s) ping; the hourly aligned tick
+  (`RUNNER_HEARTBEAT_INTERVAL_MS`, `BUILDD_RUNNER_POLL_MIN`, default 60 min)
+  stays for reconcile, claim fallback and idle-job polling.
+- **Note:** Pusher delivers realtime task notifications to runners. The
+  heartbeat interval is NOT a polling frequency for new tasks.
 - Each `(accountId, localUiUrl)` pair has at most one `worker_heartbeats` row;
   the upsert on conflict refreshes `lastHeartbeatAt`.
 - Liveness lives in Redis (`apps/web/src/lib/liveness.ts`,
@@ -181,6 +186,132 @@ supersedes: []
 
 ---
 
+---
+
+## Presence channel (revision, approved; server and runner halves shipped)
+
+**Capability statement**: A runner's reachability MUST be asserted by a Pusher
+presence connection and recorded server-side only on state change, so an idle
+runner costs no periodic traffic and a killed runner goes offline within about
+a minute.
+
+**Invariants**:
+- **Channel scope: one presence channel per account**,
+  `presence-runner-<accountId>` (prefixed by `PUSHER_CHANNEL_PREFIX` like every
+  other channel). Account, not team, because the heartbeat row, claim limits
+  and the existing `runner-<accountId>` nudge channel are already
+  account-scoped, so no new join is needed to authorise it, and members per
+  channel stay small. A team channel would put every runner of every account in
+  one channel and make each join/leave fan out to all of them. Pusher caps a
+  presence channel at 100 members; an account has a handful of runners, and the
+  join auth refuses (HTTP 403) beyond a runner cap well under that limit so one
+  account can never hit the provider limit.
+- **Presence member = runner instance.** `user_id` is `runnerBeatId`'s
+  `localUiUrl` half (the same key as the `worker_heartbeats` unique pair); the
+  auth response's `user_info` carries nothing else. Two runners of one account
+  are two members; one runner's reconnect is the same member.
+- **The channel carries no application events.** Nothing is ever triggered on
+  it; it exists for membership only. Existing task/worker/nudge channels are
+  unchanged. This keeps it out of the message-quota failure mode of #5079
+  (unconditional per-PATCH events exhausting the daily quota).
+- **Cost budget.** Each runner connect or disconnect produces one
+  `member_added`/`member_removed` webhook and, per other subscriber on the
+  channel, one fan-out message. Subscribers are the account's runners only (the
+  dashboard does not join). Cost is therefore O(connection changes x runners
+  per account), independent of time, versus the 60 s ping's O(runners x 1440)
+  requests per day. The rollout PR MUST record the before/after message
+  accounting in its task, not in the repo.
+- **Auth.** The runner subscribes with Pusher's channel authorization pointed
+  at a new route, POST /api/pusher/auth (there is no Pusher auth route today;
+  every existing channel is public). It authenticates the runner's `bld_`
+  key, accepts only `presence-runner-<accountId>` for that key's own account,
+  and signs with `pusher.authorizeChannel`, returning the `user_id` above. It
+  never signs any other channel.
+- **Webhook.** New route POST /api/webhooks/pusher verifies
+  `X-Pusher-Key` and the HMAC-SHA256 `X-Pusher-Signature` over the raw body
+  with the Pusher secret, rejects a bad signature with 401 before parsing, and
+  handles `member_added` / `member_removed` events (Pusher batches events in one
+  POST). It maps `user_id` to the `(accountId, localUiUrl)` row and records
+  `connected` plus presenceChangedAt (a small column set on
+  `worker_heartbeats`, no new table).
+- **Only a state change writes.** The write is a conditional
+  `UPDATE ... WHERE connected IS DISTINCT FROM <new>` (atomic, no
+  transaction), so a duplicate delivery writes nothing. Pusher does not
+  guarantee ordering, and a reconnect can deliver `member_removed` after the
+  new `member_added`; each event carries `time_ms`, and the update applies only
+  when `time_ms` is newer than presenceChangedAt. A removal is additionally
+  confirmed against Pusher's channel-users API before it marks the runner
+  offline when it arrives within a few seconds of an add for the same member
+  (reconnect flap).
+- **Online now = connected AND non-stale beat.** One shared helper (beside
+  `withLiveRunnerBeats` in `apps/web/src/lib/runner-beats.ts`) folds the two
+  signals; dispatch wake routing, `POST /api/workers/claim`, `GET
+  /api/workers/active`, `list_runners` and the Health tab MUST read it and MUST
+  NOT hand-roll either half. "Non-stale beat" is a window of the fallback ping
+  plus slack, so a connected runner whose content has not changed for a long
+  time still counts.
+- **Old runners (rollout).** A runner build that never joins presence and
+  still pings every 60 s keeps working: the server keeps accepting the beat,
+  and the fold falls back to beat-only (`RUNNER_LIVE_WINDOW_MS`) for any runner
+  with no presence record. A runner is "presence-aware" once it has ever
+  connected; from then on a missing connection means offline.
+- **Wedged but connected.** Presence says the process holds a socket, not that
+  it is working. A runner that is connected but whose workers stop PATCHing
+  still goes stale through the existing worker-PATCH stale detection
+  (`WORKER_STALE_REAP_MS`, leases, `stale-workers.ts`). Those thresholds are
+  NOT loosened by this revision and presence never keeps a worker alive.
+- **Runner-side health.** The DEGRADED detector (`heartbeatState` in
+  `apps/runner/src/claim-budget-signals.ts`, `SERVER_CONTACT_STALE_MS` 5 min)
+  treats "Pusher connected and nothing to report" as healthy: with the 60 s
+  ping gone, server contact legitimately goes quiet, so staleness is judged
+  from the latest of last HTTP response and last Pusher connection-state
+  confirmation, not from HTTP traffic alone. A claim-5xx streak still
+  degrades. This composes with the two-tier stale detection (task `0ccffc53`):
+  tier one is the connection, tier two is worker progress.
+- **Kill-process offline.** Pusher removes a member when its socket drops or
+  its ~30 s activity timeout lapses, so a killed process is offline within
+  about a minute without any beat being missed.
+- **Removal order.** The fixed 60 s ping is removed only after the auth route,
+  the webhook and the online-now fold are live and the fold's old-runner path
+  is verified; the hourly aligned tick is kept.
+
+**Acceptance criteria**:
+- AC-30: WHEN POST /api/webhooks/pusher receives a body whose signature does
+  not verify THEN it returns 401 and writes nothing.
+- AC-31: WHEN a signed `member_added` arrives for a runner THEN its row is
+  marked connected with presenceChangedAt; WHEN the same event is delivered
+  again, or an older `member_removed` arrives after it, THEN no write occurs.
+- AC-32: WHEN an account has two runners and one disconnects THEN only that
+  runner (by `user_id`) is marked disconnected.
+- AC-33: WHEN a runner is connected and its last beat is within the fallback
+  window THEN it is online now; WHEN either half fails THEN it is not.
+- AC-34: WHEN a runner has no presence record and beats every 60 s (old build)
+  THEN it is online now by the beat-only rule and its beats are still accepted.
+- AC-35: WHEN a presence-connected runner has nothing to report THEN it sends
+  no heartbeat until the fallback ping, and the runner's DEGRADED detector does
+  not fire.
+- AC-36: WHEN Pusher is unreachable THEN the runner's fallback ping keeps the
+  beat non-stale and the server marks it online by the beat-only rule after
+  the presence signal is judged unavailable.
+- AC-37: WHEN a runner process is killed THEN it reads offline within about one
+  minute.
+- AC-38: WHEN a task is created for an online presence-connected runner THEN
+  the dispatch wake reaches it with no added latency versus today (the wake
+  does not wait for a beat).
+- AC-39: WHEN POST /api/pusher/auth is asked for any channel other than the
+  caller's own account's presence channel THEN it refuses with 403.
+- AC-40: WHEN a connected runner's workers stop PATCHing THEN stale detection
+  reaps them on the unchanged thresholds.
+
+**Code surface** (to be built after approval):
+- apps/web/src/app/api/pusher/auth/route.ts,
+  apps/web/src/app/api/webhooks/pusher/route.ts
+- `apps/web/src/lib/runner-beats.ts` (online fold),
+  `packages/shared/src/runner-liveness.ts` (windows, fallback ping)
+- `apps/runner/src/workers.ts`, `apps/runner/src/index.ts`,
+  `apps/runner/src/claim-budget-signals.ts`
+
+---
 
 ## `/api/version`: deployed vs. latest-available
 

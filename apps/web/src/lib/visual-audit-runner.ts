@@ -20,6 +20,8 @@ export interface BrowserRunnerHeartbeat {
   accountId?: string;
   localUiUrl?: string;
   lastHeartbeatAt: string | Date;
+  /** Pusher presence (null/absent: never joined, judged by the beat alone). */
+  presenceConnected?: boolean | null;
   environment: { envKeys?: string[] | null; fleet?: unknown } | null;
   /** Workspaces this runner's account can claim in. */
   workspaceIds: readonly string[];
@@ -34,7 +36,7 @@ export function browserRunnerMatchesExecutor(hb: Pick<BrowserRunnerHeartbeat, 'l
 export function browserRunnerOnline(heartbeats: readonly BrowserRunnerHeartbeat[], workspaceId: string, now: number, executor: WorkspaceExecutor = 'any'): boolean {
   return heartbeats.some(hb =>
     browserRunnerMatchesExecutor(hb, executor)
-    && isRunnerOnline(hb.lastHeartbeatAt, now)
+    && isRunnerOnline(hb.lastHeartbeatAt, now, hb.presenceConnected)
     && hb.workspaceIds.includes(workspaceId)
     && (hb.environment?.envKeys ?? []).includes(CAPABILITY_BROWSER));
 }

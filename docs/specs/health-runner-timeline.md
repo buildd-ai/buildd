@@ -96,7 +96,7 @@ worker in its workspaces starts, ends or is settled, not only on reload.
 - The runners page mounts `HomeAutoRefresh` over the workspaces the lanes read
   (`laneWorkspaceIds`): `worker:failed`, `worker:completed`, `task:*` events
   and status-changing `worker:progress` events trigger a throttled
-  `router.refresh()`. Settling a worker publishes `worker:failed` on its
+  `router.refresh()` (progress rides the workspace activity channel). Settling a worker publishes `worker:failed` on its
   workspace channel.
 - A hidden tab does not refresh; it hands the miss to the shell's freshness
   coordinator, which catches up on return.

@@ -36,6 +36,7 @@ import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
+import { getPusherConfirmedAt } from './pusher-manager';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
@@ -3690,8 +3691,9 @@ setInterval(createPeriodicSelfHeal(), 60_000);
 // every claim — which is exactly what hid the 2026-06-22 outage. When contact is
 // stale we emit a DEGRADED line instead, so a host monitor keyed on "runner alive"
 // freshness (and humans reading the log) see the truth.
-// The stale threshold and the claim-5xx-streak rule live in heartbeatState.
+// The stale threshold and the claim-5xx-streak rule live in heartbeatState. A connected
+// Pusher socket counts as contact: an idle presence-connected runner makes no HTTP calls.
 setInterval(() => {
-  const { degraded, reason } = heartbeatState(getLastServerContactAt(), Date.now());
+  const { degraded, reason } = heartbeatState(getLastServerContactAt(), Date.now(), undefined, getPusherConfirmedAt());
   emitHeartbeatTick(degraded, reason);
 }, 60_000);

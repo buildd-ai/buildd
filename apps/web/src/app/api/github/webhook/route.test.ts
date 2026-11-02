@@ -485,6 +485,7 @@ const mockTriggerEvent = mock(() => Promise.resolve());
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: {
+    workerActivity: (id: string) => `worker-${id}-activity`, workspaceActivity: (id: string) => `workspace-${id}-activity`,
     workspace: (id: string) => `workspace-${id}`,
     task: (id: string) => `task-${id}`,
     worker: (id: string) => `worker-${id}`,

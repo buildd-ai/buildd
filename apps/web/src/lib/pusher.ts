@@ -1,5 +1,5 @@
 import Pusher from 'pusher';
-import { CHAT_PUSHER_EVENTS, conversationChannelName } from '@buildd/shared';
+import { CHAT_PUSHER_EVENTS, conversationChannelName, workerActivityChannelName, workspaceActivityChannelName } from '@buildd/shared';
 
 // Server-side Pusher client (optional)
 let pusher: Pusher | null = null;
@@ -10,7 +10,8 @@ export function _resetPusher(client: Pusher | null = null): void {
   pusher = client;
 }
 
-function getPusher(): Pusher | null {
+/** The server client, or null when Pusher is not configured. */
+export function getPusher(): Pusher | null {
   if (pusher) return pusher;
 
   const appId = process.env.PUSHER_APP_ID;
@@ -78,9 +79,22 @@ export async function triggerEvent(
 
   try {
     await client.trigger(channel, event, data);
+    countPublish(channel, event);
   } catch (error) {
     console.error('Pusher trigger failed:', error);
   }
+}
+
+/**
+ * One counter bump per publish, per event and channel kind per day
+ * (lib/pusher-usage.ts; read at GET /api/admin/pusher-usage). Fire-and-forget:
+ * a failed or slow count never delays or fails a publish. Imported lazily so a
+ * test that stubs '@/lib/redis' without the counter cannot break this module.
+ */
+function countPublish(channel: string, event: string): void {
+  import('./pusher-usage')
+    .then(m => m.recordPusherPublish?.(channel, event))
+    .catch(() => {});
 }
 
 /**
@@ -98,6 +112,7 @@ export async function triggerEventChecked(
   if (JSON.stringify(data).length > PUSHER_PAYLOAD_HARD_CAP_BYTES) return 'failed';
   try {
     await client.trigger(channel, event, data);
+    countPublish(channel, event);
     return 'sent';
   } catch (error) {
     console.error('Pusher trigger failed:', error);
@@ -110,7 +125,7 @@ export async function triggerEventChecked(
 // A runner's 30-second sync cycle PATCHes the worker endpoint even when
 // nothing visible has changed (no new currentAction, no status transition,
 // no taskProgress). Each PATCH fires 2 Pusher messages (worker + workspace
-// channel) — enough to exhaust the daily message quota with a modest fleet.
+// activity channel) — enough to exhaust the daily message quota with a modest fleet.
 //
 // `hasVisibleWorkerChange` returns true only when the event carries something
 // the dashboard or other subscribers would act on. Callers MUST still fire
@@ -163,9 +178,16 @@ export const channels = {
   workspace: (id: string) => `${CHANNEL_PREFIX}workspace-${id}`,
   task: (id: string) => `${CHANNEL_PREFIX}task-${id}`,
   worker: (id: string) => `${CHANNEL_PREFIX}worker-${id}`,
+  // Dashboard-only twins of worker and workspace for worker:progress
+  // (@buildd/shared pusher-activity.ts). Runners never subscribe to these, so a
+  // progress tick is not billed once per runner connection.
+  workerActivity: (id: string) => `${CHANNEL_PREFIX}${workerActivityChannelName(id)}`,
+  workspaceActivity: (id: string) => `${CHANNEL_PREFIX}${workspaceActivityChannelName(id)}`,
   mission: (id: string) => `${CHANNEL_PREFIX}mission-${id}`,
   // One runner account's runners: a nudge to beat now (slots set on the dashboard). No data rides on it.
   runner: (accountId: string) => `${CHANNEL_PREFIX}runner-${accountId}`,
+  // Membership only, nothing is ever triggered on it: a runner is a member while its socket is up.
+  runnerPresence: (accountId: string) => `${CHANNEL_PREFIX}presence-runner-${accountId}`,
   // Agent chat: pings only, never message text (see @buildd/shared chat.ts).
   conversation: (id: string) => `${CHANNEL_PREFIX}${conversationChannelName(id)}`,
 } as const;

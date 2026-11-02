@@ -45,7 +45,7 @@ export interface StoredUpdateDrain {
 export const UPDATE_STUCK_GRACE_MS = 15 * 60_000;
 /** How long a silent updating runner keeps its paused tasks before they are released. */
 export const UPDATE_RELEASE_SILENCE_MS = 60 * 60_000;
-/** A heartbeat older than this is late (the runner pings every minute). */
+/** A heartbeat older than this is late (a presence-connected runner beats on change and every 10-15 minutes; an older build every minute). */
 export const UPDATE_HEARTBEAT_LATE_MS = RUNNER_LIVE_WINDOW_MS;
 /** The reason a released task's new attempt carries. */
 export const UPDATE_STOPPED_REASON = 'runner stopped during an update';

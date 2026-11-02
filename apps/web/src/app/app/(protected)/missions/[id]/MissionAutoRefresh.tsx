@@ -16,7 +16,7 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { bindChannelEvents, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { Clock } from '@/lib/realtime-throttle';
 import { demandCatchUp, subscribeCatchUp } from '@/lib/app-freshness';
 import { requestPageRefresh, type Refresher } from '@/lib/page-refresh';
@@ -117,26 +117,16 @@ export default function MissionAutoRefresh({
     });
     refresherRef.current = refresher;
 
-    const channelName = `${CHANNEL_PREFIX}workspace-${workspaceId}`;
-    const channel = subscribeToChannel(channelName);
-    const missionChannelName = `${CHANNEL_PREFIX}mission-${missionId}`;
-    const missionChannel = subscribeToChannel(missionChannelName);
-
     // `mission:completion_decision` is emitted for every real completion
     // decision (docs/specs/mission-task-lifecycle.md): a refusal updates the
     // criteria and the feed, an approval moves the mission to completed.
-    const subscriptions: Array<[typeof channel, readonly string[]]> = [
-      [channel, WORKSPACE_EVENTS],
-      [missionChannel, MISSION_EVENTS],
+    // worker:progress arrives on the workspace's activity channel; bindChannelEvents routes it.
+    const handlers = (events: readonly string[]) =>
+      events.map(event => [event, (data: unknown) => refresher.onEvent(event, data)] as const);
+    const releases = [
+      bindChannelEvents(`${CHANNEL_PREFIX}workspace-${workspaceId}`, handlers(WORKSPACE_EVENTS)),
+      bindChannelEvents(`${CHANNEL_PREFIX}mission-${missionId}`, handlers(MISSION_EVENTS)),
     ];
-    const bound: Array<[typeof channel, string, (data: unknown) => void]> = [];
-    for (const [ch, events] of subscriptions) {
-      for (const event of events) {
-        const fn = (data: unknown) => refresher.onEvent(event, data);
-        ch?.bind(event, fn);
-        bound.push([ch, event, fn]);
-      }
-    }
 
     // The shell's catch-up (resume, reconnect, pull) re-renders this page:
     // anchor the reader's row around it, and drop our own pending render.
@@ -147,9 +137,7 @@ export default function MissionAutoRefresh({
     });
 
     return () => {
-      for (const [ch, event, fn] of bound) ch?.unbind(event, fn);
-      unsubscribeFromChannel(channelName);
-      unsubscribeFromChannel(missionChannelName);
+      for (const release of releases) release?.();
       unsubscribeCatchUp();
       refresher.dispose();
       if (refresherRef.current === refresher) refresherRef.current = null;

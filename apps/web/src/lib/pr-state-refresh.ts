@@ -433,7 +433,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         }
         failedAt.delete(worker.id);
 
-        await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, {
+        await triggerEvent(channels.workspaceActivity(workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
         });
 

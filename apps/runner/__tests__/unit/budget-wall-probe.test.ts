@@ -44,8 +44,9 @@ describe('BudgetWallProber', () => {
   });
 
   test('probe hits the limit: keeps the wall and refreshes the reset time', async () => {
-    const { prober, reports, cleared } = make({ ok: false, error: LIMIT });
-    prober.noteWall(new Date(Date.now() + 3600_000));
+    const fixedNow = new Date('2026-10-22T12:00:00Z').getTime();
+    const { prober, reports, cleared } = make({ ok: false, error: LIMIT }, { now: () => fixedNow });
+    prober.noteWall(new Date(fixedNow + 3600_000));
     const run = await prober.probeNow('cli');
     expect(run?.cleared).toBe(false);
     expect(reports[0].outcome).toBe('limited');

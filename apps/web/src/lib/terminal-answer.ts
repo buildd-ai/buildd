@@ -67,7 +67,7 @@ export async function withdrawQuestionAnsweredInTerminal(workerId: string, now: 
   // it: open Needs-you views drop the card on this.
   const runningEvent = { workerId, taskId: won.taskId, status: 'running', updatedAt: now.toISOString() };
   await Promise.all([
-    triggerEvent(channels.worker(workerId), events.WORKER_PROGRESS, runningEvent),
+    triggerEvent(channels.workerActivity(workerId), events.WORKER_PROGRESS, runningEvent),
     won.taskId ? triggerEvent(channels.task(won.taskId), events.WORKER_PROGRESS, runningEvent) : null,
   ]).catch(() => { /* a missed push only leaves a stale card */ });
 

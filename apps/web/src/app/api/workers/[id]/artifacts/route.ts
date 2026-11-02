@@ -189,7 +189,7 @@ export async function POST(
         .where(eq(workers.id, id));
 
       await triggerEvent(
-        channels.worker(id),
+        channels.workerActivity(id),
         events.WORKER_PROGRESS,
         { workerId: id, taskId: worker.taskId, status: worker.status, updatedAt: activityAt }
       );
@@ -249,7 +249,7 @@ export async function POST(
 
   // Trigger realtime events (thin payloads — no full worker row)
   await triggerEvent(
-    channels.worker(id),
+    channels.workerActivity(id),
     events.WORKER_PROGRESS,
     { workerId: id, taskId: worker.taskId, status: worker.status, updatedAt: activityAt }
   );

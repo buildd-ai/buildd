@@ -177,7 +177,7 @@ export async function evaluateAndAdvanceLoopOnMerge(
   // when that attempt ended. The guarded projection completes it; a live attempt keeps its task.
   if (kernelDeliveryId) await completeParkedOwner({ taskId, deliveryId: kernelDeliveryId });
 
-  await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, { taskId });
+  await triggerEvent(channels.workspaceActivity(workspaceId), events.WORKER_PROGRESS, { taskId });
   await resolveCompletedTask(taskId, workspaceId);
 
   return true;
@@ -287,7 +287,7 @@ export async function evaluateAndAdvanceLoopOnCiGreen(
     await completeParkedOwner({ taskId, deliveryId: kernelDeliveryId });
   }
 
-  await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, { taskId });
+  await triggerEvent(channels.workspaceActivity(workspaceId), events.WORKER_PROGRESS, { taskId });
   await resolveCompletedTask(taskId, workspaceId);
 
   return true;

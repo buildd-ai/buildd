@@ -15,6 +15,7 @@ const channels = new Map<string, Map<string, Handler[]>>();
 function emit(channel: string, event: string, data: unknown) {
   for (const fn of channels.get(channel)?.get(event) ?? []) fn(data);
 }
+const { channelForEvent } = await import('@buildd/shared');
 mock.module('@/lib/pusher-client', () => ({
   CHANNEL_PREFIX: '',
   subscribeToChannel: (name: string) => {
@@ -27,6 +28,17 @@ mock.module('@/lib/pusher-client', () => ({
   },
   unsubscribeFromChannel: () => {},
   getSubscribedChannel: () => null,
+  // Real routing: worker:progress lands on the channel's -activity twin.
+  bindChannelEvents: (name: string, bindings: ReadonlyArray<readonly [string, Handler]>) => {
+    const at = (e: string) => {
+      const ch = channelForEvent(name, e);
+      const handlers = channels.get(ch) ?? new Map<string, Handler[]>();
+      channels.set(ch, handlers);
+      return handlers;
+    };
+    for (const [e, fn] of bindings) at(e).set(e, [...(at(e).get(e) ?? []), fn]);
+    return () => { for (const [e, fn] of bindings) at(e).set(e, (at(e).get(e) ?? []).filter(f => f !== fn)); };
+  },
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

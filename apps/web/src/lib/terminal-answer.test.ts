@@ -19,7 +19,7 @@ mock.module('@buildd/core/db', () => ({
 const pushes: any[] = [];
 mock.module('@/lib/pusher', () => ({
   triggerEvent: async (channel: string, event: string, data: any) => { pushes.push({ channel, event, data }); },
-  channels: { worker: (id: string) => `worker-${id}`, task: (id: string) => `task-${id}` },
+  channels: { workerActivity: (id: string) => `worker-${id}-activity`, workspaceActivity: (id: string) => `workspace-${id}-activity`, worker: (id: string) => `worker-${id}`, task: (id: string) => `task-${id}` },
   events: { WORKER_PROGRESS: 'worker:progress' },
 }));
 
@@ -54,7 +54,7 @@ describe('withdrawQuestionAnsweredInTerminal', () => {
     expect(noteValues).toHaveLength(1);
     expect(noteValues[0]).toMatchObject({ taskId: 't-1', missionId: 'm-1', workerId: 'w-1', type: 'update' });
     expect(noteValues[0].title).toContain('terminal');
-    expect(pushes.map(p => p.channel).sort()).toEqual(['task-t-1', 'worker-w-1']);
+    expect(pushes.map(p => p.channel).sort()).toEqual(['task-t-1', 'worker-w-1-activity']);
     expect(pushes.every(p => p.event === 'worker:progress' && p.data.status === 'running')).toBe(true);
   });
 

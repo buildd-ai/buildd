@@ -411,7 +411,7 @@ export function HealthClient({
       // Client-only, event-driven (fires from a button click, never during
       // render/SSR) — a fresh clock read here carries no hydration risk.
       const clickNow = Date.now();
-      const online = isRunnerOnline(hb.lastHeartbeatAt, clickNow);
+      const online = isRunnerOnline(hb.lastHeartbeatAt, clickNow, hb.presenceConnected);
       const idlePushOnly = online && hb.activeWorkerCount === 0;
       const beat = timeAgo(hb.lastHeartbeatAt, clickNow);
       setRunnerHealth(prev => {
@@ -482,12 +482,12 @@ export function HealthClient({
   // Grouped on `normalizeErrorSignature` — the same key the failure-signature
   // table under Trend ranks on, so one incident is one count on both.
   const failureGroups = useMemo(() => groupFailuresBySignature(recentFailures, 5), [recentFailures]);
-  const offlineRunners = runners.filter(r => !isRunnerOnline(r.lastHeartbeatAt, now));
+  const offlineRunners = runners.filter(r => !isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected));
   // Online runners whose isolation deviates from policy in a way someone can
   // act on (isolationProblem). Reduced isolation that policy allows, and the
   // mount allowlist being off, show in runner detail only.
   const isolationProblems = runners.flatMap(r => {
-    if (!isRunnerOnline(r.lastHeartbeatAt, now)) return [];
+    if (!isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected)) return [];
     const problem = isolationProblem(r, { protectedWorkPending });
     return problem ? [{ id: r.id, ...problem }] : [];
   });
@@ -542,8 +542,8 @@ export function HealthClient({
           {
             runners: {
               total: runners.length,
-              online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now)).length,
-              busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0),
+              online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected)).length,
+              busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected) ? r.activeWorkerCount : 0), 0),
             },
             budget: {
               monthly: budgetForecast?.monthly
@@ -834,7 +834,7 @@ export function HealthClient({
           long diagnostic, is one tap away. */}
       {show('capacity') && (() => {
         const fleet = runnerLanes?.fleet ?? null;
-        const onlineHbs = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
+        const onlineHbs = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected));
         const total = fleet ? fleet.capacity : onlineHbs.reduce((n, r) => n + r.maxConcurrentWorkers, 0);
         const running = fleet
           ? fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0)
@@ -883,7 +883,7 @@ export function HealthClient({
               const c = runnerGroupCounts(g.list.map(r => {
                 const f = fleetById.get(r.id);
                 return {
-                  online: f?.online ?? isRunnerOnline(r.lastHeartbeatAt, now),
+                  online: f?.online ?? isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected),
                   maxSlots: f?.maxSlots ?? r.maxConcurrentWorkers,
                   busy: f ? f.slots.filter(x => x.worker).length : r.activeWorkerCount,
                 };
@@ -900,7 +900,7 @@ export function HealthClient({
                 key={hb.id}
                 runner={hb}
                 fleetRow={fleetRow}
-                online={fleetRow ? fleetRow.online : isRunnerOnline(hb.lastHeartbeatAt, now)}
+                online={fleetRow ? fleetRow.online : isRunnerOnline(hb.lastHeartbeatAt, now, hb.presenceConnected)}
                 health={runnerHealth.get(hb.id)}
                 onToggleExpanded={checkRunnerHealth}
                 now={now}
@@ -947,8 +947,8 @@ export function HealthClient({
           )}
           <Disclosure summary="Usage by owner">
             <OccupancyChart
-              capacityNow={runnerLanes ? runnerLanes.fleet.capacity : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
-              busyNow={runnerLanes ? runnerLanes.fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0) : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+              capacityNow={runnerLanes ? runnerLanes.fleet.capacity : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected) ? r.maxConcurrentWorkers : 0), 0)}
+              busyNow={runnerLanes ? runnerLanes.fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0) : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected) ? r.activeWorkerCount : 0), 0)}
               slots={runnerLanes?.fleet.slots ?? null}
               workspaceId={wsFilter}
             />

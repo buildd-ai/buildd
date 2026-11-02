@@ -86,7 +86,12 @@ async function preamble(
   if (!row) return { kind: 'error', status: 404, error: 'unknown dispatch id' };
   if (row.workspaceId.toLowerCase() !== target.workspaceId) return { kind: 'error', status: 403, error: 'target is outside this intent\'s scope' };
   // The callback can outrun the publish ack; take custody for it (claimCustodySql).
-  if (!inDispatchCustody(row) && row.status === 'pending' && row.handedOffAt == null && await deps.claimCustody(row.id)) {
+  // A claim that matches nothing is not proof the row is out of custody: the
+  // publish ack may have committed between our read and the claim (concurrent
+  // publish sweeps make this common). Re-read either way, or the stale row
+  // answers not_in_custody and Dispatch closes a live wake as skipped.
+  if (!inDispatchCustody(row) && row.status === 'pending' && row.handedOffAt == null) {
+    await deps.claimCustody(row.id);
     row = (await deps.loadRow(req.id)) ?? row;
   }
   if (!inDispatchCustody(row)) return { kind: 'moot', why: `not_in_custody:${row.status}` };

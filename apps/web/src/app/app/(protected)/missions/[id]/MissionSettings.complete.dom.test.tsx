@@ -15,6 +15,7 @@ mock.module('next/navigation', () => ({
 }));
 mock.module('@/lib/pusher-client', () => ({
   subscribeToChannel: () => null,
+  bindChannelEvents: () => null,
   unsubscribeFromChannel: () => {},
   CHANNEL_PREFIX: 'test-',
 }));

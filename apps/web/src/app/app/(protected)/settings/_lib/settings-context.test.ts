@@ -27,14 +27,16 @@ mock.module('next/headers', () => ({ cookies: async () => ({ get: (n: string) =>
 mock.module('next/navigation', () => ({ redirect: (to: string) => { throw new Error(`redirect ${to}`); } }));
 let accountRows: any[] = [];
 let accountQuery: any = null;
-mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null }, workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
+let slotRows: any[] = [];
+const slotChain: any = { from: () => slotChain, where: () => slotChain, orderBy: () => slotChain, catch: async () => slotRows, then: (res: any) => Promise.resolve(slotRows).then(res) };
+mock.module('@buildd/core/db', () => ({ db: { select: () => slotChain, query: { teams: { findFirst: async () => null }, workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamsWithDetails: async () => TEAMS,
   getUserWorkspaceIds: async () => [],
   resolveActiveTeamId: async (userId: string, c: string | null | undefined) => { activeCalls.push([userId, c]); return active; },
 }));
 
-const { loadSettingsContext, loadRunnerAccounts, RUNNER_ACCOUNT_COLUMNS } = await import('./settings-context');
+const { loadSettingsContext, loadRunnerAccounts, loadAccountRunnerSlots, RUNNER_ACCOUNT_COLUMNS } = await import('./settings-context');
 
 beforeEach(() => {
   cookie = undefined;
@@ -144,5 +146,25 @@ describe('loadRunnerAccounts: only the fields the runner tokens section renders'
     accountQuery = null;
     expect(await loadRunnerAccounts([])).toEqual([]);
     expect(accountQuery).toBeNull();
+  });
+});
+
+describe('loadAccountRunnerSlots — online folds presence', () => {
+  const NOW = Date.UTC(2026, 9, 30, 12, 0, 0);
+  const row = (id: string, ageMs: number, presenceConnected: boolean | null) => ({
+    id, accountId: 'acc-1', localUiUrl: `http://${id}:1`, name: id, lastHeartbeatAt: new Date(NOW - ageMs),
+    presenceConnected, active: 0, reported: 2, desired: null, origin: null, setBy: null, setAt: null,
+  });
+
+  it('presence-connected with a 10-minute-old beat is online; disconnected with a fresh beat is not; no presence falls back to the beat', async () => {
+    slotRows = [
+      row('connected', 10 * 60_000, true),
+      row('disconnected', 5_000, false),
+      row('legacy-fresh', 5_000, null),
+      row('legacy-old', 10 * 60_000, null),
+    ];
+    const out = await loadAccountRunnerSlots(['acc-1'], NOW);
+    const online = Object.fromEntries(out['acc-1'].map(r => [r.id, r.online]));
+    expect(online).toEqual({ connected: true, disconnected: false, 'legacy-fresh': true, 'legacy-old': false });
   });
 });

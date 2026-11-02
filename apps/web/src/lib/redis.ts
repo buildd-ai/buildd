@@ -248,6 +248,19 @@ export async function incrWindow(key: string, ttlSec: number): Promise<number | 
   }, null);
 }
 
+/**
+ * HINCRBY one field of a counter hash by 1 and (re)set the key's TTL in one
+ * pipeline. false when Redis is unavailable; for counters nothing waits on.
+ */
+export async function hincrWithTtl(key: string, field: string, ttlSec: number): Promise<boolean> {
+  return safe('hincr ttl', async r => { await r.pipeline().hincrby(key, field, 1).expire(key, ttlSec).exec(); return true; }, false);
+}
+
+/** HGETALL of a counter hash. null = no key; undefined = could not ask. */
+export async function hgetAllKey(key: string): Promise<Record<string, number> | null | undefined> {
+  return safe<Record<string, number> | null | undefined>('hgetall', r => r.hgetall<Record<string, number>>(key), undefined);
+}
+
 // Presence: one sorted set per person, one member per open tab, scored by the
 // tab's expiry. A member lives until its score passes; the key itself expires
 // with the last beat, so an abandoned set cleans itself up.

@@ -20,7 +20,7 @@ type Row = { id: string; workspaceId: string; taskId: string | null };
 /** The same nudge the webhook sends after a PR fact, so an open mission page refreshes. */
 async function nudge(rows: Row[]): Promise<void> {
   for (const row of rows) {
-    await triggerEvent(channels.workspace(row.workspaceId), events.WORKER_PROGRESS, { taskId: row.taskId })
+    await triggerEvent(channels.workspaceActivity(row.workspaceId), events.WORKER_PROGRESS, { taskId: row.taskId })
       .catch((err) => console.warn(`[named-replacement] nudge for worker ${row.id} failed:`, err));
   }
 }

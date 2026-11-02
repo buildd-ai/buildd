@@ -8,11 +8,10 @@ import {
   isPushOnlyRunner,
   isRunnerOnline,
   mountAllowlistEnforcedFrom,
-  RUNNER_ONLINE_WINDOW_MS,
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
-import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord, activeRunnerHold } from '@buildd/shared';
+import { RUNNER_ONLINE_CANDIDATE_WINDOW_MS, RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord, activeRunnerHold } from '@buildd/shared';
 import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from './runner-beats';
 import { classifyRunnerOwnership, isViewersPersonalRunner } from './runner-ownership';
 import { liveLinkCondition } from './granted-links';
@@ -58,6 +57,7 @@ export async function getRunnerHeartbeats(
       accountId: workerHeartbeats.accountId,
       localUiUrl: workerHeartbeats.localUiUrl,
       lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
+      presenceConnected: workerHeartbeats.presenceConnected,
       activeWorkerCount: workerHeartbeats.activeWorkerCount,
       maxConcurrentWorkers: workerHeartbeats.maxConcurrentWorkers,
       sandboxEnabled: workerHeartbeats.sandboxEnabled,
@@ -112,6 +112,7 @@ export async function getRunnerHeartbeats(
       accountId: hb.accountId,
       accountName: hb.account?.name ?? null,
       lastHeartbeatAt: new Date(hb.lastHeartbeatAt).toISOString(),
+      presenceConnected: hb.presenceConnected ?? null,
       activeWorkerCount: hb.activeWorkerCount,
       maxConcurrentWorkers: hb.maxConcurrentWorkers,
       connectivity: isPushOnlyRunner(hb.localUiUrl) ? 'push_only' as const : 'reachable' as const,
@@ -193,7 +194,7 @@ export async function loadRunnerOnlineByWorkspace(workspaceIds: readonly string[
     });
     await Promise.all(rows.map(async ws => {
       const hbs = await loadBrowserRunnerHeartbeats(ws as Parameters<typeof loadBrowserRunnerHeartbeats>[0], now);
-      if (hbs) out.set(ws.id, hbs.some(h => h.workspaceIds.includes(ws.id) && isRunnerOnline(h.lastHeartbeatAt, now)));
+      if (hbs) out.set(ws.id, hbs.some(h => h.workspaceIds.includes(ws.id) && isRunnerOnline(h.lastHeartbeatAt, now, h.presenceConnected)));
     }));
   } catch (err) {
     console.error('[runner-presence] lookup failed:', err);
@@ -217,12 +218,13 @@ export async function loadBrowserRunnerHeartbeats(
   now: number,
 ): Promise<BrowserRunnerHeartbeat[] | null> {
   try {
-    const cutoff = runnerLiveCandidateCutoff(now, RUNNER_ONLINE_WINDOW_MS);
+    const cutoff = runnerLiveCandidateCutoff(now, RUNNER_ONLINE_CANDIDATE_WINDOW_MS);
     const candidates = await db
       .select({
         accountId: workerHeartbeats.accountId,
         localUiUrl: workerHeartbeats.localUiUrl,
         lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
+        presenceConnected: workerHeartbeats.presenceConnected,
         environment: workerHeartbeats.environment,
         accountTeamId: accounts.teamId,
       })
@@ -230,7 +232,7 @@ export async function loadBrowserRunnerHeartbeats(
       .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
       .where(gt(workerHeartbeats.lastHeartbeatAt, cutoff));
     const hbs = (await withLiveRunnerBeats(candidates))
-      .filter(h => now - h.lastHeartbeatAt.getTime() < RUNNER_ONLINE_WINDOW_MS);
+      .filter(h => isRunnerOnline(h.lastHeartbeatAt, now, h.presenceConnected));
     if (hbs.length === 0) return [];
     const accountIds = [...new Set(hbs.map(h => h.accountId))];
     const links = await db
@@ -242,6 +244,7 @@ export async function loadBrowserRunnerHeartbeats(
       accountId: h.accountId,
       localUiUrl: h.localUiUrl,
       lastHeartbeatAt: h.lastHeartbeatAt,
+      presenceConnected: h.presenceConnected,
       environment: (h.environment as { envKeys?: string[] } | null) ?? null,
       workspaceIds: (() => {
         const executor = resolveWorkspaceExecutor(workspace.gitConfig as Parameters<typeof resolveWorkspaceExecutor>[0], workspace.webhookConfig).executor;

@@ -26,7 +26,7 @@ mock.module('@/lib/repo-scope', () => ({
 }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: async (ch: string, ev: string, data: any) => { triggered.push([ch, ev, data]); },
-  channels: { workspace: (id: string) => `workspace-${id}` },
+  channels: { workerActivity: (id: string) => `worker-${id}-activity`, workspaceActivity: (id: string) => `workspace-${id}-activity`, workspace: (id: string) => `workspace-${id}` },
   events: { WORKER_PROGRESS: 'worker:progress' },
 }));
 mock.module('@buildd/core/db', () => ({
@@ -66,7 +66,7 @@ describe('recordNamedReplacement', () => {
     expect(where).toContain('"isNull":"workers.mergedAt"');
     // A repeated name (every `edited` event) is a no-op write.
     expect(where).toContain('"ne":["workers.namedReplacementPrNumber",12]');
-    expect(triggered).toEqual([['workspace-ws-1', 'worker:progress', { taskId: 't-1' }]]);
+    expect(triggered).toEqual([['workspace-ws-1-activity', 'worker:progress', { taskId: 't-1' }]]);
   });
 
   it('a PR naming itself writes nothing', async () => {

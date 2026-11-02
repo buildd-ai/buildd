@@ -301,6 +301,27 @@ describe('GET /api/workspaces/[id]/runners', () => {
     expect(body.runners[0].status).toBe('stale');
   });
 
+  it('presence-connected runner with a 10-minute-old beat is online; disconnected with a fresh beat is not', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ id: WS_ID });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', accessMode: 'open' });
+    const hb = (id: string, ageMs: number, presenceConnected: boolean | null) => ({
+      id, accountId: id, lastHeartbeatAt: new Date(Date.now() - ageMs), presenceConnected,
+      maxConcurrentWorkers: 2, activeWorkerCount: 0, localUiUrl: `http://${id}:1`, environment: null,
+      account: { id, name: id, type: 'user', teamId: 'team-1' },
+    });
+    mockWorkerHeartbeatsFindMany.mockResolvedValue([
+      hb('connected', 10 * 60_000, true),
+      hb('disconnected', 5_000, false),
+      hb('legacy', 5_000, null),
+    ]);
+    mockAccountWorkspacesFindFirst.mockResolvedValue(null);
+
+    const body = await (await GET(makeRequest(), { params: Promise.resolve({ id: WS_ID }) })).json();
+    const status = Object.fromEntries(body.runners.map((r: any) => [r.accountId, r.status]));
+    expect(status).toEqual({ connected: 'online', disconnected: 'stale', legacy: 'online' });
+  });
+
   it('online threshold is wider than the heartbeat interval (regression: was 2 min)', () => {
     // At 60-min default interval, online threshold must be > 60 min so a runner
     // beating on schedule is never wrongly marked stale between beats.

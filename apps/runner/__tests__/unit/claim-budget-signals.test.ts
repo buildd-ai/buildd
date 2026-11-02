@@ -190,4 +190,20 @@ describe('heartbeatState (N3 heartbeat)', () => {
     expect(s.degraded).toBe(true);
     expect(s.reason).toContain('never');
   });
+
+  test('a connected Pusher socket is contact: idle presence-connected runner is not DEGRADED', () => {
+    // No HTTP response for an hour, but Pusher is up now.
+    expect(heartbeatState(now - 60 * 60_000, now, new ClaimHealth(), now).degraded).toBe(false);
+  });
+
+  test('Pusher down: contact ages from the last confirmation, so the fallback ping governs', () => {
+    const pusherLast = now - SERVER_CONTACT_STALE_MS - 1;
+    expect(heartbeatState(now - 60 * 60_000, now, new ClaimHealth(), pusherLast).degraded).toBe(true);
+    // The fallback ping's HTTP response restores contact.
+    expect(heartbeatState(now - 1_000, now, new ClaimHealth(), pusherLast).degraded).toBe(false);
+  });
+
+  test('a claim-5xx streak still degrades while Pusher is connected', () => {
+    expect(heartbeatState(now - 60 * 60_000, now, degradedHealth(), now).degraded).toBe(true);
+  });
 });

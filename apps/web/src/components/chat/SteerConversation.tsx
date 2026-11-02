@@ -16,7 +16,7 @@
  * presence it shows (`steerPresence`: runner, last heartbeat, current action).
  *
  * The feed refreshes on the worker's own events (spec 3ef37387 R-21):
- * worker:progress on the worker channel (the check-ins around a delivery move
+ * worker:progress on the worker's activity channel (the check-ins around a delivery move
  * the worker's current action), and worker:completed / worker:failed when the
  * run ends (a message it never read turns undelivered). A read once a minute is the fallback for a missed event, and
  * a hidden tab reads nothing until it is shown again (hooks/useLiveListen.ts).

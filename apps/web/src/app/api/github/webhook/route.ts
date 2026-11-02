@@ -469,7 +469,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_running', headSha: check_suite.head_sha, currentHeadSha: pr.head?.sha ?? null }, { scope: factFunnelScope })
         : [];
       if (worker && applied.length > 0) {
-        await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
+        await triggerEvent(channels.workspaceActivity(worker.workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
         });
       }
@@ -519,7 +519,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_failed', headSha, currentHeadSha: pr.head?.sha ?? null }, { scope: factFunnelScope })
         : [];
       if (worker && (applied.length > 0 || (worker.prLifecycleStatus === 'ci_failed' && (!pr.head?.sha || pr.head.sha === headSha)))) {
-        await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
+        await triggerEvent(channels.workspaceActivity(worker.workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
         });
         // Model policy: CI on the run's PR is its tests observation.
@@ -1000,7 +1000,7 @@ async function handlePullRequestEvent(event: {
         { bookkeeping: { prIsDraft: pr.draft ?? null }, scope: factFunnelScope },
       );
 
-      await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {
+      await triggerEvent(channels.workspaceActivity(openWorker.workspaceId), events.WORKER_PROGRESS, {
         taskId: openWorker.taskId,
       });
 
@@ -1306,7 +1306,7 @@ async function handlePullRequestEvent(event: {
     // PR closed without merge (abandoned/superseded): every row carrying the
     // PR, never over a merge (recordPrFact).
     await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' }, { scope: factFunnelScope });
-    await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
+    await triggerEvent(channels.workspaceActivity(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });
 

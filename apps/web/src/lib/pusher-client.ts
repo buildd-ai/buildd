@@ -2,6 +2,7 @@
 
 import PusherClient from 'pusher-js';
 import type { Channel } from 'pusher-js';
+import { channelForEvent } from '@buildd/shared';
 
 /**
  * Client-side Pusher access.
@@ -149,3 +150,40 @@ export function unsubscribeFromChannel(channelName: string) {
 
 /** Channel prefix for environment isolation (matches server-side PUSHER_CHANNEL_PREFIX) */
 export const CHANNEL_PREFIX = process.env.NEXT_PUBLIC_PUSHER_CHANNEL_PREFIX || '';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ChannelEventHandler = (data: any) => void;
+
+/**
+ * Bind `handlers` for `channelName`, each event on the channel it is published
+ * on: `worker:progress` rides the `-activity` twin of a worker or workspace
+ * channel (@buildd/shared pusher-activity.ts), everything else the channel
+ * itself. Subscribes only the channels those events need.
+ *
+ * Returns the cleanup (unbind every handler, release every hold), or null when
+ * Pusher is not configured.
+ */
+export function bindChannelEvents(
+  channelName: string,
+  handlers: ReadonlyArray<readonly [string, ChannelEventHandler]>,
+): (() => void) | null {
+  if (!getPusherClient()) return null;
+  const held = new Map<string, Channel>();
+  const bound: Array<[Channel, string, ChannelEventHandler]> = [];
+  for (const [event, handler] of handlers) {
+    const name = channelForEvent(channelName, event, CHANNEL_PREFIX);
+    let channel = held.get(name);
+    if (!channel) {
+      const subscribed = subscribeToChannel(name);
+      if (!subscribed) continue;
+      held.set(name, subscribed);
+      channel = subscribed;
+    }
+    channel.bind(event, handler);
+    bound.push([channel, event, handler]);
+  }
+  return () => {
+    for (const [channel, event, handler] of bound) channel.unbind(event, handler);
+    for (const name of held.keys()) unsubscribeFromChannel(name);
+  };
+}

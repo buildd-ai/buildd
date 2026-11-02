@@ -42,7 +42,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
-  channels: { workspace: (id: string) => `workspace-${id}` },
+  channels: { workerActivity: (id: string) => `worker-${id}-activity`, workspaceActivity: (id: string) => `workspace-${id}-activity`, workspace: (id: string) => `workspace-${id}` },
   events: { WORKER_PROGRESS: 'worker:progress' },
 }));
 

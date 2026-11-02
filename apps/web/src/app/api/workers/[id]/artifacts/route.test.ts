@@ -46,6 +46,7 @@ mock.module('@/lib/artifact-notify', () => ({
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: {
+    workerActivity: (id: string) => `worker-${id}-activity`, workspaceActivity: (id: string) => `workspace-${id}-activity`,
     worker: (id: string) => `worker-${id}`,
     workspace: (id: string) => `workspace-${id}`,
   },

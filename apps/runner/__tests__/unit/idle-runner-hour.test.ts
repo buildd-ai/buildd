@@ -14,7 +14,7 @@
 import { afterAll, afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { tmpdir } from 'os';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
-import { LIVENESS_PING_INTERVAL_MS, RUNNER_HEARTBEAT_INTERVAL_MS } from '@buildd/shared';
+import { RUNNER_FALLBACK_PING_MIN_MS, RUNNER_HEARTBEAT_INTERVAL_MS } from '@buildd/shared';
 import type { LocalUIConfig } from '../../src/types';
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
@@ -25,7 +25,8 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   }),
 }));
 mock.module('pusher-js', () => ({
-  default: class { connection = { bind: () => {} }; subscribe = () => ({ bind: () => {}, unbind_all: () => {}, unbind: () => {} }); unsubscribe = () => {}; disconnect = () => {}; },
+  // The presence channel reports a successful join, as a healthy Pusher does.
+  default: class { connection = { state: 'connected', bind: () => {} }; subscribe = () => ({ bind: (e: string, cb: () => void) => { if (e === 'pusher:subscription_succeeded') queueMicrotask(cb); }, unbind_all: () => {}, unbind: () => {} }); unsubscribe = () => {}; disconnect = () => {}; },
 }));
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
@@ -83,6 +84,7 @@ function fakeServer() {
     let status = 200;
     let reply: unknown = {};
     if (u.pathname === '/api/workers/heartbeat') reply = { ok: true, viewerToken: 'v', pendingTaskCount: 0, leasesRenewed: 0, claimsReleased: 0 };
+    else if (u.pathname === '/api/accounts/me') reply = { id: 'acct1', name: 'a' };
     else if (u.pathname === '/api/workers/claim') reply = { workers: [], diagnostics: { reason: 'no_pending_tasks' } };
     else if (u.pathname === '/api/tasks/cleanup') { status = 401; reply = { error: 'Unauthorized - requires session auth or admin-level API token' }; }
     const text = JSON.stringify(reply);
@@ -109,6 +111,7 @@ describe('an idle runner, for an hour', () => {
       manager = new WorkerManager({
         projectsRoot: '/tmp', builddServer: 'http://server.invalid', apiKey: 'k', maxConcurrent: 2,
         localUiUrl: 'http://localhost:8766', serverless: false, acceptRemoteTasks: true,
+        pusherKey: 'key', pusherCluster: 'us2',
       } as LocalUIConfig);
       await Bun.sleep(50);
 
@@ -130,14 +133,16 @@ describe('an idle runner, for an hour', () => {
     const beats = by('/api/workers/heartbeat');
     const claims = by('/api/workers/claim');
     const cleanups = by('/api/tasks/cleanup');
-    const other = reqs.filter(r => !['/api/workers/heartbeat', '/api/workers/claim', '/api/tasks/cleanup'].includes(r.path));
+    const other = reqs.filter(r => !['/api/workers/heartbeat', '/api/workers/claim', '/api/tasks/cleanup', '/api/accounts/me', '/api/workspaces'].includes(r.path));
 
-    // Startup beat, the liveness ping each minute, the task-poll tick.
-    const expectedBeats = 1 + Math.floor(3_600_000 / LIVENESS_PING_INTERVAL_MS) + Math.floor(3_600_000 / RUNNER_HEARTBEAT_INTERVAL_MS);
+    // Startup beat, the slow fallback ping (not a ping each minute), the task-poll tick.
+    const expectedBeats = 1 + Math.ceil(3_600_000 / RUNNER_FALLBACK_PING_MIN_MS) + Math.floor(3_600_000 / RUNNER_HEARTBEAT_INTERVAL_MS);
     expect(beats.length).toBeGreaterThan(0);
     expect(beats.length).toBeLessThanOrEqual(expectedBeats + 1);
-    // The claim fallback runs on the task-poll tick only (Pusher delivers work).
-    expect(claims.length).toBeLessThanOrEqual(Math.max(1, Math.floor(3_600_000 / RUNNER_HEARTBEAT_INTERVAL_MS)));
+    // Presence-connected and idle, the tick fires 60 times in the hour and sends none of them.
+    expect(beats.length).toBeLessThanOrEqual(1 + Math.floor(3_600_000 / RUNNER_HEARTBEAT_INTERVAL_MS) + 1);
+    // The claim fallback runs on the task-poll tick only (Pusher delivers work), plus the one startup claim.
+    expect(claims.length).toBeLessThanOrEqual(1 + Math.max(1, Math.floor(3_600_000 / RUNNER_HEARTBEAT_INTERVAL_MS)));
     // Refused once (a member key), never asked again.
     expect(cleanups.length).toBeLessThanOrEqual(1);
     // Nothing else: no list read, no worker read, no memory read.

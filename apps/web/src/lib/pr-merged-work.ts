@@ -153,7 +153,7 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   if (p.mergeIsNew) {
     await reportTaskPolicyOutcome(worker.taskId, [{ type: 'merged', merged: true }]);
   }
-  await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, { taskId: worker.taskId });
+  await triggerEvent(channels.workspaceActivity(worker.workspaceId), events.WORKER_PROGRESS, { taskId: worker.taskId });
 
   // The task's file edits landed: held path claims unblock waiting tasks.
   if (worker.taskId) {

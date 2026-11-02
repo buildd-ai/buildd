@@ -7,7 +7,7 @@ import { RunStallContext } from './run-stall-context';
 
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { bindChannelEvents, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import WorkerActivityTimeline, { collapseWorkspacePath, ageLabel } from './WorkerActivityTimeline';
 import ModelUsagePanel from './ModelUsagePanel';
 import NowStrip, { PausedBar } from './NowStrip';
@@ -195,54 +195,47 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
   // Subscribe to real-time updates
   useEffect(() => {
     const channelName = `${CHANNEL_PREFIX}worker-${worker.id}`;
-    const channel = subscribeToChannel(channelName);
 
-    if (channel) {
-      // Thin-event handler: events now carry only {workerId, taskId, status,
-      // updatedAt, taskProgress?}. The full worker row is fetched by the server
-      // component when router.refresh() re-renders the page.
-      const handleUpdate = (data: { workerId?: string; taskId?: string; status?: string; updatedAt?: string; taskProgress?: TaskProgressEntry[] }) => {
-        // taskProgress is transient (not persisted) — consume it directly from event
-        if (Array.isArray(data.taskProgress)) {
-          setTaskProgress(data.taskProgress);
-        } else {
-          setTaskProgress([]);
-        }
-        // A status change (e.g. running -> waiting_input) must be seen right
-        // away; a same-status progress tick coalesces with TaskAutoRefresh's
-        // own refresh for the same PATCH instead of doubling it.
-        const immediate = shouldFlushImmediately(lastStatusRef.current, data.status);
-        if (typeof data.status === 'string') lastStatusRef.current = data.status;
-        if (immediate) {
-          flushRefresh(router, taskId);
-        } else {
-          requestRefresh(router, taskId);
-        }
-      };
-      // worker:completed/failed are always terminal — refresh immediately.
-      const handleTerminal = (data: { workerId?: string; taskId?: string; status?: string; updatedAt?: string; taskProgress?: TaskProgressEntry[] }) => {
-        if (Array.isArray(data.taskProgress)) {
-          setTaskProgress(data.taskProgress);
-        } else {
-          setTaskProgress([]);
-        }
-        if (typeof data.status === 'string') lastStatusRef.current = data.status;
+    // Thin-event handler: events now carry only {workerId, taskId, status,
+    // updatedAt, taskProgress?}. The full worker row is fetched by the server
+    // component when router.refresh() re-renders the page.
+    const handleUpdate = (data: { workerId?: string; taskId?: string; status?: string; updatedAt?: string; taskProgress?: TaskProgressEntry[] }) => {
+      // taskProgress is transient (not persisted) — consume it directly from event
+      if (Array.isArray(data.taskProgress)) {
+        setTaskProgress(data.taskProgress);
+      } else {
+        setTaskProgress([]);
+      }
+      // A status change (e.g. running -> waiting_input) must be seen right
+      // away; a same-status progress tick coalesces with TaskAutoRefresh's
+      // own refresh for the same PATCH instead of doubling it.
+      const immediate = shouldFlushImmediately(lastStatusRef.current, data.status);
+      if (typeof data.status === 'string') lastStatusRef.current = data.status;
+      if (immediate) {
         flushRefresh(router, taskId);
-      };
+      } else {
+        requestRefresh(router, taskId);
+      }
+    };
+    // worker:completed/failed are always terminal — refresh immediately.
+    const handleTerminal = (data: { workerId?: string; taskId?: string; status?: string; updatedAt?: string; taskProgress?: TaskProgressEntry[] }) => {
+      if (Array.isArray(data.taskProgress)) {
+        setTaskProgress(data.taskProgress);
+      } else {
+        setTaskProgress([]);
+      }
+      if (typeof data.status === 'string') lastStatusRef.current = data.status;
+      flushRefresh(router, taskId);
+    };
 
-      channel.bind('worker:progress', handleUpdate);
-      channel.bind('worker:completed', handleTerminal);
-      channel.bind('worker:failed', handleTerminal);
-
-      return () => {
-        channel.unbind('worker:progress', handleUpdate);
-        channel.unbind('worker:completed', handleTerminal);
-        channel.unbind('worker:failed', handleTerminal);
-        unsubscribeFromChannel(channelName);
-      };
-    } else {
-      console.warn('[RealTimeWorkerView] No channel returned - Pusher not configured?');
-    }
+    // worker:progress arrives on the worker's activity channel; bindChannelEvents routes it.
+    const release = bindChannelEvents(channelName, [
+      ['worker:progress', handleUpdate],
+      ['worker:completed', handleTerminal],
+      ['worker:failed', handleTerminal],
+    ]);
+    if (release) return release;
+    console.warn('[RealTimeWorkerView] No channel returned - Pusher not configured?');
   }, [worker.id, taskId, router]);
 
   // The answer goes through TaskQuestion's one path (useAnswerSubmit):

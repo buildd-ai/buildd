@@ -132,6 +132,8 @@ mock.module('@/lib/pusher', () => ({
     workspace: (id: string) => `workspace-${id}`,
     task: (id: string) => `task-${id}`,
     worker: (id: string) => `worker-${id}`,
+    workerActivity: (id: string) => `worker-${id}-activity`,
+    workspaceActivity: (id: string) => `workspace-${id}-activity`,
   },
   events: {
     WORKER_STARTED: 'worker:started',
@@ -12674,7 +12676,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       await PATCH(req, { params: mockParams });
 
-      const progress = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
+      const progress = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1-activity' && c[1] === 'worker:progress');
       expect(progress?.[2]).toMatchObject({ workerId: WORKER_ID, taskId: 'task-1', currentAction: 'Reading main.ts' });
     });
 
@@ -12695,7 +12697,7 @@ describe('PATCH /api/workers/[id]', () => {
         headers: { Authorization: 'Bearer bld_test' },
         body: { status: 'running', currentAction: 'Opening the customer ledger' },
       }), { params: mockParams });
-      const masked = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
+      const masked = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1-activity' && c[1] === 'worker:progress');
       expect(masked?.[2]?.currentAction).toBe('working');
       expect(JSON.stringify(mockTriggerEvent.mock.calls)).not.toContain('customer ledger');
 
@@ -12708,7 +12710,7 @@ describe('PATCH /api/workers/[id]', () => {
         headers: { Authorization: 'Bearer bld_test' },
         body: { status: 'running' },
       }), { params: mockParams });
-      const bare = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
+      const bare = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1-activity' && c[1] === 'worker:progress');
       expect(bare).toBeUndefined(); // no-op suppressed
     });
 
@@ -12797,6 +12799,59 @@ describe('PATCH /api/workers/[id]', () => {
       const progressCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:progress');
       expect(progressCalls.length).toBeGreaterThanOrEqual(1);
       expect(progressCalls[0][2].currentAction).toBe('Running tests');
+    });
+
+    // Runners hold the worker and workspace channels for task:* and the
+    // terminal events; Pusher bills every delivery to every subscriber. A
+    // progress tick goes to the -activity twins only the dashboard holds.
+    it('publishes WORKER_PROGRESS to the worker and workspace activity channels only', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        currentAction: 'Building feature', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Running tests' },
+      }), { params: mockParams });
+
+      const id = (await mockParams).id;
+      const progressChannels = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:progress').map((c: any[]) => c[0]);
+      expect(progressChannels.sort()).toEqual([`worker-${id}-activity`, 'workspace-ws-1-activity']);
+    });
+
+    it('publishes terminal events to the worker and workspace channels runners hold', async () => {
+      for (const status of ['completed', 'failed'] as const) {
+        mockWorkersUpdate.mockReturnValue({
+          set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status, updatedAt: new Date() }]) })) })),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', accountId: 'account-1', status: 'running',
+          workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+        });
+        mockTriggerEvent.mockReset();
+        mockTriggerEvent.mockResolvedValue(undefined);
+
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status, ...(status === 'failed' ? { error: 'boom' } : {}) },
+        }), { params: mockParams });
+
+        const id = (await mockParams).id;
+        const terminal = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === `worker:${status}`).map((c: any[]) => c[0]);
+        expect(terminal).toContain(`worker-${id}`);
+        expect(terminal).toContain('workspace-ws-1');
+        expect(terminal.some((ch: string) => ch.endsWith('-activity'))).toBe(false);
+      }
     });
 
     it('always fires terminal events (WORKER_COMPLETED) even when status is unchanged', async () => {
@@ -17277,7 +17332,7 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect((await patch(body)).status).toBe(200);
     const progress = mockTriggerEvent.mock.calls.filter((call: any[]) => call[1] === 'worker:progress');
     expect(progress).toHaveLength(1);
-    expect(progress[0][0]).toBe('worker-' + (await mockParams).id);
+    expect(progress[0][0]).toBe('worker-' + (await mockParams).id + '-activity');
     expect(progress[0][2]).toMatchObject({ delivery: true });
     expect(sets.every(v => v.currentAction === undefined)).toBe(true);
 

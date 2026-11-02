@@ -10,7 +10,7 @@ import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimDeferralCounters, ClaimTaskExclusion, ClaimDeferredTask } from '@buildd/shared';
 import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp, parseRunnerLoginUse, pickLoginBackend } from '@buildd/shared';
 import { claudeDefaultTaskIds } from './login-mode-gate';
-import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot, RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
+import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot, RUNNER_ONLINE_CANDIDATE_WINDOW_MS, runnerOnlineNow } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -497,11 +497,11 @@ export async function POST(req: NextRequest) {
   const liveRunnerSlots = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(and(
       eq(workerHeartbeats.accountId, account.id),
-      gte(workerHeartbeats.lastHeartbeatAt, runnerLiveCandidateCutoff(slotsNow, RUNNER_LIVE_WINDOW_MS)),
+      gte(workerHeartbeats.lastHeartbeatAt, runnerLiveCandidateCutoff(slotsNow, RUNNER_ONLINE_CANDIDATE_WINDOW_MS)),
     )),
-    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, maxConcurrentWorkers: true },
+    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, presenceConnected: true, maxConcurrentWorkers: true },
   }).then(rows => withLiveRunnerBeats(rows))
-    .then(rows => rows.filter(r => slotsNow - r.lastHeartbeatAt.getTime() <= RUNNER_LIVE_WINDOW_MS).map(r => r.maxConcurrentWorkers))
+    .then(rows => rows.filter(r => runnerOnlineNow(r.lastHeartbeatAt, r.presenceConnected, slotsNow)).map(r => r.maxConcurrentWorkers))
     .catch((err) => {
     console.warn('[claim] could not read live runner slots, using the account limit:', err);
     return [] as number[];

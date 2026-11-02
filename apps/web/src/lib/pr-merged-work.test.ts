@@ -24,7 +24,7 @@ mock.module('@/lib/model-policy-outcomes', () => ({ reportTaskPolicyOutcome: asy
 const resolveCompletedTask = mock(async (_id: string, _ws: string) => {});
 mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: async () => {}, resolveCompletedTask }));
 mock.module('@/lib/interactive-detach', () => ({ detachInteractiveWorkersOfEndedTasks: async () => {} }));
-mock.module('@/lib/pusher', () => ({ triggerEvent: async () => {}, channels: { workspace: () => 'c' }, events: { WORKER_PROGRESS: 'p' } }));
+mock.module('@/lib/pusher', () => ({ triggerEvent: async () => {}, channels: { workspace: () => 'c', workspaceActivity: () => 'c' }, events: { WORKER_PROGRESS: 'p' } }));
 const trackerPost = mock(async (_p: any) => {});
 mock.module('@/lib/work-tracker', () => ({ postWorkTrackerCompletionUpdate: trackerPost }));
 mock.module('@/lib/path-claim-release', () => ({ releaseAndNotify: async () => {} }));

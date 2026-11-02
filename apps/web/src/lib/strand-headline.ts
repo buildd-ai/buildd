@@ -67,10 +67,10 @@ export function strandHeadline(row: StrandRowLike): StrandHeadline {
  */
 export function withoutRunnerServedStrands<T extends { backend: string }>(
   strands: readonly T[],
-  runners: ReadonlyArray<Pick<RunnerHeartbeat, 'lastHeartbeatAt' | 'codexAuthSource'>>,
+  runners: ReadonlyArray<Pick<RunnerHeartbeat, 'lastHeartbeatAt' | 'presenceConnected' | 'codexAuthSource'>>,
   now: number,
 ): T[] {
   const codexLogin = runners.some((r) =>
-    (r.codexAuthSource === 'machine_login' || r.codexAuthSource === 'api_key') && isRunnerOnline(r.lastHeartbeatAt, now));
+    (r.codexAuthSource === 'machine_login' || r.codexAuthSource === 'api_key') && isRunnerOnline(r.lastHeartbeatAt, now, r.presenceConnected));
   return codexLogin ? strands.filter((s) => s.backend !== 'codex') : [...strands];
 }

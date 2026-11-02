@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { beatWithin, INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, runnerUpdateState, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { beatWithin, runnerOnlineNow, INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, runnerUpdateState, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -30,6 +30,8 @@ export interface FleetHeartbeatRow {
   /** `fleet`: a `--once` run's identity (@buildd/shared runner-fleet). */
   environment?: { labels?: Record<string, string> | null; fleet?: unknown; hold?: unknown } | null;
   lastHeartbeatAt: DateLike;
+  /** Pusher presence; null/absent = never joined, judged by the beat alone (runnerOnlineNow). */
+  presenceConnected?: boolean | null;
   /** What the runner last reported running. Decides an ephemeral run's share of capacity. */
   activeWorkerCount?: number | null;
   /** The self-update it reported applying (@buildd/shared runner-update), when one. */
@@ -130,7 +132,14 @@ function barState(status: string): LaneBar['state'] {
   return 'done';
 }
 
-type CapacityBeat = Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'> & Partial<Pick<FleetHeartbeatRow, 'localUiUrl' | 'environment' | 'activeWorkerCount' | 'updateDrain'>>;
+/** Online by presence when the runner has joined it, else by the beat inside `windowMs`. */
+function beatUp(hb: { lastHeartbeatAt: DateLike; presenceConnected?: boolean | null }, now: number, windowMs: number): boolean {
+  return hb.presenceConnected == null
+    ? beatWithin(ms(hb.lastHeartbeatAt), now, windowMs + 1)
+    : runnerOnlineNow(ms(hb.lastHeartbeatAt), hb.presenceConnected, now);
+}
+
+type CapacityBeat = Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'> & Partial<Pick<FleetHeartbeatRow, 'presenceConnected' | 'localUiUrl' | 'environment' | 'activeWorkerCount' | 'updateDrain'>>;
 
 /** The slots one runner advertises. */
 function advertisedSlots(hb: CapacityBeat): number {
@@ -160,7 +169,7 @@ export function fleetSlotCounts(
   for (const hb of heartbeats) {
     const n = advertisedSlots(hb);
     configured += n;
-    if (!beatWithin(ms(hb.lastHeartbeatAt), now, windowMs + 1)) continue;
+    if (!beatUp(hb, now, windowMs)) continue;
     online += n;
     // Held, or updating (it claims nothing until it continues its paused agents): no free slots.
     if (!activeRunnerHold(hb.environment, now) && !runnerUpdateState({ updateDrain: hb.updateDrain, lastHeartbeatAt: hb.lastHeartbeatAt }, now)) schedulable += n;
@@ -303,7 +312,7 @@ export function buildFleetSnapshot(
       runners.push({
         id: gid, name, machine, maxSlots: slots.length,
         // A live run is the proof the group is up; a fresh beat from any run confirms it.
-        online: hbs.length === 0 ? false : hbs.some(hb => beatWithin(ms(hb.lastHeartbeatAt), now, onlineMs + 1)),
+        online: hbs.length === 0 ? false : hbs.some(hb => beatUp(hb, now, onlineMs)),
         slots,
         elastic: { executor: identity.executor, group: identity.group, running: running.length },
       });
@@ -312,7 +321,7 @@ export function buildFleetSnapshot(
     const liveHere = g.workers.filter(runsNow);
     // A runner we have no heartbeat for is shown only while it holds live work.
     if (!g.hb && liveHere.length === 0) continue;
-    const online = !!g.hb && beatWithin(ms(g.hb.lastHeartbeatAt), now, onlineMs + 1);
+    const online = !!g.hb && beatUp(g.hb, now, onlineMs);
     const identity = g.hb ? runnerIdentity(g.hb) : { name: runnerNameFromUrl(g.key), machine: null };
     const intervals = g.workers
       .filter(w => Number.isFinite(ms(w.startedAt)))
