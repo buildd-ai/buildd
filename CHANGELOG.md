@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Missions: a completed mission leads with what it produced (#5914)
+- Specs: tappable reveal for unexplained spec changes, with progress in the approval bar (#5913)
+- Runners: pusher presence auth, webhook and online-now fold; runners join the account presence channel and beat on change (#5902, #5905)
+
+### Fixed
+
+- Models: Haiku 5.5 is served on supporting runners and model fallbacks are tracked as Sentinel incidents (#5912)
+- Review: a follow-up for a PR merged over open findings cannot approve without verifying them (#5906)
+- Realtime: `worker:progress` is published on dashboard-only activity channels (#5903)
+- Dispatch: the row is re-read after a lost custody claim so a live wake is not closed as skipped (#5896)
+
 ## [0.389.0] - 2026-10-29
 
 ### Added
