@@ -1,10 +1,30 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-10-26
-**Previous scan**: 2026-10-19
-**Current SDK version in Buildd**: `^0.3.290` (runner + core). SDK head is `0.3.310` (CLI parity 2.1.310) — 20 patch versions behind. Pin did not move for a third week; the bump recommendation is still open.
+**Last updated**: 2026-11-02
+**Previous scan**: 2026-10-26
+**Current SDK version in Buildd**: `^0.3.316` (runner + core, bun.lock resolves 0.3.316 = npm `latest`). The long-open bump recommendation is RESOLVED; pin is at head.
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## Nov 2 scan (Oct 27 – Nov 2)
+
+TypeScript SDK 0.3.311–0.3.316 (0.3.313 not on npm as a separate publish). Source: SDK CHANGELOG + npm publish times. Community repos not re-scanned.
+
+| Version | Change |
+|---------|--------|
+| 0.3.316 | `permissions.blockReadsExemptPaths` setting |
+| 0.3.314 | `prewarm()` (alpha) on `/core`; `sandbox_required_unavailable` startup_failure_reason; `permissions.blockWritesOutsideWorkingDirectories`; fix: settings files outside `settingSources` no longer leak some settings |
+| 0.3.312 | auto-mode settings (`autoMode`, `useAutoModeDuringPlan`, `disableAutoMode`); `unanswered` annotation on AskUserQuestion answers (only if init lists capability) |
+| 0.3.311 | `ModelUsage.cacheCreationEphemeral5m/1hInputTokens` (cache-write split by TTL); min Node 18.14 |
+
+### Recommendations
+1. **Cost accuracy**: use the 5m/1h cache-creation split from 0.3.311 in cost accounting (1h writes are priced higher than 5m). Check `model-prices.ts` consumers. Medium.
+2. **Handle `sandbox_required_unavailable`** startup failure reason explicitly in runner failure classification. Low.
+3. **`blockWritesOutsideWorkingDirectories`**: candidate hardening for worker worktrees (workers must stay inside their worktree). Medium; evaluate.
+4. Carried, still unverified: Sonnet 5.5 cache-read price in `model-prices.ts`; Haiku 5.5 `MODEL_MIN_CLI_VERSION` (don't guess); `context_usage` payload; `parent_task_id` attribution; `prewarm()` stays alpha — watch.
+5. Bump follow-up: structured_output error handling (0.3.302) and fork-subagent default now ship with the pin; confirm plan tasks in workers.ts still behave.
 
 ---
 
