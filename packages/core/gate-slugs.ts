@@ -260,6 +260,17 @@ export const GATE_SLUGS = {
    */
   SIBLING_CONFLICT_PROBE: 'sibling_conflict_probe',
   /**
+   * GitHub webhook: a comment on a PR (`issue_comment` or an inline
+   * `pull_request_review_comment`, `created`), delivered to the live worker
+   * that owns the PR (`lib/pr-comment-followup.ts`). Per-workspace
+   * `gitConfig.prCommentFollowup`; `off` writes nothing. `accepted` = queued on
+   * the instruct path once (`detail.delivered: true`); `warned` = `recording`
+   * mode, what would have been sent; `rejected` = queued nothing, with
+   * `detail.reason` (`not_human`, `no_write_access`, `empty`, `no_live_owner`).
+   * Doubles as the redelivery idempotency key (`detail.commentId`).
+   */
+  PR_COMMENT_FOLLOWUP: 'pr_comment_followup',
+  /**
    * Keeping a mission's integration branch current with dev
    * (`lib/mission-branch-refresh.ts`, docs/design/mission-delivery-arc.md P5,
    * superseded). `accepted` = GitHub's merges API landed dev cleanly (a merge
