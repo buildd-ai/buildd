@@ -85,6 +85,10 @@ mock.module('@/lib/pr-named-replacement-store', () => ({
   recordNamedReplacement: mockRecordNamedReplacement,
   linkNamedReplacement: mock(async () => ({ updated: true, url: '' })),
 }));
+// PR comment follow-up: who is told what is covered in lib/pr-comment-followup.test.ts
+// and lib/pr-comment-followup-store.test.ts; here only what the webhook hands over.
+const mockRunPrCommentFollowup = mock((_e: any, _s: any) => Promise.resolve({ outcome: 'delivered', workerId: 'w-1' } as any));
+mock.module('@/lib/pr-comment-followup-store', () => ({ runPrCommentFollowup: mockRunPrCommentFollowup }));
 const invalidatedApprovals: Array<[string, number]> = [];
 mock.module('@/lib/github-approval', () => ({
   readGithubApproval: async () => ({ reviewDecision: null, humanApproved: false }),
@@ -767,6 +771,92 @@ const factsOfKind = (kind: string) => recordedFacts.filter((r) => r.fact.kind ==
 const mockMaybeAutoReviewUnownedPr = mock(async (_input: any) => 'skipped_off' as string);
 mock.module('@/lib/auto-review-unowned', () => ({ maybeAutoReviewUnownedPr: mockMaybeAutoReviewUnownedPr }));
 beforeEach(() => { mockMaybeAutoReviewUnownedPr.mockClear(); });
+
+describe('PR comments reach the live worker that owns the PR', () => {
+  beforeEach(() => {
+    mockRecordNamedReplacement.mockClear();
+    mockRunPrCommentFollowup.mockClear();
+    mockRunPrCommentFollowup.mockImplementation(() => Promise.resolve({ outcome: 'delivered', workerId: 'w-1' } as any));
+  });
+
+  const user = { login: 'a-maintainer', type: 'User' };
+  const issueComment = (over: Record<string, any> = {}) => ({
+    action: 'created',
+    issue: { number: 120, state: 'open', pull_request: { url: 'x' } },
+    comment: {
+      id: 9001, body: 'Please rename the helper.', html_url: 'https://github.com/test-org/test-repo/pull/120#issuecomment-9001',
+      author_association: 'MEMBER', user, ...over,
+    },
+    repository: { full_name: 'test-org/test-repo' },
+  });
+
+  it('a top-level PR comment is handed over with its author and write-access association', async () => {
+    const res = await POST(createWebhookRequest('issue_comment', issueComment()));
+    expect(res.status).toBe(200);
+    expect(mockRunPrCommentFollowup).toHaveBeenCalledTimes(1);
+    expect(mockRunPrCommentFollowup.mock.calls[0]).toEqual([{
+      repoFullName: 'test-org/test-repo', prNumber: 120, commentId: 9001,
+      url: 'https://github.com/test-org/test-repo/pull/120#issuecomment-9001',
+      body: 'Please rename the helper.',
+      author: { login: 'a-maintainer', type: 'User', association: 'MEMBER' },
+      path: null, line: null,
+    }, 'issue_comment']);
+  });
+
+  it('an outside contributor and a bot are handed over with what decides authority (the store refuses them)', async () => {
+    await POST(createWebhookRequest('issue_comment', issueComment({ author_association: 'CONTRIBUTOR', user: { login: 'drive-by', type: 'User' } })));
+    await POST(createWebhookRequest('issue_comment', issueComment({ author_association: 'NONE', user: { login: 'ci[bot]', type: 'Bot' } })));
+    expect(mockRunPrCommentFollowup.mock.calls.map(c => c[0].author)).toEqual([
+      { login: 'drive-by', type: 'User', association: 'CONTRIBUTOR' },
+      { login: 'ci[bot]', type: 'Bot', association: 'NONE' },
+    ]);
+  });
+
+  it('a "Replaced by #N" comment still names the replacement, and is still handed over', async () => {
+    await POST(createWebhookRequest('issue_comment', issueComment({ body: 'Replaced by #140' })));
+    expect(mockRecordNamedReplacement).toHaveBeenCalledTimes(1);
+    expect(mockRunPrCommentFollowup).toHaveBeenCalledTimes(1);
+  });
+
+  it('an edited comment, or a comment on a plain issue, is not handed over', async () => {
+    await POST(createWebhookRequest('issue_comment', { ...issueComment(), action: 'edited' }));
+    await POST(createWebhookRequest('issue_comment', { ...issueComment(), issue: { number: 120, state: 'open' } }));
+    expect(mockRunPrCommentFollowup).not.toHaveBeenCalled();
+  });
+
+  it('the webhook never fails because delivery failed', async () => {
+    mockRunPrCommentFollowup.mockImplementation(() => Promise.reject(new Error('db down')));
+    const res = await POST(createWebhookRequest('issue_comment', issueComment()));
+    expect(res.status).toBe(200);
+  });
+
+  it('an inline review comment is captured and handed over with its path and line', async () => {
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-93', taskId: 't-93', workspaceId: 'ws1', task: { id: 't-93', title: 'Y', missionId: null } });
+    const comment = {
+      id: 8001, body: 'Off by one here.', path: 'src/a.ts', line: 12, diff_hunk: '@@',
+      html_url: 'https://github.com/test-org/test-repo/pull/93#discussion_r8001', author_association: 'COLLABORATOR', user,
+    };
+    const res = await POST(createWebhookRequest('pull_request_review_comment', { action: 'created', comment, pull_request: { number: 93 }, repository: { full_name: 'test-org/test-repo' } }));
+    expect(res.status).toBe(200);
+    expect(mockRunPrCommentFollowup.mock.calls[0]).toEqual([expect.objectContaining({
+      prNumber: 93, commentId: 8001, path: 'src/a.ts', line: 12,
+      author: { login: 'a-maintainer', type: 'User', association: 'COLLABORATOR' },
+    }), 'review_comment']);
+  });
+
+  it('an inline comment on a PR with no owner is still handed over (the store records it as no live owner)', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    const comment = { id: 8002, body: 'x', path: 'a.ts', line: 1, author_association: 'OWNER', user };
+    await POST(createWebhookRequest('pull_request_review_comment', { action: 'created', comment, pull_request: { number: 94 }, repository: { full_name: 'test-org/test-repo' } }));
+    expect(mockRunPrCommentFollowup).toHaveBeenCalledTimes(1);
+  });
+
+  it('an edited inline comment is not handed over', async () => {
+    const comment = { id: 8003, body: 'x', author_association: 'OWNER', user };
+    await POST(createWebhookRequest('pull_request_review_comment', { action: 'edited', comment, pull_request: { number: 93 }, repository: { full_name: 'test-org/test-repo' } }));
+    expect(mockRunPrCommentFollowup).not.toHaveBeenCalled();
+  });
+});
 
 // Import handler AFTER mocks
 import { POST } from './route';

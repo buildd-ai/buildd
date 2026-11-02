@@ -42,6 +42,7 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { replacedNamedInBody, replacementNamedInClose } from '@/lib/pr-named-replacement';
 import { recordNamedReplacement } from '@/lib/pr-named-replacement-store';
+import { runPrCommentFollowup } from '@/lib/pr-comment-followup-store';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
@@ -740,20 +741,64 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
  * by #N`): recorded on the PR's unmerged worker as a named replacement, display
  * only. The issue's state is not required to read `closed`: "Close with
  * comment" posts the comment before the close, and the column is only shown on
- * a closed-unmerged PR anyway. Never throws.
+ * a closed-unmerged PR anyway.
+ *
+ * Then any new comment on a PR goes to the PR's live worker when the commenter
+ * has write access and the workspace's mode allows it (lib/pr-comment-followup.ts).
+ * Never throws.
  */
 async function handleIssueCommentEvent(event: {
   action?: string;
   issue?: { number?: number; state?: string; pull_request?: unknown } | null;
-  comment?: { body?: string | null } | null;
+  comment?: PrCommentPayload | null;
   repository?: { full_name?: string } | null;
 }): Promise<void> {
   const repo = event.repository?.full_name;
   const prNumber = event.issue?.number;
   if (event.action !== 'created' || !event.issue?.pull_request || !repo || typeof prNumber !== 'number') return;
   const replacementPrNumber = replacementNamedInClose(event.comment?.body);
-  if (replacementPrNumber === null) return;
-  await recordNamedReplacement({ repoFullName: repo, closedPrNumber: prNumber, replacementPrNumber });
+  if (replacementPrNumber !== null) {
+    await recordNamedReplacement({ repoFullName: repo, closedPrNumber: prNumber, replacementPrNumber });
+  }
+  await followUpPrComment(repo, prNumber, event.comment, 'issue_comment');
+}
+
+/** The fields of a GitHub comment payload the follow-up reads. */
+interface PrCommentPayload {
+  id?: number;
+  body?: string | null;
+  html_url?: string;
+  author_association?: string | null;
+  user?: { login?: string | null; type?: string | null } | null;
+  path?: string | null;
+  line?: number | null;
+}
+
+/** Hand a new PR comment to the PR's live worker. Never throws: delivery is a nicety. */
+async function followUpPrComment(
+  repoFullName: string,
+  prNumber: number,
+  comment: PrCommentPayload | null | undefined,
+  source: 'issue_comment' | 'review_comment',
+): Promise<void> {
+  if (!comment || typeof comment.id !== 'number' || !comment.user?.login) return;
+  try {
+    const result = await runPrCommentFollowup({
+      repoFullName,
+      prNumber,
+      commentId: comment.id,
+      url: comment.html_url ?? prUrlFor(repoFullName, prNumber),
+      body: comment.body ?? '',
+      author: { login: comment.user.login, type: comment.user.type ?? '', association: comment.author_association ?? null },
+      path: comment.path ?? null,
+      line: comment.line ?? null,
+    }, source);
+    if (result.outcome !== 'skipped' || result.reason === 'error') {
+      console.log(`[pr-comment-followup] ${repoFullName}#${prNumber} comment ${comment.id}: ${result.outcome === 'skipped' ? result.reason : result.outcome}`);
+    }
+  } catch (err) {
+    console.error(`[pr-comment-followup] ${repoFullName}#${prNumber} comment ${comment.id} failed:`, err);
+  }
 }
 
 async function handlePullRequestEvent(event: {
@@ -1787,7 +1832,8 @@ function ownerFact(w: Awaited<ReturnType<typeof resolvePrOwner>>): PrOwnerFact |
 /**
  * Inline review comments — `pull_request_review_comment`. Only `created`:
  * an edit or delete mutates a comment already captured. The reviews module
- * captures it for retrieval by the file it concerns.
+ * captures it for retrieval by the file it concerns, then it is handed to the
+ * PR's live worker like a top-level comment.
  */
 async function handlePullRequestReviewCommentEvent(event: any): Promise<void> {
   const comment = event?.comment;
@@ -1797,8 +1843,11 @@ async function handlePullRequestReviewCommentEvent(event: any): Promise<void> {
   if (!comment || !pr?.number || !repository?.full_name) return;
 
   const owner = await resolvePrOwner(repository.full_name, pr.number);
-  if (!owner?.workspaceId) return;
-  await emit({ type: 'pr.review_comment_created', repoFullName: repository.full_name, prNumber: pr.number, comment, owner: ownerFact(owner) });
+  if (owner?.workspaceId) {
+    await emit({ type: 'pr.review_comment_created', repoFullName: repository.full_name, prNumber: pr.number, comment, owner: ownerFact(owner) });
+  }
+  // Same delivery as a top-level comment, same authority rule (after the capture).
+  await followUpPrComment(repository.full_name, pr.number, comment, 'review_comment');
 }
 
 /**

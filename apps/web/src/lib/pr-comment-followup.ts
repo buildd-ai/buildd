@@ -1,6 +1,8 @@
 /**
- * PR comment follow-up (SPIKE, not wired): deliver a human's PR comment to the
- * live worker that owns the PR, instead of leaving it record-only.
+ * PR comment follow-up: deliver a person's PR comment to the live worker that
+ * owns the PR, instead of leaving it record-only. Wired from the GitHub webhook
+ * (`issue_comment` and `pull_request_review_comment`, `created` only) through
+ * `pr-comment-followup-store.ts`, which supplies the DB half.
  *
  * Idea adapted from the dsh-superagent-prototype report; the seam copies
  * `base-advance-notice.ts`: a pure decision function plus injected deps, so the
@@ -13,14 +15,13 @@
  *   - `acting`     the instruction is queued and the delivery recorded.
  *
  * Safety: comment text is untrusted data. It is quoted and labelled as data;
- * authority is decided on the author (human, not a bot), never on the text.
+ * authority is decided on the author (a human with write access to the repo:
+ * `author_association` OWNER, MEMBER or COLLABORATOR), never on the text.
  * Sensitive workspaces receive the link only. Delivery never touches any review
  * gate. Never throws: the webhook is the contract, a nudge is a nicety.
  *
- * Not in this spike: the `pr.comment_created` event, the webhook branch that
- * emits it, the DB-backed store (`resolveOwner`, `record` on the gate ledger,
- * which needs a gate slug + docs/reports/gate-audit.md row), the workspace flag
- * lookup, hand-back and release-on-end. See the PR body.
+ * Out of scope: resuming an ended task from a comment (no live owner stays
+ * record-only), hand-back and release-on-end.
  *
  * Run: bun run scripts/run-unit-tests.ts apps/web/src/lib/pr-comment-followup.test.ts
  */
@@ -38,7 +39,8 @@ export interface PrCommentEvent {
   commentId: number;
   url: string;
   body: string;
-  author: { login: string; type: string };
+  /** `association` is GitHub's `author_association` on the comment. */
+  author: { login: string; type: string; association?: string | null };
   /** Set for inline review comments. */
   path?: string | null;
   line?: number | null;
@@ -66,6 +68,19 @@ export interface PrCommentRecord {
   delivered: boolean;
 }
 
+/** A comment that was not delivered, and why: the ledger row for "queued nothing". */
+export interface PrCommentSkipRecord {
+  reason: Exclude<PrCommentSkipReason, 'flag_off' | 'error' | 'duplicate'>;
+  mode: Exclude<PrCommentMode, 'off'>;
+  repoFullName: string;
+  prNumber: number;
+  commentId: number;
+  authorLogin: string;
+  authorAssociation: string | null;
+  /** The owner when one was found (live or not). */
+  owner: PrCommentOwner | null;
+}
+
 export interface PrCommentDeps {
   /** Logins that are never a human (the buildd App, CI users). `[bot]` logins are excluded regardless. */
   botLogins: string[];
@@ -74,11 +89,14 @@ export interface PrCommentDeps {
   /** Append to the worker's instruction queue unless `marker` is already queued. False = not queued. */
   queueInstruction(workerId: string, text: string, marker: string): Promise<boolean>;
   record(record: PrCommentRecord): Promise<void>;
+  /** Record a comment that queued nothing. Optional: absent = skips are not recorded. */
+  recordSkip?(skip: PrCommentSkipRecord): Promise<void>;
 }
 
 export type PrCommentSkipReason =
   | 'flag_off'
   | 'not_human'
+  | 'no_write_access'
   | 'empty'
   | 'no_live_owner'
   | 'duplicate'
@@ -90,6 +108,13 @@ export type PrCommentResult =
 
 export function prCommentMarker(commentId: number): string {
   return `[pr-comment: ${commentId}]`;
+}
+
+/** `author_association` values that mean write access to the repo. */
+export const WRITE_ASSOCIATIONS: readonly string[] = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+
+export function hasWriteAccess(author: PrCommentEvent['author']): boolean {
+  return WRITE_ASSOCIATIONS.includes((author.association ?? '').toUpperCase());
 }
 
 function isHuman(author: PrCommentEvent['author'], botLogins: string[]): boolean {
@@ -129,12 +154,25 @@ export async function deliverPrComment(
 ): Promise<PrCommentResult> {
   if (mode === 'off') return { outcome: 'skipped', reason: 'flag_off' };
   try {
-    if (!isHuman(event.author, deps.botLogins)) return { outcome: 'skipped', reason: 'not_human' };
-    if (!event.body.trim()) return { outcome: 'skipped', reason: 'empty' };
+    const skip = async (reason: PrCommentSkipRecord['reason'], owner: PrCommentOwner | null): Promise<PrCommentResult> => {
+      await deps.recordSkip?.({
+        reason, mode,
+        repoFullName: event.repoFullName,
+        prNumber: event.prNumber,
+        commentId: event.commentId,
+        authorLogin: event.author.login,
+        authorAssociation: event.author.association ?? null,
+        owner,
+      });
+      return { outcome: 'skipped', reason };
+    };
 
     const owner = await deps.resolveOwner(event.repoFullName, event.prNumber);
+    if (!isHuman(event.author, deps.botLogins)) return skip('not_human', owner);
+    if (!hasWriteAccess(event.author)) return skip('no_write_access', owner);
+    if (!event.body.trim()) return skip('empty', owner);
     if (!owner || (TERMINAL_WORKER_STATUSES as readonly string[]).includes(owner.status)) {
-      return { outcome: 'skipped', reason: 'no_live_owner' };
+      return skip('no_live_owner', owner);
     }
 
     const base = {
@@ -161,4 +199,23 @@ export async function deliverPrComment(
     console.error(`[pr-comment-followup] PR #${event.prNumber} comment ${event.commentId} failed:`, err);
     return { outcome: 'skipped', reason: 'error' };
   }
+}
+
+/** buildd's own repo: live by default (its owner wants no shadow-only rollout). */
+export const BUILDD_REPO_FULL_NAME = 'buildd-ai/buildd';
+
+const MODES: readonly PrCommentMode[] = ['off', 'recording', 'acting'];
+
+/**
+ * The workspace's mode. An explicit `gitConfig.prCommentFollowup` always wins
+ * (so buildd can be turned off like any other workspace); absent or unknown is
+ * `off`, except on buildd's own repo, where it is `acting`.
+ */
+export function resolvePrCommentMode(
+  gitConfig: { prCommentFollowup?: string | null } | null | undefined,
+  repoFullName: string,
+): PrCommentMode {
+  const set = gitConfig?.prCommentFollowup;
+  if (set && (MODES as readonly string[]).includes(set)) return set as PrCommentMode;
+  return repoFullName.toLowerCase() === BUILDD_REPO_FULL_NAME ? 'acting' : 'off';
 }
