@@ -105,23 +105,8 @@ async function MissionsPage({
           initialQuery={titleQuery}
           moreCompleted={nextCompletedCursor != null && !titleQuery}
           searchBase={listHref({})}
+          loadOlderHref={nextCompletedCursor ? listHref({ ...(titleQuery ? { q: titleQuery } : {}), completedCursor: nextCompletedCursor }) : undefined}
         />
-      )}
-
-      {/* Rule P-4: the completed portion is one bounded page; this is the
-          escape hatch when a workspace has more than that. Replaces the
-          visible completed page rather than appending — keeps the query
-          layer a plain keyset page instead of client-side accumulation
-          state, which nothing else on this list needs yet. */}
-      {nextCompletedCursor && (
-        <div className="mt-4 text-center">
-          <Link
-            href={listHref({ ...(titleQuery ? { q: titleQuery } : {}), completedCursor: nextCompletedCursor })}
-            className="text-meta text-text-muted hover:text-text-secondary"
-          >
-            Load older completed missions
-          </Link>
-        </div>
       )}
     </div>
   );

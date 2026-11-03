@@ -45,6 +45,7 @@ export function MissionGrid({
   initialQuery = '',
   moreCompleted = false,
   searchBase,
+  loadOlderHref,
 }: {
   rows: PortfolioRow[];
   /** `?group=` from the URL: a group id, or `none`. */
@@ -58,6 +59,8 @@ export function MissionGrid({
   moreCompleted?: boolean;
   /** The list's URL (workspace kept): `?q=` on it runs the search on the server, across every completed mission (AC-65). */
   searchBase?: string;
+  /** Next completed page (rule P-4 escape hatch). Shown only once the in-page "Show N older" control is not offered, so Done never carries two controls for the same thing. */
+  loadOlderHref?: string;
 }) {
   const [q, setQ] = useState(initialQuery);
   const [status, setStatus] = useState<PortfolioStatusFilter>('all');
@@ -237,6 +240,11 @@ export function MissionGrid({
                 <button type="button" onClick={() => setShowOlder(v => !v)} className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0">
                   {showOlder ? 'Hide older' : `Show ${done.older} older`}
                 </button>
+              )}
+              {loadOlderHref && !(done.older > 0 && !showOlder) && (
+                <Link href={loadOlderHref} className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0">
+                  Load older completed missions
+                </Link>
               )}
             </div>
           </div>
