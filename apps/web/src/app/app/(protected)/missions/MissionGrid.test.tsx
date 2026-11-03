@@ -75,13 +75,16 @@ const rowHtml = (id: string) => {
 };
 
 describe('MissionGrid portfolio', () => {
-  it('renders one row per open mission still moving or waiting; completed and on-dev ones collapsed', () => {
+  it('renders one row per open mission still moving or waiting; on-dev ones collapsed, recent done ones listed', () => {
     expect(html.match(/data-testid="portfolio-row"/g)?.length).toBe(11);
     const history = html.match(/<section[^>]*data-group="completed"[\s\S]*?<\/section>/)![0];
-    expect(history).toContain('Done this week');
-    expect(history).toContain('aria-expanded="false"');
-    // Collapsed: the rows mount when it opens.
-    expect(history).not.toContain('Workspace settings split into tabs');
+    expect(history).toContain('>Done<');
+    expect(history).toContain('1 this week');
+    // Recent completions are visible without a tap (Surface IA AC-62); older ones one tap away.
+    expect(history).not.toContain('aria-expanded="false"');
+    expect(history).toContain('Workspace settings split into tabs');
+    expect(history).not.toContain('CLI login without a browser');
+    expect(history).toContain('Show 1 older');
   });
 
   it('groups open missions into Needs you / In progress / Not started, ordering applied but never printed', () => {

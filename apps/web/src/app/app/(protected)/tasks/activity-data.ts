@@ -421,6 +421,40 @@ export function missionTaskDeliveries(rows: readonly (MissionTaskRow & { mission
   return out;
 }
 
+/**
+ * Quiet Now's one pointer (spec 9430a28f R-24): the newest merge in scope
+ * within the Activity window, from the PR worker's `merged_at` or the
+ * kernel delivery's, whichever is newer (a kernel-owned delivery may hold
+ * the merge on its own row). Two `limit 1` reads in one round trip; read
+ * only when Now has nothing in motion. Null when nothing merged.
+ */
+export async function loadLastMerged(scope: ActivityScope, nowMs: number): Promise<{ id: string; title: string; mergedAt: number } | null> {
+  if (scope.workspaceIds.length === 0) return null;
+  const windowStart = new Date(nowMs - ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const where = activityScopeWhere(scope);
+  const [byWorker, byKernel] = await db.batch([
+    db.select({ id: tasksTable.id, title: tasksTable.title, mergedAt: workers.mergedAt })
+      .from(workers).innerJoin(tasksTable, eq(tasksTable.id, workers.taskId))
+      .where(and(where, gte(workers.mergedAt, windowStart)))
+      .orderBy(desc(workers.mergedAt)).limit(1),
+    db.select({ id: tasksTable.id, title: tasksTable.title, mergedAt: workflowDeliveries.mergedAt })
+      .from(workflowDeliveries).innerJoin(tasksTable, eq(tasksTable.id, workflowDeliveries.ownerTaskId))
+      .where(and(where, inArray(workflowDeliveries.workspaceId, [...scope.workspaceIds]), gte(workflowDeliveries.mergedAt, windowStart)))
+      .orderBy(desc(workflowDeliveries.mergedAt)).limit(1),
+  ]);
+  return newestMerge([...byWorker, ...byKernel]);
+}
+
+/** The newest of the candidate merges, as epoch ms. Exported for its test. */
+export function newestMerge(rows: ReadonlyArray<{ id: string; title: string; mergedAt: Date | string | null }>): { id: string; title: string; mergedAt: number } | null {
+  let best: { id: string; title: string; mergedAt: number } | null = null;
+  for (const r of rows) {
+    const at = r.mergedAt == null ? NaN : new Date(r.mergedAt).getTime();
+    if (Number.isFinite(at) && (!best || at > best.mergedAt)) best = { id: r.id, title: r.title, mergedAt: at };
+  }
+  return best;
+}
+
 export async function loadActivity(input: {
   scope: ActivityScope;
   tab: ActivityTab;
