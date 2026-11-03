@@ -348,6 +348,32 @@ ORDER BY d.owner_task_id, d.created_at DESC`);
 }
 
 /**
+ * The newest merge a kernel delivery recorded among the given owner tasks
+ * since `since`, for Activity's quiet Now pointer (spec 9430a28f R-24): a
+ * kernel-owned delivery may hold the merge on its own row. Any authority: a
+ * merge is a merge. `ownerTaskIds` is a subquery of the reader's task scope.
+ * A SELECT, `limit 1`; throws on a read failure.
+ */
+export async function newestMergedDelivery(
+  workspaceIds: readonly string[],
+  ownerTaskIds: SQLWrapper,
+  since: Date,
+  exec: Exec = dbExec,
+): Promise<{ id: string; title: string; mergedAt: string } | null> {
+  if (workspaceIds.length === 0) return null;
+  const res = await exec(sql`-- workflow:newest_merged_delivery
+SELECT t.id AS id, t.title AS title, d.merged_at AS "mergedAt"
+FROM workflow_deliveries d JOIN tasks t ON t.id = d.owner_task_id
+WHERE d.workspace_id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify([...workspaceIds])}::jsonb) x)
+  AND d.merged_at >= ${since.toISOString()}::timestamptz
+  AND d.owner_task_id IN (${ownerTaskIds})
+ORDER BY d.merged_at DESC LIMIT 1`);
+  const r = (res.rows ?? [])[0] as { id?: unknown; title?: unknown; mergedAt?: unknown } | undefined;
+  if (!r || typeof r.id !== 'string' || r.mergedAt == null) return null;
+  return { id: r.id, title: typeof r.title === 'string' ? r.title : '', mergedAt: String(r.mergedAt) };
+}
+
+/**
  * Each workspace PR's delivery state and merge time, for the path-overlap
  * incident reconcile (lib/failure-pattern-sweep.ts): has the blocker landed?
  * Any authority: a merge recorded on a legacy-owned delivery is still a merge.

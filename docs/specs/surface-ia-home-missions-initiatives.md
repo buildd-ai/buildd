@@ -124,7 +124,8 @@ Landed, checks pending. Empty sections are omitted. Recently completed work
 appears separately; older completed work is progressively revealed.
 
 The status filters in `PORTFOLIO_STATUS_FILTERS` are All, Waiting on you,
-In motion, Waiting and Landed. Search narrows the displayed rows and filter
+In progress, Not started and Checks pending (the open sections; `Done` is
+reserved for the completed section below). Search narrows the displayed rows and filter
 counts; headline counts continue to describe the selected portfolio group.
 `portfolioGroups` supplies an optional group picker. A selected group is
 reflected in `?group=`; an unknown group falls back to all groups.

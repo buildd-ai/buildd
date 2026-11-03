@@ -39,7 +39,6 @@ import type { LocalSessionView } from '@/lib/local-session-view';
 import { groupSessionsForDisplay } from '@/lib/local-session-display';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import InteractiveSessions from './InteractiveSessions';
-import { NewWorkLink } from '@/components/chat/ChatEntry';
 import DeliveryBar, { DELIVERY_END_MARK } from '@/components/ui/DeliveryBar';
 import { HISTORY_PAGE, axisHours, barOf, groupEpisodesByDay, type HistoryDay } from './history-days';
 import { displayTaskTitle } from '@/lib/task-title';
@@ -339,7 +338,8 @@ function NowView({ now, nowMs, sessions, historyHref, lastMerged }: { now: Activ
 
 /**
  * Now with nothing in motion (spec 9430a28f R-24, R-26): one label, at most
- * one pointer to the newest merge, and where to go next. It lists no
+ * one pointer to the newest merge, and where to go next (starting work is
+ * the header's Ask, or Missions' + New). It lists no
  * missions and no other finished work: those are Missions' Done section and
  * History. Phone and desktop share it.
  */
@@ -360,7 +360,6 @@ function QuietNow({ nowMs, historyHref, lastMerged }: { nowMs: number; historyHr
       <nav data-testid="activity-quiet-links" aria-label="Where to go" className="mt-2 flex flex-wrap gap-x-5 text-meta">
         <Link href={historyHref} className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">History ›</Link>
         <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">Missions ›</Link>
-        <NewWorkLink kind="task" className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">+ New task</NewWorkLink>
       </nav>
     </section>
   );

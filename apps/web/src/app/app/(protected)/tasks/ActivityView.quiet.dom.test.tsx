@@ -43,8 +43,7 @@ describe('Activity Now: quiet state', () => {
     expect(pointer.textContent).toContain('3h ago');
     expect(pointer.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/t-merged');
     const links = [...quiet.querySelectorAll('[data-testid="activity-quiet-links"] a')].map(a => a.getAttribute('href'));
-    // New task opens chat when the team has it, else the New form.
-    expect(links).toEqual(['/app/tasks?view=history', '/app/missions', '/app/missions?new=1']);
+    expect(links).toEqual(['/app/tasks?view=history', '/app/missions']);
   });
 
   it('AC-24: with no merge in the window there is no pointer, the links stay', () => {

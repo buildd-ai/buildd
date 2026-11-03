@@ -239,7 +239,7 @@ describe('MissionGrid portfolio', () => {
     const filters = html.match(/<div[^>]*data-testid="portfolio-filters"[\s\S]*?<\/div>/)![0];
     expect(filters).toContain('data-testid="segmented"');
     expect(filters).toContain('role="radiogroup"');
-    for (const label of ['All', 'Waiting on you', 'In progress', 'Not started', 'Done']) expect(filters).toContain(label);
+    for (const label of ['All', 'Waiting on you', 'In progress', 'Not started', 'Checks pending']) expect(filters).toContain(label);
     expect(filters).not.toContain('Executing');
   });
 
