@@ -45,4 +45,19 @@ describe('notifySpecApprovers', () => {
     expect(await notifySpecApprovers(N, b.d)).toEqual([]);
     expect([...a.sent, ...b.sent]).toEqual([]);
   });
+
+  it('R-83: a build that started ahead of approval says so and opens the inbox', async () => {
+    const { d, sent } = deps({ approvers: async () => ['admin'] });
+    const inbox = 'https://buildd.dev/app/specs/approvals';
+    expect(await notifySpecApprovers({ ...N, confirmUrl: inbox, warnings: 0, buildingAhead: true }, d)).toEqual(['admin']);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ url: inbox, urlTitle: 'Open approvals', title: 'Approve "Checkout"?' });
+    expect(sent[0].message).toContain('Revision 3 is waiting for your approval. Work is being built against it now');
+  });
+
+  it('R-83: with no personal key anywhere, building ahead pushes nothing (Home and the inbox still list it)', async () => {
+    const { d, sent } = deps({ keyOf: async () => null });
+    expect(await notifySpecApprovers({ ...N, buildingAhead: true }, d)).toEqual([]);
+    expect(sent).toEqual([]);
+  });
 });

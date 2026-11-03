@@ -21,6 +21,8 @@ export interface SpecApprovalPush {
   revision: number;
   confirmUrl: string;
   warnings: number;
+  /** A task started building ahead of approval against this revision (living-specs.md §20, R-83). */
+  buildingAhead?: boolean;
 }
 
 export interface SpecApprovalNotifyDeps {
@@ -50,9 +52,9 @@ export async function notifySpecApprovers(e: SpecApprovalPush, deps: SpecApprova
   if (!teamId || !approvers.length) return [];
   const message = {
     title: `Approve "${e.title}"?`,
-    message: `Revision ${e.revision} is waiting for your approval.${e.warnings ? ` ${e.warnings} ${e.warnings === 1 ? 'thing' : 'things'} to look at.` : ''}`,
+    message: `Revision ${e.revision} is waiting for your approval.${e.buildingAhead ? ' Work is being built against it now; approving re-grades it.' : ''}${e.warnings ? ` ${e.warnings} ${e.warnings === 1 ? 'thing' : 'things'} to look at.` : ''}`,
     url: e.confirmUrl,
-    urlTitle: 'Review and approve',
+    urlTitle: e.buildingAhead ? 'Open approvals' : 'Review and approve',
     priority: 0 as const,
   };
   const sent: string[] = [];
