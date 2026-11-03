@@ -142,8 +142,14 @@ export type SpecRevisionRow = typeof specRevisions.$inferSelect;
  * no-criteria-change check (./auto-approve.ts, b7fc9316 R-21) a revise runs
  * on the head it wrote.
  */
-export const specStoreDeps: { afterRevisionInsert: (specId: string) => Promise<void>; autoApprove: (specId: string) => Promise<AutoApproval> } = {
+export const specStoreDeps: {
+  afterRevisionInsert: (specId: string) => Promise<void>;
+  autoApprove: (specId: string) => Promise<AutoApproval>;
+  /** Specify → Build (./task-handoff.ts, R-81): record the revision on the task that wrote it. Fail-open. */
+  recordAuthored: (caller: SpecCaller, specId: string, revision: number) => Promise<void>;
+} = {
   afterRevisionInsert: async () => {},
+  recordAuthored: async (caller, specId, revision) => (await import('./task-handoff')).recordSpecAuthoredByTask(caller, specId, revision),
   autoApprove: async (specId) => (await import('./auto-approve')).autoApproveNoCriteriaChange(specId),
 };
 
@@ -263,6 +269,8 @@ export async function createSpecDraft(caller: SpecCaller, input: {
     explanation: explained.explanation,
   }).returning();
   await afterRevisionWritten(spec, revision, body);
+  // Specify → Build (§20, R-81): the writing task names the spec, so the task that builds it can inherit it.
+  if (!opts.imported) await specStoreDeps.recordAuthored(caller, spec.id, revision.revision);
   return { ok: true, spec, revision, duplicateCheck };
 }
 
@@ -396,6 +404,7 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   // The spec as this write left it: the version the CAS matched, plus one.
   // A later revise moves the head on, never what this revision was written against.
   await afterRevisionWritten({ ...spec, version: spec.version + 1, headRevision: revision.revision }, revision, body);
+  if (!opts.imported) await specStoreDeps.recordAuthored(caller, specId, revision.revision);
   const duplicateCheck = hash === head.contentHash || opts.imported || opts.duplicates === false
     ? null
     : await reviseDuplicateCheck(caller, spec, head, body, opts.duplicates ?? {});

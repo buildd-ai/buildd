@@ -175,8 +175,18 @@ draft is written as sent either way.
 
 ## Building ahead of approval
 
-A person may ask for work to be built before the spec is approved. That is
-allowed, and buildd keeps it honest:
+Work may be built before the spec is approved. That is allowed, and buildd
+keeps it honest:
+
+- **A task pinned provisionally builds; it does not ask.** Its claim brief
+  says so. Do not ask a person to approve the spec or wait for approval:
+  buildd asks the approvers once when the build starts, and approving
+  re-grades the work. Ask a person only for a decision the spec does not
+  settle.
+- **Specify, then build, as two tasks.** File the spec task as organizer or
+  researcher (a builder is refused `create_draft` and `revise`), and the build
+  as a builder task with `dependsOn` on it. The build inherits the spec the
+  first task wrote at claim, with no `specSource` of its own needed.
 
 - File the task against the spec as usual. With no approved revision (or
   naming a draft `revision`), the pin is provisional: that exact revision and
