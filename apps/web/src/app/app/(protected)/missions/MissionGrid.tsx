@@ -34,12 +34,18 @@ import { shortDuration } from '@/lib/mission-list-card';
 export type { PortfolioRow } from '@/lib/mission-portfolio';
 
 const ALL_GROUPS = '__all__';
+/** Done rows listed while open work exists; the rest are one tap away (Surface IA AC-62). */
+export const DONE_WHILE_OPEN = 5;
 
 export function MissionGrid({
   rows,
   initialGroup = null,
   slots,
   now = Date.now(),
+  initialQuery = '',
+  moreCompleted = false,
+  searchBase,
+  loadOlderHref,
 }: {
   rows: PortfolioRow[];
   /** `?group=` from the URL: a group id, or `none`. */
@@ -47,12 +53,21 @@ export function MissionGrid({
   /** Live workers / seats across the team. */
   slots: { live: number; max: number };
   now?: number;
+  /** `?q=` from the URL: the server already narrowed the completed page to it. */
+  initialQuery?: string;
+  /** More completed missions exist than this page holds. */
+  moreCompleted?: boolean;
+  /** The list's URL (workspace kept): `?q=` on it runs the search on the server, across every completed mission (AC-65). */
+  searchBase?: string;
+  /** Next completed page (rule P-4 escape hatch). Shown only once the in-page "Show N older" control is not offered, so Done never carries two controls for the same thing. */
+  loadOlderHref?: string;
 }) {
-  const [q, setQ] = useState('');
+  const [q, setQ] = useState(initialQuery);
   const [status, setStatus] = useState<PortfolioStatusFilter>('all');
   const [showOlder, setShowOlder] = useState(false);
+  const [showAllRecent, setShowAllRecent] = useState(false);
   // Phones keep search behind a 44px button; from md the field always shows.
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(initialQuery !== '');
   const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => { if (searchOpen) searchRef.current?.focus(); }, [searchOpen]);
   const toggleSearch = () => {
@@ -78,10 +93,16 @@ export function MissionGrid({
   const filterCounts = useMemo(() => portfolioFilterCounts(scoped), [scoped]);
   const visible = useMemo(() => filterPortfolio(scoped, { status }), [scoped, status]);
   const sections = useMemo(() => buildMissionSections(visible), [visible]);
-  const doneRows = filterPortfolio([...recentDone, ...(showOlder || recentDone.length === 0 ? olderDone : [])], { q });
+  const searching = q.trim() !== '';
+  const done = useMemo(
+    () => doneList({ recentDone, olderDone, q, capped: open.length > 0 && !showAllRecent, showOlder }),
+    [recentDone, olderDone, q, open.length, showAllRecent, showOlder],
+  );
 
   const multiWorkspace = new Set(rows.map(r => r.workspaceId ?? '')).size > 1;
-  const filtered = q.trim() !== '' || status !== 'all' || group !== '';
+  const filtered = searching || status !== 'all' || group !== '';
+  // The status chips are the open sections, so finished work shows under All only (AC-66).
+  const showDone = status === 'all' && done.rows.length > 0;
   const listed = sections.filter(sec => sec.key !== 'landed');
   const onDev = sections.find(sec => sec.key === 'landed');
 
@@ -187,8 +208,8 @@ export function MissionGrid({
         )}
         {visible.length === 0 && (
           <p data-testid="portfolio-empty" className="py-4 text-body text-text-secondary">
-            {open.length === 0 ? 'No open missions.' : 'No missions match.'}
-            {filtered && open.length > 0 && (
+            {open.length === 0 && !searching ? 'No open missions.' : showDone ? 'No open missions match.' : 'No missions match.'}
+            {filtered && (open.length > 0 || !showDone) && (
               <button
                 type="button"
                 onClick={() => { setQ(''); setStatus('all'); chooseGroup(''); }}
@@ -201,26 +222,38 @@ export function MissionGrid({
         )}
       </div>
 
-      {recentDone.length + olderDone.length > 0 && (
-        <section data-testid="mission-group" data-group="completed" aria-label="Done missions">
-          <Disclosure
-            summary={<span className="text-title font-semibold text-text-primary">Done{recentDone.length > 0 ? ' this week' : ''}</span>}
-            count={recentDone.length > 0 ? recentDone.length : olderDone.length}
-          >
-            <div className="mt-1">
-              {doneRows.map(r => <DoneRow key={r.delivery.id} row={r} now={now} />)}
-              {recentDone.length > 0 && olderDone.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowOlder(v => !v)}
-                  className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0"
-                >
-                  {showOlder ? 'Hide older' : `Show ${olderDone.length} older`}
+      {showDone && (
+        <section data-testid="mission-group" data-group="completed" aria-labelledby="mission-group-done">
+          <h2 id="mission-group-done" className="flex flex-wrap items-baseline gap-x-2">
+            <span className="text-title font-semibold text-text-primary">Done</span>
+            <span data-testid="mission-done-count" className="font-mono text-meta text-text-secondary">{done.caption}</span>
+          </h2>
+          <div className="mt-1">
+            {done.rows.map(r => <DoneRow key={r.delivery.id} row={r} now={now} />)}
+            <div className="flex flex-wrap gap-x-4">
+              {done.moreRecent > 0 && (
+                <button type="button" onClick={() => setShowAllRecent(true)} className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0">
+                  Show {done.moreRecent} more
                 </button>
               )}
+              {done.older > 0 && (
+                <button type="button" onClick={() => setShowOlder(v => !v)} className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0">
+                  {showOlder ? 'Hide older' : `Show ${done.older} older`}
+                </button>
+              )}
+              {loadOlderHref && !(done.older > 0 && !showOlder) && (
+                <Link href={loadOlderHref} className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0">
+                  Load older completed missions
+                </Link>
+              )}
             </div>
-          </Disclosure>
+          </div>
         </section>
+      )}
+      {searching && moreCompleted && searchBase && (
+        <Link data-testid="portfolio-search-all" href={withQuery(searchBase, q.trim())} className="inline-flex min-h-11 items-center text-meta text-accent-text md:min-h-0">
+          Search all completed missions ›
+        </Link>
       )}
 
     </div>
@@ -318,16 +351,57 @@ function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now:
   );
 }
 
+/** `base` with `q` set, other params kept. */
+export function withQuery(base: string, q: string): string {
+  const [path, query = ''] = base.split('?');
+  const params = new URLSearchParams(query);
+  params.set('q', q);
+  return `${path}?${params.toString()}`;
+}
+
+/**
+ * The Done section's rows (Surface IA AC-61 to AC-64), newest completion
+ * first (`splitPortfolio`). The recent ones lead; with none this week the
+ * newest older ones do. While open work exists the lead is capped at
+ * {@link DONE_WHILE_OPEN}. A search reaches every loaded completion, older
+ * ones included, with no tap. Pure; exported for its test.
+ */
+export function doneList(input: {
+  recentDone: readonly PortfolioRow[];
+  olderDone: readonly PortfolioRow[];
+  q: string;
+  capped: boolean;
+  showOlder: boolean;
+}): { rows: PortfolioRow[]; caption: string; moreRecent: number; older: number } {
+  const { recentDone, olderDone, q, capped, showOlder } = input;
+  if (q.trim() !== '') {
+    const rows = filterPortfolio([...recentDone, ...olderDone], { q });
+    return { rows, caption: `${rows.length} ${rows.length === 1 ? 'matches' : 'match'}`, moreRecent: 0, older: 0 };
+  }
+  const lead = recentDone.length > 0 ? recentDone : olderDone;
+  const rest = recentDone.length > 0 ? olderDone : [];
+  const shown = capped ? lead.slice(0, DONE_WHILE_OPEN) : [...lead];
+  return {
+    rows: showOlder ? [...shown, ...rest] : shown,
+    caption: recentDone.length > 0 ? `${recentDone.length} this week` : `${olderDone.length}`,
+    moreRecent: lead.length - shown.length,
+    older: rest.length,
+  };
+}
+
 export function DoneRow({ row, now }: { row: PortfolioRow; now: number }) {
   const d = row.delivery;
   return (
-    <div data-testid="portfolio-done-row" className="relative flex items-center gap-2.5 border-t border-border-default py-2.5">
+    <div data-testid="portfolio-done-row" data-mission-id={d.id} className="relative flex items-center gap-2.5 border-t border-border-default py-2.5">
       <span aria-hidden="true" className="font-mono text-meta text-status-success">■</span>
       <Link href={d.href} className="min-w-0 flex-1 truncate text-body text-text-primary after:absolute after:inset-0 hover:underline">
         {d.title}
       </Link>
       {d.total > 0 && <span className="shrink-0 whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">{d.landed}/{d.total} merged</span>}
-      <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{ago(row.completedAt, now)}</span>
+      {/* The age is the completion, never the last update (AC-63). */}
+      {row.completedAt != null && (
+        <time dateTime={new Date(row.completedAt).toISOString()} className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{ago(row.completedAt, now)}</time>
+      )}
     </div>
   );
 }

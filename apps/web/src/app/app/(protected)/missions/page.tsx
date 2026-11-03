@@ -17,9 +17,11 @@ export const dynamic = 'force-dynamic';
 async function MissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string; completedCursor?: string; group?: string; new?: string }>;
+  searchParams: Promise<{ workspace?: string; completedCursor?: string; group?: string; new?: string; q?: string }>;
 }) {
-  const { workspace: wsFilter, completedCursor: completedCursorParam, group: groupParam, new: newParam } = await searchParams;
+  const { workspace: wsFilter, completedCursor: completedCursorParam, group: groupParam, new: newParam, q: qParam } = await searchParams;
+  // `?q=`: the search run on the server, so it reaches every completed mission (Surface IA AC-65).
+  const titleQuery = (qParam ?? '').trim().slice(0, 200);
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -49,11 +51,15 @@ async function MissionsPage({
       teamId: activeTeamId,
       workspaceId: wsFilter ?? null,
       completedCursor: decodeCompletedCursor(completedCursorParam),
+      titleQuery: titleQuery || null,
       now,
     }),
     // Mission finish dates require a calibrated estimator as well as team availability.
     (async () => taskEstimatesDefaultOn() && await taskEstimatesEnabled(activeTeamId))(),
   ]);
+
+  const listHref = (extra: Record<string, string>) =>
+    `/app/missions?${new URLSearchParams({ ...(wsFilter ? { workspace: wsFilter } : {}), ...extra }).toString()}`;
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
@@ -88,26 +94,19 @@ async function MissionsPage({
         </div>
       </div>
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && !titleQuery ? (
         <p className="text-body text-text-secondary">No missions. A mission groups the tasks behind one goal.</p>
       ) : (
-        <MissionGrid rows={rows} initialGroup={groupParam ?? null} slots={slots} now={now} />
-      )}
-
-      {/* Rule P-4: the completed portion is one bounded page; this is the
-          escape hatch when a workspace has more than that. Replaces the
-          visible completed page rather than appending — keeps the query
-          layer a plain keyset page instead of client-side accumulation
-          state, which nothing else on this list needs yet. */}
-      {nextCompletedCursor && (
-        <div className="mt-4 text-center">
-          <Link
-            href={`/app/missions?${new URLSearchParams({ ...(wsFilter ? { workspace: wsFilter } : {}), completedCursor: nextCompletedCursor }).toString()}`}
-            className="text-meta text-text-muted hover:text-text-secondary"
-          >
-            Load older completed missions
-          </Link>
-        </div>
+        <MissionGrid
+          rows={rows}
+          initialGroup={groupParam ?? null}
+          slots={slots}
+          now={now}
+          initialQuery={titleQuery}
+          moreCompleted={nextCompletedCursor != null && !titleQuery}
+          searchBase={listHref({})}
+          loadOlderHref={nextCompletedCursor ? listHref({ ...(titleQuery ? { q: titleQuery } : {}), completedCursor: nextCompletedCursor }) : undefined}
+        />
       )}
     </div>
   );

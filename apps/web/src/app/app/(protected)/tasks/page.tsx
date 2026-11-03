@@ -6,10 +6,11 @@ import { redirect, unstable_rethrow } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
-import ActivityView from './ActivityView';
+import ActivityView, { type LastMerged } from './ActivityView';
 import ActivityAutoRefresh from './ActivityAutoRefresh';
 import { LiveRegion } from '@/components/LiveRegion';
-import { loadActivity, type ActivityData, type ActivityMissionRow } from './activity-data';
+import { loadActivity, loadLastMerged, type ActivityData, type ActivityMissionRow } from './activity-data';
+import { nowDeliveries } from './now-board';
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
 import { localHoldsByWorker } from '@/lib/local-session-display';
 import { HOME_MISSION_SUMMARIES } from '@/modules';
@@ -61,6 +62,7 @@ async function ActivityBody(params: ActivityParams) {
   let loadFailed = false;
   // The workspaces whose events can change what Activity shows.
   let liveWorkspaceIds: string[] = [];
+  let lastMerged: LastMerged | null = null;
 
   if (!isDev && user) {
     try {
@@ -103,6 +105,14 @@ async function ActivityBody(params: ActivityParams) {
           ]);
           localSessions = sessions;
           activity = loaded;
+          // Quiet Now's pointer: read only when nothing is in motion (R-24). Best-effort:
+          // without it the quiet block still renders, never an error.
+          if (mode === 'now' && nowDeliveries(loaded.now).length === 0) {
+            lastMerged = await loadLastMerged({ workspaceIds: wsIds, missionId, initiativeId }, Date.now()).catch((err) => {
+              console.warn('[tasks] last merged query failed:', err);
+              return null;
+            });
+          }
           historyReach = loaded.historyReach;
           missionTitle = loaded.missionTitle;
         }
@@ -138,6 +148,7 @@ async function ActivityBody(params: ActivityParams) {
       loadError={loadFailed}
       historyReach={historyReach}
       identityFilters={activity?.identityFilters ?? false}
+      lastMerged={lastMerged}
     />
     </>
   );
