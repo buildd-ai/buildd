@@ -39,7 +39,7 @@ export const notificationSubscribers: readonly AnySubscriber[] = [
   // the people who may approve it, each on their own key, never the team channel (spec b7fc9316 R-10).
   subscriber('notifications', 'spec.approval_requested', 'push-spec-approval-requested', async e => {
     const { notifySpecApprovers } = await import('@/lib/spec-approval-notify');
-    await notifySpecApprovers({ workspaceId: e.workspaceId, title: e.title, revision: e.revision, confirmUrl: e.confirmUrl, warnings: e.warnings });
+    await notifySpecApprovers({ workspaceId: e.workspaceId, title: e.title, revision: e.revision, confirmUrl: e.confirmUrl, warnings: e.warnings, buildingAhead: e.buildingAhead === true });
   }),
   // ── Subscriptions ledger ───────────────────────────────────────────────────
   subscriber('notifications', 'task.completed', 'ledger-task-completed', async e => {

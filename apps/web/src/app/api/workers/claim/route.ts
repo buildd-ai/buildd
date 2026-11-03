@@ -85,7 +85,8 @@ import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { claimBranchHint } from '@/lib/claim-branch-hint';
 import { openOwnerQuestion } from '@/lib/owner-blocked-fix';
-import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
+import { settleSpecPinAtClaim, SPEC_APPROVAL_ASKED_KEY, type ClaimSpecPin } from '@/lib/specs/task-handoff';
+import { attachSpecPinBriefs, type SpecPinAtClaim } from './spec-pin-brief';
 import { resolveDesignSourceAtClaim } from '@/lib/design-source';
 import { cancelSkippedTask, isRepairRole, notOwnerTaskSql, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
 import { isOwnerTask, withdrawOwner, type OwnerTask } from '@/lib/workflow/owner-attempt';
@@ -1146,6 +1147,8 @@ export async function POST(req: NextRequest) {
   // results inform subsequent queries). Instead, we use atomic UPDATE...WHERE status='pending'
   // which is inherently safe against concurrent claims at the SQL level.
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
+  // The spec pin brief and approval ask per claimed task (./spec-pin-brief.ts), sent once the claim stands.
+  const specPinAtClaim = new Map<string, SpecPinAtClaim>();
 
   // Per-reason deferral counters for the dispatch loop. Incremented at each
   // `continue` so the final response can distinguish "all deferred" from true
@@ -2596,15 +2599,22 @@ export async function POST(req: NextRequest) {
     // work starts: the first claim re-pins, riding on this claim's own context
     // write (lib/specs/claim-pin.ts). A failed read never fails the claim; the
     // task keeps the pin it was filed with.
-    const claimPin = await repinSpecAtClaim({ id: task.id, workspaceId: task.workspaceId, context: taskContext, taskClass: (task as any).taskClass })
-      .catch((err): ClaimPin => {
+    // A build task filed before its spec existed inherits the spec its
+    // dependency drafted, and a provisional pin asks the approvers once
+    // (lib/specs/task-handoff.ts, living-specs.md §20 R-81 to R-83).
+    const claimPin = await settleSpecPinAtClaim({ id: task.id, workspaceId: task.workspaceId, context: taskContext, dependsOn: (task as any).dependsOn, taskClass: (task as any).taskClass })
+      .catch((err): ClaimSpecPin => {
         console.warn(`[claim] spec pin read failed for task ${task.id} (keeping the filing pin):`, (err as Error)?.message ?? err);
-        return { specSource: null, reason: null };
+        return { specSource: null, reasons: [], brief: null, ask: null };
       });
     if (claimPin.specSource) {
       (patchedContext as Record<string, unknown>).specSource = claimPin.specSource;
-      console.log(`[claim] task ${task.id}: ${claimPin.reason}`);
     }
+    if (claimPin.reasons.length) console.log(`[claim] task ${task.id}: ${claimPin.reasons.join('; ')}`);
+    if (claimPin.ask) {
+      (patchedContext as Record<string, unknown>)[SPEC_APPROVAL_ASKED_KEY] = { specId: claimPin.ask.specId, revision: claimPin.ask.revision, at: now.toISOString() };
+    }
+    if (claimPin.brief || claimPin.ask) specPinAtClaim.set(task.id, { brief: claimPin.brief, ask: claimPin.ask, workspaceId: task.workspaceId });
 
     // The design the builder works to, from the task's, its mission's or its
     // spec's design (lib/design-source.ts). A failed read never fails the claim.
@@ -3331,6 +3341,7 @@ export async function POST(req: NextRequest) {
   );
   claimTiming('optional_context');
   await attachArtifactReferences(claimedWorkers, filteredTasks);
+  attachSpecPinBriefs(claimedWorkers, specPinAtClaim);
   await VISUAL_AUDIT_ROUTES(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 

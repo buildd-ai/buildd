@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/mission-outcome.ts, apps/web/src/lib/specs/mission-selection.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/lib/specs/copy.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files, retire, retired, superseded, restore, copy spec, copied_from, cross-workspace handoff, publication policy, spec_publication, publish anyway, removal PR, outcome spec, outcomeSpec, final verification, integrated target, mission-level verdict, spec repair]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, apps/web/src/lib/specs/approval-gate.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-similarity.test.ts, apps/web/src/lib/specs/knowledge-similarity.test.ts, packages/core/__tests__/knowledge-spec-corpus-query.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/src/lib/spec-publication-decision.test.ts, apps/web/src/lib/specs/mission-outcome-fold.test.ts, apps/web/src/lib/specs/mission-selection.test.ts, apps/web/src/lib/specs/mission-verdict-authority.test.ts, packages/core/__tests__/goal-criteria-living-spec.test.ts, apps/web/tests/db/spec-copy.test.ts, packages/core/__tests__/mcp-specs-copy.test.ts, apps/web/tests/db/spec-approval-inbox.test.ts, packages/core/__tests__/mcp-specs-awaiting-approval.test.ts, apps/web/tests/db/spec-revision-explanation.test.ts, packages/spec-contract/src/explanation.test.ts, apps/web/src/app/api/specs/[specId]/approve/inbox/route.test.ts, apps/web/src/app/api/specs/[specId]/retire/confirm/route.test.ts, apps/web/src/components/SpecStatusRequest.dom.test.tsx]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, apps/web/src/lib/specs/approval-gate.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-similarity.test.ts, apps/web/src/lib/specs/knowledge-similarity.test.ts, packages/core/__tests__/knowledge-spec-corpus-query.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/src/lib/spec-publication-decision.test.ts, apps/web/src/lib/specs/mission-outcome-fold.test.ts, apps/web/src/lib/specs/mission-selection.test.ts, apps/web/src/lib/specs/mission-verdict-authority.test.ts, packages/core/__tests__/goal-criteria-living-spec.test.ts, apps/web/tests/db/spec-copy.test.ts, packages/core/__tests__/mcp-specs-copy.test.ts, apps/web/tests/db/spec-approval-inbox.test.ts, packages/core/__tests__/mcp-specs-awaiting-approval.test.ts, apps/web/tests/db/spec-revision-explanation.test.ts, packages/spec-contract/src/explanation.test.ts, apps/web/src/app/api/specs/[specId]/approve/inbox/route.test.ts, apps/web/src/app/api/specs/[specId]/retire/confirm/route.test.ts, apps/web/src/components/SpecStatusRequest.dom.test.tsx, apps/web/tests/db/spec-specify-to-build.test.ts, apps/web/src/lib/specs/task-handoff.test.ts, apps/web/src/app/api/workers/claim/spec-pin-brief.test.ts, apps/web/src/lib/spec-approval-notify.test.ts, apps/web/src/lib/revision-task-guard.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1717,8 +1717,49 @@ the fact grades what already shipped.
   newer than the one named, the tasks are re-graded to it at once (R-39); when
   the named revision is approved, they are pinned to it as in §6. Each task's
   result says attached, or why not.
+- R-81: Specify, then Build. A revision written from a task's own token
+  (`create_draft` or `revise`) is recorded on that task as
+  `context.specAuthored { specId, revision }`. At claim, a task that names no
+  Living Spec and has `dependsOn` inherits the one spec its dependencies
+  wrote, pinned as R-36 and §6 pin it (the approved revision, else the head,
+  provisional) and marked `inheritedFrom`. Dependencies that wrote two
+  different specs are ambiguous and nothing is inherited; a spec the task
+  already names is never replaced (`apps/web/src/lib/specs/task-handoff.ts`).
+- R-82: Every claim of a task pinned to a Living Spec carries a brief naming
+  the spec and revision to read. For a provisional pin it says to build
+  against that revision now, not to ask a person to approve or wait for
+  approval, and to say "Built ahead of approval, against revision N" in the
+  PR. Approval is not a precondition for building (D-14).
+- R-83: The first claim of a provisionally pinned task asks the people who
+  may approve the spec once, through the existing approval push (each
+  approver's own Pushover key, never the team channel, as b7fc9316 R-10) with
+  a link to the Awaiting your approval inbox, where Home's Needs you card
+  already counts the revision. It is recorded on the task
+  (`context.specApprovalAsked`), so a later claim of the same task and
+  revision asks nobody. An approver with no personal key gets no push; the
+  inbox and Needs you still list it, and nothing says a push was sent.
+- R-84: A task that drafts or revises a Living Spec, read from its title (a
+  verb before "Living Spec", or `create_draft`), is refused when filed with
+  the builder role, as revising already is: that role is refused
+  `create_draft` and `revise` (acceptance_role_forbidden). The refusal says to
+  file it as organizer or researcher and file the build as its own builder
+  task with `dependsOn` on it.
 
 **Acceptance criteria**:
+- AC-127: GIVEN an organizer task A and a builder task B with dependsOn A and
+  no spec WHEN A drafts a spec from its own token and B is claimed THEN B is
+  pinned provisionally to revision 1 with `inheritedFrom` A, its brief says
+  "Built ahead of approval, against revision 1" and not to ask for approval,
+  one approval ask is made, a second claim of B asks nobody, and approving
+  revision 1 re-grades B there (`apps/web/tests/db/spec-specify-to-build.test.ts`).
+- AC-128: GIVEN a build that starts ahead of approval WHEN the approvers are
+  asked THEN an approver with a personal Pushover key gets one push linking
+  the inbox and one without a key gets none
+  (`apps/web/src/lib/spec-approval-notify.test.ts`).
+- AC-129: GIVEN a task titled "Draft Living Spec ..." WHEN it is filed with
+  the builder role THEN it is refused, and a builder task whose description
+  only mentions the drafting task is not
+  (`apps/web/src/lib/revision-task-guard.test.ts`).
 - AC-98: GIVEN a spec with only a draft revision WHEN an agent files a task
   against it THEN the task is pinned to that revision with its hash and
   `provisional: true`, and a revision that does not exist is a 409
@@ -1747,10 +1788,14 @@ the fact grades what already shipped.
 - `apps/web/src/lib/specs/provisional.ts` — `regradeProvisionalPins`, `attachProvisional`, `loadProvisionalNeedsYou`
 - `apps/web/src/lib/specs/provisional-text.ts` — `withSpecSourceBlock`, `criterionTexts`
 - `apps/web/src/app/api/specs/[specId]/provisional/route.ts` — `POST`
+- `apps/web/src/lib/specs/task-handoff.ts` — `recordSpecAuthoredByTask`, `settleSpecPinAtClaim`, `specPinBrief`
+- `apps/web/src/app/api/workers/claim/spec-pin-brief.ts` — `attachSpecPinBriefs`
 
 **Not yet**:
 - The task page shows a provisional pin like any other pin; it does not yet
   say "built ahead of approval" there.
+- A build task filed with no `dependsOn` on the task that wrote its spec
+  inherits nothing: it must name the spec in `context.specSource`.
 - A re-grade interrupted after its pin moved is not resumed: the note, check
   runs or PR edit it had not reached stay undone.
 
