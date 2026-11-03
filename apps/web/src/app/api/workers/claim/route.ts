@@ -86,7 +86,7 @@ import { guardClaimedRetry } from '@/lib/supersession';
 import { claimBranchHint } from '@/lib/claim-branch-hint';
 import { openOwnerQuestion } from '@/lib/owner-blocked-fix';
 import { settleSpecPinAtClaim, SPEC_APPROVAL_ASKED_KEY, type ClaimSpecPin } from '@/lib/specs/task-handoff';
-import { attachSpecPinBriefs, type SpecPinAtClaim } from './spec-pin-brief';
+import { attachSpecPinBriefs, type SpecPinAtClaim } from './pin-brief';
 import { resolveDesignSourceAtClaim } from '@/lib/design-source';
 import { cancelSkippedTask, isRepairRole, notOwnerTaskSql, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
 import { isOwnerTask, withdrawOwner, type OwnerTask } from '@/lib/workflow/owner-attempt';
@@ -1147,7 +1147,7 @@ export async function POST(req: NextRequest) {
   // results inform subsequent queries). Instead, we use atomic UPDATE...WHERE status='pending'
   // which is inherently safe against concurrent claims at the SQL level.
   const claimedWorkers: ClaimTasksResponse['workers'] = [];
-  // The spec pin brief and approval ask per claimed task (./spec-pin-brief.ts), sent once the claim stands.
+  // The spec pin brief and approval ask per claimed task (./pin-brief.ts), sent once the claim stands.
   const specPinAtClaim = new Map<string, SpecPinAtClaim>();
 
   // Per-reason deferral counters for the dispatch loop. Incremented at each

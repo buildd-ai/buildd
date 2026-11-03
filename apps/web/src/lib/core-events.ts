@@ -411,7 +411,7 @@ export type CoreEvent =
   /**
    * A bearer session (MCP or chat) asked for a spec revision's approval and the
    * quality gate passed (lib/specs/approval.ts), or a task started building
-   * ahead of approval against it (`buildingAhead`, claim/spec-pin-brief.ts,
+   * ahead of approval against it (`buildingAhead`, claim/pin-brief.ts,
    * once per task and revision). The notifications module sends the link to
    * each approver's own key; nothing is approved until a person opens it.
    */

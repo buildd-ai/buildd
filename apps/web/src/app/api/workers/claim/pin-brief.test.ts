@@ -3,7 +3,7 @@
  * (living-specs.md §20, R-82, R-83; lib/specs/task-handoff.ts).
  */
 import { describe, expect, it } from 'bun:test';
-import { attachSpecPinBriefs, type ApprovalAsk, type SpecPinAtClaim } from './spec-pin-brief';
+import { attachSpecPinBriefs, type ApprovalAsk, type SpecPinAtClaim } from './pin-brief';
 
 const worker = (taskId: string) => ({ id: `w-${taskId}`, taskId, branch: 'b', task: { id: taskId, context: {} } }) as any;
 
