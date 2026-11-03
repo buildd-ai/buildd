@@ -2,14 +2,14 @@
 title: Surface IA — Home, Missions, Initiatives
 status: active
 owner: max
-last_verified: 2026-10-25
+last_verified: 2026-11-03
 summary: Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/home/page.tsx, apps/web/src/app/app/(protected)/missions/page.tsx, apps/web/src/lib/initiative-view.ts]
 related: [initiatives, mission-task-lifecycle, timeline-dependency-geometry, release-flow]
 keywords: [placement matrix, release, ship state, empty-state doctrine, unseeded baseline, integration branch, workspace headers]
 supersedes: [missions-tab-triage]
-verified_by: [apps/web/src/app/app/(protected)/home/home-initiative-rail.test.ts, apps/web/src/lib/initiative-view.test.ts, apps/web/src/app/app/(protected)/missions/[id]/MissionReleaseSection.test.tsx, apps/web/src/components/TaskShipBadge.test.tsx]
+verified_by: [apps/web/src/app/app/(protected)/home/home-initiative-rail.test.ts, apps/web/src/app/app/(protected)/missions/MissionGrid.discovery.dom.test.tsx, apps/web/src/lib/initiative-view.test.ts, apps/web/src/app/app/(protected)/missions/[id]/MissionReleaseSection.test.tsx, apps/web/src/components/TaskShipBadge.test.tsx]
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "initiative-archetype"
@@ -124,7 +124,8 @@ Landed, checks pending. Empty sections are omitted. Recently completed work
 appears separately; older completed work is progressively revealed.
 
 The status filters in `PORTFOLIO_STATUS_FILTERS` are All, Waiting on you,
-In motion, Waiting and Landed. Search narrows the displayed rows and filter
+In progress, Not started and Checks pending (the open sections; `Done` is
+reserved for the completed section below). Search narrows the displayed rows and filter
 counts; headline counts continue to describe the selected portfolio group.
 `portfolioGroups` supplies an optional group picker. A selected group is
 reflected in `?group=`; an unknown group falls back to all groups.
@@ -151,9 +152,56 @@ No initiative triage or token aggregation belongs to this page.
 - AC-12: GIVEN a search query WHEN portfolio results narrow THEN filter counts
   follow the query and headline counts retain the selected group's totals.
 
+### Finished work and search
+
+Missions is where finished missions are found; Activity does not list them
+(Activity spec `9430a28f` R-24, R-26). In the All view, after the open
+sections, a **Done** section lists completed missions as hairline rows, newest
+completion first. It is a visible section, not a closed disclosure. The order
+and each row's age read `missions.completedAt`, never `updatedAt` or the last
+task movement. Recent means completed in the last 7 days
+(`COMPLETED_HISTORY_WINDOW_MS`); older completions are one tap away. Search
+reaches every completed mission, older ones included. The status chips are the
+open sections, so Done shows under All only. Mission lifecycle and the
+completed mission's own page (outcome-first, PR #5914) are unchanged.
+
+Design: buildd artifact `8c8ab24d`, `missions-activity-discovery.html` (screens `phone-missions-populated`,
+`desktop-missions-populated`, `phone-missions-quiet`, `phone-missions-search`).
+
+- AC-61: GIVEN no open missions and at least one completed WHEN the All view
+  renders THEN the completed rows are listed on first paint with no disclosure
+  to open, newest completion first; with none completed in the last 7 days the
+  newest older completions are listed instead.
+  check: bun run scripts/run-unit-tests.ts "apps/web/src/app/app/(protected)/missions/MissionGrid.discovery.dom.test.tsx"
+- AC-62: GIVEN open and completed missions WHEN the All view renders THEN every
+  open section comes before the Done section, which lists at most 5 recent
+  completions, with one control revealing the rest of the recent ones and
+  another revealing older ones.
+  check: bun run scripts/run-unit-tests.ts "apps/web/src/app/app/(protected)/missions/MissionGrid.discovery.dom.test.tsx"
+- AC-63: GIVEN completed missions WHEN Done renders THEN rows are ordered by
+  `completedAt` descending (id breaks ties) and each row's age is computed
+  from `completedAt` in a `<time dateTime>`; a mission with no completion time
+  sorts last and shows no age.
+  check: bun run scripts/run-unit-tests.ts "apps/web/src/app/app/(protected)/missions/MissionGrid.discovery.dom.test.tsx"
+- AC-64: GIVEN a query matching only a completed mission older than 7 days WHEN
+  it is typed in the All view THEN that row shows without pressing Show older,
+  and the open list reads `No open missions match.` rather than
+  `No missions match.`
+  check: bun run scripts/run-unit-tests.ts "apps/web/src/app/app/(protected)/missions/MissionGrid.discovery.dom.test.tsx"
+- AC-65: GIVEN more completed missions than one page AND a non-empty query WHEN
+  the search runs THEN a `Search all completed missions ›` link carries the
+  query as `?q=`, and the server filters the completed page by title
+  (case-insensitive, wildcards literal), so the search reaches every completed
+  mission.
+  check: bun run scripts/run-unit-tests.ts "apps/web/src/app/app/(protected)/missions/MissionGrid.discovery.dom.test.tsx" apps/web/src/lib/mission-list-search.test.ts
+- AC-66: GIVEN a status chip other than All WHEN the list renders THEN no Done
+  section renders.
+  check: bun run scripts/run-unit-tests.ts "apps/web/src/app/app/(protected)/missions/MissionGrid.discovery.dom.test.tsx"
+
 **Code surface**: `apps/web/src/app/app/(protected)/missions/page.tsx`,
 `apps/web/src/app/app/(protected)/missions/MissionGrid.tsx`,
-`apps/web/src/lib/mission-portfolio.ts`, `apps/web/src/lib/mission-sections.ts`.
+`apps/web/src/lib/mission-portfolio.ts`, `apps/web/src/lib/mission-sections.ts`,
+`apps/web/src/lib/mission-list-load.ts`.
 
 ---
 

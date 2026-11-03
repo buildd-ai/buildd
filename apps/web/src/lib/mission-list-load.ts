@@ -15,7 +15,7 @@
  */
 import { db } from '@buildd/core/db';
 import { accounts, initiatives, missionSummaries, missions, workers, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import { MISSION_SUMMARY_VERSION, type MissionSummaryList } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
 import { deliveryAtRead, type MissionDeliveryRow } from './delivery-projection';
@@ -89,6 +89,17 @@ function listRowsQuery(where: SQL | undefined) {
     .where(where);
 }
 
+/** `%`, `_` and `\\` in a search are literal, not ILIKE wildcards. Exported for its test. */
+export function likePattern(q: string): string {
+  return `%${q.replace(/[\\%_]/g, c => `\\${c}`)}%`;
+}
+
+/** The completed page's title filter, or none for an empty query. */
+export function completedTitleMatch(q: string | null | undefined): SQL | undefined {
+  const t = q?.trim() ?? '';
+  return t === '' ? undefined : ilike(missions.title, likePattern(t));
+}
+
 /**
  * The list for one team, optionally narrowed to a workspace (team-level
  * missions, with no workspace, always stay). `completedCursor` pages the
@@ -98,9 +109,12 @@ export async function loadMissionList(opts: {
   teamId: string;
   workspaceId?: string | null;
   completedCursor: CompletedMissionCursor | null;
+  /** Narrows the completed page to titles containing it (case-insensitive), so a search reaches every completed mission. */
+  titleQuery?: string | null;
   now: number;
 }): Promise<MissionListView> {
   const { teamId, workspaceId, completedCursor, now } = opts;
+  const titleMatch = completedTitleMatch(opts.titleQuery);
   const scope = workspaceId
     ? and(eq(missions.teamId, teamId), or(eq(missions.workspaceId, workspaceId), isNull(missions.workspaceId)))
     : eq(missions.teamId, teamId);
@@ -115,7 +129,7 @@ export async function loadMissionList(opts: {
   const [openRows, completedPage, seatRows] = await db.batch([
     listRowsQuery(and(scope, ne(missions.status, 'completed')))
       .orderBy(desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)),
-    listRowsQuery(and(scope, eq(missions.status, 'completed'), cursorClause))
+    listRowsQuery(and(scope, eq(missions.status, 'completed'), cursorClause, titleMatch))
       .orderBy(desc(missions.completedAt), desc(missions.id))
       .limit(COMPLETED_MISSIONS_PAGE_SIZE + 1),
     // Seats across the team's accounts, and the live workers on them.
