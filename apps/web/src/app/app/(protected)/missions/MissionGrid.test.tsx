@@ -87,6 +87,14 @@ describe('MissionGrid portfolio', () => {
     expect(history).toContain('Show 1 older');
   });
 
+  it('offers one control for older completed missions: the in-page disclosure, not also the load-older link', () => {
+    const out = renderToStaticMarkup(<MissionGrid rows={[...open, ...done]} slots={{ live: 1, max: 4 }} now={NOW} moreCompleted loadOlderHref="/app/missions?completedCursor=c" />);
+    expect(out).toContain('Show 1 older');
+    expect(out).not.toContain('Load older completed missions');
+    const recentOnly = renderToStaticMarkup(<MissionGrid rows={[...open, done[0]]} slots={{ live: 1, max: 4 }} now={NOW} moreCompleted loadOlderHref="/app/missions?completedCursor=c" />);
+    expect(recentOnly).toContain('Load older completed missions');
+  });
+
   it('groups open missions into Needs you / In progress / Not started, ordering applied but never printed', () => {
     const sec = (k: string) => html.match(new RegExp(`<section[^>]*data-section="${k}"[\\s\\S]*?</section>`))![0];
     expect(sec('needs')).toContain('Waiting on you');
