@@ -43,7 +43,21 @@ describe('Activity Now: quiet state', () => {
     expect(pointer.textContent).toContain('3h ago');
     expect(pointer.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/t-merged');
     const links = [...quiet.querySelectorAll('[data-testid="activity-quiet-links"] a')].map(a => a.getAttribute('href'));
-    expect(links).toEqual(['/app/tasks?view=history', '/app/missions']);
+    expect(links).toEqual(['/app/missions']);
+  });
+
+  it('mobile audit: the quiet block repeats no tab and stacks no second rule under the tab strip', () => {
+    mount(<ActivityView mode="now" now={quietNow} history={[]} nowMs={nowMs} hrefs={hrefs} lastMerged={lastMerged} />);
+    const quiet = q('[data-testid="activity-quiet"]')!;
+    // History is already the tab right above it: no second control to the same place.
+    expect([...quiet.querySelectorAll('a')].some(a => a.getAttribute('href') === hrefs.history)).toBe(false);
+    expect(quiet.textContent).not.toContain('History');
+    // The tab strip's underline is the only rule; no section-weight spacing.
+    const cls = quiet.getAttribute('class') ?? '';
+    expect(cls).not.toMatch(/\bborder-t\b/);
+    expect(cls).not.toMatch(/\bmt-6\b/);
+    // One compact line, not a section heading.
+    expect(quiet.querySelector('h2')!.getAttribute('class')).not.toContain('text-title');
   });
 
   it('AC-24: with no merge in the window there is no pointer, the links stay', () => {
