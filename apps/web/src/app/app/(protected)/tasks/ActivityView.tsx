@@ -337,8 +337,8 @@ function NowView({ now, nowMs, sessions, lastMerged }: { now: ActivityNow; nowMs
 }
 
 /**
- * Now with nothing in motion (spec 9430a28f R-24, R-26): one compact line,
- * the label, at most one pointer to the newest merge, and Missions. History is
+ * Now with nothing in motion (spec 9430a28f R-24, R-26): two compact rows,
+ * the label with Missions beside it, then at most one pointer to the newest merge. History is
  * the tab right above it, so it is not repeated here, and the tab strip's
  * underline is the only rule (no second border or section spacing). Starting
  * work is the header's Ask, or Missions' + New. It lists no missions and no
@@ -348,11 +348,15 @@ function NowView({ now, nowMs, sessions, lastMerged }: { now: ActivityNow; nowMs
 function QuietNow({ nowMs, lastMerged }: { nowMs: number; lastMerged: LastMerged | null }) {
   const since = lastMerged ? age(lastMerged.mergedAt, nowMs) : '';
   return (
-    <section data-testid="activity-quiet" aria-label="Nothing in motion" className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-meta text-text-muted md:max-w-[640px]">
-      <h2 className="inline-flex min-h-11 shrink-0 items-center text-body font-semibold text-text-primary md:min-h-8">Nothing in motion</h2>
+    <section data-testid="activity-quiet" aria-label="Nothing in motion" className="mt-2 text-meta text-text-muted md:max-w-[640px]">
+      <div className="flex items-center gap-3">
+        <h2 className="text-body font-semibold text-text-primary">Nothing in motion</h2>
+        <nav data-testid="activity-quiet-links" aria-label="Where to go" className="ml-auto shrink-0">
+          <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">Missions ›</Link>
+        </nav>
+      </div>
       {lastMerged && (
-        <p data-testid="activity-quiet-last" className="flex min-w-0 flex-1 basis-auto items-baseline gap-1.5">
-          <span aria-hidden="true" className="shrink-0">·</span>
+        <p data-testid="activity-quiet-last" className="flex min-w-0 items-baseline gap-1.5">
           <span className="shrink-0">Last merged</span>
           <Link href={`/app/tasks/${lastMerged.id}`} className="inline-flex min-h-11 min-w-0 items-center truncate text-text-primary hover:underline md:min-h-8" title={lastMerged.title}>
             <span className="truncate">{displayTaskTitle(lastMerged.title)}</span>
@@ -360,9 +364,6 @@ function QuietNow({ nowMs, lastMerged }: { nowMs: number; lastMerged: LastMerged
           <time dateTime={new Date(lastMerged.mergedAt).toISOString()} className="shrink-0 whitespace-nowrap font-mono">· {since === 'now' ? 'just now' : `${since} ago`}</time>
         </p>
       )}
-      <nav data-testid="activity-quiet-links" aria-label="Where to go" className="ml-auto shrink-0">
-        <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">Missions ›</Link>
-      </nav>
     </section>
   );
 }

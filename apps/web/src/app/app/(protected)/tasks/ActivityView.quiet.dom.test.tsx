@@ -56,7 +56,7 @@ describe('Activity Now: quiet state', () => {
     const cls = quiet.getAttribute('class') ?? '';
     expect(cls).not.toMatch(/\bborder-t\b/);
     expect(cls).not.toMatch(/\bmt-6\b/);
-    // One compact line, not a section heading.
+    // Compact rows, not a section heading.
     expect(quiet.querySelector('h2')!.getAttribute('class')).not.toContain('text-title');
   });
 
