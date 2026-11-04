@@ -157,6 +157,11 @@ describe('MobilePageHeader shell geometry', () => {
     expect(new Set(shells).size).toBe(1);
   });
 
+  it('top-level pages expose a trailing slot for their create action', () => {
+    pathname = '/app/missions';
+    expect(render({ teams: TEAMS, currentTeamId: 't1' })).toMatch(/id="mobile-top-bar-action" class="[^"]*empty:hidden/);
+  });
+
   it('Chat exposes a slot for its crumbs', () => {
     pathname = '/app/chat';
     expect(render({ teams: TEAMS, currentTeamId: 't1' })).toContain('id="mobile-top-bar-slot"');
