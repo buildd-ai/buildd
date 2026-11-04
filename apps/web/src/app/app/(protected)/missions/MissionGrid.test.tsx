@@ -192,6 +192,27 @@ describe('MissionGrid portfolio', () => {
     expect(second).toContain('data-testid="portfolio-search"');
   });
 
+  it('hides the group selector when there is only one group to choose', () => {
+    const one = open.map(r => ({ ...r, groupId: 'g1', groupName: 'Mobile' }));
+    const out = renderToStaticMarkup(<MissionGrid rows={one} slots={{ live: 1, max: 4 }} now={NOW} />);
+    expect(out).not.toContain('data-testid="portfolio-group"');
+  });
+
+  it('the group selector is a compact control on phones, not a full-width row', () => {
+    const grouped = open.map((r, i) => ({ ...r, groupId: i % 2 ? 'g1' : 'g2', groupName: i % 2 ? 'Mobile' : 'Billing' }));
+    const out = renderToStaticMarkup(<MissionGrid rows={grouped} slots={{ live: 1, max: 4 }} now={NOW} />);
+    const wrap = out.match(/<div class="([^"]*)"><button[^>]*data-testid="portfolio-group"/)![1];
+    expect(wrap).toContain('w-auto');
+    expect(wrap).not.toMatch(/(^|\s)flex-1(\s|$)/);
+  });
+
+  it('carries the page doors on the stats line, phones only', () => {
+    const out = renderToStaticMarkup(<MissionGrid rows={open} slots={{ live: 1, max: 4 }} now={NOW} doors={<a href="/app/specs">Specs</a>} />);
+    const doors = out.match(/<div[^>]*data-testid="portfolio-doors"[^>]*>/)![0];
+    expect(doors).toContain('md:hidden');
+    expect(out).toContain('href="/app/specs"');
+  });
+
   it('has no glossary footer, and never names a branch the reader may not have', () => {
     expect(html).not.toContain('data-testid="portfolio-definitions"');
     expect(html).not.toMatch(/\bon dev\b/i);
