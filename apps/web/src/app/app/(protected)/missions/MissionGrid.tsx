@@ -11,7 +11,7 @@
  * scope comes from the shell's switcher (the page reads `?workspace=`).
  */
 import { Select } from '@/components/ui/Select';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import Disclosure from '@/components/ui/Disclosure';
 import MissionRow from '@/components/ui/MissionRow';
@@ -24,7 +24,6 @@ import {
   filterPortfolio,
   portfolioFilterCounts,
   portfolioGroups,
-  NO_GROUP,
   splitPortfolio,
   type PortfolioRow,
   type PortfolioStatusFilter,
@@ -46,6 +45,7 @@ export function MissionGrid({
   moreCompleted = false,
   searchBase,
   loadOlderHref,
+  doors,
 }: {
   rows: PortfolioRow[];
   /** `?group=` from the URL: a group id, or `none`. */
@@ -61,6 +61,8 @@ export function MissionGrid({
   searchBase?: string;
   /** Next completed page (rule P-4 escape hatch). Shown only once the in-page "Show N older" control is not offered, so Done never carries two controls for the same thing. */
   loadOlderHref?: string;
+  /** Phones only: the page's quiet links (Specs, Releases), carried on the stats line. */
+  doors?: ReactNode;
 }) {
   const [q, setQ] = useState(initialQuery);
   const [status, setStatus] = useState<PortfolioStatusFilter>('all');
@@ -77,7 +79,9 @@ export function MissionGrid({
   const groups = useMemo(() => portfolioGroups(rows), [rows]);
   // A link to a group with no missions left falls back to all of them.
   const [group, setGroup] = useState(initialGroup && groups.some(g => g.id === initialGroup) ? initialGroup : '');
-  const hasGroups = groups.some(g => g.id !== NO_GROUP);
+  // Only offer the group filter when it is a real choice: one group (or none) filters nothing.
+  // A ?group= link keeps it showing so the reader can clear it.
+  const hasGroups = groups.length > 1 || (group !== '' && groups.length > 0);
   const chooseGroup = (id: string) => {
     setGroup(id);
     const url = new URL(window.location.href);
@@ -108,7 +112,7 @@ export function MissionGrid({
 
   return (
     <div className="space-y-5">
-      <Headline open={totals.all} slots={slots} />
+      <Headline open={totals.all} slots={slots} doors={doors} />
 
       {/* Phones get at most two rows: the strip and the search button, then
           the group selector and the opened search side by side. One row from md. */}
@@ -170,7 +174,8 @@ export function MissionGrid({
               { value: ALL_GROUPS, label: 'All groups' },
               ...groups.map(g => ({ value: g.id, label: `${g.name} (${g.count})` })),
             ]}
-            className="min-w-0 flex-1 md:w-auto md:min-w-[180px] md:flex-none"
+            size="sm"
+            className="w-auto max-w-[45%] shrink-0 md:max-w-none md:min-w-[180px]"
           />
         )}
         <input
@@ -278,7 +283,7 @@ function SectionView({ sec, now, showWorkspace }: { sec: MissionSection; now: nu
  * "14 open · 1 of 4 agent slots" on one line. The per-status counts are not
  * repeated here: the filter strip and the section headings already carry them.
  */
-function Headline({ open, slots }: { open: number; slots: { live: number; max: number } }) {
+function Headline({ open, slots, doors }: { open: number; slots: { live: number; max: number }; doors?: ReactNode }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
       <span data-testid="portfolio-open" title={COUNTER_DEFINITIONS.open} className="font-mono text-[24px] font-semibold leading-none tabular-nums text-text-primary md:text-[32px]">{open}</span>
@@ -288,6 +293,7 @@ function Headline({ open, slots }: { open: number; slots: { live: number; max: n
           <span aria-hidden="true" className="mr-2 text-text-muted">·</span>{slots.live} of {slots.max} agent slots
         </p>
       )}
+      {doors && <div data-testid="portfolio-doors" className="-my-3 ml-auto self-center md:hidden">{doors}</div>}
     </div>
   );
 }

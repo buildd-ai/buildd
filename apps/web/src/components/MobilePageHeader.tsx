@@ -7,7 +7,7 @@ import { TeamSwitcher } from './TeamSwitcher';
 import UserAvatarMenu from './UserAvatarMenu';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
-import MobileTopBar, { MOBILE_TOP_BAR_SLOT_ID } from './MobileTopBar';
+import MobileTopBar, { MOBILE_TOP_BAR_ACTION_ID, MOBILE_TOP_BAR_SLOT_ID } from './MobileTopBar';
 import { isAccountRoute } from '@/lib/nav-active';
 
 interface HeaderTeam {
@@ -92,6 +92,8 @@ export default function MobilePageHeader({
   );
   const trailing = (
     <>
+      {/* A page's create action portals in here (MobileTopBarAction); empty, it takes no gap. */}
+      <div id={MOBILE_TOP_BAR_ACTION_ID} className="flex items-center empty:hidden" />
       {showSwitcher && !phoneHome && <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />}
       <UserAvatarMenu userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
     </>
