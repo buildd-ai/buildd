@@ -144,7 +144,7 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
             <a href={hrefs[mode]} className="mt-2 inline-flex min-h-11 items-center text-meta text-accent-text">Try again ›</a>
           </div>
         ) : mode === 'now' ? (
-          <NowView now={now} nowMs={nowMs} sessions={missionFilter ? [] : localSessions} historyHref={hrefs.history} lastMerged={lastMerged} />
+          <NowView now={now} nowMs={nowMs} sessions={missionFilter ? [] : localSessions} lastMerged={lastMerged} />
         ) : (
           <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={outcome} onOutcomeChange={setOutcome} who={who} onWhoChange={identityFilters ? setWho : null} />
         )}
@@ -276,7 +276,7 @@ const COLUMNS: readonly PipelineStage[] = ['build', 'verify', 'deliver'];
  * groups, the cards, the YouStrip and the rail are all this array (AC-12).
  * Phone and desktop are two arrangements of it; only one is displayed.
  */
-function NowView({ now, nowMs, sessions, historyHref, lastMerged }: { now: ActivityNow; nowMs: number; sessions: LocalSessionView[]; historyHref: string; lastMerged: LastMerged | null }) {
+function NowView({ now, nowMs, sessions, lastMerged }: { now: ActivityNow; nowMs: number; sessions: LocalSessionView[]; lastMerged: LastMerged | null }) {
   const deliveries = useMemo(() => nowDeliveries(now), [now]);
   const byStage = useMemo(() => groupByStage(deliveries), [deliveries]);
   const waiting = useMemo(() => waitingOnYou(deliveries), [deliveries]);
@@ -285,7 +285,7 @@ function NowView({ now, nowMs, sessions, historyHref, lastMerged }: { now: Activ
   if (deliveries.length === 0) {
     return (
       <>
-        <QuietNow nowMs={nowMs} historyHref={historyHref} lastMerged={lastMerged} />
+        <QuietNow nowMs={nowMs} lastMerged={lastMerged} />
         <SessionsLine sessions={sessions} nowMs={nowMs} />
       </>
     );
@@ -337,30 +337,33 @@ function NowView({ now, nowMs, sessions, historyHref, lastMerged }: { now: Activ
 }
 
 /**
- * Now with nothing in motion (spec 9430a28f R-24, R-26): one label, at most
- * one pointer to the newest merge, and where to go next (starting work is
- * the header's Ask, or Missions' + New). It lists no
- * missions and no other finished work: those are Missions' Done section and
- * History. Phone and desktop share it.
+ * Now with nothing in motion (spec 9430a28f R-24, R-26): two compact rows,
+ * the label with Missions beside it, then at most one pointer to the newest merge. History is
+ * the tab right above it, so it is not repeated here, and the tab strip's
+ * underline is the only rule (no second border or section spacing). Starting
+ * work is the header's Ask, or Missions' + New. It lists no missions and no
+ * other finished work: those are Missions' Done section and History. Phone
+ * and desktop share it.
  */
-function QuietNow({ nowMs, historyHref, lastMerged }: { nowMs: number; historyHref: string; lastMerged: LastMerged | null }) {
+function QuietNow({ nowMs, lastMerged }: { nowMs: number; lastMerged: LastMerged | null }) {
   const since = lastMerged ? age(lastMerged.mergedAt, nowMs) : '';
   return (
-    <section data-testid="activity-quiet" aria-label="Nothing in motion" className="mt-6 border-t border-border-default pt-4 pb-4 md:max-w-[640px]">
-      <h2 className="text-title font-semibold text-text-primary">Nothing in motion</h2>
+    <section data-testid="activity-quiet" aria-label="Nothing in motion" className="mt-2 text-meta text-text-muted md:max-w-[640px]">
+      <div className="flex items-center gap-3">
+        <h2 className="text-body font-semibold text-text-primary">Nothing in motion</h2>
+        <nav data-testid="activity-quiet-links" aria-label="Where to go" className="ml-auto shrink-0">
+          <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">Missions ›</Link>
+        </nav>
+      </div>
       {lastMerged && (
-        <p data-testid="activity-quiet-last" className="mt-1.5 flex min-w-0 items-baseline gap-1.5 text-meta text-text-muted">
-          <span className="shrink-0">Last merged ·</span>
-          <Link href={`/app/tasks/${lastMerged.id}`} className="inline-flex min-h-11 min-w-0 items-center truncate text-text-primary hover:underline md:min-h-0" title={lastMerged.title}>
+        <p data-testid="activity-quiet-last" className="flex min-w-0 items-baseline gap-1.5">
+          <span className="shrink-0">Last merged</span>
+          <Link href={`/app/tasks/${lastMerged.id}`} className="inline-flex min-h-11 min-w-0 items-center truncate text-text-primary hover:underline md:min-h-8" title={lastMerged.title}>
             <span className="truncate">{displayTaskTitle(lastMerged.title)}</span>
           </Link>
           <time dateTime={new Date(lastMerged.mergedAt).toISOString()} className="shrink-0 whitespace-nowrap font-mono">· {since === 'now' ? 'just now' : `${since} ago`}</time>
         </p>
       )}
-      <nav data-testid="activity-quiet-links" aria-label="Where to go" className="mt-2 flex flex-wrap gap-x-5 text-meta">
-        <Link href={historyHref} className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">History ›</Link>
-        <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">Missions ›</Link>
-      </nav>
     </section>
   );
 }
