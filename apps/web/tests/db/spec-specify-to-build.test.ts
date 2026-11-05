@@ -113,7 +113,7 @@ describe('Specify → Build', () => {
     const taskA = await insertTask({ role: 'organizer' });
     const d = await createSpecDraft(taskToken(taskA), { workspaceId: wsA, title: `Exports ${rand()}`, body: BODY_1 }, { duplicates: false });
     if (!d.ok) throw new Error(d.error);
-    const r2 = await reviseSpecDraft(taskToken(taskA), d.spec.id, { expectedVersion: d.spec.version, body: BODY_2, explanation: { summary: 's', lines: { 'R-2': 'adds header row rule', Exports: 'wording' } } }, { duplicates: false, autoApprove: false });
+    const r2 = await reviseSpecDraft(taskToken(taskA), d.spec.id, { expectedVersion: d.spec.version, body: BODY_2 }, { duplicates: false, autoApprove: false });
     if (!r2.ok) throw new Error(r2.error);
     expect((await taskRow(taskA)).context[SPEC_AUTHORED_KEY]).toMatchObject({ specId: d.spec.id, revision: 2 });
     const taskB = await insertTask({ role: 'builder', dependsOn: [taskA] });

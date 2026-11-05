@@ -65,9 +65,7 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    cover every change it lists. The approval page checks the keys against the
    real change, with no model: a change you leave out is listed "Not
    explained" and the person must open it before Approve works; a line for
-   something that did not change is listed apart. From an agent session a revise
-   that leaves a change out is refused (400, code explanation_incomplete; the error
-   names the keys to add; nothing is written): add them and revise again. The explanation is fixed
+   something that did not change is listed apart. The explanation is fixed
    with its revision: a revise that only sends a new one is refused (a 409
    with code explanation_immutable). **The explanation must be cumulative.**
    A `revise` from an agent or task token is refused with a 409
