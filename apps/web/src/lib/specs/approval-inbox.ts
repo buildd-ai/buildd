@@ -5,6 +5,8 @@ import { isUuid } from '@/lib/uuid';
 import { appBaseUrl } from '@/lib/app-url';
 import { roleHas } from '@/lib/permissions';
 import { requestingPerson } from '@/lib/request-person';
+import { classifyRisk, sortHighFirst, type RiskTier } from '@buildd/spec-contract/risk-tier';
+import { getArtifactRevisions } from '@/lib/artifact-revisions';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -87,9 +89,13 @@ export interface AwaitingApprovalRow {
   /** The one-line summary of the head's explanation (R-15); null when none was written. */
   explanationSummary: string | null;
   proposedAt: string;
+  /** High, Medium or Low, mechanically (R-32); the inbox sorts High first. */
+  tier: RiskTier;
+  /** Why, one plain line each. */
+  tierReasons: string[];
 }
 
-/** Every spec this person may approve whose head waits on a decision, newest proposal first. */
+/** Every spec this person may approve whose head waits on a decision: High first (R-33), newest proposal first within a tier. */
 export async function listAwaitingApproval(userId: string): Promise<AwaitingApprovalRow[]> {
   const ws = await approverWorkspaces(userId);
   if (!ws.length) return [];
@@ -97,22 +103,42 @@ export async function listAwaitingApproval(userId: string): Promise<AwaitingAppr
 
   const rows = rowsOf<{
     id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number;
-    content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; created_at: string | Date;
+    content_hash: string; scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; created_at: string | Date;
   }>(await db.execute(sql`
     SELECT specs.id, specs.title, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
-      r.content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.created_at
+      r.content_hash, specs.scope, specs.metadata->>'risk' AS risk, specs.body_artifact_id, r.artifact_revision AS head_artifact_revision, ra.artifact_revision AS approved_artifact_revision, ra.content_hash AS approved_content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.created_at
     FROM specs
     JOIN spec_revisions r ON r.spec_id = specs.id AND r.revision = specs.head_revision
+    LEFT JOIN spec_revisions ra ON ra.spec_id = specs.id AND ra.revision = specs.approved_revision
     LEFT JOIN users u ON r.author_kind = 'user' AND u.id::text = r.author_id
     WHERE ${inArray(specs.workspaceId, ws.map((w) => w.id))} AND ${awaitingApprovalWhere()}
     ORDER BY r.created_at DESC, specs.id`));
-  return rows.map((r) => ({
+  const tiers = await Promise.all(rows.map((r) => tierOf(r)));
+  return sortHighFirst(rows.map((r, i) => ({
+    tier: tiers[i]!.tier, tierReasons: tiers[i]!.reasons,
     specId: r.id, title: r.title, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '',
     headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision),
     version: Number(r.version), contentHash: r.content_hash,
     author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
     changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
-  }));
+  })));
+}
+
+/** The row's tier from its approved and head bodies; a body that cannot be read leaves it Medium, never High or Low by guess. */
+async function tierOf(r: { scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; content_hash: string }) {
+  try {
+    const wanted = [r.head_artifact_revision, ...(r.approved_artifact_revision == null ? [] : [r.approved_artifact_revision])];
+    const read = await getArtifactRevisions(r.body_artifact_id, wanted);
+    const body = (n: number, hash: string | null) => { const a = read.get(n); return a && typeof a.content === 'string' && (!hash || a.contentHash === hash) ? a.content : null; };
+    const to = body(r.head_artifact_revision, r.content_hash);
+    const from = r.approved_artifact_revision == null ? null : body(r.approved_artifact_revision, r.approved_content_hash);
+    if (to === null || (r.approved_artifact_revision != null && from === null)) {
+      return r.risk === 'high' ? { tier: 'high' as const, reasons: ['A person flagged this spec risk: high.'] } : { tier: 'medium' as const, reasons: ['The change could not be read to rate it.'] };
+    }
+    return classifyRisk({ scope: r.scope, flaggedHigh: r.risk === 'high', from, to });
+  } catch {
+    return { tier: 'medium' as const, reasons: ['The change could not be read to rate it.'] };
+  }
 }
 
 async function countWhere(where: SQL): Promise<number> {

@@ -1,12 +1,13 @@
 import { listAwaitingApproval, type AwaitingApprovalRow } from './approval-inbox';
 import { signSpecApprovalRequest } from './approval-request';
+import { filterByTier, type RiskFilter, type RiskTier } from '@buildd/spec-contract/risk-tier';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
 import { getSpec } from './store';
 
 /** Rows past this are counted and left to the inbox, so the page stays one read. */
 export const REVIEW_ALL_ROWS = 30;
 
-export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'author'> {
+export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'author' | 'tier' | 'tierReasons'> {
   /** One sentence on what changes: the explanation's summary, else the change summary; null when neither was written. */
   summary: string | null;
   /**
@@ -25,11 +26,15 @@ export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'titl
  * each with its one-line summary, its diff and its own signed request. Built
  * from the person's id alone; nothing here approves.
  */
-export async function reviewAllView(userId: string, now = Date.now()): Promise<{ rows: ReviewAllRow[]; more: number }> {
-  const all = await listAwaitingApproval(userId);
+export async function reviewAllView(userId: string, filter: RiskFilter = 'all', now = Date.now()): Promise<{ rows: ReviewAllRow[]; more: number; counts: Record<RiskTier, number>; filter: RiskFilter }> {
+  const everything = await listAwaitingApproval(userId);
+  const counts = { high: 0, medium: 0, low: 0 } satisfies Record<RiskTier, number>;
+  for (const r of everything) counts[r.tier]++;
+  // R-33: the filter narrows what is listed, so Approve all (which sends one request per listed row) acts only within it.
+  const all = filterByTier(everything, filter);
   const caller = { kind: 'user' as const, userId };
   const rows = await Promise.all(all.slice(0, REVIEW_ALL_ROWS).map(async (r): Promise<ReviewAllRow> => ({
-    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, author: r.author,
+    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, author: r.author, tier: r.tier, tierReasons: r.tierReasons,
     summary: r.explanationSummary ?? r.changeSummary?.trim() ?? null,
     request: signSpecApprovalRequest({
       specId: r.specId, workspaceId: r.workspaceId, revision: r.headRevision, expectedVersion: r.version, contentHash: r.contentHash,
@@ -37,7 +42,7 @@ export async function reviewAllView(userId: string, now = Date.now()): Promise<{
     }, now),
     diff: await rowDiff(caller, r).catch(() => null),
   })));
-  return { rows, more: Math.max(0, all.length - REVIEW_ALL_ROWS) };
+  return { rows, more: Math.max(0, all.length - REVIEW_ALL_ROWS), counts, filter };
 }
 
 async function rowDiff(caller: { kind: 'user'; userId: string }, r: AwaitingApprovalRow): Promise<ReviewAllRow['diff']> {

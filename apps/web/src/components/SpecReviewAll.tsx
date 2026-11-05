@@ -4,11 +4,15 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Card from '@/components/ui/Card';
+import Chip from '@/components/ui/Chip';
+import Segmented from '@/components/ui/Segmented';
 import Disclosure from '@/components/ui/Disclosure';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import SpecDiffView from '@/components/SpecDiffView';
 import { approveAll, approveAllSummary, type ApproveAllItem, type ApproveAllResult, type ConfirmReply } from '@/lib/specs/approve-all';
+import { TIER_CHIP, TIER_WORD } from '@/lib/specs/risk-tier-view';
+import type { RiskFilter, RiskTier } from '@buildd/spec-contract/risk-tier';
 import type { ReviewAllRow } from '@/lib/specs/review-all-view';
 
 /** One signed request, confirmed on its own: the same endpoint a confirm link uses. */
@@ -30,8 +34,12 @@ const OUTCOME_WORD = { approved: 'Approved', stale: 'Stale', needs_reason: 'Need
  * per revision, in order (lib/specs/approve-all.ts); it never sends one
  * request for several.
  */
-export default function SpecReviewAll({ rows, initialResult = null, openSpecId = null }: {
+export default function SpecReviewAll({ rows, counts, filter = 'all', initialResult = null, openSpecId = null }: {
+  /** The rows in the chosen tier (the server filters, so Approve all acts only on these: R-33). */
   rows: ReviewAllRow[];
+  /** How many wait in each tier, over every row; the filter's labels. */
+  counts?: Record<RiskTier, number>;
+  filter?: RiskFilter;
   /** Fixtures only: render as if Approve all had already run. */
   initialResult?: ApproveAllResult | null;
   /** Fixtures only: the row whose diff starts open. */
@@ -41,6 +49,13 @@ export default function SpecReviewAll({ rows, initialResult = null, openSpecId =
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(0);
   const [result, setResult] = useState<ApproveAllResult | null>(initialResult);
+  const total = counts ? counts.high + counts.medium + counts.low : rows.length;
+  const filterItems = counts ? ([
+    { value: 'all', label: `All ${total}` },
+    { value: 'high', label: `High ${counts.high}` },
+    { value: 'medium', label: `Medium ${counts.medium}` },
+    { value: 'low', label: `Low ${counts.low}` },
+  ] as const) : null;
   const items: ApproveAllItem[] = rows.flatMap((r) => (r.request ? [{ specId: r.specId, title: r.title, revision: r.headRevision, request: r.request }] : []));
   const unsigned = rows.length - items.length;
   const outcomeOf = (specId: string) => result?.outcomes.find((o) => o.item.specId === specId)?.outcome ?? null;
@@ -60,6 +75,16 @@ export default function SpecReviewAll({ rows, initialResult = null, openSpecId =
 
   return (
     <div className="flex flex-col gap-3">
+      {filterItems ? (
+        <div className="overflow-x-auto" data-testid="spec-review-all-filter">
+          <Segmented
+            items={filterItems}
+            value={filter}
+            label="Show revisions by risk"
+            onChange={(v) => { if (!busy) router.push(v === 'all' ? '/app/specs/review-all' : `/app/specs/review-all?tier=${v}`); }}
+          />
+        </div>
+      ) : null}
       <ul className="flex flex-col gap-3" data-testid="spec-review-all-list">
         {rows.map((r) => {
           const outcome = outcomeOf(r.specId);
@@ -70,6 +95,9 @@ export default function SpecReviewAll({ rows, initialResult = null, openSpecId =
                   <Link href={`/app/specs/${encodeURIComponent(r.specId)}`} className="inline-flex min-h-11 items-center text-title font-semibold text-text-primary underline-offset-2 hover:underline [overflow-wrap:anywhere] md:min-h-0">
                     {r.title}
                   </Link>
+                  <span className="flex items-center gap-2">
+                    <Chip tone={TIER_CHIP[r.tier]} data-testid="spec-review-all-tier" title={r.tierReasons.join(' ')}>{TIER_WORD[r.tier]}</Chip>
+                  </span>
                   {outcome ? <span className="text-meta text-text-secondary" data-testid="spec-review-all-outcome">{OUTCOME_WORD[outcome]}</span> : null}
                 </div>
                 <p className="text-body text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-all-summary">
@@ -107,11 +135,11 @@ export default function SpecReviewAll({ rows, initialResult = null, openSpecId =
                 ? `Approving ${done} of ${items.length}…`
                 : unsigned
                   ? 'Approval requests cannot be signed on this deployment. Approve each one from the inbox.'
-                  : `Approves each of the ${items.length} revisions on its own request. One that changed since this page loaded is not approved.`}
+                  : `Approves each of the ${items.length}${filter === 'all' ? '' : ` ${filter}-risk`} revisions on its own request. One that changed since this page loaded is not approved.`}
             </p>
             <div className="shrink-0">
               <PrimaryAction onClick={run} disabled={busy || items.length === 0 || unsigned > 0} fullWidthOnMobile data-testid="spec-review-all-approve">
-                {`Approve all ${items.length}`}
+                {filter === 'all' ? `Approve all ${items.length}` : `Approve all ${items.length} ${filter}`}
               </PrimaryAction>
             </div>
           </>
