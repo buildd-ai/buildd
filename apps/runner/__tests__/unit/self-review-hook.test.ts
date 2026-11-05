@@ -1,0 +1,115 @@
+/**
+ * Self-review guard, recording stage (Living Spec f3742450, T2). Never denies.
+ *
+ * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/self-review-hook.test.ts
+ */
+import { describe, test, expect } from 'bun:test';
+import { createSelfReviewGuardHook, resolveSelfReviewMode } from '../../src/self-review-guard';
+import { createVerifyGuardHook } from '../../src/verify-guard';
+import type { Milestone } from '../../src/types';
+
+const signal = { signal: new AbortController().signal };
+const complete = (params: Record<string, unknown> = {}) =>
+  ({ hook_event_name: 'PreToolUse', tool_name: 'mcp__buildd__buildd_tasks', tool_input: { action: 'complete_task', params } }) as any;
+const denied = (r: any) => r?.hookSpecificOutput?.permissionDecision === 'deny';
+
+function setup(over: Record<string, any> = {}) {
+  const milestones: Milestone[] = [];
+  const hook = createSelfReviewGuardHook({
+    worker: { id: 'w1', toolCalls: [{}, {}], tokenTally: { inputTokens: 10, outputTokens: 5 } } as any,
+    task: { title: 'T', description: '- add the thing\n- run the tests', roleSlug: 'builder', pathManifest: ['a.ts'] } as any,
+    mode: 'recording',
+    addMilestone: (m: Milestone) => milestones.push(m),
+    openFailures: () => [],
+    log: () => {},
+    ...over,
+  });
+  return { hook, milestones };
+}
+const labels = (ms: Milestone[]) => ms.map((m: any) => m.label as string);
+
+describe('resolveSelfReviewMode', () => {
+  test('defaults to off; only known modes accepted', () => {
+    expect(resolveSelfReviewMode(undefined)).toBe('off');
+    expect(resolveSelfReviewMode({})).toBe('off');
+    expect(resolveSelfReviewMode({ selfReview: 'bogus' })).toBe('off');
+    expect(resolveSelfReviewMode({ selfReview: 'recording' })).toBe('recording');
+  });
+});
+
+describe('recording mode', () => {
+  test('never denies and logs mode, arm none, version and item ids (AC-4)', async () => {
+    const { hook, milestones } = setup();
+    expect(denied(await hook(complete(), undefined, signal))).toBe(false);
+    const line = labels(milestones).join('\n');
+    expect(line).toContain('mode=recording');
+    expect(line).toContain('arm=none');
+    expect(line).toContain('version=1');
+    expect(line).toContain('req-1');
+    expect(line).toContain('scope');
+    expect(line).toContain('tokens=15');
+  });
+
+  test('fires at most once per worker', async () => {
+    const { hook, milestones } = setup();
+    await hook(complete(), undefined, signal);
+    await hook(complete(), undefined, signal);
+    expect(milestones).toHaveLength(1);
+  });
+
+  test('exempt tasks record the exemption reason', async () => {
+    const { hook, milestones } = setup({ task: { roleSlug: 'reviewer', description: '- x' } });
+    expect(denied(await hook(complete(), undefined, signal))).toBe(false);
+    expect(labels(milestones).join()).toContain('exempt=reviewer-role');
+  });
+
+  test('failure reports are exempt (error)', async () => {
+    const { hook, milestones } = setup();
+    await hook(complete({ error: 'boom' }), undefined, signal);
+    expect(labels(milestones).join()).toContain('exempt=error');
+  });
+
+  test('builder failure fails open', async () => {
+    const { hook } = setup({ task: { get description() { throw new Error('x'); } } });
+    expect(denied(await hook(complete(), undefined, signal))).toBe(false);
+  });
+
+  test('ignores other tools and non-completion actions', async () => {
+    const { hook, milestones } = setup();
+    await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }, undefined, signal);
+    await hook(complete(), undefined, signal); // fires
+    expect(milestones).toHaveLength(1);
+  });
+});
+
+describe('mode off', () => {
+  test('creates no state and no log', async () => {
+    const { hook, milestones } = setup({ mode: 'off' });
+    expect(await hook(complete(), undefined, signal)).toEqual({});
+    expect(await hook(complete(), undefined, signal)).toEqual({});
+    expect(milestones).toHaveLength(0);
+  });
+});
+
+describe('composed with verify-guard in registration order (AC-1)', () => {
+  test('an open verify failure is refused first and the stage does not fire', async () => {
+    const open = [{ family: 'test', command: 'bun run test', exitCode: 1, timedOut: false }] as any;
+    const milestones: Milestone[] = [];
+    const worker = { id: 'w1', toolCalls: [] } as any;
+    const verify = createVerifyGuardHook({ worker, isReviewer: false, openFailures: () => open, log: () => {} });
+    const review = createSelfReviewGuardHook({
+      worker, task: { description: '- a' } as any, mode: 'recording',
+      addMilestone: (m: Milestone) => milestones.push(m), openFailures: () => open, log: () => {},
+    });
+    let result: any = {};
+    for (const h of [verify, review]) {
+      result = await h(complete(), undefined, signal);
+      if (denied(result)) break;
+    }
+    expect(denied(result)).toBe(true);
+    expect(milestones).toHaveLength(0);
+    // The guard also stands down on its own if run alongside (parallel hooks).
+    expect(await review(complete(), undefined, signal)).toEqual({});
+    expect(milestones).toHaveLength(0);
+  });
+});
