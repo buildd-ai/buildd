@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { approvalInboxView, otherDraftsView, type InboxRow } from '@/lib/specs/approval-inbox-view';
 import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
+import { rowRevisionLine } from '@/lib/specs/approval-row-line';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
 import Card from '@/components/ui/Card';
 import SpecQuestion from '@/components/SpecQuestion';
@@ -84,8 +85,9 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
       </div>
       {row.question ? <SpecQuestion question={row.question} /> : null}
       <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-line">
-        {row.workspaceName} · revision {row.headRevision}{row.approvedRevision ? ` replaces ${row.approvedRevision}` : ', first approval'} · by {row.author}
+        {row.workspaceName} · {rowRevisionLine(row)} · by {row.author}
       </p>
+      {row.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-coverage">{row.coverage}</p> : null}
       {row.changeSummary ? <p className="text-body text-text-primary [overflow-wrap:anywhere]">{row.changeSummary}</p> : null}
       {view ? (
         <Disclosure summary={`Review revision ${row.headRevision}`} defaultOpen={open}>
