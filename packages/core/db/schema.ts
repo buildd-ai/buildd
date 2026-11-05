@@ -4625,6 +4625,41 @@ export const deviceCodes = pgTable('device_codes', {
   expiresAtIdx: index('device_codes_expires_at_idx').on(t.expiresAt),
 }));
 
+// Voyage spend on the platform key, per team and month: what the guard reserves against, one
+// row per kind so a reservation is a single atomic UPDATE...WHERE. `exhausted_at`
+// marks the first refused call, which is what the team is told about.
+// See docs/specs/voyage-spend-guard.md.
+export const voyageUsageMonthly = pgTable('voyage_usage_monthly', {
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  /** `YYYY-MM`, UTC. */
+  month: text('month').notNull(),
+  kind: text('kind').notNull().$type<'embed' | 'rerank'>(),
+  tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  calls: bigint('calls', { mode: 'number' }).notNull().default(0),
+  deniedCalls: bigint('denied_calls', { mode: 'number' }).notNull().default(0),
+  exhaustedAt: timestamp('exhausted_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.teamId, t.month, t.kind] }),
+}));
+
+// Voyage spend by who caused it: real `usage.total_tokens` per day, model, corpus,
+// caller and key. Bounded by those keys, and holds no content.
+export const voyageUsageDaily = pgTable('voyage_usage_daily', {
+  day: date('day').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'embed' | 'rerank'>(),
+  model: text('model').notNull(),
+  corpus: text('corpus').notNull(),
+  caller: text('caller').notNull(),
+  /** Whose key paid: buildd's, or the team's own. */
+  keySource: text('key_source').notNull().$type<'platform' | 'byok'>(),
+  tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  calls: bigint('calls', { mode: 'number' }).notNull().default(0),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.day, t.teamId, t.kind, t.model, t.corpus, t.caller, t.keySource] }),
+}));
+
 // Knowledge chunks — unified semantic + lexical retrieval store.
 // namespace = "{workspaceId}:{corpus}" (e.g. "ws-abc:memory").
 // HNSW index on embedding is added in the migration SQL.

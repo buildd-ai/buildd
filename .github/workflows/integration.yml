@@ -52,6 +52,14 @@ jobs:
   integration:
     name: integration
     runs-on: ubuntu-latest
+    # Without this the job inherits GitHub's 6h default, and the concurrency
+    # group below makes every other integration run wait behind it: release
+    # candidate v0.392.0 sat 40 minutes in a hung sync until it was cancelled.
+    # Green runs take 9 to 17 minutes end to end. Each long step has its own
+    # smaller limit that fails first with a message saying what timed out;
+    # this is the backstop. A job that hits it ends "cancelled", which no
+    # gate reads as a pass.
+    timeout-minutes: 60
     # One test machine, one fixed checkout path, one server port, one set of
     # screen sessions: two runs at once overwrite each other. Every caller (the
     # hotfix-PR path in build.yml, post-merge-integration.yml on dev) shares
@@ -107,6 +115,7 @@ jobs:
 
       - name: Create Neon preview branch
         id: neon
+        timeout-minutes: 5
         run: |
           BRANCH_NAME="${{ inputs.neon_branch }}"
 
@@ -205,6 +214,9 @@ jobs:
 
       - name: Sync code and build on test machine
         id: sync
+        # Backstop only. The script bounds each attempt (20m) and the whole
+        # loop (40m), and reports a timeout as an infrastructure failure.
+        timeout-minutes: 45
         env:
           # Always an exact SHA (see "Resolve the commit under test"): the branch
           # may have moved on by the time this job leaves the queue, and the
@@ -223,69 +235,16 @@ jobs:
             exit 1
           fi
           echo "INTEGRATION_MODE=full host=$TEST_HOST container=$TEST_CONTAINER user=$TEST_USER"
-          rc=1
-          for attempt in 1 2 3 4 5; do
-            echo "Attempt $attempt/5: syncing and building on test machine..."
-            # By SHA, not branch: a branch tip can move (or the branch can be
-            # deleted) between the event and this job. The HEAD check fails the
-            # run if what was checked out is not the commit being reported on.
-            if tailscale ssh "$TEST_USER@$TEST_HOST" << SCRIPT
-              docker exec $TEST_CONTAINER bash -c "
-                set -e
-                export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
-                (chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true) && rm -rf /tmp/buildd-ci
-                git init -q /tmp/buildd-ci
-                git -C /tmp/buildd-ci remote add origin https://github.com/${{ github.repository }}.git
-                git -C /tmp/buildd-ci fetch --depth 1 origin $CHECKOUT_SHA
-                git -C /tmp/buildd-ci checkout -q FETCH_HEAD
-                test \\\$(git -C /tmp/buildd-ci rev-parse HEAD) = $CHECKOUT_SHA || { echo 'SHA mismatch: test machine HEAD is not $CHECKOUT_SHA'; exit 1; }
-                cd /tmp/buildd-ci && bun install 2>&1 | tail -3
-                cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
-                test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
-              "
-          SCRIPT
-            then
-              rc=0
-              break
-            fi
-            [ $attempt -lt 5 ] && echo "Attempt $attempt failed, retrying in 60s..." && sleep 60
-          done
-          if [ $rc -ne 0 ]; then
-            echo "All SSH attempts failed. Probing Tailscale connectivity..."
-            if timeout 15 tailscale ping "$TEST_HOST" 2>&1 | grep -qi "pong"; then
-              echo "::error::SSH failed but machine IS reachable via Tailscale — check SSH/docker config on the test machine"
-              echo "machine_online=true" >> "$GITHUB_OUTPUT"
-              exit 1
-            else
-              # FAILS, deliberately. This branch used to `exit 0` with a warning,
-              # on the reasoning that an infra outage is not a code problem. The
-              # consequence: between 2026-07-16 and 2026-08-29 this job reported
-              # SUCCESS six consecutive times having executed zero tests, because
-              # Tailscale was logged out on the host the whole time. A green that
-              # cannot be told apart from "never ran" is worse than a red one.
-              #
-              # Safe to fail: `integration` is NOT a required check on `main`
-              # (only `build` is), so a red here annotates the run without
-              # blocking a merge — including the hotfix PRs that are this job's
-              # entire population.
-              #
-              # NOTE: ci-fix.yml detects this error message pattern and handles
-              # infrastructure failures specially: instead of attempting a code
-              # fix (which cannot succeed), it auto-reruns the failed job up to
-              # 3 times with backoff. This gives transient Tailscale outages a
-              # chance to clear without creating unnecessary CI-retry tasks. If
-              # the job persistently fails with this error after 3 reruns, a
-              # human must run 'sudo tailscale up --ssh' on the host.
-              echo "::error::Test machine ${TEST_HOST} is unreachable over Tailscale, so NO integration or E2E tests ran. This is an infrastructure failure, not a code failure — but it is reported as a failure so it cannot masquerade as passing coverage. Fix: run 'sudo tailscale up --ssh' on the host (it logs out and stays out), then re-run this job."
-              echo "INTEGRATION_MODE=skipped_unreachable"
-              echo "machine_online=false" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          echo "machine_online=true" >> "$GITHUB_OUTPUT"
+          # Retries, per-attempt and total time limits, killing a hung build
+          # on the machine, and the infra-vs-code verdict all live in the
+          # script, which has tests (scripts/ci/sync-test-machine.test.ts).
+          # By SHA, not branch: a branch tip can move (or the branch can be
+          # deleted) between the event and this job.
+          bash scripts/ci/sync-test-machine.sh "$CHECKOUT_SHA" "https://github.com/${{ github.repository }}.git"
 
       - name: Verify SDK native binary (post-build)
         if: steps.sync.outputs.machine_online != 'false'
+        timeout-minutes: 3
         # The integration tests have repeatedly failed with
         # "Claude Code native binary not found at /tmp/buildd-ci/node_modules/.bun/
         # @anthropic-ai+claude-agent-sdk-linux-arm64-musl@<ver>/.../claude" even
@@ -298,7 +257,7 @@ jobs:
         # consumed as ssh stdin, leaving none for the inner one. Use bash -c
         # with the script piped via stdin to docker exec -i instead.
         run: |
-          tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
+          timeout 120 tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
           set +e
           echo "::group::SDK binary state (post-build)"
           echo "--- arch + bun version ---"
@@ -319,12 +278,14 @@ jobs:
 
       - name: Run migrations on Neon preview branch
         if: steps.sync.outputs.machine_online != 'false'
+        timeout-minutes: 10
         run: cd packages/core && bun db:migrate
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
 
       - name: Seed integration test fixtures
         if: steps.sync.outputs.machine_online != 'false'
+        timeout-minutes: 5
         run: bun run scripts/seed-integration-fixtures.ts
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
@@ -333,6 +294,7 @@ jobs:
 
       - name: Raise concurrency limits and clear budget walls for CI
         if: steps.sync.outputs.machine_online != 'false'
+        timeout-minutes: 3
         # The branch is a fresh fork of its parent, so it carries whatever
         # provider walls and budget pauses the parent holds right now. A real
         # runner hitting its plan limit would otherwise defer every claim these
@@ -350,6 +312,8 @@ jobs:
 
       - name: Start preview server
         if: steps.sync.outputs.machine_online != 'false'
+        # Takes under 10s when green; the readiness loop below gives up at 150s.
+        timeout-minutes: 8
         # `next start` runs under Node (apps/web `start` script), as on Vercel.
         # It ran under Bun until Next 16.3, whose compiled server runtime Bun
         # 1.3.x cannot load: the server printed "Ready" and then answered every
@@ -364,13 +328,14 @@ jobs:
           # DATABASE_URL and every authed route returned 500. That stayed
           # hidden while the API tests were silently not running (see below).
           printf 'DATABASE_URL=%q\nAUTH_SECRET=%q\n' "$DATABASE_URL" "$AUTH_SECRET" | \
-            tailscale ssh "$TEST_USER@$TEST_HOST" \
+            timeout 60 tailscale ssh "$TEST_USER@$TEST_HOST" \
               "docker exec -i $TEST_CONTAINER bash -c 'cat > /tmp/buildd-ci/.env.test'"
 
           # Resolve node (fetch a pinned LTS into /tmp if the machine has none
           # or an old one), write a launcher, and start it in screen. Piped to
-          # `bash -s` so nothing below needs escaping twice.
-          tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER'
+          # `bash -s` so nothing below needs escaping twice. Bounded: it may
+          # download Node, otherwise it returns in seconds.
+          timeout 240 tailscale ssh "$TEST_USER@$TEST_HOST" -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "docker exec -i $TEST_CONTAINER bash -s" << 'INNER'
           set -euo pipefail
           export PATH=$HOME/.local/bin:$HOME/.bun/bin:/tmp/buildd-node/bin:$PATH
           # 0 when `node` is really Bun (images and `bun run` shim node -> bun).
@@ -408,7 +373,7 @@ jobs:
 
           dump_log() {
             echo "--- /tmp/buildd-web.log ---"
-            tailscale ssh "$TEST_USER@$TEST_HOST" \
+            timeout 30 tailscale ssh "$TEST_USER@$TEST_HOST" \
               "docker exec $TEST_CONTAINER tail -80 /tmp/buildd-web.log 2>/dev/null" || true
           }
 
@@ -418,8 +383,8 @@ jobs:
           # routes and pages load different compiled runtimes.
           BASE="http://$TEST_HOST:3333"
           for i in $(seq 1 30); do
-            if curl -s "$BASE/api/version" 2>/dev/null | jq -e . >/dev/null 2>&1; then
-              PAGE_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/" || echo 000)
+            if curl -s -m 10 "$BASE/api/version" 2>/dev/null | jq -e . >/dev/null 2>&1; then
+              PAGE_CODE=$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$BASE/" || echo 000)
               if [ "$PAGE_CODE" -ge 200 ] && [ "$PAGE_CODE" -lt 500 ]; then
                 echo "Server ready: /api/version ok, / -> $PAGE_CODE"
                 break
@@ -429,7 +394,7 @@ jobs:
               exit 1
             fi
             # Fail fast on a known crash instead of waiting out the timeout.
-            if tailscale ssh "$TEST_USER@$TEST_HOST" \
+            if timeout 30 tailscale ssh "$TEST_USER@$TEST_HOST" \
                 "docker exec $TEST_CONTAINER grep -q -e 'Failed to load external module' -e 'command not found' /tmp/buildd-web.log" 2>/dev/null; then
               echo "::error::Preview server is up but cannot serve requests (see log). NO integration tests ran."
               dump_log
@@ -449,11 +414,12 @@ jobs:
 
       - name: Verify SDK native binary (pre-runner)
         if: steps.sync.outputs.machine_online != 'false' && inputs.runner
+        timeout-minutes: 3
         # Same probe as post-build, but right before the runner spawns. If the
         # binary is here then but the runner reports it missing, the issue is
         # in how the runner process resolves the path, not in the install.
         run: |
-          tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
+          timeout 120 tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
           echo "::group::SDK binary state (pre-runner)"
           ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk-linux-arm64-musl@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/claude 2>&1 | head -3
           ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl 2>&1 | head -3
@@ -472,6 +438,8 @@ jobs:
 
       - name: Start preview runner
         if: steps.sync.outputs.machine_online != 'false' && inputs.runner
+        # Takes under 5s when green; the readiness loop below gives up at 30s.
+        timeout-minutes: 5
         # BUILDD_HOME isolates this process's WorkerStore/history/session-log
         # from the test machine's real `~/.buildd` (this container doubles as
         # a live dogfood runner). Without it the preview runner resumes real
@@ -484,7 +452,7 @@ jobs:
         # test file (see apps/runner/src/buildd-home.ts); this step is the one
         # place that launches the runner directly and was missed by that fix.
         run: |
-          tailscale ssh "$TEST_USER@$TEST_HOST" << SCRIPT
+          timeout 60 tailscale ssh "$TEST_USER@$TEST_HOST" << SCRIPT
             docker exec $TEST_CONTAINER bash -c "
               export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
               screen -X -S buildd-test quit 2>/dev/null || true
@@ -514,7 +482,7 @@ jobs:
           # and its healthcheck pages on a listener there), so the runner is reached through an
           # SSH forward from this job to the container's own address on the host's bridge:
           # nothing new is published and nothing on the machine changes.
-          CONTAINER_IP=$(tailscale ssh "$TEST_USER@$TEST_HOST" "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $TEST_CONTAINER" | tr -d '[:space:]')
+          CONTAINER_IP=$(timeout 30 tailscale ssh "$TEST_USER@$TEST_HOST" "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $TEST_CONTAINER" | tr -d '[:space:]')
           echo "runner container address: ${CONTAINER_IP:-unknown}"
           nohup tailscale ssh "$TEST_USER@$TEST_HOST" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L "127.0.0.1:8767:${CONTAINER_IP}:8767" > /tmp/runner-tunnel.log 2>&1 &
           sleep 3
@@ -539,11 +507,11 @@ jobs:
               for port in 8767 3333; do
                 if timeout 4 bash -c "exec 3<>/dev/tcp/$TEST_HOST/$port" 2>/dev/null; then echo "tcp $TEST_HOST:$port from this job: connects"; else echo "tcp $TEST_HOST:$port from this job: no connection"; fi
               done
-              tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec $TEST_CONTAINER bash -c '
+              timeout 30 tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec $TEST_CONTAINER bash -c '
                 echo \"inside the machine, loopback:  HTTP \$(curl -s -m 3 -o /dev/null -w %{http_code} -H \"X-Buildd-Local-Token: $BUILDD_LOCAL_TOKEN\" http://127.0.0.1:8767/api/config)\"
                 echo \"inside the machine, tailnet ip: HTTP \$(curl -s -m 3 -o /dev/null -w %{http_code} -H \"X-Buildd-Local-Token: $BUILDD_LOCAL_TOKEN\" http://$TEST_HOST:8767/api/config)\"
               '" || true
-              tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec $TEST_CONTAINER bash -c '
+              timeout 30 tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec $TEST_CONTAINER bash -c '
                 echo \"=== Listening ports ===\"
                 netstat -tulpn 2>/dev/null | grep -E \":(3333|8767)\" || ss -tulpn 2>/dev/null | grep -E \":(3333|8767)\" || echo \"Could not get port listing\"
                 echo \"=== Runner process ===\"
@@ -567,6 +535,8 @@ jobs:
       - name: Integration tests
         id: api_tests
         if: steps.sync.outputs.machine_online != 'false' && inputs.api
+        # About 1 minute when green, for all six files.
+        timeout-minutes: 15
         # One `bun test` process per file, and each must report at least one
         # passing test. These files call process.exit(0) to "skip" (missing key,
         # unreachable runner), and in a single shared process that exit ended
@@ -647,12 +617,13 @@ jobs:
 
       - name: Dump SDK binary state on failure
         if: failure()
+        timeout-minutes: 3
         # Compare with the post-build/pre-runner probes — if the binary was
         # there earlier and isn't now, something between those checkpoints
         # mutated /tmp/buildd-ci. Also captures inode/mtime so we can tell
         # whether the file was overwritten vs deleted vs never installed.
         run: |
-          tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
+          timeout 120 tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
           echo "::group::SDK binary state (on failure)"
           echo "--- expected platform variant ---"
           ls -lai /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk-linux-arm64-musl@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/claude 2>&1 | head -3
@@ -670,19 +641,21 @@ jobs:
 
       - name: Dump runner and server logs on failure
         if: failure()
+        timeout-minutes: 3
         run: |
           echo "--- /tmp/buildd-test.log (runner) ---"
-          tailscale ssh "$TEST_USER@$TEST_HOST" \
+          timeout 60 tailscale ssh "$TEST_USER@$TEST_HOST" \
             "docker exec $TEST_CONTAINER bash -c 'tail -500 /tmp/buildd-test.log 2>/dev/null'" || echo "(no runner log)"
           echo ""
           echo "--- /tmp/buildd-web.log (server, tail) ---"
-          tailscale ssh "$TEST_USER@$TEST_HOST" \
+          timeout 60 tailscale ssh "$TEST_USER@$TEST_HOST" \
             "docker exec $TEST_CONTAINER bash -c 'tail -200 /tmp/buildd-web.log 2>/dev/null'" || echo "(no server log)"
 
       - name: Cleanup
         if: always()
+        timeout-minutes: 3
         run: |
-          tailscale ssh "$TEST_USER@$TEST_HOST" 'docker exec ${{ vars.TEST_MACHINE_CONTAINER }} bash -c "
+          timeout 90 tailscale ssh "$TEST_USER@$TEST_HOST" 'docker exec ${{ vars.TEST_MACHINE_CONTAINER }} bash -c "
             screen -X -S buildd-web quit 2>/dev/null
             screen -X -S buildd-test quit 2>/dev/null
             (chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true) && rm -rf /tmp/buildd-ci
@@ -690,6 +663,7 @@ jobs:
 
       - name: Cleanup Neon branch
         if: always()
+        timeout-minutes: 3
         run: |
           BRANCH_ID="${{ steps.neon.outputs.branch_id }}"
           [ -z "$BRANCH_ID" ] && exit 0

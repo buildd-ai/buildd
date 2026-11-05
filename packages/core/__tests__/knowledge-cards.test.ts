@@ -287,12 +287,12 @@ describe('VoyageEmbedder input_type', () => {
     return { body: () => captured };
   }
 
-  it('defaults to voyage-4-large and input_type=document', async () => {
+  it('defaults to voyage-4-large and sends input_type=document', async () => {
     const cap = stubFetch();
     try {
       const e = new VoyageEmbedder('test-key');
       expect(e.model).toBe('voyage-4-large');
-      await e.embed(['hello']);
+      await e.embed(['hello'], 'document', { namespace: 'ws:memory', caller: 'test' });
       expect(cap.body().model).toBe('voyage-4-large');
       expect(cap.body().input_type).toBe('document');
     } finally {
@@ -304,7 +304,7 @@ describe('VoyageEmbedder input_type', () => {
     const cap = stubFetch();
     try {
       const e = new VoyageEmbedder('test-key');
-      await e.embed(['search me'], 'query');
+      await e.embed(['search me'], 'query', { namespace: 'ws:memory', caller: 'test' });
       expect(cap.body().input_type).toBe('query');
     } finally {
       globalThis.fetch = origFetch;

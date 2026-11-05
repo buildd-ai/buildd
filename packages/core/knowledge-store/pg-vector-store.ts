@@ -1,7 +1,8 @@
 import { sql } from 'drizzle-orm';
-import type { KnowledgeStore, UpsertChunk, UpsertResult, QueryResult, QueryParams, Embedder, Reranker, Corpus } from './types';
+import type { KnowledgeStore, UpsertChunk, UpsertResult, QueryResult, QueryParams, Embedder, Reranker, Corpus, ReusableEmbeddings } from './types';
 import { applyRerank } from './reranker';
 import { getCodeEmbedder, isCodeCorpus } from './voyage-embedder';
+import type { VoyageCall } from './voyage-guard';
 import { applyRecencyAuthority, CORPUS_AUTHORITY } from './recency-authority';
 import { LIVING_SPEC_DRAFT_SOURCE_TYPE } from './living-spec';
 import { createHash } from 'crypto';
@@ -179,11 +180,20 @@ interface EntityChunkRow {
 
 // ── PgVectorStore ────────────────────────────────────────────────────────────
 
+/** Most candidates one rerank call may score. Each is billed with the query again. */
+export const RERANK_CANDIDATE_CAP = 20;
+
 export class PgVectorStore implements KnowledgeStore {
+  private readonly caller: string;
+
+  /** `opts.caller` names this store's spend in attribution (see ./voyage-guard.ts). */
   constructor(
     private readonly embedder: Embedder | null,
     private readonly reranker: Reranker | null = null,
-  ) {}
+    opts: { caller?: string } = {},
+  ) {
+    this.caller = opts.caller ?? 'unattributed';
+  }
 
   private _selectEmbedder(corpus: Corpus): Embedder | null {
     if (isCodeCorpus(corpus)) {
@@ -192,47 +202,79 @@ export class PgVectorStore implements KnowledgeStore {
     return this.embedder;
   }
 
-  async upsert(namespace: string, chunks: UpsertChunk[]): Promise<UpsertResult> {
+  async findReusableEmbeddings(namespace: string, chunks: UpsertChunk[]): Promise<ReusableEmbeddings> {
+    const out = new Map<string, string>();
+    const embedder = this._selectEmbedder(namespace.split(':')[1] as Corpus);
+    if (!embedder || chunks.length === 0) return out;
+    const db = await getDb();
+    const hashes = [...new Set(chunks.map(c => sha256(stripNulBytes(c.content))))];
+    const res = await db.execute(sql`
+      SELECT coalesce(lexical_text, content) AS text, embedding::text AS embedding
+      FROM knowledge_chunks
+      WHERE namespace = ${namespace}
+        AND content_hash IN (${sql.join(hashes.map(h => sql`${h}`), sql`, `)})
+        AND embedding_model = ${embedder.model}
+        AND embedding IS NOT NULL
+    `);
+    for (const row of (res?.rows ?? []) as Array<{ text: string; embedding: string }>) out.set(row.text, row.embedding);
+    return out;
+  }
+
+  async upsert(namespace: string, chunks: UpsertChunk[], opts: { reuse?: ReusableEmbeddings } = {}): Promise<UpsertResult> {
     if (chunks.length === 0) return { superseded: 0 };
 
     let superseded = 0;
+    let lexicalOnly = 0;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
     const activeEmbedder = this._selectEmbedder(corpus);
 
-    const texts = chunks.map(c => c.lexicalText ?? c.content);
-    const embeddings = activeEmbedder
-      ? await activeEmbedder.embed(texts)
-      : chunks.map(() => null);
+    // Content-hash dedup: drop a chunk whose identical content already exists in
+    // the namespace under a DIFFERENT source_id. This prevents cross-PR
+    // near-duplicates where the same file diff appears in multiple rebased PRs
+    // (e.g. a design doc added in PR #1604 that also shows as @@ -0,0 +1,348 @@ in
+    // PRs #1608 and #1609). The content_hash_idx on (namespace, content_hash)
+    // makes the lookup fast. Before embedding: a dropped chunk costs nothing.
+    const kept: UpsertChunk[] = [];
+    for (const chunk of chunks) {
+      if (chunk.contentDedup) {
+        const existingRows = await db.execute(sql`
+          SELECT source_id FROM knowledge_chunks
+          WHERE namespace = ${namespace}
+            AND content_hash = ${sha256(stripNulBytes(chunk.content))}
+            AND source_id != ${stripNulBytes(chunk.id)}
+          LIMIT 1
+        `);
+        if ((existingRows.rows as Array<{ source_id: string }>).length > 0) continue;
+      }
+      kept.push(chunk);
+    }
+    if (kept.length === 0) return { superseded: 0 };
 
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      const embedding = embeddings[i];
+    // Embed only what no stored row already holds a vector for.
+    const textOf = (c: UpsertChunk) => stripNulBytes(c.lexicalText ?? c.content);
+    const reuse = opts.reuse ?? await this.findReusableEmbeddings(namespace, kept);
+    const toEmbed = activeEmbedder ? [...new Set(kept.map(textOf).filter(t => !reuse.has(t)))] : [];
+    const fresh = toEmbed.length > 0
+      ? await activeEmbedder!.embed(toEmbed, 'document', { namespace, caller: this.caller })
+      : [];
+    const denied = fresh === null;
+    const vectors = new Map<string, string>(reuse);
+    toEmbed.forEach((t, i) => { if (fresh?.[i]) vectors.set(t, vectorToString(fresh[i])); });
+
+    for (const chunk of kept) {
+      const embedding = vectors.get(textOf(chunk)) ?? null;
       const rawLexicalText = chunk.lexicalText ?? chunk.content;
       // Defensively strip any stray NUL bytes before they hit the INSERT —
       // Postgres text columns reject 0x00 outright (see stripNulBytes above).
       const clean = sanitizeChunkForInsert(chunk, rawLexicalText);
       const contentHash = sha256(clean.content);
-      const fileHash = chunk.fileHash ?? null;
+      // A chunk the guard refused must not look finished: with its file hash
+      // stored, the next ingest would skip the file and it would never get a vector.
+      const unembedded = denied && !embedding;
+      if (unembedded) lexicalOnly++;
+      const fileHash = unembedded ? null : chunk.fileHash ?? null;
       const sourceTs = chunk.sourceTs ?? null;
-
-      // Content-hash dedup: skip if identical content already exists in the namespace
-      // under a DIFFERENT source_id. This prevents cross-PR near-duplicates where the
-      // same file diff appears in multiple rebased PRs (e.g. a design doc added in PR
-      // #1604 that also shows as @@ -0,0 +1,348 @@ in PRs #1608 and #1609). The
-      // content_hash_idx on (namespace, content_hash) makes the lookup fast.
-      if (chunk.contentDedup) {
-        const existingRows = await db.execute(sql`
-          SELECT source_id FROM knowledge_chunks
-          WHERE namespace = ${namespace}
-            AND content_hash = ${contentHash}
-            AND source_id != ${clean.sourceId}
-          LIMIT 1
-        `);
-        if ((existingRows.rows as Array<{ source_id: string }>).length > 0) {
-          continue;
-        }
-      }
 
       // Write source_ts into metadata so recency scoring can read it on query
       const metadataWithTs = {
@@ -250,7 +292,7 @@ export class PgVectorStore implements KnowledgeStore {
             (${clean.sourceId}, ${namespace}, ${corpus}, ${clean.sourceType},
              ${clean.sourcePath}, ${clean.sourceUrl},
              ${clean.content}, ${clean.lexicalText},
-             ${vectorToString(embedding)}::vector,
+             ${embedding}::vector,
              ${activeEmbedder!.model},
              ${JSON.stringify(metadataWithTs)}::jsonb,
              ${contentHash},
@@ -285,6 +327,11 @@ export class PgVectorStore implements KnowledgeStore {
              ${sourceTs ? sourceTs.toISOString() : null},
              NOW())
           ON CONFLICT (namespace, source_id) DO UPDATE SET
+            -- New text with no new vector: the old vector describes text that is gone.
+            embedding = CASE WHEN knowledge_chunks.content_hash = EXCLUDED.content_hash
+                             THEN knowledge_chunks.embedding END,
+            embedding_model = CASE WHEN knowledge_chunks.content_hash = EXCLUDED.content_hash
+                                   THEN knowledge_chunks.embedding_model END,
             content      = EXCLUDED.content,
             lexical_text = EXCLUDED.lexical_text,
             metadata     = EXCLUDED.metadata,
@@ -311,7 +358,7 @@ export class PgVectorStore implements KnowledgeStore {
       }
     }
 
-    return { superseded };
+    return { superseded, ...(lexicalOnly > 0 ? { lexicalOnly } : {}) };
   }
 
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
@@ -320,7 +367,10 @@ export class PgVectorStore implements KnowledgeStore {
     const corpus = namespace.split(':')[1] as Corpus;
     const activeEmbedder = this._selectEmbedder(corpus);
     const limit = Math.min(topK, 50);
-    const candidateLimit = this.reranker ? Math.min(limit * 5, 100) : limit;
+    const candidateLimit = this.reranker ? Math.min(limit * 3, RERANK_CANDIDATE_CAP) : limit;
+    const call = { namespace, caller: params.caller ?? this.caller };
+    // Set when the guard refuses the query embedding or the rerank.
+    const budget = { denied: false };
 
     const typeClause = filters?.corpus
       ? sql`AND corpus = ${filters.corpus}`
@@ -341,7 +391,7 @@ export class PgVectorStore implements KnowledgeStore {
     let results: QueryResult[];
 
     const embeddingStr = mode === 'vector' || mode === 'hybrid'
-      ? await this._queryEmbedding(db, namespace, params, activeEmbedder)
+      ? await this._queryEmbedding(db, namespace, params, activeEmbedder, call, budget)
       : null;
 
     if (mode === 'vector' && !embeddingStr) return [];
@@ -410,7 +460,7 @@ export class PgVectorStore implements KnowledgeStore {
     // Sort by final score DESC before passing to reranker
     results.sort((a, b) => b.score - a.score);
 
-    const finalResults = await this._finalize(results, text, limit, recencyAuthority);
+    const finalResults = await this._finalize(results, text, limit, recencyAuthority, call, budget);
 
     // Phase C (C2): retrieval-hit tracking — fire-and-forget, never awaited,
     // never fails the query. Skippable for eval/assessment runs.
@@ -431,6 +481,8 @@ export class PgVectorStore implements KnowledgeStore {
     namespace: string,
     params: QueryParams,
     activeEmbedder: Embedder | null,
+    call: VoyageCall,
+    budget: { denied: boolean },
   ): Promise<string | null> {
     if (params.embedding?.length) return vectorToString(params.embedding);
     if (params.nearChunkId) {
@@ -444,14 +496,18 @@ export class PgVectorStore implements KnowledgeStore {
       return row?.embedding ?? null;
     }
     if (!activeEmbedder) return null;
-    const [queryEmbedding] = await activeEmbedder.embed([params.text], 'query');
-    return vectorToString(queryEmbedding);
+    const vectors = await activeEmbedder.embed([params.text], 'query', call);
+    if (!vectors) {
+      budget.denied = true;
+      return null;
+    }
+    return vectorToString(vectors[0]);
   }
 
   async embedQueries(namespace: string, texts: string[]): Promise<number[][] | null> {
     const embedder = this._selectEmbedder(namespace.split(':')[1] as Corpus);
     if (!embedder || texts.length === 0) return embedder ? [] : null;
-    return embedder.embed(texts, 'query');
+    return embedder.embed(texts, 'query', { namespace, caller: this.caller });
   }
 
   /**
@@ -725,22 +781,36 @@ export class PgVectorStore implements KnowledgeStore {
     text: string,
     limit: number,
     recencyAuthority: boolean,
+    call: VoyageCall,
+    budget: { denied: boolean },
   ): Promise<QueryResult[]> {
     let out = results;
 
     if (this.reranker && results.length > 1) {
       // Capture RRF scores before reranking overwrites score
       const rrfScores = new Map(results.map(r => [r.id, r.score]));
-      out = await applyRerank(this.reranker, text, results, limit);
-      // Tag per-signal scores: rrf (pre-rerank) and rerank (cross-encoder)
-      out = out.map(r => ({
-        ...r,
-        scoreBreakdown: {
-          ...(r.scoreBreakdown ?? {}),
-          rrf: rrfScores.get(r.id),
-          rerank: r.score,
-        },
-      }));
+      // Graph expansion can add past candidateLimit; the cap is on what is billed.
+      const candidates = results.slice(0, RERANK_CANDIDATE_CAP);
+      const reranked = await applyRerank(this.reranker, text, candidates, limit, call);
+      if (reranked) {
+        // Tag per-signal scores: rrf (pre-rerank) and rerank (cross-encoder)
+        out = reranked.map(r => ({
+          ...r,
+          scoreBreakdown: {
+            ...(r.scoreBreakdown ?? {}),
+            rrf: rrfScores.get(r.id),
+            rerank: r.score,
+          },
+        }));
+        // A reranker score is calibrated however the candidates were found.
+        budget.denied = false;
+      } else {
+        budget.denied = true;
+      }
+    }
+
+    if (budget.denied) {
+      out = out.map(r => ({ ...r, scoreBreakdown: { ...(r.scoreBreakdown ?? {}), budgetFallback: true } }));
     }
 
     if (recencyAuthority && out.length > 0) {
@@ -950,8 +1020,9 @@ export class PgVectorStore implements KnowledgeStore {
     if (!activeEmbedder) return [];
 
     try {
-      const [embedding] = await activeEmbedder.embed([content]);
-      const embeddingStr = vectorToString(embedding);
+      const vectors = await activeEmbedder.embed([content], 'document', { namespace, caller: this.caller });
+      if (!vectors) return [];
+      const embeddingStr = vectorToString(vectors[0]);
       const db = await getDb();
 
       const res = await db.execute(sql`
