@@ -4,14 +4,18 @@
  * Tests the detectRepetitiveToolCalls logic that prevents agents
  * from getting stuck making the same tool calls repeatedly.
  *
- * Run: bun test __tests__/unit
+ * AC-1: these cases run against the real module (apps/runner/src/stuck-detection.ts),
+ * not a copy of it, so they cannot drift from the code.
+ *
+ * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/loop-detection.test.ts
  */
 
 import { describe, test, expect } from 'bun:test';
-
-// Constants matching workers.ts
-const MAX_IDENTICAL_TOOL_CALLS = 5;
-const MAX_SIMILAR_TOOL_CALLS = 15;
+import {
+  detectRepetitiveToolCalls,
+  isBenignBashCommand,
+  stripCdPrefix,
+} from '../../src/stuck-detection';
 
 // Tool call type
 interface ToolCall {
@@ -20,124 +24,18 @@ interface ToolCall {
   input?: Record<string, unknown>;
 }
 
-// ── Mirrors of the helpers in workers.ts ────────────────────────────────────
-
-const BENIGN_BASH_FIRST_TOKENS = new Set([
-  'cd', 'ls', 'pwd', 'cat', 'head', 'tail', 'grep', 'rg', 'find', 'echo',
-]);
-const BENIGN_GIT_SUBCOMMANDS = new Set([
-  'diff', 'log', 'show', 'status', 'branch', 'checkout', 'fetch', 'rev-parse', 'cat-file',
-]);
-
-function stripCdPrefix(cmd: string): string {
-  const m = cmd.match(/^cd\s+\S+\s*(?:&&|;)\s*([\s\S]*)/);
-  return m ? m[1].trimStart() : cmd.trimStart();
-}
-
-function isBenignBashCommand(cmd: string): boolean {
-  const effective = stripCdPrefix(cmd);
-  const tokens = effective.split(/\s+/);
-  const first = tokens[0];
-  if (!first) return false;
-  if (BENIGN_BASH_FIRST_TOKENS.has(first)) return true;
-  if (first === 'git') {
-    const sub = tokens[1];
-    return sub !== undefined && BENIGN_GIT_SUBCOMMANDS.has(sub);
-  }
-  return false;
-}
-
-// Re-implement detectRepetitiveToolCalls for testing (mirrors workers.ts)
-function detectRepetitiveToolCalls(toolCalls: ToolCall[]): {
-  action: 'none' | 'nudge' | 'abort';
-  reason?: string;
-  nudgeMessage?: string;
-} {
-  // Exclude benign Bash commands from all repetition counting
-  const calls = toolCalls.filter(tc => {
-    if (tc.name === 'Bash') return !isBenignBashCommand((tc.input?.command as string) || '');
-    return true;
-  });
-
-  if (calls.length < MAX_IDENTICAL_TOOL_CALLS) {
-    return { action: 'none' };
-  }
-
-  const normalizeCallKey = (tc: ToolCall) => {
-    if (tc.name === 'Read') {
-      return JSON.stringify({
-        name: tc.name,
-        file_path: tc.input?.file_path,
-        offset: tc.input?.offset,
-        limit: tc.input?.limit,
-      });
-    }
-    return JSON.stringify({ name: tc.name, input: tc.input });
-  };
-
-  // Abort at 2×
-  if (calls.length >= 2 * MAX_IDENTICAL_TOOL_CALLS) {
-    const last2x = calls.slice(-2 * MAX_IDENTICAL_TOOL_CALLS);
-    const key = normalizeCallKey(last2x[0]);
-    if (last2x.every(tc => normalizeCallKey(tc) === key)) {
-      return {
-        action: 'abort',
-        reason: `Agent stuck: made ${2 * MAX_IDENTICAL_TOOL_CALLS} identical ${last2x[0].name} calls`,
-      };
-    }
-  }
-
-  // Nudge at 1×
-  {
-    const last1x = calls.slice(-MAX_IDENTICAL_TOOL_CALLS);
-    const key = normalizeCallKey(last1x[0]);
-    if (last1x.every(tc => normalizeCallKey(tc) === key)) {
-      return {
-        action: 'nudge',
-        nudgeMessage: `You've repeated the same ${last1x[0].name} call ${MAX_IDENTICAL_TOOL_CALLS} times — vary your approach or signal completion.`,
-      };
-    }
-  }
-
-  // Similar non-benign Bash check (full command, no 50-char truncation)
-  const nonBenignBash = calls.filter(tc => tc.name === 'Bash');
-
-  if (nonBenignBash.length >= MAX_SIMILAR_TOOL_CALLS) {
-    const normalizeCmd = (cmd: string) =>
-      cmd.replace(/"[^"]*"/g, '""').replace(/'[^']*'/g, "''");
-
-    // Abort at 2×
-    if (nonBenignBash.length >= 2 * MAX_SIMILAR_TOOL_CALLS) {
-      const last2x = nonBenignBash.slice(-2 * MAX_SIMILAR_TOOL_CALLS);
-      const firstPattern = normalizeCmd((last2x[0].input?.command as string) || '');
-      if (last2x.every(tc => normalizeCmd((tc.input?.command as string) || '') === firstPattern)) {
-        return {
-          action: 'abort',
-          reason: `Agent stuck: made ${2 * MAX_SIMILAR_TOOL_CALLS} similar Bash commands starting with "${firstPattern.slice(0, 30)}..."`,
-        };
-      }
-    }
-
-    // Nudge at 1×
-    const last1x = nonBenignBash.slice(-MAX_SIMILAR_TOOL_CALLS);
-    const firstPattern = normalizeCmd((last1x[0].input?.command as string) || '');
-    if (last1x.every(tc => normalizeCmd((tc.input?.command as string) || '') === firstPattern)) {
-      return {
-        action: 'nudge',
-        nudgeMessage: `You've repeated a near-identical Bash command ${MAX_SIMILAR_TOOL_CALLS} times — vary your approach or signal completion.`,
-      };
-    }
-  }
-
-  return { action: 'none' };
-}
-
 // Helper to create tool calls
 function tc(name: string, input?: Record<string, unknown>): ToolCall {
   return { name, timestamp: Date.now(), input };
 }
 
 describe('detectRepetitiveToolCalls', () => {
+  test('AC-1: module exports the benign-Bash helpers workers.ts imports', () => {
+    expect(typeof isBenignBashCommand).toBe('function');
+    expect(typeof stripCdPrefix).toBe('function');
+    expect(detectRepetitiveToolCalls([]).action).toBe('none');
+  });
+
   describe('identical call detection — nudge then abort', () => {
     test('5 identical Read calls emit nudge (not abort)', () => {
       const calls = Array(5).fill(null).map(() => tc('Read', { file_path: '/src/app.ts' }));
