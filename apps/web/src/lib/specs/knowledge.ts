@@ -42,7 +42,7 @@ export const specKnowledgeDeps: {
   async store() {
     const { PgVectorStore, getVoyageEmbedder } = await import('@buildd/core/knowledge-store');
     // The store recall reads: it picks the corpus's model itself, and is lexical-only when it has none.
-    return new PgVectorStore(getVoyageEmbedder());
+    return new PgVectorStore(getVoyageEmbedder(), null, { caller: 'spec_knowledge' });
   },
   async writeGraph(input) {
     const { replaceLivingSpecGraph } = await import('@buildd/core/knowledge-store');

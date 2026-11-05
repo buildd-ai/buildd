@@ -18,6 +18,8 @@ import {
 const HOUR = 60 * 60 * 1000;
 const T0 = new Date('2026-10-02T12:00:00Z');
 
+import { MAX_FULL_INGEST_FILES } from '@buildd/core/knowledge-store/ingest-filter';
+
 function queuedJob(overrides: Partial<FallbackJob> = {}): FallbackJob {
   return {
     id: 'job-1',
@@ -167,6 +169,22 @@ describe('runFullIngestFallbackTick', () => {
     expect(row.stats).toMatchObject({ mode: 'serverless-fallback', sha: 'sha-1', filesIngested: 3, prunedChunks: 2 });
     // The sweep is anchored on the first claim of this run.
     expect(sweeps).toEqual([{ workspaceId: 'ws-1', since: T0 }]);
+  });
+
+  it('stops at the ingest ceiling and does not sweep what it never read', async () => {
+    const files = Object.fromEntries(
+      Array.from({ length: MAX_FULL_INGEST_FILES + 3 }, (_, i) => [`src/f${String(i).padStart(6, '0')}.ts`, 'x']),
+    );
+    const { store, rows } = memoryStore([queuedJob()]);
+    const { github } = fakeGithub({ files });
+    const { deps: d, ingested, sweeps } = deps({ store, github });
+
+    const out = await runFullIngestFallbackTick(d, { now: () => T0 });
+
+    expect(out.completed).toEqual(['job-1']);
+    expect(ingested.flat().length).toBe(MAX_FULL_INGEST_FILES);
+    expect(sweeps).toEqual([]);
+    expect(rows.get('job-1')!.stats).toMatchObject({ ingestTruncated: true, filesOverCeiling: 3, prunedChunks: 0 });
   });
 
   it('resolves the default branch head for a job with no sha', async () => {

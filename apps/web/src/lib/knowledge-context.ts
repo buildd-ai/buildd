@@ -6,6 +6,7 @@ import {
   extractFilePaths,
   fetchEntityCatalog,
   renderEntityCatalog,
+  clearsScoreFloor,
 } from '@buildd/core/knowledge-store';
 import type { QueryResult, CatalogEntity, QueryMode } from '@buildd/core/knowledge-store';
 import {
@@ -173,7 +174,7 @@ export async function buildKnowledgeContext(
     : Array.from(new Set(opts?.linkedDocsWorkspaceIds ?? [])).filter(id => id !== workspaceId);
   const excluded = opts?.excludedSourceIds;
   try {
-    const ks: KnowledgeQuerier = store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+    const ks: KnowledgeQuerier = store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker(), { caller: opts?.caller ?? 'claim_context' });
     const memoryScope = teamId && !sensitive
       ? await memoryScopeFor(opts?.memoryScope, workspaceId, teamId)
       : null;
@@ -278,7 +279,7 @@ export async function buildKnowledgeContext(
       ? await Promise.all(
           sources.map(async (s) => {
             const results = await s.run().catch(() => [] as QueryResult[]);
-            const strong = results.filter(r => (r.score ?? 0) >= PRECISION_FLOOR && !excluded?.has(r.id));
+            const strong = results.filter(r => clearsScoreFloor(r, PRECISION_FLOOR) && !excluded?.has(r.id));
             if (s.render) {
               const rendered = await s.render(strong).catch(() => [] as string[]);
               return rendered.length > 0 ? [`\n### ${s.label}`, ...rendered] : [];
@@ -546,7 +547,7 @@ export async function buildClusteredKnowledgeContext(
 
   try {
     assembly.assemblyId = crypto.randomUUID();
-    const ks: KnowledgeQuerier = input.store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+    const ks: KnowledgeQuerier = input.store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker(), { caller: 'claim_recipe' });
     // Resolved once: memory steps and the corpora hint both use it.
     const memoryScope = teamId && !sensitive
       ? await memoryScopeFor(input.opts?.memoryScope, workspaceId, teamId)

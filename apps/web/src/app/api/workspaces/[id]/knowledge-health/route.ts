@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getKnowledgeHealth } from '@buildd/core/knowledge-store';
+import { getKnowledgeHealth, getWorkspaceVoyageBudget } from '@buildd/core/knowledge-store';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -49,8 +49,12 @@ export async function GET(
     }
 
     try {
-        const health = await getKnowledgeHealth(id);
-        return NextResponse.json({ health });
+        const [health, voyageBudget] = await Promise.all([
+            getKnowledgeHealth(id),
+            // A notice, not the page: failing to read it never hides the health panel.
+            getWorkspaceVoyageBudget(id).catch(() => null),
+        ]);
+        return NextResponse.json({ health, voyageBudget });
     } catch (error) {
         console.error('Knowledge health error:', error);
         return NextResponse.json({ error: 'Failed to load knowledge health' }, { status: 500 });
