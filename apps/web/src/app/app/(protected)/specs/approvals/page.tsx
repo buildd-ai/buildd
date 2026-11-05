@@ -33,7 +33,7 @@ export default async function SpecApprovalsPage() {
     <main className="px-4 pt-[4.5rem] pb-24 md:px-8 md:pt-8 md:pb-10">
       <div className="flex max-w-3xl flex-col gap-4">
         <h1 className="text-heading font-semibold text-text-primary">Awaiting your approval</h1>
-        <Lede className="max-w-none">
+        <Lede className="max-w-none!">
           <span data-testid="spec-approvals-lede">
             {n === 0
               ? 'Nothing waits for your approval.'
