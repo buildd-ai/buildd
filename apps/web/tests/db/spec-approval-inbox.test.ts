@@ -124,11 +124,12 @@ describe('the inbox lists what waits on the signed-in person (R-1, AC-1)', () =>
 
 describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
   test('three stacked unapproved revisions are one row, covering approved to head, measured against the head\'s explanation', async () => {
-    const s = await draft();
+    const base = BODY();
+    const s = await draft(wsA, base);
     const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
     if (!a.ok || 'pending' in a) throw new Error('approve failed');
     let version = a.spec.version;
-    const bodies = [`${BODY()}R-2: Rates are cached.\n`, `${BODY()}R-2: Rates are cached.\nR-3: Rates expire daily.\n`];
+    const bodies = [`${base}R-2: Rates are cached.\n`, `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\n`];
     for (const body of bodies) {
       const r = await reviseSpecDraft(user(member), s.id, { expectedVersion: version, body, changeSummary: 'Adds a rule.' });
       if (!r.ok) throw new Error(r.error);
@@ -136,7 +137,7 @@ describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
     }
     // The head explains everything since the approved revision, not just its own step.
     const head = await reviseSpecDraft(user(member), s.id, {
-      expectedVersion: version, body: `${BODY()}R-2: Rates are cached.\nR-3: Rates expire daily.\nR-4: Rates show their age.\n`, changeSummary: 'Adds R-4.',
+      expectedVersion: version, body: `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\nR-4: Rates show their age.\n`, changeSummary: 'Adds R-4.',
       explanation: { summary: 'Adds R-2 to R-4.', lines: { 'R-2': 'Cache rates.', 'R-3': 'Expire daily.', 'R-4': 'Show the age.' } },
     });
     if (!head.ok) throw new Error(head.error);
@@ -155,13 +156,14 @@ describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
   });
 
   test('an explanation that covers only the last step leaves the earlier stacked changes not explained', async () => {
-    const s = await draft();
+    const base = BODY();
+    const s = await draft(wsA, base);
     const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
     if (!a.ok || 'pending' in a) throw new Error('approve failed');
-    const r2 = await reviseSpecDraft(user(member), s.id, { expectedVersion: a.spec.version, body: `${BODY()}R-2: Rates are cached.\n`, changeSummary: 'Adds R-2.' });
+    const r2 = await reviseSpecDraft(user(member), s.id, { expectedVersion: a.spec.version, body: `${base}R-2: Rates are cached.\n`, changeSummary: 'Adds R-2.' });
     if (!r2.ok) throw new Error(r2.error);
     const r3 = await reviseSpecDraft(user(member), s.id, {
-      expectedVersion: r2.spec.version, body: `${BODY()}R-2: Rates are cached.\nR-3: Rates expire daily.\n`, changeSummary: 'Adds R-3.',
+      expectedVersion: r2.spec.version, body: `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\n`, changeSummary: 'Adds R-3.',
       explanation: { summary: 'Adds R-3.', lines: { 'R-3': 'Expire daily.' } },
     });
     if (!r3.ok) throw new Error(r3.error);
@@ -170,12 +172,13 @@ describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
   });
 
   test('Approve on the row pins the head revision, version and hash', async () => {
-    const s = await draft();
+    const base = BODY();
+    const s = await draft(wsA, base);
     const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
     if (!a.ok || 'pending' in a) throw new Error('approve failed');
-    const r2 = await reviseSpecDraft(user(member), s.id, { expectedVersion: a.spec.version, body: `${BODY()}R-2: x.\n`, changeSummary: 'a' });
+    const r2 = await reviseSpecDraft(user(member), s.id, { expectedVersion: a.spec.version, body: `${base}R-2: x.\n`, changeSummary: 'a' });
     if (!r2.ok) throw new Error(r2.error);
-    const r3 = await reviseSpecDraft(user(member), s.id, { expectedVersion: r2.spec.version, body: `${BODY()}R-2: x.\nR-3: y.\n`, changeSummary: 'b' });
+    const r3 = await reviseSpecDraft(user(member), s.id, { expectedVersion: r2.spec.version, body: `${base}R-2: x.\nR-3: y.\n`, changeSummary: 'b' });
     if (!r3.ok) throw new Error(r3.error);
     const row = (await listAwaitingApproval(admin)).find((x) => x.specId === s.id)!;
     expect({ revision: row.headRevision, version: row.version, contentHash: row.contentHash }).toEqual(await pinOf(s.id));
