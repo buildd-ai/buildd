@@ -1,5 +1,6 @@
 import { listAwaitingApproval, type AwaitingApprovalRow } from './approval-inbox';
 import type { RevisionRisk } from './revision-risk';
+import { rowCoverage } from './approval-row-coverage';
 import { approvalPinView, type ApprovalRequestView } from './approval-view';
 
 /** Rows past this show their line and a link to the spec, not the full review. */
@@ -10,6 +11,8 @@ export interface InboxRow extends AwaitingApprovalRow {
   view: ApprovalRequestView | null;
   /** Needs judgement or low-risk. Unreadable or unclassified rows say judgement. */
   risk: RevisionRisk;
+  /** Explanation coverage approved-to-head against the head's explanation (R-30); null when unreadable. */
+  coverage: string | null;
 }
 
 const UNKNOWN_RISK: RevisionRisk = { level: 'judgement', reasons: ['Could not be compared with the approved revision'] };
@@ -27,10 +30,11 @@ export function sortByRisk<T extends { risk: RevisionRisk }>(rows: readonly T[])
 export async function approvalInboxView(userId: string): Promise<InboxRow[]> {
   const rows = await listAwaitingApproval(userId);
   const built = await Promise.all(rows.map(async (r, i): Promise<InboxRow> => {
+    const coverage = await rowCoverage(r);
     const view = i < INBOX_DETAILED_ROWS
       ? await approvalPinView(userId, r.specId, { revision: r.headRevision, expectedVersion: r.version, contentHash: r.contentHash }).catch(() => null)
       : null;
-    return { ...r, view, risk: (view?.state === 'ready' && view.risk) || UNKNOWN_RISK };
+    return { ...r, view, coverage, risk: (view?.state === 'ready' && view.risk) || UNKNOWN_RISK };
   }));
   return sortByRisk(built);
 }

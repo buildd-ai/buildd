@@ -156,7 +156,7 @@ describe('approval is untouched', () => {
     if (!sub.ok) throw new Error(sub.error);
     const ap = await approveSpecRevision(user(admin), spec.id, { revision: 1, expectedVersion: sub.spec.version });
     if (!ap.ok) throw new Error(ap.error);
-    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: ap.spec.version, section: 's5', body: '## Refunds\nR-3: changed\n', explanation: EXPLAIN });
+    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: ap.spec.version, section: 's5', body: '## Refunds\nR-3: changed\n', explanation: { summary: 'Refund rule changed.', lines: { 'R-3': 'Reworded the refund rule.' } } });
     if (!r.ok) throw new Error(r.error);
     expect([r.spec.status, r.spec.approvedRevision, r.spec.headRevision, r.revision.approvedBy]).toEqual(['draft', 1, 2, null]);
   });

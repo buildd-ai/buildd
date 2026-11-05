@@ -69,7 +69,15 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    that leaves a change out is refused (400, code explanation_incomplete; the error
    names the keys to add; nothing is written): add them and revise again. The explanation is fixed
    with its revision: a revise that only sends a new one is refused (a 409
-   with code explanation_immutable).
+   with code explanation_immutable). **The explanation must be cumulative.**
+   A `revise` from an agent or task token is refused with a 409
+   code explanation_incomplete, naming the criterion ids and section headings
+   left out, and writes nothing, unless it covers every change between the
+   spec's approved revision and the new head. When earlier revisions of the
+   spec are still unapproved, their changes count too: explain all of them,
+   not only yours (run `diff` with `from` the approved revision). A person's
+   dashboard edit, a copy and an import are exempt. A spec with no approved
+   revision has nothing to cover.
    **Ask the question when the revision needs a judgement call.** Add
    `question`: one sentence naming the decision you need from the person
    ("Should a refund after packing wait for the parcel?"). It leads their
