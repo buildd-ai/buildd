@@ -53,6 +53,13 @@ const run = (calls: StuckCall[], mode: 'off' | 'log' | 'nudge' = 'nudge', redact
   evaluateStuck({ calls, state: createStuckState(), mode, redact });
 
 describe('stuck detection', () => {
+  test('AC-1: the repeat guard is exported from the module and keeps its behaviour', () => {
+    expect(typeof detectRepetitiveToolCalls).toBe('function');
+    expect(detectRepetitiveToolCalls([]).action).toBe('none');
+    const same = Array.from({ length: 5 }, () => ({ name: 'Read', timestamp: 1, input: { file_path: '/a.ts' } }));
+    expect(detectRepetitiveToolCalls(same).action).toBe('nudge');
+  });
+
   test('AC-2: 6 failing counted calls with 3+ distinct inputs report an error streak', () => {
     const calls = [failBash(1), failBash(2), failBash(3), failBash(4), failEdit(1), failEdit(2)];
     const r = run(calls);
