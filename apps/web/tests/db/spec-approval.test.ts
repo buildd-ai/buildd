@@ -106,7 +106,7 @@ describe('an approval is one decision on one revision', () => {
 
   test('approving a revision that is not the head, or from a stale version, is a 409', async () => {
     const spec = await draft();
-    const r2 = await reviseSpecDraft(user(member), spec.id, { expectedVersion: 1, body: BODY_N1, explanation: { summary: 'test change', lines: { 'R-2': 'added', 'AC-2': 'added', 'R-1': 'edited', 'AC-1': 'edited' } } });
+    const r2 = await reviseSpecDraft(user(member), spec.id, { expectedVersion: 1, body: BODY_N1 });
     if (!r2.ok) throw new Error(r2.error);
     expect(await approveSpecRevision(user(admin), spec.id, { revision: 1, expectedVersion: r2.spec.version })).toMatchObject({ ok: false, status: 409 });
     expect(await approveSpecRevision(user(admin), spec.id, { revision: 2, expectedVersion: 1 })).toMatchObject({ ok: false, status: 409, currentVersion: r2.spec.version });
@@ -134,7 +134,7 @@ describe('running work stays pinned to the revision it started on', () => {
     const src = pinned.context.specSource as Record<string, unknown>;
     expect(src).toMatchObject({ specId: spec.id, specRevisionId: a.revision.id, revision: 1, contentHash: sha(BODY_N) });
 
-    const r2 = await reviseSpecDraft(agentToken(), spec.id, { expectedVersion: a.spec.version, body: BODY_N1 });
+    const r2 = await reviseSpecDraft(agentToken(), spec.id, { expectedVersion: a.spec.version, body: BODY_N1, explanation: { summary: 'test change', lines: { 'R-2': 'added', 'AC-2': 'added', 'R-1': 'edited', 'AC-1': 'edited' } } });
     if (!r2.ok) throw new Error(r2.error);
 
     const read = await readPinnedSpecRevision(src);
