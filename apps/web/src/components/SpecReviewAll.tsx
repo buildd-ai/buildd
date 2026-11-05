@@ -100,7 +100,7 @@ export default function SpecReviewAll({ rows, counts, filter = 'all', initialRes
                   </span>
                   {outcome ? <span className="text-meta text-text-secondary" data-testid="spec-review-all-outcome">{OUTCOME_WORD[outcome]}</span> : null}
                 </div>
-                <p className="text-body text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-all-summary">
+                <p className={`text-text-primary [overflow-wrap:anywhere] ${r.isQuestion ? 'text-body font-semibold' : 'text-body'}`} data-testid="spec-review-all-summary" data-question={r.isQuestion ? 'yes' : undefined}>
                   {r.summary ?? 'No summary was written for this revision. Open the diff to see what changes.'}
                 </p>
                 <p className="text-meta text-text-muted [overflow-wrap:anywhere]">

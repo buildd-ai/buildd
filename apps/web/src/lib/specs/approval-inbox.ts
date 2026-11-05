@@ -88,6 +88,8 @@ export interface AwaitingApprovalRow {
   changeSummary: string | null;
   /** The one-line summary of the head's explanation (R-15); null when none was written. */
   explanationSummary: string | null;
+  /** The decision the author needs, from the head's explanation; null when none was asked. */
+  question: string | null;
   proposedAt: string;
   /** High, Medium or Low, mechanically (R-32); the inbox sorts High first. */
   tier: RiskTier;
@@ -103,10 +105,10 @@ export async function listAwaitingApproval(userId: string): Promise<AwaitingAppr
 
   const rows = rowsOf<{
     id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number;
-    content_hash: string; scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; created_at: string | Date;
+    content_hash: string; scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation_question: string | null; created_at: string | Date;
   }>(await db.execute(sql`
     SELECT specs.id, specs.title, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
-      r.content_hash, specs.scope, specs.metadata->>'risk' AS risk, specs.body_artifact_id, r.artifact_revision AS head_artifact_revision, ra.artifact_revision AS approved_artifact_revision, ra.content_hash AS approved_content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.created_at
+      r.content_hash, specs.scope, specs.metadata->>'risk' AS risk, specs.body_artifact_id, r.artifact_revision AS head_artifact_revision, ra.artifact_revision AS approved_artifact_revision, ra.content_hash AS approved_content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation->>'question' AS explanation_question, r.created_at
     FROM specs
     JOIN spec_revisions r ON r.spec_id = specs.id AND r.revision = specs.head_revision
     LEFT JOIN spec_revisions ra ON ra.spec_id = specs.id AND ra.revision = specs.approved_revision
@@ -120,7 +122,7 @@ export async function listAwaitingApproval(userId: string): Promise<AwaitingAppr
     headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision),
     version: Number(r.version), contentHash: r.content_hash,
     author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
-    changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
+    changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null, question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
   })));
 }
 

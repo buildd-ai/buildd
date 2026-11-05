@@ -10,6 +10,8 @@ export const REVIEW_ALL_ROWS = 30;
 export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'author' | 'tier' | 'tierReasons'> {
   /** One sentence on what changes: the explanation's summary, else the change summary; null when neither was written. */
   summary: string | null;
+  /** True when `summary` is the author's question rather than a summary. */
+  isQuestion: boolean;
   /**
    * The signed request Approve all confirms for exactly this revision, pinned
    * to the spec, revision, version and content hash read now; null when the
@@ -18,6 +20,11 @@ export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'titl
   request: string | null;
   /** The revision against its approved revision (the whole body when none is), as numbered rows. Null when it cannot be read. */
   diff: { hunks: DiffHunk[]; omittedLines: number; linesAdded: number; linesRemoved: number } | null;
+}
+
+/** The one line a Review all row shows: the author's question when there is one, in place of the summary. */
+export function reviewAllSummary(r: Pick<AwaitingApprovalRow, 'question' | 'explanationSummary' | 'changeSummary'>): string | null {
+  return r.question ?? r.explanationSummary ?? r.changeSummary?.trim() ?? null;
 }
 
 /**
@@ -34,8 +41,8 @@ export async function reviewAllView(userId: string, filter: RiskFilter = 'all', 
   const all = filterByTier(everything, filter);
   const caller = { kind: 'user' as const, userId };
   const rows = await Promise.all(all.slice(0, REVIEW_ALL_ROWS).map(async (r): Promise<ReviewAllRow> => ({
-    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, author: r.author, tier: r.tier, tierReasons: r.tierReasons,
-    summary: r.explanationSummary ?? r.changeSummary?.trim() ?? null,
+    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, author: r.author, tier: r.tier, tierReasons: r.tierReasons, summary: reviewAllSummary(r),
+    isQuestion: r.question != null,
     request: signSpecApprovalRequest({
       specId: r.specId, workspaceId: r.workspaceId, revision: r.headRevision, expectedVersion: r.version, contentHash: r.contentHash,
       requestedBy: userId, via: 'dashboard',

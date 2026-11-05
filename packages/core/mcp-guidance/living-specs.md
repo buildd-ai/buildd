@@ -67,7 +67,21 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    explained" and the person must open it before Approve works; a line for
    something that did not change is listed apart. The explanation is fixed
    with its revision: a revise that only sends a new one is refused (a 409
-   with code explanation_immutable). Say what changed and why, plainly; the check
+   with code explanation_immutable). **The explanation must be cumulative.**
+   A `revise` from an agent or task token is refused with a 409
+   code explanation_incomplete, naming the criterion ids and section headings
+   left out, and writes nothing, unless it covers every change between the
+   spec's approved revision and the new head. When earlier revisions of the
+   spec are still unapproved, their changes count too: explain all of them,
+   not only yours (run `diff` with `from` the approved revision). A person's
+   dashboard edit, a copy and an import are exempt. A spec with no approved
+   revision has nothing to cover.
+   **Ask the question when the revision needs a judgement call.** Add
+   `question`: one sentence naming the decision you need from the person
+   ("Should a refund after packing wait for the parcel?"). It leads their
+   inbox row and the confirm page above the coverage line, and Review all
+   shows it in place of the summary. Leave it out when nothing needs
+   deciding; it is fixed with the revision like the rest. Say what changed and why, plainly; the check
    only proves you mentioned it.
 4. **Submit and approve: a person's act.** `buildd action=manage_specs params={ action: "submit", specId, expectedVersion }`
    and `buildd action=manage_specs params={ action: "approve", specId, revision, expectedVersion }`

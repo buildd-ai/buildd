@@ -14,9 +14,9 @@ import type { ApproveAllResult } from '@/lib/specs/approve-all';
 export const SPEC_REVIEW_ALL_VARIANTS = ['list', 'diff', 'result', 'high'] as const;
 export type SpecReviewAllVariant = (typeof SPEC_REVIEW_ALL_VARIANTS)[number];
 
-const row = (n: number, title: string, summary: string | null, approvedRevision: number | null, rows: ReviewAllRow['diff'], tier: ReviewAllRow['tier'], why: string): ReviewAllRow => ({
+const row = (n: number, title: string, summary: string | null, approvedRevision: number | null, rows: ReviewAllRow['diff'], tier: ReviewAllRow['tier'], why: string, isQuestion = false): ReviewAllRow => ({
   specId: `fixture-spec-${n}`, title, workspaceName: 'Shop', headRevision: (approvedRevision ?? 0) + 1, approvedRevision,
-  author: n % 2 ? 'an agent' : 'Sam Rivera', summary, request: `fixture-request-${n}`, diff: rows, tier, tierReasons: [why],
+  author: n % 2 ? 'an agent' : 'Sam Rivera', summary, isQuestion, request: `fixture-request-${n}`, diff: rows, tier, tierReasons: [why],
 });
 
 export const SPEC_REVIEW_ALL_ROWS: ReviewAllRow[] = [
@@ -29,13 +29,13 @@ export const SPEC_REVIEW_ALL_ROWS: ReviewAllRow[] = [
       { op: '+', oldLine: null, newLine: 61, text: '- R-13: An order can be cancelled from the confirmation email until it is packed.' },
     ] }],
   }, 'high', 'A person flagged this spec risk: high.'),
-  row(2, 'Refunds to the original card, before and after packing', 'Refunds after packing wait for the parcel to come back.', 4, {
+  row(2, 'Refunds to the original card, before and after packing', 'Should a refund after packing wait for the parcel to come back, or go out at once?', 4, {
     linesAdded: 1, linesRemoved: 1, omittedLines: 0,
     hunks: [{ kind: 'changed', path: 'Refunds > After packing', linesAdded: 1, linesRemoved: 1, rows: [
       { op: '-', oldLine: 22, newLine: null, text: '- AC-4: GIVEN a packed order WHEN I cancel THEN the refund is issued at once.' },
       { op: '+', oldLine: null, newLine: 22, text: '- AC-4: GIVEN a packed order WHEN I cancel THEN the refund is issued when the parcel is back.' },
     ] }],
-  }, 'medium', 'AC-4 changed.'),
+  }, 'medium', 'AC-4 changed.', true),
   row(3, 'Receipts', null, 1, {
     linesAdded: 1, linesRemoved: 0, omittedLines: 0,
     hunks: [{ kind: 'changed', path: 'Receipts > Requirements', linesAdded: 1, linesRemoved: 0, rows: [
