@@ -23,6 +23,7 @@ import { criterionHashes, retiredIdRefusal, writeCriterionRecords } from './crit
 import { acceptanceRoleRefusal } from './verdict-guards';
 import { parseReplaces, replacesRefusal } from './replaces';
 import { parseExplanation } from '@buildd/spec-contract/explanation';
+import { draftRefusal } from './proposals';
 import { explanationRefusalText } from './explanation-check';
 import type { AutoApproval } from './auto-approve';
 
@@ -261,6 +262,13 @@ export async function createSpecDraft(caller: SpecCaller, input: {
     await SPEC_DUPLICATE_OVERRIDE(duplicateCheck.blocking, override, who.label);
   }
 
+  // R-81 (65ed7fa3): an observation task or a scheduled task never drafts a spec. A copy or import is a person's act.
+  const taskScopeId = caller.kind === 'account' ? (caller.account.taskScope as { taskId?: unknown } | undefined)?.taskId : undefined;
+  if (!opts.imported && taskScopeId) {
+    const refusal = await draftRefusal(taskScopeId);
+    if (refusal) return fail(403, refusal, { code: 'spec_draft_not_allowed' });
+  }
+
   // The body artifact: its insert is revision 1 (the artifact revision trigger).
   const [art] = await db.insert(artifacts).values({
     workspaceId, type: 'content', title: `Spec: ${title.trim()}`, content: body, contentAuthor: who.label,
@@ -270,6 +278,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   const [spec] = await db.insert(specs).values({
     workspaceId, title: title.trim(), scope, kind, parentSpecId: (parentSpecId as string | null | undefined) ?? null,
     bodyArtifactId: art.id, headRevision: 1, createdBy: who.label,
+    createdByTaskId: !opts.imported && typeof taskScopeId === 'string' && isUuid(taskScopeId) ? taskScopeId : null,
     metadata: opts.metadata ?? null,
     repoSource: opts.imported ? { state: 'imported', ...importOf(opts.imported), revision: 1, importedAt: opts.imported.importedAt } : null,
   }).returning();

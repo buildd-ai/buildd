@@ -3119,6 +3119,10 @@ export const specs = pgTable('specs', {
   // person has confirmed it (R-19). NULL: not imported.
   repoSource: jsonb('repo_source').$type<SpecRepoSource>(),
   createdBy: text('created_by'),
+  // The task whose token wrote the first draft (approvals spec b7fc9316 R-35):
+  // what tells a requested spec from a proposal. No FK: a task may be pruned
+  // and the spec stays. NULL: a person, an API key or an import wrote it.
+  createdByTaskId: uuid('created_by_task_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

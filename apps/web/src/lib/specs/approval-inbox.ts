@@ -5,6 +5,7 @@ import { isUuid } from '@/lib/uuid';
 import { appBaseUrl } from '@/lib/app-url';
 import { roleHas } from '@/lib/permissions';
 import { requestingPerson } from '@/lib/request-person';
+import { proposalWhere } from './proposals';
 import { foldedRevisions } from './folded-revisions';
 import { classifyRisk, sortHighFirst, type RiskTier } from '@buildd/spec-contract/risk-tier';
 import { getArtifactRevisions } from '@/lib/artifact-revisions';
@@ -35,10 +36,11 @@ export const SPEC_REVIEW_ALL_PATH = '/app/specs/review-all';
 export const specApprovalInboxUrl = () => `${appBaseUrl()}${SPEC_APPROVAL_INBOX_PATH}`;
 export const specPageUrl = (specId: string) => `${appBaseUrl()}/app/specs/${encodeURIComponent(specId)}`;
 
-/** A specs row that waits on a decision: live, a head newer than what is approved, not an unconfirmed import. */
+/** A specs row that waits on a decision: live, a head newer than what is approved, not an unconfirmed import, not a proposal (./proposals.ts: an unrequested draft waits on a mission or a task first). */
 export const awaitingApprovalWhere = () => sql`${specs.status} NOT IN ('retired', 'superseded')
   AND (${specs.approvedRevision} IS NULL OR ${specs.headRevision} > ${specs.approvedRevision})
-  AND coalesce(${specs.repoSource}->>'state', '') <> 'imported'`;
+  AND coalesce(${specs.repoSource}->>'state', '') <> 'imported'
+  AND NOT (${proposalWhere()})`;
 
 /** The main list's lane (b7fc9316 R-38): contract-kind specs only. Every other kind is the "Other drafts" lane. */
 export const mainLaneWhere = () => sql`${specs.kind} = 'contract'`;
