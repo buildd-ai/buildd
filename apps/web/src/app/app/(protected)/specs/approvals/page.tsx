@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { approvalInboxView, type InboxRow } from '@/lib/specs/approval-inbox-view';
+import { approvalInboxView, otherDraftsView, type InboxRow } from '@/lib/specs/approval-inbox-view';
 import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
 import { rowRevisionLine } from '@/lib/specs/approval-row-line';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
@@ -25,7 +25,7 @@ export const dynamic = 'force-dynamic';
 export default async function SpecApprovalsPage() {
   const user = await getCurrentUser();
   if (!user) redirect(`/app/auth/signin?callbackUrl=${encodeURIComponent(SPEC_APPROVAL_INBOX_PATH)}`);
-  const rows = await approvalInboxView(user.id);
+  const [rows, other] = await Promise.all([approvalInboxView(user.id), otherDraftsView(user.id)]);
   const n = rows.length;
   const judgement = rows.filter((r) => r.risk.level === 'judgement');
   const lowRisk = rows.filter((r) => r.risk.level !== 'judgement');
@@ -61,6 +61,20 @@ export default async function SpecApprovalsPage() {
             </Disclosure>
           </div>
         ) : null}
+        {other.length > 0 ? (
+          <div data-testid="spec-approvals-other-lane"><Disclosure summary="Other drafts" count={other.length}>
+            <p className="pb-2 text-meta text-text-muted">Charters, experiments and snapshots. Nothing waits on these: they never block a build or a merge.</p>
+            <ul className="flex flex-col gap-2" data-testid="spec-approvals-other-list">
+              {other.map((r) => (
+                <li key={r.specId} className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="spec-approvals-other-row" data-spec-id={r.specId}>
+                  <Link href={`/app/specs/${encodeURIComponent(r.specId)}`} className="inline-flex min-h-11 items-center text-body text-text-primary underline-offset-2 hover:underline [overflow-wrap:anywhere] md:min-h-0">{r.title}</Link>
+                  <Chip tone="muted" data-testid="spec-approvals-kind">{r.kind}</Chip>
+                  <span className="text-meta text-text-muted">{r.workspaceName} · revision {r.headRevision}</span>
+                </li>
+              ))}
+            </ul>
+          </Disclosure></div>
+        ) : null}
       </div>
     </main>
   );
@@ -76,6 +90,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
           {row.title}
         </Link>
         <div className="flex flex-wrap items-center gap-2">
+        <Chip tone="muted" data-testid="spec-approvals-kind">{row.kind}</Chip>
         <Chip tone={row.risk.level === 'judgement' ? 'warning' : 'muted'} data-testid="spec-approvals-risk" data-risk={row.risk.level}>
           {row.risk.level === 'judgement' ? 'needs judgement' : 'low-risk'}
         </Chip>

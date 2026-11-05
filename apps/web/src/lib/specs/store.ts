@@ -11,6 +11,7 @@ import { requirementIds, type RequirementRef } from '@buildd/spec-contract/requi
 import { verificationDeclarationError } from '@buildd/spec-contract/verification-bindings';
 import { newRepoRefs, normalizeRepoPath, parseRepoRefs, sameRepoRefs, type RepoRef } from './repo-refs';
 import { specScopeRefusal } from './scopes';
+import { DEFAULT_SPEC_KIND, specKindRefusal, type SpecKind } from './kinds';
 import { ArtifactReadError, AUTO_FULL_MAX_CHARS, readArtifactBody, type ArtifactReadResult, type ArtifactReadSelector } from '@buildd/core/artifact-read';
 import { readRepoFileAtCommit } from './repo-source';
 import { resolveDesign } from './design';
@@ -183,7 +184,7 @@ export function changedCriteria(prev: string, next: string): string[] {
 }
 
 export async function createSpecDraft(caller: SpecCaller, input: {
-  workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
+  workspaceId: unknown; title: unknown; scope?: unknown; /** b7fc9316 R-38: contract (default), charter, experiment or snapshot. */ kind?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
   /** b7fc9316 R-15: what the revision changes, in the author's words; immutable once written. */
   explanation?: unknown;
   /** Override a duplicate refusal (§13): the spec this one replaces, or why it is distinct. */
@@ -203,6 +204,9 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   if (typeof title !== 'string' || !title.trim() || title.length > 200) return fail(400, 'title is required (at most 200 characters)');
   const scopeError = specScopeRefusal(scope);
   if (scopeError) return fail(400, scopeError);
+  const kind = (input.kind ?? DEFAULT_SPEC_KIND) as SpecKind;
+  const kindError = specKindRefusal(kind);
+  if (kindError) return fail(400, kindError);
   const body = checkBody(input.body);
   if (typeof body !== 'string') return body;
   const repoRefs = readRefsInput(input.repoRefs);
@@ -255,7 +259,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   }).returning();
   const bodyRev = await getArtifactRevision(art.id, art.currentRevision);
   const [spec] = await db.insert(specs).values({
-    workspaceId, title: title.trim(), scope, parentSpecId: (parentSpecId as string | null | undefined) ?? null,
+    workspaceId, title: title.trim(), scope, kind, parentSpecId: (parentSpecId as string | null | undefined) ?? null,
     bodyArtifactId: art.id, headRevision: 1, createdBy: who.label,
     metadata: opts.metadata ?? null,
     repoSource: opts.imported ? { state: 'imported', ...importOf(opts.imported), revision: 1, importedAt: opts.imported.importedAt } : null,
