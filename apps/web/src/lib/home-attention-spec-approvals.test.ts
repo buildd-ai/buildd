@@ -23,4 +23,13 @@ describe('specApprovalsAttention (AC-7)', () => {
     expect(specApprovalsAttention(0)).toBeNull();
     expect(needsYou(0).items).toEqual([]);
   });
+
+  it('splits the count into need-judgement and low-risk, still one card to the inbox', () => {
+    const c = specApprovalsAttention(5, 3)!;
+    expect(c.sentence).toBe('2 need judgement, 3 low-risk.');
+    expect(c.href).toBe(SPEC_APPROVALS_HREF);
+    expect(specApprovalsAttention(4, 1)!.sentence).toBe('3 need judgement, 1 low-risk.');
+    expect(specApprovalsAttention(2, 0)!.sentence).toBe('Review each one and approve with a click.');
+    expect(specApprovalsAttention(2, 9)!.sentence).toBe('0 need judgement, 2 low-risk.');
+  });
 });
