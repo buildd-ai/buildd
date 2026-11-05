@@ -1,10 +1,14 @@
 import { db } from '@buildd/core/db';
-import { specs } from '@buildd/core/db/schema';
+import { specs, type SpecKind } from '@buildd/core/db/schema';
 import { and, count, inArray, sql, type SQL } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { appBaseUrl } from '@/lib/app-url';
 import { roleHas } from '@/lib/permissions';
 import { requestingPerson } from '@/lib/request-person';
+import { foldedRevisions } from './folded-revisions';
+import { classifyRisk, sortHighFirst, type RiskTier } from '@buildd/spec-contract/risk-tier';
+import { getArtifactRevisions } from '@/lib/artifact-revisions';
+import type { SpecExplanation } from '@buildd/spec-contract/explanation';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -36,13 +40,19 @@ export const awaitingApprovalWhere = () => sql`${specs.status} NOT IN ('retired'
   AND (${specs.approvedRevision} IS NULL OR ${specs.headRevision} > ${specs.approvedRevision})
   AND coalesce(${specs.repoSource}->>'state', '') <> 'imported'`;
 
+/** The main list's lane (b7fc9316 R-38): contract-kind specs only. Every other kind is the "Other drafts" lane. */
+export const mainLaneWhere = () => sql`${specs.kind} = 'contract'`;
+export const otherLaneWhere = () => sql`${specs.kind} <> 'contract'`;
+export type InboxLane = 'main' | 'other';
+const laneWhere = (lane: InboxLane) => (lane === 'main' ? mainLaneWhere() : otherLaneWhere());
+
 /**
  * Waiting specs per workspace, as an un-run query (Home reads it in its first
  * round, lib/read-round.ts). Filter the workspaces by mayApproveIn after.
  */
 export const awaitingApprovalCounts = (workspaceIds: readonly string[]) =>
   db.select({ workspaceId: specs.workspaceId, n: count() }).from(specs)
-    .where(and(inArray(specs.workspaceId, [...workspaceIds]), awaitingApprovalWhere()))
+    .where(and(inArray(specs.workspaceId, [...workspaceIds]), awaitingApprovalWhere(), mainLaneWhere()))
     .groupBy(specs.workspaceId);
 
 const rowsOf = <T,>(r: unknown) => ((r as { rows?: T[] }).rows ?? []);
@@ -74,10 +84,14 @@ export async function approverWorkspaces(userId: string): Promise<Array<{ id: st
 export interface AwaitingApprovalRow {
   specId: string;
   title: string;
+  /** The spec's kind (R-38), shown on every row. */
+  kind: SpecKind;
   workspaceId: string;
   workspaceName: string;
   headRevision: number;
   approvedRevision: number | null;
+  /** Unapproved revisions between the approved one and the head, folded under it (R-30, R-39). The row's diff and Approve are for the head. */
+  foldedRevisions: number[];
   /** The spec version and the head's content hash, as read: what an Approve on this row is pinned to. */
   version: number;
   contentHash: string;
@@ -86,33 +100,88 @@ export interface AwaitingApprovalRow {
   changeSummary: string | null;
   /** The one-line summary of the head's explanation (R-15); null when none was written. */
   explanationSummary: string | null;
+  /** The head's whole explanation (R-15), what coverage is measured against; null when none was written. */
+  explanation: SpecExplanation | null;
+  /** The spec's body artifact, for reading the approved-to-head change list. */
+  bodyArtifactId: string;
+  /**
+   * How many revisions this one row stands for: everything after the approved
+   * revision up to the head (R-30). One when the head sits directly on the
+   * approved revision; more when revisions are stacked unapproved.
+   */
+  revisionsCovered: number;
+  /** The decision the author needs, from the head's explanation; null when none was asked. */
+  question: string | null;
   proposedAt: string;
+  /** High, Medium or Low, mechanically (R-32); the inbox sorts High first. */
+  tier: RiskTier;
+  /** Why, one plain line each. */
+  tierReasons: string[];
 }
 
-/** Every spec this person may approve whose head waits on a decision, newest proposal first. */
-export async function listAwaitingApproval(userId: string): Promise<AwaitingApprovalRow[]> {
+/**
+ * Every spec this person may approve whose head waits on a decision: High first
+ * (R-33), newest proposal first within a tier. `lane` picks the main list
+ * (contract kind, the default) or the separate Other drafts lane (every other
+ * kind, R-38).
+ */
+export async function listAwaitingApproval(userId: string, lane: InboxLane = 'main'): Promise<AwaitingApprovalRow[]> {
   const ws = await approverWorkspaces(userId);
   if (!ws.length) return [];
   const names = new Map(ws.map((w) => [w.id, w.name]));
 
   const rows = rowsOf<{
-    id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number;
-    content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; created_at: string | Date;
-  }>(await db.execute(sql`
-    SELECT specs.id, specs.title, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
-      r.content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.created_at
+    id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number; content_hash: string; scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; explanation_question: string | null; created_at: string | Date; kind: string; }>(await db.execute(sql`
+    SELECT specs.id, specs.title, specs.kind, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
+      r.content_hash, specs.scope, specs.metadata->>'risk' AS risk, specs.body_artifact_id, r.artifact_revision AS head_artifact_revision, ra.artifact_revision AS approved_artifact_revision, ra.content_hash AS approved_content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation, r.explanation->>'question' AS explanation_question, r.created_at
     FROM specs
     JOIN spec_revisions r ON r.spec_id = specs.id AND r.revision = specs.head_revision
+    LEFT JOIN spec_revisions ra ON ra.spec_id = specs.id AND ra.revision = specs.approved_revision
     LEFT JOIN users u ON r.author_kind = 'user' AND u.id::text = r.author_id
-    WHERE ${inArray(specs.workspaceId, ws.map((w) => w.id))} AND ${awaitingApprovalWhere()}
+    WHERE ${inArray(specs.workspaceId, ws.map((w) => w.id))} AND ${awaitingApprovalWhere()} AND ${laneWhere(lane)}
     ORDER BY r.created_at DESC, specs.id`));
-  return rows.map((r) => ({
-    specId: r.id, title: r.title, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '',
+  const tiers = await Promise.all(rows.map((r) => tierOf(r)));
+  return sortHighFirst(rows.map((r, i) => ({
+    tier: tiers[i]!.tier, tierReasons: tiers[i]!.reasons,
+    specId: r.id, title: r.title, kind: r.kind as SpecKind, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '',
     headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision),
+    foldedRevisions: foldedRevisions(r.approved_revision == null ? null : Number(r.approved_revision), Number(r.head_revision)),
     version: Number(r.version), contentHash: r.content_hash,
     author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
-    changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
-  }));
+    changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null,
+    explanation: r.explanation ?? null,
+    bodyArtifactId: r.body_artifact_id,
+    revisionsCovered: Number(r.head_revision) - (r.approved_revision == null ? 0 : Number(r.approved_revision)),
+    question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
+  })));
+}
+
+/** The row's tier from its approved and head bodies; a body that cannot be read leaves it Medium, never High or Low by guess. */
+async function tierOf(r: { scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; content_hash: string }) {
+  try {
+    const wanted = [r.head_artifact_revision, ...(r.approved_artifact_revision == null ? [] : [r.approved_artifact_revision])];
+    const read = await getArtifactRevisions(r.body_artifact_id, wanted);
+    const body = (n: number, hash: string | null) => { const a = read.get(n); return a && typeof a.content === 'string' && (!hash || a.contentHash === hash) ? a.content : null; };
+    const to = body(r.head_artifact_revision, r.content_hash);
+    const from = r.approved_artifact_revision == null ? null : body(r.approved_artifact_revision, r.approved_content_hash);
+    if (to === null || (r.approved_artifact_revision != null && from === null)) {
+      return r.risk === 'high' ? { tier: 'high' as const, reasons: ['A person flagged this spec risk: high.'] } : { tier: 'medium' as const, reasons: ['The change could not be read to rate it.'] };
+    }
+    return classifyRisk({ scope: r.scope, flaggedHigh: r.risk === 'high', from, to });
+  } catch {
+    return { tier: 'medium' as const, reasons: ['The change could not be read to rate it.'] };
+  }
+}
+
+/** How many of the waiting rows the risk-tier classifier calls Low (Home's split, R-9). */
+export const countLowRisk = (rows: ReadonlyArray<{ tier: RiskTier }>): number => rows.filter((r) => r.tier === 'low').length;
+
+/** The Low-tier share of what waits on this person in these workspaces; 0 when it cannot be read. */
+export async function countLowRiskAwaiting(userId: string, workspaceIds?: readonly string[]): Promise<number> {
+  try {
+    const rows = await listAwaitingApproval(userId);
+    return countLowRisk(workspaceIds ? rows.filter((r) => workspaceIds.includes(r.workspaceId)) : rows);
+  } catch { return 0; }
 }
 
 async function countWhere(where: SQL): Promise<number> {
@@ -120,11 +189,11 @@ async function countWhere(where: SQL): Promise<number> {
   return Number(r?.n ?? 0);
 }
 
-/** How many spec revisions wait on this person: Home's Needs you card (R-9). */
-export async function countAwaitingApprovalFor(userId: string, workspaceIds?: readonly string[]): Promise<number> {
+/** How many spec revisions wait on this person in a lane: Home's Needs you card counts the main one (R-9, R-38). */
+export async function countAwaitingApprovalFor(userId: string, workspaceIds?: readonly string[], lane: InboxLane = 'main'): Promise<number> {
   const ws = (await approverWorkspaces(userId)).filter((w) => !workspaceIds || workspaceIds.includes(w.id));
   if (!ws.length) return 0;
-  return countWhere(inArray(specs.workspaceId, ws.map((w) => w.id)));
+  return countWhere(and(inArray(specs.workspaceId, ws.map((w) => w.id)), laneWhere(lane))!);
 }
 
 /**
@@ -134,13 +203,18 @@ export async function countAwaitingApprovalFor(userId: string, workspaceIds?: re
  * confirm token or anything else that approves.
  */
 export async function countAwaitingApproval(caller: SpecCaller, workspaceId: string | null): Promise<
-  { ok: true; count: number; scope: 'person' | 'workspace'; inboxUrl: string } | SpecError
+  { ok: true; count: number; otherDraftsCount: number; scope: 'person' | 'workspace'; inboxUrl: string } | SpecError
 > {
   const personId = caller.kind === 'user' ? caller.userId : requestingPerson(null, caller.account);
-  if (personId) return { ok: true, count: await countAwaitingApprovalFor(personId), scope: 'person', inboxUrl: specApprovalInboxUrl() };
+  if (personId) {
+    const [count, otherDraftsCount] = await Promise.all([countAwaitingApprovalFor(personId), countAwaitingApprovalFor(personId, undefined, 'other')]);
+    return { ok: true, count, otherDraftsCount, scope: 'person', inboxUrl: specApprovalInboxUrl() };
+  }
   if (!workspaceId || !isUuid(workspaceId)) return fail(400, 'workspaceId is required');
   if (!(await reach(caller, workspaceId, false))) return fail(404, 'Workspace not found');
-  return { ok: true, count: await countWhere(sql`${specs.workspaceId} = ${workspaceId}::uuid`), scope: 'workspace', inboxUrl: specApprovalInboxUrl() };
+  const inWs = sql`${specs.workspaceId} = ${workspaceId}::uuid`;
+  const [count, otherDraftsCount] = await Promise.all([countWhere(and(inWs, mainLaneWhere())!), countWhere(and(inWs, otherLaneWhere())!)]);
+  return { ok: true, count, otherDraftsCount, scope: 'workspace', inboxUrl: specApprovalInboxUrl() };
 }
 
 /**

@@ -15,7 +15,6 @@ import { specPasskeyRequired } from '@/lib/passkeys/guard';
 import type { SpecGateResult } from '@buildd/core/db/schema';
 import type { RevisionReview } from './revision-changes';
 import { explanationCoverage, sectionWordChanges, type ExplanationCoverage, type SpecExplanation } from '@buildd/spec-contract/explanation';
-import { classifyRevisionRisk, type RevisionRisk } from './revision-risk';
 import type { WordOp } from '@buildd/spec-contract/criterion-review';
 
 /**
@@ -64,8 +63,6 @@ export type ApprovalRequestView =
     coverage: ExplanationCoverage | null;
     /** Each changed section's words outside the criteria (R-17), keyed by heading path. */
     sectionWords: Record<string, WordOp[]>;
-    /** How much judgement this revision needs, from its text alone (revision-risk.ts); absent counts as needing judgement. */
-    risk?: RevisionRisk;
     /** The team requires a passkey to approve (R-20): Approve asks for it after the click. */
     passkey: boolean;
   };
@@ -120,7 +117,7 @@ export async function approvalPinView(userId: string, specId: string, pin: Appro
     const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: pin.revision, rows: true });
     if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
     const sectionWords = changes ? sectionWordChanges(d.diff.fromBody ?? '', d.diff.toBody, changes.otherText) : {};
-    return { state: 'ready', ...ready, sectionWords, risk: classifyRevisionRisk(d.diff.fromBody ?? null, d.diff.toBody), replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, replacing };
+    return { state: 'ready', ...ready, sectionWords, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, replacing };
   }
   // Nothing approved yet: the whole revision is what comes into force.
   const s = await getSpec(caller, specId, { revision: pin.revision });
@@ -128,5 +125,5 @@ export async function approvalPinView(userId: string, specId: string, pin: Appro
   const d = diffSpecBodies('', s.view.body);
   const h = diffSpecHunks('', s.view.body);
   const sectionWords = changes ? sectionWordChanges('', s.view.body, changes.otherText) : {};
-  return { state: 'ready', ...ready, sectionWords, risk: classifyRevisionRisk(null, s.view.body), replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, replacing };
+  return { state: 'ready', ...ready, sectionWords, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, replacing };
 }

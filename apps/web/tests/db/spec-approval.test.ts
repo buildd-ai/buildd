@@ -134,7 +134,7 @@ describe('running work stays pinned to the revision it started on', () => {
     const src = pinned.context.specSource as Record<string, unknown>;
     expect(src).toMatchObject({ specId: spec.id, specRevisionId: a.revision.id, revision: 1, contentHash: sha(BODY_N) });
 
-    const r2 = await reviseSpecDraft(agentToken(), spec.id, { expectedVersion: a.spec.version, body: BODY_N1, explanation: { summary: 'test change', lines: { 'R-2': 'added', 'AC-2': 'added', 'R-1': 'edited', 'AC-1': 'edited' } } });
+    const r2 = await reviseSpecDraft(agentToken(), spec.id, { expectedVersion: a.spec.version, body: BODY_N1, explanation: { summary: 'Adds rate caching.', lines: { 'R-2': 'New: rates are cached for 15 minutes.' } } });
     if (!r2.ok) throw new Error(r2.error);
 
     const read = await readPinnedSpecRevision(src);

@@ -2958,6 +2958,9 @@ export const artifactLinks = pgTable('artifact_links', {
 export const SPEC_SCOPES = ['product', 'domain', 'feature', 'mission'] as const;
 export const SPEC_STATUSES = ['draft', 'in_review', 'approved', 'superseded', 'retired'] as const;
 export type SpecScope = (typeof SPEC_SCOPES)[number];
+/** What a spec is for (approvals spec b7fc9316 R-38): only `contract` revisions go to the main approval inbox. */
+export const SPEC_KINDS = ['contract', 'charter', 'experiment', 'snapshot'] as const;
+export type SpecKind = (typeof SPEC_KINDS)[number];
 export type SpecStatus = (typeof SPEC_STATUSES)[number];
 
 /** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
@@ -2997,6 +3000,8 @@ export interface SpecMetadataBlock {
    * whose build starts after (apps/web/src/lib/specs/mission-standards.ts).
    */
   standard?: true;
+  /** Living Specs R-32: a person flagged the spec high risk; its waiting revisions are the High tier. */
+  risk?: 'high';
   /**
    * Set by a copy from another workspace (apps/web/src/lib/specs/copy.ts): the
    * source revision this spec's head is byte for byte, by hash. Server-written
@@ -3094,6 +3099,7 @@ export const specs = pgTable('specs', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   title: text('title').notNull(),
   scope: text('scope').notNull().$type<SpecScope>(),
+  kind: text('kind').notNull().default('contract').$type<SpecKind>(),
   parentSpecId: uuid('parent_spec_id'),
   status: text('status').notNull().default('draft').$type<SpecStatus>(),
   version: integer('version').notNull().default(1),

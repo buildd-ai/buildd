@@ -34,7 +34,7 @@ import { standardMarkRefusal } from './standard-mark';
  * in a workspace that opted in gets its generated PR updated (R-15).
  */
 
-export const METADATA_KEYS = ['owner', 'summary', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance', 'publication', 'criteria_unread', 'standard'] as const;
+export const METADATA_KEYS = ['owner', 'summary', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance', 'publication', 'criteria_unread', 'standard', 'risk'] as const;
 type Key = (typeof METADATA_KEYS)[number];
 /**
  * The fields a repo spec file states, and so the ones an import writes and
@@ -95,6 +95,10 @@ function parseField(key: Key, raw: unknown): { value: SpecMetadataBlock[Key] | n
       // Cleared is stored as no mark, like publication's default.
       if (raw === false) return { value: null };
       return raw === true ? { value: true } : { error: 'standard is true (a standard of this workspace) or false' };
+    case 'risk':
+      // Cleared is stored as no flag. Only a person sets it (updateSpecMetadata).
+      if (raw === 'normal') return { value: null };
+      return raw === 'high' ? { value: 'high' } : { error: 'risk is high (a person flags this spec as high risk) or normal' };
     case 'repo_provenance': {
       const p = raw as Record<string, unknown>;
       const ok = !!p && typeof p === 'object' && !Array.isArray(p) && typeof p.path === 'string' && /^docs\/specs\/[^/]+\.md$/.test(p.path)
@@ -153,6 +157,10 @@ export async function updateSpecMetadata(caller: SpecCaller | SystemCaller, spec
     const ownerOrAdmin = caller.kind === 'user' && await holdsInWorkspace(caller.userId, spec.workspaceId, 'approve_specs');
     const refusal = standardMarkRefusal({ callerKind: caller.kind, ownerOrAdmin });
     if (refusal) return fail(403, refusal);
+  }
+  // R-32: `risk: high` puts every revision of the spec in the High tier; only a person flags it.
+  if ('risk' in parsed && caller.kind !== 'user') {
+    return fail(403, 'Flagging a spec risk: high is a person\'s decision, from their own session. An agent run or API key cannot set or clear it.');
   }
   if (parsed.domains) {
     // Only an area covers domains, and each value names one area: placement and the repo copy must not have to choose.

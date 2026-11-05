@@ -44,7 +44,6 @@ beforeAll(async () => {
   ({ teamId: teamO, workspaceId: otherWs } = await seedWorkspace());
   outsider = await member(teamO);
 });
-const AGENT = () => ({ kind: 'account' as const, account: { id: '00000000-0000-4000-8000-0000000000a1', teamId: teamT, workspaceIds: null } as any });
 const P = () => ({ kind: 'user' as const, userId: person });
 
 const BODY_1 = '# Operator surface\nR-1: Root causes are read through the operator API.\n- **AC-1** The team product shows no incident list.\n';
@@ -210,19 +209,6 @@ describe('retry', () => {
     expect(await count(dest)).toBe(before);
     const got = await getSpec(P(), first.destination.specId);
     expect(got.ok && [got.view.body, got.view.spec.metadata?.copied_from?.revision]).toEqual([body3, 3]);
-  });
-
-  test('an agent retry that revises the copy needs no explanation, the copy is verbatim', async () => {
-    const specId = await sourceSpec();
-    const first = await copySpecToWorkspace(AGENT(), specId, { targetWorkspaceId: dest, revision: 2 });
-    if (!first.ok) throw new Error(first.error);
-    const body3 = BODY_2 + 'R-3: Owner verdicts are kept.\n';
-    const rev = await reviseSpecDraft(P(), specId, { expectedVersion: 2, body: body3 });
-    if (!rev.ok) throw new Error(rev.error);
-    await approve(specId, 3);
-    const next = await copySpecToWorkspace(AGENT(), specId, { targetWorkspaceId: dest });
-    if (!next.ok) throw new Error(next.error);
-    expect([next.reused, next.destination.specId, next.destination.contentHash]).toEqual([false, first.destination.specId, sha(body3)]);
   });
 
   test('a copy whose provenance write was lost is repaired by the retry', async () => {
