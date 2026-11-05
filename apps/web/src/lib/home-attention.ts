@@ -272,7 +272,7 @@ export interface HomeListedMission {
 }
 
 /** One owner decision per subject. PR identity includes the workspace because numbers are repository-local. */
-export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [], specApprovals = 0 }: {
+export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [], specApprovals = 0, specApprovalsLowRisk = 0 }: {
   /** Supplied by Home, where the action queue and core UI are composed. */
   isActionable: (chip: ActionQueueItem['chip']) => boolean;
   queue: readonly ActionQueueItem[];
@@ -283,10 +283,12 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   status?: readonly HomeAttentionItem[];
   /** Spec revisions waiting on this person's approval: one card (specApprovalsAttention). */
   specApprovals?: number;
+  /** Of those, how many the risk-tier classifier calls low-risk. */
+  specApprovalsLowRisk?: number;
 }): HomeAttentionItem[] {
   const items = new Map<string, HomeAttentionItem>();
   for (const s of status) items.set(s.key, s);
-  const specCard = specApprovalsAttention(specApprovals);
+  const specCard = specApprovalsAttention(specApprovals, specApprovalsLowRisk);
   if (specCard) items.set(specCard.key, specCard);
   for (const q of questions) {
     const key = `question:${q.taskId ?? q.workerId}`;
@@ -339,13 +341,17 @@ export const SPEC_APPROVALS_HREF = '/app/specs/approvals';
  * never an approve action of its own: approving happens in the inbox, one
  * revision per click.
  */
-export function specApprovalsAttention(count: number): HomeAttentionItem | null {
+export function specApprovalsAttention(count: number, lowRisk = 0): HomeAttentionItem | null {
   if (!Number.isFinite(count) || count <= 0) return null;
   const one = count === 1;
+  // The split (R-9): how many need a person's judgement and how many are low-risk, from the risk-tier classifier.
+  const low = Number.isFinite(lowRisk) ? Math.min(Math.max(Math.trunc(lowRisk), 0), count) : 0;
+  const judge = count - low;
+  const split = low > 0 ? `${judge} need${judge === 1 ? 's' : ''} judgement, ${low} low-risk.` : null;
   return {
     key: 'spec-approvals', kind: 'queue', label: 'spec approval', tone: 'warning',
     title: `${count} spec ${one ? 'revision waits' : 'revisions wait'} for your approval`,
-    sentence: `Review ${one ? 'it' : 'each one'} and approve with a click.`,
+    sentence: split ?? `Review ${one ? 'it' : 'each one'} and approve with a click.`,
     meta: '', href: SPEC_APPROVALS_HREF, actionType: 'approve',
     primary: { label: 'Review approvals', href: SPEC_APPROVALS_HREF }, owner: 'human',
   };
