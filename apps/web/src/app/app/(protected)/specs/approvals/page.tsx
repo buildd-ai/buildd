@@ -5,6 +5,7 @@ import { approvalInboxView, type InboxRow } from '@/lib/specs/approval-inbox-vie
 import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
 import Card from '@/components/ui/Card';
+import SpecQuestion from '@/components/SpecQuestion';
 import Chip from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
 import Lede from '@/components/ui/Lede';
@@ -66,6 +67,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
           </Chip>
         ) : null}
       </div>
+      {row.question ? <SpecQuestion question={row.question} /> : null}
       <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-line">
         {row.workspaceName} · revision {row.headRevision}{row.approvedRevision ? ` replaces ${row.approvedRevision}` : ', first approval'} · by {row.author}
       </p>

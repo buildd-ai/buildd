@@ -123,7 +123,7 @@ export const SPEC_PAGE_APPROVAL_VIEW: Extract<ApprovalRequestView, { state: 'rea
     summary: 'Cancelling works from the email too; folds in the two older cancellation specs.', mismatch: null, otherText: [],
     lines: [{ kind: 'added', id: 'R-13', text: 'An order can be cancelled from the confirmation email until it is packed.', section: '6. Cancelling' }],
   },
-  explanation: { summary: 'Shoppers can cancel from the confirmation email, and the two older cancellation specs retire.', lines: { 'R-13': 'New: the email carries a cancel link that works until the order is packed.' } },
+  explanation: { summary: 'Shoppers can cancel from the confirmation email, and the two older cancellation specs retire.', question: 'Should the cancel link keep working after the order is packed?', lines: { 'R-13': 'New: the email carries a cancel link that works until the order is packed.' } },
   coverage: null,
   sectionWords: {},
 };

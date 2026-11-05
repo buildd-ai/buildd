@@ -231,7 +231,10 @@ later ones are proposed (D-4).
   `create_draft` / `revise` `explanation`, stored in
   `spec_revisions.explanation` and never changed afterwards (a trigger refuses
   an UPDATE; a revise that only sends a new one is a 409
-  `explanation_immutable`). Under it, a mechanical coverage check
+  `explanation_immutable`). The explanation may also carry a `question`: one
+  sentence naming the decision the author needs. When present it leads the
+  inbox row and the confirm page above the coverage line, and Review all shows
+  it in place of the summary. Under it, a mechanical coverage check
   (`packages/spec-contract/src/explanation.ts`, no model) against the
   criterion change list: each change explained or listed under Not explained,
   and lines naming something that did not change listed apart. Every line

@@ -16,7 +16,7 @@ const SPEC = '00000000-0000-4000-8000-000000000082';
 const ctx = (o: Partial<ActionContext> = {}): ActionContext => ({ workspaceId: WS, getWorkspaceId: async () => WS, getLevel: async () => 'worker', ...o });
 const out = (r: any) => String(r.content[0].text);
 const call = (api: unknown, params: Record<string, unknown>) => handleBuilddAction(api as ApiFn, 'manage_specs', params, ctx());
-const EXPLANATION = { summary: 'Totals round to cents.', lines: { 'R-1': 'Rounds to the cent.', 'Out of scope': 'Drops refunds.' } };
+const EXPLANATION = { summary: 'Totals round to cents.', question: 'Should refunds stay out of scope?', lines: { 'R-1': 'Rounds to the cent.', 'Out of scope': 'Drops refunds.' } };
 
 describe('manage_specs explanation', () => {
   it('create_draft sends the explanation with the draft', async () => {
@@ -47,5 +47,7 @@ describe('manage_specs explanation', () => {
     const guidance = readFileSync(join(import.meta.dir, '..', 'mcp-guidance', 'living-specs.md'), 'utf8');
     expect(guidance).toContain('Write an explanation with every revise');
     expect(guidance).toContain('explanation_immutable');
+    expect(contract).toContain('question?: one sentence naming the decision');
+    expect(guidance).toContain('Ask the question when the revision needs a judgement call');
   });
 });
