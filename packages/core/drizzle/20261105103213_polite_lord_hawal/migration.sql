@@ -1,1 +1,0 @@
-ALTER TABLE "specs" ADD COLUMN "kind" text DEFAULT 'contract' NOT NULL;
