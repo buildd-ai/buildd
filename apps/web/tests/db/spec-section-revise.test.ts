@@ -161,3 +161,20 @@ describe('approval is untouched', () => {
     expect([r.spec.status, r.spec.approvedRevision, r.spec.headRevision, r.revision.approvedBy]).toEqual(['draft', 1, 2, null]);
   });
 });
+
+describe('an agent revision must explain what it changes', () => {
+  const count = async (specId: string) => (await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM spec_revisions WHERE spec_id = ${specId}::uuid`))[0].n;
+  test('refused naming the missing keys, nothing written; a person is not held to it; a full explanation lands', async () => {
+    const spec = await draft();
+    const next = '## Refunds\nR-3: Refunds are fast.\n';
+    const refused = await reviseSpecSection(agent(), spec.id, { expectedVersion: 1, section: 's5', body: next });
+    expect(refused).toMatchObject({ ok: false, status: 400, code: 'explanation_incomplete' });
+    expect(!refused.ok && refused.error).toContain('R-3');
+    expect(await count(spec.id)).toBe(1);
+    const person = await reviseSpecSection(user(member), spec.id, { expectedVersion: 1, section: 's5', body: next });
+    expect(person.ok).toBe(true);
+    const spec2 = await draft();
+    const ok = await reviseSpecSection(agent(), spec2.id, { expectedVersion: 1, section: 's5', body: next, explanation: EXPLAIN });
+    expect(ok.ok).toBe(true);
+  });
+});
