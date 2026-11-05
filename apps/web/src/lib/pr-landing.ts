@@ -31,8 +31,7 @@ import { tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { OPEN_TASK_STATUSES, type MergePolicy } from '@buildd/shared';
 import type { GateCallerOrigin, GateOutcome } from '@buildd/core/gate-events';
-import { isMissionIntegrationBase, type MissionIntegrationFields } from '@buildd/core/mission-integration';
-import { reviewByRiskFor } from '@/lib/review-by-risk';
+import type { MissionIntegrationFields } from '@buildd/core/mission-integration';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import {
@@ -126,8 +125,6 @@ export type HumanCause =
   | 'deny_path'
   | 'size_cap'
   | 'branch_protection'
-  /** Work built ahead of a spec's approval cannot reach trunk until that revision is approved (living-specs §20, R-44). */
-  | 'spec_unapproved'
   /** Review by risk (spec 62e985a8 R-4): the PR touches a risk area and waits for a person to approve it. */
   | 'risk_area'
   /** Review by risk (R-1): an acceptance check it answers for has no passing test at the head. */
@@ -278,8 +275,6 @@ export interface LandPrDeps {
   mergeOutsideKernel?: typeof import('@/lib/pr-landing-adoption').mergeOutsideKernel;
   /** Runs a delivery's due effects (a REPAIRING delivery's backed-off repair). Defaults to the seam's `drainDelivery`. */
   drainDelivery?: (deliveryId: string) => Promise<unknown>;
-  /** The built-ahead-of-approval hold for a trunk merge. Defaults to specs/ahead-hold.ts `loadAheadHold`. */
-  aheadHold?: (taskId: string | null, toMissionBranch: boolean) => Promise<{ hold: false } | { hold: true; reason: string }>;
   /** The mission-PR / delivery-target hold. Defaults to mission-pr.ts `guardMissionPrMerge`. */
   guardMissionPrMerge?: typeof guardMissionPrMerge;
   /** What review a frozen release candidate is owed (composition at its head). Defaults to workflow/candidate-review.ts. */
@@ -840,16 +835,6 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
 
   // ── 3. Safety rails (every one except base freshness, which is work below) ──
   const mission = input.mission !== undefined ? input.mission : await loadMissionIntegrationFields(owner.taskId);
-  // ── 3a. Built ahead of approval: trunk waits for the spec revision's approval ──
-  {
-    // Review by risk R-8: a merge into the workspace integration branch is not
-    // held for the spec's approval either; the release summary marks it built ahead (R-2, R-7).
-    const toMissionBranch = isMissionIntegrationBase({ baseRef, mission })
-      || !!reviewByRiskFor({ gitConfig: input.gitConfig ?? null, baseRef, mission });
-    const ahead = await (deps.aheadHold ?? (async (t, m) => (await import('@/lib/specs/ahead-hold')).loadAheadHold(t, m)))(owner.taskId, toMissionBranch)
-      .catch((err) => { console.warn(`[pr-landing] spec-ahead hold for ${repoFullName}#${prNumber} unreadable:`, err); return { hold: false as const }; });
-    if (ahead.hold) return human('spec_unapproved', ahead.reason, { waitingOn: 'spec_approval' });
-  }
   const effectivePolicy: MergePolicy = override.size
     ? { ...policy, threshold: { ...policy.threshold, maxLines: Number.MAX_SAFE_INTEGER } as MergePolicy['threshold'] }
     : policy;

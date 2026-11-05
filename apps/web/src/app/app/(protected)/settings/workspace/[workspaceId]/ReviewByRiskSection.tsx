@@ -7,7 +7,7 @@ import { emptyRiskAreas, REVIEW_BY_RISK_AREA_LABEL, REVIEW_BY_RISK_AREA_WHAT } f
 /**
  * Review by risk on the workspace Merge Policy page (spec 62e985a8). Off by
  * default; a person turns it on and lists the paths of the three path areas.
- * While on, an area with no paths says that nothing is held for it (R-5).
+ * While on, an area with no paths says that nothing waits for a person (R-5).
  */
 
 export interface ReviewByRiskDraft {
@@ -41,7 +41,7 @@ function EmptyAreaNotes({ policy }: { policy: ReviewByRiskPolicy }) {
     <ul className="space-y-1" data-testid="review-by-risk-empty-areas">
       {empty.map((a) => (
         <li key={a} className="text-xs text-status-warning">
-          {REVIEW_BY_RISK_AREA_LABEL[a]}: no paths listed, so nothing is held for it.
+          {REVIEW_BY_RISK_AREA_LABEL[a]}: no paths listed. Nothing waits for a person.
         </li>
       ))}
     </ul>
@@ -86,9 +86,7 @@ export function ReviewByRiskFields({ draft, onChange }: { draft: ReviewByRiskDra
           Review by risk
         </label>
         <p className="text-xs text-text-muted">
-          Agent PRs into the integration branch merge on their own when CI passes, they have no conflict, the
-          review did not ask for changes and every acceptance check has a passing test. PRs that touch an area
-          below wait for a person. If this workspace releases, each release waits for a person to approve one summary.
+          Agent PRs into the integration branch merge when green and tested. Risk areas and releases wait for a person.
         </p>
       </div>
       {draft.enabled && (
@@ -116,6 +114,8 @@ export function ReviewByRiskFields({ draft, onChange }: { draft: ReviewByRiskDra
   );
 }
 
+const SUMMARY_LOAD_FAILED = 'Could not load the release summary.';
+
 interface SummaryResponse {
   required: boolean;
   approved: boolean;
@@ -132,9 +132,9 @@ export function ReleaseSummaryCard({ workspaceId, canApprove }: { workspaceId: s
 
   async function load() {
     const res = await fetch(`/api/workspaces/${workspaceId}/release-summary`).catch(() => null);
-    if (!res) { setNote('Could not load the release summary.'); return; }
+    if (!res) { setNote(SUMMARY_LOAD_FAILED); return; }
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) { setData(null); setNote((body as { error?: string }).error ?? 'Could not load the release summary.'); return; }
+    if (!res.ok) { setData(null); setNote((body as { error?: string }).error ?? SUMMARY_LOAD_FAILED); return; }
     setNote(null);
     setData(body as SummaryResponse);
   }

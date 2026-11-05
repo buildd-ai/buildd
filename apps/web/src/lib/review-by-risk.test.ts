@@ -128,13 +128,8 @@ describe('review by risk — merging to the integration branch', () => {
 
   it('AC-4: a provisionally pinned PR meeting R-1 merges, is not held for the spec approval, and the summary lists it as built ahead', async () => {
     expect(await rail(gitConfigOn(), { loadAcceptanceChecks: pinnedAllPass })).toEqual({ ok: true });
-    // R-8: the landing function's built-ahead hold treats the integration branch like a mission branch.
+    // R-8: no built-ahead hold exists on this base (#5949 removed it), so the rail above is the whole answer.
     expect(rbr.reviewByRiskFor({ gitConfig: gitConfigOn(), baseRef: 'dev' })).not.toBeNull();
-    const { decideAheadHold } = await import('@/lib/specs/ahead-hold');
-    const pin = { provisional: true, revision: 3 };
-    const spec = { title: 'Some spec', approvedRevision: null, headRevision: 3 };
-    expect(decideAheadHold({ pin, toMissionBranch: true, spec }).hold).toBe(false);
-    expect(decideAheadHold({ pin, toMissionBranch: false, spec }).hold).toBe(true);
 
     const ends = summary.releaseEnds({ enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', prodBranch: 'main' }, DEV_WORKFLOW)!;
     const s = summary.buildReleaseSummary({

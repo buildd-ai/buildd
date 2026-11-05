@@ -30,10 +30,10 @@ afterEach(() => {
 });
 
 describe('ReviewByRiskSection', () => {
-  it('R-5: while on, an area with no paths says nothing is held for it', () => {
+  it('R-5: while on, an area with no paths says nothing waits for a person', () => {
     act(() => root.render(<ReviewByRiskFacts policy={{ enabled: true, areas: { dataMigrations: ['db/'] } }} />));
     const notes = host.querySelector('[data-testid="review-by-risk-empty-areas"]')?.textContent ?? '';
-    expect(notes).toContain('Access: no paths listed, so nothing is held for it.');
+    expect(notes).toContain('Access: no paths listed. Nothing waits for a person.');
     expect(notes).toContain('Credentials: no paths listed');
     expect(notes).not.toContain('Data migrations');
   });

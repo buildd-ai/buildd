@@ -3003,8 +3003,6 @@ export interface SpecMetadataBlock {
    * whose build starts after (apps/web/src/lib/specs/mission-standards.ts).
    */
   standard?: true;
-  /** Living Specs R-32: a person flagged the spec high risk; its waiting revisions are the High tier. */
-  risk?: 'high';
   /**
    * Set by a copy from another workspace (apps/web/src/lib/specs/copy.ts): the
    * source revision this spec's head is byte for byte, by hash. Server-written

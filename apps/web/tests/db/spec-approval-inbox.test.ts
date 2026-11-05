@@ -122,30 +122,6 @@ describe('the inbox lists what waits on the signed-in person (R-1, AC-1)', () =>
   });
 });
 
-describe('stacked unapproved revisions fold under the newest (R-30, R-39)', () => {
-  test('one row per spec: diffed from the approved revision, listing the folded revisions; Approve pinned to the head', async () => {
-    const s = await draft();
-    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
-    if (!a.ok || 'pending' in a) throw new Error('approve failed');
-    let version = a.spec.version;
-    for (const n of [2, 3, 4]) {
-      const r = await reviseSpecDraft(user(member), s.id, { expectedVersion: version, body: `${BODY()}R-${n}: Rule ${n}.\n` });
-      if (!r.ok) throw new Error(r.error);
-      version = r.spec.version;
-    }
-    const mine = (await listAwaitingApproval(admin)).filter((x) => x.specId === s.id);
-    expect(mine).toHaveLength(1);
-    expect(mine[0]).toMatchObject({ headRevision: 4, approvedRevision: 1, foldedRevisions: [2, 3] });
-    const view = (await approvalInboxView(admin)).find((r) => r.specId === s.id)!.view;
-    expect(view?.state === 'ready' && view.replaces).toBe(1);
-    expect(view?.state === 'ready' && view.pin.revision).toBe(4);
-    // A pin on a folded revision is not approvable.
-    const folded = await approveFromInbox(user(admin), s.id, { revision: 3, expectedVersion: version, contentHash: await hashOf(s.id, 3) });
-    expect(folded).toMatchObject({ ok: false });
-    expect(await row(s.id)).toMatchObject({ approved_revision: 1 });
-  });
-});
-
 describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
   test('three stacked unapproved revisions are one row, covering approved to head, measured against the head\'s explanation', async () => {
     const base = BODY();
@@ -418,5 +394,59 @@ describe('AC-11: a spec that asks an agent to approve it is approved only by a d
     // The person clicks Approve in their browser.
     expect(await approveFromInbox(user(admin), s.id, pin)).toMatchObject({ ok: true });
     expect(await row(s.id)).toMatchObject({ approved_revision: 1 });
+  });
+});
+
+describe('one row per spec, approved revision to head (R-30, R-39)', () => {
+  test('stacked unapproved revisions are one row, diffed from the approved revision; Approve is pinned to the head', async () => {
+    const s = await draft();
+    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    let version = a.spec.version;
+    for (const n of [2, 3, 4]) {
+      const r = await reviseSpecDraft(user(member), s.id, { expectedVersion: version, body: `${BODY()}R-${n}: Rule ${n}.\n` });
+      if (!r.ok) throw new Error(r.error);
+      version = r.spec.version;
+    }
+    const mine = (await listAwaitingApproval(admin)).filter((x) => x.specId === s.id);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ headRevision: 4, approvedRevision: 1, revisionsCovered: 3 });
+    const inbox = (await approvalInboxView(admin)).filter((r) => r.specId === s.id);
+    expect(inbox).toHaveLength(1);
+    const view = inbox[0]!.view;
+    expect(view?.state === 'ready' && view.replaces).toBe(1);
+    expect(view?.state === 'ready' && view.pin.revision).toBe(4);
+    // A pin on a superseded middle revision is not approvable.
+    const middle = await approveFromInbox(user(admin), s.id, { revision: 3, expectedVersion: version, contentHash: await hashOf(s.id, 3) });
+    expect(middle).toMatchObject({ ok: false });
+    expect(await row(s.id)).toMatchObject({ approved_revision: 1 });
+  });
+});
+
+describe('risk labels: needs judgement first, low-risk grouped after (#5935)', () => {
+  test('a criterion change needs judgement, a wording-only change is low-risk, and judgement rows sort first', async () => {
+    const body = `# Checkout ${rand()}\n\nShoppers pay at the end.\n\nR-1: Totals are in the shopper's currency.\n`;
+    const wording = await draft(wsA, body);
+    const criterion = await draft(wsA, body);
+    for (const s of [wording, criterion]) {
+      const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+      if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    }
+    // Revised in this order so the low-risk one is newest: the sort, not recency, puts judgement first.
+    // The wording-only revision would auto-approve (R-21); skipped here so it waits, as one does when the check could not run.
+    const c = await reviseSpecDraft(user(member), criterion.id, { expectedVersion: (await row(criterion.id)).version, body: `${body}R-2: Rates are cached.\n` });
+    if (!c.ok) throw new Error(c.error);
+    const w = await reviseSpecDraft(user(member), wording.id, { expectedVersion: (await row(wording.id)).version, body: body.replace('Shoppers pay at the end.', 'Shoppers pay once, at the end.') }, { autoApprove: false });
+    if (!w.ok) throw new Error(w.error);
+    const inbox = await approvalInboxView(admin);
+    const of = (id: string) => inbox.find((r) => r.specId === id)!;
+    expect(of(criterion.id).risk).toMatchObject({ level: 'judgement' });
+    expect(of(criterion.id).risk.reasons).toContain('Criterion R-2 was added');
+    expect(of(wording.id).risk).toEqual({ level: 'low-risk', reasons: [] });
+    const firstLow = inbox.findIndex((r) => r.risk.level !== 'judgement');
+    const lastJudgement = inbox.map((r) => r.risk.level).lastIndexOf('judgement');
+    expect(firstLow === -1 || lastJudgement < firstLow).toBe(true);
+    // Low-risk approves nothing by itself.
+    expect(await row(wording.id)).toMatchObject({ approved_revision: 1 });
   });
 });

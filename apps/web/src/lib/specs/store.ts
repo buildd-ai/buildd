@@ -149,16 +149,7 @@ export const specStoreDeps: {
   autoApprove: (specId: string) => Promise<AutoApproval>;
   /** Specify → Build (./task-handoff.ts, R-81): record the revision on the task that wrote it. Fail-open. */
   recordAuthored: (caller: SpecCaller, specId: string, revision: number) => Promise<void>;
-  /**
-   * Ask the approvers the moment a revision that waits on a person is written
-   * (b7fc9316 R-10), not when a task later builds against it. Fail-open.
-   */
-  requestApproval: (spec: SpecRow, revision: number) => Promise<void>;
 } = {
-  requestApproval: async (spec, revision) => {
-    const [{ emit }, { specApprovalInboxUrl }] = await Promise.all([import('@/lib/core-emit'), import('./approval-inbox')]);
-    await emit({ type: 'spec.approval_requested', workspaceId: spec.workspaceId, title: spec.title, revision, confirmUrl: specApprovalInboxUrl(), warnings: 0 });
-  },
   afterRevisionInsert: async () => {},
   recordAuthored: async (caller, specId, revision) => (await import('./task-handoff')).recordSpecAuthoredByTask(caller, specId, revision),
   autoApprove: async (specId) => (await import('./auto-approve')).autoApproveNoCriteriaChange(specId),
@@ -290,7 +281,6 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   await afterRevisionWritten(spec, revision, body);
   // Specify → Build (§20, R-81): the writing task names the spec, so the task that builds it can inherit it.
   if (!opts.imported) await specStoreDeps.recordAuthored(caller, spec.id, revision.revision);
-  if (!opts.imported && !opts.metadata) await specStoreDeps.requestApproval(spec, revision.revision).catch((err) => console.warn(`[specs] approval request for ${spec.id} failed (the inbox still lists it):`, err instanceof Error ? err.message : err));
   return { ok: true, spec, revision, duplicateCheck };
 }
 
@@ -449,9 +439,6 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     return { approved: false, reason: 'the check could not run' };
   });
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  if (!opts.imported && opts.autoApprove !== false && !autoApproval?.approved) {
-    await specStoreDeps.requestApproval(after ?? spec, revision.revision).catch((err) => console.warn(`[specs] approval request for ${specId} failed (the inbox still lists it):`, err instanceof Error ? err.message : err));
-  }
   const [stamped] = autoApproval?.approved ? await db.select().from(specRevisions).where(eq(specRevisions.id, revision.id)).limit(1) : [revision];
   return { ok: true, spec: after, revision: stamped ?? revision, unchanged: false, duplicateCheck, autoApproval };
 }
