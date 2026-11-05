@@ -44,7 +44,7 @@ A turn's regions, top to bottom (`ChatThread compose="turn"`):
 
 ```
 ┌ head ─────────── avatar · name · time        drawn from the first chunk
-├ work line ────── live step → "Writing the answer" → "Did 6 steps · filed 1 task"
+├ work line ────── <live step> → <answer step> → <summary of steps>
 ├ tool rows ────── only while the folded line is opened
 ├ phase "answer"
 │   answer slot ── the phase's latest prose, replaced in place (answerPartIndex)
@@ -171,23 +171,25 @@ second time.
 
 ## Storyboard
 
+The strings in angle brackets are placeholders: this spec fixes layout, and the words come from Product voice (`d4613613`).
+
 The dev fixtures page plays these frames (`/app/dev/chat?state=composed`,
 `&frame=N` holds one; Confirm on `?state=propose` plays the resume).
 
 ```
 frame 0  head │ ■ (square)         │ "The rates service needs a follow-up…"▌
-frame 1  head │ ■ Reading a task   │ "The rates service needs a follow-up…"
-frame 2  head │ ■ Drafting a task  │ "…"                     (nothing below)
-frame 3  head │ ■ Writing the answer│ "…"
-frame 4  head │ ■ Writing the answer│ "Nothing covered stale rates, so I…"▌   same node
-frame 5  head │ ▭ Did 2 steps · filed 1 task │ final answer
+frame 1  head │ ■ <live step>       │ "<answer text>…"
+frame 2  head │ ■ <live step>       │ "…"                     (nothing below)
+frame 3  head │ ■ <answer step>    │ "…"
+frame 4  head │ ■ <answer step>    │ "<answer text>…"▌   same node
+frame 5  head │ ▭ <summary of steps> │ final answer
               │ ┃ CREATED · 1 task      [task shell → card, same height]
               │ ┃ REFERENCED · 1 task   [task shell → card]
 
-resume   head │ ▭ fold │ "Here's a draft."         ← rationale, same node
+resume   head │ ▭ fold │ <rationale text>         ← rationale, same node
               │ [ New mission · Confirm & file ]   ← card, same node
               │ [ mission receipt ]
-              │ "Filed. buildd is planning it…"▌   ← new answer node, view anchored here
+              │ <confirmation text>▌   ← new answer node, view anchored here
 ```
 
 ## Trade-offs

@@ -168,12 +168,12 @@ hold:
   unverified caller's explicit claim is refused and the exclusion probe names
   it: `mission_local`, "This mission runs in a local session".
 - **LX-3**: held wins. `missionNotHeld()` still applies to the interactive
-  claim; a held local mission is paused for everyone and reads HELD.
+  claim; a local mission that has not started is paused for everyone and reads Not started.
 - **LX-4**: force-start keeps working. `/start` without `forceOverride` returns
   `422 mission_local`; with it, `bypassHeldGate` is written and lifts this gate
   as well as the hold. An admin `claim_task force: true` lifts it too.
-- **LX-5**: display. A local mission is active work: chip `LOCAL`, list status
-  `Local`, grouped with running missions, never HELD / "arm to start" and never
+- **LX-5**: display. A local mission is active work: chip `Local`, list status
+  `Local`, grouped with running missions, never Not started / "Start the mission" and never
   STALLED / "dispatch a worker". A queued task reads "Ready to start from a
   local session", claimed work reads "1 task in progress in a local session",
   and `/api/cron/queue-stall` does not report it.
@@ -186,9 +186,9 @@ hold:
   `deriveLocalStrand` (`apps/web/src/lib/local-strand.ts`) is the one
   predicate; the card, the mission page, `explain` and the chat mission object
   hand its answer to `deriveMissionStateView` as `localStrand`. A stranded
-  mission reads chip `STRANDED`, list status `Stranded`, kind
-  `awaiting_decision` (so it is an ask: NEEDS YOU), headline "Stranded: no
-  local session for Xm. Continue on a runner?". It outranks failures and
+  mission reads chip `No session`, list status `No session`, kind
+  `awaiting_decision` (so it is an ask: Waiting on you), headline "No local
+  session for Xm. Continue on a runner?". It outranks failures and
   unmerged PRs, which stay in `outstanding`: a reviewer nobody claims is why
   the PR sits. Held still wins (LX-3).
 - **LX-7**: "Continue on a runner". The stranded card's primary action flips
@@ -222,14 +222,14 @@ hold:
   local session's `ask_human`) still counts as live, so `missionOpenQuestions`
   (`apps/web/src/lib/open-ask.ts`) hands the asking tasks to
   `deriveMissionStateView` as `openQuestions`. It outranks the live-worker
-  rule: kind `awaiting_decision` (NEEDS YOU), focus `human_decision` with
-  `question`, headline the question itself ("N questions for you" for
-  several, "An agent is waiting for your answer" with no question text), next
+  rule: kind `awaiting_decision` (Waiting on you), focus `human_decision` with
+  `question`, headline the question itself ("N questions" for
+  several, "Question waiting for an answer" with no question text), next
   action "Answer it on the task page to continue.", and the causal line reads
-  `"<task>" asks: <question>`, never "a worker is running it". Its action
+  `<task>: <question>`, never "a worker is running it". Its action
   ("Answer the question") opens the task page with the answer focused
   (`taskAnswerHref`), never the mission sheet. The chip keeps saying who runs
-  the work (`LOCAL` / `RUNNING`). Held still wins; a failed deliverable still
+  the work (`Local` / `Running`). Not started still wins; a failed deliverable still
   leads the headline. The Board counts the same task in its waiting-on-you
   count (`deriveFeedTaskState`, `isOpenAsk`), with the asking worker as the
   task's worker whatever order the query returned (`toBoardTaskInput`).
