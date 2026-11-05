@@ -52,6 +52,18 @@ describe('Review all', () => {
     expect(m.container.querySelector('[data-testid="spec-review-all-approve"]')!.textContent).toBe('Approve all 4');
   });
 
+  it('R-34/AC-35: a row whose merged work passed every criterion reads Matches what shipped; one with misses lists only those', async () => {
+    const m = await render('list');
+    mounted.push(m);
+    const rows = m.container.querySelectorAll('[data-testid="spec-review-all-row"]');
+    expect(rows[0]!.querySelector('[data-testid="spec-shipped-label"]')!.textContent).toBe('Matches what shipped');
+    expect(rows[0]!.querySelector('[data-testid="spec-shipped-unmet"]')).toBeNull();
+    expect(rows[1]!.querySelector('[data-testid="spec-shipped-label"]')).toBeNull();
+    expect(rows[1]!.querySelector('[data-testid="spec-shipped-unmet"]')!.textContent).toBe('Shipped work does not yet cover: AC-4 failed, R-7 has no check');
+    // Nothing merged: neither.
+    expect(rows[2]!.querySelector('[data-testid="spec-shipped-label"], [data-testid="spec-shipped-unmet"]')).toBeNull();
+  });
+
   it('opens a diff in place', async () => {
     const m = await render('diff');
     mounted.push(m);

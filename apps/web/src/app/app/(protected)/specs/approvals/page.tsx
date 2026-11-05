@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { approvalInboxView, type InboxRow } from '@/lib/specs/approval-inbox-view';
 import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
+import SpecShippedLine from '@/components/SpecShippedLine';
 import Card from '@/components/ui/Card';
 import Chip from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
@@ -70,6 +71,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
         {row.workspaceName} · revision {row.headRevision}{row.approvedRevision ? ` replaces ${row.approvedRevision}` : ', first approval'} · by {row.author}
       </p>
       {row.changeSummary ? <p className="text-body text-text-primary [overflow-wrap:anywhere]">{row.changeSummary}</p> : null}
+      <SpecShippedLine shipped={row.shipped} />
       {view ? (
         <Disclosure summary={`Review revision ${row.headRevision}`} defaultOpen={open}>
           <div className="pt-2">
