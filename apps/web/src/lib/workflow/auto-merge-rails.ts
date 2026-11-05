@@ -92,7 +92,8 @@ export function builddLandingRails(deps: LandingRailsDeps): Rails {
         const redCi = cls === 'ci' && (observed.checkRuns ?? []).some(isFailingCheckRun);
         // Lasting: it will not clear by waiting, so a person decides (and is told which rail).
         // CI (pending or red, which the CI family repairs), a read, a moved head or a hold waits.
-        const lasting = cls === 'deny_path' || cls === 'size' || cls === 'blocked'
+        // Review by risk's holds wait for a person (R-4) or a test result nobody is running yet (R-1).
+        const lasting = cls === 'deny_path' || cls === 'size' || cls === 'blocked' || cls === 'risk_area' || cls === 'ac_untested'
           || (cls === 'migration' && !/^could not /.test(verdict.reason) && !/snapshot parent is no longer a leaf/.test(verdict.reason));
         return {
           passed: false, reasons: [verdict.reason],

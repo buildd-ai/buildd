@@ -7,6 +7,7 @@ import { workspaces, githubRepos, type WorkspaceGitConfig, type WorkspaceRelease
 import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { applyReviewByRiskWrite } from '@/lib/review-by-risk';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -94,6 +95,9 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
     if (r.releaseBranch !== undefined && typeof r.releaseBranch !== 'string') {
         return { ok: false, error: 'releaseBranch must be a string', status: 422 };
     }
+    if (r.summaryApproval !== undefined && typeof r.summaryApproval !== 'boolean') {
+        return { ok: false, error: 'summaryApproval must be a boolean', status: 422 };
+    }
     let candidate: WorkspaceReleaseConfig['candidate'];
     if (r.candidate !== undefined && r.candidate !== null) {
         const c = r.candidate as Record<string, unknown>;
@@ -130,6 +134,8 @@ function parseReleaseConfig(rc: unknown): { ok: true; config: WorkspaceReleaseCo
         ...(typeof r.verificationUrl === 'string' ? { verificationUrl: r.verificationUrl } : {}),
         // script
         ...(typeof r.command === 'string' ? { command: r.command } : {}),
+        // review by risk (R-6): absent = a person approves the release summary while the mode is on
+        ...(typeof r.summaryApproval === 'boolean' ? { summaryApproval: r.summaryApproval } : {}),
     };
 
     const candidateError = releaseCandidateConfigError(config);
@@ -538,11 +544,15 @@ async function savePost(
 
         // mergePolicy write-path validation: unknown keys rejected, not silently stripped
         if (body.mergePolicy !== undefined) {
+            // Review by risk is a person's setting (spec 62e985a8 R-5, R-9): an
+            // absent key keeps the stored one; a change by anyone else is refused.
+            const risk = applyReviewByRiskWrite({ previous: previous.mergePolicy, next: body.mergePolicy, byPerson: !!user && !apiAccount });
+            if (!risk.ok) return NextResponse.json({ error: risk.error, field: 'mergePolicy.reviewByRisk' }, { status: risk.status });
             if (body.mergePolicy === null) {
                 // Explicit null clears the policy (falls back to default at runtime)
                 gitConfig.mergePolicy = undefined;
             } else {
-                const parsed = parseMergePolicy(body.mergePolicy);
+                const parsed = parseMergePolicy(risk.next);
                 if (!parsed.ok) {
                     return NextResponse.json(
                         { error: parsed.error, field: parsed.field },

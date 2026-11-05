@@ -32,6 +32,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { OPEN_TASK_STATUSES, type MergePolicy } from '@buildd/shared';
 import type { GateCallerOrigin, GateOutcome } from '@buildd/core/gate-events';
 import { isMissionIntegrationBase, type MissionIntegrationFields } from '@buildd/core/mission-integration';
+import { reviewByRiskFor } from '@/lib/review-by-risk';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { githubApi, mergePullRequest } from '@/lib/github';
 import {
@@ -127,6 +128,10 @@ export type HumanCause =
   | 'branch_protection'
   /** Work built ahead of a spec's approval cannot reach trunk until that revision is approved (living-specs §20, R-44). */
   | 'spec_unapproved'
+  /** Review by risk (spec 62e985a8 R-4): the PR touches a risk area and waits for a person to approve it. */
+  | 'risk_area'
+  /** Review by risk (R-1): an acceptance check it answers for has no passing test at the head. */
+  | 'ac_untested'
   | 'migration'
   | 'unsafe_other'
   /** The refresh cycle ran out while the base kept moving, and the gap was too big (or unlistable) to land across. Retried next cycle. */
@@ -837,7 +842,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   const mission = input.mission !== undefined ? input.mission : await loadMissionIntegrationFields(owner.taskId);
   // ── 3a. Built ahead of approval: trunk waits for the spec revision's approval ──
   {
-    const toMissionBranch = isMissionIntegrationBase({ baseRef, mission });
+    // Review by risk R-8: a merge into the workspace integration branch is not
+    // held for the spec's approval either; the release summary marks it built ahead (R-2, R-7).
+    const toMissionBranch = isMissionIntegrationBase({ baseRef, mission })
+      || !!reviewByRiskFor({ gitConfig: input.gitConfig ?? null, baseRef, mission });
     const ahead = await (deps.aheadHold ?? (async (t, m) => (await import('@/lib/specs/ahead-hold')).loadAheadHold(t, m)))(owner.taskId, toMissionBranch)
       .catch((err) => { console.warn(`[pr-landing] spec-ahead hold for ${repoFullName}#${prNumber} unreadable:`, err); return { hold: false as const }; });
     if (ahead.hold) return human('spec_unapproved', ahead.reason, { waitingOn: 'spec_approval' });
@@ -863,6 +871,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       skipBaseFreshness: true,
       observed,
       gitConfig: input.gitConfig,
+      // A person's own landing is the approval review by risk asks for (R-4).
+      ...(actor.kind === 'human' ? { personApproves: { approvedBy: actor.userId ?? null } } : {}),
     });
 
   let safety = await runSafety(input.bound);
@@ -911,6 +921,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         return waiting(reason);
       case 'deny_path':
         return human('deny_path', reason);
+      case 'risk_area':
+        return human('risk_area', reason, { waitingOn: 'person' });
+      case 'ac_untested':
+        return human('ac_untested', reason);
       case 'migration':
         if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
         if (/^could not /.test(reason)) return waiting(reason);

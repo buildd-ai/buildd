@@ -31,6 +31,7 @@ import { dispatchWorkflowRelease, releasePreflight } from '@/lib/release/dispatc
 import { attributeRelease } from '@buildd/core/release-attribution';
 import type { ReleaseArchetype } from '@buildd/core/release-archetype';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { defaultSummaryGate, type SummaryGate } from '@/lib/release/summary-gate';
 
 export interface RecordAndDispatchParams {
   workspaceId: string;
@@ -76,6 +77,8 @@ export interface RecordAndDispatchDeps {
   dispatch?: typeof dispatchWorkflowRelease;
   preflight?: typeof releasePreflight;
   attribute?: typeof attributeRelease;
+  /** Review by risk's release-summary approval (release/summary-store.ts). */
+  summaryGate?: SummaryGate;
 }
 
 /** Release workflow inputs that amend an open candidate rather than cut one. */
@@ -131,6 +134,16 @@ export async function recordAndDispatchRelease(
       status: 422,
       error: `Could not resolve the head commit of ${ref} — refusing to dispatch a release with no head sha.`,
     };
+  }
+
+  // Review by risk (R-6): a workflow or script release waits for a person to
+  // approve the summary of exactly this commit, whatever triggered it (AC-5).
+  // An amendment moves a candidate that approved dispatch already cut.
+  if (!params.amendment && !isAmendmentDispatch(params.inputs)) {
+    const summary = await (deps.summaryGate ?? defaultSummaryGate(db))({
+      workspaceId, headSha, surface: 'release/record', door: 'dispatch',
+    });
+    if (summary.blocks) return { ok: false, status: 409, error: `${summary.reason} ${summary.clearedBy}` };
   }
 
   // Idempotency: an in-flight row for this commit means a release is already

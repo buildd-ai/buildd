@@ -14,6 +14,7 @@ import { TonePill } from '@/components/ui/StatePill';
 import type { StateTone } from '@/components/ui/states';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
 import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
+import { ReleaseSummaryCard, ReviewByRiskFacts, ReviewByRiskFields, draftOf, policyOfDraft } from './ReviewByRiskSection';
 
 interface Role {
   slug: string;
@@ -137,6 +138,9 @@ export default function MergePolicyEditor({
   // Stall notify
   const [stallMinutes, setStallMinutes] = useState(String(policy.stallNotifyMinutes ?? ''));
 
+  // Review by risk (spec 62e985a8): a person's setting, off by default
+  const [riskDraft, setRiskDraft] = useState(() => draftOf(policy.reviewByRisk));
+
   // Mission overrides
   const [missionOverrides, setMissionOverrides] = useState<MissionOverride[]>(initialOverrides);
   const [editingOverride, setEditingOverride] = useState<MissionOverride | null>(null);
@@ -165,6 +169,9 @@ export default function MergePolicyEditor({
 
     const stall = parseInt(stallMinutes);
     if (!isNaN(stall) && stall > 0) p.stallNotifyMinutes = stall;
+
+    // Sent once it was ever stored or switched on, so turning it off is a write too.
+    if (riskDraft.enabled || initial.reviewByRisk) p.reviewByRisk = policyOfDraft(riskDraft);
 
     return p;
   }
@@ -247,6 +254,8 @@ export default function MergePolicyEditor({
               { label: 'Stall notification', value: stallMinutes ? `${stallMinutes} minutes` : 'Default' },
             ]}
           />
+          <ReviewByRiskFacts policy={policy.reviewByRisk} />
+          {policy.reviewByRisk?.enabled && <ReleaseSummaryCard workspaceId={workspaceId} canApprove={false} />}
           <DetectedPathsSection policyConfig={policyConfig} />
           {policyConfig && (
             <PolicySuggestionsSection
@@ -354,6 +363,10 @@ export default function MergePolicyEditor({
           </div>
         </div>
       )}
+
+      {/* Review by risk — a mode next to the tier */}
+      <ReviewByRiskFields draft={riskDraft} onChange={setRiskDraft} />
+      {initial.reviewByRisk?.enabled && <ReleaseSummaryCard workspaceId={workspaceId} canApprove />}
 
       {/* Protected paths — detected from the repo, never typed */}
       <DetectedPathsSection policyConfig={policyConfig} onRescan={() => setRescanOpen(true)} />

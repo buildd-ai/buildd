@@ -11,6 +11,7 @@
  *    above applies, retrying a merge a bounded number of times before failing the task.
  * Core: the GitHub webhook and the pr-reconcile cron both reach it.
  */
+import { defaultSummaryGate } from '@/lib/release/summary-gate';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
@@ -74,6 +75,16 @@ export async function handleReleasePrCiSuccess(
   const allPassed = await allCheckSuitesPassed(installationId, repoFullName, headSha);
   if (!allPassed) {
     console.log(`[release-pr] Not all suites passed for ${repoFullName}#${prNumber} — waiting for remaining checks`);
+    return;
+  }
+
+  // Review by risk (R-6): a branch_merge release waits for a person to approve the summary
+  // of exactly this commit. The release stays pending for the next green or sweep.
+  const summaryGate = await defaultSummaryGate()({
+    workspaceId: pendingReleaseTasks[0]!.workspaceId, headSha, surface: 'release-pr ci-success', door: 'merge',
+  });
+  if (summaryGate.blocks) {
+    console.log(`[release-pr] Merge of ${repoFullName}#${prNumber} held: ${summaryGate.reason} ${summaryGate.clearedBy}`);
     return;
   }
 

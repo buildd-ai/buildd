@@ -52,6 +52,16 @@ import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
 import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
 import { refreshCause } from '@/lib/refresh-cause';
+import {
+  decideReviewByRisk,
+  isAcUntestedReason,
+  isRiskHoldReason,
+  reviewByRiskFor,
+  AC_UNTESTED_PREFIX,
+  type AcStanding,
+  type PrFileDiff,
+} from '@/lib/review-by-risk';
+import type { AcceptanceChecksAtHead } from '@/lib/review-by-risk-load';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -66,7 +76,12 @@ export function isBehindBaseRefusal(reason: string): boolean {
 
 export type AutoMergeRefusalClass =
   | 'ci' | 'deny_path' | 'migration' | 'size' | 'conflict' | 'blocked'
-  | 'base_freshness' | 'model_bound' | 'stale_head' | 'github_read' | 'semantic_hold' | 'other';
+  | 'base_freshness' | 'model_bound' | 'stale_head' | 'github_read' | 'semantic_hold'
+  /** Review by risk: a risk area waits for a person (R-4). */
+  | 'risk_area'
+  /** Review by risk: an acceptance check has no passing test at the head (R-1). */
+  | 'ac_untested'
+  | 'other';
 
 /**
  * Which safety rail an `evaluateAutoMergeSafety` refusal came from, for the
@@ -74,6 +89,10 @@ export type AutoMergeRefusalClass =
  * function returns; an unrecognised one is `other`, never dropped.
  */
 export function classifyAutoMergeRefusal(reason: string): AutoMergeRefusalClass {
+  // First: their text names areas such as "Data migrations", which the
+  // migration pattern below would otherwise claim.
+  if (isRiskHoldReason(reason)) return 'risk_area';
+  if (isAcUntestedReason(reason)) return 'ac_untested';
   if (isBehindBaseRefusal(reason)) return 'base_freshness';
   if (/^CI checks |could not verify CI status/.test(reason)) return 'ci';
   if (/^touches protected path/.test(reason)) return 'deny_path';
@@ -185,7 +204,7 @@ export async function evaluateAutoMergeSafety(
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview' | 'dataMigrations'>,
+  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview' | 'dataMigrations' | 'reviewByRisk'>,
   // One options bag, because the bound now needs the mission row too: the
   // authoritative "is this ref the mission's integration branch" question is
   // asked of `opts.mission`, so a second positional parameter would have to
@@ -212,6 +231,15 @@ export async function evaluateAutoMergeSafety(
      * unattended merge's stand-ins for judgment, and a person is the judgment.
      */
     personDecides?: boolean;
+    /**
+     * A person's own merge through a door that otherwise runs the unattended
+     * rails (the landing function's dashboard door). Only review by risk reads
+     * it: a person merging is the approval R-4 asks for. `personDecides`
+     * implies it. `approvedBy` names the person for the release summary (R-7).
+     */
+    personApproves?: { approvedBy: string | null } | null;
+    /** Review by risk's acceptance-check read (review-by-risk-load.ts). Injected by tests. */
+    loadAcceptanceChecks?: (taskId: string | null, headSha: string) => Promise<AcceptanceChecksAtHead>;
     /**
      * The workspace gitConfig, for the post-refresh semantic hold
      * (base-refresh.ts `checkBaseRefreshHold`). Every merge door passes it;
@@ -329,7 +357,7 @@ export async function evaluateAutoMergeSafety(
       : (policy.threshold?.denyPaths ?? []);
   const maxLines = policy.threshold?.maxLines ?? 800;
 
-  let files: Array<{ filename: string; additions: number; deletions: number }> = [];
+  let files: Array<{ filename: string; additions: number; deletions: number; status?: string; patch?: string; previous_filename?: string }> = [];
   try {
     files = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`);
   } catch (err) {
@@ -345,7 +373,7 @@ export async function evaluateAutoMergeSafety(
   const deltaBase = await refreshDeltaBaseForTask(opts?.taskId ?? null, opts?.gitConfig ?? null);
   if (deltaBase) {
     const delta = await effectiveDeltaFiles(installationId, repoFullName, deltaBase, headSha);
-    if (delta) files = delta;
+    if (delta) files = delta.map((f) => ({ ...f, patch: f.patch ?? undefined, previous_filename: f.previous_filename ?? undefined }));
   }
 
   if (denyPaths.length > 0) {
@@ -430,11 +458,83 @@ export async function evaluateAutoMergeSafety(
     opts.observed.mergeableState = prData?.mergeable_state ?? null;
   }
 
+  // Review by risk (spec 62e985a8; lib/review-by-risk.ts). Decided on the live
+  // base, not only on the policy a door resolved: a door that resolved without
+  // a base ref still gets the holds. Adds holds and lifts only the size cap
+  // below; CI, the verdict gate, conflicts, branch protection and the merge
+  // method are untouched (R-10).
+  const reviewByRisk = opts?.gitConfig
+    ? reviewByRiskFor({
+        gitConfig: opts.gitConfig,
+        baseRef: prData?.base?.ref ?? null,
+        mission: opts.mission ?? null,
+        repoDefaultBranch: (prData?.base?.repo as { default_branch?: string | null } | null | undefined)?.default_branch ?? null,
+      })?.policy ?? null
+    : (policy.reviewByRisk?.enabled ? policy.reviewByRisk : null);
+  if (reviewByRisk) {
+    const person = !!opts?.personDecides || !!opts?.personApproves;
+    let acIds: string[] | null = null;
+    let standings: AcStanding[] = [];
+    if (!person) {
+      const load = opts?.loadAcceptanceChecks
+        ?? (async (t: string | null, h: string) => (await import('@/lib/review-by-risk-load')).loadAcceptanceChecksAtHead(t, h));
+      let read: AcceptanceChecksAtHead;
+      try {
+        read = await load(opts?.taskId ?? null, headSha);
+      } catch (err) {
+        read = { pinned: true, error: err instanceof Error ? err.message : String(err) };
+      }
+      if (read.pinned && 'error' in read) {
+        // Fail closed: a pin whose checks cannot be read cannot show they were tested.
+        return { ok: false, reason: `${AC_UNTESTED_PREFIX} — could not read this PR's acceptance checks: ${read.error}` };
+      }
+      if (read.pinned) { acIds = read.acIds; standings = read.standings; }
+    }
+    const decision = decideReviewByRisk({ policy: reviewByRisk, files, headSha, acIds, standings, person });
+    if (decision.hold) {
+      fireGateEvent({
+        gate: GATE_SLUGS.REVIEW_BY_RISK,
+        surface: 'auto-merge',
+        outcome: 'deferred',
+        reason: decision.reason,
+        workspaceId: opts?.workspaceId ?? null,
+        taskId: opts?.taskId ?? null,
+        workerId: opts?.workerId ?? null,
+        callerOrigin: 'system',
+        detail: {
+          prNumber, headSha, kind: decision.kind,
+          areas: decision.hits.map((h) => ({ area: h.area, file: h.file, matched: h.matched })).slice(0, 20),
+          ...(decision.kind === 'ac_untested' ? { untested: decision.untested } : {}),
+        },
+      });
+      return { ok: false, reason: decision.reason };
+    }
+    if (person && decision.hits.length) {
+      // The approval R-4 asks for, recorded for the release summary (R-7).
+      fireGateEvent({
+        gate: GATE_SLUGS.REVIEW_BY_RISK,
+        surface: 'auto-merge',
+        outcome: 'bypassed',
+        reason: 'a person approved a PR touching a review-by-risk area by merging it',
+        workspaceId: opts?.workspaceId ?? null,
+        taskId: opts?.taskId ?? null,
+        workerId: opts?.workerId ?? null,
+        callerOrigin: 'dashboard',
+        detail: {
+          prNumber, headSha,
+          approvedBy: opts?.personApproves?.approvedBy ?? null,
+          areas: decision.hits.map((h) => ({ area: h.area, file: h.file, matched: h.matched })).slice(0, 20),
+        },
+      });
+    }
+  }
+
   // Aggregate line-count cap — auto-threshold tier ONLY (see the function
   // doc comment). `agent-review` and `human` never reach this block, so a
   // workspace on either tier cannot inherit the 800-line default just
-  // because `policy.threshold` happened to be unset.
-  if (policy.tier === 'auto-threshold' && !opts?.personDecides) {
+  // because `policy.threshold` happened to be unset. Review by risk has no
+  // size condition (R-1), so it lifts the cap for the PRs it governs.
+  if (policy.tier === 'auto-threshold' && !opts?.personDecides && !reviewByRisk) {
     // Is this a task PR into its own mission's integration branch
     // (task branch → integration branch)?
     //
