@@ -89,3 +89,15 @@ export type {
   FreshnessInput,
   GetKnowledgeHealthOptions,
 } from './health';
+export {
+  SKILL_SOURCE_TYPE,
+  SKILL_EXCERPT_CHARS,
+  buildSkillChunk,
+  findSimilarSkills,
+  isIndexableSkill,
+  quoteSkillText,
+  skillChunkHash,
+  skillChunkText,
+  skillSourceId,
+} from './skills';
+export type { SimilarSkill, SkillIndexInput } from './skills';
