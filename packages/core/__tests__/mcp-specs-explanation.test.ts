@@ -41,12 +41,23 @@ describe('manage_specs explanation', () => {
     expect(out(r)).toContain('explanation cannot change');
   });
 
+  it('R-28: an incomplete explanation comes back as the reason, naming what is missing', async () => {
+    const err = new Error(`API error: 409 - ${JSON.stringify({ error: 'The explanation does not cover every change. Not explained: criteria R-3. Nothing was written.', code: 'explanation_incomplete' })}`);
+    const api = mock(async () => { throw err; });
+    const r = await call(api, { action: 'revise', specId: SPEC, expectedVersion: 3, body: '# Checkout\n- R-1: y', explanation: EXPLANATION });
+    expect(out(r)).toContain('Not explained: criteria R-3');
+  });
+
   it('the contract and the guidance tell an agent to write one when it revises', () => {
     const contract = buildParamsDescription(['manage_specs']);
     expect(contract).toContain('explanation? (create_draft/revise');
     const guidance = readFileSync(join(import.meta.dir, '..', 'mcp-guidance', 'living-specs.md'), 'utf8');
     expect(guidance).toContain('Write an explanation with every revise');
     expect(guidance).toContain('explanation_immutable');
+    // R-28: the explanation must be cumulative, and the refusal is named
+    expect(guidance).toContain('explanation_incomplete');
+    expect(guidance).toContain('cumulative');
+    expect(contract).toContain('explanation_incomplete');
     expect(contract).toContain('question?: one sentence naming the decision');
     expect(guidance).toContain('Ask the question when the revision needs a judgement call');
   });
