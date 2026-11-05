@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "ba8080d4-a18e-45f0-b34d-76c32495108d",
+  "id": "ffa97479-ee83-4ac0-96e0-c2fb1fcb4fcf",
   "prevIds": [
     "95f56b64-84dd-43e5-9f7a-29905f3926b5"
   ],
@@ -22453,6 +22453,19 @@
       "generated": null,
       "identity": null,
       "name": "created_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "specs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_by_task_id",
       "entityType": "columns",
       "schema": "public",
       "table": "specs"
