@@ -221,7 +221,7 @@ const SAFE: Record<string, string[]> = {
   // Closed vocabularies (ARTIFACT_LINK_SUBJECTS / ARTIFACT_LINK_RELATIONS in the schema).
   artifact_links: ['subject_kind', 'relation'],
   // Closed vocabularies (SPEC_SCOPES / SPEC_STATUSES) and a sha256 of a body scrubbed elsewhere.
-  specs: ['scope', 'status', 'kind'], // kind: contract | charter | experiment | snapshot
+  specs: ['scope', 'status'],
   spec_revisions: ['content_hash', 'repo_refs', 'replaces'], // repo paths pinned to commit SHAs; replaces is spec ids
   // A criterion id from the spec body (R-1, AC-2) and a git SHA.
   spec_outcome_verdicts: ['criterion_id', 'head_sha'],
