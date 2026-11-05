@@ -153,7 +153,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   // Unpinned: every in-reach workspace, for routing to pick the turn's scope.
   const workspaces = defaultWorkspaceId ? [] : await loadRoutableWorkspaces(conv.teamId, reach.workspaceIds).catch(() => []);
   const embedder = getVoyageEmbedder();
-  const knowledgeStore = new PgVectorStore(embedder, getVoyageReranker());
+  const knowledgeStore = new PgVectorStore(embedder, getVoyageReranker(), { caller: 'chat' });
 
   /** Tool context and memory with `wsId` as the default workspace (null = none). */
   const scopeFor = (wsId: string | null) => {

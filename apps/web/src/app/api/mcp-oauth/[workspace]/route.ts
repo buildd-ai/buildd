@@ -139,7 +139,7 @@ function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string,
     getLevel: async () => level,
     // An OAuth session is always a signed-in person (its personal roles).
     principal: 'person',
-    knowledgeStore: new PgVectorStore(embedder, getVoyageReranker()),
+    knowledgeStore: new PgVectorStore(embedder, getVoyageReranker(), { caller: 'mcp_oauth' }),
     embedder,
   };
 
@@ -235,7 +235,7 @@ ${LEGACY_ENDPOINT_NOTICE}`,
             return { content: [{ type: 'text' as const, text: 'Memory store unavailable — team could not be resolved.' }], isError: true };
           }
           const embedder = getVoyageEmbedder();
-          const knowledgeStore = new PgVectorStore(embedder, getVoyageReranker());
+          const knowledgeStore = new PgVectorStore(embedder, getVoyageReranker(), { caller: 'mcp_oauth' });
           return await handleMemoryAction(memClient, action === 'memory_delete' ? 'delete' : 'consolidate_knowledge', params, {
             workspaceId,
             teamId: accountTeamId,

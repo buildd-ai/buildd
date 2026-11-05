@@ -262,7 +262,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   // workspaceId is resolved lazily inside the mirror, so the store can be
   // constructed unconditionally; null embedder falls back to lexical indexing.
   const ctxEmbedder = getVoyageEmbedder();
-  const ctxKnowledgeStore = new PgVectorStore(ctxEmbedder, getVoyageReranker());
+  const ctxKnowledgeStore = new PgVectorStore(ctxEmbedder, getVoyageReranker(), { caller: 'mcp' });
 
   /**
    * Whether the knowledge surfaces (memory store, recall/learn, the memory
@@ -379,7 +379,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     }
 
     const embedder = getVoyageEmbedder();
-    const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
+    const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker(), { caller: 'mcp' }) : undefined;
     const memTeamId = await resolveTeamId(wsId, accountTeamId);
     // Docs of other same-team workspaces this one links to. Read arms only: the
     // admin knowledge-ops arm never searches.

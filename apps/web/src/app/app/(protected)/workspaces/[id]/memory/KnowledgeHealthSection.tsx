@@ -34,6 +34,11 @@ interface KnowledgeHealth {
   freshness: 'fresh' | 'stale' | 'no-index';
 }
 
+interface VoyageBudget {
+  state: 'ok' | 'near' | 'over';
+  message: string | null;
+}
+
 interface Props {
   workspaceId: string;
 }
@@ -79,6 +84,7 @@ function shortSha(sha: string | null): string {
 
 export default function KnowledgeHealthSection({ workspaceId }: Props) {
   const [health, setHealth] = useState<KnowledgeHealth | null>(null);
+  const [budget, setBudget] = useState<VoyageBudget | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,7 +96,9 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
         return r.json();
       })
       .then((data) => {
-        if (!cancelled) setHealth(data.health);
+        if (cancelled) return;
+        setHealth(data.health);
+        setBudget(data.voyageBudget ?? null);
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load. Try again.');
@@ -125,6 +133,15 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
       {health && !loading && !error && (
         <div className="space-y-5">
           {fresh && <p className="text-sm text-text-secondary">{fresh.blurb}</p>}
+
+          {budget?.message && (
+            <p
+              data-testid="voyage-budget-notice"
+              className={`text-sm ${budget.state === 'over' ? 'text-status-error' : 'text-text-secondary'}`}
+            >
+              {budget.message}
+            </p>
+          )}
 
           {/* Corpus / chunk table */}
           {health.corpora.length > 0 ? (
