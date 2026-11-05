@@ -19,6 +19,7 @@
     "./db/*": "./db/*.ts",
     "./config": "./config.ts",
     "./token-scopes": "./token-scopes.ts",
+    "./procedure-skeleton": "./procedure-skeleton.ts",
     "./mcp-tools": "./mcp-tools.ts",
     "./mcp-tool-groups": "./mcp-tool-groups.ts",
     "./mcp-sub-actions": "./mcp-sub-actions.ts",
