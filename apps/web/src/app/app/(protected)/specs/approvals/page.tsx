@@ -34,7 +34,7 @@ export default async function SpecApprovalsPage() {
     <main className="px-4 pt-[4.5rem] pb-24 md:px-8 md:pt-8 md:pb-10">
       <div className="flex max-w-3xl flex-col gap-4">
         <h1 className="text-heading font-semibold text-text-primary">Awaiting your approval</h1>
-        <Lede>
+        <Lede className="max-w-none!">
           <span data-testid="spec-approvals-lede">
             {n === 0
               ? 'Nothing waits for your approval.'
@@ -86,19 +86,19 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
   const gate = view?.state === 'ready' ? view.gate : null;
   return (
     <Card className="flex flex-col gap-2" data-testid="spec-approvals-row" data-spec-id={row.specId}>
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-        <Link href={`/app/specs/${encodeURIComponent(row.specId)}`} className="inline-flex min-h-11 items-center text-title font-semibold text-text-primary underline-offset-2 hover:underline [overflow-wrap:anywhere] md:min-h-0">
-          {row.title}
-        </Link>
+      <Link href={`/app/specs/${encodeURIComponent(row.specId)}`} className="inline-flex min-h-11 items-center self-start text-title font-semibold text-text-primary underline-offset-2 hover:underline [overflow-wrap:anywhere] md:min-h-0">
+        {row.title}
+      </Link>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="spec-approvals-badges">
+        <Chip tone={row.risk.level === 'judgement' ? 'warning' : 'muted'} data-testid="spec-approvals-risk" data-risk={row.risk.level}>
+          {row.risk.level === 'judgement' ? 'needs judgement' : 'low-risk'}
+        </Chip>
         <Chip tone="muted" data-testid="spec-approvals-kind">{row.kind}</Chip>
         {gate ? (
           <Chip tone={gate.passed ? (gate.warnings.length ? 'warning' : 'success') : 'error'} data-testid="spec-approvals-gate">
             {gate.passed ? (gate.warnings.length ? 'gate passed, warnings' : 'gate passed') : 'gate refused'}
           </Chip>
         ) : null}
-        <Chip tone={row.risk.level === 'judgement' ? 'warning' : 'muted'} data-testid="spec-approvals-risk" data-risk={row.risk.level}>
-          {row.risk.level === 'judgement' ? 'needs judgement' : 'low-risk'}
-        </Chip>
       </div>
       {row.question ? <SpecQuestion question={row.question} /> : null}
       <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-line">
