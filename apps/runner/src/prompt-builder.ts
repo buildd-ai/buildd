@@ -1,4 +1,5 @@
 import type { query } from '@anthropic-ai/claude-agent-sdk';
+import { buildLoopVerificationSection } from './loop-verification-section';
 import { QUESTION_BRIEF_GUIDANCE } from '@buildd/core/question-brief';
 import { resumeInstruction } from '@buildd/core/start-anyway';
 import type { LocalWorker, BuilddTask } from './types';
@@ -706,6 +707,13 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   const retryBaseBranch = (taskCtx as any)?.baseBranch as string | undefined;
   const maxIter = (taskCtx as any)?.maxIterations as number | undefined;
 
+  // Loop retries carry the verifier's last verdict in its own section, so the
+  // one-line summary is not repeated in Retry Context.
+  const verificationContent = buildLoopVerificationSection({
+    loopConfig: (task as { loopConfig?: { exitCondition?: { type?: string } } | null }).loopConfig,
+    context: taskCtx as Record<string, unknown> | undefined,
+  });
+
   let retryContent: string | null = null;
   if (retryIteration || failureCtx) {
     const retryParts: string[] = ['## Retry Context'];
@@ -715,13 +723,14 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     if (retryBaseBranch) {
       retryParts.push(`Previous work is on branch \`${retryBaseBranch}\`. Your worktree is based on that branch — continue from existing work, do NOT start fresh.`);
     }
-    if (failureCtx) {
+    if (failureCtx && !verificationContent) {
       retryParts.push(`Previous failure: ${failureCtx}`);
     }
     retryParts.push('Review the existing work and continue from where the previous attempt left off. Do not redo completed work.');
     retryContent = retryParts.join('\n');
   }
-  addSection('retry-context', retryContent);
+  // Same accounting slot as Retry Context: the section list is pinned by the byte-accounting suite.
+  addSection('retry-context', [retryContent, verificationContent].filter(Boolean).join('\n\n') || null);
 
   // A cold answer reopens this SAME task for a new attempt (no `Continue:`
   // task): the person's answer reaches the attempt only through here. See
