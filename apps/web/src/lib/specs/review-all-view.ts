@@ -6,7 +6,7 @@ import { getSpec } from './store';
 /** Rows past this are counted and left to the inbox, so the page stays one read. */
 export const REVIEW_ALL_ROWS = 30;
 
-export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'author'> {
+export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'foldedRevisions' | 'author'> {
   /** One sentence on what changes: the explanation's summary, else the change summary; null when neither was written. */
   summary: string | null;
   /**
@@ -29,7 +29,7 @@ export async function reviewAllView(userId: string, now = Date.now()): Promise<{
   const all = await listAwaitingApproval(userId);
   const caller = { kind: 'user' as const, userId };
   const rows = await Promise.all(all.slice(0, REVIEW_ALL_ROWS).map(async (r): Promise<ReviewAllRow> => ({
-    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, author: r.author,
+    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, foldedRevisions: r.foldedRevisions, author: r.author,
     summary: r.explanationSummary ?? r.changeSummary?.trim() ?? null,
     request: signSpecApprovalRequest({
       specId: r.specId, workspaceId: r.workspaceId, revision: r.headRevision, expectedVersion: r.version, contentHash: r.contentHash,

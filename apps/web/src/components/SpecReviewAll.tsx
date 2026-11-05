@@ -9,6 +9,7 @@ import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import SpecDiffView from '@/components/SpecDiffView';
 import { approveAll, approveAllSummary, type ApproveAllItem, type ApproveAllResult, type ConfirmReply } from '@/lib/specs/approve-all';
+import { foldedLine } from '@/lib/specs/folded-revisions';
 import type { ReviewAllRow } from '@/lib/specs/review-all-view';
 
 /** One signed request, confirmed on its own: the same endpoint a confirm link uses. */
@@ -78,6 +79,7 @@ export default function SpecReviewAll({ rows, initialResult = null, openSpecId =
                 <p className="text-meta text-text-muted [overflow-wrap:anywhere]">
                   {r.workspaceName} · revision {r.headRevision}{r.approvedRevision ? ` replaces ${r.approvedRevision}` : ', first approval'} · by {r.author}
                   {r.diff ? ` · +${r.diff.linesAdded} −${r.diff.linesRemoved}` : ''}
+                  {foldedLine(r.foldedRevisions) ? ` · ${foldedLine(r.foldedRevisions)}` : ''}
                 </p>
                 <Disclosure summary="Show the diff" defaultOpen={openSpecId === r.specId}>
                   <div className="pt-2" data-testid="spec-review-all-diff">
