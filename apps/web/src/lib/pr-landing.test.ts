@@ -1239,6 +1239,26 @@ describe('landPr — tier', () => {
 
 // ── Safety rails ───────────────────────────────────────────────────────────────
 
+describe('landPr — work built ahead of spec approval', () => {
+  it('holds a trunk merge until the pinned revision is approved', async () => {
+    const aheadHold = async () => ({ hold: true as const, reason: 'built ahead of approval of Billing rev 2' });
+    const out = await land({}, { ...deps(), aheadHold } as any);
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'spec_unapproved' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('merges once the hold clears (approved, or re-pinned and approved)', async () => {
+    const out = await land({}, { ...deps(), aheadHold: async () => ({ hold: false as const }) } as any);
+    expect(out).toMatchObject({ kind: 'merged' });
+  });
+
+  it('asks the hold whether the base is a mission branch', async () => {
+    const seen: boolean[] = [];
+    await land({}, { ...deps(), aheadHold: async (_t: string | null, m: boolean) => { seen.push(m); return { hold: false as const }; } } as any);
+    expect(seen).toEqual([false]);
+  });
+});
+
 describe('landPr — safety rails', () => {
   it('pending CI waits', async () => {
     gh.checkRuns = [{ name: 'build', status: 'in_progress', conclusion: null }];

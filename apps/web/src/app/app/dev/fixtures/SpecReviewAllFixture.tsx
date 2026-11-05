@@ -14,12 +14,10 @@ import type { ApproveAllResult } from '@/lib/specs/approve-all';
 export const SPEC_REVIEW_ALL_VARIANTS = ['list', 'diff', 'result'] as const;
 export type SpecReviewAllVariant = (typeof SPEC_REVIEW_ALL_VARIANTS)[number];
 
-const row = (n: number, title: string, summary: string | null, approvedRevision: number | null, rows: ReviewAllRow['diff']): ReviewAllRow => ({
+const row = (n: number, title: string, summary: string | null, approvedRevision: number | null, rows: ReviewAllRow['diff'], isQuestion = false): ReviewAllRow => ({
   specId: `fixture-spec-${n}`, title, workspaceName: 'Shop', headRevision: (approvedRevision ?? 0) + 1, approvedRevision,
-  author: n % 2 ? 'an agent' : 'Sam Rivera', summary, request: `fixture-request-${n}`, diff: rows,
-  shipped: n === 1 ? { merged: true, matches: true, unmet: [] }
-    : n === 2 ? { merged: true, matches: false, unmet: [{ id: 'AC-4', state: 'failed' }, { id: 'R-7', state: 'no_check' }] } : null,
-});
+  author: n % 2 ? 'an agent' : 'Sam Rivera', summary, request: `fixture-request-${n}`, diff: rows, shipped: n === 1 ? { merged: true, matches: true, unmet: [] }
+  : n === 2 ? { merged: true, matches: false, unmet: [{ id: 'AC-4', state: 'failed' }, { id: 'R-7', state: 'no_check' }] } : null, isQuestion, });
 
 export const SPEC_REVIEW_ALL_ROWS: ReviewAllRow[] = [
   row(1, 'Checkout', 'Shoppers can cancel from the confirmation email until the order is packed.', 2, {
@@ -31,13 +29,13 @@ export const SPEC_REVIEW_ALL_ROWS: ReviewAllRow[] = [
       { op: '+', oldLine: null, newLine: 61, text: '- R-13: An order can be cancelled from the confirmation email until it is packed.' },
     ] }],
   }),
-  row(2, 'Refunds to the original card, before and after packing', 'Refunds after packing wait for the parcel to come back.', 4, {
+  row(2, 'Refunds to the original card, before and after packing', 'Should a refund after packing wait for the parcel to come back, or go out at once?', 4, {
     linesAdded: 1, linesRemoved: 1, omittedLines: 0,
     hunks: [{ kind: 'changed', path: 'Refunds > After packing', linesAdded: 1, linesRemoved: 1, rows: [
       { op: '-', oldLine: 22, newLine: null, text: '- AC-4: GIVEN a packed order WHEN I cancel THEN the refund is issued at once.' },
       { op: '+', oldLine: null, newLine: 22, text: '- AC-4: GIVEN a packed order WHEN I cancel THEN the refund is issued when the parcel is back.' },
     ] }],
-  }),
+  }, true),
   row(3, 'Receipts', null, 1, {
     linesAdded: 1, linesRemoved: 0, omittedLines: 0,
     hunks: [{ kind: 'changed', path: 'Receipts > Requirements', linesAdded: 1, linesRemoved: 0, rows: [
