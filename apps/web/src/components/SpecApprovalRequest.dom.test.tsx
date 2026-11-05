@@ -505,3 +505,23 @@ describe('SpecApprovalRequest: the explanation and its check', () => {
     });
   });
 });
+
+describe('SpecApprovalRequest: the author\'s question', () => {
+  const lines = [{ kind: 'changed' as const, id: 'R-1', text: 'a', oldText: 'b', words: [], section: 'Checkout > Totals' }];
+  const withQuestion = (question?: string) => {
+    const explanation = { summary: 'Totals round to cents.', ...(question ? { question } : {}), lines: { 'R-1': 'Rounds.' } };
+    return { ...ready, explanation, coverage: explanationCoverage(explanation, lines as never[], []), sectionWords: {} };
+  };
+  it('leads the explanation, above the coverage line', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={withQuestion('Should refunds be in scope?')} />));
+    const qEl = q('spec-question')!;
+    expect(qEl.textContent).toContain('Should refunds be in scope?');
+    const order = [...container.querySelectorAll('[data-testid="spec-question"], [data-testid="spec-explain-summary"], [data-testid="spec-explain-coverage"]')].map((e) => e.getAttribute('data-testid'));
+    expect(order[0]).toBe('spec-question');
+    expect(order.indexOf('spec-explain-coverage')).toBeGreaterThan(0);
+  });
+  it('shows nothing extra when no question was asked', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={withQuestion()} />));
+    expect(q('spec-question')).toBeNull();
+  });
+});
