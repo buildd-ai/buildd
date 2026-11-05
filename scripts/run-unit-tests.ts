@@ -44,7 +44,6 @@ const UNIT_TEST_ROOTS = [
  * per criterion. The build task removes each entry once its file passes.
  */
 export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
-  'apps/runner/__tests__/unit/stuck-detection.test.ts', // spec "In-session stuck detection" r1
 ];
 
 export function isUnitTestFile(path: string): boolean {
