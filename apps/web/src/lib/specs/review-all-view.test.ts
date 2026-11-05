@@ -9,6 +9,7 @@ const row = (n: number, tier: 'high' | 'medium' | 'low') => ({
 const all = [row(1, 'high'), row(2, 'medium'), row(3, 'high'), row(4, 'low')];
 
 mock.module('./approval-inbox', () => ({ listAwaitingApproval: async () => all }));
+mock.module('./approval-row-coverage', () => ({ rowCoverage: async () => null }));
 mock.module('./approval-request', () => ({ signSpecApprovalRequest: (p: { specId: string }) => `signed-${p.specId}` }));
 mock.module('./diff', () => ({ diffSpecHunks: () => ({ hunks: [], omittedLines: 0 }), diffSpecRevisions: async () => ({ ok: false }) }));
 mock.module('./store', () => ({ getSpec: async () => ({ ok: false }) }));
