@@ -8,7 +8,7 @@ import { isUuid } from '@/lib/uuid';
  *
  * A proposal is a native draft nobody asked for: never approved, written by a
  * task's token (specs.created_by_task_id) where that task was not filed to
- * write specs (kind `writing`), pinned by no task and selected by no mission.
+ * write specs (kind `writing`; a task since pruned counts as asked), pinned by no task and selected by no mission.
  * It is listed under Proposals on the specs page and is not an approval:
  * it stays out of the inbox, Home's count and `awaiting_approval`, until a
  * mission selects it or a task pins it, which returns it to the inbox.
@@ -20,22 +20,14 @@ import { isUuid } from '@/lib/uuid';
 export const proposalWhere = () => sql`${specs.approvedRevision} IS NULL
   AND ${specs.createdByTaskId} IS NOT NULL
   AND coalesce(${specs.repoSource}->>'state', '') <> 'imported'
-  AND NOT EXISTS (SELECT 1 FROM tasks wt WHERE wt.id = ${specs.createdByTaskId} AND wt.kind = 'writing')
+  AND EXISTS (SELECT 1 FROM tasks wt WHERE wt.id = ${specs.createdByTaskId} AND wt.kind IS DISTINCT FROM 'writing')
   AND NOT EXISTS (SELECT 1 FROM tasks pt WHERE pt.workspace_id = ${specs.workspaceId}
     AND pt.context->'specSource'->>'specId' = ${specs.id}::text)
   AND NOT EXISTS (SELECT 1 FROM missions m WHERE m.workspace_id = ${specs.workspaceId}
     AND m.goal_criteria @> jsonb_build_array(jsonb_build_object('type', 'living_spec', 'specId', ${specs.id}::text)))`;
 
-export interface ProposalRow {
-  specId: string;
-  title: string;
-  workspaceId: string;
-  headRevision: number;
-  proposedAt: string;
-  /** The task that wrote it, when it still exists. */
-  taskId: string | null;
-  taskTitle: string | null;
-}
+export type { ProposalRow } from './proposal-row';
+import type { ProposalRow } from './proposal-row';
 
 const rowsOf = <T,>(r: unknown) => ((r as { rows?: T[] }).rows ?? []);
 
