@@ -81,8 +81,7 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    ("Should a refund after packing wait for the parcel?"). It leads their
    inbox row and the confirm page above the coverage line, and Review all
    shows it in place of the summary. Leave it out when nothing needs
-   deciding; it is fixed with the revision like the rest.
-   Say what changed and why, plainly; the check
+   deciding; it is fixed with the revision like the rest. Say what changed and why, plainly; the check
    only proves you mentioned it.
 4. **Submit and approve: a person's act.** `buildd action=manage_specs params={ action: "submit", specId, expectedVersion }`
    and `buildd action=manage_specs params={ action: "approve", specId, revision, expectedVersion }`
