@@ -22,6 +22,7 @@ import { criterionHashes, retiredIdRefusal, writeCriterionRecords } from './crit
 import { acceptanceRoleRefusal } from './verdict-guards';
 import { parseReplaces, replacesRefusal } from './replaces';
 import { parseExplanation } from '@buildd/spec-contract/explanation';
+import { explanationRefusalText } from './explanation-check';
 import type { AutoApproval } from './auto-approve';
 
 /**
@@ -287,6 +288,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   duplicates?: DuplicateCheckDeps | false;
   /** false: never run the no-criteria-change check (a copy: copying never approves). */
   autoApprove?: false;
+  /** b7fc9316 R-29: a copy writes a revision it did not author, so no explanation is required of it. */
+  explanationExempt?: true;
 } = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean; duplicateCheck?: DuplicateCheck | null; autoApproval?: AutoApproval | null } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
@@ -330,6 +333,17 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
       return fail(409, `Revision ${head.revision} is already written and its explanation cannot change. Nothing was written; an explanation goes with the revise that changes the spec.`, { code: 'explanation_immutable' });
     }
     return { ok: true, spec, revision: head, unchanged: true };
+  }
+  // b7fc9316 R-28: an agent's explanation covers every change since the approved
+  // revision, stacked unapproved revisions included. A person's edit, a copy and an
+  // import are exempt (R-29); a spec with nothing approved has nothing to cover.
+  if (caller.kind === 'account' && !opts.imported && !opts.explanationExempt && spec.approvedRevision != null) {
+    const [approved] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, spec.approvedRevision))).limit(1);
+    const approvedBody = approved ? (await getArtifactRevision(spec.bodyArtifactId, approved.artifactRevision))?.content : null;
+    if (typeof approvedBody === 'string') {
+      const incomplete = explanationRefusalText(approvedBody, body, explained.explanation);
+      if (incomplete) return fail(409, incomplete, { code: 'explanation_incomplete' });
+    }
   }
   if (replaces && replacesChanged) {
     const refused = await replacesRefusal(spec.workspaceId, replaces, spec.id);
