@@ -45,6 +45,7 @@ const RAW_STRING_PURPOSES = new Set([
   'inference_key',
   // OpenRouter key for decision calls (packages/core/decision-client.ts).
   'decision_key',
+  'voyage_api_key',
   // A role/workspace env-mapping value (e.g. a private-registry token) — see
   // docs/credentials-architecture.md and docs/design/reliable-env-provisioning.md.
   'role_env_secret',
@@ -56,7 +57,7 @@ const RAW_STRING_PURPOSES = new Set([
  * would silently make a team credential work only for tasks that one account
  * files.
  */
-const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key', 'role_env_secret']);
+const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key', 'role_env_secret', 'voyage_api_key']);
 
 /**
  * Sanitize a raw secret value before encryption: trim whitespace, and for raw-string
@@ -83,7 +84,7 @@ function sanitizeSecretValue(raw: string, purpose: string): string {
  * team's Cloudflare account (apps/cloud-runner), so it takes the same bar; it
  * is always team-wide: one Worker serves the team.
  */
-const TEAM_MODEL_KEY_PURPOSES = new Set(['inference_key', 'decision_key', CLOUDFLARE_PURPOSE]);
+const TEAM_MODEL_KEY_PURPOSES = new Set(['inference_key', 'decision_key', 'voyage_api_key', CLOUDFLARE_PURPOSE]);
 
 type SecretsCaller = {
   teamIds: string[];
@@ -207,7 +208,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
-  const validPurposes = ['anthropic_api_key', 'openai_api_key', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'role_env_secret', CLOUDFLARE_PURPOSE];
+  const validPurposes = ['anthropic_api_key', 'openai_api_key', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'voyage_api_key', 'role_env_secret', CLOUDFLARE_PURPOSE];
   if (!validPurposes.includes(purpose)) {
     return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
   }
