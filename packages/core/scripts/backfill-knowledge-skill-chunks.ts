@@ -10,7 +10,7 @@
  *
  * Usage:
  *   VOYAGE_API_KEY=... DATABASE_URL=... \
- *   bun packages/core/scripts/backfill-skill-chunks.ts [workspaceId] [--dry-run]
+ *   bun packages/core/scripts/backfill-knowledge-skill-chunks.ts [workspaceId] [--dry-run]
  */
 import { db } from '../db/index';
 import { workspaces, workspaceSkills } from '../db/schema';
