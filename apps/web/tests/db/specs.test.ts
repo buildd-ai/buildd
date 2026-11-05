@@ -31,6 +31,7 @@ beforeAll(async () => {
 const A = () => ({ kind: 'user' as const, userId: userA });
 const agent = () => ({ kind: 'account' as const, account: { id: '00000000-0000-4000-8000-0000000000a1', teamId: teamA, workspaceIds: null } as any });
 
+const EXPL = { summary: 'test change', lines: { 'R-2': 'edit', 'R-3': 'edit', 'AC-1': 'edit', Checkout: 'edit' } };
 const BODY_1 = '# Checkout\nR-1: Totals are in the shopper\'s currency.\n- **AC-1** Given EUR, the total reads €.\n';
 
 async function draft() {
@@ -73,7 +74,7 @@ describe('two writers revising the same draft', () => {
     const bot = BODY_1 + 'R-2: agent edit\n';
     const [a, b] = await Promise.all([
       reviseSpecDraft(A(), spec.id, { expectedVersion: 1, body: human }),
-      reviseSpecDraft(agent(), spec.id, { expectedVersion: 1, body: bot }),
+      reviseSpecDraft(agent(), spec.id, { expectedVersion: 1, body: bot, explanation: EXPL }),
     ]);
     expect([a.ok, b.ok].sort()).toEqual([false, true]);
     const lost = (a.ok ? b : a) as { ok: false; status: number; currentVersion?: number };
@@ -83,7 +84,7 @@ describe('two writers revising the same draft', () => {
     expect(head.ok && head.view.body).toBe(winner);
     // The loser re-reads version 2 and revises on top: both edits are now in history.
     const merged = winner + (a.ok ? 'R-3: agent edit\n' : 'R-3: human edit\n');
-    const retry = await reviseSpecDraft(a.ok ? agent() : A(), spec.id, { expectedVersion: 2, body: merged });
+    const retry = await reviseSpecDraft(a.ok ? agent() : A(), spec.id, { expectedVersion: 2, body: merged, explanation: EXPL });
     expect(retry.ok && retry.revision.revision).toBe(3);
     const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM spec_revisions WHERE spec_id = ${spec.id}::uuid`);
     expect(n).toBe(3);
@@ -97,7 +98,7 @@ describe('two writers revising the same draft', () => {
 
   test('an agent\'s revision is recorded as the agent\'s', async () => {
     const { spec } = await draft();
-    const r = await reviseSpecDraft(agent(), spec.id, { expectedVersion: 1, body: BODY_1 + 'z\n' });
+    const r = await reviseSpecDraft(agent(), spec.id, { expectedVersion: 1, body: BODY_1 + 'z\n', explanation: EXPL });
     expect(r.ok && [r.revision.authorKind, r.revision.approvedBy]).toEqual(['agent', null]);
   });
 });
@@ -163,7 +164,7 @@ describe('nothing here approves', () => {
   test('an agent asking for status approved on create, revise or relate still leaves a draft with no approver', async () => {
     const created = await createSpecDraft(agent(), { workspaceId: wsA, title: `Agent ${rand()}`, body: BODY_1, status: 'approved', approvedBy: 'agent' } as any);
     if (!created.ok) throw new Error(created.error);
-    const revised = await reviseSpecDraft(agent(), created.spec.id, { expectedVersion: 1, body: BODY_1 + 'more\n', status: 'approved' } as any);
+    const revised = await reviseSpecDraft(agent(), created.spec.id, { expectedVersion: 1, body: BODY_1 + 'more\n', status: 'approved', explanation: EXPL } as any);
     await relateSpec(agent(), created.spec.id, { parentSpecId: null, status: 'approved' } as any);
     expect(revised.ok).toBe(true);
     const [row] = await q<{ status: string; approved: string | null }>(sql`SELECT status, approved_revision AS approved FROM specs WHERE id = ${created.spec.id}::uuid`);

@@ -39,6 +39,9 @@ const CURRENCY = '## Currency\nR-1: Totals are in the shopper\'s currency.\n\n';
 const CACHING = '## Caching\nR-2: Rates are cached for 15 minutes.\n\n';
 const CACHE_SUB = '### Expiry\nAC-2 Stale rates are refetched.\n\n';
 const REFUNDS = '## Refunds\nR-3: Refunds go to the original card.\n';
+const KEYS = ['R-1', 'R-2', 'R-3', 'AC-2', 'Checkout', 'Checkout > Currency', 'Checkout > Caching', 'Checkout > Caching > Expiry', 'Checkout > Refunds'];
+// An agent's revision must explain what it changes; cover every key the fixtures can touch.
+const EXPLAIN = { summary: 'test change', lines: Object.fromEntries(KEYS.map((k) => [k, 'changed by test'])) };
 const BODY = INTRO + CURRENCY + CACHING + CACHE_SUB + REFUNDS;
 // Outline ids: s1 Checkout, s2 Currency, s3 Caching (with s4 Expiry inside it), s5 Refunds.
 
@@ -57,7 +60,7 @@ describe('a section revise replaces exactly one section', () => {
   test('by id: the new revision is the old body with only that span replaced, hash-pinned', async () => {
     const spec = await draft();
     const next = '## Caching\nR-2: Rates are cached for 5 minutes.\n\n';
-    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: 1, section: 's3', body: next, changeSummary: 'shorter cache' });
+    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: 1, section: 's3', body: next, changeSummary: 'shorter cache', explanation: EXPLAIN });
     if (!r.ok) throw new Error(r.error);
     const expected = INTRO + CURRENCY + next + REFUNDS;
     expect([r.spec.version, r.revision.revision, r.revision.contentHash, r.revision.authorKind, r.revision.changeSummary]).toEqual([2, 2, sha(expected), 'agent', 'shorter cache']);
@@ -70,14 +73,14 @@ describe('a section revise replaces exactly one section', () => {
   test('by heading text: a unique heading names the section', async () => {
     const spec = await draft();
     const next = '## Refunds\nR-3: Refunds go to the original payment method.\n';
-    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: 1, heading: 'Refunds', body: next });
+    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: 1, heading: 'Refunds', body: next, explanation: EXPLAIN });
     expect(r.ok && r.revision.revision).toBe(2);
     expect((await headBody(spec.id)).body).toBe(INTRO + CURRENCY + CACHING + CACHE_SUB + next);
   });
 
   test('a replacement without a trailing newline does not run into the next heading', async () => {
     const spec = await draft();
-    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: 1, section: 's2', body: '## Currency\nR-1: Totals are in euros.' });
+    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: 1, section: 's2', body: '## Currency\nR-1: Totals are in euros.', explanation: EXPLAIN });
     expect(r.ok).toBe(true);
     expect((await headBody(spec.id)).body).toBe(INTRO + '## Currency\nR-1: Totals are in euros.\n' + CACHING + CACHE_SUB + REFUNDS);
   });
@@ -102,7 +105,7 @@ describe('a section revise that cannot apply writes nothing', () => {
   test('two section writers from one version: exactly one lands', async () => {
     const spec = await draft();
     const [a, b] = await Promise.all([
-      reviseSpecSection(agent(), spec.id, { expectedVersion: 1, section: 's2', body: '## Currency\nR-1: a\n\n' }),
+      reviseSpecSection(agent(), spec.id, { expectedVersion: 1, section: 's2', body: '## Currency\nR-1: a\n\n', explanation: EXPLAIN }),
       reviseSpecSection(user(member), spec.id, { expectedVersion: 1, section: 's5', body: '## Refunds\nR-3: b\n' }),
     ]);
     expect([a.ok, b.ok].sort()).toEqual([false, true]);
@@ -153,8 +156,25 @@ describe('approval is untouched', () => {
     if (!sub.ok) throw new Error(sub.error);
     const ap = await approveSpecRevision(user(admin), spec.id, { revision: 1, expectedVersion: sub.spec.version });
     if (!ap.ok) throw new Error(ap.error);
-    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: ap.spec.version, section: 's5', body: '## Refunds\nR-3: changed\n' });
+    const r = await reviseSpecSection(agent(), spec.id, { expectedVersion: ap.spec.version, section: 's5', body: '## Refunds\nR-3: changed\n', explanation: EXPLAIN });
     if (!r.ok) throw new Error(r.error);
     expect([r.spec.status, r.spec.approvedRevision, r.spec.headRevision, r.revision.approvedBy]).toEqual(['draft', 1, 2, null]);
+  });
+});
+
+describe('an agent revision must explain what it changes', () => {
+  const count = async (specId: string) => (await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM spec_revisions WHERE spec_id = ${specId}::uuid`))[0].n;
+  test('refused naming the missing keys, nothing written; a person is not held to it; a full explanation lands', async () => {
+    const spec = await draft();
+    const next = '## Refunds\nR-3: Refunds are fast.\n';
+    const refused = await reviseSpecSection(agent(), spec.id, { expectedVersion: 1, section: 's5', body: next });
+    expect(refused).toMatchObject({ ok: false, status: 400, code: 'explanation_incomplete' });
+    expect(!refused.ok && refused.error).toContain('R-3');
+    expect(await count(spec.id)).toBe(1);
+    const person = await reviseSpecSection(user(member), spec.id, { expectedVersion: 1, section: 's5', body: next });
+    expect(person.ok).toBe(true);
+    const spec2 = await draft();
+    const ok = await reviseSpecSection(agent(), spec2.id, { expectedVersion: 1, section: 's5', body: next, explanation: EXPLAIN });
+    expect(ok.ok).toBe(true);
   });
 });

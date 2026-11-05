@@ -22,6 +22,7 @@ import { criterionHashes, retiredIdRefusal, writeCriterionRecords } from './crit
 import { acceptanceRoleRefusal } from './verdict-guards';
 import { parseReplaces, replacesRefusal } from './replaces';
 import { parseExplanation } from '@buildd/spec-contract/explanation';
+import { explanationRefusal } from './explanation-required';
 import type { AutoApproval } from './auto-approve';
 
 /**
@@ -287,6 +288,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   duplicates?: DuplicateCheckDeps | false;
   /** false: never run the no-criteria-change check (a copy: copying never approves). */
   autoApprove?: false;
+  /** true: the body is copied verbatim from another spec (copy.ts), so there is nothing of the caller's own to explain. */
+  verbatimCopy?: true;
 } = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean; duplicateCheck?: DuplicateCheck | null; autoApproval?: AutoApproval | null } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
@@ -330,6 +333,15 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
       return fail(409, `Revision ${head.revision} is already written and its explanation cannot change. Nothing was written; an explanation goes with the revise that changes the spec.`, { code: 'explanation_immutable' });
     }
     return { ok: true, spec, revision: head, unchanged: true };
+  }
+  // An agent's revision must explain every criterion and section it changes
+  // (reuses the approval page's coverage check, R-16). People are not held to it.
+  if (caller.kind === 'account' && !opts.imported && !opts.verbatimCopy && hash !== head.contentHash) {
+    const prev = await getArtifactRevision(spec.bodyArtifactId, head.artifactRevision);
+    if (prev && typeof prev.content === 'string') {
+      const refused = explanationRefusal(prev.content, body, explained.explanation);
+      if (refused) return fail(400, refused.message, { code: 'explanation_incomplete' });
+    }
   }
   if (replaces && replacesChanged) {
     const refused = await replacesRefusal(spec.workspaceId, replaces, spec.id);
