@@ -33,3 +33,17 @@ describe('specApprovalsAttention (AC-7)', () => {
     expect(specApprovalsAttention(2, 9)!.sentence).toBe('0 need judgement, 2 low-risk.');
   });
 });
+
+describe('Home derivation carries the low-risk split (R-9)', () => {
+  const derive = (count: number, low: number) => deriveHomeNeedsYou({ queue: [], missions: [], questions: [], held: [], isActionable: () => true, specApprovals: count, specApprovalsLowRisk: low });
+  it('deriveHomeNeedsYou with a low-risk count renders the split on the one card', () => {
+    const r = derive(5, 3);
+    expect(r.items).toHaveLength(1);
+    expect(r.items[0].sentence).toBe('2 need judgement, 3 low-risk.');
+    expect(r.items[0].href).toBe(SPEC_APPROVALS_HREF);
+  });
+  it('countLowRisk counts only Low-tier rows', async () => {
+    const { countLowRisk } = await import('./specs/approval-inbox');
+    expect(countLowRisk([{ tier: 'low' }, { tier: 'high' }, { tier: 'low' }, { tier: 'medium' }])).toBe(2);
+  });
+});

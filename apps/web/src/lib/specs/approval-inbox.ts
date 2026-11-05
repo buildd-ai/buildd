@@ -141,6 +141,17 @@ async function tierOf(r: { scope: string; risk: string | null; body_artifact_id:
   }
 }
 
+/** How many of the waiting rows the risk-tier classifier calls Low (Home's split, R-9). */
+export const countLowRisk = (rows: ReadonlyArray<{ tier: RiskTier }>): number => rows.filter((r) => r.tier === 'low').length;
+
+/** The Low-tier share of what waits on this person in these workspaces; 0 when it cannot be read. */
+export async function countLowRiskAwaiting(userId: string, workspaceIds?: readonly string[]): Promise<number> {
+  try {
+    const rows = await listAwaitingApproval(userId);
+    return countLowRisk(workspaceIds ? rows.filter((r) => workspaceIds.includes(r.workspaceId)) : rows);
+  } catch { return 0; }
+}
+
 async function countWhere(where: SQL): Promise<number> {
   const [r] = await db.select({ n: count() }).from(specs).where(and(where, awaitingApprovalWhere()));
   return Number(r?.n ?? 0);
