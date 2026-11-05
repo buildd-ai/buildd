@@ -8,6 +8,8 @@
  * verify-guard keeps priority and is not touched: while a verify failure is open
  * this stage stands down and spends nothing. No model call lives here.
  */
+import { denyPreToolUse } from './hook-factory';
+import { runnerDenial } from './runner-denial';
 import { isBuilddActionTool } from '@buildd/shared';
 import { unrecoveredVerifyFailures, type OpenVerifyFailure } from './error-trace-scanner';
 import { buildSelfReviewChecklist, selfReviewExemption, type SelfReviewTaskInput } from './self-review-checklist';
@@ -171,13 +173,7 @@ export function createStagedSelfReviewHook(deps: StagedHookDeps) {
       denialAt = { turns: deps.turns?.(), tokens: tokens(), summary: params.summary, version: checklist.version, ids };
       between.set(deps.worker.id, []);
       rec('denied', null, { checklistVersion: checklist.version, itemIds: ids });
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: reason(checklist),
-        },
-      };
+      return denyPreToolUse(runnerDenial(reason(checklist)));
     } catch (err) {
       log(`Staged self-review failed open: ${err instanceof Error ? err.message : String(err)}`);
       try { rec('failed_open', null); } catch { /* never block */ }
