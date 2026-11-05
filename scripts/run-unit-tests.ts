@@ -43,7 +43,16 @@ const UNIT_TEST_ROOTS = [
  * the unit gate must not collect them; scripts/run-acceptance-tests.ts runs them
  * per criterion. The build task removes each entry once its file passes.
  */
-export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [];
+export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
+  'apps/web/src/app/api/analytics/procedure-digest.test.ts',
+  'apps/web/src/app/api/workers/claim/skill-usage.test.ts',
+  'packages/core/__tests__/skill-candidate-extract.test.ts',
+  'packages/core/__tests__/skill-candidate-isolation.test.ts',
+  'packages/core/__tests__/skill-candidate-sanitiser.test.ts',
+  'packages/core/__tests__/skill-candidate-transition.test.ts',
+  'packages/core/__tests__/skill-lifecycle-events.test.ts',
+  'packages/core/__tests__/skill-retirement-rule.test.ts',
+];
 
 export function isUnitTestFile(path: string): boolean {
   if (ACCEPTANCE_ONLY_TESTS.includes(path)) return false;
