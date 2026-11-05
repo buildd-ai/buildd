@@ -11,8 +11,6 @@
  * The module reads call history; it never stores result text (only a hash).
  */
 
-import type { ToolCall } from './types';
-
 export const MAX_IDENTICAL_TOOL_CALLS = 5; // Nudge at 5 identical calls; abort at 2×
 export const MAX_SIMILAR_TOOL_CALLS = 15; // Nudge at 15 similar non-benign Bash calls; abort at 2×
 export const ERROR_STREAK_THRESHOLD = 6;
@@ -69,7 +67,11 @@ export function normalizeCallKey(tc: { name: string; input?: Record<string, unkn
   return JSON.stringify({ name: tc.name, input: tc.input });
 }
 
-export function detectRepetition(toolCalls: ReadonlyArray<Pick<ToolCall, 'name' | 'input'>>): RepetitionResult {
+export function detectRepetitiveToolCalls(toolCalls: ReadonlyArray<Pick<StuckCall, 'name' | 'input'>>): RepetitionResult {
+  return detectRepetition(toolCalls);
+}
+
+export function detectRepetition(toolCalls: ReadonlyArray<{ name: string; input?: any }>): RepetitionResult {
   // Exclude benign Bash commands from all repetition counting.
   const calls = toolCalls.filter(tc => {
     if (tc.name === 'Bash') return !isBenignBashCommand((tc.input?.command as string) || '');
@@ -103,7 +105,11 @@ export function detectRepetition(toolCalls: ReadonlyArray<Pick<ToolCall, 'name' 
   }
 
   // Similar Bash check (non-benign Bash only, full command comparison)
-  const nonBenignBash = calls.filter(tc => tc.name === 'Bash');
+  // Only a CONSECUTIVE run of Bash calls counts: a build/edit loop that alternates
+  // `make` with Edit is progress, not repetition (alternation has its own scenario).
+  let tailStart = calls.length;
+  while (tailStart > 0 && calls[tailStart - 1].name === 'Bash') tailStart--;
+  const nonBenignBash = calls.slice(tailStart);
 
   if (nonBenignBash.length >= MAX_SIMILAR_TOOL_CALLS) {
     const normalizeCmd = (cmd: string) =>
@@ -150,19 +156,53 @@ export function resultSignature(text: string): string {
   return `${h.toString(16).padStart(8, '0')}:${Math.min(norm.length, 9999)}`;
 }
 
-// ── Call classification ──────────────────────────────────────────────────────
+// ── Result signature ─────────────────────────────────────────────────────────
+
+/**
+ * A short hash of a tool result with digits and whitespace removed, so a result
+ * that only differs by a timestamp, count or spacing compares equal. The text
+ * itself is not kept.
+ */
+export function resultSignature(text: string): string {
+  const norm = (text ?? '').replace(/\d+/g, '').replace(/\s+/g, '');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < norm.length; i++) {
+    h ^= norm.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${h.toString(16).padStart(8, '0')}:${Math.min(norm.length, 9999)}`;
+}
+
+// ── Call shape ───────────────────────────────────────────────────────────────
+
+/**
+ * A tool call joined with what its result said. `resultSignature` is a hash;
+ * `errorLine` is the last line of an errored result, held only for the call
+ * being evaluated (the worker never persists it). `nonExecutionKind` marks a
+ * denied/cancelled/unresolved call: it is skipped, never counted as success.
+ */
+export interface StuckCall {
+  id: string;
+  name: string;
+  timestamp: number;
+  input?: Record<string, unknown>;
+  isError?: boolean;
+  resultSignature?: string;
+  errorLine?: string;
+  nonExecutionKind?: string;
+}
 
 const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 
 /** Read-only exploration: failing here is normal and says nothing about being stuck. */
-function isReadOnlyCall(tc: Pick<ToolCall, 'name' | 'input'>): boolean {
+function isReadOnlyCall(tc: Pick<StuckCall, 'name' | 'input'>): boolean {
   if (READ_ONLY_TOOLS.has(tc.name)) return true;
   if (tc.name === 'Bash') return isBenignBashCommand((tc.input?.command as string) || '');
   return false;
 }
 
 /** Waiting on something external: repeating it is expected, not a loop. */
-function isPollingCall(tc: Pick<ToolCall, 'name' | 'input'>): boolean {
+function isPollingCall(tc: Pick<StuckCall, 'name' | 'input'>): boolean {
   if (tc.name !== 'Bash') return false;
   return /^sleep(\s|$)/.test(stripCdPrefix((tc.input?.command as string) || ''));
 }
@@ -173,32 +213,35 @@ export interface ErrorStreakResult {
   detected: boolean;
   count: number;
   distinct: number;
-  tool?: string;
+  tools: string[];
+  lastErrorLine?: string;
 }
 
 /**
- * Trailing run of errored action calls. Read-only, denied/unresolved calls are
- * ignored (neither extend nor reset). A successful action call ends the run.
+ * Trailing run of errored action calls. Read-only and denied calls are ignored
+ * (neither extend nor reset). A successful action call ends the run.
  */
-export function detectErrorStreak(calls: ReadonlyArray<ToolCall>): ErrorStreakResult {
+export function detectErrorStreak(calls: ReadonlyArray<StuckCall>): ErrorStreakResult {
   const keys = new Set<string>();
+  const tools: string[] = [];
   let count = 0;
-  let tool: string | undefined;
+  let lastErrorLine: string | undefined;
   for (let i = calls.length - 1; i >= 0; i--) {
     const tc = calls[i];
-    const o = tc.outcome;
-    if (!o || o.skipped) continue;
+    if (tc.nonExecutionKind) continue;
     if (isReadOnlyCall(tc)) continue;
-    if (!o.isError) break;
+    if (!tc.isError) break;
     count++;
     keys.add(normalizeCallKey(tc));
-    if (!tool) tool = tc.name;
+    if (!tools.includes(tc.name)) tools.push(tc.name);
+    if (lastErrorLine === undefined) lastErrorLine = tc.errorLine;
   }
   return {
     detected: count >= ERROR_STREAK_THRESHOLD && keys.size >= ERROR_STREAK_MIN_DISTINCT,
     count,
     distinct: keys.size,
-    tool,
+    tools,
+    lastErrorLine,
   };
 }
 
@@ -206,31 +249,28 @@ export function detectErrorStreak(calls: ReadonlyArray<ToolCall>): ErrorStreakRe
 
 export interface AlternationResult {
   detected: boolean;
-  tools?: [string, string];
+  tools: string[];
 }
 
-export function detectAlternation(calls: ReadonlyArray<ToolCall>): AlternationResult {
+export function detectAlternation(calls: ReadonlyArray<StuckCall>): AlternationResult {
   const need = ALTERNATION_REPEATS * 2;
-  const window: ToolCall[] = [];
+  const window: StuckCall[] = [];
   for (let i = calls.length - 1; i >= 0 && window.length < need; i--) {
     const tc = calls[i];
-    if (!tc.outcome || tc.outcome.skipped) continue;
-    if (isPollingCall(tc)) continue;
+    if (tc.nonExecutionKind || isPollingCall(tc)) continue;
     window.push(tc);
   }
-  if (window.length < need) return { detected: false };
+  if (window.length < need) return { detected: false, tools: [] };
   window.reverse();
   const a = normalizeCallKey(window[0]);
   const b = normalizeCallKey(window[1]);
-  if (a === b) return { detected: false };
-  const sigs = new Map<string, string>();
+  if (a === b) return { detected: false, tools: [] };
+  const sigs = new Map<string, string | undefined>();
   for (let i = 0; i < window.length; i++) {
     const k = normalizeCallKey(window[i]);
-    if (k !== (i % 2 === 0 ? a : b)) return { detected: false };
-    const sig = window[i].outcome!.sig;
-    const prev = sigs.get(k);
-    if (prev !== undefined && prev !== sig) return { detected: false };
-    sigs.set(k, sig);
+    if (k !== (i % 2 === 0 ? a : b)) return { detected: false, tools: [] };
+    if (sigs.has(k) && sigs.get(k) !== window[i].resultSignature) return { detected: false, tools: [] };
+    sigs.set(k, window[i].resultSignature);
   }
   return { detected: true, tools: [window[0].name, window[1].name] };
 }
@@ -239,80 +279,104 @@ export function detectAlternation(calls: ReadonlyArray<ToolCall>): AlternationRe
 
 export type StuckMode = 'off' | 'log' | 'nudge';
 
-export function stuckMode(env: Record<string, string | undefined> = process.env): StuckMode {
-  const v = env.BUILDD_STUCK_DETECTION?.trim().toLowerCase();
+/** BUILDD_STUCK_DETECTION: off | log | nudge. Unset or unknown is `log`. */
+export function parseStuckMode(raw: string | undefined | null): StuckMode {
+  const v = (raw ?? '').trim().toLowerCase();
   return v === 'off' || v === 'nudge' || v === 'log' ? v : 'log';
+}
+
+export function stuckMode(env: Record<string, string | undefined> = process.env): StuckMode {
+  return parseStuckMode(env.BUILDD_STUCK_DETECTION);
 }
 
 // ── Nudge text ───────────────────────────────────────────────────────────────
 
-/** Last non-empty line of a result, secret-redacted then truncated. */
-export function lastErrorLine(text: string, redact: (s: string) => string = s => s): string {
+/** Redact, then cap at 160 chars (an ellipsis counts toward the cap). */
+export function clipErrorLine(line: string, redact: (s: string) => string = s => s): string {
+  const red = redact((line ?? '').trim());
+  return red.length > NUDGE_ERROR_LINE_MAX ? red.slice(0, NUDGE_ERROR_LINE_MAX - 1) + '…' : red;
+}
+
+/** Last non-empty line of a result text. */
+export function lastLine(text: string): string {
   const lines = (text ?? '').split('\n').map(l => l.trim()).filter(Boolean);
-  const last = lines.length ? lines[lines.length - 1] : '';
-  const red = redact(last);
-  return red.length > NUDGE_ERROR_LINE_MAX ? red.slice(0, NUDGE_ERROR_LINE_MAX) + '…' : red;
+  return lines.length ? lines[lines.length - 1] : '';
 }
 
-export function buildErrorStreakNudge(s: { tool?: string; count: number; lastError?: string }): string {
-  const tail = s.lastError ? ` Last error: ${s.lastError}` : '';
-  return `Your last ${s.count} ${s.tool ?? 'tool'} calls in a row failed, each with different input.${tail} Step back: find the common cause, or change approach or signal that you are blocked.`;
+export function buildErrorStreakNudge(s: { tool: string; count: number; lastError?: string }): string {
+  const latest = s.lastError ? ` Latest error: ${s.lastError}.` : '';
+  return `Your last ${s.count} ${s.tool} calls in a row failed, each with different input.${latest} Stop repeating and find the common cause, change approach, or signal that you are blocked.`;
 }
 
-export function buildAlternationNudge(a: { tools: [string, string] }): string {
+export function buildAlternationNudge(a: { tools: string[] }): string {
   return `You have alternated between ${a.tools[0]} and ${a.tools[1]} ${ALTERNATION_REPEATS} times with the same results each time. Neither is changing anything — try a different approach or signal that you are blocked.`;
 }
 
 // ── Latched evaluation ───────────────────────────────────────────────────────
 
 export interface StuckState {
-  errorStreakLatched?: boolean;
-  alternationLatched?: boolean;
-  lastSignal?: { scenario: 'error_streak' | 'alternation'; ts: number };
+  errorStreakLatched: boolean;
+  alternationLatched: boolean;
 }
 
+export function createStuckState(): StuckState {
+  return { errorStreakLatched: false, alternationLatched: false };
+}
+
+/** What a log-mode signal records: scenario, size, tools, position. No inputs, no result text. */
 export interface StuckSignal {
   scenario: 'error_streak' | 'alternation';
-  message: string;
+  length: number;
+  tools: string[];
+  callIndex: number;
+}
+
+export interface StuckEvaluation {
+  action: 'none' | 'signal' | 'nudge';
+  scenario?: StuckSignal['scenario'];
+  message?: string;
+  signal?: StuckSignal;
 }
 
 /**
  * Evaluate the outcome-based scenarios (error streak, then alternation) and
- * return at most one signal. Each scenario latches independently: it fires once
- * per streak and re-arms when the condition stops holding. `off` evaluates
- * nothing. The caller decides what `log` vs `nudge` means for the signal.
+ * return at most one result. Each scenario latches independently: it fires once
+ * per streak and re-arms when its condition stops holding. `off` evaluates
+ * nothing; `log` returns a signal with no message; `nudge` adds the message.
  * Never aborts.
  */
-export function evaluateStuck(
-  calls: ReadonlyArray<ToolCall>,
-  state: StuckState,
-  mode: StuckMode,
-  opts: { lastErrorText?: string; redact?: (s: string) => string; now?: number } = {},
-): StuckSignal | null {
-  if (mode === 'off') return null;
+export function evaluateStuck(args: {
+  calls: ReadonlyArray<StuckCall>;
+  state: StuckState;
+  mode: StuckMode;
+  redact?: (s: string) => string;
+}): StuckEvaluation {
+  const { calls, state, mode, redact } = args;
+  if (mode === 'off') return { action: 'none' };
 
   const streak = detectErrorStreak(calls);
   const alt = detectAlternation(calls);
   if (!streak.detected) state.errorStreakLatched = false;
   if (!alt.detected) state.alternationLatched = false;
 
-  let signal: StuckSignal | null = null;
+  let signal: StuckSignal | undefined;
+  let message: string | undefined;
   if (streak.detected && !state.errorStreakLatched) {
     state.errorStreakLatched = true;
-    signal = {
-      scenario: 'error_streak',
-      message: buildErrorStreakNudge({
-        tool: streak.tool,
-        count: streak.count,
-        lastError: opts.lastErrorText ? lastErrorLine(opts.lastErrorText, opts.redact) : undefined,
-      }),
-    };
+    signal = { scenario: 'error_streak', length: streak.count, tools: streak.tools, callIndex: calls.length - 1 };
+    const line = streak.lastErrorLine ? clipErrorLine(streak.lastErrorLine, redact) : '';
+    message = buildErrorStreakNudge({ tool: streak.tools[0], count: streak.count, lastError: line || undefined });
   }
   if (alt.detected && !state.alternationLatched) {
-    // Latch even when the streak message won this evaluation, so it does not fire next call.
+    // Latch even when the streak won this evaluation so it does not fire on the next call.
     state.alternationLatched = true;
-    if (!signal) signal = { scenario: 'alternation', message: buildAlternationNudge({ tools: alt.tools! }) };
+    if (!signal) {
+      signal = { scenario: 'alternation', length: ALTERNATION_REPEATS * 2, tools: alt.tools, callIndex: calls.length - 1 };
+      message = buildAlternationNudge({ tools: alt.tools });
+    }
   }
-  if (signal) state.lastSignal = { scenario: signal.scenario, ts: opts.now ?? Date.now() };
-  return signal;
+  if (!signal) return { action: 'none' };
+  return mode === 'nudge'
+    ? { action: 'nudge', scenario: signal.scenario, message, signal }
+    : { action: 'signal', scenario: signal.scenario, signal };
 }

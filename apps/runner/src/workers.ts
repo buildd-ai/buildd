@@ -663,7 +663,7 @@ export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
 import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSED_FOR_UPDATE_ERROR, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
-import { detectRepetition, evaluateStuck, resultSignature, stuckMode } from './stuck-detection.js';
+import { createStuckState, detectRepetition, evaluateStuck, resultSignature, stuckMode, lastLine, type StuckCall } from './stuck-detection.js';
 
 // Cache key for the per-team server-managed credential cache. Prefer the
 // workspace's teamId (team-wide secrets cover all workspaces) and fall back to
@@ -7454,22 +7454,34 @@ export class WorkerManager {
               if (!denied) {
                 const mode = stuckMode();
                 if (mode !== 'off') {
-                  if (!worker.stuckState) worker.stuckState = {};
+                  if (!worker.stuckState) worker.stuckState = createStuckState();
                   const redactStuck = this.secretRedactors.get(worker.id) ?? ((x: string) => x);
-                  const signal = evaluateStuck(worker.toolCalls, worker.stuckState, mode, {
-                    lastErrorText: block.is_error === true ? text : undefined,
-                    redact: redactStuck,
-                  });
-                  if (signal) {
-                    console.log(`[Worker ${worker.id}] stuck-detection(${mode}) ${signal.scenario}: ${signal.message}`);
-                    if (mode === 'nudge') {
+                  // Join each call with its outcome; unresolved calls are skipped, never success.
+                  // Only the call being resolved carries its last error line, and only for this evaluation.
+                  const stuckCalls: StuckCall[] = worker.toolCalls.map((c, idx) => ({
+                    id: c.toolUseId ?? `call-${idx}`,
+                    name: c.name,
+                    timestamp: c.timestamp,
+                    input: c.input,
+                    isError: c.outcome?.isError,
+                    resultSignature: c.outcome?.sig,
+                    ...(c === outcomeCall && block.is_error === true ? { errorLine: lastLine(text) } : {}),
+                    ...(!c.outcome || c.outcome.skipped ? { nonExecutionKind: 'unresolved' } : {}),
+                  }));
+                  const result = evaluateStuck({ calls: stuckCalls, state: worker.stuckState, mode, redact: redactStuck });
+                  if (result.action !== 'none' && result.signal) {
+                    console.log(
+                      `[Worker ${worker.id}] stuck-detection(${mode}) ${result.signal.scenario} ` +
+                      `length=${result.signal.length} tools=${result.signal.tools.join(',')} callIndex=${result.signal.callIndex}`,
+                    );
+                    if (result.action === 'nudge' && result.message) {
                       const sessionRef = this.sessions.get(worker.id);
                       if (sessionRef) {
                         sessionRef.inputStream.enqueue(
-                          buildUserMessage(signal.message, { sessionId: sessionRef.sessionId })
+                          buildUserMessage(result.message, { sessionId: sessionRef.sessionId })
                         );
                       }
-                      this.addMilestone(worker, { type: 'status', label: `⚠️ ${signal.message}`, ts: Date.now() });
+                      this.addMilestone(worker, { type: 'status', label: `⚠️ ${result.message}`, ts: Date.now() });
                     }
                   }
                 }
