@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "ffa97479-ee83-4ac0-96e0-c2fb1fcb4fcf",
+  "id": "23690aca-546a-4ae8-89fa-8e3e7691063c",
   "prevIds": [
     "95f56b64-84dd-43e5-9f7a-29905f3926b5"
   ],
@@ -22310,19 +22310,6 @@
       "generated": null,
       "identity": null,
       "name": "scope",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "specs"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'contract'",
-      "generated": null,
-      "identity": null,
-      "name": "kind",
       "entityType": "columns",
       "schema": "public",
       "table": "specs"

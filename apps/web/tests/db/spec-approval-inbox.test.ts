@@ -146,31 +146,6 @@ describe('stacked unapproved revisions fold under the newest (R-30, R-39)', () =
   });
 });
 
-describe('kinds and lanes (R-38, AC-39)', () => {
-  test('a new spec is a contract by default, and create_draft rejects an unknown kind', async () => {
-    const s = await draft();
-    expect(s.kind).toBe('contract');
-    const bad = await createSpecDraft(user(admin), { workspaceId: wsA, title: `kind-${rand()}`, body: BODY(), kind: 'memo' }, { duplicates: false });
-    expect(bad.ok).toBe(false);
-  });
-
-  test('a charter revision is in Other drafts and counted apart, not in the main inbox', async () => {
-    const c = await createSpecDraft(user(admin), { workspaceId: wsA, title: `charter-${rand()}`, body: BODY(), kind: 'charter' }, { duplicates: false });
-    if (!c.ok) throw new Error(c.error);
-    const k = await draft();
-    const main = new Set((await listAwaitingApproval(admin)).map((x) => x.specId));
-    const other = await listAwaitingApproval(admin, 'other');
-    expect([main.has(c.spec.id), main.has(k.id)]).toEqual([false, true]);
-    expect(other.find((x) => x.specId === c.spec.id)?.kind).toBe('charter');
-    expect(other.some((x) => x.specId === k.id)).toBe(false);
-    const counted = await countAwaitingApproval(user(admin), null);
-    if (!counted.ok) throw new Error(counted.error);
-    expect(counted.otherDraftsCount).toBeGreaterThanOrEqual(1);
-    const inbox = await approvalInboxView(admin);
-    expect(inbox.some((r) => r.specId === c.spec.id)).toBe(false);
-  });
-});
-
 describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
   test('three stacked unapproved revisions are one row, covering approved to head, measured against the head\'s explanation', async () => {
     const base = BODY();

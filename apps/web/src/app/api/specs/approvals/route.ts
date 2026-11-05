@@ -14,6 +14,6 @@ export async function GET(req: NextRequest) {
   const caller = await specCaller(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const r = await countAwaitingApproval(caller, req.nextUrl.searchParams.get('workspaceId'));
-  if (r.ok) return NextResponse.json({ count: r.count, otherDraftsCount: r.otherDraftsCount, scope: r.scope, inboxUrl: r.inboxUrl });
+  if (r.ok) return NextResponse.json({ count: r.count, scope: r.scope, inboxUrl: r.inboxUrl });
   return NextResponse.json({ error: r.error }, { status: r.status });
 }
