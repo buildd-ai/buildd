@@ -5054,7 +5054,7 @@ export class WorkerManager {
         lastCommitSha: (task.context as any)?.lastCommitSha,
         failureContext: (task.context as any)?.failureContext,
         recoveryRef: (task.context as any)?.recoveryRef,
-        hasVerificationSection: buildLoopVerificationSection({ loopConfig: task.loopConfig, context: task.context as Record<string, unknown> | undefined }) !== null,
+        loop: buildLoopVerificationSection({ loopConfig: task.loopConfig, context: task.context as Record<string, unknown> | undefined }) !== null,
         defaultBranch: gitConfig?.defaultBranch || 'main',
       });
       if (retryContinuitySection) {

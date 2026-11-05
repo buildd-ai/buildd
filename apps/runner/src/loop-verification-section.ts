@@ -58,16 +58,18 @@ function outputBlock(evidence: Record<string, unknown>): string[] {
 
   const carriers = new Set<string>();
   const parts: string[] = [];
-  let budget = TOTAL_OUTPUT_CAP_CHARS;
+  let budget = TOTAL_OUTPUT_CAP_CHARS - 2; // the newlines between the fence tags and the body count too
   for (const [name, raw] of streams) {
     const { text, stripped } = sanitizeUntrustedText(raw);
     stripped.forEach((c) => carriers.add(c));
     if (text.trim() === '') continue;
-    const cap = Math.min(STREAM_CAP_CHARS, budget);
+    const label = `[${name}]\n`;
+    const sep = parts.length > 0 ? 1 : 0;
+    const cap = Math.min(STREAM_CAP_CHARS, budget) - label.length - sep;
     if (cap <= 0) break;
     const body = tail(text, cap);
-    budget -= body.length;
-    parts.push(`[${name}]\n${body}`);
+    budget -= label.length + sep + body.length;
+    parts.push(`${label}${body}`);
   }
   if (parts.length === 0) return [];
 
