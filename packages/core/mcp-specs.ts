@@ -399,7 +399,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'kind', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause', 'replaces', 'explanation'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause', 'replaces', 'explanation'] as const) if (params[k] !== undefined) payload[k] = params[k];
       let spec;
       let duplicateCheck: DuplicateCheckView | null = null;
       let suggestedParent: { specId: string; title: string; reason: string } | null = null;
@@ -828,12 +828,10 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         const n = Number(r.count ?? 0);
         const revisions = `${n} spec ${n === 1 ? 'revision' : 'revisions'}`;
         const wait = n === 1 ? 'waits' : 'wait';
-        const other = Number(r.otherDraftsCount ?? 0);
-        const otherLine = other > 0 ? ` Separately, ${other} other-kind draft ${other === 1 ? 'revision is' : 'revisions are'} in the Other drafts lane (they block nothing).` : '';
         if (r.scope === 'person') {
-          return text(n === 0 ? `Nothing waits for your approval. Inbox: ${r.inboxUrl}${otherLine}` : `${revisions} ${wait} for your approval. A person approves each one on buildd.dev, one at a time: ${r.inboxUrl}${otherLine}`);
+          return text(n === 0 ? `Nothing waits for your approval. Inbox: ${r.inboxUrl}` : `${revisions} ${wait} for your approval. A person approves each one on buildd.dev, one at a time: ${r.inboxUrl}`);
         }
-        return text(n === 0 ? `Nothing waits for approval in this workspace. Inbox: ${r.inboxUrl}${otherLine}` : `${revisions} ${wait} for approval in this workspace. A person approves each one on buildd.dev: ${r.inboxUrl}${otherLine}`);
+        return text(n === 0 ? `Nothing waits for approval in this workspace. Inbox: ${r.inboxUrl}` : `${revisions} ${wait} for approval in this workspace. A person approves each one on buildd.dev: ${r.inboxUrl}`);
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 403, 404].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
