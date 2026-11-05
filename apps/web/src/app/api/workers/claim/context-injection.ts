@@ -262,7 +262,7 @@ export async function predictTaskAreas(
     // cross-encoder rerank step is pure overhead here — a store built without
     // one skips it entirely (PgVectorStore.query no-ops rerank when `reranker`
     // is null).
-    const store = new PgVectorStore(getVoyageEmbedder());
+    const store = new PgVectorStore(getVoyageEmbedder(), null, { caller: 'claim_task_area' });
     // One task's prediction (a Voyage query plus a neighbour-paths lookup) does
     // not depend on any other task's — the loop body's only writes are to this
     // task's own `out` entry and its own DB row, so running the batch

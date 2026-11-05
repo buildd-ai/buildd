@@ -7823,7 +7823,7 @@ export async function handleBuilddAction(
       // while the server-built store ranked by cross-encoder relevance, so the
       // same query got different semantics depending on which path served it.
       const ks =
-        ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
+        ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker(), { caller: 'mcp' });
 
       // Step 1: query the doc corpus and direct :code in parallel (prose
       // vocabulary works for prose).
@@ -8938,7 +8938,7 @@ export async function handleRecallAction(
   if (Array.isArray(params.scope)) {
     const scopes = (params.scope as string[]).map(s => s as Corpus);
     const mode = chooseModeForQuery(query);
-    const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
+    const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker(), { caller: 'mcp' });
 
     const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK }, 'recall', { includeCandidates });
 
@@ -9001,7 +9001,7 @@ export async function handleRecallAction(
   // while the server-built store ranked by cross-encoder relevance, so the
   // same query got different semantics depending on which path served it.
   const ks =
-    ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
+    ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker(), { caller: 'mcp' });
   // Exclude superseded entries by default, apply type/files filters, then the
   // caller limit. Memory goes through the one door, which over-fetches the
   // team-wide namespace and keeps the caller's project.
@@ -9578,7 +9578,7 @@ export async function handleMemoryAction(
 
       const mode = (params.mode as 'hybrid' | 'vector' | 'lexical') || 'hybrid';
       const topK = Math.min((params.topK as number) || 10, 50);
-      const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
+      const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker(), { caller: 'mcp' });
 
       // Multi-corpus: fan out concurrently, fuse with RRF (k=60, same as pg-vector-store).
       if (Array.isArray(params.corpus)) {

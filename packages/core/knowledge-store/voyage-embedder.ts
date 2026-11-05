@@ -1,4 +1,6 @@
 import type { Embedder, EmbedInputType, Corpus } from './types';
+import { estimateTextTokens } from '../voyage-budget';
+import { getVoyageGuard, type VoyageCall, type VoyageGuard } from './voyage-guard';
 
 const VOYAGE_API_URL = 'https://api.voyageai.com/v1/embeddings';
 const DEFAULT_MODEL = 'voyage-4-large';
@@ -30,7 +32,7 @@ export const DEFAULT_MAX_TOKENS_PER_REQUEST = 80_000;
  * tokenize closer to 3.5–4, so this over-counts, which is the safe direction.
  */
 export function estimateEmbedTokens(text: string): number {
-  return Math.ceil(text.length / 3);
+  return estimateTextTokens(text);
 }
 
 /**
@@ -73,6 +75,23 @@ class VoyageRequestError extends Error {
 export interface VoyageEmbedderOptions {
   /** Estimated-token budget per request (default DEFAULT_MAX_TOKENS_PER_REQUEST). */
   maxTokensPerRequest?: number;
+  /** The spend guard (default: the process-wide one over the database). */
+  guard?: VoyageGuard;
+}
+
+/**
+ * Query embeddings, by model and text. A claim or a multi-corpus recall sends
+ * the same text to every corpus; the entries are promises, so that concurrent
+ * fan-out shares one request as well as a later repeat. A vector depends only
+ * on the model and the text, so entries are safe to share between teams.
+ */
+const QUERY_CACHE_MAX = 1_000;
+const QUERY_CACHE_TTL_MS = 15 * 60 * 1000;
+const queryCache = new Map<string, { at: number; vector: Promise<number[] | null> }>();
+
+/** Drop every cached query embedding. Tests only. */
+export function resetQueryEmbeddingCache(): void {
+  queryCache.clear();
 }
 
 /**
@@ -92,6 +111,7 @@ export class VoyageEmbedder implements Embedder {
   readonly model: string;
   readonly dimensions: number;
   private readonly maxTokensPerRequest: number;
+  private readonly guard: VoyageGuard | undefined;
 
   constructor(
     private readonly apiKey: string,
@@ -102,39 +122,94 @@ export class VoyageEmbedder implements Embedder {
     this.model = model;
     this.dimensions = dimensions;
     this.maxTokensPerRequest = opts.maxTokensPerRequest ?? DEFAULT_MAX_TOKENS_PER_REQUEST;
+    this.guard = opts.guard;
   }
 
-  async embed(texts: string[], inputType: EmbedInputType = 'document'): Promise<number[][]> {
+  /**
+   * Embed `texts`, or return null when the spend guard refuses: the caller then
+   * stores or searches without vectors. Nothing reaches Voyage without a permit.
+   */
+  async embed(texts: string[], inputType: EmbedInputType, call: VoyageCall): Promise<number[][] | null> {
     if (texts.length === 0) return [];
-    const out: number[][] = new Array(texts.length);
-    for (const indexes of planEmbedRequests(texts, this.maxTokensPerRequest)) {
-      const vectors = await this.embedSplittingOnOverflow(indexes.map(i => texts[i]), inputType);
-      indexes.forEach((textIndex, j) => {
-        out[textIndex] = vectors[j];
+    return inputType === 'query' ? this.embedQueries(texts, call) : this.embedGuarded(texts, inputType, call);
+  }
+
+  private async embedQueries(texts: string[], call: VoyageCall): Promise<number[][] | null> {
+    const now = Date.now();
+    const key = (t: string) => `${this.model}\0${t}`;
+    const fresh = (t: string) => {
+      const hit = queryCache.get(key(t));
+      return hit && now - hit.at < QUERY_CACHE_TTL_MS ? hit : undefined;
+    };
+    const misses = [...new Set(texts)].filter(t => !fresh(t));
+    if (misses.length > 0) {
+      const batch = this.embedGuarded(misses, 'query', call);
+      misses.forEach((t, i) => {
+        const k = key(t);
+        const vector = batch.then(vectors => vectors?.[i] ?? null);
+        if (queryCache.size >= QUERY_CACHE_MAX) queryCache.delete(queryCache.keys().next().value as string);
+        queryCache.delete(k);
+        const entry = { at: now, vector };
+        queryCache.set(k, entry);
+        // A denial or a failure is not an answer worth keeping.
+        const evict = () => { if (queryCache.get(k) === entry) queryCache.delete(k); };
+        vector.then(v => { if (!v) evict(); }, evict);
       });
     }
-    return out;
+    const vectors = await Promise.all(texts.map(t => queryCache.get(key(t))!.vector));
+    return vectors.some(v => !v) ? null : (vectors as number[][]);
+  }
+
+  private async embedGuarded(texts: string[], inputType: EmbedInputType, call: VoyageCall): Promise<number[][] | null> {
+    const permit = await (this.guard ?? getVoyageGuard()).admit({
+      ...call,
+      kind: 'embed',
+      model: this.model,
+      inputType,
+      estimatedTokens: texts.reduce((sum, t) => sum + estimateEmbedTokens(t), 0),
+    });
+    if (!permit) return null;
+
+    const usage = { tokens: 0 };
+    try {
+      const out: number[][] = new Array(texts.length);
+      for (const indexes of planEmbedRequests(texts, this.maxTokensPerRequest)) {
+        const vectors = await this.embedSplittingOnOverflow(indexes.map(i => texts[i]), inputType, usage, permit.apiKey ?? this.apiKey);
+        indexes.forEach((textIndex, j) => {
+          out[textIndex] = vectors[j];
+        });
+      }
+      return out;
+    } finally {
+      // On a failure part-way, this is what Voyage actually billed: 0 if nothing.
+      permit.settle(usage.tokens);
+    }
   }
 
   /** One request; on a too-many-tokens rejection, halve and retry each half. */
-  private async embedSplittingOnOverflow(texts: string[], inputType: EmbedInputType): Promise<number[][]> {
+  private async embedSplittingOnOverflow(
+    texts: string[],
+    inputType: EmbedInputType,
+    usage: { tokens: number },
+    apiKey: string,
+  ): Promise<number[][]> {
     try {
-      return await this.request(texts, inputType);
+      return await this.request(texts, inputType, usage, apiKey);
     } catch (err) {
       if (!(err instanceof VoyageRequestError) || !err.tooManyTokens || texts.length < 2) throw err;
       const mid = Math.ceil(texts.length / 2);
-      const left = await this.embedSplittingOnOverflow(texts.slice(0, mid), inputType);
-      const right = await this.embedSplittingOnOverflow(texts.slice(mid), inputType);
+      const left = await this.embedSplittingOnOverflow(texts.slice(0, mid), inputType, usage, apiKey);
+      const right = await this.embedSplittingOnOverflow(texts.slice(mid), inputType, usage, apiKey);
       return [...left, ...right];
     }
   }
 
-  private async request(texts: string[], inputType: EmbedInputType): Promise<number[][]> {
+  private async request(texts: string[], inputType: EmbedInputType, usage: { tokens: number }, apiKey: string): Promise<number[][]> {
     const res = await fetch(VOYAGE_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: this.model,
@@ -148,6 +223,7 @@ export class VoyageEmbedder implements Embedder {
     }
 
     const data = (await res.json()) as VoyageResponse;
+    usage.tokens += data.usage?.total_tokens ?? 0;
     // Sort by index to preserve original order
     return data.data.sort((a, b) => a.index - b.index).map(d => d.embedding);
   }
