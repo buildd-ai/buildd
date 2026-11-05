@@ -156,23 +156,6 @@ export function resultSignature(text: string): string {
   return `${h.toString(16).padStart(8, '0')}:${Math.min(norm.length, 9999)}`;
 }
 
-// ── Result signature ─────────────────────────────────────────────────────────
-
-/**
- * A short hash of a tool result with digits and whitespace removed, so a result
- * that only differs by a timestamp, count or spacing compares equal. The text
- * itself is not kept.
- */
-export function resultSignature(text: string): string {
-  const norm = (text ?? '').replace(/\d+/g, '').replace(/\s+/g, '');
-  let h = 0x811c9dc5;
-  for (let i = 0; i < norm.length; i++) {
-    h ^= norm.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return `${h.toString(16).padStart(8, '0')}:${Math.min(norm.length, 9999)}`;
-}
-
 // ── Call shape ───────────────────────────────────────────────────────────────
 
 /**
