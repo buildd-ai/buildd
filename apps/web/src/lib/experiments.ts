@@ -50,7 +50,7 @@ export function retiredKindMessage(kind: string): string {
   return `experiment kind ${kind} is retired and no longer enrols anything; existing ${kind} experiments stay readable and can be concluded`;
 }
 
-export const EXPERIMENT_KINDS = ['model_routing', 'heartbeat_triage', 'question_gate'] as const satisfies readonly ExperimentKind[];
+export const EXPERIMENT_KINDS = ['model_routing', 'heartbeat_triage', 'question_gate', 'staged_self_review'] as const satisfies readonly ExperimentKind[];
 
 /** Legal status moves. `concluded` is terminal. */
 export const EXPERIMENT_TRANSITIONS: Record<ExperimentStatus, readonly ExperimentStatus[]> = {

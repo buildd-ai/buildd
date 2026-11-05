@@ -44,8 +44,6 @@ const UNIT_TEST_ROOTS = [
  * per criterion. The build task removes each entry once its file passes.
  */
 export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
-  'apps/runner/__tests__/unit/staged-self-review.test.ts',
-  'packages/core/__tests__/staged-self-review.test.ts',
 ];
 
 export function isUnitTestFile(path: string): boolean {
