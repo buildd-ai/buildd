@@ -122,30 +122,6 @@ describe('the inbox lists what waits on the signed-in person (R-1, AC-1)', () =>
   });
 });
 
-describe('stacked unapproved revisions fold under the newest (R-30, R-39)', () => {
-  test('one row per spec: diffed from the approved revision, listing the folded revisions; Approve pinned to the head', async () => {
-    const s = await draft();
-    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
-    if (!a.ok || 'pending' in a) throw new Error('approve failed');
-    let version = a.spec.version;
-    for (const n of [2, 3, 4]) {
-      const r = await reviseSpecDraft(user(member), s.id, { expectedVersion: version, body: `${BODY()}R-${n}: Rule ${n}.\n` });
-      if (!r.ok) throw new Error(r.error);
-      version = r.spec.version;
-    }
-    const mine = (await listAwaitingApproval(admin)).filter((x) => x.specId === s.id);
-    expect(mine).toHaveLength(1);
-    expect(mine[0]).toMatchObject({ headRevision: 4, approvedRevision: 1, foldedRevisions: [2, 3] });
-    const view = (await approvalInboxView(admin)).find((r) => r.specId === s.id)!.view;
-    expect(view?.state === 'ready' && view.replaces).toBe(1);
-    expect(view?.state === 'ready' && view.pin.revision).toBe(4);
-    // A pin on a folded revision is not approvable.
-    const folded = await approveFromInbox(user(admin), s.id, { revision: 3, expectedVersion: version, contentHash: await hashOf(s.id, 3) });
-    expect(folded).toMatchObject({ ok: false });
-    expect(await row(s.id)).toMatchObject({ approved_revision: 1 });
-  });
-});
-
 describe('kinds and lanes (R-38, AC-39)', () => {
   test('a new spec is a contract by default, and create_draft rejects an unknown kind', async () => {
     const s = await draft();

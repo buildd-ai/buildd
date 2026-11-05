@@ -112,9 +112,6 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   // misfiles it as reviews-merge.
   'apps/web/src/components/DesignPreview.tsx',
   'apps/web/src/app/app/dev/fixtures/DesignPreviewFixture.tsx',
-  // A spec's risk tier as chip text and tone, shown on the approvals inbox and
-  // review-all view (core Living Specs UI). `tier-` misfiles it as model-tiers.
-  'apps/web/src/lib/specs/risk-tier-view.ts',
 ]);
 
 export function moduleOf(path: string): Owner {

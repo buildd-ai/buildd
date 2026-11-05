@@ -6,9 +6,6 @@ import { appBaseUrl } from '@/lib/app-url';
 import { roleHas } from '@/lib/permissions';
 import { requestingPerson } from '@/lib/request-person';
 import { proposalWhere } from './proposals';
-import { foldedRevisions } from './folded-revisions';
-import { classifyRisk, sortHighFirst, type RiskTier } from '@buildd/spec-contract/risk-tier';
-import { getArtifactRevisions } from '@/lib/artifact-revisions';
 import type { SpecExplanation } from '@buildd/spec-contract/explanation';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
@@ -92,8 +89,6 @@ export interface AwaitingApprovalRow {
   workspaceName: string;
   headRevision: number;
   approvedRevision: number | null;
-  /** Unapproved revisions between the approved one and the head, folded under it (R-30, R-39). The row's diff and Approve are for the head. */
-  foldedRevisions: number[];
   /** The spec version and the head's content hash, as read: what an Approve on this row is pinned to. */
   version: number;
   contentHash: string;
@@ -115,17 +110,12 @@ export interface AwaitingApprovalRow {
   /** The decision the author needs, from the head's explanation; null when none was asked. */
   question: string | null;
   proposedAt: string;
-  /** High, Medium or Low, mechanically (R-32); the inbox sorts High first. */
-  tier: RiskTier;
-  /** Why, one plain line each. */
-  tierReasons: string[];
 }
 
 /**
- * Every spec this person may approve whose head waits on a decision: High first
- * (R-33), newest proposal first within a tier. `lane` picks the main list
- * (contract kind, the default) or the separate Other drafts lane (every other
- * kind, R-38).
+ * Every spec this person may approve whose head waits on a decision, newest
+ * proposal first. `lane` picks the main list (contract kind, the default) or
+ * the separate Other drafts lane (every other kind, R-38).
  */
 export async function listAwaitingApproval(userId: string, lane: InboxLane = 'main'): Promise<AwaitingApprovalRow[]> {
   const ws = await approverWorkspaces(userId);
@@ -133,21 +123,19 @@ export async function listAwaitingApproval(userId: string, lane: InboxLane = 'ma
   const names = new Map(ws.map((w) => [w.id, w.name]));
 
   const rows = rowsOf<{
-    id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number; content_hash: string; scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; explanation_question: string | null; created_at: string | Date; kind: string; }>(await db.execute(sql`
+    id: string; title: string; kind: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number;
+    content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; body_artifact_id: string; explanation_question: string | null; created_at: string | Date;
+  }>(await db.execute(sql`
     SELECT specs.id, specs.title, specs.kind, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
-      r.content_hash, specs.scope, specs.metadata->>'risk' AS risk, specs.body_artifact_id, r.artifact_revision AS head_artifact_revision, ra.artifact_revision AS approved_artifact_revision, ra.content_hash AS approved_content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation, r.explanation->>'question' AS explanation_question, r.created_at
+      r.content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation, specs.body_artifact_id, r.explanation->>'question' AS explanation_question, r.created_at
     FROM specs
     JOIN spec_revisions r ON r.spec_id = specs.id AND r.revision = specs.head_revision
-    LEFT JOIN spec_revisions ra ON ra.spec_id = specs.id AND ra.revision = specs.approved_revision
     LEFT JOIN users u ON r.author_kind = 'user' AND u.id::text = r.author_id
     WHERE ${inArray(specs.workspaceId, ws.map((w) => w.id))} AND ${awaitingApprovalWhere()} AND ${laneWhere(lane)}
     ORDER BY r.created_at DESC, specs.id`));
-  const tiers = await Promise.all(rows.map((r) => tierOf(r)));
-  return sortHighFirst(rows.map((r, i) => ({
-    tier: tiers[i]!.tier, tierReasons: tiers[i]!.reasons,
+  return rows.map((r) => ({
     specId: r.id, title: r.title, kind: r.kind as SpecKind, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '',
     headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision),
-    foldedRevisions: foldedRevisions(r.approved_revision == null ? null : Number(r.approved_revision), Number(r.head_revision)),
     version: Number(r.version), contentHash: r.content_hash,
     author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
     changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null,
@@ -155,35 +143,7 @@ export async function listAwaitingApproval(userId: string, lane: InboxLane = 'ma
     bodyArtifactId: r.body_artifact_id,
     revisionsCovered: Number(r.head_revision) - (r.approved_revision == null ? 0 : Number(r.approved_revision)),
     question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
-  })));
-}
-
-/** The row's tier from its approved and head bodies; a body that cannot be read leaves it Medium, never High or Low by guess. */
-async function tierOf(r: { scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; content_hash: string }) {
-  try {
-    const wanted = [r.head_artifact_revision, ...(r.approved_artifact_revision == null ? [] : [r.approved_artifact_revision])];
-    const read = await getArtifactRevisions(r.body_artifact_id, wanted);
-    const body = (n: number, hash: string | null) => { const a = read.get(n); return a && typeof a.content === 'string' && (!hash || a.contentHash === hash) ? a.content : null; };
-    const to = body(r.head_artifact_revision, r.content_hash);
-    const from = r.approved_artifact_revision == null ? null : body(r.approved_artifact_revision, r.approved_content_hash);
-    if (to === null || (r.approved_artifact_revision != null && from === null)) {
-      return r.risk === 'high' ? { tier: 'high' as const, reasons: ['A person flagged this spec risk: high.'] } : { tier: 'medium' as const, reasons: ['The change could not be read to rate it.'] };
-    }
-    return classifyRisk({ scope: r.scope, flaggedHigh: r.risk === 'high', from, to });
-  } catch {
-    return { tier: 'medium' as const, reasons: ['The change could not be read to rate it.'] };
-  }
-}
-
-/** How many of the waiting rows the risk-tier classifier calls Low (Home's split, R-9). */
-export const countLowRisk = (rows: ReadonlyArray<{ tier: RiskTier }>): number => rows.filter((r) => r.tier === 'low').length;
-
-/** The Low-tier share of what waits on this person in these workspaces; 0 when it cannot be read. */
-export async function countLowRiskAwaiting(userId: string, workspaceIds?: readonly string[]): Promise<number> {
-  try {
-    const rows = await listAwaitingApproval(userId);
-    return countLowRisk(workspaceIds ? rows.filter((r) => workspaceIds.includes(r.workspaceId)) : rows);
-  } catch { return 0; }
+  }));
 }
 
 async function countWhere(where: SQL): Promise<number> {
