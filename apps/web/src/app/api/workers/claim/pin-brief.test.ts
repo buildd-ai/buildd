@@ -2,7 +2,10 @@
  * The claimed task's Living Spec brief and the one approval ask
  * (living-specs.md §20, R-82, R-83; lib/specs/task-handoff.ts).
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
+
+const emitted: unknown[] = [];
+mock.module('@/lib/core-emit', () => ({ emit: async (e: unknown) => { emitted.push(e); } }));
 import { attachSpecPinBriefs, type ApprovalAsk, type SpecPinAtClaim } from './pin-brief';
 
 const worker = (taskId: string) => ({ id: `w-${taskId}`, taskId, branch: 'b', task: { id: taskId, context: {} } }) as any;
@@ -37,5 +40,11 @@ describe('attachSpecPinBriefs', () => {
   it('a failed ask never fails the claim', async () => {
     attachSpecPinBriefs([worker('t1')], new Map([['t1', { brief: null, ask: { specId: 's', revision: 1, title: 'T' }, workspaceId: 'ws' }]]), () => {}, async () => { throw new Error('push down'); });
     await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('the default ask no longer emits spec.approval_requested: approvers are asked when the revision is written', async () => {
+    attachSpecPinBriefs([worker('t1')], new Map([['t1', { brief: 'b', ask: { specId: 's', revision: 1, title: 'T' }, workspaceId: 'ws' }]]), () => {});
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emitted).toEqual([]);
   });
 });
