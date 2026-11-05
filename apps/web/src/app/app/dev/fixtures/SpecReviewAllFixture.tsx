@@ -18,6 +18,8 @@ const row = (n: number, title: string, summary: string | null, approvedRevision:
   specId: `fixture-spec-${n}`, title, workspaceName: 'Shop', headRevision: (approvedRevision ?? 0) + (n === 2 ? 3 : 1), approvedRevision, revisionsCovered: n === 2 ? 3 : 1,
   coverage: n === 2 ? 'Explanation covers 4 of 4 changes' : 'Explanation covers 1 of 1 change',
   author: n % 2 ? 'an agent' : 'Sam Rivera', summary, isQuestion, request: `fixture-request-${n}`, diff: rows,
+  shipped: n === 1 ? { merged: true, matches: true, unmet: [] }
+    : n === 2 ? { merged: true, matches: false, unmet: [{ id: 'AC-4', state: 'failed' }, { id: 'R-7', state: 'no_check' }] } : null,
 });
 
 export const SPEC_REVIEW_ALL_ROWS: ReviewAllRow[] = [

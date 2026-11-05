@@ -3,6 +3,8 @@ import { rowCoverage } from './approval-row-coverage';
 import { signSpecApprovalRequest } from './approval-request';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
 import { getSpec } from './store';
+import { shippedStandings } from './matches-shipped-store';
+import type { ShippedStanding } from './matches-shipped';
 
 /** Rows past this are counted and left to the inbox, so the page stays one read. */
 export const REVIEW_ALL_ROWS = 30;
@@ -22,6 +24,8 @@ export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'titl
   request: string | null;
   /** The revision against its approved revision (the whole body when none is), as numbered rows. Null when it cannot be read. */
   diff: { hunks: DiffHunk[]; omittedLines: number; linesAdded: number; linesRemoved: number } | null;
+  /** What the merged work shows against the head's criteria (R-34); null when nothing merged or it could not be read. */
+  shipped: ShippedStanding | null;
 }
 
 /** The one line a Review all row shows: the author's question when there is one, in place of the summary. */
@@ -38,7 +42,10 @@ export function reviewAllSummary(r: Pick<AwaitingApprovalRow, 'question' | 'expl
 export async function reviewAllView(userId: string, now = Date.now()): Promise<{ rows: ReviewAllRow[]; more: number }> {
   const all = await listAwaitingApproval(userId);
   const caller = { kind: 'user' as const, userId };
-  const rows = await Promise.all(all.slice(0, REVIEW_ALL_ROWS).map(async (r): Promise<ReviewAllRow> => ({
+  const shown = all.slice(0, REVIEW_ALL_ROWS);
+  const shipped = await shippedStandings(shown);
+  const rows = await Promise.all(shown.map(async (r): Promise<ReviewAllRow> => ({
+    shipped: shipped.get(r.specId) ?? null,
     specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, revisionsCovered: r.revisionsCovered, author: r.author,
     coverage: await rowCoverage(r),
     summary: reviewAllSummary(r),

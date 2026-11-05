@@ -16,13 +16,14 @@
     "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/InteractiveSessions.tsx": 1,
     "apps/web/src/components/FlightDetailSheet.tsx": 1,
+    "apps/web/src/components/SpecShippedLine.tsx": 1,
     "apps/web/src/components/insights/flow-chart-model.ts": 1,
     "apps/web/src/lib/mission-dependency-gate.ts": 1
   },
   "internal-jargon": {
     "apps/web/src/app/app/(protected)/health/_components/FailureGroups.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/CloudRunnerDeploy.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/CloudflareSection.tsx": 1,
+    "apps/web/src/app/app/(protected)/settings/_lib/use-cloud-runner-deploy.ts": 1,
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
   },
   "warning-instead-of-default": {
@@ -39,7 +40,6 @@
     "apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx": 2,
     "apps/web/src/components/FlightDetailSheet.tsx": 1,
-    "apps/web/src/components/LoopStatus.tsx": 2,
     "apps/web/src/components/chat/canvas-empty.ts": 1,
     "apps/web/src/lib/mission-state-view.ts": 7
   },
@@ -58,8 +58,11 @@
     "packages/core/mcp-tools.ts": 35
   },
   "catalog-word": {
-    "packages/core/mcp-tools.ts": 18
+    "apps/web/src/components/SpecShippedLine.tsx": 1,
+    "apps/web/src/lib/mission-state-view.ts": 1,
+    "packages/core/mcp-tools.ts": 17
   },
+  "sort-subtitle": {},
   "duplicate-explanation": {
     "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx": 1,
@@ -67,6 +70,5 @@
     "apps/web/src/components/chat/DirectiveCard.tsx": 1,
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1,
     "apps/web/src/lib/mission-state-view.ts": 3
-  },
-  "sort-subtitle": {}
+  }
 }
