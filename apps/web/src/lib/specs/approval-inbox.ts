@@ -5,6 +5,7 @@ import { isUuid } from '@/lib/uuid';
 import { appBaseUrl } from '@/lib/app-url';
 import { roleHas } from '@/lib/permissions';
 import { requestingPerson } from '@/lib/request-person';
+import { foldedRevisions } from './folded-revisions';
 import { classifyRisk, sortHighFirst, type RiskTier } from '@buildd/spec-contract/risk-tier';
 import { getArtifactRevisions } from '@/lib/artifact-revisions';
 import type { SpecExplanation } from '@buildd/spec-contract/explanation';
@@ -89,6 +90,8 @@ export interface AwaitingApprovalRow {
   workspaceName: string;
   headRevision: number;
   approvedRevision: number | null;
+  /** Unapproved revisions between the approved one and the head, folded under it (R-30, R-39). The row's diff and Approve are for the head. */
+  foldedRevisions: number[];
   /** The spec version and the head's content hash, as read: what an Approve on this row is pinned to. */
   version: number;
   contentHash: string;
@@ -142,6 +145,7 @@ export async function listAwaitingApproval(userId: string, lane: InboxLane = 'ma
     tier: tiers[i]!.tier, tierReasons: tiers[i]!.reasons,
     specId: r.id, title: r.title, kind: r.kind as SpecKind, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '',
     headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision),
+    foldedRevisions: foldedRevisions(r.approved_revision == null ? null : Number(r.approved_revision), Number(r.head_revision)),
     version: Number(r.version), contentHash: r.content_hash,
     author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
     changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null,

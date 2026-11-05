@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { approvalInboxView, otherDraftsView, type InboxRow } from '@/lib/specs/approval-inbox-view';
 import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
+import { foldedLine } from '@/lib/specs/folded-revisions';
 import { rowRevisionLine } from '@/lib/specs/approval-row-line';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
 import SpecShippedLine from '@/components/SpecShippedLine';
@@ -110,6 +111,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
       {row.risk.level === 'judgement' && row.risk.reasons.length ? (
         <p className="text-meta text-text-secondary [overflow-wrap:anywhere]" data-testid="spec-approvals-risk-reasons">{row.risk.reasons.join(' · ')}</p>
       ) : null}
+      {foldedLine(row.foldedRevisions) ? <p className="text-meta text-text-muted" data-testid="spec-approvals-folded">{foldedLine(row.foldedRevisions)}</p> : null}
       {row.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-coverage">{row.coverage}</p> : null}
       {row.changeSummary ? <p className="text-body text-text-primary [overflow-wrap:anywhere]">{row.changeSummary}</p> : null}
       <SpecShippedLine shipped={row.shipped} />

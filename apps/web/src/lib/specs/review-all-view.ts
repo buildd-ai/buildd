@@ -10,7 +10,7 @@ import type { ShippedStanding } from './matches-shipped';
 /** Rows past this are counted and left to the inbox, so the page stays one read. */
 export const REVIEW_ALL_ROWS = 30;
 
-export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'revisionsCovered' | 'author' | 'tier' | 'tierReasons'> {
+export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'foldedRevisions' | 'revisionsCovered' | 'author' | 'tier' | 'tierReasons'> {
   /** Explanation coverage approved-to-head against the head's explanation (R-30); null when unreadable. */
   coverage: string | null;
   /** One sentence on what changes: the explanation's summary, else the change summary; null when neither was written. */
@@ -51,7 +51,7 @@ export async function reviewAllView(userId: string, filter: RiskFilter = 'all', 
   const shipped = await shippedStandings(shown);
   const rows = await Promise.all(shown.map(async (r): Promise<ReviewAllRow> => ({
     shipped: shipped.get(r.specId) ?? null,
-    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, revisionsCovered: r.revisionsCovered, author: r.author, tier: r.tier, tierReasons: r.tierReasons, coverage: await rowCoverage(r), summary: reviewAllSummary(r),
+    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, foldedRevisions: r.foldedRevisions, revisionsCovered: r.revisionsCovered, author: r.author, tier: r.tier, tierReasons: r.tierReasons, coverage: await rowCoverage(r), summary: reviewAllSummary(r),
     isQuestion: r.question != null,
     request: signSpecApprovalRequest({
       specId: r.specId, workspaceId: r.workspaceId, revision: r.headRevision, expectedVersion: r.version, contentHash: r.contentHash,

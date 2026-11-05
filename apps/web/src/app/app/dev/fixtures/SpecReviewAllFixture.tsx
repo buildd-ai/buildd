@@ -15,9 +15,7 @@ export const SPEC_REVIEW_ALL_VARIANTS = ['list', 'diff', 'result', 'high'] as co
 export type SpecReviewAllVariant = (typeof SPEC_REVIEW_ALL_VARIANTS)[number];
 
 const row = (n: number, title: string, summary: string | null, approvedRevision: number | null, rows: ReviewAllRow['diff'], tier: ReviewAllRow['tier'], why: string, isQuestion = false): ReviewAllRow => ({
-  specId: `fixture-spec-${n}`, title, workspaceName: 'Shop', headRevision: (approvedRevision ?? 0) + (n === 2 ? 3 : 1), approvedRevision, revisionsCovered: n === 2 ? 3 : 1,
-  coverage: n === 2 ? 'Explanation covers 4 of 4 changes' : 'Explanation covers 1 of 1 change',
-  author: n % 2 ? 'an agent' : 'Sam Rivera', request: `fixture-request-${n}`, diff: rows, tier, tierReasons: [why], summary, isQuestion, shipped: n === 1 ? { merged: true, matches: true, unmet: [] }
+  specId: `fixture-spec-${n}`, workspaceName: 'Shop', headRevision: (approvedRevision ?? 0) + (n === 2 ? 3 : 1), foldedRevisions: [], author: n % 2 ? 'an agent' : 'Sam Rivera', request: `fixture-request-${n}`, diff: rows, title, approvedRevision, revisionsCovered: n === 2 ? 3 : 1, coverage: n === 2 ? 'Explanation covers 4 of 4 changes' : 'Explanation covers 1 of 1 change', tier, tierReasons: [why], summary, isQuestion, shipped: n === 1 ? { merged: true, matches: true, unmet: [] }
   : n === 2 ? { merged: true, matches: false, unmet: [{ id: 'AC-4', state: 'failed' }, { id: 'R-7', state: 'no_check' }] } : null, });
 
 export const SPEC_REVIEW_ALL_ROWS: ReviewAllRow[] = [
