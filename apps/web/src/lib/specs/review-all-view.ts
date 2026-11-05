@@ -1,4 +1,5 @@
 import { listAwaitingApproval, type AwaitingApprovalRow } from './approval-inbox';
+import { rowCoverage } from './approval-row-coverage';
 import { signSpecApprovalRequest } from './approval-request';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
 import { getSpec } from './store';
@@ -8,7 +9,9 @@ import type { ShippedStanding } from './matches-shipped';
 /** Rows past this are counted and left to the inbox, so the page stays one read. */
 export const REVIEW_ALL_ROWS = 30;
 
-export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'author'> {
+export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'revisionsCovered' | 'author'> {
+  /** Explanation coverage approved-to-head against the head's explanation (R-30); null when unreadable. */
+  coverage: string | null;
   /** One sentence on what changes: the explanation's summary, else the change summary; null when neither was written. */
   summary: string | null;
   /** True when `summary` is the author's question rather than a summary. */
@@ -43,7 +46,8 @@ export async function reviewAllView(userId: string, now = Date.now()): Promise<{
   const shipped = await shippedStandings(shown);
   const rows = await Promise.all(shown.map(async (r): Promise<ReviewAllRow> => ({
     shipped: shipped.get(r.specId) ?? null,
-    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, author: r.author,
+    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, revisionsCovered: r.revisionsCovered, author: r.author,
+    coverage: await rowCoverage(r),
     summary: reviewAllSummary(r),
     isQuestion: r.question != null,
     request: signSpecApprovalRequest({

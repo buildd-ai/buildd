@@ -64,13 +64,23 @@ describe('Review all', () => {
     expect(rows[2]!.querySelector('[data-testid="spec-shipped-label"], [data-testid="spec-shipped-unmet"]')).toBeNull();
   });
 
-  it('opens a diff in place', async () => {
-    const m = await render('diff');
+  it('AC-31, R-30: a spec with stacked revisions is one row that says how many it covers, with approved-to-head coverage', async () => {
+    const m = await render('list');
     mounted.push(m);
-    const diffs = m.container.querySelectorAll('[data-testid="spec-review-all-diff"]');
-    expect(diffs).toHaveLength(1);
-    expect(diffs[0]!.textContent).toContain('from the confirmation email');
+    const rows = m.container.querySelectorAll('[data-testid="spec-review-all-row"]');
+    expect(rows[1]!.textContent).toContain('revision 7 replaces 4, covering 3 revisions');
+    expect(rows[1]!.querySelector('[data-testid="spec-review-all-coverage"]')!.textContent).toBe('Explanation covers 4 of 4 changes');
+    expect(rows[0]!.textContent).toContain('revision 3 replaces 2 ');
+    expect(rows[0]!.textContent).not.toContain('covering');
   });
+
+  it('opens a diff in place', async () => {
+  const m = await render('diff');
+  mounted.push(m);
+  const diffs = m.container.querySelectorAll('[data-testid="spec-review-all-diff"]');
+  expect(diffs).toHaveLength(1);
+  expect(diffs[0]!.textContent).toContain('from the confirmation email');
+});
 
   it('AC-25, AC-26: Approve all sends one request per revision, each its own; one stale is named with its new head, the other three approved', async () => {
     const sent: Array<{ url: string; body: { request?: string } }> = [];

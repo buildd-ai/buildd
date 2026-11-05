@@ -15,11 +15,8 @@ export const SPEC_REVIEW_ALL_VARIANTS = ['list', 'diff', 'result'] as const;
 export type SpecReviewAllVariant = (typeof SPEC_REVIEW_ALL_VARIANTS)[number];
 
 const row = (n: number, title: string, summary: string | null, approvedRevision: number | null, rows: ReviewAllRow['diff'], isQuestion = false): ReviewAllRow => ({
-  specId: `fixture-spec-${n}`, title, workspaceName: 'Shop', headRevision: (approvedRevision ?? 0) + 1, approvedRevision,
-  author: n % 2 ? 'an agent' : 'Sam Rivera', summary, request: `fixture-request-${n}`, diff: rows, isQuestion,
-  shipped: n === 1 ? { merged: true, matches: true, unmet: [] }
-    : n === 2 ? { merged: true, matches: false, unmet: [{ id: 'AC-4', state: 'failed' }, { id: 'R-7', state: 'no_check' }] } : null,
-});
+  specId: `fixture-spec-${n}`, title, workspaceName: 'Shop', headRevision: (approvedRevision ?? 0) + (n === 2 ? 3 : 1), approvedRevision, author: n % 2 ? 'an agent' : 'Sam Rivera', summary, request: `fixture-request-${n}`, diff: rows, isQuestion, shipped: n === 1 ? { merged: true, matches: true, unmet: [] }
+  : n === 2 ? { merged: true, matches: false, unmet: [{ id: 'AC-4', state: 'failed' }, { id: 'R-7', state: 'no_check' }] } : null, revisionsCovered: n === 2 ? 3 : 1, coverage: n === 2 ? 'Explanation covers 4 of 4 changes' : 'Explanation covers 1 of 1 change', });
 
 export const SPEC_REVIEW_ALL_ROWS: ReviewAllRow[] = [
   row(1, 'Checkout', 'Shoppers can cancel from the confirmation email until the order is packed.', 2, {
