@@ -27,6 +27,9 @@ export default async function SpecApprovalsPage() {
   if (!user) redirect(`/app/auth/signin?callbackUrl=${encodeURIComponent(SPEC_APPROVAL_INBOX_PATH)}`);
   const [rows, other] = await Promise.all([approvalInboxView(user.id), otherDraftsView(user.id)]);
   const n = rows.length;
+  // Judgement first, low-risk grouped after (approvalInboxView sorts them); low-risk never auto-approves.
+  const judgement = rows.filter((r) => r.risk.level === 'judgement');
+  const lowRisk = rows.filter((r) => r.risk.level !== 'judgement');
   return (
     <main className="px-4 pt-[4.5rem] pb-24 md:px-8 md:pt-8 md:pb-10">
       <div className="flex max-w-3xl flex-col gap-4">
@@ -44,10 +47,20 @@ export default async function SpecApprovalsPage() {
             ) : null}
           </span>
         </Lede>
-        {n > 0 ? (
+        {judgement.length > 0 ? (
           <ul className="flex flex-col gap-3" data-testid="spec-approvals-list">
-            {rows.map((r) => <li key={r.specId}><InboxRowCard row={r} open={n === 1} /></li>)}
+            {judgement.map((r) => <li key={r.specId}><InboxRowCard row={r} open={n === 1} /></li>)}
           </ul>
+        ) : null}
+        {lowRisk.length > 0 ? (
+          <div data-testid="spec-approvals-low-risk">
+            <Disclosure summary={`${lowRisk.length} low-risk ${lowRisk.length === 1 ? 'revision' : 'revisions'}: wording and notes only`} defaultOpen={judgement.length === 0}>
+              <p className="pt-2 text-meta text-text-muted">No criterion, credential, permission or approval wording changed. Each still needs its own Approve.</p>
+              <ul className="flex flex-col gap-3 pt-3">
+                {lowRisk.map((r) => <li key={r.specId}><InboxRowCard row={r} open={n === 1} /></li>)}
+              </ul>
+            </Disclosure>
+          </div>
         ) : null}
         {other.length > 0 ? (
           <div data-testid="spec-approvals-other-lane"><Disclosure summary="Other drafts" count={other.length}>
@@ -83,11 +96,17 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
             {gate.passed ? (gate.warnings.length ? 'gate passed, warnings' : 'gate passed') : 'gate refused'}
           </Chip>
         ) : null}
+        <Chip tone={row.risk.level === 'judgement' ? 'warning' : 'muted'} data-testid="spec-approvals-risk" data-risk={row.risk.level}>
+          {row.risk.level === 'judgement' ? 'needs judgement' : 'low-risk'}
+        </Chip>
       </div>
       {row.question ? <SpecQuestion question={row.question} /> : null}
       <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-line">
         {row.workspaceName} · {rowRevisionLine(row)} · by {row.author}
       </p>
+      {row.risk.level === 'judgement' && row.risk.reasons.length ? (
+        <p className="text-meta text-text-secondary [overflow-wrap:anywhere]" data-testid="spec-approvals-risk-reasons">{row.risk.reasons.join(' · ')}</p>
+      ) : null}
       {row.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-coverage">{row.coverage}</p> : null}
       {row.changeSummary ? <p className="text-body text-text-primary [overflow-wrap:anywhere]">{row.changeSummary}</p> : null}
       <SpecShippedLine shipped={row.shipped} />
