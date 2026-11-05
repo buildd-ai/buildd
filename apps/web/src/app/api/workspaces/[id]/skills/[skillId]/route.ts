@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { scheduleSkillIndex, scheduleSkillRemoval } from '@/lib/skills/knowledge';
 import { NextRequest, NextResponse } from 'next/server';
 import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { patchClaudeAiArtifactsMetadata } from '@buildd/shared';
@@ -238,6 +239,7 @@ export async function PATCH(
             updatedSkill.configStorageKey = configStorageKey;
         }
 
+        scheduleSkillIndex(updatedSkill);
         return NextResponse.json({ skill: updatedSkill });
     } catch (error) {
         console.error('Update workspace skill error:', error);
@@ -289,6 +291,7 @@ export async function DELETE(
             .delete(workspaceSkills)
             .where(eq(workspaceSkills.id, skillId));
 
+        scheduleSkillRemoval(id, skillId);
         return NextResponse.json({ success: true });
     } catch (error) {
         console.error('Delete workspace skill error:', error);

@@ -16,6 +16,7 @@ import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { roleHas } from '@/lib/permissions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { scheduleSkillIndex } from '@/lib/skills/knowledge';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 async function authenticateRequest(req: NextRequest) {
@@ -286,6 +287,7 @@ export async function POST(
                     .where(eq(workspaceSkills.id, updated.id));
             }
 
+            scheduleSkillIndex(updated);
             return NextResponse.json({ skill: updated });
         }
 
@@ -337,6 +339,7 @@ export async function POST(
                 .where(eq(workspaceSkills.id, skill.id));
         }
 
+        scheduleSkillIndex(skill);
         return NextResponse.json({ skill }, { status: 201 });
     } catch (error) {
         console.error('Create workspace skill error:', error);
