@@ -14,7 +14,7 @@ export default function SpecProposals({ proposals, now }: { proposals: ProposalR
     <section className="flex flex-col gap-2" aria-labelledby="spec-proposals-h" data-testid="spec-proposals">
       <div>
         <h2 id="spec-proposals-h" className="text-title font-semibold text-text-primary">Proposals</h2>
-        <p className="text-meta text-text-muted">Drafts an agent wrote unasked. They wait for a mission to select them or a task to pin them; until then they are not in your approvals.</p>
+        <p className="text-meta text-text-muted">Drafts an agent wrote unasked. A mission that selects one, or a task that pins it, moves it to approvals.</p>
       </div>
       <ul className="flex flex-col gap-2">
         {proposals.map((p) => (
