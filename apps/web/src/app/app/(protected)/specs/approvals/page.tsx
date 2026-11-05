@@ -72,6 +72,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
         <Link href={`/app/specs/${encodeURIComponent(row.specId)}`} className="inline-flex min-h-11 items-center text-title font-semibold text-text-primary underline-offset-2 hover:underline [overflow-wrap:anywhere] md:min-h-0">
           {row.title}
         </Link>
+        <div className="flex flex-wrap items-center gap-2">
         <Chip tone={row.risk.level === 'judgement' ? 'warning' : 'muted'} data-testid="spec-approvals-risk" data-risk={row.risk.level}>
           {row.risk.level === 'judgement' ? 'needs judgement' : 'low-risk'}
         </Chip>
@@ -80,6 +81,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
             {gate.passed ? (gate.warnings.length ? 'gate passed, warnings' : 'gate passed') : 'gate refused'}
           </Chip>
         ) : null}
+        </div>
       </div>
       <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-line">
         {row.workspaceName} · revision {row.headRevision}{row.approvedRevision ? ` replaces ${row.approvedRevision}` : ', first approval'} · by {row.author}
