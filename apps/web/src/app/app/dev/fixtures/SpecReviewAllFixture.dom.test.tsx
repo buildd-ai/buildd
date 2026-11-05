@@ -59,7 +59,7 @@ describe('Review all', () => {
     expect(rows[0]!.querySelector('[data-testid="spec-shipped-label"]')!.textContent).toBe('Matches what shipped');
     expect(rows[0]!.querySelector('[data-testid="spec-shipped-unmet"]')).toBeNull();
     expect(rows[1]!.querySelector('[data-testid="spec-shipped-label"]')).toBeNull();
-    expect(rows[1]!.querySelector('[data-testid="spec-shipped-unmet"]')!.textContent).toBe('Shipped work does not yet cover: AC-4 failed, R-7 has no check');
+    expect(rows[1]!.querySelector('[data-testid="spec-shipped-unmet"]')!.textContent).toBe('Not covered: AC-4 failed, R-7 has no check');
     // Nothing merged: neither.
     expect(rows[2]!.querySelector('[data-testid="spec-shipped-label"], [data-testid="spec-shipped-unmet"]')).toBeNull();
   });
@@ -75,12 +75,12 @@ describe('Review all', () => {
   });
 
   it('opens a diff in place', async () => {
-  const m = await render('diff');
-  mounted.push(m);
-  const diffs = m.container.querySelectorAll('[data-testid="spec-review-all-diff"]');
-  expect(diffs).toHaveLength(1);
-  expect(diffs[0]!.textContent).toContain('from the confirmation email');
-});
+    const m = await render('diff');
+    mounted.push(m);
+    const diffs = m.container.querySelectorAll('[data-testid="spec-review-all-diff"]');
+    expect(diffs).toHaveLength(1);
+    expect(diffs[0]!.textContent).toContain('from the confirmation email');
+  });
 
   it('AC-25, AC-26: Approve all sends one request per revision, each its own; one stale is named with its new head, the other three approved', async () => {
     const sent: Array<{ url: string; body: { request?: string } }> = [];

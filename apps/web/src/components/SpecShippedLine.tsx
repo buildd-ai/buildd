@@ -16,7 +16,7 @@ export default function SpecShippedLine({ shipped }: { shipped: ShippedStanding 
   if (!shipped.unmet.length) return null;
   return (
     <p className="text-meta text-text-secondary [overflow-wrap:anywhere]" data-testid="spec-shipped-unmet">
-      Shipped work does not yet cover:{' '}
+      Not covered:{' '}
       {shipped.unmet.map((u, i) => (
         <span key={u.id}>{i ? ', ' : ''}<span className="font-mono">{u.id}</span> {STATE_WORDS[u.state]}</span>
       ))}

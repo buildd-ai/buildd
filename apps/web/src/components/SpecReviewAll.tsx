@@ -84,12 +84,12 @@ export default function SpecReviewAll({ rows, initialResult = null, openSpecId =
                 <SpecShippedLine shipped={r.shipped} />
                 {r.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-review-all-coverage">{r.coverage}</p> : null}
                 <Disclosure summary="Show the diff" defaultOpen={openSpecId === r.specId}>
-                <div className="pt-2" data-testid="spec-review-all-diff">
-                  {r.diff
-                    ? <SpecDiffView hunks={r.diff.hunks} omittedLines={r.diff.omittedLines} />
-                    : <p className="text-body text-text-secondary">The diff could not be read. Open the spec to review it.</p>}
-                </div>
-              </Disclosure>
+                  <div className="pt-2" data-testid="spec-review-all-diff">
+                    {r.diff
+                      ? <SpecDiffView hunks={r.diff.hunks} omittedLines={r.diff.omittedLines} />
+                      : <p className="text-body text-text-secondary">The diff could not be read. Open the spec to review it.</p>}
+                  </div>
+                </Disclosure>
               </Card>
             </li>
           );
