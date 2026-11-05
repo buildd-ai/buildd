@@ -38,7 +38,8 @@ export function decideAheadHold({ pin, toMissionBranch, spec }: AheadHoldInput):
 export async function loadAheadHold(taskId: string | null, toMissionBranch: boolean): Promise<AheadHold> {
   if (!taskId || toMissionBranch) return { hold: false };
   const [t] = await db.select({ context: tasks.context }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
-  const pin = (t?.context as { specSource?: Record<string, unknown> } | null)?.specSource;
+  const rawPin = (t?.context as { specSource?: unknown } | null)?.specSource;
+  const pin = rawPin && typeof rawPin === 'object' ? (rawPin as Record<string, unknown>) : null;
   if (!pin || pin.provisional !== true || typeof pin.specId !== 'string') return { hold: false };
   const [spec] = await db.select({ title: specs.title, approvedRevision: specs.approvedRevision, headRevision: specs.headRevision })
     .from(specs).where(eq(specs.id, pin.specId)).limit(1);
