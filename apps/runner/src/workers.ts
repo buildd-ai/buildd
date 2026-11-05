@@ -90,6 +90,7 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
+import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5566,6 +5567,11 @@ export class WorkerManager {
           // later pass. Claude only: Codex has no PreToolUse seam.
           ...(!isCodexTask
             ? [{ hooks: [createVerifyGuardHook({ worker, isReviewer: Boolean(task.context?.reviewerFor) })] }]
+            : []),
+          // Self-review recording (self-review-guard.ts): after the verify guard,
+          // so its refusal wins. Records only, never denies; off by default.
+          ...(!isCodexTask
+            ? [{ hooks: [createSelfReviewGuardHook({ worker, task: task as any, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
             : []),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
