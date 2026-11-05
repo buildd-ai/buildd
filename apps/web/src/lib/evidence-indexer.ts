@@ -355,7 +355,7 @@ export function defaultEvidenceIndexerDeps(store?: EvidenceIndexerDeps['store'])
     if (!lazyStore) {
       const { PgVectorStore, getVoyageEmbedder } = await import('@buildd/core/knowledge-store');
       // Same default embedder the query side uses; lexical-only when none is configured.
-      lazyStore = new PgVectorStore(getVoyageEmbedder());
+      lazyStore = new PgVectorStore(getVoyageEmbedder(), null, { caller: 'evidence_index' });
     }
     return lazyStore;
   };

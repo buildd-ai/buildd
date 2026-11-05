@@ -9,7 +9,7 @@
 import * as childProcess from 'node:child_process';
 const { execFile } = childProcess;
 import { createHash } from 'crypto';
-import { shouldIngestFile, MAX_INGEST_FILE_BYTES } from './ingest-filter';
+import { capFullIngest, shouldIngestFile, MAX_FULL_INGEST_BYTES, MAX_FULL_INGEST_FILES, MAX_INGEST_FILE_BYTES, type IngestCeiling } from './ingest-filter';
 import type { ScipGraph } from './scip-parser';
 import { BuilddTransport } from '../buildd-transport';
 
@@ -39,6 +39,8 @@ export interface IngestBatchStats {
   filesDeleted: number;
   /** Files skipped because their content hash matched what is already in the store. */
   skippedUnchanged?: number;
+  /** Chunks stored without a vector because the team's Voyage budget refused them. */
+  chunksLexicalOnly?: number;
 }
 
 export interface FullIngestCompletion {
@@ -103,6 +105,7 @@ interface AdaptivePushTotals {
   chunksUpserted: number;
   filesSkipped: number;
   skippedUnchanged: number;
+  chunksLexicalOnly: number;
   batchRetries: number;
 }
 
@@ -123,6 +126,7 @@ async function pushBatchAdaptive(
     totals.chunksUpserted += res.chunksUpserted;
     totals.filesSkipped += res.filesSkipped;
     totals.skippedUnchanged += res.skippedUnchanged ?? 0;
+    totals.chunksLexicalOnly += res.chunksLexicalOnly ?? 0;
   } catch (err) {
     if (batch.length < 2 || !isRetryableBatchError(err)) throw err;
     totals.batchRetries++;
@@ -181,6 +185,8 @@ export interface RunFullIngestOptions {
    */
   scipEnrich?: (job: FullIngestJob) => Promise<ScipEnrichResult | null>;
   log?: (msg: string) => void;
+  /** Default MAX_FULL_INGEST_FILES / MAX_FULL_INGEST_BYTES. */
+  ceiling?: IngestCeiling;
 }
 
 /**
@@ -242,7 +248,9 @@ export async function runFullIngestJob(
   const startedAt = Date.now();
   try {
     const allPaths = await reader.listFiles();
-    const keepPaths = allPaths.filter(p => shouldIngestFile(p));
+    const eligiblePaths = allPaths.filter(p => shouldIngestFile(p));
+    const ceiling = opts.ceiling ?? { maxFiles: MAX_FULL_INGEST_FILES, maxBytes: MAX_FULL_INGEST_BYTES };
+    const keepPaths = eligiblePaths.slice(0, ceiling.maxFiles);
 
     let skipped = 0;
     const entries: IngestFileEntry[] = [];
@@ -251,15 +259,19 @@ export async function runFullIngestJob(
     const READ_CONCURRENCY = 8;
     const contents: Array<string | null> = new Array(keepPaths.length).fill(null);
     let next = 0;
+    // Stop reading past the ceiling: a huge repo must not be held in memory first.
+    let bytesRead = 0;
     await Promise.all(
       Array.from({ length: Math.min(READ_CONCURRENCY, keepPaths.length) }, async () => {
-        while (next < keepPaths.length) {
+        while (next < keepPaths.length && bytesRead <= ceiling.maxBytes) {
           const i = next++;
           contents[i] = await reader.readFile(keepPaths[i]);
+          bytesRead += Buffer.byteLength(contents[i] ?? '', 'utf8');
         }
       }),
     );
-    keepPaths.forEach((path, i) => {
+    const unread = keepPaths.length - next;
+    keepPaths.slice(0, next).forEach((path, i) => {
       const content = contents[i];
       if (content === null) {
         skipped++;
@@ -268,18 +280,22 @@ export async function runFullIngestJob(
       const fileHash = createHash('sha256').update(content).digest('hex');
       entries.push({ path, content, fileHash });
     });
+    const capped = capFullIngest(entries, e => Buffer.byteLength(e.content, 'utf8'), ceiling);
+    const filesOverCeiling = capped.dropped + unread + (eligiblePaths.length - keepPaths.length);
+    const ingestTruncated = filesOverCeiling > 0;
 
     const totals: AdaptivePushTotals = {
       filesIngested: 0,
       chunksUpserted: 0,
       filesSkipped: 0,
       skippedUnchanged: 0,
+      chunksLexicalOnly: 0,
       batchRetries: 0,
     };
-    for (const batch of planFileBatches(entries, caps)) {
+    for (const batch of planFileBatches(capped.kept, caps)) {
       await pushBatchAdaptive(api, job.id, batch, totals);
     }
-    const { filesIngested, chunksUpserted, skippedUnchanged, batchRetries } = totals;
+    const { filesIngested, chunksUpserted, skippedUnchanged, chunksLexicalOnly, batchRetries } = totals;
     skipped += totals.filesSkipped;
 
     // Precise code-graph enrichment (SCIP). Runs after files are ingested so
@@ -289,11 +305,13 @@ export async function runFullIngestJob(
 
     const stats: Record<string, unknown> = {
       filesListed: allPaths.length,
-      filesSent: entries.length,
+      filesSent: capped.kept.length,
       filesIngested,
       filesSkipped: skipped,
       skippedUnchanged,
       chunksUpserted,
+      ...(chunksLexicalOnly > 0 ? { chunksLexicalOnly } : {}),
+      ...(ingestTruncated ? { ingestTruncated, filesOverCeiling } : {}),
       batchRetries,
       durationMs: Date.now() - startedAt,
       ...(reader.resolvedSha ? { sha: reader.resolvedSha } : {}),
@@ -301,8 +319,10 @@ export async function runFullIngestJob(
     };
     // sweep: a full run touched every current file, so the server can prune
     // file-derived chunks in this workspace's code/docs namespaces that this
-    // run did not refresh (deleted/renamed files since the last full sync).
-    await api.completeJob(job.id, { status: 'done', stats, sweep: true });
+    // run did not refresh (deleted/renamed files since the last full sync). A
+    // truncated run did not touch every file, so it must not sweep: what it left
+    // out is not stale.
+    await api.completeJob(job.id, { status: 'done', stats, sweep: !ingestTruncated });
     return { status: 'done', stats };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
