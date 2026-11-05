@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { specs, type SpecKind } from '@buildd/core/db/schema';
+import { specs } from '@buildd/core/db/schema';
 import { and, count, inArray, sql, type SQL } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { appBaseUrl } from '@/lib/app-url';
@@ -39,19 +39,13 @@ export const awaitingApprovalWhere = () => sql`${specs.status} NOT IN ('retired'
   AND coalesce(${specs.repoSource}->>'state', '') <> 'imported'
   AND NOT (${proposalWhere()})`;
 
-/** The main list's lane (b7fc9316 R-38): contract-kind specs only. Every other kind is the "Other drafts" lane. */
-export const mainLaneWhere = () => sql`${specs.kind} = 'contract'`;
-export const otherLaneWhere = () => sql`${specs.kind} <> 'contract'`;
-export type InboxLane = 'main' | 'other';
-const laneWhere = (lane: InboxLane) => (lane === 'main' ? mainLaneWhere() : otherLaneWhere());
-
 /**
  * Waiting specs per workspace, as an un-run query (Home reads it in its first
  * round, lib/read-round.ts). Filter the workspaces by mayApproveIn after.
  */
 export const awaitingApprovalCounts = (workspaceIds: readonly string[]) =>
   db.select({ workspaceId: specs.workspaceId, n: count() }).from(specs)
-    .where(and(inArray(specs.workspaceId, [...workspaceIds]), awaitingApprovalWhere(), mainLaneWhere()))
+    .where(and(inArray(specs.workspaceId, [...workspaceIds]), awaitingApprovalWhere()))
     .groupBy(specs.workspaceId);
 
 const rowsOf = <T,>(r: unknown) => ((r as { rows?: T[] }).rows ?? []);
@@ -83,8 +77,6 @@ export async function approverWorkspaces(userId: string): Promise<Array<{ id: st
 export interface AwaitingApprovalRow {
   specId: string;
   title: string;
-  /** The spec's kind (R-38), shown on every row. */
-  kind: SpecKind;
   workspaceId: string;
   workspaceName: string;
   headRevision: number;
@@ -114,36 +106,24 @@ export interface AwaitingApprovalRow {
 
 /**
  * Every spec this person may approve whose head waits on a decision, newest
- * proposal first. `lane` picks the main list (contract kind, the default) or
- * the separate Other drafts lane (every other kind, R-38).
+ * proposal first.
  */
-export async function listAwaitingApproval(userId: string, lane: InboxLane = 'main'): Promise<AwaitingApprovalRow[]> {
+export async function listAwaitingApproval(userId: string): Promise<AwaitingApprovalRow[]> {
   const ws = await approverWorkspaces(userId);
   if (!ws.length) return [];
   const names = new Map(ws.map((w) => [w.id, w.name]));
 
   const rows = rowsOf<{
-    id: string; title: string; kind: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number;
-    content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; body_artifact_id: string; explanation_question: string | null; created_at: string | Date;
-  }>(await db.execute(sql`
-    SELECT specs.id, specs.title, specs.kind, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
+    id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number; content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; body_artifact_id: string; explanation_question: string | null; created_at: string | Date; }>(await db.execute(sql`
+    SELECT specs.id, specs.title, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
       r.content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation, specs.body_artifact_id, r.explanation->>'question' AS explanation_question, r.created_at
     FROM specs
     JOIN spec_revisions r ON r.spec_id = specs.id AND r.revision = specs.head_revision
     LEFT JOIN users u ON r.author_kind = 'user' AND u.id::text = r.author_id
-    WHERE ${inArray(specs.workspaceId, ws.map((w) => w.id))} AND ${awaitingApprovalWhere()} AND ${laneWhere(lane)}
+    WHERE ${inArray(specs.workspaceId, ws.map((w) => w.id))} AND ${awaitingApprovalWhere()}
     ORDER BY r.created_at DESC, specs.id`));
   return rows.map((r) => ({
-    specId: r.id, title: r.title, kind: r.kind as SpecKind, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '',
-    headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision),
-    version: Number(r.version), contentHash: r.content_hash,
-    author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
-    changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null,
-    explanation: r.explanation ?? null,
-    bodyArtifactId: r.body_artifact_id,
-    revisionsCovered: Number(r.head_revision) - (r.approved_revision == null ? 0 : Number(r.approved_revision)),
-    question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
-  }));
+    specId: r.id, title: r.title, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '', headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision), version: Number(r.version), contentHash: r.content_hash, author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent', changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null, explanation: r.explanation ?? null, bodyArtifactId: r.body_artifact_id, revisionsCovered: Number(r.head_revision) - (r.approved_revision == null ? 0 : Number(r.approved_revision)), question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(), }));
 }
 
 async function countWhere(where: SQL): Promise<number> {
@@ -151,11 +131,11 @@ async function countWhere(where: SQL): Promise<number> {
   return Number(r?.n ?? 0);
 }
 
-/** How many spec revisions wait on this person in a lane: Home's Needs you card counts the main one (R-9, R-38). */
-export async function countAwaitingApprovalFor(userId: string, workspaceIds?: readonly string[], lane: InboxLane = 'main'): Promise<number> {
+/** How many spec revisions wait on this person: Home's Needs you card (R-9). */
+export async function countAwaitingApprovalFor(userId: string, workspaceIds?: readonly string[]): Promise<number> {
   const ws = (await approverWorkspaces(userId)).filter((w) => !workspaceIds || workspaceIds.includes(w.id));
   if (!ws.length) return 0;
-  return countWhere(and(inArray(specs.workspaceId, ws.map((w) => w.id)), laneWhere(lane))!);
+  return countWhere(inArray(specs.workspaceId, ws.map((w) => w.id)));
 }
 
 /**
@@ -165,18 +145,13 @@ export async function countAwaitingApprovalFor(userId: string, workspaceIds?: re
  * confirm token or anything else that approves.
  */
 export async function countAwaitingApproval(caller: SpecCaller, workspaceId: string | null): Promise<
-  { ok: true; count: number; otherDraftsCount: number; scope: 'person' | 'workspace'; inboxUrl: string } | SpecError
+  { ok: true; count: number; scope: 'person' | 'workspace'; inboxUrl: string } | SpecError
 > {
   const personId = caller.kind === 'user' ? caller.userId : requestingPerson(null, caller.account);
-  if (personId) {
-    const [count, otherDraftsCount] = await Promise.all([countAwaitingApprovalFor(personId), countAwaitingApprovalFor(personId, undefined, 'other')]);
-    return { ok: true, count, otherDraftsCount, scope: 'person', inboxUrl: specApprovalInboxUrl() };
-  }
+  if (personId) return { ok: true, count: await countAwaitingApprovalFor(personId), scope: 'person', inboxUrl: specApprovalInboxUrl() };
   if (!workspaceId || !isUuid(workspaceId)) return fail(400, 'workspaceId is required');
   if (!(await reach(caller, workspaceId, false))) return fail(404, 'Workspace not found');
-  const inWs = sql`${specs.workspaceId} = ${workspaceId}::uuid`;
-  const [count, otherDraftsCount] = await Promise.all([countWhere(and(inWs, mainLaneWhere())!), countWhere(and(inWs, otherLaneWhere())!)]);
-  return { ok: true, count, otherDraftsCount, scope: 'workspace', inboxUrl: specApprovalInboxUrl() };
+  return { ok: true, count: await countWhere(sql`${specs.workspaceId} = ${workspaceId}::uuid`), scope: 'workspace', inboxUrl: specApprovalInboxUrl() };
 }
 
 /**

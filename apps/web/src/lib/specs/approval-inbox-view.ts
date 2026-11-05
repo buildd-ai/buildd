@@ -42,12 +42,3 @@ export async function approvalInboxView(userId: string): Promise<InboxRow[]> {
   }));
   return sortByRisk(built);
 }
-
-/**
- * The Other drafts lane (b7fc9316 R-38): waiting revisions of every kind but
- * `contract`, one line each with a link to the spec. No approve control here:
- * nothing in this lane blocks a build or a merge.
- */
-export async function otherDraftsView(userId: string): Promise<AwaitingApprovalRow[]> {
-  return listAwaitingApproval(userId, 'other');
-}
