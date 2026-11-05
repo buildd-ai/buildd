@@ -10,6 +10,23 @@ related: [knowledge-store-retrieval, knowledge-ingest-pipeline, pluggable-knowle
 keywords: [voyage, BYOK, voyage_api_key, fair use, embedding spend, rerank tokens, usage.total_tokens, VOYAGE_BUDGET_ENFORCED, voyage_usage_monthly, voyage_usage_daily, lexical fallback, budgetFallback, MAX_FULL_INGEST_BYTES]
 verified_by: [packages/core/__tests__/voyage-budget.test.ts, packages/core/__tests__/voyage-guard.test.ts, packages/core/__tests__/voyage-client-boundary.test.ts, packages/core/__tests__/voyage-spend-store.test.ts, packages/core/__tests__/knowledge-ingest-filter.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "voyage-guard"
+    type: "symbol"
+    name: "createVoyageGuard"
+    path: "packages/core/knowledge-store/voyage-guard.ts"
+  - id: "voyage-caps"
+    type: "symbol"
+    name: "voyageCapsForPlan"
+    path: "packages/core/voyage-budget.ts"
+  - id: "voyage-usage-table"
+    type: "symbol"
+    name: "voyageUsageDaily"
+    path: "packages/core/db/schema.ts"
+  - id: "voyage-guard-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/voyage-guard.test.ts"
 ---
 # Voyage Spend Guard
 
