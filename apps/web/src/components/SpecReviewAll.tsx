@@ -9,6 +9,7 @@ import Disclosure from '@/components/ui/Disclosure';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import SpecDiffView from '@/components/SpecDiffView';
+import SpecShippedLine from '@/components/SpecShippedLine';
 import { approveAll, approveAllSummary, type ApproveAllItem, type ApproveAllResult, type ConfirmReply } from '@/lib/specs/approve-all';
 import type { ReviewAllRow } from '@/lib/specs/review-all-view';
 
@@ -80,6 +81,7 @@ export default function SpecReviewAll({ rows, initialResult = null, openSpecId =
                   {r.workspaceName} · {rowRevisionLine(r)} · by {r.author}
                   {r.diff ? ` · +${r.diff.linesAdded} −${r.diff.linesRemoved}` : ''}
                 </p>
+                <SpecShippedLine shipped={r.shipped} />
                 {r.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-review-all-coverage">{r.coverage}</p> : null}
                 <Disclosure summary="Show the diff" defaultOpen={openSpecId === r.specId}>
                   <div className="pt-2" data-testid="spec-review-all-diff">

@@ -5,6 +5,7 @@ import { approvalInboxView, type InboxRow } from '@/lib/specs/approval-inbox-vie
 import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
 import { rowRevisionLine } from '@/lib/specs/approval-row-line';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
+import SpecShippedLine from '@/components/SpecShippedLine';
 import Card from '@/components/ui/Card';
 import SpecQuestion from '@/components/SpecQuestion';
 import Chip from '@/components/ui/Chip';
@@ -74,6 +75,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
       </p>
       {row.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-approvals-coverage">{row.coverage}</p> : null}
       {row.changeSummary ? <p className="text-body text-text-primary [overflow-wrap:anywhere]">{row.changeSummary}</p> : null}
+      <SpecShippedLine shipped={row.shipped} />
       {view ? (
         <Disclosure summary={`Review revision ${row.headRevision}`} defaultOpen={open}>
           <div className="pt-2">
