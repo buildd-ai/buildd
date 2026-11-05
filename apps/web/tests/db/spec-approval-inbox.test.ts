@@ -146,6 +146,94 @@ describe('stacked unapproved revisions fold under the newest (R-30, R-39)', () =
   });
 });
 
+describe('kinds and lanes (R-38, AC-39)', () => {
+  test('a new spec is a contract by default, and create_draft rejects an unknown kind', async () => {
+    const s = await draft();
+    expect(s.kind).toBe('contract');
+    const bad = await createSpecDraft(user(admin), { workspaceId: wsA, title: `kind-${rand()}`, body: BODY(), kind: 'memo' }, { duplicates: false });
+    expect(bad.ok).toBe(false);
+  });
+
+  test('a charter revision is in Other drafts and counted apart, not in the main inbox', async () => {
+    const c = await createSpecDraft(user(admin), { workspaceId: wsA, title: `charter-${rand()}`, body: BODY(), kind: 'charter' }, { duplicates: false });
+    if (!c.ok) throw new Error(c.error);
+    const k = await draft();
+    const main = new Set((await listAwaitingApproval(admin)).map((x) => x.specId));
+    const other = await listAwaitingApproval(admin, 'other');
+    expect([main.has(c.spec.id), main.has(k.id)]).toEqual([false, true]);
+    expect(other.find((x) => x.specId === c.spec.id)?.kind).toBe('charter');
+    expect(other.some((x) => x.specId === k.id)).toBe(false);
+    const counted = await countAwaitingApproval(user(admin), null);
+    if (!counted.ok) throw new Error(counted.error);
+    expect(counted.otherDraftsCount).toBeGreaterThanOrEqual(1);
+    const inbox = await approvalInboxView(admin);
+    expect(inbox.some((r) => r.specId === c.spec.id)).toBe(false);
+  });
+});
+
+describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
+  test('three stacked unapproved revisions are one row, covering approved to head, measured against the head\'s explanation', async () => {
+    const base = BODY();
+    const s = await draft(wsA, base);
+    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    let version = a.spec.version;
+    const bodies = [`${base}R-2: Rates are cached.\n`, `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\n`];
+    for (const body of bodies) {
+      const r = await reviseSpecDraft(user(member), s.id, { expectedVersion: version, body, changeSummary: 'Adds a rule.' });
+      if (!r.ok) throw new Error(r.error);
+      version = r.spec.version;
+    }
+    // The head explains everything since the approved revision, not just its own step.
+    const head = await reviseSpecDraft(user(member), s.id, {
+      expectedVersion: version, body: `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\nR-4: Rates show their age.\n`, changeSummary: 'Adds R-4.',
+      explanation: { summary: 'Adds R-2 to R-4.', lines: { 'R-2': 'Cache rates.', 'R-3': 'Expire daily.', 'R-4': 'Show the age.' } },
+    });
+    if (!head.ok) throw new Error(head.error);
+
+    const listed = (await listAwaitingApproval(admin)).filter((x) => x.specId === s.id);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ headRevision: 4, approvedRevision: 1, revisionsCovered: 3 });
+
+    const inbox = (await approvalInboxView(admin)).filter((x) => x.specId === s.id);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]!.coverage).toBe('Explanation covers 3 of 3 changes');
+    const { reviewAllView } = await import('../../src/lib/specs/review-all-view');
+    const all = (await reviewAllView(admin)).rows.filter((x) => x.specId === s.id);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ headRevision: 4, approvedRevision: 1, revisionsCovered: 3, coverage: 'Explanation covers 3 of 3 changes' });
+  });
+
+  test('an explanation that covers only the last step leaves the earlier stacked changes not explained', async () => {
+    const base = BODY();
+    const s = await draft(wsA, base);
+    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    const r2 = await reviseSpecDraft(user(member), s.id, { expectedVersion: a.spec.version, body: `${base}R-2: Rates are cached.\n`, changeSummary: 'Adds R-2.' });
+    if (!r2.ok) throw new Error(r2.error);
+    const r3 = await reviseSpecDraft(user(member), s.id, {
+      expectedVersion: r2.spec.version, body: `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\n`, changeSummary: 'Adds R-3.',
+      explanation: { summary: 'Adds R-3.', lines: { 'R-3': 'Expire daily.' } },
+    });
+    if (!r3.ok) throw new Error(r3.error);
+    const row = (await approvalInboxView(admin)).find((x) => x.specId === s.id)!;
+    expect(row.coverage).toBe('Covers 1 of 2: 1 not explained');
+  });
+
+  test('Approve on the row pins the head revision, version and hash', async () => {
+    const base = BODY();
+    const s = await draft(wsA, base);
+    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    const r2 = await reviseSpecDraft(user(member), s.id, { expectedVersion: a.spec.version, body: `${base}R-2: x.\n`, changeSummary: 'a' });
+    if (!r2.ok) throw new Error(r2.error);
+    const r3 = await reviseSpecDraft(user(member), s.id, { expectedVersion: r2.spec.version, body: `${base}R-2: x.\nR-3: y.\n`, changeSummary: 'b' });
+    if (!r3.ok) throw new Error(r3.error);
+    const row = (await listAwaitingApproval(admin)).find((x) => x.specId === s.id)!;
+    expect({ revision: row.headRevision, expectedVersion: row.version, contentHash: row.contentHash }).toEqual(await pinOf(s.id));
+  });
+});
+
 describe('each row opens onto the confirm view, pinned to what it shows (R-2)', () => {
   test('a ready view whose pin is the row\'s revision, version and hash; a member gets no rows', async () => {
     const s = await draft();

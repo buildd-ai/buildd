@@ -11,6 +11,7 @@ import { requirementIds, type RequirementRef } from '@buildd/spec-contract/requi
 import { verificationDeclarationError } from '@buildd/spec-contract/verification-bindings';
 import { newRepoRefs, normalizeRepoPath, parseRepoRefs, sameRepoRefs, type RepoRef } from './repo-refs';
 import { specScopeRefusal } from './scopes';
+import { DEFAULT_SPEC_KIND, specKindRefusal, type SpecKind } from './kinds';
 import { ArtifactReadError, AUTO_FULL_MAX_CHARS, readArtifactBody, type ArtifactReadResult, type ArtifactReadSelector } from '@buildd/core/artifact-read';
 import { readRepoFileAtCommit } from './repo-source';
 import { resolveDesign } from './design';
@@ -22,6 +23,7 @@ import { criterionHashes, retiredIdRefusal, writeCriterionRecords } from './crit
 import { acceptanceRoleRefusal } from './verdict-guards';
 import { parseReplaces, replacesRefusal } from './replaces';
 import { parseExplanation } from '@buildd/spec-contract/explanation';
+import { explanationRefusalText } from './explanation-check';
 import type { AutoApproval } from './auto-approve';
 
 /**
@@ -147,7 +149,16 @@ export const specStoreDeps: {
   autoApprove: (specId: string) => Promise<AutoApproval>;
   /** Specify → Build (./task-handoff.ts, R-81): record the revision on the task that wrote it. Fail-open. */
   recordAuthored: (caller: SpecCaller, specId: string, revision: number) => Promise<void>;
+  /**
+   * Ask the approvers the moment a revision that waits on a person is written
+   * (b7fc9316 R-10), not when a task later builds against it. Fail-open.
+   */
+  requestApproval: (spec: SpecRow, revision: number) => Promise<void>;
 } = {
+  requestApproval: async (spec, revision) => {
+    const [{ emit }, { specApprovalInboxUrl }] = await Promise.all([import('@/lib/core-emit'), import('./approval-inbox')]);
+    await emit({ type: 'spec.approval_requested', workspaceId: spec.workspaceId, title: spec.title, revision, confirmUrl: specApprovalInboxUrl(), warnings: 0 });
+  },
   afterRevisionInsert: async () => {},
   recordAuthored: async (caller, specId, revision) => (await import('./task-handoff')).recordSpecAuthoredByTask(caller, specId, revision),
   autoApprove: async (specId) => (await import('./auto-approve')).autoApproveNoCriteriaChange(specId),
@@ -182,7 +193,7 @@ export function changedCriteria(prev: string, next: string): string[] {
 }
 
 export async function createSpecDraft(caller: SpecCaller, input: {
-  workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
+  workspaceId: unknown; title: unknown; scope?: unknown; /** b7fc9316 R-38: contract (default), charter, experiment or snapshot. */ kind?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
   /** b7fc9316 R-15: what the revision changes, in the author's words; immutable once written. */
   explanation?: unknown;
   /** Override a duplicate refusal (§13): the spec this one replaces, or why it is distinct. */
@@ -202,6 +213,9 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   if (typeof title !== 'string' || !title.trim() || title.length > 200) return fail(400, 'title is required (at most 200 characters)');
   const scopeError = specScopeRefusal(scope);
   if (scopeError) return fail(400, scopeError);
+  const kind = (input.kind ?? DEFAULT_SPEC_KIND) as SpecKind;
+  const kindError = specKindRefusal(kind);
+  if (kindError) return fail(400, kindError);
   const body = checkBody(input.body);
   if (typeof body !== 'string') return body;
   const repoRefs = readRefsInput(input.repoRefs);
@@ -254,7 +268,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   }).returning();
   const bodyRev = await getArtifactRevision(art.id, art.currentRevision);
   const [spec] = await db.insert(specs).values({
-    workspaceId, title: title.trim(), scope, parentSpecId: (parentSpecId as string | null | undefined) ?? null,
+    workspaceId, title: title.trim(), scope, kind, parentSpecId: (parentSpecId as string | null | undefined) ?? null,
     bodyArtifactId: art.id, headRevision: 1, createdBy: who.label,
     metadata: opts.metadata ?? null,
     repoSource: opts.imported ? { state: 'imported', ...importOf(opts.imported), revision: 1, importedAt: opts.imported.importedAt } : null,
@@ -271,6 +285,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   await afterRevisionWritten(spec, revision, body);
   // Specify → Build (§20, R-81): the writing task names the spec, so the task that builds it can inherit it.
   if (!opts.imported) await specStoreDeps.recordAuthored(caller, spec.id, revision.revision);
+  if (!opts.imported && !opts.metadata) await specStoreDeps.requestApproval(spec, revision.revision).catch((err) => console.warn(`[specs] approval request for ${spec.id} failed (the inbox still lists it):`, err instanceof Error ? err.message : err));
   return { ok: true, spec, revision, duplicateCheck };
 }
 
@@ -287,6 +302,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   duplicates?: DuplicateCheckDeps | false;
   /** false: never run the no-criteria-change check (a copy: copying never approves). */
   autoApprove?: false;
+  /** b7fc9316 R-29: a copy writes a revision it did not author, so no explanation is required of it. */
+  explanationExempt?: true;
 } = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean; duplicateCheck?: DuplicateCheck | null; autoApproval?: AutoApproval | null } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
@@ -330,6 +347,17 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
       return fail(409, `Revision ${head.revision} is already written and its explanation cannot change. Nothing was written; an explanation goes with the revise that changes the spec.`, { code: 'explanation_immutable' });
     }
     return { ok: true, spec, revision: head, unchanged: true };
+  }
+  // b7fc9316 R-28: an agent's explanation covers every change since the approved
+  // revision, stacked unapproved revisions included. A person's edit, a copy and an
+  // import are exempt (R-29); a spec with nothing approved has nothing to cover.
+  if (caller.kind === 'account' && !opts.imported && !opts.explanationExempt && spec.approvedRevision != null) {
+    const [approved] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, spec.approvedRevision))).limit(1);
+    const approvedBody = approved ? (await getArtifactRevision(spec.bodyArtifactId, approved.artifactRevision))?.content : null;
+    if (typeof approvedBody === 'string') {
+      const incomplete = explanationRefusalText(approvedBody, body, explained.explanation);
+      if (incomplete) return fail(409, incomplete, { code: 'explanation_incomplete' });
+    }
   }
   if (replaces && replacesChanged) {
     const refused = await replacesRefusal(spec.workspaceId, replaces, spec.id);
@@ -416,6 +444,9 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     return { approved: false, reason: 'the check could not run' };
   });
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  if (!opts.imported && opts.autoApprove !== false && !autoApproval?.approved) {
+    await specStoreDeps.requestApproval(after ?? spec, revision.revision).catch((err) => console.warn(`[specs] approval request for ${specId} failed (the inbox still lists it):`, err instanceof Error ? err.message : err));
+  }
   const [stamped] = autoApproval?.approved ? await db.select().from(specRevisions).where(eq(specRevisions.id, revision.id)).limit(1) : [revision];
   return { ok: true, spec: after, revision: stamped ?? revision, unchanged: false, duplicateCheck, autoApproval };
 }
