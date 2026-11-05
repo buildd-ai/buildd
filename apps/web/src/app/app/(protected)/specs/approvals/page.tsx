@@ -6,6 +6,7 @@ import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/appr
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
 import Card from '@/components/ui/Card';
 import Chip from '@/components/ui/Chip';
+import { TIER_CHIP, TIER_WORD } from '@/lib/specs/risk-tier-view';
 import Disclosure from '@/components/ui/Disclosure';
 import Lede from '@/components/ui/Lede';
 
@@ -60,6 +61,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
         <Link href={`/app/specs/${encodeURIComponent(row.specId)}`} className="inline-flex min-h-11 items-center text-title font-semibold text-text-primary underline-offset-2 hover:underline [overflow-wrap:anywhere] md:min-h-0">
           {row.title}
         </Link>
+        <Chip tone={TIER_CHIP[row.tier]} data-testid="spec-approvals-tier" title={row.tierReasons.join(' ')}>{TIER_WORD[row.tier]}</Chip>
         {gate ? (
           <Chip tone={gate.passed ? (gate.warnings.length ? 'warning' : 'success') : 'error'} data-testid="spec-approvals-gate">
             {gate.passed ? (gate.warnings.length ? 'gate passed, warnings' : 'gate passed') : 'gate refused'}
