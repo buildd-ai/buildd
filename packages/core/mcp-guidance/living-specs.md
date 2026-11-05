@@ -69,7 +69,7 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    with its revision: a revise that only sends a new one is refused (a 409
    with code explanation_immutable). **The explanation must be cumulative.**
    A `revise` from an agent or task token is refused with a 409
-   `explanation_incomplete`, naming the criterion ids and section headings
+   code explanation_incomplete, naming the criterion ids and section headings
    left out, and writes nothing, unless it covers every change between the
    spec's approved revision and the new head. When earlier revisions of the
    spec are still unapproved, their changes count too: explain all of them,
