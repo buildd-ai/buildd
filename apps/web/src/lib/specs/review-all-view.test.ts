@@ -13,6 +13,7 @@ mock.module('./approval-row-coverage', () => ({ rowCoverage: async () => null })
 mock.module('./approval-request', () => ({ signSpecApprovalRequest: (p: { specId: string }) => `signed-${p.specId}` }));
 mock.module('./diff', () => ({ diffSpecHunks: () => ({ hunks: [], omittedLines: 0 }), diffSpecRevisions: async () => ({ ok: false }) }));
 mock.module('./store', () => ({ getSpec: async () => ({ ok: false }) }));
+mock.module('./matches-shipped-store', () => ({ shippedStandings: async () => new Map() }));
 
 const { reviewAllView } = await import('./review-all-view');
 
