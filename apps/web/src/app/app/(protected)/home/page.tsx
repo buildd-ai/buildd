@@ -64,7 +64,7 @@ import HomeLive, { type HomeRegion } from './HomeLive';
 import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeListedMission } from '@/lib/home-attention';
-import { countAwaitingApprovalFor, countLowRiskAwaiting } from '@/lib/specs/approval-inbox';
+import { countAwaitingApprovalFor } from '@/lib/specs/approval-inbox';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { fleetHeartbeatsQuery, homeQuestionsFrom, homeQuestionWorkersQuery, admittedQuestionRows, loadHomeFleet, loadQueueHistory } from '@/lib/home-fleet';
 import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
@@ -131,8 +131,6 @@ interface HomeView {
   serviceStatus: ServiceStatusView;
   /** Spec revisions waiting on this person's approval: one Needs you card (spec b7fc9316 R-9). */
   specApprovals: number;
-  /** Of those, how many the risk-tier classifier calls low-risk (the card's split). */
-  specApprovalsLowRisk: number;
   hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null;
   modelUpgradeTeamId: string | null;
   chatPlacement: HomeChatPlacement;
@@ -158,7 +156,7 @@ interface HomeView {
 
 const EMPTY_VIEW: HomeView = {
   teamWorkspaces: [], workspaceCount: 0, refreshWorkspaceIds: [],
-  serviceStatus: EMPTY_SERVICE_STATUS, specApprovals: 0, specApprovalsLowRisk: 0, hostedRunnerBanner: null, modelUpgradeTeamId: null,
+  serviceStatus: EMPTY_SERVICE_STATUS, specApprovals: 0, hostedRunnerBanner: null, modelUpgradeTeamId: null,
   chatPlacement: { kind: 'none' }, chatTeamId: null, hasAgentCredential: null, firstTask: 'none',
   runnerConnected: undefined, actionQueue: [], discrepancyOverflowCount: 0, actionQueueInitiatives: [],
   questions: [], held: [], listed: [], openMissions: 0, milestones: [], quietMissions: 0, quietCauses: [],
@@ -319,7 +317,7 @@ async function HomePage({
 /** The data HomeBody renders from, derived from one load: also what a live event re-reads. */
 function homeRegionOf(view: HomeView, initFilter: string | undefined): HomeRegion {
   const queue = initFilter ? view.actionQueue.filter((i) => i.initiativeId === initFilter) : view.actionQueue;
-  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status: view.serviceStatus.needsYou, specApprovals: view.specApprovals, specApprovalsLowRisk: view.specApprovalsLowRisk });
+  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status: view.serviceStatus.needsYou, specApprovals: view.specApprovals });
   return {
     items,
     inProgress,
@@ -593,7 +591,6 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
   const wsById = new Map((r1.inboxWorkspaces ?? []).map(ws => [ws.id, ws]));
   // The same count and scope as the Awaiting your approval inbox: every workspace this person may approve in, not just the active team or workspace filter.
   view.specApprovals = await countAwaitingApprovalFor(userId).catch(() => 0);
-  if (view.specApprovals > 0) view.specApprovalsLowRisk = await countLowRiskAwaiting(userId);
   const openPrWorkers = oneRowPerPr(r1.openPrWorkers ?? []);
   const openTaskIds = openPrWorkers.map(w => w.taskId).filter((id): id is string => !!id);
   const openPrNumbers = [...new Set(openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null))];

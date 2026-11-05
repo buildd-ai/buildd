@@ -13,6 +13,8 @@
  */
 import type { ClaimTasksResponse } from '@buildd/shared';
 import { appendContextBlock, type ContextBlockSink } from './context-injection';
+import { emit } from '@/lib/core-emit';
+import { specApprovalInboxUrl } from '@/lib/specs/approval-inbox';
 
 export type SpecPinAtClaim = {
   brief: string | null;
@@ -22,9 +24,10 @@ export type SpecPinAtClaim = {
 
 export type ApprovalAsk = { workspaceId: string; specId: string; revision: number; title: string };
 
-// The approvers are asked when the revision is written (lib/specs/store.ts
-// requestApproval), not when a task claims it: nothing more to send here.
-const defaultAsk = async (_a: ApprovalAsk): Promise<void> => {};
+const defaultAsk = (a: ApprovalAsk) => emit({
+  type: 'spec.approval_requested', workspaceId: a.workspaceId, title: a.title, revision: a.revision,
+  confirmUrl: specApprovalInboxUrl(), warnings: 0, buildingAhead: true,
+});
 
 export function attachSpecPinBriefs(
   claimedWorkers: ClaimTasksResponse['workers'],
