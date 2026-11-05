@@ -9,6 +9,7 @@ import SpecShippedLine from '@/components/SpecShippedLine';
 import Card from '@/components/ui/Card';
 import SpecQuestion from '@/components/SpecQuestion';
 import Chip from '@/components/ui/Chip';
+import { TIER_CHIP, TIER_WORD } from '@/lib/specs/risk-tier-view';
 import Disclosure from '@/components/ui/Disclosure';
 import Lede from '@/components/ui/Lede';
 
@@ -90,6 +91,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
           {row.title}
         </Link>
         <div className="flex flex-wrap items-center gap-2">
+        <Chip tone={TIER_CHIP[row.tier]} data-testid="spec-approvals-tier" title={row.tierReasons.join(' ')}>{TIER_WORD[row.tier]}</Chip>
         <Chip tone="muted" data-testid="spec-approvals-kind">{row.kind}</Chip>
         <Chip tone={row.risk.level === 'judgement' ? 'warning' : 'muted'} data-testid="spec-approvals-risk" data-risk={row.risk.level}>
           {row.risk.level === 'judgement' ? 'needs judgement' : 'low-risk'}
