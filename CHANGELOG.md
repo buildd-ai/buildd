@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Webhook: a person's PR comment is delivered to the PR's live worker (#5917)
+
+### Fixed
+
+- Activity: quiet Now is one compact line, with no duplicate History link or stacked rule (#5926)
+- Mobile: Missions and Agents put their create action in the top bar (#5927)
+- Specs: a build task inherits the spec its dependency drafted and builds ahead without asking (#5921)
+
 ## [0.391.0] - 2026-11-02
 
 ### Added
