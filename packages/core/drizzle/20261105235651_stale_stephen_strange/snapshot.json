@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "23690aca-546a-4ae8-89fa-8e3e7691063c",
+  "id": "3a268bc3-bdd5-4a51-9c6c-7872ccb5ceea",
   "prevIds": [
-    "95f56b64-84dd-43e5-9f7a-29905f3926b5"
+    "c54ba936-5e28-494a-b0cd-29204074a68a"
   ],
   "ddl": [
     {
@@ -914,6 +914,18 @@
     {
       "isRlsEnabled": false,
       "name": "visual_shot_reviews",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "voyage_usage_daily",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "voyage_usage_monthly",
       "entityType": "tables",
       "schema": "public"
     },
@@ -28022,6 +28034,227 @@
       "table": "visual_shot_reviews"
     },
     {
+      "type": "date",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "day",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "corpus",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "caller",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "key_source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "tokens",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "calls",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "month",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "tokens",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "calls",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "denied_calls",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "exhausted_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -50126,6 +50359,40 @@
     {
       "nameExplicit": false,
       "columns": [
+        "team_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "teams",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "voyage_usage_daily_team_id_teams_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "team_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "teams",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "voyage_usage_monthly_team_id_teams_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "workspace_id"
       ],
       "schemaTo": "public",
@@ -50913,6 +51180,34 @@
       "entityType": "pks",
       "schema": "public",
       "table": "user_active_days"
+    },
+    {
+      "columns": [
+        "day",
+        "team_id",
+        "kind",
+        "model",
+        "corpus",
+        "caller",
+        "key_source"
+      ],
+      "nameExplicit": false,
+      "name": "voyage_usage_daily_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "voyage_usage_daily"
+    },
+    {
+      "columns": [
+        "team_id",
+        "month",
+        "kind"
+      ],
+      "nameExplicit": false,
+      "name": "voyage_usage_monthly_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "voyage_usage_monthly"
     },
     {
       "columns": [
