@@ -181,7 +181,7 @@ describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
     const r3 = await reviseSpecDraft(user(member), s.id, { expectedVersion: r2.spec.version, body: `${base}R-2: x.\nR-3: y.\n`, changeSummary: 'b' });
     if (!r3.ok) throw new Error(r3.error);
     const row = (await listAwaitingApproval(admin)).find((x) => x.specId === s.id)!;
-    expect({ revision: row.headRevision, version: row.version, contentHash: row.contentHash }).toEqual(await pinOf(s.id));
+    expect({ revision: row.headRevision, expectedVersion: row.version, contentHash: row.contentHash }).toEqual(await pinOf(s.id));
   });
 });
 
