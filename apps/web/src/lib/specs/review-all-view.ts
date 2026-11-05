@@ -1,4 +1,5 @@
 import { listAwaitingApproval, type AwaitingApprovalRow } from './approval-inbox';
+import { rowCoverage } from './approval-row-coverage';
 import { signSpecApprovalRequest } from './approval-request';
 import { filterByTier, type RiskFilter, type RiskTier } from '@buildd/spec-contract/risk-tier';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
@@ -7,7 +8,9 @@ import { getSpec } from './store';
 /** Rows past this are counted and left to the inbox, so the page stays one read. */
 export const REVIEW_ALL_ROWS = 30;
 
-export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'author' | 'tier' | 'tierReasons'> {
+export interface ReviewAllRow extends Pick<AwaitingApprovalRow, 'specId' | 'title' | 'workspaceName' | 'headRevision' | 'approvedRevision' | 'revisionsCovered' | 'author' | 'tier' | 'tierReasons'> {
+  /** Explanation coverage approved-to-head against the head's explanation (R-30); null when unreadable. */
+  coverage: string | null;
   /** One sentence on what changes: the explanation's summary, else the change summary; null when neither was written. */
   summary: string | null;
   /** True when `summary` is the author's question rather than a summary. */
@@ -41,7 +44,7 @@ export async function reviewAllView(userId: string, filter: RiskFilter = 'all', 
   const all = filterByTier(everything, filter);
   const caller = { kind: 'user' as const, userId };
   const rows = await Promise.all(all.slice(0, REVIEW_ALL_ROWS).map(async (r): Promise<ReviewAllRow> => ({
-    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, author: r.author, tier: r.tier, tierReasons: r.tierReasons, summary: reviewAllSummary(r),
+    specId: r.specId, title: r.title, workspaceName: r.workspaceName, headRevision: r.headRevision, approvedRevision: r.approvedRevision, revisionsCovered: r.revisionsCovered, author: r.author, tier: r.tier, tierReasons: r.tierReasons, coverage: await rowCoverage(r), summary: reviewAllSummary(r),
     isQuestion: r.question != null,
     request: signSpecApprovalRequest({
       specId: r.specId, workspaceId: r.workspaceId, revision: r.headRevision, expectedVersion: r.version, contentHash: r.contentHash,

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { rowRevisionLine } from '@/lib/specs/approval-row-line';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Card from '@/components/ui/Card';
@@ -104,9 +105,10 @@ export default function SpecReviewAll({ rows, counts, filter = 'all', initialRes
                   {r.summary ?? 'No summary was written for this revision. Open the diff to see what changes.'}
                 </p>
                 <p className="text-meta text-text-muted [overflow-wrap:anywhere]">
-                  {r.workspaceName} · revision {r.headRevision}{r.approvedRevision ? ` replaces ${r.approvedRevision}` : ', first approval'} · by {r.author}
+                  {r.workspaceName} · {rowRevisionLine(r)} · by {r.author}
                   {r.diff ? ` · +${r.diff.linesAdded} −${r.diff.linesRemoved}` : ''}
                 </p>
+                {r.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-review-all-coverage">{r.coverage}</p> : null}
                 <Disclosure summary="Show the diff" defaultOpen={openSpecId === r.specId}>
                   <div className="pt-2" data-testid="spec-review-all-diff">
                     {r.diff

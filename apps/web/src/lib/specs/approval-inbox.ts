@@ -7,6 +7,7 @@ import { roleHas } from '@/lib/permissions';
 import { requestingPerson } from '@/lib/request-person';
 import { classifyRisk, sortHighFirst, type RiskTier } from '@buildd/spec-contract/risk-tier';
 import { getArtifactRevisions } from '@/lib/artifact-revisions';
+import type { SpecExplanation } from '@buildd/spec-contract/explanation';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -88,6 +89,16 @@ export interface AwaitingApprovalRow {
   changeSummary: string | null;
   /** The one-line summary of the head's explanation (R-15); null when none was written. */
   explanationSummary: string | null;
+  /** The head's whole explanation (R-15), what coverage is measured against; null when none was written. */
+  explanation: SpecExplanation | null;
+  /** The spec's body artifact, for reading the approved-to-head change list. */
+  bodyArtifactId: string;
+  /**
+   * How many revisions this one row stands for: everything after the approved
+   * revision up to the head (R-30). One when the head sits directly on the
+   * approved revision; more when revisions are stacked unapproved.
+   */
+  revisionsCovered: number;
   /** The decision the author needs, from the head's explanation; null when none was asked. */
   question: string | null;
   proposedAt: string;
@@ -105,10 +116,10 @@ export async function listAwaitingApproval(userId: string): Promise<AwaitingAppr
 
   const rows = rowsOf<{
     id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number;
-    content_hash: string; scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation_question: string | null; created_at: string | Date;
+    content_hash: string; scope: string; risk: string | null; body_artifact_id: string; head_artifact_revision: number; approved_artifact_revision: number | null; approved_content_hash: string | null; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; explanation_question: string | null; created_at: string | Date;
   }>(await db.execute(sql`
     SELECT specs.id, specs.title, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
-      r.content_hash, specs.scope, specs.metadata->>'risk' AS risk, specs.body_artifact_id, r.artifact_revision AS head_artifact_revision, ra.artifact_revision AS approved_artifact_revision, ra.content_hash AS approved_content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation->>'question' AS explanation_question, r.created_at
+      r.content_hash, specs.scope, specs.metadata->>'risk' AS risk, specs.body_artifact_id, r.artifact_revision AS head_artifact_revision, ra.artifact_revision AS approved_artifact_revision, ra.content_hash AS approved_content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation, r.explanation->>'question' AS explanation_question, r.created_at
     FROM specs
     JOIN spec_revisions r ON r.spec_id = specs.id AND r.revision = specs.head_revision
     LEFT JOIN spec_revisions ra ON ra.spec_id = specs.id AND ra.revision = specs.approved_revision
@@ -122,7 +133,11 @@ export async function listAwaitingApproval(userId: string): Promise<AwaitingAppr
     headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision),
     version: Number(r.version), contentHash: r.content_hash,
     author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
-    changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null, question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
+    changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null,
+    explanation: r.explanation ?? null,
+    bodyArtifactId: r.body_artifact_id,
+    revisionsCovered: Number(r.head_revision) - (r.approved_revision == null ? 0 : Number(r.approved_revision)),
+    question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
   })));
 }
 
