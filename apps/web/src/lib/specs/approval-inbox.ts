@@ -97,6 +97,8 @@ export interface AwaitingApprovalRow {
    * approved revision; more when revisions are stacked unapproved.
    */
   revisionsCovered: number;
+  /** The decision the author needs, from the head's explanation; null when none was asked. */
+  question: string | null;
   proposedAt: string;
 }
 
@@ -108,10 +110,10 @@ export async function listAwaitingApproval(userId: string): Promise<AwaitingAppr
 
   const rows = rowsOf<{
     id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number;
-    content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; body_artifact_id: string; created_at: string | Date;
+    content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; body_artifact_id: string; explanation_question: string | null; created_at: string | Date;
   }>(await db.execute(sql`
     SELECT specs.id, specs.title, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
-      r.content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation, specs.body_artifact_id, r.created_at
+      r.content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation, specs.body_artifact_id, r.explanation->>'question' AS explanation_question, r.created_at
     FROM specs
     JOIN spec_revisions r ON r.spec_id = specs.id AND r.revision = specs.head_revision
     LEFT JOIN users u ON r.author_kind = 'user' AND u.id::text = r.author_id
@@ -123,8 +125,10 @@ export async function listAwaitingApproval(userId: string): Promise<AwaitingAppr
     version: Number(r.version), contentHash: r.content_hash,
     author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
     changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null,
-    explanation: r.explanation ?? null, bodyArtifactId: r.body_artifact_id,
-    revisionsCovered: Number(r.head_revision) - (r.approved_revision == null ? 0 : Number(r.approved_revision)), proposedAt: new Date(r.created_at).toISOString(),
+    explanation: r.explanation ?? null,
+    bodyArtifactId: r.body_artifact_id,
+    revisionsCovered: Number(r.head_revision) - (r.approved_revision == null ? 0 : Number(r.approved_revision)),
+    question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
   }));
 }
 
