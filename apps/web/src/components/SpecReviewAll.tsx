@@ -13,6 +13,7 @@ import PrimaryAction from '@/components/ui/PrimaryAction';
 import SpecDiffView from '@/components/SpecDiffView';
 import SpecShippedLine from '@/components/SpecShippedLine';
 import { approveAll, approveAllSummary, type ApproveAllItem, type ApproveAllResult, type ConfirmReply } from '@/lib/specs/approve-all';
+import { foldedLine } from '@/lib/specs/folded-revisions';
 import { TIER_CHIP, TIER_WORD } from '@/lib/specs/risk-tier-view';
 import type { RiskFilter, RiskTier } from '@buildd/spec-contract/risk-tier';
 import type { ReviewAllRow } from '@/lib/specs/review-all-view';
@@ -108,6 +109,7 @@ export default function SpecReviewAll({ rows, counts, filter = 'all', initialRes
                 <p className="text-meta text-text-muted [overflow-wrap:anywhere]">
                   {r.workspaceName} · {rowRevisionLine(r)} · by {r.author}
                   {r.diff ? ` · +${r.diff.linesAdded} −${r.diff.linesRemoved}` : ''}
+                  {foldedLine(r.foldedRevisions) ? ` · ${foldedLine(r.foldedRevisions)}` : ''}
                 </p>
                 <SpecShippedLine shipped={r.shipped} />
                 {r.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-review-all-coverage">{r.coverage}</p> : null}
