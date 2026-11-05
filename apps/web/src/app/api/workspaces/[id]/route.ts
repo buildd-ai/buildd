@@ -11,7 +11,7 @@ import { roleHas } from '@/lib/permissions';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
-import { applyReviewByRiskWrite } from '@/lib/review-by-risk';
+import { applyReviewByRiskWrite } from '@/lib/review-by-risk-config';
 import { findRemovedPathFieldInGitConfig, isWarmHandoverOptOut, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';

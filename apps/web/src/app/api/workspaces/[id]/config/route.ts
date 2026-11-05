@@ -7,7 +7,7 @@ import { workspaces, githubRepos, type WorkspaceGitConfig, type WorkspaceRelease
 import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { applyReviewByRiskWrite } from '@/lib/review-by-risk';
+import { applyReviewByRiskWrite } from '@/lib/review-by-risk-config';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';

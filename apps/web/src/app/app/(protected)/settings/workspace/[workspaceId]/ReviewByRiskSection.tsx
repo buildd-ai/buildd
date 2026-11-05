@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { REVIEW_BY_RISK_PATH_AREAS, type ReviewByRiskPathArea, type ReviewByRiskPolicy } from '@buildd/shared';
-import { emptyRiskAreas, REVIEW_BY_RISK_AREA_LABEL, REVIEW_BY_RISK_AREA_WHAT } from '@/lib/review-by-risk';
+import { emptyRiskAreas, REVIEW_BY_RISK_AREA_LABEL, REVIEW_BY_RISK_AREA_WHAT } from '@/lib/review-by-risk-config';
 
 /**
  * Review by risk on the workspace Merge Policy page (spec 62e985a8). Off by

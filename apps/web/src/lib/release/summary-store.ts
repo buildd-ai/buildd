@@ -199,9 +199,11 @@ async function summaryItems(
   const taskIds = [...new Set(workerRows.map((w) => w.taskId).filter((t): t is string => !!t))];
   const taskRows = taskIds.length ? await db.select({ id: tasks.id, context: tasks.context }).from(tasks).where(inArray(tasks.id, taskIds)) : [];
   const pinOf = (taskId: string | null | undefined) => {
-    const ctx = taskRows.find((t) => t.id === taskId)?.context as { specSource?: Record<string, unknown> } | null | undefined;
-    const pin = ctx?.specSource;
-    return pin && typeof pin.specId === 'string' ? pin : null;
+    const ctx = taskRows.find((t) => t.id === taskId)?.context as { specSource?: unknown } | null | undefined;
+    const raw = ctx?.specSource;
+    if (!raw || typeof raw !== 'object') return null;
+    const pin = raw as Record<string, unknown>;
+    return typeof pin.specId === 'string' ? pin : null;
   };
   const specIds = [...new Set(workerRows.map((w) => pinOf(w.taskId)?.specId as string | undefined).filter((s): s is string => !!s))];
   const specRows = specIds.length ? await db.select({ id: specs.id, title: specs.title }).from(specs).where(inArray(specs.id, specIds)) : [];
@@ -226,12 +228,12 @@ async function summaryItems(
       gh(ws.installationId!, `/repos/${ws.repoFullName}/pulls/${pr.number}/files?per_page=300`).catch(() => null),
     ]);
     const areaRows = approvals
-      .map((a) => a.detail as { prNumber?: unknown; approvedBy?: unknown; areas?: Array<{ area?: unknown }> } | null)
+      .map((a) => a.detail as { prNumber?: unknown; approvedBy?: unknown; areas?: unknown } | null)
       .filter((d) => d?.prNumber === pr.number);
     const areas: ReleaseSummaryItem['areas'] = [];
     for (const d of areaRows) {
-      for (const a of d?.areas ?? []) {
-        const area = a?.area as ReviewByRiskArea;
+      for (const a of Array.isArray(d?.areas) ? (d.areas as unknown[]) : []) {
+        const area = (a as { area?: unknown } | null)?.area as ReviewByRiskArea;
         if (typeof area === 'string' && !areas.some((x) => x.area === area)) {
           areas.push({ area, approvedBy: nameOf(typeof d?.approvedBy === 'string' ? d.approvedBy : null) });
         }
