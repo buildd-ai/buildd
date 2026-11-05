@@ -51,7 +51,7 @@ export default async function SpecApprovalsPage() {
         {lowRisk.length > 0 ? (
           <div data-testid="spec-approvals-low-risk">
             <Disclosure summary={`${lowRisk.length} low-risk ${lowRisk.length === 1 ? 'revision' : 'revisions'}: wording and notes only`} defaultOpen={judgement.length === 0}>
-              <p className="pt-2 text-meta text-text-muted">No criterion, credential, permission or approval wording changed. Each still needs your own Approve.</p>
+              <p className="pt-2 text-meta text-text-muted">No criterion, credential, permission or approval wording changed. Each still needs its own Approve.</p>
               <ul className="flex flex-col gap-3 pt-3">
                 {lowRisk.map((r) => <li key={r.specId}><InboxRowCard row={r} open={n === 1} /></li>)}
               </ul>
