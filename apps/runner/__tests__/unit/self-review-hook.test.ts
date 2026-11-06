@@ -92,6 +92,24 @@ describe('recording mode', () => {
     expect(labels(milestones).join()).toContain('exempt=reviewer-role');
   });
 
+  test('bookkeeping tasks (task.taskClass) are exempt', async () => {
+    const { hook, milestones } = setup({ task: { roleSlug: 'builder', description: '- x', taskClass: 'bookkeeping', mode: 'execution' } });
+    expect(denied(await hook(complete(), undefined, signal))).toBe(false);
+    expect(labels(milestones).join()).toContain('exempt=bookkeeping');
+  });
+
+  test('planning tasks (task.mode) are exempt', async () => {
+    const { hook, milestones } = setup({ task: { roleSlug: 'builder', description: '- x', taskClass: 'standard', mode: 'planning' } });
+    await hook(complete(), undefined, signal);
+    expect(labels(milestones).join()).toContain('exempt=planning');
+  });
+
+  test('legacy context flags no longer exempt', async () => {
+    const { hook, milestones } = setup({ task: { roleSlug: 'builder', description: '- x', context: { bookkeeping: true, planning: true } } });
+    await hook(complete(), undefined, signal);
+    expect(labels(milestones).join()).not.toContain('exempt=');
+  });
+
   test('failure reports are exempt (error)', async () => {
     const { hook, milestones } = setup();
     await hook(complete({ error: 'boom' }), undefined, signal);

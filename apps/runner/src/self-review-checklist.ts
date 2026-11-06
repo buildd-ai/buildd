@@ -33,6 +33,10 @@ export interface SelfReviewTaskInput {
   pathManifest?: unknown;
   /** Living Spec acceptance criterion ids (e.g. "AC-3"). */
   specCriterionIds?: string[] | null;
+  /** tasks.taskClass; 'bookkeeping' is exempt from self-review. */
+  taskClass?: string | null;
+  /** tasks.mode; 'planning' is exempt from self-review. */
+  mode?: string | null;
 }
 
 export interface SelfReviewExemptionInput {

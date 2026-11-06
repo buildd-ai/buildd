@@ -73,14 +73,13 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
       fired = true;
 
       const params = (toolInput.params ?? {}) as Record<string, any>;
-      const ctx = deps.task.context ?? {};
       const exemption = selfReviewExemption({
         error: params.error,
         blockedOnTaskId: params.blockedOnTaskId,
         discardEdits: params.discardEdits,
         roleSlug: deps.task.roleSlug,
-        bookkeeping: Boolean(ctx.bookkeeping),
-        planning: Boolean(ctx.planning),
+        bookkeeping: deps.task.taskClass === 'bookkeeping',
+        planning: deps.task.mode === 'planning',
         alreadyShippedIn: params.alreadyShippedIn,
         outputRequirement: deps.task.outputRequirement,
       });

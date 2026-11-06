@@ -67,8 +67,6 @@ const KIND_EXEMPT: Record<string, string> = {
   reviewer: 'reviewer',
   visual_auditor: 'visual-auditor',
   'visual-auditor': 'visual-auditor',
-  bookkeeping: 'bookkeeping',
-  planning: 'planning',
 };
 
 const EDIT_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
@@ -162,15 +160,14 @@ export function createStagedSelfReviewHook(deps: StagedHookDeps) {
       if (deps.backend === 'codex') { rec('exempt', 'exempt:codex'); return {}; }
       if (openFailures(deps.worker.id).length > 0) return {};
 
-      const ctx = deps.task.context ?? {};
       const kind = deps.task.kind ? KIND_EXEMPT[deps.task.kind] : undefined;
       const reasonStr = kind ?? selfReviewExemption({
         error: params.error,
         blockedOnTaskId: params.blockedOnTaskId,
         discardEdits: params.discardEdits,
         roleSlug: deps.task.roleSlug,
-        bookkeeping: Boolean(ctx.bookkeeping),
-        planning: Boolean(ctx.planning),
+        bookkeeping: deps.task.taskClass === 'bookkeeping',
+        planning: deps.task.mode === 'planning',
         alreadyShippedIn: params.alreadyShippedIn,
         outputRequirement: deps.task.outputRequirement,
       });
