@@ -94,10 +94,10 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
       } else {
         const checklist = buildSelfReviewChecklist(deps.task);
         label = checklist
-          ? `Self-review: ${common} version=${checklist.version} items=${checklist.items.map(it => it.id).join(',') || 'none'}`
+          ? `Self-review: ${common} version=${checklist.version} items=${checklist.items.map(it => it.id).join(',') || 'none'} checklist=${checklist.items.map(it => `[${it.id}] ${it.text}`).join(' | ')}`
           : `Self-review: ${common} builder-failed`;
       }
-      deps.addMilestone({ type: 'status', label: label.slice(0, 300), ts: Date.now() });
+      deps.addMilestone({ type: 'status', label: label.slice(0, 2000), ts: Date.now() });
     } catch (err) {
       log(`Self-review recording failed open: ${err instanceof Error ? err.message : String(err)}`);
     }

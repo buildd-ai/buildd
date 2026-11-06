@@ -56,6 +56,7 @@ describe('recording mode', () => {
     expect(line).toContain('req-1');
     expect(line).toContain('scope');
     expect(line).toContain('tokens=15');
+    expect(line).toMatch(/checklist=\[req-1\] \S/); // the checklist text, not only ids
   });
 
   test('fires at most once per worker', async () => {
