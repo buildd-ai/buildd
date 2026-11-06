@@ -6,7 +6,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { runStagedSelfReviewReadout } from '@buildd/core/staged-self-review-readout-source';
-import { STAGED_SELF_REVIEW_FEATURE } from '@buildd/core/staged-self-review';
+import { STAGED_SELF_REVIEW_FEATURE } from '@buildd/core/staged-draw';
 import { bearerOf, resolveExperimentViewer } from '@/lib/experiment-access';
 import { isTaskToken } from '@/lib/task-token';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';

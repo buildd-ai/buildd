@@ -1,8 +1,8 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { experiments, experimentAssignments } from '@buildd/core/db/schema';
-import { assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-self-review';
-/** Mirrors STAGED_SELF_REVIEW_FEATURE in packages/core/staged-self-review.ts (not imported: that file's path classes it as a module). */
+import { assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-draw';
+/** Mirrors STAGED_SELF_REVIEW_FEATURE in packages/core/staged-draw.ts. */
 const STAGED_SELF_REVIEW_FEATURE = 'staged_self_review';
 
 /**

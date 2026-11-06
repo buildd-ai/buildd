@@ -16,9 +16,9 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { stagedReviewRecordsFromMilestones, stagedReviewRecordsFromWorkers, classifyStagedReview, stagedReviewLabel } from '../staged-self-review';
+import { stagedReviewRecordsFromMilestones, stagedReviewRecordsFromWorkers, classifyStagedReview, stagedReviewLabel } from '../staged-draw';
 
-const load = () => import('../staged-self-review');
+const load = () => import('../staged-draw');
 
 describe('R-4: off by default, with a recording mode', () => {
   test('R-4: no stored row means off; recording and acting are recognised', async () => {

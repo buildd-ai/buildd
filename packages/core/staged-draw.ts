@@ -3,7 +3,7 @@
  * f3742450). Pure functions: mode switch, arm draw, rubber-stamp readout and
  * the pre-registered kill criterion. Off means no footprint (AC-9).
  */
-import { assignExperimentArm } from './experiment-randomizer';
+import { assignExperimentArm } from './arm-randomizer';
 
 export const STAGED_SELF_REVIEW_FEATURE = 'staged_self_review';
 
@@ -46,6 +46,55 @@ export function assignStagedReviewArm(args: { taskId: string; experiment: Staged
     unitId: args.taskId,
     fraction: args.experiment.treatmentFraction,
   });
+}
+
+export interface StagedAssignmentRow {
+  experimentId: string;
+  taskId: string;
+  unitType: 'task';
+  unitId: string;
+  arm: StagedReviewArm;
+  propensity: number;
+  policyVersion: number;
+  served: boolean;
+}
+
+/**
+ * The assignment row the server records for one staged draw. Mirrors the
+ * runner's resolveStagedConfig (same mode, same draw inputs), so the recorded
+ * arm is the arm the runner acts on. Null unless acting with a registered
+ * experiment: recording and off never write a row, so the treatment arm holds
+ * only tasks where the stage could act.
+ */
+export function stagedAssignmentRow(
+  taskId: string,
+  gitConfig: { selfReview?: unknown; selfReviewExperiment?: any } | null | undefined,
+): StagedAssignmentRow | null {
+  const exp = gitConfig?.selfReviewExperiment;
+  if (!exp?.id || !taskId) return null;
+  const mode = resolveStagedReviewMode(
+    gitConfig?.selfReview === 'acting' || gitConfig?.selfReview === 'recording'
+      ? { mode: String(gitConfig.selfReview), checklistVersion: exp.checklistVersion }
+      : null,
+    { checklistVersion: undefined },
+  );
+  if (mode !== 'acting') return null;
+  const policyVersion = Number(exp.policyVersion ?? 1);
+  const drawn = assignStagedReviewArm({
+    taskId,
+    experiment: { id: String(exp.id), policyVersion, treatmentFraction: exp.treatmentFraction },
+  });
+  const arm = effectiveStagedArm({ mode, arm: drawn.arm });
+  return {
+    experimentId: String(exp.id),
+    taskId,
+    unitType: 'task',
+    unitId: taskId,
+    arm,
+    propensity: drawn.propensity,
+    policyVersion,
+    served: arm === 'treatment',
+  };
 }
 
 /** Only acting mode lets the treatment arm act; otherwise the task sees no stage. */

@@ -4208,7 +4208,7 @@ export const taskOutcomes = pgTable('task_outcomes', {
  * docs/design/model-routing-experiment.md and docs/design/experiment-lifecycle.md.
  *
  * `policyVersion` is part of the randomiser's salt
- * (packages/core/experiment-randomizer.ts), so bumping it re-randomises every
+ * (packages/core/arm-randomizer.ts), so bumping it re-randomises every
  * unit. Bump it when the meaning of an arm changes; never edit arm semantics
  * in place under a running version.
  */
@@ -7075,7 +7075,7 @@ export const decisionRecords = pgTable('decision_records', {
   // What the decision was about (DecisionSubjectRef): outcomes are labelled by subject.
   subjectType: text('subject_type'),
   subjectId: text('subject_id'),
-  // Set only when the call's assignment came from experiment-randomizer.ts;
+  // Set only when the call's assignment came from arm-randomizer.ts;
   // the readout reports causal lift for these rows and no others.
   experimentId: text('experiment_id'),
   experimentArm: text('experiment_arm'),

@@ -1,8 +1,30 @@
-import { describe, test, expect } from 'bun:test';
-import { buildStagedAssignment, withStagedExperiment } from './staged-arm';
-import { resolveStagedConfig } from '../../../../../../runner/src/staged-self-review';
+import { describe, test, expect, mock, beforeEach } from 'bun:test';
+
+let insertShouldThrow = false;
+const inserted: Array<{ row: any; target: any }> = [];
+mock.module('@buildd/core/db', () => ({
+  db: {
+    insert: (_table: any) => ({
+      values: (row: any) => ({
+        onConflictDoNothing: (opts: any) => {
+          if (insertShouldThrow) return Promise.reject(new Error('boom'));
+          inserted.push({ row, target: opts?.target });
+          return Promise.resolve();
+        },
+      }),
+    }),
+  },
+}));
+
+const { buildStagedAssignment, withStagedExperiment, recordStagedAssignment } = await import('./staged-arm');
+const { resolveStagedConfig } = await import('../../../../../../runner/src/staged-self-review');
 
 const exp = { id: 'exp-1', policyVersion: 2, treatmentFraction: 0.5 };
+
+beforeEach(() => {
+  insertShouldThrow = false;
+  inserted.length = 0;
+});
 
 describe('withStagedExperiment', () => {
   test('off or unset selfReview: workspace returned untouched', () => {
@@ -51,5 +73,25 @@ describe('buildStagedAssignment', () => {
     expect(buildStagedAssignment({ gitConfig: { selfReview: 'acting' } }, 't')).toBeNull();
     expect(buildStagedAssignment(withStagedExperiment({ gitConfig: { selfReview: 'recording' } }, exp), 't')).toBeNull();
     expect(buildStagedAssignment({ gitConfig: {} }, 't')).toBeNull();
+  });
+});
+describe('recordStagedAssignment', () => {
+  const acting = withStagedExperiment({ gitConfig: { selfReview: 'acting' } }, exp);
+  test('acting with a running experiment: inserts the row, idempotent on (experiment, task)', async () => {
+    await recordStagedAssignment(acting, 'task-abc');
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].row).toMatchObject({ experimentId: 'exp-1', taskId: 'task-abc', unitType: 'task', unitId: 'task-abc', policyVersion: 2 });
+    expect(inserted[0].target).toHaveLength(2);
+  });
+  test('recording, off, or no experiment: buildStagedAssignment returns null and nothing is inserted', async () => {
+    await recordStagedAssignment(withStagedExperiment({ gitConfig: { selfReview: 'recording' } }, exp), 'task-rec');
+    await recordStagedAssignment({ gitConfig: { selfReview: 'off' } }, 'task-off');
+    await recordStagedAssignment({ gitConfig: { selfReview: 'acting' } }, 'task-noexp');
+    expect(inserted).toHaveLength(0);
+  });
+  test('a failing insert is swallowed, never thrown', async () => {
+    insertShouldThrow = true;
+    await expect(recordStagedAssignment(acting, 'task-fail')).resolves.toBeUndefined();
+    expect(inserted).toHaveLength(0);
   });
 });

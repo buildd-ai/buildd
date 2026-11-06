@@ -61,9 +61,6 @@ export type Owner = ModuleId | 'core';
 
 /** Core run-record helpers whose names also match broader module heuristics. */
 const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
-  // Staged self-review draw helpers shared by the claim route and the runner (core plumbing).
-  'packages/core/staged-self-review.ts',
-  'packages/core/experiment-randomizer.ts',
   'packages/core/bash-failure-trace.ts',
   // Task/worker outcome eligibility for core forecasts, not stored knowledge.
   'packages/core/task-estimate-evidence.ts',
