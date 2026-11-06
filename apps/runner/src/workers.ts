@@ -92,7 +92,7 @@ import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
 import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
-import { createStagedSelfReviewHook, createStagedRecorder, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
+import { stagedSelfReviewPreToolUse, createStagedRecorder, resolveStagedConfig } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5549,15 +5549,10 @@ export class WorkerManager {
           // Staged self-review acting mode (staged-self-review.ts): treatment
           // arm is denied once with an intent checklist; control and
           // recording only record. Replaces the recording-only hook above.
-          ...(!isCodexTask && stagedCfg.mode === 'acting'
-            ? [{ hooks: [createStagedSelfReviewHook({
-                worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
-                record: createStagedRecorder(worker, m => this.addMilestone(worker, m)),
-              })] }]
-            : []),
-          ...(!isCodexTask && stagedCfg.mode === 'acting'
-            ? [{ hooks: [async (input: any) => { if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(worker.id, input.tool_name); return {}; }] }]
-            : []),
+          ...stagedSelfReviewPreToolUse({
+            cfg: stagedCfg, isCodexTask, worker, task: task as any,
+            record: createStagedRecorder(worker, m => this.addMilestone(worker, m)),
+          }),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
           // so a command it refuses never waits. See deps-gate.ts.
