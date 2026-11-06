@@ -31,12 +31,28 @@ export interface SelfReviewGuardDeps {
   worker: Pick<LocalWorker, 'id'> & Partial<Pick<LocalWorker, 'toolCalls' | 'tokenTally'>>;
   task: SelfReviewTaskInput & { roleSlug?: string | null; context?: Record<string, any> | null; outputRequirement?: string | null };
   mode: SelfReviewMode;
+  /** Test seam; defaults to a deterministic draw on the worker id. */
+  arm?: 'control' | 'treatment';
   addMilestone: (milestone: Milestone) => void;
   /** Test seam; defaults to the scanner's own state. */
   openFailures?: (workerId: string) => OpenVerifyFailure[];
   /** Turns so far, when the caller knows it. */
   turns?: () => number | undefined;
   log?: (line: string) => void;
+}
+
+/**
+ * Deterministic control/treatment draw for a worker (propensity 0.5). Recording
+ * never acts on it; it logs the arm the acting stage would have drawn, so the
+ * control arm is a recorded fact rather than `none`. Hash of the worker id.
+ */
+export function drawSelfReviewArm(workerId: string): 'control' | 'treatment' {
+  let h = 2166136261;
+  for (let k = 0; k < workerId.length; k++) {
+    h ^= workerId.charCodeAt(k);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return (h & 1) === 0 ? 'control' : 'treatment';
 }
 
 export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
@@ -57,34 +73,79 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
       fired = true;
 
       const params = (toolInput.params ?? {}) as Record<string, any>;
-      const ctx = deps.task.context ?? {};
       const exemption = selfReviewExemption({
         error: params.error,
         blockedOnTaskId: params.blockedOnTaskId,
         discardEdits: params.discardEdits,
         roleSlug: deps.task.roleSlug,
-        bookkeeping: Boolean(ctx.bookkeeping),
-        planning: Boolean(ctx.planning),
+        bookkeeping: deps.task.taskClass === 'bookkeeping',
+        planning: deps.task.mode === 'planning',
         alreadyShippedIn: params.alreadyShippedIn,
         outputRequirement: deps.task.outputRequirement,
       });
 
       const tokens = (deps.worker.tokenTally?.inputTokens ?? 0) + (deps.worker.tokenTally?.outputTokens ?? 0);
       const turns = deps.turns?.();
-      const common = `mode=${deps.mode} arm=none turns=${turns ?? 'unknown'} tokens=${tokens}`;
+      const common = `mode=${deps.mode} arm=${deps.arm ?? drawSelfReviewArm(deps.worker.id)} propensity=0.5 turns=${turns ?? 'unknown'} tokens=${tokens}`;
       let label: string;
+      let checklist: ReturnType<typeof buildSelfReviewChecklist> | null = null;
       if (exemption) {
         label = `Self-review: ${common} exempt=${exemption}`;
       } else {
-        const checklist = buildSelfReviewChecklist(deps.task);
+        checklist = buildSelfReviewChecklist(deps.task);
         label = checklist
           ? `Self-review: ${common} version=${checklist.version} items=${checklist.items.map(it => it.id).join(',') || 'none'} checklist=${checklist.items.map(it => `[${it.id}] ${it.text}`).join(' | ')}`
           : `Self-review: ${common} builder-failed`;
       }
       deps.addMilestone({ type: 'status', label: label.slice(0, 2000), ts: Date.now() });
+
+      // Structured answer record (R-6): the same fields the acting stage records.
+      // Recording never asks, so there is no denial: addedTurns/addedTokens are 0
+      // and nothing changed after one; `answers` is whatever the agent volunteered.
+      const record = {
+        mode: deps.mode,
+        arm: 'none',
+        exemption: exemption ?? null,
+        outcome: exemption ? 'exempt' : checklist ? 'eligible' : 'failed_open',
+        checklistVersion: checklist?.version ?? null,
+        itemIds: checklist?.items.map(it => it.id) ?? [],
+        answers: boundAnswers((params.structuredOutput as any)?.selfReview),
+        toolCallsBetween: [],
+        addedTurns: 0,
+        addedTokens: 0,
+        workChangedAfterDenial: false,
+      };
+      deps.addMilestone({ type: 'status', label: serializeRecord(record), ts: Date.now() });
     } catch (err) {
       log(`Self-review recording failed open: ${err instanceof Error ? err.message : String(err)}`);
     }
     return {};
   };
+}
+
+const RECORD_PREFIX = 'Self-review record: ';
+const RECORD_MAX = 1000;
+const MAX_ANSWERS = 12;
+const MAX_FIELD = 80;
+
+/** Keep id/answer/evidence per item, each bounded, so the record stays small. */
+function boundAnswers(raw: unknown): unknown {
+  if (raw == null) return null;
+  const cap = (v: unknown) => (typeof v === 'string' ? v.slice(0, MAX_FIELD) : v);
+  if (Array.isArray(raw)) {
+    return raw.slice(0, MAX_ANSWERS).map(a =>
+      a && typeof a === 'object'
+        ? { id: cap((a as any).id), answer: cap((a as any).answer), evidence: cap((a as any).evidence) }
+        : cap(a));
+  }
+  return cap(typeof raw === 'string' ? raw : JSON.stringify(raw));
+}
+
+/** Always returns `prefix + valid JSON` within RECORD_MAX; never a cut-off string. */
+function serializeRecord(record: Record<string, unknown>): string {
+  let out = RECORD_PREFIX + JSON.stringify(record);
+  if (out.length <= RECORD_MAX) return out;
+  out = RECORD_PREFIX + JSON.stringify({ ...record, answers: null, truncated: true });
+  if (out.length <= RECORD_MAX) return out;
+  return RECORD_PREFIX + JSON.stringify({ ...record, itemIds: [], answers: null, truncated: true });
 }

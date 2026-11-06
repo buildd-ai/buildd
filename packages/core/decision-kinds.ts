@@ -57,7 +57,7 @@ export interface BuilddDecisionKindBinding {
    * A model asked after the decision is made, out of band, to measure it
    * against the applied answer (`decision-policy.ts`). Never applied.
    * `fraction` is the share of subjects asked (default 1), drawn per subject
-   * through `experiment-randomizer.ts`.
+   * through `arm-randomizer.ts`.
    */
   challenger?: (DecisionModelConfig & { fraction?: number }) | null;
   /** How the shared readout counts and scores this kind. The only kind-specific readout logic. */

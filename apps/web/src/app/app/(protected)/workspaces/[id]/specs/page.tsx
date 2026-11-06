@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { specListView } from '@/lib/specs/page-view';
+import SpecProposals from '@/components/SpecProposals';
 import SpecIndex from '@/components/SpecIndex';
 
 export const dynamic = 'force-dynamic';
@@ -22,6 +23,7 @@ export default async function WorkspaceSpecsPage({ params }: { params: Promise<{
           </Link>
           <h1 className="text-heading font-semibold text-text-primary">Specs</h1>
         </header>
+        <SpecProposals proposals={view.unrequested} now={view.now} />
         <SpecIndex specs={view.index} options={{ now: view.now, proposals: view.proposals }} workspaceId={view.workspace.id} canAct={view.canAct} canConfirm={view.canConfirm} />
       </div>
     </main>

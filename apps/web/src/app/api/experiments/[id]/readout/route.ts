@@ -22,7 +22,8 @@ import { TIER_POOL_EXPERIMENT_KIND } from '@buildd/core/tier-pool';
 import { runTierPoolReadout } from '@buildd/core/tier-pool-admin';
 import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
-import { evaluateKillCriterion, validateStagedExperimentConfig, STAGED_SELF_REVIEW_FEATURE, type KillCriterion } from '@buildd/core/staged-self-review';
+import { runStagedSelfReviewReadout } from '@buildd/core/staged-self-review-readout-source';
+import { evaluateKillCriterion, validateStagedExperimentConfig, STAGED_SELF_REVIEW_FEATURE, type KillCriterion } from '@buildd/core/staged-draw';
 import { bearerOf, resolveExperimentViewer } from '@/lib/experiment-access';
 import { isTaskToken } from '@/lib/task-token';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';
@@ -83,8 +84,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       const v = raw === null ? NaN : Number(raw);
       return Number.isFinite(v) ? v : undefined;
     };
-    const touchRate = num('touchRate');
-    const flipRate = num('flipRate');
+    // Rubber-stamp rates come from the stored stage records; query params override.
+    const stored = await runStagedSelfReviewReadout(
+      { id: row.id, policyVersion },
+      { touchRate: criterion.rubberStampTouchRate, flipRate: criterion.rubberStampFlipRate },
+    );
+    const touchRate = num('touchRate') ?? (stored.n > 0 ? stored.touchRate : undefined);
+    const flipRate = num('flipRate') ?? (stored.n > 0 ? stored.flipRate : undefined);
     const addedCost = num('addedCostPerTask');
     const killCriterion = evaluateKillCriterion({
       readout: { verdict: readout.verdict, touchRate, flipRate },
@@ -93,6 +99,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     });
     return NextResponse.json({
       experiment: toExperimentDTO(row), policyVersion, readout, health,
+      stagedReview: stored,
       killCriterion: { ...killCriterion, addedCostMeasured: addedCost !== undefined },
     });
   }

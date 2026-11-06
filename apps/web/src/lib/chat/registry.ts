@@ -337,6 +337,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   invoke_model_inference: { reason: 'worker-only', note: 'A running agent spends its own model.inference grant; chat has no worker.' },
   query_database: { reason: 'worker-only', note: 'A running agent spends its own database.query grant; chat has no worker.' },
   upload_artifact: { reason: 'worker-only', note: 'Uploads a worker-produced file.' },
+  platform_rerank: { reason: 'not-yet', note: 'Platform operator switch for reranking with the platform key; chat has no operator tool yet. Operators use buildd_admin or the admin API.' },
   probe_budget_wall: { reason: 'not-yet', note: 'Asks runners to recheck a provider limit; chat has no runner-control tool yet.' },
   get_page_source: { reason: 'worker-only', note: 'The visual auditor asks where its own pages come from.' },
   dispatch_visual_qa: { reason: 'worker-only', note: 'A worker without an authenticated gh starts the Visual QA capture for its own branch.' },

@@ -112,8 +112,8 @@ describe('R-3 / AC-3: exemptions never deny and log the reason', () => {
     ['discardEdits', { params: { discardEdits: true, summary: 'x' } }, {}],
     ['reviewer task', { params: { summary: 'x' } }, { kind: 'reviewer' }],
     ['visual-auditor task', { params: { summary: 'x' } }, { kind: 'visual_auditor' }],
-    ['bookkeeping task', { params: { summary: 'x' } }, { kind: 'bookkeeping' }],
-    ['planning task', { params: { summary: 'x' } }, { kind: 'planning' }],
+    ['bookkeeping task', { params: { summary: 'x' } }, { taskClass: 'bookkeeping' }],
+    ['planning task', { params: { summary: 'x' } }, { mode: 'planning' }],
     ['alreadyShippedIn', { params: { alreadyShippedIn: 12, summary: 'x' } }, {}],
     ['output requirement none', { params: { summary: 'x' } }, { outputRequirement: 'none' }],
   ];
@@ -227,6 +227,21 @@ describe('resolveStagedConfig (AC-2 wiring)', () => {
   test('acting without an experiment never treats', async () => {
     const m = await load();
     expect(m.resolveStagedConfig({ selfReview: 'acting' }, 'task-1').arm).toBe('control');
+  });
+  test('claimed workspace experiment reaches the draw (fetched config has none)', async () => {
+    const m = await load();
+    // getWorkspaceConfig never carries the experiment; the claim response does.
+    const fetched = { selfReview: 'acting' };
+    const claimed = { selfReview: 'acting', selfReviewExperiment: exp };
+    expect(m.resolveStagedConfig(fetched, 'task-1').arm).toBe('control');
+    const merged = m.stagedGitConfig(fetched, claimed);
+    expect(m.resolveStagedConfig(merged, 'task-1')).toMatchObject({ mode: 'acting', arm: 'treatment', propensity: 1 });
+  });
+  test('stagedGitConfig keeps the fetched config when the claim has no experiment', async () => {
+    const m = await load();
+    const fetched = { selfReview: 'acting' };
+    expect(m.stagedGitConfig(fetched, undefined)).toBe(fetched);
+    expect(m.stagedGitConfig(fetched, { selfReview: 'acting' })).toBe(fetched);
   });
   test('recording is never treatment; absent is off', async () => {
     const m = await load();
