@@ -11,6 +11,8 @@
  * The module reads call history; it never stores result text (only a hash).
  */
 
+import { isBuilddActionTool } from '@buildd/shared';
+
 export const MAX_IDENTICAL_TOOL_CALLS = 5; // Nudge at 5 identical calls; abort at 2×
 export const MAX_SIMILAR_TOOL_CALLS = 15; // Nudge at 15 similar non-benign Bash calls; abort at 2×
 export const ERROR_STREAK_THRESHOLD = 6;
@@ -184,10 +186,31 @@ function isReadOnlyCall(tc: Pick<StuckCall, 'name' | 'input'>): boolean {
   return false;
 }
 
+// gh subcommands that wait on or read CI/PR state: polling, not action.
+const POLLING_GH_RE = /^gh\s+(?:run\s+(?:watch|view)|pr\s+(?:checks|view))(?:\s|$)/;
+// buildd actions that read state the worker is waiting on.
+const POLLING_BUILDD_ACTIONS = new Set(['get_task', 'list_tasks', 'get_mission']);
+
 /** Waiting on something external: repeating it is expected, not a loop. */
 function isPollingCall(tc: Pick<StuckCall, 'name' | 'input'>): boolean {
-  if (tc.name !== 'Bash') return false;
-  return /^sleep(\s|$)/.test(stripCdPrefix((tc.input?.command as string) || ''));
+  if (tc.name === 'Bash') {
+    const effective = stripCdPrefix((tc.input?.command as string) || '');
+    return /^sleep(\s|$)/.test(effective) || POLLING_GH_RE.test(effective);
+  }
+  if (isBuilddActionTool(tc.name)) {
+    const action = tc.input?.action;
+    return typeof action === 'string' && POLLING_BUILDD_ACTIONS.has(action);
+  }
+  return false;
+}
+
+/**
+ * Calls that neither count toward nor break an outcome scenario: denied or
+ * unresolved calls, read-only exploration, and polling. Shared by the error
+ * streak and alternation detectors so both agree on what "noise" is.
+ */
+export function isIgnoredCall(tc: StuckCall): boolean {
+  return !!tc.nonExecutionKind || isReadOnlyCall(tc) || isPollingCall(tc);
 }
 
 // ── Error streak ─────────────────────────────────────────────────────────────
@@ -201,8 +224,8 @@ export interface ErrorStreakResult {
 }
 
 /**
- * Trailing run of errored action calls. Read-only and denied calls are ignored
- * (neither extend nor reset). A successful action call ends the run.
+ * Trailing run of errored action calls. Ignored calls (see isIgnoredCall) neither
+ * extend nor reset the run. A successful action call ends the run.
  */
 export function detectErrorStreak(calls: ReadonlyArray<StuckCall>): ErrorStreakResult {
   const keys = new Set<string>();
@@ -211,8 +234,7 @@ export function detectErrorStreak(calls: ReadonlyArray<StuckCall>): ErrorStreakR
   let lastErrorLine: string | undefined;
   for (let i = calls.length - 1; i >= 0; i--) {
     const tc = calls[i];
-    if (tc.nonExecutionKind) continue;
-    if (isReadOnlyCall(tc)) continue;
+    if (isIgnoredCall(tc)) continue;
     if (!tc.isError) break;
     count++;
     keys.add(normalizeCallKey(tc));
@@ -240,7 +262,7 @@ export function detectAlternation(calls: ReadonlyArray<StuckCall>): AlternationR
   const window: StuckCall[] = [];
   for (let i = calls.length - 1; i >= 0 && window.length < need; i--) {
     const tc = calls[i];
-    if (tc.nonExecutionKind || isPollingCall(tc)) continue;
+    if (isIgnoredCall(tc)) continue;
     window.push(tc);
   }
   if (window.length < need) return { detected: false, tools: [] };
