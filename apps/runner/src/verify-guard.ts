@@ -184,7 +184,7 @@ function describe(f: OpenVerifyFailure): string {
   const how = f.timedOut
     ? `was killed by its timeout (exit ${f.exitCode}) before it finished`
     : `exited ${f.exitCode}`;
-  return `the last ${f.family} command, \`${f.command.slice(0, 140)}\`, ${how} and no later ${f.family} run passed`;
+  return `the last ${f.family} command, \`${(f.command ?? '').slice(0, 140)}\`, ${how} and no later ${f.family} run passed`;
 }
 
 const APPROVE_VERDICT = 'approve';
