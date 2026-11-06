@@ -458,7 +458,7 @@ async function executePushJob(job: IngestJob): Promise<DiffExecution> {
 
   const { PgVectorStore, getVoyageEmbedder, buildNamespace, ingestFiles } =
     await import('@buildd/core/knowledge-store');
-  const store = new PgVectorStore(getVoyageEmbedder('voyage-code-3'));
+  const store = new PgVectorStore(getVoyageEmbedder('voyage-code-3'), null, { caller: 'ingest_push' });
 
   const docsNamespace = buildNamespace(job.workspaceId, 'docs');
   for (const filePath of deletions) {
@@ -469,9 +469,11 @@ async function executePushJob(job: IngestJob): Promise<DiffExecution> {
   const refused = new Set(admission.refused);
   const admittedDocs = refused.size > 0 ? docs.filter(d => !refused.has(d.path)) : docs;
   let chunksUpserted = 0;
+  let chunksLexicalOnly = 0;
   if (admittedDocs.length > 0) {
     const res = await ingestFiles(store, job.workspaceId, 'docs', admittedDocs);
     chunksUpserted = res.chunks;
+    chunksLexicalOnly = res.chunksLexicalOnly;
   }
 
   return {
@@ -482,6 +484,7 @@ async function executePushJob(job: IngestJob): Promise<DiffExecution> {
       ...(admission.message ? { planLimitMessage: admission.message } : {}),
       filesDeleted: deletions.length,
       chunksUpserted,
+      ...(chunksLexicalOnly > 0 ? { chunksLexicalOnly } : {}),
       prChunksUpserted: 0,
       totalBytes,
       backfillEnqueued: false,
@@ -573,7 +576,7 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
     await import('@buildd/core/knowledge-store');
 
   // code/docs/spec all embed with voyage-code-3 (see getVoyageEmbedderForCorpus).
-  const store = new PgVectorStore(getVoyageEmbedder('voyage-code-3'));
+  const store = new PgVectorStore(getVoyageEmbedder('voyage-code-3'), null, { caller: 'ingest_diff' });
 
   // Capture pre-run state BEFORE any upserts so the backfill check reflects
   // whether this workspace had a code index before this job ran.
@@ -599,11 +602,13 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
   // Upserts via the shared ingest path (fileToChunks under the hood).
   let filesIngested = 0;
   let chunksUpserted = 0;
+  let chunksLexicalOnly = 0;
   for (const corpus of ['code', 'docs'] as const) {
     if (sources[corpus].length === 0) continue;
     const res = await ingestFiles(store, job.workspaceId, corpus, sources[corpus]);
     filesIngested += res.files;
     chunksUpserted += res.chunks;
+    chunksLexicalOnly += res.chunksLexicalOnly;
   }
 
   // PR-diff corpus (spec §3.5, A3): ingest the patch itself — per-file hunks
@@ -640,7 +645,7 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
     if (prChunks.length > 0) {
       // Separate store: `pr` embeds with the default voyage-4-large model
       // (getVoyageEmbedderForCorpus policy), not the code-3 store above.
-      const prStore = new PgVectorStore(getVoyageEmbedder('voyage-4-large'));
+      const prStore = new PgVectorStore(getVoyageEmbedder('voyage-4-large'), null, { caller: 'ingest_diff' });
       await prStore.upsert(buildNamespace(job.workspaceId, 'pr'), prChunks);
       prChunksUpserted = prChunks.length;
     }

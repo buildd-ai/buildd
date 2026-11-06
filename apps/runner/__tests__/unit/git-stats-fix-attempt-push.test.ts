@@ -61,7 +61,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  // Windows can hold a handle on git's files briefly after the process exits (EBUSY).
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 /** What setupWorktree pins: the commit the base ref held when the worktree was cut. */

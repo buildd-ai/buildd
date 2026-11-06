@@ -22,8 +22,10 @@ mock.module('@/lib/team-access', () => ({
 
 // Mock the knowledge-store barrel so the route's DB aggregation is controllable
 // and never touches a real Postgres connection.
+const mockGetWorkspaceVoyageBudget = mock(async () => null as unknown);
 mock.module('@buildd/core/knowledge-store', () => ({
   getKnowledgeHealth: mockGetKnowledgeHealth,
+  getWorkspaceVoyageBudget: mockGetWorkspaceVoyageBudget,
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -50,6 +52,32 @@ const SAMPLE_HEALTH = {
   staleAfterDays: 14,
   freshness: 'stale',
 };
+
+describe('GET /api/workspaces/[id]/knowledge-health: Voyage budget notice', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1' });
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockGetKnowledgeHealth.mockReset();
+    mockGetKnowledgeHealth.mockResolvedValue(SAMPLE_HEALTH);
+    mockGetWorkspaceVoyageBudget.mockReset();
+  });
+
+  it('returns where the team stands beside the health', async () => {
+    const status = { enforced: true, state: 'over', message: 'used its budget' };
+    mockGetWorkspaceVoyageBudget.mockResolvedValue(status);
+    const res = await GET(createMockRequest({ authorization: 'Bearer bld_x' }), { params: mockParams });
+    expect((await res.json()).voyageBudget).toEqual(status);
+  });
+
+  it('still serves the health when the budget cannot be read', async () => {
+    mockGetWorkspaceVoyageBudget.mockRejectedValue(new Error('db down'));
+    const res = await GET(createMockRequest({ authorization: 'Bearer bld_x' }), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect((await res.json()).voyageBudget).toBeNull();
+  });
+});
 
 describe('GET /api/workspaces/[id]/knowledge-health', () => {
   beforeEach(() => {
