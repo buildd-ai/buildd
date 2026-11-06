@@ -50,6 +50,7 @@ import {
   type DispatchModelRejection, type DispatchModelSource,
 } from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment, markDispatchFallback } from '@buildd/core/model-routing-experiment-source';
+import { recordStagedReviewAssignment } from '@buildd/core/staged-self-review-assignment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
@@ -2805,6 +2806,11 @@ export async function POST(req: NextRequest) {
     }
     if (poolDraw) {
       await recordAgentPoolAssignment(poolDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
+    }
+    // Staged self-review draw (runner-side hook): recorded only where the runner
+    // wires the stage, i.e. not for Codex and not for a caller's own seat.
+    if (!isCodexTask && !runsOnCallersSeat) {
+      await recordStagedReviewAssignment({ teamId: taskTeamId, taskId: task.id, gitConfig: (task as any).workspace?.gitConfig });
     }
 
     if (account.managedRunner) {

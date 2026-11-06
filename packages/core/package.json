@@ -342,6 +342,7 @@
     "./prompt-catalog": "./prompt-catalog.ts",
     "./prompt-seed": "./prompt-seed.ts",
     "./staged-self-review-readout-source": "./staged-self-review-readout-source.ts",
+    "./staged-self-review-assignment-source": "./staged-self-review-assignment-source.ts",
     "./prompt-seed-source": "./prompt-seed-source.ts"
   },
   "dependencies": {
