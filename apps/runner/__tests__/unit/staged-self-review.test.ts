@@ -242,6 +242,35 @@ describe('R-6: what a staged task records', () => {
   });
 });
 
+describe('R-6: turn clock wiring (workers.ts hookOverrides.turns)', () => {
+  test('addedTurns is non-null and counts assistant turns between denial and answer', async () => {
+    const m = await load();
+    const records: any[] = [];
+    const worker: any = { id: 'w-turns', assistantTurns: 3 };
+    const [entry] = m.stagedSelfReviewPreToolUse({
+      cfg: { mode: 'acting', arm: 'treatment', propensity: 0.5 },
+      isCodexTask: false,
+      worker,
+      task: TASK as any,
+      record: (e: any) => records.push(e),
+      hookOverrides: { turns: () => worker.assistantTurns, openFailures: () => [], log: () => {} },
+    });
+    const hook = entry.hooks[0];
+    expect(denied(await hook(completion()))).toBe(true);
+    worker.assistantTurns += 2; // two assistant messages while answering
+    await hook(completion({ summary: 'ok', structuredOutput: { selfReview: [{ id: 'x', answer: 'met', evidence: 'because' }] } }));
+    const answered = records.find(r => r.outcome === 'answered');
+    expect(answered.addedTurns).toBe(2);
+  });
+
+  test('without a turn source addedTurns stays null', async () => {
+    const { hook, records } = await setup();
+    await hook(completion());
+    await hook(completion({ summary: 'ok', structuredOutput: { selfReview: [{ id: 'x', answer: 'met', evidence: 'b' }] } }));
+    expect(records.find(r => r.outcome === 'answered').addedTurns).toBeNull();
+  });
+});
+
 describe('resolveStagedConfig (AC-2 wiring)', () => {
   const exp = { id: 'e1', policyVersion: 1, treatmentFraction: 1 };
   test('acting + experiment + fraction 1 draws treatment', async () => {

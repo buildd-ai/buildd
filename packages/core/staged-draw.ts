@@ -202,6 +202,19 @@ export function stagedReviewFootprint<T>(
 
 const SELF_REVIEW_PREFIX = 'Self-review: {';
 
+function recordFromEntry(e: Record<string, unknown>, taskId?: string | null): StagedReviewRecord | null {
+  if (e.outcome !== 'answered') return null;
+  const answers = Array.isArray(e.answers)
+    ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
+    : ['unanswered'];
+  return {
+    taskId: taskId ?? undefined,
+    toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
+    changedAfterDenial: e.workChangedAfterDenial === true,
+    answers,
+  };
+}
+
 /**
  * Stored records -> readout input. The runner writes each stage outcome as a
  * `Self-review: {json}` status milestone; only `answered` entries carry a
@@ -221,16 +234,8 @@ export function stagedReviewRecordsFromMilestones(
       try {
         // Runner caps labels at 300 chars, so long records arrive truncated and fail here: counted as skipped.
         const e = JSON.parse(text.slice('Self-review: '.length)) as Record<string, unknown>;
-        if (e.outcome !== 'answered') continue;
-        const answers = Array.isArray(e.answers)
-          ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
-          : ['unanswered'];
-        records.push({
-          taskId: w.taskId ?? undefined,
-          toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
-          changedAfterDenial: e.workChangedAfterDenial === true,
-          answers,
-        });
+        const r = recordFromEntry(e, w.taskId);
+        if (r) records.push(r);
       } catch { skipped++; }
     }
   }

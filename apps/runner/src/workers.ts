@@ -5554,6 +5554,7 @@ export class WorkerManager {
             cfg: stagedCfg, isCodexTask, worker,
             task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task), taskClass: (task as any).taskClass ?? null, mode: (task as any).mode ?? null },
             record: createStagedRecorder(worker, m => this.addMilestone(worker, m)),
+            hookOverrides: { turns: () => worker.assistantTurns },
           }),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
@@ -7187,6 +7188,7 @@ export class WorkerManager {
     }
 
     if (msg.type === 'assistant') {
+      worker.assistantTurns = (worker.assistantTurns ?? 0) + 1;
       // A steering message this reply answers has been read (instruction-acks.ts).
       this.acknowledgeInstructions(worker.id, this.instructionAcks.onAssistant(worker.id, msg as any));
 

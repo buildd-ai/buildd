@@ -193,3 +193,20 @@ describe('stagedReviewRecordsFromWorkers (AC-8)', () => {
     expect(records).toHaveLength(1);
   });
 });
+
+describe('realistic multi-answer record (R-6)', () => {
+  const long = {
+    mode: 'acting', arm: 'treatment', outcome: 'answered', propensity: 0.5, checklistVersion: 'v1',
+    itemIds: ['i1', 'i2', 'i3', 'i4'],
+    answers: ['i1', 'i2', 'i3', 'i4'].map(id => ({ id, answer: 'met', evidence: 'x'.repeat(80) })),
+    toolCallsBetween: [], workChangedAfterDenial: false, addedTurns: 2, addedTokens: 1200,
+  };
+  test('record over 300 chars is read from resultMeta, not lost to the milestone cap', () => {
+    expect(JSON.stringify(long).length).toBeGreaterThan(300);
+    const truncated = { type: 'status', label: `Self-review: ${JSON.stringify(long)}`.slice(0, 300) };
+    const { records, skipped } = stagedReviewRecordsFromWorkers([{ taskId: 't', milestones: [truncated], resultMeta: { stagedSelfReview: [long] } }]);
+    expect(skipped).toBe(0);
+    expect(records).toHaveLength(1);
+    expect(classifyStagedReview(records).rubberStamped).toBe(true);
+  });
+});
