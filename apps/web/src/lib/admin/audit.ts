@@ -5,12 +5,14 @@ import type { AdminRecoveryCapability } from '@buildd/shared';
 
 export type PlatformAdminAuditAction = 'experiment.update' | 'team.experiment_flags.update' | 'decision_feature.mode.update'
   | 'decision_measurement.update' | 'decision_measurement.retire'
+  /** A platform-wide runtime switch (e.g. rerank on the platform key). */
+  | 'platform_setting.update'
   /** Owner recovery actions (operator-recovery spec §7.2): `recovery.<capability>`. */
   | `recovery.${AdminRecoveryCapability}`
   | `claim_learning.${import('./claim-learning-actions').ClaimLearningCapability}`;
 
 export type PlatformAdminAuditTarget = 'experiment' | 'team' | 'decision_feature' | 'decision_measurement'
-  | 'cause' | 'incident' | 'automation';
+  | 'cause' | 'incident' | 'automation' | 'platform_setting';
 
 export interface PlatformAdminAuditInput {
   actorAccountId: string;

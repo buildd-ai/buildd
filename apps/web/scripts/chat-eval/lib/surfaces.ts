@@ -101,6 +101,7 @@ export const MCP_SYSTEM_PROMPT = 'You are an assistant with access to buildd, a 
 export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   list_workspaces: 'read',
   get_usage_stats: 'read',
+  get_embedding_usage: 'read',
   get_manifest_coverage: 'read',
   get_path_claim_stats: 'read',
   get_decision_stats: 'read',
@@ -110,6 +111,8 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   invoke_model_inference: 'write',
   query_database: 'read',
   probe_budget_wall: 'write',
+  // get and set: multi-op, so a write whole (fail closed).
+  platform_rerank: 'write',
   close_pr: 'write',
   approve_pr_override: 'write',
   update_pr: 'write',

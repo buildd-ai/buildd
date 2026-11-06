@@ -158,6 +158,7 @@ describe('worker MCP actions under a per-task token', () => {
  * route refuses these before any handler runs.
  */
 const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
+  platform_rerank: 'a platform-wide runtime switch for every team\'s retrieval; the route is platform operator only, so a task token is never one',
   answer_question: 'a person\'s answer to a parked question; the route refuses every per-task token, so an organizer cannot answer its workers',
   create_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
   update_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
@@ -184,6 +185,7 @@ const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
   consolidate_knowledge: "maintains the team's knowledge store; archives entries",
   memory_delete: "permanently deletes from the team's memory",
   get_decision: "reads any decision in the team's ledger, not one mission's",
+  get_embedding_usage: 'platform-owner read of Voyage spend across all teams, not one mission',
   label_decision: "grades decisions across the team's ledger, not one mission's",
 };
 

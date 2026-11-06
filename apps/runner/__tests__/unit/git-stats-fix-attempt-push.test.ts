@@ -61,7 +61,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  // Windows can hold a handle on git's files for several seconds after the process
+  // exits (EBUSY): CI's Windows runner exhausted a 2s retry budget here. Retry for
+  // ~10s, and if it still will not go, leave the dir: it is under the OS temp root
+  // and the assertions above have already run.
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 50, retryDelay: 200 });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EBUSY') throw err;
+  }
 });
 
 /** What setupWorktree pins: the commit the base ref held when the worktree was cut. */
