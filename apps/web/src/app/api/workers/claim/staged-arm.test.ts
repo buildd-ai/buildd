@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { withStagedExperiment } from './staged-arm';
+import { buildStagedAssignment, withStagedExperiment } from './staged-arm';
 import { resolveStagedConfig } from '../../../../../../runner/src/staged-self-review';
 
 const exp = { id: 'exp-1', policyVersion: 2, treatmentFraction: 0.5 };
@@ -33,5 +33,23 @@ describe('withStagedExperiment', () => {
   test('recording never gets a treatment arm', () => {
     const ws = withStagedExperiment({ gitConfig: { selfReview: 'recording' } }, exp);
     for (let i = 0; i < 30; i++) expect(resolveStagedConfig(ws.gitConfig, `t-${i}`).arm).toBe('control');
+  });
+});
+describe('buildStagedAssignment', () => {
+  const acting = withStagedExperiment({ gitConfig: { selfReview: 'acting' } }, exp);
+  test('matches the runner draw, with propensity and version', () => {
+    for (let i = 0; i < 30; i++) {
+      const row = buildStagedAssignment(acting, `task-${i}`)!;
+      const r = resolveStagedConfig(acting.gitConfig, `task-${i}`);
+      expect(row.arm).toBe(r.arm);
+      expect(row.propensity).toBe(r.propensity!);
+      expect(row.policyVersion).toBe(2);
+      expect(row.served).toBe(r.arm === 'treatment');
+    }
+  });
+  test('no experiment, recording or off: nothing recorded', () => {
+    expect(buildStagedAssignment({ gitConfig: { selfReview: 'acting' } }, 't')).toBeNull();
+    expect(buildStagedAssignment(withStagedExperiment({ gitConfig: { selfReview: 'recording' } }, exp), 't')).toBeNull();
+    expect(buildStagedAssignment({ gitConfig: {} }, 't')).toBeNull();
   });
 });
