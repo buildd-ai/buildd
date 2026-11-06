@@ -6,7 +6,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from './db/client';
 import { experimentAssignments, workers } from './db/schema';
-import { classifyStagedReview, stagedReviewRecordsFromMilestones, type StagedReviewReadout } from './staged-self-review';
+import { classifyStagedReview, stagedReviewRecordsFromStored, type StagedReviewReadout } from './staged-self-review';
 
 export const STAGED_REVIEW_READOUT_ROW_LIMIT = 5000;
 
@@ -23,7 +23,7 @@ export function buildStagedReviewTasksQuery(experimentId: string, policyVersion:
 }
 
 export function buildStagedReviewWorkersQuery(taskIds: string[]) {
-  return db.select({ taskId: workers.taskId, milestones: workers.milestones }).from(workers).where(inArray(workers.taskId, taskIds));
+  return db.select({ taskId: workers.taskId, milestones: workers.milestones, resultMeta: workers.resultMeta }).from(workers).where(inArray(workers.taskId, taskIds));
 }
 
 export async function runStagedSelfReviewReadout(
@@ -34,6 +34,6 @@ export async function runStagedSelfReviewReadout(
   const taskIds = rows.map(r => r.taskId).filter((id): id is string => !!id);
   if (taskIds.length === 0) return { ...classifyStagedReview([], limits), skipped: 0 };
   const ws = await buildStagedReviewWorkersQuery(taskIds);
-  const { records, skipped } = stagedReviewRecordsFromMilestones(ws);
+  const { records, skipped } = stagedReviewRecordsFromStored(ws);
   return { ...classifyStagedReview(records, limits), skipped };
 }

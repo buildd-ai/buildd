@@ -16,7 +16,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { stagedReviewRecordsFromMilestones, classifyStagedReview } from '../staged-self-review';
+import { stagedReviewRecordsFromMilestones, stagedReviewRecordsFromStored, classifyStagedReview } from '../staged-self-review';
 
 const load = () => import('../staged-self-review');
 
@@ -148,5 +148,27 @@ describe('stagedReviewRecordsFromMilestones', () => {
   test('reads edits as a flip', () => {
     const { records } = stagedReviewRecordsFromMilestones([{ milestones: [label({ outcome: 'answered', answers: [{ answer: 'unmet' }], toolCallsBetween: ['Edit'], workChangedAfterDenial: true })] }]);
     expect(classifyStagedReview(records).flipRate).toBe(1);
+  });
+});
+
+describe('stagedReviewRecordsFromStored', () => {
+  const long = {
+    mode: 'acting', arm: 'treatment', outcome: 'answered', propensity: 0.5, checklistVersion: 'v1',
+    itemIds: ['i1', 'i2', 'i3', 'i4'],
+    answers: ['i1', 'i2', 'i3', 'i4'].map(id => ({ id, answer: 'met', evidence: 'x'.repeat(80) })),
+    toolCallsBetween: [], workChangedAfterDenial: false, addedTurns: 2, addedTokens: 1200,
+  };
+  test('a realistic multi-answer record exceeds the milestone cap yet reads from resultMeta', () => {
+    expect(JSON.stringify(long).length).toBeGreaterThan(300);
+    const truncated = { type: 'status', label: `Self-review: ${JSON.stringify(long)}`.slice(0, 300) };
+    expect(stagedReviewRecordsFromMilestones([{ taskId: 't', milestones: [truncated] }]).records).toHaveLength(0);
+    const { records, skipped } = stagedReviewRecordsFromStored([{ taskId: 't', milestones: [truncated], resultMeta: { stagedSelfReview: [long] } }]);
+    expect(skipped).toBe(0);
+    expect(records).toHaveLength(1);
+    expect(classifyStagedReview(records).rubberStamped).toBe(true);
+  });
+  test('falls back to milestones when resultMeta has no records', () => {
+    const { records } = stagedReviewRecordsFromStored([{ milestones: [{ label: `Self-review: ${JSON.stringify({ outcome: 'answered', answers: [{ answer: 'met' }] })}` }], resultMeta: {} }]);
+    expect(records).toHaveLength(1);
   });
 });

@@ -151,6 +151,41 @@ const SELF_REVIEW_PREFIX = 'Self-review: {';
  * checklist answer. Labels with the prefix that do not parse (e.g. truncated) are
  * counted in `skipped`; labels without the prefix are ignored.
  */
+export function stagedReviewRecordsFromStored(
+  workersRows: readonly { taskId?: string | null; milestones?: unknown; resultMeta?: unknown }[],
+): { records: StagedReviewRecord[]; skipped: number } {
+  const records: StagedReviewRecord[] = [];
+  let skipped = 0;
+  for (const w of workersRows) {
+    const stored = (w.resultMeta as { stagedSelfReview?: unknown } | null | undefined)?.stagedSelfReview;
+    if (Array.isArray(stored)) {
+      for (const e of stored as Record<string, unknown>[]) {
+        if (!e || typeof e !== 'object') { skipped++; continue; }
+        const r = recordFromEntry(e, w.taskId);
+        if (r) records.push(r);
+      }
+    } else {
+      const m = stagedReviewRecordsFromMilestones([w]);
+      records.push(...m.records);
+      skipped += m.skipped;
+    }
+  }
+  return { records, skipped };
+}
+
+function recordFromEntry(e: Record<string, unknown>, taskId?: string | null): StagedReviewRecord | null {
+  if (e.outcome !== 'answered') return null;
+  const answers = Array.isArray(e.answers)
+    ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
+    : ['unanswered'];
+  return {
+    taskId: taskId ?? undefined,
+    toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
+    changedAfterDenial: e.workChangedAfterDenial === true,
+    answers,
+  };
+}
+
 export function stagedReviewRecordsFromMilestones(
   workersRows: readonly { taskId?: string | null; milestones?: unknown }[],
 ): { records: StagedReviewRecord[]; skipped: number } {
@@ -164,16 +199,8 @@ export function stagedReviewRecordsFromMilestones(
       try {
         // Runner caps labels at 300 chars, so long records arrive truncated and fail here: counted as skipped.
         const e = JSON.parse(text.slice('Self-review: '.length)) as Record<string, unknown>;
-        if (e.outcome !== 'answered') continue;
-        const answers = Array.isArray(e.answers)
-          ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
-          : ['unanswered'];
-        records.push({
-          taskId: w.taskId ?? undefined,
-          toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
-          changedAfterDenial: e.workChangedAfterDenial === true,
-          answers,
-        });
+        const r = recordFromEntry(e, w.taskId);
+        if (r) records.push(r);
       } catch { skipped++; }
     }
   }

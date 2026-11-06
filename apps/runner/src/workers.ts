@@ -5552,7 +5552,14 @@ export class WorkerManager {
           ...(!isCodexTask && stagedCfg.mode === 'acting'
             ? [{ hooks: [createStagedSelfReviewHook({
                 worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
-                record: e => this.addMilestone(worker, { type: 'status', label: `Self-review: ${JSON.stringify(e)}`.slice(0, 300), ts: Date.now() }),
+                turns: () => worker.assistantTurns,
+                record: e => {
+                  // Full record rides resultMeta.stagedSelfReview (the readout reads it);
+                  // the milestone is only a short pointer, so its 300-char cap loses nothing.
+                  const list = (worker.stagedSelfReview ??= []);
+                  if (list.length < 50) list.push({ ...e, ts: Date.now() });
+                  this.addMilestone(worker, { type: 'status', label: `Self-review: ${String((e as any).outcome)} (${String((e as any).arm)})`, ts: Date.now() });
+                },
               })] }]
             : []),
           ...(!isCodexTask && stagedCfg.mode === 'acting'
@@ -6265,6 +6272,7 @@ export class WorkerManager {
           ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
           ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
           ...(fileToolAreas && Object.keys(fileToolAreas).length > 0 ? { fileToolAreas } : {}),
+          ...(worker.stagedSelfReview && worker.stagedSelfReview.length > 0 ? { stagedSelfReview: worker.stagedSelfReview } : {}),
         };
         if (Object.keys(measured).length > 0) {
           if (worker.resultMeta) {
@@ -7189,6 +7197,7 @@ export class WorkerManager {
     }
 
     if (msg.type === 'assistant') {
+      worker.assistantTurns = (worker.assistantTurns ?? 0) + 1;
       // A steering message this reply answers has been read (instruction-acks.ts).
       this.acknowledgeInstructions(worker.id, this.instructionAcks.onAssistant(worker.id, msg as any));
 
