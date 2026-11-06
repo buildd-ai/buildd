@@ -7,6 +7,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
   buildSelfReviewChecklist,
+  deriveSpecCriterionIds,
   isMechanicalItem,
   selfReviewExemption,
   SELF_REVIEW_CHECKLIST_VERSION,
@@ -91,4 +92,23 @@ describe('selfReviewExemption', () => {
       expect(selfReviewExemption(input)).toBe(reason);
     });
   }
+});
+
+describe('deriveSpecCriterionIds', () => {
+  const repairTask = {
+    id: 't-repair', title: 'Repair AC-5', description: '- Make the checklist show the pinned criterion',
+    context: { specRepair: { missionId: 'm1', specId: 's1', criterionId: 'AC-5', filedBy: 't0' } },
+  };
+  test('spec-repair task yields a crit item and the denylist still holds', () => {
+    const ids = deriveSpecCriterionIds(repairTask);
+    expect(ids).toEqual(['AC-5']);
+    const c = buildSelfReviewChecklist({ ...repairTask, description: '- Make it right\n- Run the tests and lint', specCriterionIds: ids })!;
+    expect(c.items.map(i => i.id)).toContain('crit-AC-5');
+    expect(c.items.some(i => /tests|lint/i.test(i.text.replace(/spec criterion/, '')))).toBe(false);
+  });
+  test('dedupes, drops malformed, tolerates junk', () => {
+    expect(deriveSpecCriterionIds({ specCriterionIds: ['AC-1', 'bad'], context: { specRepair: { criterionId: 'AC-1' } } })).toEqual(['AC-1']);
+    expect(deriveSpecCriterionIds(null)).toEqual([]);
+    expect(deriveSpecCriterionIds({ context: { specRepair: 'x' } })).toEqual([]);
+  });
 });

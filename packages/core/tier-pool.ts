@@ -26,7 +26,7 @@
  *   Ineligible units write no row.
  * - **Labels and numbers only.** Nothing here takes or returns message text.
  */
-import { hashUnitInterval } from './experiment-randomizer';
+import { hashUnitInterval } from './arm-randomizer';
 import { isReviewerTask } from './experiment-lineage';
 import type { Tier, TierSurface } from './model-tier-defaults';
 import { TIER_SURFACES } from './model-tier-defaults';
