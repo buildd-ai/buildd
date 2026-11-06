@@ -7,7 +7,7 @@
  * Run: bun run scripts/run-unit-tests.ts packages/core/__tests__/staged-self-review-assignment.test.ts
  */
 import { describe, test, expect } from 'bun:test';
-import { stagedAssignmentRow, assignStagedReviewArm } from '../staged-self-review';
+import { stagedAssignmentRow, assignStagedReviewArm } from '../staged-draw';
 
 const exp = (treatmentFraction: number, policyVersion = 2) => ({
   id: '11111111-1111-4111-8111-111111111111', treatmentFraction, policyVersion, checklistVersion: 'v1',

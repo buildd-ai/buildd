@@ -48,7 +48,7 @@
  * the arithmetic and the union rules are testable against literal rows. The
  * query half lives in `./task-area-prediction-source.ts`.
  */
-import { assignExperimentArm, type ExperimentAssignment } from './experiment-randomizer';
+import { assignExperimentArm, type ExperimentAssignment } from './arm-randomizer';
 import { stripTrailingSep } from './path-overlap';
 
 // ── Experiment identity ───────────────────────────────────────────────────────

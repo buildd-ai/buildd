@@ -1,12 +1,12 @@
 /**
  * Staged self-review readout: the query half. Reads the stage records the
  * runner stored as worker milestones for the experiment's assigned tasks and
- * runs `classifyStagedReview` over them (./staged-self-review.ts).
+ * runs `classifyStagedReview` over them (./staged-draw.ts).
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from './db/client';
 import { experimentAssignments, workers } from './db/schema';
-import { classifyStagedReview, stagedReviewRecordsFromWorkers, type StagedReviewReadout } from './staged-self-review';
+import { classifyStagedReview, stagedReviewRecordsFromWorkers, type StagedReviewReadout } from './staged-draw';
 
 export const STAGED_REVIEW_READOUT_ROW_LIMIT = 5000;
 

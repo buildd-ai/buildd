@@ -2,12 +2,12 @@
  * Staged self-review assignment: the write half. At claim time the server
  * records the arm the runner will draw for a task, so the readout
  * (./staged-self-review-readout-source.ts) reads treatment tasks from
- * experiment_assignments. Pure row logic lives in ./staged-self-review.ts.
+ * experiment_assignments. Pure row logic lives in ./staged-draw.ts.
  */
 import { and, eq } from 'drizzle-orm';
 import { db } from './db/client';
 import { experiments, experimentAssignments } from './db/schema';
-import { stagedAssignmentRow, STAGED_SELF_REVIEW_FEATURE } from './staged-self-review';
+import { stagedAssignmentRow, STAGED_SELF_REVIEW_FEATURE } from './staged-draw';
 
 /**
  * Persist the staged draw. Only for a running staged_self_review experiment of

@@ -50,7 +50,7 @@ import {
   type DispatchModelRejection, type DispatchModelSource,
 } from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment, markDispatchFallback } from '@buildd/core/model-routing-experiment-source';
-import { recordStagedReviewAssignment } from '@buildd/core/staged-self-review-assignment-source';
+import { recordStagedReviewAssignment } from '@buildd/core/staged-draw-assignment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';

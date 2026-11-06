@@ -3,7 +3,7 @@
  * f3742450). Pure functions: mode switch, arm draw, rubber-stamp readout and
  * the pre-registered kill criterion. Off means no footprint (AC-9).
  */
-import { assignExperimentArm } from './experiment-randomizer';
+import { assignExperimentArm } from './arm-randomizer';
 
 export const STAGED_SELF_REVIEW_FEATURE = 'staged_self_review';
 

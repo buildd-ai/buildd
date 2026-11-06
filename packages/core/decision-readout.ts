@@ -20,7 +20,7 @@
  *    policy or provider here is observational: those rows were not assigned at
  *    random, so a difference between groups is not an effect. `causal` claims
  *    a difference only for rows stamped with an `assignExperimentArm`
- *    assignment (`experiment-randomizer.ts`), one experiment at a time.
+ *    assignment (`arm-randomizer.ts`), one experiment at a time.
  *
  * Quality is the kind's, never this module's: an `objective` adapter says
  * whether an answer was right given an outcome label. Without one, labels are

@@ -11,7 +11,7 @@
 import { denyPreToolUse } from './hook-factory';
 import { runnerDenial } from './runner-denial';
 import { isBuilddActionTool } from '@buildd/shared';
-import { resolveStagedReviewMode, assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-self-review';
+import { resolveStagedReviewMode, assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-draw';
 import { unrecoveredVerifyFailures, type OpenVerifyFailure } from './error-trace-scanner';
 import { buildSelfReviewChecklist, selfReviewExemption, type SelfReviewTaskInput } from './self-review-checklist';
 

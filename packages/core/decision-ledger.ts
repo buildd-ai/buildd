@@ -53,7 +53,7 @@ export interface DecisionLedgerInput {
   failureClass?: 'capability' | 'key' | 'provider' | null;
   subjectType?: string | null;
   subjectId?: string | null;
-  /** Only from experiment-randomizer.ts `assignExperimentArm`; the readout's causal lift reads nothing else. */
+  /** Only from arm-randomizer.ts `assignExperimentArm`; the readout's causal lift reads nothing else. */
   experimentId?: string | null;
   experimentArm?: string | null;
   propensity?: number | null;
