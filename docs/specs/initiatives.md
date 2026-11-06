@@ -57,14 +57,14 @@ as an empty progress bar beside `100%`. See
 - The bar draws exactly one segment per non-archived mission. A done mission's
   segment is solid; an open mission's segment fills to its tasks done over its
   tasks. The number of solid segments therefore always equals `n`.
-- Attention is a fact about missions: `N missions need you` (a parked question
-  or an ask on an open mission), `N missions held` (open missions only; a
-  completed mission never counts as held), `All N missions done` (every mission
+- Attention is a fact about missions: `N missions waiting on you` (a parked question
+  or an ask on an open mission), `N missions not started` (open missions only; a
+  completed mission never counts as not started), `All N missions done` (every mission
   done, initiative not completed). Each fact that names a mission links to it.
 - The card offers at most one next action, in this order: answer the first ask,
-  arm the first held mission, mark the initiative completed, add a first
+  start the first mission not yet started, mark the initiative completed, add a first
   mission, open it. A completed or archived initiative offers none.
-- The list groups cards as Needs you, Active, Planned, Paused, Completed, in that
+- The list groups cards as Waiting on you, Active, Planned, Paused, Completed, in that
   order, drops empty groups, and collapses Completed behind one control.
   Archived initiatives are not listed.
 - The list and the page read one loader, `loadInitiativeCards`, and each
@@ -85,13 +85,13 @@ as an empty progress bar beside `100%`. See
   renders, THEN it shows `2/3 missions done`, 3 bar segments, 2 of them solid,
   and the open segment filled to half.
 - AC-3: GIVEN a paused initiative with a completed mission whose hold flag is
-  still set, WHEN the card renders, THEN it shows no held fact and sits in the
+  still set, WHEN the card renders, THEN it shows no not-started fact and sits in the
   Paused group.
 - AC-4: GIVEN an open mission with a parked question, WHEN the card renders,
-  THEN it shows `1 mission needs you` linking to that question and its action
+  THEN it shows `1 mission waiting on you` linking to that question and its action
   is `Answer`.
-- AC-5: GIVEN an open held mission and no ask, WHEN the card renders, THEN its
-  action is `Arm` for that mission.
+- AC-5: GIVEN an open mission that has not started and no ask, WHEN the card renders, THEN its
+  action is `Start` for that mission.
 - AC-6: WHEN `PATCH /api/initiatives/[id]` receives `status: "planned"`, THEN it
   stores `planned`; WHEN it receives `status: "bogus"`, THEN it rejects with
   HTTP 400.

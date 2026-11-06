@@ -52,6 +52,28 @@ describe('Review all', () => {
     expect(m.container.querySelector('[data-testid="spec-review-all-approve"]')!.textContent).toBe('Approve all 4');
   });
 
+  it('R-34/AC-35: a row whose merged work passed every criterion reads Matches what shipped; one with misses lists only those', async () => {
+    const m = await render('list');
+    mounted.push(m);
+    const rows = m.container.querySelectorAll('[data-testid="spec-review-all-row"]');
+    expect(rows[0]!.querySelector('[data-testid="spec-shipped-label"]')!.textContent).toBe('Matches what shipped');
+    expect(rows[0]!.querySelector('[data-testid="spec-shipped-unmet"]')).toBeNull();
+    expect(rows[1]!.querySelector('[data-testid="spec-shipped-label"]')).toBeNull();
+    expect(rows[1]!.querySelector('[data-testid="spec-shipped-unmet"]')!.textContent).toBe('Not covered: AC-4 failed, R-7 has no check');
+    // Nothing merged: neither.
+    expect(rows[2]!.querySelector('[data-testid="spec-shipped-label"], [data-testid="spec-shipped-unmet"]')).toBeNull();
+  });
+
+  it('AC-31, R-30: a spec with stacked revisions is one row that says how many it covers, with approved-to-head coverage', async () => {
+    const m = await render('list');
+    mounted.push(m);
+    const rows = m.container.querySelectorAll('[data-testid="spec-review-all-row"]');
+    expect(rows[1]!.textContent).toContain('revision 7 replaces 4, covering 3 revisions');
+    expect(rows[1]!.querySelector('[data-testid="spec-review-all-coverage"]')!.textContent).toBe('Explanation covers 4 of 4 changes');
+    expect(rows[0]!.textContent).toContain('revision 3 replaces 2 ');
+    expect(rows[0]!.textContent).not.toContain('covering');
+  });
+
   it('opens a diff in place', async () => {
     const m = await render('diff');
     mounted.push(m);
