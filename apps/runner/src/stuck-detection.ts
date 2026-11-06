@@ -107,11 +107,7 @@ export function detectRepetition(toolCalls: ReadonlyArray<{ name: string; input?
   }
 
   // Similar Bash check (non-benign Bash only, full command comparison)
-  // Only a CONSECUTIVE run of Bash calls counts: a build/edit loop that alternates
-  // `make` with Edit is progress, not repetition (alternation has its own scenario).
-  let tailStart = calls.length;
-  while (tailStart > 0 && calls[tailStart - 1].name === 'Bash') tailStart--;
-  const nonBenignBash = calls.slice(tailStart);
+  const nonBenignBash = calls.filter(tc => tc.name === 'Bash');
 
   if (nonBenignBash.length >= MAX_SIMILAR_TOOL_CALLS) {
     const normalizeCmd = (cmd: string) =>
