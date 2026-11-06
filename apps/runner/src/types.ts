@@ -452,6 +452,8 @@ export interface LocalWorker {
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
   // Flushed into resultMeta.toolCounts at completion.
   toolCounts?: Record<string, number>;
+  /** Assistant messages seen this session; the staged self-review hook's turn clock. */
+  assistantTurns?: number;
   /**
    * Bash sub-classification (see bash-classify.ts). The histogram above can
    * only ever show a single bar for `Bash` — by far the most-called tool — so
@@ -462,6 +464,8 @@ export interface LocalWorker {
   bashCommandCounts?: BashCommandCounts;
   /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
   fileToolAreas?: Record<string, Record<string, number>>;
+  /** Full staged self-review records, in order (staged-self-review.ts StagedEntry). */
+  stagedSelfReview?: Array<Record<string, unknown>>;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -606,6 +610,8 @@ export interface ResultMeta {
   bashCommandCounts?: BashCommandCounts;
   /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
   fileToolAreas?: Record<string, Record<string, number>>;
+  /** Full staged self-review records, in order (staged-self-review.ts StagedEntry). */
+  stagedSelfReview?: Array<Record<string, unknown>>;
   /**
    * Outcome of the one-shot "closing turn" a session that ends without
    * calling complete_task gets before the runner falls back to

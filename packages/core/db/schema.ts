@@ -491,6 +491,9 @@ export interface WorkspaceGitConfig {
   branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
   branchPrefix?: string;              // 'feature/', 'buildd/', null for none
   useBuildBranch?: boolean;          // Use buildd/task-id naming
+  // Branches buildd pushed are deleted once nothing needs them (apps/web/src/lib/branch-retire.ts):
+  // on PR close, on task end, and by a daily sweep. Absent ⇒ on. 'off' keeps every branch.
+  branchCleanup?: 'auto' | 'off';
 
   // Default branch strategy for NEW missions (resolved via resolveBranchStrategy()
   // in branch-strategy.ts — never inline `gitConfig?.branchStrategy ?? '...'` at a
@@ -1231,6 +1234,8 @@ export interface ResultMeta {
    * that predate the capture or made no file tool call.
    */
   fileToolAreas?: Record<string, Record<string, number>>;
+  /** Full staged self-review records (mode, arm, outcome, checklist ids, answers, tool calls, added turns/tokens, change flag), in order. */
+  stagedSelfReview?: Array<Record<string, unknown>>;
   /**
    * Outcome of the one-shot "closing turn" the runner gives a session that
    * ended without the agent calling `complete_task`, before it falls back to
@@ -4212,7 +4217,7 @@ export const taskOutcomes = pgTable('task_outcomes', {
  * docs/design/model-routing-experiment.md and docs/design/experiment-lifecycle.md.
  *
  * `policyVersion` is part of the randomiser's salt
- * (packages/core/experiment-randomizer.ts), so bumping it re-randomises every
+ * (packages/core/arm-randomizer.ts), so bumping it re-randomises every
  * unit. Bump it when the meaning of an arm changes; never edit arm semantics
  * in place under a running version.
  */
@@ -4228,7 +4233,7 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'tier_pool' | 'heartbeat_triage' | 'question_gate' | 'staged_self_review'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
@@ -7080,7 +7085,7 @@ export const decisionRecords = pgTable('decision_records', {
   // What the decision was about (DecisionSubjectRef): outcomes are labelled by subject.
   subjectType: text('subject_type'),
   subjectId: text('subject_id'),
-  // Set only when the call's assignment came from experiment-randomizer.ts;
+  // Set only when the call's assignment came from arm-randomizer.ts;
   // the readout reports causal lift for these rows and no others.
   experimentId: text('experiment_id'),
   experimentArm: text('experiment_arm'),
