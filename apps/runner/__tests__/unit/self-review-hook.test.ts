@@ -38,16 +38,25 @@ describe('resolveSelfReviewMode', () => {
 });
 
 describe('recording mode', () => {
-  test('never denies and logs mode, arm none, version and item ids (AC-4)', async () => {
+  test('arm draw is deterministic and covers both arms across workers', async () => {
+    const { drawSelfReviewArm } = await import('../../src/self-review-guard');
+    expect(drawSelfReviewArm('w1')).toBe(drawSelfReviewArm('w1'));
+    const arms = new Set(Array.from({ length: 40 }, (_, n) => drawSelfReviewArm(`worker-${n}`)));
+    expect(arms.size).toBe(2);
+  });
+
+  test('never denies and logs mode, a drawn arm, version and item ids (AC-4)', async () => {
     const { hook, milestones } = setup();
     expect(denied(await hook(complete(), undefined, signal))).toBe(false);
     const line = labels(milestones).join('\n');
     expect(line).toContain('mode=recording');
-    expect(line).toContain('arm=none');
+    expect(line).toMatch(/arm=(control|treatment) propensity=0.5/);
+    expect(line).not.toContain('arm=none');
     expect(line).toContain('version=1');
     expect(line).toContain('req-1');
     expect(line).toContain('scope');
     expect(line).toContain('tokens=15');
+    expect(line).toMatch(/checklist=\[req-1\] \S/); // the checklist text, not only ids
   });
 
   test('fires at most once per worker', async () => {

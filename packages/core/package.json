@@ -338,6 +338,10 @@
     "./prompted-decision": "./prompted-decision.ts",
     "./prompt-catalog": "./prompt-catalog.ts",
     "./prompt-seed": "./prompt-seed.ts",
+    "./platform-rerank-switch": "./platform-rerank-switch.ts",
+    "./untrusted-text": "./untrusted-text.ts",
+    "./voyage-budget": "./voyage-budget.ts",
+    "./staged-self-review-readout-source": "./staged-self-review-readout-source.ts",
     "./prompt-seed-source": "./prompt-seed-source.ts"
   },
   "dependencies": {

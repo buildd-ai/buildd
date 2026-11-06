@@ -232,3 +232,27 @@ describe('/api/experiments — per-task token', () => {
     expect(Object.keys(body.health).sort()).toEqual(['a', 'b']);
   });
 });
+
+describe('POST /api/experiments: staged_self_review kill criterion', () => {
+  const kc = { minSample: 30, maxAddedCostPerTask: 0.5, rubberStampTouchRate: 0.8, rubberStampFlipRate: 0.05 };
+  beforeEach(() => { as('operator'); mockInsert.mockReset(); mockInsert.mockResolvedValue(row({ kind: 'staged_self_review' })); });
+
+  it('400s a missing killCriterion and writes nothing', async () => {
+    const res = await post({ key: 'k', title: 't', kind: 'staged_self_review' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/killCriterion/);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('400s an incomplete killCriterion', async () => {
+    const res = await post({ key: 'k', title: 't', kind: 'staged_self_review', config: { killCriterion: { minSample: 30 } } });
+    expect(res.status).toBe(400);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('creates with a complete killCriterion', async () => {
+    const res = await post({ key: 'k', title: 't', kind: 'staged_self_review', config: { killCriterion: kc } });
+    expect(res.status).toBe(201);
+    expect(mockInsert).toHaveBeenCalled();
+  });
+});

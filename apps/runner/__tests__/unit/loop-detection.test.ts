@@ -9,130 +9,20 @@
 
 import { describe, test, expect } from 'bun:test';
 
-// Constants matching workers.ts
-const MAX_IDENTICAL_TOOL_CALLS = 5;
-const MAX_SIMILAR_TOOL_CALLS = 15;
+import {
+  MAX_IDENTICAL_TOOL_CALLS,
+  MAX_SIMILAR_TOOL_CALLS,
+  detectRepetition,
+} from '../../src/stuck-detection';
 
-// Tool call type
 interface ToolCall {
   name: string;
   timestamp: number;
   input?: Record<string, unknown>;
 }
 
-// ── Mirrors of the helpers in workers.ts ────────────────────────────────────
+const detectRepetitiveToolCalls = (toolCalls: ToolCall[]) => detectRepetition(toolCalls);
 
-const BENIGN_BASH_FIRST_TOKENS = new Set([
-  'cd', 'ls', 'pwd', 'cat', 'head', 'tail', 'grep', 'rg', 'find', 'echo',
-]);
-const BENIGN_GIT_SUBCOMMANDS = new Set([
-  'diff', 'log', 'show', 'status', 'branch', 'checkout', 'fetch', 'rev-parse', 'cat-file',
-]);
-
-function stripCdPrefix(cmd: string): string {
-  const m = cmd.match(/^cd\s+\S+\s*(?:&&|;)\s*([\s\S]*)/);
-  return m ? m[1].trimStart() : cmd.trimStart();
-}
-
-function isBenignBashCommand(cmd: string): boolean {
-  const effective = stripCdPrefix(cmd);
-  const tokens = effective.split(/\s+/);
-  const first = tokens[0];
-  if (!first) return false;
-  if (BENIGN_BASH_FIRST_TOKENS.has(first)) return true;
-  if (first === 'git') {
-    const sub = tokens[1];
-    return sub !== undefined && BENIGN_GIT_SUBCOMMANDS.has(sub);
-  }
-  return false;
-}
-
-// Re-implement detectRepetitiveToolCalls for testing (mirrors workers.ts)
-function detectRepetitiveToolCalls(toolCalls: ToolCall[]): {
-  action: 'none' | 'nudge' | 'abort';
-  reason?: string;
-  nudgeMessage?: string;
-} {
-  // Exclude benign Bash commands from all repetition counting
-  const calls = toolCalls.filter(tc => {
-    if (tc.name === 'Bash') return !isBenignBashCommand((tc.input?.command as string) || '');
-    return true;
-  });
-
-  if (calls.length < MAX_IDENTICAL_TOOL_CALLS) {
-    return { action: 'none' };
-  }
-
-  const normalizeCallKey = (tc: ToolCall) => {
-    if (tc.name === 'Read') {
-      return JSON.stringify({
-        name: tc.name,
-        file_path: tc.input?.file_path,
-        offset: tc.input?.offset,
-        limit: tc.input?.limit,
-      });
-    }
-    return JSON.stringify({ name: tc.name, input: tc.input });
-  };
-
-  // Abort at 2×
-  if (calls.length >= 2 * MAX_IDENTICAL_TOOL_CALLS) {
-    const last2x = calls.slice(-2 * MAX_IDENTICAL_TOOL_CALLS);
-    const key = normalizeCallKey(last2x[0]);
-    if (last2x.every(tc => normalizeCallKey(tc) === key)) {
-      return {
-        action: 'abort',
-        reason: `Agent stuck: made ${2 * MAX_IDENTICAL_TOOL_CALLS} identical ${last2x[0].name} calls`,
-      };
-    }
-  }
-
-  // Nudge at 1×
-  {
-    const last1x = calls.slice(-MAX_IDENTICAL_TOOL_CALLS);
-    const key = normalizeCallKey(last1x[0]);
-    if (last1x.every(tc => normalizeCallKey(tc) === key)) {
-      return {
-        action: 'nudge',
-        nudgeMessage: `You've repeated the same ${last1x[0].name} call ${MAX_IDENTICAL_TOOL_CALLS} times — vary your approach or signal completion.`,
-      };
-    }
-  }
-
-  // Similar non-benign Bash check (full command, no 50-char truncation)
-  const nonBenignBash = calls.filter(tc => tc.name === 'Bash');
-
-  if (nonBenignBash.length >= MAX_SIMILAR_TOOL_CALLS) {
-    const normalizeCmd = (cmd: string) =>
-      cmd.replace(/"[^"]*"/g, '""').replace(/'[^']*'/g, "''");
-
-    // Abort at 2×
-    if (nonBenignBash.length >= 2 * MAX_SIMILAR_TOOL_CALLS) {
-      const last2x = nonBenignBash.slice(-2 * MAX_SIMILAR_TOOL_CALLS);
-      const firstPattern = normalizeCmd((last2x[0].input?.command as string) || '');
-      if (last2x.every(tc => normalizeCmd((tc.input?.command as string) || '') === firstPattern)) {
-        return {
-          action: 'abort',
-          reason: `Agent stuck: made ${2 * MAX_SIMILAR_TOOL_CALLS} similar Bash commands starting with "${firstPattern.slice(0, 30)}..."`,
-        };
-      }
-    }
-
-    // Nudge at 1×
-    const last1x = nonBenignBash.slice(-MAX_SIMILAR_TOOL_CALLS);
-    const firstPattern = normalizeCmd((last1x[0].input?.command as string) || '');
-    if (last1x.every(tc => normalizeCmd((tc.input?.command as string) || '') === firstPattern)) {
-      return {
-        action: 'nudge',
-        nudgeMessage: `You've repeated a near-identical Bash command ${MAX_SIMILAR_TOOL_CALLS} times — vary your approach or signal completion.`,
-      };
-    }
-  }
-
-  return { action: 'none' };
-}
-
-// Helper to create tool calls
 function tc(name: string, input?: Record<string, unknown>): ToolCall {
   return { name, timestamp: Date.now(), input };
 }
@@ -372,6 +262,20 @@ describe('detectRepetitiveToolCalls', () => {
 
       expect(result.action).toBe('abort');
       expect(result.reason).toContain('30 similar Bash commands');
+    });
+
+    test('similar Bash calls interleaved with Edits still nudge at 15 and abort at 30', () => {
+      const interleave = (n: number) =>
+        Array(n).fill(null).flatMap((_, i) => [
+          tc('Bash', { command: `git commit -m "fix: bug ${i}"` }),
+          tc('Edit', { file_path: `/repo/f${i}.ts`, old_string: 'a', new_string: `b${i}` }),
+        ]);
+
+      expect(detectRepetitiveToolCalls(interleave(14)).action).toBe('none');
+      expect(detectRepetitiveToolCalls(interleave(15)).action).toBe('nudge');
+      const abort = detectRepetitiveToolCalls(interleave(30));
+      expect(abort.action).toBe('abort');
+      expect(abort.reason).toContain('30 similar Bash commands');
     });
 
     test('14 similar Bash commands do not trigger', () => {
