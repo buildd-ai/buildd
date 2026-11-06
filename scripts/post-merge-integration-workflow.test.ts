@@ -75,10 +75,14 @@ describe('reusable integration workflow', () => {
     // The test machine's checkout supplies the server.
     const sync = job.steps.find((s: any) => s.id === 'sync');
     expect(sync.env.CHECKOUT_SHA).toBe('${{ steps.target.outputs.sha }}');
-    expect(sync.run).toContain('fetch --depth 1 origin $CHECKOUT_SHA');
-    expect(sync.run).toContain('rev-parse HEAD) = $CHECKOUT_SHA');
+    expect(sync.run).toContain('bash scripts/ci/sync-test-machine.sh "$CHECKOUT_SHA"');
+    // The container-side script fetches that SHA and refuses any other HEAD.
+    const build = readFileSync('scripts/ci/test-machine-build.sh', 'utf8');
+    expect(build).toContain('fetch --depth 1 origin "$sha"');
+    expect(build).toContain('rev-parse HEAD)" = "$sha"');
     // never by branch name: a branch tip moves between the event and the job
     expect(sync.run).not.toContain('--branch');
+    expect(build).not.toContain('--branch');
 
     expect(triggers(wf).workflow_call.outputs.tested_sha.value).toBe('${{ jobs.integration.outputs.tested_sha }}');
     expect(job.outputs.tested_sha).toBe('${{ steps.target.outputs.sha }}');

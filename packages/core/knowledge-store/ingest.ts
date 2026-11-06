@@ -39,6 +39,8 @@ export interface IngestResult {
   chunks: number;
   /** Files skipped because their content hash matched what is already stored. */
   skippedUnchanged: number;
+  /** Chunks stored without a vector because the team's Voyage budget refused them. */
+  chunksLexicalOnly: number;
 }
 
 // Defaults sized for voyage-4-large (generous context) while keeping chunks
@@ -154,6 +156,7 @@ export async function fileToChunks(
  * whose hash is unchanged are skipped entirely — no re-chunk, no delete, no
  * re-embed. This is what turns a steady-state re-ingest of the whole tree into
  * near-zero work. Skipping is disabled when the store lacks `getFileHashes`.
+ * A file that did change keeps the vectors of the chunks that did not.
  */
 export async function ingestFiles(
   store: KnowledgeStore,
@@ -165,6 +168,7 @@ export async function ingestFiles(
   const namespace = buildNamespace(workspaceId, corpus);
   let chunkCount = 0;
   let skippedUnchanged = 0;
+  let chunksLexicalOnly = 0;
 
   // Ensure every file carries a hash so it lands on its chunks (enabling the
   // skip on the *next* run) and can be compared against stored hashes now.
@@ -186,12 +190,15 @@ export async function ingestFiles(
       continue;
     }
     const chunks = await fileToChunks(file, corpus, overrides);
+    // Read before the delete: an edit to one function must not re-embed the file.
+    const reuse = chunks.length > 0 ? await store.findReusableEmbeddings?.(namespace, chunks) : undefined;
     // Clear prior chunks for this file even when it now yields zero chunks
     // (e.g. emptied) so stale content doesn't linger.
     await store.deleteBySource?.(namespace, { sourcePath: file.path });
     if (chunks.length > 0) {
-      await store.upsert(namespace, chunks);
+      const res = reuse ? await store.upsert(namespace, chunks, { reuse }) : await store.upsert(namespace, chunks);
       chunkCount += chunks.length;
+      chunksLexicalOnly += res?.lexicalOnly ?? 0;
     }
   }
 
@@ -201,7 +208,7 @@ export async function ingestFiles(
     await store.touchBySource?.(namespace, skippedPaths);
   }
 
-  return { files: files.length, chunks: chunkCount, skippedUnchanged };
+  return { files: files.length, chunks: chunkCount, skippedUnchanged, chunksLexicalOnly };
 }
 
 /**

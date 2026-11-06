@@ -46,6 +46,7 @@ import {
 import type { SQL } from 'drizzle-orm';
 import { PUSH_MEMORY_STATES, pullMemoryStates, type MemoryState } from './memory-candidates';
 import { buildNamespace } from './knowledge-store/pg-vector-store';
+import { clearsScoreFloor } from './knowledge-store/reranker';
 import { RELEVANCE_LIVE_BUDGET_MS } from './memory-decisions';
 import type { QueryMode, QueryResult } from './knowledge-store/types';
 import { isUuid } from '@buildd/shared';
@@ -670,7 +671,7 @@ async function defaultStore(): Promise<MemoryQuerier> {
   const { PgVectorStore } = await import('./knowledge-store/pg-vector-store');
   const { getVoyageEmbedder } = await import('./knowledge-store/voyage-embedder');
   const { getVoyageReranker } = await import('./knowledge-store/reranker');
-  return new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+  return new PgVectorStore(getVoyageEmbedder(), getVoyageReranker(), { caller: 'memory_retrieval' });
 }
 
 async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<RetrieveMemoryResult> {
@@ -691,6 +692,7 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
     const candidates = input.budget.candidates ?? input.budget.topK;
     const raw = await store.query(buildNamespace(teamId, 'memory'), {
       text: input.query,
+      caller: input.caller,
       topK: memoryOverfetchTopK(candidates),
       mode: input.mode,
       // Only a pull is a hit. A push counted here made a memory injected into
@@ -710,7 +712,7 @@ async function retrieveHybridMemory(input: RetrieveMemoryInput): Promise<Retriev
     let hits: RetrievedMemoryHit[] = own.map((r, i) => {
       const gatedBy: MemoryGate | null = exclude?.has(r.id)
         ? 'excluded'
-        : typeof minScore === 'number' && (r.score ?? 0) < minScore
+        : typeof minScore === 'number' && !clearsScoreFloor(r, minScore)
           ? 'score_floor'
           : null;
       return {

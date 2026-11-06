@@ -150,7 +150,7 @@ async function fetchOpenCodeAheadRows(workspaceId: string): Promise<OpenCodeAhea
 
 let defaultQuerier: PgVectorStore | null = null;
 function getDefaultQuerier(): IntakeQuerier {
-  if (!defaultQuerier) defaultQuerier = new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+  if (!defaultQuerier) defaultQuerier = new PgVectorStore(getVoyageEmbedder(), getVoyageReranker(), { caller: 'spec_discrepancy' });
   return defaultQuerier;
 }
 

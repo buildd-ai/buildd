@@ -1,3 +1,5 @@
+import type { VoyageCall } from './voyage-guard';
+
 // ── Embedder ─────────────────────────────────────────────────────────────────
 
 /**
@@ -10,7 +12,8 @@ export type EmbedInputType = 'document' | 'query';
 export interface Embedder {
   readonly model: string;
   readonly dimensions: number;
-  embed(texts: string[], inputType?: EmbedInputType): Promise<number[][]>;
+  /** Null: the spend guard refused, so go without vectors. See ./voyage-guard.ts. */
+  embed(texts: string[], inputType: EmbedInputType, call: VoyageCall): Promise<number[][] | null>;
 }
 
 // ── Reranker ─────────────────────────────────────────────────────────────────
@@ -25,8 +28,9 @@ export interface Reranker {
   rerank(
     query: string,
     documents: string[],
-    topK?: number,
-  ): Promise<Array<{ index: number; score: number }>>;
+    topK: number | undefined,
+    call: VoyageCall,
+  ): Promise<Array<{ index: number; score: number }> | null>;
 }
 
 // ── Chunk types ───────────────────────────────────────────────────────────────
@@ -81,7 +85,12 @@ export interface UpsertChunk {
 export interface UpsertResult {
   /** Rows marked is_current=false via `UpsertChunk.supersedes` across the batch. */
   superseded: number;
+  /** Chunks stored without a vector because the spend guard refused. */
+  lexicalOnly?: number;
 }
+
+/** Vectors already stored, by the exact text they embed. See `findReusableEmbeddings`. */
+export type ReusableEmbeddings = ReadonlyMap<string, string>;
 
 export interface QueryResult {
   id: string;
@@ -119,11 +128,15 @@ export interface QueryResult {
     rrf?: number;
     /** Cross-encoder reranker score (set when a reranker is configured). */
     rerank?: number;
+    /** The spend guard refused embed or rerank: this hit's score is not relevance-calibrated. */
+    budgetFallback?: boolean;
   };
 }
 
 export interface QueryParams {
   text: string;
+  /** Names this query in spend attribution; defaults to the store's own caller. */
+  caller?: string;
   filters?: {
     corpus?: Corpus;
     sourceType?: string;
@@ -184,7 +197,13 @@ export interface KnowledgeStore {
    * Upsert chunks. May return an UpsertResult (explicit-supersession count);
    * simple implementations can keep returning void.
    */
-  upsert(namespace: string, chunks: UpsertChunk[]): Promise<UpsertResult | void>;
+  upsert(namespace: string, chunks: UpsertChunk[], opts?: { reuse?: ReusableEmbeddings }): Promise<UpsertResult | void>;
+  /**
+   * Stored vectors these chunks can keep, looked up by what would be embedded.
+   * `ingestFiles` calls it before clearing a file, so an edit pays only for the
+   * chunks that changed.
+   */
+  findReusableEmbeddings?(namespace: string, chunks: UpsertChunk[]): Promise<ReusableEmbeddings>;
   query(namespace: string, params: QueryParams): Promise<QueryResult[]>;
   /**
    * Embed many query texts in one call with the namespace's embedder, for
