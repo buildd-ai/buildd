@@ -92,7 +92,7 @@ import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
 import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
-import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
+import { stagedSelfReviewPreToolUse, resolveStagedConfig } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5549,20 +5549,15 @@ export class WorkerManager {
           // Staged self-review acting mode (staged-self-review.ts): treatment
           // arm is denied once with an intent checklist; control and
           // recording only record. Replaces the recording-only hook above.
-          ...(!isCodexTask && stagedCfg.mode === 'acting'
-            ? [{ hooks: [createStagedSelfReviewHook({
-                worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
-                record: e => {
-                  // Full structured record rides resultMeta.stagedSelfReview; the
-                  // milestone is only the short human-readable pointer.
-                  (worker.stagedSelfReview ??= []).push({ ...e, ts: Date.now() });
-                  this.addMilestone(worker, { type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: Date.now() });
-                },
-              })] }]
-            : []),
-          ...(!isCodexTask && stagedCfg.mode === 'acting'
-            ? [{ hooks: [async (input: any) => { if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(worker.id, input.tool_name); return {}; }] }]
-            : []),
+          ...stagedSelfReviewPreToolUse({
+            cfg: stagedCfg, isCodexTask, worker, task: task as any,
+            record: e => {
+              // Full structured record rides resultMeta.stagedSelfReview; the
+              // milestone is only the short human-readable pointer.
+              (worker.stagedSelfReview ??= []).push({ ...e, ts: Date.now() });
+              this.addMilestone(worker, { type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: Date.now() });
+            },
+          }),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
           // so a command it refuses never waits. See deps-gate.ts.
