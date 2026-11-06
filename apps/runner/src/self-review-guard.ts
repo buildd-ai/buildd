@@ -79,10 +79,10 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
       } else {
         checklist = buildSelfReviewChecklist(deps.task);
         label = checklist
-          ? `Self-review: ${common} version=${checklist.version} items=${checklist.items.map(it => it.id).join(',') || 'none'}`
+          ? `Self-review: ${common} version=${checklist.version} items=${checklist.items.map(it => it.id).join(',') || 'none'} checklist=${checklist.items.map(it => `[${it.id}] ${it.text}`).join(' | ')}`
           : `Self-review: ${common} builder-failed`;
       }
-      deps.addMilestone({ type: 'status', label: label.slice(0, 300), ts: Date.now() });
+      deps.addMilestone({ type: 'status', label: label.slice(0, 2000), ts: Date.now() });
 
       // Structured answer record (R-6): the same fields the acting stage records.
       // Recording never asks, so there is no denial: addedTurns/addedTokens are 0
