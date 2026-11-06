@@ -111,6 +111,12 @@ export interface ToolCall {
    * scanning (workers.ts handleMessage `user`/tool_result branch).
    */
   toolUseId?: string;
+  /**
+   * What the matching tool_result said, set when it arrives (stuck-detection.ts).
+   * `sig` is a hash of the result with digits/whitespace removed — no result text
+   * is kept. `skipped` marks a denied/cancelled call. Absent until resolved.
+   */
+  outcome?: { isError: boolean; sig: string; skipped?: boolean };
 }
 
 // File checkpoint (from SDK files_persisted events)
@@ -530,6 +536,8 @@ export interface LocalWorker {
   lastAssistantMessage?: string;
   // Set after the first loop-guard nudge is injected so we don't double-send
   loopNudgeSent?: boolean;
+  // Latches + last signal for the error-streak / alternation scenarios (stuck-detection.ts)
+  stuckState?: import('./stuck-detection').StuckState;
   // Current prompt UUID (SDK v0.3.196 BaseHookInput.prompt_id) — correlates hook events
   // with SDK-emitted OTel spans at prompt grain (attribute: prompt.id).
   currentPromptId?: string;
