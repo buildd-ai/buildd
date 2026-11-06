@@ -491,6 +491,9 @@ export interface WorkspaceGitConfig {
   branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
   branchPrefix?: string;              // 'feature/', 'buildd/', null for none
   useBuildBranch?: boolean;          // Use buildd/task-id naming
+  // Branches buildd pushed are deleted once nothing needs them (apps/web/src/lib/branch-retire.ts):
+  // on PR close, on task end, and by a daily sweep. Absent ⇒ on. 'off' keeps every branch.
+  branchCleanup?: 'auto' | 'off';
 
   // Default branch strategy for NEW missions (resolved via resolveBranchStrategy()
   // in branch-strategy.ts — never inline `gitConfig?.branchStrategy ?? '...'` at a

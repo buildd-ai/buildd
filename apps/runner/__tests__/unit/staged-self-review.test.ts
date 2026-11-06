@@ -105,6 +105,30 @@ describe('R-3 / AC-2: fires at most once per worker', () => {
   });
 });
 
+describe('R-3: staged state survives hook rebuilds on one worker', () => {
+  const rebuild = async (worker: any, records: any[]) => {
+    const m = await load();
+    return m.createStagedSelfReviewHook({
+      worker, task: TASK, mode: 'acting', arm: 'treatment', openFailures: () => [],
+      record: (e: any) => { records.push(e); (worker.stagedSelfReview ??= []).push(e); }, log: () => {},
+    } as any);
+  };
+
+  test('a second hook for the same worker never denies', async () => {
+    const worker: any = { id: 'w-rebuild' };
+    const records: any[] = [];
+    const first = await rebuild(worker, records);
+    expect(denied(await first(completion()))).toBe(true);
+    const second = await rebuild(worker, records);
+    // The open denial carries over, so this answers it (recorded), not a new denial.
+    expect(denied(await second(completion({ summary: 'answered' })))).toBe(false);
+    const third = await rebuild(worker, records);
+    expect(denied(await third(completion()))).toBe(false);
+    expect(records.filter(r => r.outcome === 'denied')).toHaveLength(1);
+    expect(records.filter(r => r.outcome === 'answered')).toHaveLength(1);
+  });
+});
+
 describe('R-3 / AC-3: exemptions never deny and log the reason', () => {
   const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
     ['error report', { params: { error: 'could not do it' } }, {}],
