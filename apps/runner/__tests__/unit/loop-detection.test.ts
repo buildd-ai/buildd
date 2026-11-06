@@ -264,6 +264,20 @@ describe('detectRepetitiveToolCalls', () => {
       expect(result.reason).toContain('30 similar Bash commands');
     });
 
+    test('similar Bash calls interleaved with Edits still nudge at 15 and abort at 30', () => {
+      const interleave = (n: number) =>
+        Array(n).fill(null).flatMap((_, i) => [
+          tc('Bash', { command: `git commit -m "fix: bug ${i}"` }),
+          tc('Edit', { file_path: `/repo/f${i}.ts`, old_string: 'a', new_string: `b${i}` }),
+        ]);
+
+      expect(detectRepetitiveToolCalls(interleave(14)).action).toBe('none');
+      expect(detectRepetitiveToolCalls(interleave(15)).action).toBe('nudge');
+      const abort = detectRepetitiveToolCalls(interleave(30));
+      expect(abort.action).toBe('abort');
+      expect(abort.reason).toContain('30 similar Bash commands');
+    });
+
     test('14 similar Bash commands do not trigger', () => {
       const calls = Array(14).fill(null).map((_, i) =>
         tc('Bash', { command: `git commit -m "fix ${i}"` })
