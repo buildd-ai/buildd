@@ -32,7 +32,6 @@ import type {
   ExperimentVisibility,
   UpdateExperimentInput,
 } from '@buildd/shared';
-import { validateStagedExperimentConfig } from '@buildd/core/staged-self-review';
 import { validateStagedExperimentConfig } from '@buildd/core/staged-draw';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
 
