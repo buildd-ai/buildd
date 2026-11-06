@@ -32,6 +32,7 @@ import type {
   ExperimentVisibility,
   UpdateExperimentInput,
 } from '@buildd/shared';
+import { validateStagedExperimentConfig } from '@buildd/core/staged-self-review';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
@@ -151,6 +152,11 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
     if (capError) return { ok: false, status: 400, error: capError };
   }
 
+  if (kind === 'staged_self_review') {
+    const staged = validateStagedExperimentConfig(b.config as Record<string, unknown> | undefined);
+    if (!staged.ok) return { ok: false, status: 400, error: staged.error! };
+  }
+
   const visibility = b.visibility ?? 'admins';
   if (!EXPERIMENT_VISIBILITIES.includes(visibility)) return { ok: false, status: 400, error: 'visibility must be "admins" or "team"' };
 
@@ -257,6 +263,12 @@ export function planExperimentPatch(current: ExperimentState, body: unknown, now
     }
     if (b.status === 'running' && current.kind && (RETIRED_EXPERIMENT_KINDS as readonly string[]).includes(current.kind)) {
       return { ok: false, status: 400, error: retiredKindMessage(current.kind) };
+    }
+    if (b.status === 'running' && current.kind === 'staged_self_review') {
+      // Validate the config the experiment will run with: the patch's, else the stored one.
+      const effective = (isPlainObject(b.config) ? b.config : current.config) as Record<string, unknown>;
+      const staged = validateStagedExperimentConfig(effective);
+      if (!staged.ok) return { ok: false, status: 400, error: staged.error! };
     }
     transition = b.status;
   }
