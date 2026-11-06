@@ -21,6 +21,11 @@ describe('staged self-review wiring', () => {
     expect(staged).toBeGreaterThan(verify);
     expect(src.slice(verify, staged)).toContain('!isCodexTask');
   });
+  test('acting draw reads the claimed workspace experiment, not only the fetched config', () => {
+    // The claim response carries selfReviewExperiment on task.workspace.gitConfig;
+    // getWorkspaceConfig does not. The draw must be fed the merged config.
+    expect(src).toContain('resolveStagedConfig(stagedGitConfig(gitConfig as any, (task as any).workspace?.gitConfig) as any');
+  });
   test('tool calls are noted for the staged stage', () => {
     expect(src).toContain('noteStagedToolCall(worker.id, input.tool_name)');
   });
