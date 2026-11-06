@@ -101,6 +101,24 @@ function reason(c: IntentChecklist): string {
   ].join('\n');
 }
 
+/**
+ * The record() sink: appends each staged task's full entry (checklist ids,
+ * answers, toolCallsBetween, addedTurns/Tokens, workChangedAfterDenial) to
+ * worker.stagedSelfReview, which the completion report copies into
+ * resultMeta.stagedSelfReview for the readout. The milestone is only the short
+ * human-readable pointer.
+ */
+export function createStagedRecorder(
+  worker: { stagedSelfReview?: Array<Record<string, unknown>> },
+  addMilestone: (m: { type: 'status'; label: string; ts: number }) => void,
+  now: () => number = Date.now,
+): (entry: StagedEntry) => void {
+  return e => {
+    (worker.stagedSelfReview ??= []).push({ ...e, ts: now() });
+    addMilestone({ type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: now() });
+  };
+}
+
 export function createStagedSelfReviewHook(deps: StagedHookDeps) {
   if (deps.mode === 'off') return async (_input: unknown): Promise<Record<string, unknown>> => ({});
 
