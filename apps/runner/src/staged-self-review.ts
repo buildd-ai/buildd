@@ -47,8 +47,17 @@ export interface StagedEntry {
   workChangedAfterDenial?: boolean;
 }
 
+export interface OpenDenial { turns?: number; tokens: number; summary: unknown; version: string; ids: string[] }
+
 export interface StagedHookDeps {
-  worker: { id: string; tokenTally?: { inputTokens?: number; outputTokens?: number } | null };
+  worker: {
+    id: string;
+    tokenTally?: { inputTokens?: number; outputTokens?: number } | null;
+    /** Entries recorded so far; a denied/answered one means this worker is already staged. */
+    stagedSelfReview?: Array<Record<string, unknown>>;
+    /** An open denial, kept on the worker so a rebuilt hook (resume) still sees it. */
+    stagedDenial?: OpenDenial | null;
+  };
   task: StagedTask;
   mode: StagedMode;
   arm: StagedArm;
@@ -123,8 +132,11 @@ export function createStagedSelfReviewHook(deps: StagedHookDeps) {
   const openFailures = deps.openFailures ?? unrecoveredVerifyFailures;
   const build = deps.buildChecklist ?? buildIntentChecklist;
   const log = deps.log ?? ((l: string) => console.log(`[Worker ${deps.worker.id}] ${l}`));
-  let staged = Boolean(deps.alreadyStaged);
-  let denialAt: { turns?: number; tokens: number; summary: unknown; version: string; ids: string[] } | null = null;
+  // The hook is rebuilt every startSession on the same worker, so what must
+  // survive lives on the worker, not in this closure.
+  let staged = deps.alreadyStaged
+    ?? Boolean(deps.worker.stagedSelfReview?.some(e => e.outcome === 'denied' || e.outcome === 'answered'));
+  let denialAt: OpenDenial | null = deps.worker.stagedDenial ?? null;
   const tokens = () => (deps.worker.tokenTally?.inputTokens ?? 0) + (deps.worker.tokenTally?.outputTokens ?? 0);
   const rec = (outcome: StagedOutcome, exemption: string | null, extra: Partial<StagedEntry> = {}) =>
     deps.record({ mode: deps.mode, arm: deps.arm, exemption, outcome, propensity: deps.propensity, ...extra });
@@ -143,6 +155,7 @@ export function createStagedSelfReviewHook(deps: StagedHookDeps) {
         between.delete(deps.worker.id);
         const d = denialAt;
         denialAt = null;
+        deps.worker.stagedDenial = null;
         const turnsNow = deps.turns?.();
         rec('answered', null, {
           checklistVersion: d.version,
@@ -187,6 +200,7 @@ export function createStagedSelfReviewHook(deps: StagedHookDeps) {
 
       staged = true;
       denialAt = { turns: deps.turns?.(), tokens: tokens(), summary: params.summary, version: checklist.version, ids };
+      deps.worker.stagedDenial = denialAt;
       between.set(deps.worker.id, []);
       rec('denied', null, { checklistVersion: checklist.version, itemIds: ids });
       return denyPreToolUse(runnerDenial(reason(checklist)));
