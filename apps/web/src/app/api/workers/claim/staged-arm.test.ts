@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { withStagedExperiment } from './staged-review-experiment';
+import { withStagedExperiment } from './staged-arm';
 import { resolveStagedConfig } from '../../../../../../runner/src/staged-self-review';
 
 const exp = { id: 'exp-1', policyVersion: 2, treatmentFraction: 0.5 };

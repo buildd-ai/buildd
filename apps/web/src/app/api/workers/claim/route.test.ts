@@ -6,7 +6,7 @@ const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
 const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
 mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 import { NextRequest } from 'next/server';
-import { invalidateStagedExperimentCache } from './staged-review-experiment';
+import { invalidateStagedExperimentCache } from './staged-arm';
 import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 

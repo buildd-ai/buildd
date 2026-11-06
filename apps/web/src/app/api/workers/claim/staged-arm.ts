@@ -1,7 +1,8 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { experiments } from '@buildd/core/db/schema';
-import { STAGED_SELF_REVIEW_FEATURE } from '@buildd/core/staged-self-review';
+/** Mirrors STAGED_SELF_REVIEW_FEATURE in packages/core/staged-self-review.ts (not imported: that file's path classes it as a module). */
+const STAGED_SELF_REVIEW_FEATURE = 'staged_self_review';
 
 /**
  * Staged self-review (Living Spec f3742450): hand the runner the team's running
