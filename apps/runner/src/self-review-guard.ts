@@ -31,12 +31,28 @@ export interface SelfReviewGuardDeps {
   worker: Pick<LocalWorker, 'id'> & Partial<Pick<LocalWorker, 'toolCalls' | 'tokenTally'>>;
   task: SelfReviewTaskInput & { roleSlug?: string | null; context?: Record<string, any> | null; outputRequirement?: string | null };
   mode: SelfReviewMode;
+  /** Test seam; defaults to a deterministic draw on the worker id. */
+  arm?: 'control' | 'treatment';
   addMilestone: (milestone: Milestone) => void;
   /** Test seam; defaults to the scanner's own state. */
   openFailures?: (workerId: string) => OpenVerifyFailure[];
   /** Turns so far, when the caller knows it. */
   turns?: () => number | undefined;
   log?: (line: string) => void;
+}
+
+/**
+ * Deterministic control/treatment draw for a worker (propensity 0.5). Recording
+ * never acts on it; it logs the arm the acting stage would have drawn, so the
+ * control arm is a recorded fact rather than `none`. Hash of the worker id.
+ */
+export function drawSelfReviewArm(workerId: string): 'control' | 'treatment' {
+  let h = 2166136261;
+  for (let k = 0; k < workerId.length; k++) {
+    h ^= workerId.charCodeAt(k);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return (h & 1) === 0 ? 'control' : 'treatment';
 }
 
 export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
@@ -71,7 +87,7 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
 
       const tokens = (deps.worker.tokenTally?.inputTokens ?? 0) + (deps.worker.tokenTally?.outputTokens ?? 0);
       const turns = deps.turns?.();
-      const common = `mode=${deps.mode} arm=none turns=${turns ?? 'unknown'} tokens=${tokens}`;
+      const common = `mode=${deps.mode} arm=${deps.arm ?? drawSelfReviewArm(deps.worker.id)} propensity=0.5 turns=${turns ?? 'unknown'} tokens=${tokens}`;
       let label: string;
       let checklist: ReturnType<typeof buildSelfReviewChecklist> | null = null;
       if (exemption) {
