@@ -227,6 +227,21 @@ export function resolveStagedConfig(
 }
 
 /**
+ * The fetched workspace config, with the running experiment taken from the
+ * claimed task's workspace. The claim route attaches `selfReviewExperiment`
+ * there (claim/staged-arm.ts); getWorkspaceConfig never does, so
+ * without this merge every acting task draws control at propensity 1.
+ */
+export function stagedGitConfig<T extends { selfReviewExperiment?: unknown } | null | undefined>(
+  fetched: T,
+  claimed: { selfReviewExperiment?: unknown } | null | undefined,
+): T {
+  const exp = claimed?.selfReviewExperiment;
+  if (!exp) return fetched;
+  return { ...(fetched ?? {}), selfReviewExperiment: exp } as T;
+}
+
+/**
  * The PreToolUse matcher entries the runner registers for acting mode: the
  * deny-once hook, then the tool-call counter. Empty for Codex (no PreToolUse
  * seam) and for any mode but acting. workers.ts spreads this into the chain
