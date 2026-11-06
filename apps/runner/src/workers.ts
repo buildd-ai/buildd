@@ -49,6 +49,7 @@ import { runCriterionBatch, summarizeCriterionBatch } from './criterion-batch';
 import { criterionBatchOf, type CriterionBatchMarker } from '@buildd/shared';
 import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, readMergirafLedgerAsync, reportAgentMerges, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
+import { buildLoopVerificationSection } from './loop-verification-section';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
 import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memory-excludes';
@@ -5024,6 +5025,7 @@ export class WorkerManager {
         lastCommitSha: (task.context as any)?.lastCommitSha,
         failureContext: (task.context as any)?.failureContext,
         recoveryRef: (task.context as any)?.recoveryRef,
+        loop: buildLoopVerificationSection({ loopConfig: task.loopConfig, context: task.context as Record<string, unknown> | undefined }) !== null,
         defaultBranch: gitConfig?.defaultBranch || 'main',
       });
       if (retryContinuitySection) {
