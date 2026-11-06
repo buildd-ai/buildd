@@ -153,6 +153,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   list_connectors: one(read('GET /api/connectors/mounted')),
   resolve_capability: one(deferred('planner/agent discovery before routing; chat users see connectors on Settings')),
   get_usage_stats: one(deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),
+  get_embedding_usage: one(deferred('platform-owner Voyage spend read; not a chat-user surface')),
   // A runner row carries a workspaceIds array: the reach filter keeps a row
   // only if one of them is in reach, and strips the rest (in-process-api.ts).
   list_runners: one(read('GET /api/workers/active')),
