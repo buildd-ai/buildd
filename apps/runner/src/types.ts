@@ -462,6 +462,8 @@ export interface LocalWorker {
   bashCommandCounts?: BashCommandCounts;
   /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
   fileToolAreas?: Record<string, Record<string, number>>;
+  /** Full staged self-review records, in order (staged-self-review.ts StagedEntry). */
+  stagedSelfReview?: Array<Record<string, unknown>>;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -606,6 +608,8 @@ export interface ResultMeta {
   bashCommandCounts?: BashCommandCounts;
   /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
   fileToolAreas?: Record<string, Record<string, number>>;
+  /** Full staged self-review records, in order (staged-self-review.ts StagedEntry). */
+  stagedSelfReview?: Array<Record<string, unknown>>;
   /**
    * Outcome of the one-shot "closing turn" a session that ends without
    * calling complete_task gets before the runner falls back to

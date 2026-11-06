@@ -5552,7 +5552,12 @@ export class WorkerManager {
           ...(!isCodexTask && stagedCfg.mode === 'acting'
             ? [{ hooks: [createStagedSelfReviewHook({
                 worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
-                record: e => this.addMilestone(worker, { type: 'status', label: `Self-review: ${JSON.stringify(e)}`.slice(0, 300), ts: Date.now() }),
+                record: e => {
+                  // Full structured record rides resultMeta.stagedSelfReview; the
+                  // milestone is only the short human-readable pointer.
+                  (worker.stagedSelfReview ??= []).push({ ...e, ts: Date.now() });
+                  this.addMilestone(worker, { type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: Date.now() });
+                },
               })] }]
             : []),
           ...(!isCodexTask && stagedCfg.mode === 'acting'
@@ -6265,6 +6270,7 @@ export class WorkerManager {
           ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
           ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
           ...(fileToolAreas && Object.keys(fileToolAreas).length > 0 ? { fileToolAreas } : {}),
+          ...(worker.stagedSelfReview && worker.stagedSelfReview.length > 0 ? { stagedSelfReview: worker.stagedSelfReview } : {}),
         };
         if (Object.keys(measured).length > 0) {
           if (worker.resultMeta) {

@@ -342,6 +342,7 @@
     "./prompted-decision": "./prompted-decision.ts",
     "./prompt-catalog": "./prompt-catalog.ts",
     "./prompt-seed": "./prompt-seed.ts",
+    "./platform-rerank-switch": "./platform-rerank-switch.ts",
     "./prompt-seed-source": "./prompt-seed-source.ts"
   },
   "dependencies": {
