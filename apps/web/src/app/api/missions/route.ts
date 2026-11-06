@@ -281,6 +281,9 @@ export async function POST(req: NextRequest) {
       if (removedField) {
         return NextResponse.json({ error: removedPolicyPathFieldError(removedField), field: removedField }, { status: 400 });
       }
+      if (typeof mergePolicy === 'object' && 'reviewByRisk' in mergePolicy) {
+        return NextResponse.json({ error: "mergePolicy.reviewByRisk is a workspace setting (the workspace Merge Policy page); a mission's merges keep their own rules", field: 'mergePolicy.reviewByRisk' }, { status: 400 });
+      }
       const parsed = parseMergePolicy(mergePolicy);
       if (!parsed.ok) {
         return NextResponse.json({ error: parsed.error, field: parsed.field }, { status: 422 });

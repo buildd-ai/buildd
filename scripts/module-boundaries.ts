@@ -107,6 +107,10 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   // The Release section's recent-releases split (ran vs skipped), pure and used
   // only by the core settings page's ReleaseSection.tsx.
   'apps/web/src/app/app/(protected)/settings/_lib/recent-releases.ts',
+  // The mergePolicy.reviewByRisk setting's shape (area names, write rule): read
+  // by the core workspace routes and settings page. Pure, no merge behaviour;
+  // the hold stays in the reviews module (apps/web/src/lib/review-by-risk.ts).
+  'apps/web/src/lib/review-by-risk-config.ts',
   // The artifact page's sandboxed frame for an HTML design (an artifact body,
   // core). `(?<!p)review` matches the "Preview" in its PascalCase name and
   // misfiles it as reviews-merge.

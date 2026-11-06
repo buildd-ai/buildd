@@ -45,6 +45,7 @@ import { fixWork, captureWork, reviewEscalate, reviewsHost, reviewWork } from '@
 import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
 import { externalMergeFixWork, trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
+import { defaultSummaryGate } from '@/lib/release/summary-gate';
 import { builddLandingRails } from '@/lib/workflow/auto-merge-rails';
 import { conflictEscalate, conflictFixWork, conflictsHost } from '@/lib/workflow/conflict-retry-effects';
 import { builddDecide } from '@/lib/workflow/decision-port';
@@ -159,6 +160,9 @@ export const RUN_PROGRESS_READERS: RunProgressReaders = {
  * (needs you) or the landing path merges it (merging).
  */
 export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
+
+/** Review by risk R-6: the release-summary check, for the core held-release door (lib/held-pr-tasks.ts). */
+export const RELEASE_SUMMARY_GATE = defaultSummaryGate();
 
 /**
  * The workflow kernel's slots (docs/specs/workflow-kernel-library.md §2). Core

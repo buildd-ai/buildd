@@ -11,6 +11,7 @@ import { roleHas } from '@/lib/permissions';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
+import { applyReviewByRiskWrite } from '@/lib/review-by-risk-config';
 import { findRemovedPathFieldInGitConfig, isWarmHandoverOptOut, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
@@ -509,6 +510,12 @@ export async function PATCH(
         where: sqlWhere(eq(workspaces.id, id)),
         columns: { gitConfig: true },
       });
+      if ('mergePolicy' in gitConfig) {
+        // Review by risk is a person's setting (spec 62e985a8 R-5, R-9).
+        const risk = applyReviewByRiskWrite({ previous: current?.gitConfig?.mergePolicy, next: gitConfig.mergePolicy, byPerson: !!user && !apiAccount });
+        if (!risk.ok) return NextResponse.json({ error: risk.error, field: 'gitConfig.mergePolicy.reviewByRisk' }, { status: risk.status });
+        gitConfig.mergePolicy = risk.next as typeof gitConfig.mergePolicy;
+      }
       updates.gitConfig = { ...(current?.gitConfig ?? {}), ...gitConfig };
     }
 
