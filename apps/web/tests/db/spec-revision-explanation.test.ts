@@ -13,7 +13,7 @@
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedWorkspace } from './harness';
+import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
 process.env.AUTH_SECRET ||= 'spec-revision-explanation-test-secret';
 
@@ -22,17 +22,18 @@ const { approvalPinView } = await import('../../src/lib/specs/approval-view');
 const { specApprovalDeps } = await import('../../src/lib/specs/approval');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
-let wsA: string; let admin: string;
+let wsA: string; let admin: string; let teamA: string; let TASK: string;
 beforeAll(async () => {
   assertDbConfigured();
-  let teamA: string;
   ({ teamId: teamA, workspaceId: wsA } = await seedWorkspace());
   await q(sql`UPDATE workspaces SET access_mode = 'open' WHERE id = ${wsA}::uuid`);
   const [u] = await q<{ id: string }>(sql`INSERT INTO users (email) VALUES (${`u-${rand()}@example.test`}) RETURNING id`);
   await q(sql`INSERT INTO team_members (team_id, user_id, role) VALUES (${teamA}::uuid, ${u.id}::uuid, 'admin')`);
   admin = u.id;
+  TASK = await seedTask(wsA);
   specApprovalDeps.notify = async () => {};
 });
+const agentToken = () => ({ kind: 'account' as const, account: { id: '00000000-0000-4000-8000-0000000000a2', teamId: teamA, workspaceIds: null, taskScope: { taskId: TASK, workspaceId: wsA } } as any });
 
 const user = (userId: string) => ({ kind: 'user' as const, userId });
 const V1 = (s: string) => [
@@ -132,5 +133,48 @@ describe('an explanation cannot change once written (AC-18)', () => {
     // Other columns of the revision still update (approval writes approved_at).
     await q(sql`UPDATE spec_revisions SET criteria_count = criteria_count WHERE spec_id = ${p.specId}::uuid AND revision = ${p.revision}`);
     expect((await view(p)).explanation!.summary).toBe('Totals round to cents.');
+  });
+});
+
+
+describe('an agent\'s explanation is checked when written (R-28, R-29, AC-29, AC-30)', () => {
+  /** Approved at r1; `n` more revisions by a person stack on it, none approved. */
+  async function approvedWithHead() {
+    const s = rand();
+    const c = await createSpecDraft(user(admin), { workspaceId: wsA, title: `Checkout ${s}`, body: V1(s) }, { duplicates: false });
+    if (!c.ok) throw new Error(c.error);
+    await q(sql`UPDATE specs SET approved_revision = 1, status = 'approved' WHERE id = ${c.spec.id}::uuid`);
+    await q(sql`UPDATE spec_revisions SET approved_at = now(), approved_by = ${`user:${admin}`} WHERE spec_id = ${c.spec.id}::uuid AND revision = 1`);
+    return { s, specId: c.spec.id, version: c.spec.version };
+  }
+
+  test('AC-29: an agent revise missing a criterion is a 409 naming it, writes nothing; adding the line writes it', async () => {
+    const { s, specId, version } = await approvedWithHead();
+    const { 'R-3': _r3, ...missing } = ALL;
+    const refused = await reviseSpecDraft(agentToken(), specId, { expectedVersion: version, body: V2(s), explanation: { summary: 'Totals round.', lines: missing } }, { duplicates: false });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) { expect(refused.status).toBe(409); expect(refused.code).toBe('explanation_incomplete'); expect(refused.error).toContain('R-3'); }
+    const [after] = await q<{ version: number }>(sql`SELECT version FROM specs WHERE id = ${specId}::uuid`);
+    expect(after.version).toBe(version);
+    const ok = await reviseSpecDraft(agentToken(), specId, { expectedVersion: version, body: V2(s), explanation: { summary: 'Totals round.', lines: ALL } }, { duplicates: false });
+    expect(ok.ok).toBe(true);
+  });
+
+  test('AC-30: a person\'s edit with no explanation is written', async () => {
+    const { s, specId, version } = await approvedWithHead();
+    const r = await reviseSpecDraft(user(admin), specId, { expectedVersion: version, body: V2(s) }, { duplicates: false });
+    expect(r.ok).toBe(true);
+  });
+
+  test('stacked: a person\'s r2 and r3 are unapproved; an agent r4 covering only its own change is refused', async () => {
+    const { s, specId, version } = await approvedWithHead();
+    const r2 = await reviseSpecDraft(user(admin), specId, { expectedVersion: version, body: V2(s).replace('Totals round to cents.', 'Totals round up.') }, { duplicates: false });
+    if (!r2.ok) throw new Error(r2.error);
+    const r3 = await reviseSpecDraft(user(admin), specId, { expectedVersion: r2.spec.version, body: V2(s) }, { duplicates: false });
+    if (!r3.ok) throw new Error(r3.error);
+    const body4 = V2(s).replace('Tax is shown per line.', 'Tax is shown per line and total.');
+    const own = await reviseSpecDraft(agentToken(), specId, { expectedVersion: r3.spec.version, body: body4, explanation: { summary: 'Tax.', lines: { 'R-3': 'Tax per line and total.' } } }, { duplicates: false });
+    expect(own.ok).toBe(false);
+    if (!own.ok) { expect(own.code).toBe('explanation_incomplete'); expect(own.error).toContain('R-1'); }
   });
 });
