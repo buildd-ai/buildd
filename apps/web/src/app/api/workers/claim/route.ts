@@ -4,6 +4,7 @@ import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
+import { attachStagedExperiment } from './staged-review-injection';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
@@ -3466,9 +3467,9 @@ export async function POST(req: NextRequest) {
 
   return jsonResponse({
     // The workspace dispatch token never leaves in a claim (lib/workspace-dispatch-token.ts).
-    workers: claimedWorkers.map((cw) => (cw.task
-      ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
-      : cw)),
+    workers: await Promise.all(claimedWorkers.map(async (cw) => (cw.task
+      ? { ...cw, task: { ...(cw.task as any), workspace: await attachStagedExperiment(withoutDispatchToken((cw.task as any).workspace) as any) } }
+      : cw))),
     // Only report partial budget exhaustion for background runners. Interactive sessions
     // have their own credentials and should not be told about account budget state.
     ...(accountBudgetExhausted && !runsOnCallersSeat && {
