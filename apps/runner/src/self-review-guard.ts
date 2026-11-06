@@ -82,6 +82,25 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
           : `Self-review: ${common} builder-failed`;
       }
       deps.addMilestone({ type: 'status', label: label.slice(0, 300), ts: Date.now() });
+
+      // Structured answer record (R-6): the same fields the acting stage records.
+      // Recording never asks, so there is no denial: addedTurns/addedTokens are 0
+      // and nothing changed after one; `answers` is whatever the agent volunteered.
+      const checklist = exemption ? null : buildSelfReviewChecklist(deps.task);
+      const record = {
+        mode: deps.mode,
+        arm: 'none',
+        exemption: exemption ?? null,
+        outcome: exemption ? 'exempt' : checklist ? 'eligible' : 'failed_open',
+        checklistVersion: checklist?.version ?? null,
+        itemIds: checklist?.items.map(it => it.id) ?? [],
+        answers: (params.structuredOutput as any)?.selfReview ?? null,
+        toolCallsBetween: [],
+        addedTurns: 0,
+        addedTokens: 0,
+        workChangedAfterDenial: false,
+      };
+      deps.addMilestone({ type: 'status', label: `Self-review record: ${JSON.stringify(record)}`.slice(0, 1000), ts: Date.now() });
     } catch (err) {
       log(`Self-review recording failed open: ${err instanceof Error ? err.message : String(err)}`);
     }

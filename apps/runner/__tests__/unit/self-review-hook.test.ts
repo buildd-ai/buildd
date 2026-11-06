@@ -50,11 +50,21 @@ describe('recording mode', () => {
     expect(line).toContain('tokens=15');
   });
 
+  test('writes a structured answer record with checklist, answers and change flag', async () => {
+    const { hook, milestones } = setup();
+    await hook(complete({ structuredOutput: { selfReview: [{ id: 'req-1', answer: 'met', evidence: 'x' }] } }), undefined, signal);
+    const rec = labels(milestones).find(l => l.startsWith('Self-review record: '))!;
+    const j = JSON.parse(rec.slice('Self-review record: '.length));
+    expect(j).toMatchObject({ outcome: 'eligible', checklistVersion: 1, addedTurns: 0, addedTokens: 0, workChangedAfterDenial: false });
+    expect(j.itemIds).toContain('req-1');
+    expect(j.answers[0].answer).toBe('met');
+  });
+
   test('fires at most once per worker', async () => {
     const { hook, milestones } = setup();
     await hook(complete(), undefined, signal);
     await hook(complete(), undefined, signal);
-    expect(milestones).toHaveLength(1);
+    expect(milestones).toHaveLength(2);
   });
 
   test('exempt tasks record the exemption reason', async () => {
@@ -78,7 +88,7 @@ describe('recording mode', () => {
     const { hook, milestones } = setup();
     await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }, undefined, signal);
     await hook(complete(), undefined, signal); // fires
-    expect(milestones).toHaveLength(1);
+    expect(milestones).toHaveLength(2);
   });
 });
 
