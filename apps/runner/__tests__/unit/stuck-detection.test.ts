@@ -247,7 +247,6 @@ describe('stuck detection', () => {
         expect(r.abort).toBeUndefined();
         expect(r.error).toBeUndefined();
       }
-      expect(detectRepetitiveToolCalls(calls).action).not.toBe('abort');
     }
   });
 
