@@ -25,6 +25,7 @@
     "./mcp-sub-actions": "./mcp-sub-actions.ts",
     "./guidance-topics": "./guidance-topics.ts",
     "./prior-work-render": "./prior-work-render.ts",
+    "./untrusted-text": "./untrusted-text.ts",
     "./model-aliases": "./model-aliases.ts",
     "./model-thinking": "./model-thinking.ts",
     "./model-catalog": "./model-catalog.ts",
