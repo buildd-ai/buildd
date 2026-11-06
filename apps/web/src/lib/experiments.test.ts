@@ -296,19 +296,19 @@ describe('staged_self_review kill criterion (pre-registered)', () => {
     config: {}, startedAt: null, decision: null, ...over,
   });
 
-  test('create refuses without killCriterion, accepts with it', () => {
+  it('create refuses without killCriterion, accepts with it', () => {
     expect(parseCreateExperiment({ ...base }).ok).toBe(false);
     expect(parseCreateExperiment({ ...base, config: {} }).ok).toBe(false);
     expect(parseCreateExperiment({ ...base, config: { killCriterion: kc } }).ok).toBe(true);
   });
 
-  test('start gate refuses a draft with no stored criterion', () => {
+  it('start gate refuses a draft with no stored criterion', () => {
     const r = planExperimentPatch(state(), { status: 'running' }, new Date());
     expect(r.ok).toBe(false);
     expect(planExperimentPatch(state({ config: { killCriterion: kc } }), { status: 'running' }, new Date()).ok).toBe(true);
   });
 
-  test('criterion is frozen once started', () => {
+  it('criterion is frozen once started', () => {
     const r = planExperimentPatch(
       state({ status: 'paused', startedAt: new Date(), config: { killCriterion: kc } }),
       { config: { killCriterion: { ...kc, minSample: 1 } } }, new Date());
