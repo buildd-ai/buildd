@@ -1288,6 +1288,8 @@ async function handlePullRequestEvent(event: {
     prNumber: pr.number,
     merged: !!pr.merged,
     baseRef: pr.base?.ref ?? null,
+    headRef: pr.head?.ref ?? null,
+    headRepoFullName: pr.head?.repo?.full_name ?? null,
     installationId: event.installation?.id ?? null,
     workspaceId: worker?.workspaceId ?? null,
   });

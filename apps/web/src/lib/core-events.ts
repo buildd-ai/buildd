@@ -295,6 +295,9 @@ export type CoreEvent =
       prNumber: number;
       merged: boolean;
       baseRef: string | null;
+      /** The PR's head branch, and the repo it lives in (a fork's differs from `repoFullName`). */
+      headRef: string | null;
+      headRepoFullName: string | null;
       installationId: number | null;
       workspaceId: string | null;
     }
