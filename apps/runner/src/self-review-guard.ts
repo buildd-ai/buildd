@@ -12,6 +12,7 @@
  * the agent sees verify-guard's refusal and nothing from this stage (AC-1).
  */
 import { isBuilddActionTool } from '@buildd/shared';
+import { resolveStagedReviewMode, type StagedReviewMode } from '@buildd/core/staged-self-review';
 import { unrecoveredVerifyFailures, type OpenVerifyFailure } from './error-trace-scanner';
 import {
   buildSelfReviewChecklist,
@@ -22,9 +23,18 @@ import type { LocalWorker, Milestone } from './types';
 
 export type SelfReviewMode = 'off' | 'recording';
 
-/** Workspace config (gitConfig.selfReview). Absent or unknown = off. */
+/**
+ * Workspace config (gitConfig.selfReview). Absent or unknown = off.
+ * 'acting' is only reachable through resolveStagedReviewMode and is handled by
+ * staged-self-review.ts; this recording guard stands down for it.
+ */
 export function resolveSelfReviewMode(gitConfig: { selfReview?: unknown } | null | undefined): SelfReviewMode {
-  return gitConfig?.selfReview === 'recording' ? 'recording' : 'off';
+  return resolveStagedReviewMode({ mode: typeof gitConfig?.selfReview === 'string' ? gitConfig.selfReview : null }) === 'recording' ? 'recording' : 'off';
+}
+
+/** Full three-way mode (off | recording | acting), same config key. */
+export function resolveSelfReviewStagedMode(gitConfig: { selfReview?: unknown } | null | undefined): StagedReviewMode {
+  return resolveStagedReviewMode({ mode: typeof gitConfig?.selfReview === 'string' ? gitConfig.selfReview : null });
 }
 
 export interface SelfReviewGuardDeps {

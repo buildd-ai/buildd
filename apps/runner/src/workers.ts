@@ -90,7 +90,9 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
-import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
+import { createSelfReviewGuardHook, resolveSelfReviewMode, resolveSelfReviewStagedMode } from './self-review-guard';
+import { createStagedSelfReviewHook, noteStagedToolCall } from './staged-self-review';
+import { assignStagedReviewArm, STAGED_SELF_REVIEW_FEATURE } from '@buildd/core/staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5573,6 +5575,34 @@ export class WorkerManager {
           ...(!isCodexTask
             ? [{ hooks: [createSelfReviewGuardHook({ worker, task: task as any, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
             : []),
+          // Staged self-review (staged-self-review.ts), acting mode only: one
+          // intent checklist denial before complete_task, treatment arm only.
+          // Off by default (gitConfig.selfReview = 'acting' to enable). Record
+          // sink is the same milestone path as the recording guard.
+          ...(!isCodexTask && resolveSelfReviewStagedMode(gitConfig as any) === 'acting'
+            ? [{ hooks: [(() => {
+                const draw = assignStagedReviewArm({
+                  taskId: task.id,
+                  experiment: {
+                    id: STAGED_SELF_REVIEW_FEATURE,
+                    policyVersion: 'workspace-config',
+                    treatmentFraction: (gitConfig as any)?.selfReviewFraction ?? 0.5,
+                  },
+                });
+                return createStagedSelfReviewHook({
+                  worker,
+                  task: task as any,
+                  mode: 'acting',
+                  arm: draw.arm,
+                  propensity: draw.propensity,
+                  record: e => this.addMilestone(worker, {
+                    type: 'status',
+                    label: `Staged self-review: ${JSON.stringify(e)}`.slice(0, 300),
+                    ts: Date.now(),
+                  }),
+                });
+              })()] }]
+            : []),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
           // so a command it refuses never waits. See deps-gate.ts.
@@ -7279,6 +7309,7 @@ export class WorkerManager {
           // (R2) so a later tool_result can be correlated back to its source
           // tool for error-trace scanning (see the `user`/tool_result branch).
           const toolUseId = (block.id as string | undefined) || undefined;
+          noteStagedToolCall(worker.id, toolName);
           worker.toolCalls.push({
             name: toolName,
             timestamp: Date.now(),

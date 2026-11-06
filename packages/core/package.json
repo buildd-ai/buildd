@@ -11,6 +11,7 @@
   },
   "exports": {
     "./ui-verification": "./ui-verification.ts",
+    "./staged-self-review": "./staged-self-review.ts",
     "./decision-kind-ui-copy": "./decision-kind-ui-copy.ts",
     "./db": "./db/index.ts",
     "./run-evidence": "./run-evidence.ts",
