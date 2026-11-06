@@ -152,6 +152,11 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
     if (capError) return { ok: false, status: 400, error: capError };
   }
 
+  if (kind === 'staged_self_review') {
+    const staged = validateStagedExperimentConfig(b.config as Record<string, unknown> | undefined);
+    if (!staged.ok) return { ok: false, status: 400, error: staged.error! };
+  }
+
   const visibility = b.visibility ?? 'admins';
   if (!EXPERIMENT_VISIBILITIES.includes(visibility)) return { ok: false, status: 400, error: 'visibility must be "admins" or "team"' };
 
