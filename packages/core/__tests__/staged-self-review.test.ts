@@ -16,6 +16,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { stagedReviewRecordsFromMilestones, classifyStagedReview } from '../staged-self-review';
 
 const load = () => import('../staged-self-review');
 
@@ -128,22 +129,24 @@ describe('AC-9: off leaves no footprint', () => {
   });
 });
 
-import { stagedReviewRecordsFromMilestones, classifyStagedReview as classify2 } from '../staged-self-review';
-import { describe as d2, test as t2, expect as e2 } from 'bun:test';
-
-d2('stagedReviewRecordsFromMilestones', () => {
+describe('stagedReviewRecordsFromMilestones', () => {
   const label = (o: object) => ({ type: 'status', label: `Self-review: ${JSON.stringify(o)}` });
-  t2('turns stored answered records into a rubber-stamp readout', () => {
+  test('turns stored answered records into a rubber-stamp readout and counts truncated labels', () => {
     const { records, skipped } = stagedReviewRecordsFromMilestones([
       { taskId: 't1', milestones: [label({ outcome: 'denied' }), label({ outcome: 'answered', answers: [{ id: 'a', answer: 'met' }], toolCallsBetween: [], workChangedAfterDenial: false })] },
       { taskId: 't2', milestones: [{ type: 'status', label: 'Self-review: {"outcome":"answ' }, { label: 'other' }] },
     ]);
-    e2(records).toHaveLength(1);
-    e2(skipped).toBe(0);
-    e2(classify2(records).rubberStamped).toBe(true);
+    expect(records).toHaveLength(1);
+    expect(skipped).toBe(1);
+    expect(classifyStagedReview(records).rubberStamped).toBe(true);
   });
-  t2('counts unparseable labels and reads edits as a flip', () => {
+  test('labels without the prefix are not counted', () => {
+    const { records, skipped } = stagedReviewRecordsFromMilestones([{ milestones: [{ label: 'other' }, { label: 'Self-review' }, { label: 5 }, null] as any }]);
+    expect(records).toHaveLength(0);
+    expect(skipped).toBe(0);
+  });
+  test('reads edits as a flip', () => {
     const { records } = stagedReviewRecordsFromMilestones([{ milestones: [label({ outcome: 'answered', answers: [{ answer: 'unmet' }], toolCallsBetween: ['Edit'], workChangedAfterDenial: true })] }]);
-    e2(classify2(records).flipRate).toBe(1);
+    expect(classifyStagedReview(records).flipRate).toBe(1);
   });
 });
