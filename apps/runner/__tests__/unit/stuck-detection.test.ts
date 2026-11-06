@@ -251,6 +251,71 @@ describe('stuck detection', () => {
     }
   });
 
+  // Polling and read-only calls are "ignored" by both outcome scenarios (shared predicate).
+  const POLLING_BASH = ['sleep 60', 'gh run watch 123', 'gh run view 123', 'gh pr checks 45', 'gh pr view 45'];
+  const POLLING_BUILDD = ['get_task', 'list_tasks', 'get_mission'];
+  const pollingCalls = (): Array<[string, StuckCall]> => [
+    ...POLLING_BASH.map(cmd => [cmd, call('Bash', { command: cmd })] as [string, StuckCall]),
+    ...POLLING_BUILDD.map(action => [`buildd ${action}`, call('mcp__buildd__buildd_tasks', { action })] as [string, StuckCall]),
+  ];
+
+  for (const [label, poll] of pollingCalls()) {
+    test(`R-5: failing polling call ${label} does not count toward an error streak`, () => {
+      const failingPoll = { ...poll, isError: true, resultSignature: 'sig:fail', errorLine: 'boom' };
+      const five = [failBash(1), failBash(2), failEdit(3), failBash(4), failBash(5)];
+      expect(run([...five, failingPoll]).action).toBe('none');
+      // Polling between failures neither completes nor resets the streak.
+      const six = [failBash(1), failingPoll, failBash(2), failEdit(3), failingPoll, failBash(4), failBash(5), failBash(6)];
+      expect(run(six).signal?.scenario).toBe('error_streak');
+    });
+
+    test(`R-5: successful polling call ${label} does not end an error streak`, () => {
+      const okPoll = { ...poll, isError: false, resultSignature: 'sig:ok' };
+      const six = [failBash(1), failBash(2), okPoll, failEdit(3), failBash(4), failBash(5), failBash(6)];
+      expect(run(six).signal?.scenario).toBe('error_streak');
+    });
+
+    test(`R-5: polling call ${label} interleaved in an alternation does not break it`, () => {
+      const calls: StuckCall[] = [];
+      for (let i = 0; i < 8; i++) {
+        calls.push(i % 2 === 0 ? A() : B());
+        calls.push({ ...poll, id: `${poll.id}-${i}`, resultSignature: 'sig:poll' });
+      }
+      expect(run(calls).signal?.scenario).toBe('alternation');
+    });
+  }
+
+  test('R-5: a Read interleaved between A,B alternation steps does not break it', () => {
+    const calls: StuckCall[] = [];
+    for (let i = 0; i < 8; i++) {
+      calls.push(i % 2 === 0 ? A() : B());
+      calls.push(call('Read', { file_path: '/src/a.ts' }, { resultSignature: 'sig:read' }));
+    }
+    const r = run(calls);
+    expect(r.signal?.scenario).toBe('alternation');
+    expect(r.message).toContain('Bash');
+    expect(r.message).toContain('Edit');
+  });
+
+  test('R-5: Grep, Glob and benign Bash interleaved in an alternation do not break it', () => {
+    const noise = [
+      call('Grep', { pattern: 'x' }, { resultSignature: 'sig:grep' }),
+      call('Glob', { pattern: '**/*.ts' }, { resultSignature: 'sig:glob' }),
+      call('Bash', { command: 'git status' }, { resultSignature: 'sig:status' }),
+    ];
+    const calls: StuckCall[] = [];
+    for (let i = 0; i < 8; i++) {
+      calls.push(i % 2 === 0 ? A() : B());
+      calls.push(noise[i % noise.length]);
+    }
+    expect(run(calls).signal?.scenario).toBe('alternation');
+  });
+
+  test('R-5: a Read interleaved in an error streak neither extends nor breaks it', () => {
+    const calls = [failBash(1), call('Read', { file_path: '/x' }, { resultSignature: 'r' }), failBash(2), failEdit(3), failBash(4), failBash(5), failBash(6)];
+    expect(run(calls).signal?.scenario).toBe('error_streak');
+  });
+
   test('R-10: result signature ignores digits and whitespace, keeps no text', () => {
     expect(resultSignature('failed at 12:01:05  count=7')).toBe(resultSignature('failed at 99:59:00 count=1'));
     expect(resultSignature('failed')).not.toBe(resultSignature('passed'));
