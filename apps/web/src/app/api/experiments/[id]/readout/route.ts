@@ -66,8 +66,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   }
   // Staged self-review is measured over stored stage records, not task outcomes.
   if (row.kind === 'staged_self_review') {
-    const k = (row.config as { killCriterion?: { rubberStampTouchRate?: number; rubberStampFlipRate?: number } } | null)?.killCriterion;
-    const readout = await runStagedSelfReviewReadout({ id: row.id, policyVersion }, { touchRate: k?.rubberStampTouchRate, flipRate: k?.rubberStampFlipRate });
+    const cfg = row.config as { killCriterion?: unknown } | null;
+    const k = (cfg?.killCriterion ?? {}) as { rubberStampTouchRate?: unknown; rubberStampFlipRate?: unknown };
+    const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
+    const readout = await runStagedSelfReviewReadout({ id: row.id, policyVersion }, { touchRate: num(k.rubberStampTouchRate), flipRate: num(k.rubberStampFlipRate) });
     return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
   }
   // Tier pools are measured per arm over their own assignment rows (chat turns or tasks).
