@@ -5545,13 +5545,14 @@ export class WorkerManager {
           // Self-review recording (self-review-guard.ts): after the verify guard,
           // so its refusal wins. Records only, never denies; off by default.
           ...(!isCodexTask && stagedCfg.mode !== 'acting'
-            ? [{ hooks: [createSelfReviewGuardHook({ worker, task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task) }, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
+            ? [{ hooks: [createSelfReviewGuardHook({ worker, task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task), taskClass: (task as any).taskClass ?? null, mode: (task as any).mode ?? null }, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
             : []),
           // Staged self-review acting mode (staged-self-review.ts): treatment
           // arm is denied once with an intent checklist; control and
           // recording only record. Replaces the recording-only hook above.
           ...stagedSelfReviewPreToolUse({
-            cfg: stagedCfg, isCodexTask, worker, task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task) },
+            cfg: stagedCfg, isCodexTask, worker,
+            task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task), taskClass: (task as any).taskClass ?? null, mode: (task as any).mode ?? null },
             record: createStagedRecorder(worker, m => this.addMilestone(worker, m)),
           }),
           // Deps gate (cloud): while the install runs behind the session,
