@@ -65,14 +65,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const readout = await runHeartbeatTriageReadout({ id: row.id, policyVersion }, parseHeartbeatTriageConfig(row.config));
     return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
   }
-  // Staged self-review is measured over stored stage records, not task outcomes.
-  if (row.kind === 'staged_self_review') {
-    const cfg = row.config as { killCriterion?: unknown } | null;
-    const k = (cfg?.killCriterion ?? {}) as { rubberStampTouchRate?: unknown; rubberStampFlipRate?: unknown };
-    const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
-    const readout = await runStagedSelfReviewReadout({ id: row.id, policyVersion }, { touchRate: num(k.rubberStampTouchRate), flipRate: num(k.rubberStampFlipRate) });
-    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
-  }
   // Tier pools are measured per arm over their own assignment rows (chat turns or tasks).
   if (row.kind === TIER_POOL_EXPERIMENT_KIND) {
     const readout = await runTierPoolReadout({ id: row.id, policyVersion });
@@ -92,8 +84,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       const v = raw === null ? NaN : Number(raw);
       return Number.isFinite(v) ? v : undefined;
     };
-    const touchRate = num('touchRate');
-    const flipRate = num('flipRate');
+    // Rubber-stamp rates come from the stored stage records; query params override.
+    const stored = await runStagedSelfReviewReadout(
+      { id: row.id, policyVersion },
+      { touchRate: criterion.rubberStampTouchRate, flipRate: criterion.rubberStampFlipRate },
+    );
+    const touchRate = num('touchRate') ?? (stored.n > 0 ? stored.touchRate : undefined);
+    const flipRate = num('flipRate') ?? (stored.n > 0 ? stored.flipRate : undefined);
     const addedCost = num('addedCostPerTask');
     const killCriterion = evaluateKillCriterion({
       readout: { verdict: readout.verdict, touchRate, flipRate },
@@ -102,6 +99,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     });
     return NextResponse.json({
       experiment: toExperimentDTO(row), policyVersion, readout, health,
+      stagedReview: stored,
       killCriterion: { ...killCriterion, addedCostMeasured: addedCost !== undefined },
     });
   }

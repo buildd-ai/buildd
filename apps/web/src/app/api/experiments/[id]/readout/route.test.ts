@@ -28,6 +28,9 @@ mock.module('@buildd/core/tier-pool-admin', () => ({ runTierPoolReadout: mockPoo
 const mockHealth = mock(async (..._a: any[]) => [] as any[]);
 mock.module('@buildd/core/experiment-health-source', () => ({ runExperimentHealth: mockHealth }));
 
+const mockStaged = mock(async (..._a: any[]) => ({ touchRate: 0, flipRate: 0, contradictionRate: 0, rubberStamped: false, n: 0, skipped: 0 }) as any);
+mock.module('@buildd/core/staged-self-review-readout-source', () => ({ runStagedSelfReviewReadout: mockStaged }));
+
 import { GET } from './route';
 
 const T0 = new Date('2026-01-01T00:00:00.000Z');
@@ -191,6 +194,17 @@ describe('GET readout: staged_self_review kill criterion', () => {
     body = await (await run('?addedCostPerTask=2')).json();
     expect(body.killCriterion.action).toBe('switch_off');
     expect(body.killCriterion.addedCostMeasured).toBe(true);
+  });
+
+  it('labels a rubber stamp from stored records when no query rates are given', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: { killCriterion: kc } });
+    mockRun.mockResolvedValueOnce({ verdict: 'treatment_better' });
+    mockStaged.mockResolvedValueOnce({ touchRate: 0.95, flipRate: 0.0, contradictionRate: 0, rubberStamped: true, n: 40, skipped: 0 });
+    const body = await (await run()).json();
+    expect(body.stagedReview.rubberStamped).toBe(true);
+    expect(body.killCriterion.action).toBe('switch_off');
+    expect(body.killCriterion.reasons.join()).toContain('rubber-stamped');
   });
 
   it('continues when no limb is met', async () => {
