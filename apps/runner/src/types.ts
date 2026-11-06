@@ -454,8 +454,6 @@ export interface LocalWorker {
   toolCounts?: Record<string, number>;
   /** Assistant messages seen this session; the staged self-review hook's turn clock. */
   assistantTurns?: number;
-  /** Full staged self-review records, in order (staged-self-review.ts StagedEntry), bounded. */
-  stagedSelfReview?: Array<Record<string, unknown>>;
   /**
    * Bash sub-classification (see bash-classify.ts). The histogram above can
    * only ever show a single bar for `Bash` — by far the most-called tool — so
