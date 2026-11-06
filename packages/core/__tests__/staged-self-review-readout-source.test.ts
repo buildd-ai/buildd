@@ -52,3 +52,15 @@ describe('runStagedSelfReviewReadout over stored worker rows (AC-8)', () => {
     expect(r.rubberStamped).toBe(false);
   });
 });
+
+describe('milestone-label records (AC-8)', () => {
+  test('answered milestone with no tool calls and no change is rubberStamped', async () => {
+    call = 0;
+    tasks = [{ taskId: 't0' }, { taskId: 't1' }];
+    const label = { type: 'status', label: `Self-review: ${JSON.stringify({ outcome: 'answered', answers: [{ id: 'a', answer: 'met' }], toolCallsBetween: [], workChangedAfterDenial: false })}` };
+    workerRows = tasks.map((t: any) => ({ taskId: t.taskId, milestones: [label] }));
+    const r = await runStagedSelfReviewReadout({ id: 'e1', policyVersion: 1 });
+    expect(r.skipped).toBe(0);
+    expect(r.rubberStamped).toBe(true);
+  });
+});
