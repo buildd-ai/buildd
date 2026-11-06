@@ -34,6 +34,7 @@ import { missionSubscribers } from '@/lib/mission-subscribers';
 import { refreshMissionSummariesFor } from '@/lib/mission-summary-store';
 import type { WorkChangeListener } from '@/lib/work-changed';
 import { reviewSubscribers } from '@/lib/review-subscribers';
+import { branchRetireSubscribers } from '@/lib/branch-retire-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
 import { specCheckSubscribers } from '@/lib/spec-check-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
@@ -91,6 +92,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...missionSubscribers,
   // pr.closed: the surface settle is scheduled before the review reactions.
   ...reviewSubscribers,
+  // A closed PR's head, an ended task's branches, and the daily floor sweep: after the review reactions.
+  ...branchRetireSubscribers,
   // pr.merged: the release record is kicked off before the ledger write.
   ...releaseSubscribers,
   ...earlyReleaseSubscribers,
