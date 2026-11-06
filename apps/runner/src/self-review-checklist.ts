@@ -58,6 +58,31 @@ export function isMechanicalItem(text: string): boolean {
   return DENYLIST.test(text);
 }
 
+const CRITERION_ID = /^(R|AC)-\d+$/;
+
+/**
+ * The Living Spec criterion ids a task is pinned to, from what the runner
+ * receives: an explicit `specCriterionIds` plus `context.specRepair.criterionId`
+ * (stamped server-side on spec-repair tasks). Deduplicated, malformed ids
+ * dropped. Never throws.
+ */
+export function deriveSpecCriterionIds(task: unknown): string[] {
+  try {
+    const t = (task ?? {}) as { specCriterionIds?: unknown; context?: { specRepair?: { criterionId?: unknown } | null } | null };
+    const out: string[] = [];
+    const add = (v: unknown) => {
+      if (typeof v !== 'string') return;
+      const id = v.trim();
+      if (CRITERION_ID.test(id) && !out.includes(id)) out.push(id);
+    };
+    if (Array.isArray(t.specCriterionIds)) t.specCriterionIds.forEach(add);
+    add(t.context?.specRepair?.criterionId);
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 const REQUIREMENT_LINE = /^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)(.+?)\s*$/;
 
 function requirementLines(description: string): string[] {
