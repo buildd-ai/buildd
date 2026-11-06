@@ -11,6 +11,7 @@
 import { denyPreToolUse } from './hook-factory';
 import { runnerDenial } from './runner-denial';
 import { isBuilddActionTool } from '@buildd/shared';
+import { resolveStagedReviewMode, assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-self-review';
 import { unrecoveredVerifyFailures, type OpenVerifyFailure } from './error-trace-scanner';
 import { buildSelfReviewChecklist, selfReviewExemption, type SelfReviewTaskInput } from './self-review-checklist';
 
@@ -180,4 +181,29 @@ export function createStagedSelfReviewHook(deps: StagedHookDeps) {
       return {};
     }
   };
+}
+
+/**
+ * Workspace config -> mode and arm. `gitConfig.selfReview` is off | recording |
+ * acting; acting needs `gitConfig.selfReviewExperiment` ({ id, policyVersion,
+ * treatmentFraction, checklistVersion? }) or every task draws control, so an
+ * acting switch without a registered experiment denies nothing.
+ */
+export function resolveStagedConfig(
+  gitConfig: { selfReview?: unknown; selfReviewExperiment?: any } | null | undefined,
+  taskId: string,
+): { mode: StagedMode; arm: StagedArm; propensity?: number } {
+  const exp = gitConfig?.selfReviewExperiment;
+  const mode = resolveStagedReviewMode(
+    gitConfig?.selfReview === 'acting' || gitConfig?.selfReview === 'recording' ? { mode: String(gitConfig.selfReview), checklistVersion: exp?.checklistVersion } : null,
+    { checklistVersion: undefined },
+  );
+  if (mode === 'off') return { mode, arm: 'control' };
+  if (!exp?.id || !taskId) return { mode, arm: 'control', propensity: 1 };
+  try {
+    const drawn = assignStagedReviewArm({ taskId, experiment: { id: String(exp.id), policyVersion: exp.policyVersion ?? 1, treatmentFraction: exp.treatmentFraction } });
+    return { mode, arm: effectiveStagedArm({ mode, arm: drawn.arm }), propensity: drawn.propensity };
+  } catch {
+    return { mode, arm: 'control', propensity: 1 };
+  }
 }

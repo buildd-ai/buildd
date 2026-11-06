@@ -91,6 +91,7 @@ import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
 import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
+import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5512,6 +5513,7 @@ export class WorkerManager {
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // tool activity hook (clears toolInFlight after each tool),
       // and lifecycle hooks (TaskCompleted, SubagentStart, SubagentStop).
+      const stagedCfg = resolveStagedConfig(gitConfig as any, String((task as any).id ?? ''));
       queryOptions.hooks = {
         PreToolUse: [
           ...(readJailPrefixes
@@ -5539,8 +5541,20 @@ export class WorkerManager {
             : []),
           // Self-review recording (self-review-guard.ts): after the verify guard,
           // so its refusal wins. Records only, never denies; off by default.
-          ...(!isCodexTask
+          ...(!isCodexTask && stagedCfg.mode !== 'acting'
             ? [{ hooks: [createSelfReviewGuardHook({ worker, task: task as any, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
+            : []),
+          // Staged self-review acting mode (staged-self-review.ts): treatment
+          // arm is denied once with an intent checklist; control and
+          // recording only record. Replaces the recording-only hook above.
+          ...(!isCodexTask && stagedCfg.mode === 'acting'
+            ? [{ hooks: [createStagedSelfReviewHook({
+                worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
+                record: e => this.addMilestone(worker, { type: 'status', label: `Self-review: ${JSON.stringify(e)}`.slice(0, 300), ts: Date.now() }),
+              })] }]
+            : []),
+          ...(!isCodexTask && stagedCfg.mode === 'acting'
+            ? [{ hooks: [async (input: any) => { if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(worker.id, input.tool_name); return {}; }] }]
             : []),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
