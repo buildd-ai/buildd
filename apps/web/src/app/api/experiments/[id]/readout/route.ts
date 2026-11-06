@@ -23,6 +23,7 @@ import { runTierPoolReadout } from '@buildd/core/tier-pool-admin';
 import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import { runStagedSelfReviewReadout } from '@buildd/core/staged-self-review-readout-source';
+import { evaluateKillCriterion, validateStagedExperimentConfig, STAGED_SELF_REVIEW_FEATURE, type KillCriterion } from '@buildd/core/staged-self-review';
 import { bearerOf, resolveExperimentViewer } from '@/lib/experiment-access';
 import { isTaskToken } from '@/lib/task-token';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';
@@ -76,6 +77,33 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (row.kind === TIER_POOL_EXPERIMENT_KIND) {
     const readout = await runTierPoolReadout({ id: row.id, policyVersion });
     return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
+  }
+  // Staged self-review: the two-arm task readout supplies the verdict; the
+  // pre-registered kill criterion decides. The only outcomes are switch_off
+  // or continue — never "tune the checklist".
+  if (row.kind === STAGED_SELF_REVIEW_FEATURE) {
+    const config = (row.config ?? {}) as Record<string, unknown>;
+    const valid = validateStagedExperimentConfig(config);
+    if (!valid.ok) return NextResponse.json({ error: valid.error }, { status: 422 });
+    const criterion = config.killCriterion as KillCriterion;
+    const readout = await runExperimentReadout({ id: row.id, policyVersion }, { minSamplePerArm: criterion.minSample });
+    const num = (k: string) => {
+      const raw = req.nextUrl.searchParams.get(k);
+      const v = raw === null ? NaN : Number(raw);
+      return Number.isFinite(v) ? v : undefined;
+    };
+    const touchRate = num('touchRate');
+    const flipRate = num('flipRate');
+    const addedCost = num('addedCostPerTask');
+    const killCriterion = evaluateKillCriterion({
+      readout: { verdict: readout.verdict, touchRate, flipRate },
+      criterion,
+      measuredAddedCost: addedCost ?? 0,
+    });
+    return NextResponse.json({
+      experiment: toExperimentDTO(row), policyVersion, readout, health,
+      killCriterion: { ...killCriterion, addedCostMeasured: addedCost !== undefined },
+    });
   }
   if (row.kind !== MODEL_ROUTING_EXPERIMENT_KIND) {
     return NextResponse.json({ error: `No readout for experiment kind '${row.kind}'` }, { status: 422 });
