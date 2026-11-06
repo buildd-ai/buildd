@@ -1,6 +1,12 @@
 import { describe, test, expect } from 'bun:test';
-import { withStagedExperiment } from './staged-review-experiment';
+import { withStagedExperiment, STAGED_EXPERIMENT_KIND } from './staged-review-injection';
 import { resolveStagedConfig } from '../../../../../../runner/src/staged-self-review';
+
+import { STAGED_SELF_REVIEW_FEATURE } from '@buildd/core/staged-self-review';
+
+test('experiment kind mirrors the core constant', () => {
+  expect(STAGED_EXPERIMENT_KIND).toBe(STAGED_SELF_REVIEW_FEATURE);
+});
 
 const exp = { id: 'exp-1', policyVersion: 2, treatmentFraction: 0.5 };
 

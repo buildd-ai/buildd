@@ -61,6 +61,9 @@ export type Owner = ModuleId | 'core';
 
 /** Core run-record helpers whose names also match broader module heuristics. */
 const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
+  // Claim-time hand-off of the running staged self-review experiment to the runner
+  // (docs/specs staged self-review): core claim plumbing; `review`/`experiment` misfile it.
+  'apps/web/src/app/api/workers/claim/staged-review-injection.ts',
   'packages/core/bash-failure-trace.ts',
   // Task/worker outcome eligibility for core forecasts, not stored knowledge.
   'packages/core/task-estimate-evidence.ts',
