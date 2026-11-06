@@ -49,6 +49,7 @@ import { runCriterionBatch, summarizeCriterionBatch } from './criterion-batch';
 import { criterionBatchOf, type CriterionBatchMarker } from '@buildd/shared';
 import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, readMergirafLedgerAsync, reportAgentMerges, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
+import { buildLoopVerificationSection } from './loop-verification-section';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
 import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memory-excludes';
@@ -90,6 +91,8 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
+import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
+import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -544,38 +547,6 @@ interface WorkerSession {
   reapedAt?: number;  // Set by the post-completion watchdog (reapSession) — the abort is cleanup, not an outcome
 }
 
-// Constants for repetition detection
-const MAX_IDENTICAL_TOOL_CALLS = 5;   // Nudge at 5 identical calls; abort at 2×
-const MAX_SIMILAR_TOOL_CALLS = 15;    // Nudge at 15 similar non-benign Bash calls; abort at 2×
-
-// Bash command tokens that are safe exploration — never count toward the repetition check
-const BENIGN_BASH_FIRST_TOKENS = new Set([
-  'cd', 'ls', 'pwd', 'cat', 'head', 'tail', 'grep', 'rg', 'find', 'echo',
-]);
-// git subcommands that are read-only — safe under "git <sub>" or "cd ... && git <sub>"
-const BENIGN_GIT_SUBCOMMANDS = new Set([
-  'diff', 'log', 'show', 'status', 'branch', 'checkout', 'fetch', 'rev-parse', 'cat-file',
-]);
-
-// Strip a leading "cd <path> &&" or "cd <path>;" prefix so we can inspect the real command
-function stripCdPrefix(cmd: string): string {
-  const m = cmd.match(/^cd\s+\S+\s*(?:&&|;)\s*([\s\S]*)/);
-  return m ? m[1].trimStart() : cmd.trimStart();
-}
-
-function isBenignBashCommand(cmd: string): boolean {
-  const effective = stripCdPrefix(cmd);
-  const tokens = effective.split(/\s+/);
-  const first = tokens[0];
-  if (!first) return false;
-  if (BENIGN_BASH_FIRST_TOKENS.has(first)) return true;
-  if (first === 'git') {
-    const sub = tokens[1];
-    return sub !== undefined && BENIGN_GIT_SUBCOMMANDS.has(sub);
-  }
-  return false;
-}
-
 // Check if Claude Code credentials exist (OAuth or API key)
 // We don't validate - just check if credentials exist
 /**
@@ -695,6 +666,7 @@ export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
 import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSED_FOR_UPDATE_ERROR, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
+import { createStuckState, detectRepetition, evaluateStuck, resultSignature, stuckMode, lastLine, type StuckCall } from './stuck-detection.js';
 
 // Cache key for the per-team server-managed credential cache. Prefer the
 // workspace's teamId (team-wide secrets cover all workspaces) and fall back to
@@ -5053,6 +5025,7 @@ export class WorkerManager {
         lastCommitSha: (task.context as any)?.lastCommitSha,
         failureContext: (task.context as any)?.failureContext,
         recoveryRef: (task.context as any)?.recoveryRef,
+        loop: buildLoopVerificationSection({ loopConfig: task.loopConfig, context: task.context as Record<string, unknown> | undefined }) !== null,
         defaultBranch: gitConfig?.defaultBranch || 'main',
       });
       if (retryContinuitySection) {
@@ -5542,6 +5515,7 @@ export class WorkerManager {
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // tool activity hook (clears toolInFlight after each tool),
       // and lifecycle hooks (TaskCompleted, SubagentStart, SubagentStop).
+      const stagedCfg = resolveStagedConfig(gitConfig as any, String((task as any).id ?? ''));
       queryOptions.hooks = {
         PreToolUse: [
           ...(readJailPrefixes
@@ -5566,6 +5540,28 @@ export class WorkerManager {
           // later pass. Claude only: Codex has no PreToolUse seam.
           ...(!isCodexTask
             ? [{ hooks: [createVerifyGuardHook({ worker, isReviewer: Boolean(task.context?.reviewerFor) })] }]
+            : []),
+          // Self-review recording (self-review-guard.ts): after the verify guard,
+          // so its refusal wins. Records only, never denies; off by default.
+          ...(!isCodexTask && stagedCfg.mode !== 'acting'
+            ? [{ hooks: [createSelfReviewGuardHook({ worker, task: task as any, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
+            : []),
+          // Staged self-review acting mode (staged-self-review.ts): treatment
+          // arm is denied once with an intent checklist; control and
+          // recording only record. Replaces the recording-only hook above.
+          ...(!isCodexTask && stagedCfg.mode === 'acting'
+            ? [{ hooks: [createStagedSelfReviewHook({
+                worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
+                record: e => {
+                  // Full structured record rides resultMeta.stagedSelfReview; the
+                  // milestone is only the short human-readable pointer.
+                  (worker.stagedSelfReview ??= []).push({ ...e, ts: Date.now() });
+                  this.addMilestone(worker, { type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: Date.now() });
+                },
+              })] }]
+            : []),
+          ...(!isCodexTask && stagedCfg.mode === 'acting'
+            ? [{ hooks: [async (input: any) => { if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(worker.id, input.tool_name); return {}; }] }]
             : []),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
@@ -6274,6 +6270,7 @@ export class WorkerManager {
           ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
           ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
           ...(fileToolAreas && Object.keys(fileToolAreas).length > 0 ? { fileToolAreas } : {}),
+          ...(worker.stagedSelfReview && worker.stagedSelfReview.length > 0 ? { stagedSelfReview: worker.stagedSelfReview } : {}),
         };
         if (Object.keys(measured).length > 0) {
           if (worker.resultMeta) {
@@ -7343,7 +7340,7 @@ export class WorkerManager {
           }
 
           // Check for repetitive tool calls (infinite loop detection)
-          const repetitionCheck = this.detectRepetitiveToolCalls(worker);
+          const repetitionCheck = detectRepetition(worker.toolCalls);
           if (repetitionCheck.action === 'nudge') {
             if (!worker.loopNudgeSent) {
               worker.loopNudgeSent = true;
@@ -7464,6 +7461,60 @@ export class WorkerManager {
               .filter((b: any) => b && b.type === 'text' && typeof b.text === 'string')
               .map((b: any) => b.text)
               .join('\n');
+          }
+
+          // Stuck detection: resolve the originating call by tool_use_id and record
+          // what the result was (hash only — no text kept). This runs BEFORE the
+          // empty-text and non-execution `continue`s below: an errored result with no
+          // text must still count, and a denied call must be marked so it is skipped.
+          {
+            const outcomeId = block.tool_use_id as string | undefined;
+            const outcomeCall = outcomeId
+              ? [...worker.toolCalls].reverse().find(c => c.toolUseId === outcomeId)
+              : undefined;
+            if (outcomeCall) {
+              const denied = !!(block as any).tool_result_meta?.non_execution_kind;
+              outcomeCall.outcome = {
+                isError: block.is_error === true,
+                sig: resultSignature(text),
+                ...(denied ? { skipped: true } : {}),
+              };
+              if (!denied) {
+                const mode = stuckMode();
+                if (mode !== 'off') {
+                  if (!worker.stuckState) worker.stuckState = createStuckState();
+                  const redactStuck = this.secretRedactors.get(worker.id) ?? ((x: string) => x);
+                  // Join each call with its outcome; unresolved calls are skipped, never success.
+                  // Only the call being resolved carries its last error line, and only for this evaluation.
+                  const stuckCalls: StuckCall[] = worker.toolCalls.map((c, idx) => ({
+                    id: c.toolUseId ?? `call-${idx}`,
+                    name: c.name,
+                    timestamp: c.timestamp,
+                    input: c.input,
+                    isError: c.outcome?.isError,
+                    resultSignature: c.outcome?.sig,
+                    ...(c === outcomeCall && block.is_error === true ? { errorLine: lastLine(text) } : {}),
+                    ...(!c.outcome || c.outcome.skipped ? { nonExecutionKind: 'unresolved' } : {}),
+                  }));
+                  const result = evaluateStuck({ calls: stuckCalls, state: worker.stuckState, mode, redact: redactStuck });
+                  if (result.action !== 'none' && result.signal) {
+                    console.log(
+                      `[Worker ${worker.id}] stuck-detection(${mode}) ${result.signal.scenario} ` +
+                      `length=${result.signal.length} tools=${result.signal.tools.join(',')} callIndex=${result.signal.callIndex}`,
+                    );
+                    if (result.action === 'nudge' && result.message) {
+                      const sessionRef = this.sessions.get(worker.id);
+                      if (sessionRef) {
+                        sessionRef.inputStream.enqueue(
+                          buildUserMessage(result.message, { sessionId: sessionRef.sessionId })
+                        );
+                      }
+                      this.addMilestone(worker, { type: 'status', label: `⚠️ ${result.message}`, ts: Date.now() });
+                    }
+                  }
+                }
+              }
+            }
           }
 
           // tool_result_meta sidecar (SDK 0.3.216+): typed classification of
@@ -7762,101 +7813,6 @@ export class WorkerManager {
     if (worker.messages.length > 200) {
       worker.messages.shift();
     }
-  }
-
-  // Detect if agent is stuck in an infinite loop of repeated tool calls.
-  // Returns:
-  //   action: 'none'  — no problem detected
-  //   action: 'nudge' — threshold hit, send a steering message (do NOT abort)
-  //   action: 'abort' — 2× threshold hit, terminate the worker
-  private detectRepetitiveToolCalls(worker: LocalWorker): {
-    action: 'none' | 'nudge' | 'abort';
-    reason?: string;
-    nudgeMessage?: string;
-  } {
-    // Exclude benign Bash commands from all repetition counting.
-    // This prevents exploration commands like "cd /repo && git diff ...", "ls", etc.
-    // from tripping the guard. Non-Bash tools (Read, Edit, Write, Grep…) are kept.
-    const calls = worker.toolCalls.filter(tc => {
-      if (tc.name === 'Bash') return !isBenignBashCommand((tc.input?.command as string) || '');
-      return true;
-    });
-
-    if (calls.length < MAX_IDENTICAL_TOOL_CALLS) {
-      return { action: 'none' };
-    }
-
-    // ── Identical call check (all non-benign tools) ──────────────────────────
-    const normalizeCallKey = (tc: { name: string; input?: Record<string, unknown> }) => {
-      if (tc.name === 'Read') {
-        // Different offset/limit = distinct reads, so include them in the key
-        return JSON.stringify({
-          name: tc.name,
-          file_path: tc.input?.file_path,
-          offset: tc.input?.offset,
-          limit: tc.input?.limit,
-        });
-      }
-      return JSON.stringify({ name: tc.name, input: tc.input });
-    };
-
-    // Abort at 2× (agent ignored the nudge and kept going)
-    if (calls.length >= 2 * MAX_IDENTICAL_TOOL_CALLS) {
-      const last2x = calls.slice(-2 * MAX_IDENTICAL_TOOL_CALLS);
-      const key = normalizeCallKey(last2x[0]);
-      if (last2x.every(tc => normalizeCallKey(tc) === key)) {
-        return {
-          action: 'abort',
-          reason: `Agent stuck: made ${2 * MAX_IDENTICAL_TOOL_CALLS} identical ${last2x[0].name} calls`,
-        };
-      }
-    }
-
-    // Nudge at 1× threshold
-    {
-      const last1x = calls.slice(-MAX_IDENTICAL_TOOL_CALLS);
-      const key = normalizeCallKey(last1x[0]);
-      if (last1x.every(tc => normalizeCallKey(tc) === key)) {
-        return {
-          action: 'nudge',
-          nudgeMessage: `You've repeated the same ${last1x[0].name} call ${MAX_IDENTICAL_TOOL_CALLS} times — vary your approach or signal completion.`,
-        };
-      }
-    }
-
-    // ── Similar Bash check (non-benign Bash only, full command comparison) ───
-    // Quote-normalise the full command — no 50-char truncation, so commands that
-    // share a long cd-prefix but differ in their actual argument are distinct.
-    const nonBenignBash = calls.filter(tc => tc.name === 'Bash');
-
-    if (nonBenignBash.length >= MAX_SIMILAR_TOOL_CALLS) {
-      const normalizeCmd = (cmd: string) =>
-        cmd.replace(/"[^"]*"/g, '""').replace(/'[^']*'/g, "''");
-
-      // Abort at 2×
-      if (nonBenignBash.length >= 2 * MAX_SIMILAR_TOOL_CALLS) {
-        const last2x = nonBenignBash.slice(-2 * MAX_SIMILAR_TOOL_CALLS);
-        const firstPattern = normalizeCmd((last2x[0].input?.command as string) || '');
-        if (last2x.every(tc => normalizeCmd((tc.input?.command as string) || '') === firstPattern)) {
-          return {
-            action: 'abort',
-            reason: `Agent stuck: made ${2 * MAX_SIMILAR_TOOL_CALLS} similar Bash commands starting with "${firstPattern.slice(0, 30)}..."`,
-          };
-        }
-      }
-
-      // Nudge at 1×
-      const last1x = nonBenignBash.slice(-MAX_SIMILAR_TOOL_CALLS);
-      const firstPattern = normalizeCmd((last1x[0].input?.command as string) || '');
-      if (last1x.every(tc => normalizeCmd((tc.input?.command as string) || '') === firstPattern)) {
-        return {
-          action: 'nudge',
-          nudgeMessage: `You've repeated a near-identical Bash command ${MAX_SIMILAR_TOOL_CALLS} times — vary your approach or signal completion.`,
-        };
-      }
-    }
-
-    return { action: 'none' };
   }
 
   // Close the current reasoning phase as a milestone

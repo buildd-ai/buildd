@@ -31,6 +31,7 @@ import { and, asc, eq, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { knowledgeIngestJobs } from '@buildd/core/db/schema';
 import {
+  capFullIngest,
   classifyIngestCorpus,
   shouldIngestFile,
 } from '@buildd/core/knowledge-store/ingest-filter';
@@ -80,6 +81,7 @@ export interface FallbackProgress {
   chunksUpserted?: number;
   filesSkipped?: number;
   skippedUnchanged?: number;
+  chunksLexicalOnly?: number;
   ticks?: number;
   failures?: number;
   lastError?: string;
@@ -163,7 +165,12 @@ async function resolveSha(deps: FallbackDeps, installationId: number, job: Fallb
   return commit.sha;
 }
 
-async function listTree(deps: FallbackDeps, installationId: number, repo: string, sha: string): Promise<TreeEntry[]> {
+async function listTree(
+  deps: FallbackDeps,
+  installationId: number,
+  repo: string,
+  sha: string,
+): Promise<{ entries: TreeEntry[]; filesOverCeiling: number }> {
   const tree = await deps.github(installationId, `/repos/${repo}/git/trees/${sha}?recursive=1`);
   if (tree?.truncated) {
     throw new FatalFallbackError(
@@ -172,11 +179,14 @@ async function listTree(deps: FallbackDeps, installationId: number, repo: string
     );
   }
   if (!Array.isArray(tree?.tree)) throw new Error(`unexpected tree response for ${repo}@${sha}`);
-  return (tree.tree as Array<{ path: string; type: string; sha: string; size?: number }>)
+  const eligible = (tree.tree as Array<{ path: string; type: string; sha: string; size?: number }>)
     .filter(e => e.type === 'blob')
     .filter(e => classifyIngestCorpus(e.path) !== null && shouldIngestFile(e.path, { sizeBytes: e.size ?? 0 }))
     .map(e => ({ path: e.path, sha: e.sha, size: e.size ?? 0 }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  // Fixed path order, so the cursor stays valid across ticks.
+  const capped = capFullIngest(eligible, e => e.size);
+  return { entries: capped.kept, filesOverCeiling: capped.dropped };
 }
 
 async function fetchBlob(
@@ -286,7 +296,7 @@ export async function runFullIngestFallbackTick(
       if (!progress || progress.sha !== sha) {
         progress = { sha, cursor: 0, startedAt: claimAt.toISOString() };
       }
-      const entries = await listTree(deps, installationId, claimed.repo, sha);
+      const { entries, filesOverCeiling } = await listTree(deps, installationId, claimed.repo, sha);
       progress.total = entries.length;
       progress.ticks = (progress.ticks ?? 0) + 1;
       log(
@@ -308,12 +318,13 @@ export async function runFullIngestFallbackTick(
         }
         const res = files.length > 0
           ? await deps.ingestBatch(claimed.workspaceId, files)
-          : { filesIngested: 0, chunksUpserted: 0, filesSkipped: 0, filesDeleted: 0, skippedUnchanged: 0 };
+          : { filesIngested: 0, chunksUpserted: 0, filesSkipped: 0, filesDeleted: 0, skippedUnchanged: 0, chunksLexicalOnly: 0 };
         progress.cursor += slice.length;
         progress.filesIngested = (progress.filesIngested ?? 0) + res.filesIngested;
         progress.chunksUpserted = (progress.chunksUpserted ?? 0) + res.chunksUpserted;
         progress.filesSkipped = (progress.filesSkipped ?? 0) + res.filesSkipped + unreadable;
         progress.skippedUnchanged = (progress.skippedUnchanged ?? 0) + res.skippedUnchanged;
+        progress.chunksLexicalOnly = (progress.chunksLexicalOnly ?? 0) + (res.chunksLexicalOnly ?? 0);
         progress.failures = 0;
         delete progress.lastError;
         out.filesIngested += res.filesIngested;
@@ -326,7 +337,9 @@ export async function runFullIngestFallbackTick(
       }
 
       if (progress.cursor >= entries.length) {
-        const prunedChunks = await deps.sweep(claimed.workspaceId, new Date(progress.startedAt));
+        // Files past the ceiling were never read, so they were not refreshed:
+        // sweeping would delete their chunks as if the files were gone.
+        const prunedChunks = filesOverCeiling > 0 ? 0 : await deps.sweep(claimed.workspaceId, new Date(progress.startedAt));
         const stats: Record<string, unknown> = {
           ...(claimed.stats ?? {}),
           mode: 'serverless-fallback',
@@ -336,6 +349,8 @@ export async function runFullIngestFallbackTick(
           filesSkipped: progress.filesSkipped ?? 0,
           skippedUnchanged: progress.skippedUnchanged ?? 0,
           chunksUpserted: progress.chunksUpserted ?? 0,
+          ...(progress.chunksLexicalOnly ? { chunksLexicalOnly: progress.chunksLexicalOnly } : {}),
+          ...(filesOverCeiling > 0 ? { ingestTruncated: true, filesOverCeiling } : {}),
           prunedChunks,
           ticks: progress.ticks,
           fallback: progress,

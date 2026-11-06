@@ -258,6 +258,11 @@ describe('session cwd must be a git checkout for a repo task', () => {
   // configured cwd there, not a fallback.
   test('branchingStrategy none still runs in the clone', async () => {
     await runTask(manager, 'acme/widgets', 'w-none', 250, { branchingStrategy: 'none' });
+    // Slow hosts (Windows CI) can need longer than the fixed settle to get
+    // the mocked session going; wait for it rather than a bigger sleep.
+    for (let i = 0; i < 40 && !sessionStarted && !failurePatch('w-none'); i++) {
+      await new Promise(r => setTimeout(r, 100));
+    }
 
     expect(sessionStarted).toBe(true);
     expect(failurePatch('w-none')).toBeUndefined();

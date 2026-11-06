@@ -231,7 +231,10 @@ later ones are proposed (D-4).
   `create_draft` / `revise` `explanation`, stored in
   `spec_revisions.explanation` and never changed afterwards (a trigger refuses
   an UPDATE; a revise that only sends a new one is a 409
-  `explanation_immutable`). Under it, a mechanical coverage check
+  `explanation_immutable`). The explanation may also carry a `question`: one
+  sentence naming the decision the author needs. When present it leads the
+  inbox row and the confirm page above the coverage line, and Review all shows
+  it in place of the summary. Under it, a mechanical coverage check
   (`packages/spec-contract/src/explanation.ts`, no model) against the
   criterion change list: each change explained or listed under Not explained,
   and lines naming something that did not change listed apart. Every line
@@ -1704,6 +1707,14 @@ the fact grades what already shipped.
   and its PR text changes to "Built ahead of approval against revision N,
   re-graded against approved revision M". A failed PR edit is recorded on the
   pin and blocks nothing.
+- R-44a: Work built ahead of approval does not merge to trunk until its pinned
+  revision is approved. The landing function holds a PR whose task carries a
+  provisional pin, based on anything but the mission's integration branch, as
+  `needs_human` / `spec_unapproved` ("built ahead of approval of <spec> rev N").
+  A pin superseded by a newer draft head is held until re-pinned to it and that
+  revision is approved; a pin whose spec has since approved a later revision is
+  held until the re-grade re-pins it (R-39), then lands. Mission-branch merges
+  are never held, so the mission's own PR to trunk carries the hold.
 - R-42: A spec with merged provisional work and no approval for 3 days shows
   in Needs You, to people who may approve it, as "Work shipped against an
   unapproved spec", naming the spec, how many merged tasks and the revision
@@ -1783,6 +1794,12 @@ the fact grades what already shipped.
 - AC-103: GIVEN a provisional pin WHEN its PR body is composed THEN it says
   "Built ahead of approval, against revision N", and after re-grading it says
   which revision was approved (`apps/web/src/lib/specs/provisional-text.test.ts`).
+
+- AC-103a: GIVEN a PR for provisionally pinned work, based on trunk WHEN the
+  landing function runs THEN it holds as `spec_unapproved` naming the spec and
+  revision; a mission-branch base proceeds; a newer draft head says to re-pin to
+  it; a pin re-graded to the approved revision lands
+  (`apps/web/src/lib/specs/ahead-hold.test.ts`, `apps/web/src/lib/pr-landing.test.ts`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/provisional.ts` — `regradeProvisionalPins`, `attachProvisional`, `loadProvisionalNeedsYou`

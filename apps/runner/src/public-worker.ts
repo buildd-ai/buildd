@@ -134,6 +134,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   sessionModel: true,
   reportedModel: true,
   resultMeta: true,
+  stagedSelfReview: true,
   questionGate: true,
   claudeAiArtifacts: true,
   questionPushbacks: true,
@@ -145,6 +146,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   assertionConnectors: true,
   promptSuggestions: true,
   loopNudgeSent: true,
+  stuckState: true, // booleans + a scenario label; no result text
   currentPromptId: true,
   commandLifecycle: true,
   modelCapabilities: true,

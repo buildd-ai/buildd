@@ -122,6 +122,69 @@ describe('the inbox lists what waits on the signed-in person (R-1, AC-1)', () =>
   });
 });
 
+describe('one row per spec, approved revision to head (R-30, AC-31)', () => {
+  test('three stacked unapproved revisions are one row, covering approved to head, measured against the head\'s explanation', async () => {
+    const base = BODY();
+    const s = await draft(wsA, base);
+    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    let version = a.spec.version;
+    const bodies = [`${base}R-2: Rates are cached.\n`, `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\n`];
+    for (const body of bodies) {
+      const r = await reviseSpecDraft(user(member), s.id, { expectedVersion: version, body, changeSummary: 'Adds a rule.' });
+      if (!r.ok) throw new Error(r.error);
+      version = r.spec.version;
+    }
+    // The head explains everything since the approved revision, not just its own step.
+    const head = await reviseSpecDraft(user(member), s.id, {
+      expectedVersion: version, body: `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\nR-4: Rates show their age.\n`, changeSummary: 'Adds R-4.',
+      explanation: { summary: 'Adds R-2 to R-4.', lines: { 'R-2': 'Cache rates.', 'R-3': 'Expire daily.', 'R-4': 'Show the age.' } },
+    });
+    if (!head.ok) throw new Error(head.error);
+
+    const listed = (await listAwaitingApproval(admin)).filter((x) => x.specId === s.id);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ headRevision: 4, approvedRevision: 1, revisionsCovered: 3 });
+
+    const inbox = (await approvalInboxView(admin)).filter((x) => x.specId === s.id);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]!.coverage).toBe('Explanation covers 3 of 3 changes');
+    const { reviewAllView } = await import('../../src/lib/specs/review-all-view');
+    const all = (await reviewAllView(admin)).rows.filter((x) => x.specId === s.id);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ headRevision: 4, approvedRevision: 1, revisionsCovered: 3, coverage: 'Explanation covers 3 of 3 changes' });
+  });
+
+  test('an explanation that covers only the last step leaves the earlier stacked changes not explained', async () => {
+    const base = BODY();
+    const s = await draft(wsA, base);
+    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    const r2 = await reviseSpecDraft(user(member), s.id, { expectedVersion: a.spec.version, body: `${base}R-2: Rates are cached.\n`, changeSummary: 'Adds R-2.' });
+    if (!r2.ok) throw new Error(r2.error);
+    const r3 = await reviseSpecDraft(user(member), s.id, {
+      expectedVersion: r2.spec.version, body: `${base}R-2: Rates are cached.\nR-3: Rates expire daily.\n`, changeSummary: 'Adds R-3.',
+      explanation: { summary: 'Adds R-3.', lines: { 'R-3': 'Expire daily.' } },
+    });
+    if (!r3.ok) throw new Error(r3.error);
+    const row = (await approvalInboxView(admin)).find((x) => x.specId === s.id)!;
+    expect(row.coverage).toBe('Covers 1 of 2: 1 not explained');
+  });
+
+  test('Approve on the row pins the head revision, version and hash', async () => {
+    const base = BODY();
+    const s = await draft(wsA, base);
+    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    const r2 = await reviseSpecDraft(user(member), s.id, { expectedVersion: a.spec.version, body: `${base}R-2: x.\n`, changeSummary: 'a' });
+    if (!r2.ok) throw new Error(r2.error);
+    const r3 = await reviseSpecDraft(user(member), s.id, { expectedVersion: r2.spec.version, body: `${base}R-2: x.\nR-3: y.\n`, changeSummary: 'b' });
+    if (!r3.ok) throw new Error(r3.error);
+    const row = (await listAwaitingApproval(admin)).find((x) => x.specId === s.id)!;
+    expect({ revision: row.headRevision, expectedVersion: row.version, contentHash: row.contentHash }).toEqual(await pinOf(s.id));
+  });
+});
+
 describe('each row opens onto the confirm view, pinned to what it shows (R-2)', () => {
   test('a ready view whose pin is the row\'s revision, version and hash; a member gets no rows', async () => {
     const s = await draft();
@@ -331,5 +394,59 @@ describe('AC-11: a spec that asks an agent to approve it is approved only by a d
     // The person clicks Approve in their browser.
     expect(await approveFromInbox(user(admin), s.id, pin)).toMatchObject({ ok: true });
     expect(await row(s.id)).toMatchObject({ approved_revision: 1 });
+  });
+});
+
+describe('one row per spec, approved revision to head (R-30, R-39)', () => {
+  test('stacked unapproved revisions are one row, diffed from the approved revision; Approve is pinned to the head', async () => {
+    const s = await draft();
+    const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    let version = a.spec.version;
+    for (const n of [2, 3, 4]) {
+      const r = await reviseSpecDraft(user(member), s.id, { expectedVersion: version, body: `${BODY()}R-${n}: Rule ${n}.\n` });
+      if (!r.ok) throw new Error(r.error);
+      version = r.spec.version;
+    }
+    const mine = (await listAwaitingApproval(admin)).filter((x) => x.specId === s.id);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ headRevision: 4, approvedRevision: 1, revisionsCovered: 3 });
+    const inbox = (await approvalInboxView(admin)).filter((r) => r.specId === s.id);
+    expect(inbox).toHaveLength(1);
+    const view = inbox[0]!.view;
+    expect(view?.state === 'ready' && view.replaces).toBe(1);
+    expect(view?.state === 'ready' && view.pin.revision).toBe(4);
+    // A pin on a superseded middle revision is not approvable.
+    const middle = await approveFromInbox(user(admin), s.id, { revision: 3, expectedVersion: version, contentHash: await hashOf(s.id, 3) });
+    expect(middle).toMatchObject({ ok: false });
+    expect(await row(s.id)).toMatchObject({ approved_revision: 1 });
+  });
+});
+
+describe('risk labels: needs judgement first, low-risk grouped after (#5935)', () => {
+  test('a criterion change needs judgement, a wording-only change is low-risk, and judgement rows sort first', async () => {
+    const body = `# Checkout ${rand()}\n\nShoppers pay at the end.\n\nR-1: Totals are in the shopper's currency.\n`;
+    const wording = await draft(wsA, body);
+    const criterion = await draft(wsA, body);
+    for (const s of [wording, criterion]) {
+      const a = await approveSpecRevision(user(admin), s.id, { revision: 1, expectedVersion: 1 });
+      if (!a.ok || 'pending' in a) throw new Error('approve failed');
+    }
+    // Revised in this order so the low-risk one is newest: the sort, not recency, puts judgement first.
+    // The wording-only revision would auto-approve (R-21); skipped here so it waits, as one does when the check could not run.
+    const c = await reviseSpecDraft(user(member), criterion.id, { expectedVersion: (await row(criterion.id)).version, body: `${body}R-2: Rates are cached.\n` });
+    if (!c.ok) throw new Error(c.error);
+    const w = await reviseSpecDraft(user(member), wording.id, { expectedVersion: (await row(wording.id)).version, body: body.replace('Shoppers pay at the end.', 'Shoppers pay once, at the end.') }, { autoApprove: false });
+    if (!w.ok) throw new Error(w.error);
+    const inbox = await approvalInboxView(admin);
+    const of = (id: string) => inbox.find((r) => r.specId === id)!;
+    expect(of(criterion.id).risk).toMatchObject({ level: 'judgement' });
+    expect(of(criterion.id).risk.reasons).toContain('Criterion R-2 was added');
+    expect(of(wording.id).risk).toEqual({ level: 'low-risk', reasons: [] });
+    const firstLow = inbox.findIndex((r) => r.risk.level !== 'judgement');
+    const lastJudgement = inbox.map((r) => r.risk.level).lastIndexOf('judgement');
+    expect(firstLow === -1 || lastJudgement < firstLow).toBe(true);
+    // Low-risk approves nothing by itself.
+    expect(await row(wording.id)).toMatchObject({ approved_revision: 1 });
   });
 });
