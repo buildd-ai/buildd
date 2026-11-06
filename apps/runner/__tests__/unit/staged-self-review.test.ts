@@ -217,3 +217,20 @@ describe('R-6: what a staged task records', () => {
     }
   });
 });
+
+describe('resolveStagedConfig (AC-2 wiring)', () => {
+  const exp = { id: 'e1', policyVersion: 1, treatmentFraction: 1 };
+  test('acting + experiment + fraction 1 draws treatment', async () => {
+    const m = await load();
+    expect(m.resolveStagedConfig({ selfReview: 'acting', selfReviewExperiment: exp }, 'task-1')).toMatchObject({ mode: 'acting', arm: 'treatment' });
+  });
+  test('acting without an experiment never treats', async () => {
+    const m = await load();
+    expect(m.resolveStagedConfig({ selfReview: 'acting' }, 'task-1').arm).toBe('control');
+  });
+  test('recording is never treatment; absent is off', async () => {
+    const m = await load();
+    expect(m.resolveStagedConfig({ selfReview: 'recording', selfReviewExperiment: exp }, 't').arm).toBe('control');
+    expect(m.resolveStagedConfig({}, 't').mode).toBe('off');
+  });
+});
