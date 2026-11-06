@@ -611,15 +611,15 @@ offered.
 
 - Retire *Nothing is fixing it.* and the incident use of the generic
   `no_next_step` PR sentence (G5). The sentence shown MUST say:
-  - what Buildd last did, if anything;
+  - the last action taken, if anything;
   - what it is waiting on, if anything;
   - when it looks again, or which one choice it needs.
-- Example forms, plain words, no internal identifiers beyond PR and task short ids:
-  - waiting: "Waiting for PR #N to land. Buildd checks again at 14:20."
-  - recovering: "PR #N landed; Buildd released its files and restarted task 1a2b3c4d."
-  - inconclusive: "Buildd couldn't confirm this is still happening. It checks again at 14:20."
-  - needs_decision: "Task 1a2b3c4d and PR #N's fix are waiting on each other. Choose one to stop."
-  - recovered: "Recovered at 03:10: task 1a2b3c4d started once PR #N landed."
+- Example forms: name the thing and the action, no first person, no narration. `<task>` and `<PR>` are titles or labels; a task id or PR number is never the headline, only secondary text:
+  - waiting: "Waiting for <PR> to merge. Next check 14:20."
+  - recovering: "<PR> merged. Files released, <task> restarted."
+  - inconclusive: "Not confirmed. Next check 14:20."
+  - needs_decision: "<task> and the fix in <PR> wait on each other. Choose one to stop."
+  - recovered: "Recovered at 03:10: <task> started after <PR> merged."
 - Times are shown in the viewer's timezone, per the timezone-resolution spec.
 - Ages come from the episode (§5 rule 3), never from the incident's first sighting.
 - Words like "fixed", "resolved" or "recovered" appear only for `recovered`.
@@ -1326,8 +1326,7 @@ writer and no notifier. The contract changes are additive (`v` stays 1).
   lands, because the write is first-verdict-wins.
 - **Platform causes.** A decision on a `platform`-scoped cause becomes
   `needs_operator` with `capabilityGap.capability = 'platform_decision'`. A
-  customer's surfaces read *Buildd is working on a platform problem affecting
-  this task* for that gap and for `repair_infrastructure:*` (§17).
+  customer's surfaces read *Platform problem affecting this task* for that gap and for `repair_infrastructure:*` (§17).
 - **Runbooks.** `qa.scrub_immutable_violation` adds one rule to §16.3 step 4:
   the capture re-run waits for the fix task's PR to merge.
   `dispatch.delivery_exhausted` is a family of its own

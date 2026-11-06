@@ -10,7 +10,7 @@ import { experimentAssignments, workers } from './db/schema';
 import {
   classifyStagedReview,
   stagedReviewLabel,
-  stagedReviewRecordsFromMilestones,
+  stagedReviewRecordsFromWorkers,
   type StagedReviewLabel,
   type StagedReviewReadout,
 } from './staged-self-review';
@@ -30,7 +30,7 @@ export function buildStagedReviewTasksQuery(experimentId: string, policyVersion:
 }
 
 export function buildStagedReviewWorkersQuery(taskIds: string[]) {
-  return db.select({ taskId: workers.taskId, milestones: workers.milestones }).from(workers).where(inArray(workers.taskId, taskIds));
+  return db.select({ taskId: workers.taskId, milestones: workers.milestones, resultMeta: workers.resultMeta }).from(workers).where(inArray(workers.taskId, taskIds));
 }
 
 export async function runStagedSelfReviewReadout(
@@ -40,7 +40,7 @@ export async function runStagedSelfReviewReadout(
   const rows = await buildStagedReviewTasksQuery(experiment.id, experiment.policyVersion);
   const taskIds = rows.map(r => r.taskId).filter((id): id is string => !!id);
   const ws = taskIds.length === 0 ? [] : await buildStagedReviewWorkersQuery(taskIds);
-  const { records, skipped } = stagedReviewRecordsFromMilestones(ws);
+  const { records, skipped } = stagedReviewRecordsFromWorkers(ws);
   const readout = classifyStagedReview(records, limits);
   return { ...readout, skipped, label: stagedReviewLabel(readout) };
 }

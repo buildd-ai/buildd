@@ -1,3 +1,4 @@
+import { listProposals, type ProposalRow } from './proposals';
 import { currentFiling, filingViews, filingViewsFrom, type FilingRow, type FilingView } from './filings';
 import { organizeWorkspace } from './organize';
 import { db } from '@buildd/core/db';
@@ -107,6 +108,8 @@ export type SpecListView =
     workspace: { id: string; name: string };
     /** The specs flat, for the index (§19): filings, suggestions and all. */
     index: SpecIndexInput[];
+    /** Unrequested drafts (./proposals.ts), listed apart from approvals. */
+    unrequested: ProposalRow[];
     /** A cold-start taxonomy proposal's areas (§17 R-4), shown as possible areas. */
     proposals: AreaProposal[];
     /** The reader may file, undo, dismiss and accept (write access). */
@@ -233,7 +236,8 @@ export async function specListView(userId: string, workspaceId: string): Promise
     specApprover(caller, workspaceId).catch(() => null),
   ]);
   const proposals = canAct ? await coldStartProposals(caller, workspaceId, r.specs) : [];
-  return { state: 'ok', workspace: ws, index, proposals, canAct, canConfirm: !!approver, now: Date.now() };
+  const unrequested = await listProposals(workspaceId).catch(() => []);
+  return { state: 'ok', workspace: ws, index, proposals, unrequested, canAct, canConfirm: !!approver, now: Date.now() };
 }
 
 /**

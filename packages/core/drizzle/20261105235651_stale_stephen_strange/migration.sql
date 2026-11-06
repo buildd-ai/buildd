@@ -1,0 +1,1 @@
+ALTER TABLE "specs" ADD COLUMN "created_by_task_id" uuid;
