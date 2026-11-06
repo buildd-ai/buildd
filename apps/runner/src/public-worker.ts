@@ -145,6 +145,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   assertionConnectors: true,
   promptSuggestions: true,
   loopNudgeSent: true,
+  stuckState: true, // booleans + a scenario label; no result text
   currentPromptId: true,
   commandLifecycle: true,
   modelCapabilities: true,
