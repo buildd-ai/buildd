@@ -59,11 +59,31 @@ describe('recording mode', () => {
     expect(line).toMatch(/checklist=\[req-1\] \S/); // the checklist text, not only ids
   });
 
+  test('writes a structured answer record with checklist, answers and change flag', async () => {
+    const { hook, milestones } = setup();
+    await hook(complete({ structuredOutput: { selfReview: [{ id: 'req-1', answer: 'met', evidence: 'x' }] } }), undefined, signal);
+    const rec = labels(milestones).find(l => l.startsWith('Self-review record: '))!;
+    const j = JSON.parse(rec.slice('Self-review record: '.length));
+    expect(j).toMatchObject({ outcome: 'eligible', checklistVersion: 1, addedTurns: 0, addedTokens: 0, workChangedAfterDenial: false });
+    expect(j.itemIds).toContain('req-1');
+    expect(j.answers[0].answer).toBe('met');
+  });
+
+  test('record label stays valid JSON when answers carry long evidence', async () => {
+    const { hook, milestones } = setup();
+    const answers = Array.from({ length: 30 }, (_, i) => ({ id: `req-${i}`, answer: 'met', evidence: 'e'.repeat(5000) }));
+    await hook(complete({ structuredOutput: { selfReview: answers } }), undefined, signal);
+    const rec = labels(milestones).find(l => l.startsWith('Self-review record: '))!;
+    expect(rec.length).toBeLessThanOrEqual(1000);
+    const j = JSON.parse(rec.slice('Self-review record: '.length));
+    expect(j.outcome).toBe('eligible');
+  });
+
   test('fires at most once per worker', async () => {
     const { hook, milestones } = setup();
     await hook(complete(), undefined, signal);
     await hook(complete(), undefined, signal);
-    expect(milestones).toHaveLength(1);
+    expect(milestones).toHaveLength(2);
   });
 
   test('exempt tasks record the exemption reason', async () => {
@@ -87,7 +107,7 @@ describe('recording mode', () => {
     const { hook, milestones } = setup();
     await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }, undefined, signal);
     await hook(complete(), undefined, signal); // fires
-    expect(milestones).toHaveLength(1);
+    expect(milestones).toHaveLength(2);
   });
 });
 
