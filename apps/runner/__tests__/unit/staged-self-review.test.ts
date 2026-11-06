@@ -112,8 +112,8 @@ describe('R-3 / AC-3: exemptions never deny and log the reason', () => {
     ['discardEdits', { params: { discardEdits: true, summary: 'x' } }, {}],
     ['reviewer task', { params: { summary: 'x' } }, { kind: 'reviewer' }],
     ['visual-auditor task', { params: { summary: 'x' } }, { kind: 'visual_auditor' }],
-    ['bookkeeping task', { params: { summary: 'x' } }, { kind: 'bookkeeping' }],
-    ['planning task', { params: { summary: 'x' } }, { kind: 'planning' }],
+    ['bookkeeping task', { params: { summary: 'x' } }, { taskClass: 'bookkeeping' }],
+    ['planning task', { params: { summary: 'x' } }, { mode: 'planning' }],
     ['alreadyShippedIn', { params: { alreadyShippedIn: 12, summary: 'x' } }, {}],
     ['output requirement none', { params: { summary: 'x' } }, { outputRequirement: 'none' }],
   ];
