@@ -92,7 +92,7 @@ import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
 import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
-import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
+import { createStagedSelfReviewHook, createStagedRecorder, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5552,12 +5552,7 @@ export class WorkerManager {
           ...(!isCodexTask && stagedCfg.mode === 'acting'
             ? [{ hooks: [createStagedSelfReviewHook({
                 worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
-                record: e => {
-                  // Full structured record rides resultMeta.stagedSelfReview; the
-                  // milestone is only the short human-readable pointer.
-                  (worker.stagedSelfReview ??= []).push({ ...e, ts: Date.now() });
-                  this.addMilestone(worker, { type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: Date.now() });
-                },
+                record: createStagedRecorder(worker, m => this.addMilestone(worker, m)),
               })] }]
             : []),
           ...(!isCodexTask && stagedCfg.mode === 'acting'
