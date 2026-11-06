@@ -91,8 +91,9 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
+import { deriveSpecCriterionIds } from './self-review-checklist';
 import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
-import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
+import { stagedSelfReviewPreToolUse, createStagedRecorder, resolveStagedConfig, stagedGitConfig } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5515,7 +5516,7 @@ export class WorkerManager {
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // tool activity hook (clears toolInFlight after each tool),
       // and lifecycle hooks (TaskCompleted, SubagentStart, SubagentStop).
-      const stagedCfg = resolveStagedConfig(gitConfig as any, String((task as any).id ?? ''));
+      const stagedCfg = resolveStagedConfig(stagedGitConfig(gitConfig as any, (task as any).workspace?.gitConfig) as any, String((task as any).id ?? ''));
       queryOptions.hooks = {
         PreToolUse: [
           ...(readJailPrefixes
@@ -5544,25 +5545,17 @@ export class WorkerManager {
           // Self-review recording (self-review-guard.ts): after the verify guard,
           // so its refusal wins. Records only, never denies; off by default.
           ...(!isCodexTask && stagedCfg.mode !== 'acting'
-            ? [{ hooks: [createSelfReviewGuardHook({ worker, task: task as any, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
+            ? [{ hooks: [createSelfReviewGuardHook({ worker, task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task), taskClass: (task as any).taskClass ?? null, mode: (task as any).mode ?? null }, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
             : []),
           // Staged self-review acting mode (staged-self-review.ts): treatment
           // arm is denied once with an intent checklist; control and
           // recording only record. Replaces the recording-only hook above.
-          ...(!isCodexTask && stagedCfg.mode === 'acting'
-            ? [{ hooks: [createStagedSelfReviewHook({
-                worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
-                record: e => {
-                  // Full structured record rides resultMeta.stagedSelfReview; the
-                  // milestone is only the short human-readable pointer.
-                  (worker.stagedSelfReview ??= []).push({ ...e, ts: Date.now() });
-                  this.addMilestone(worker, { type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: Date.now() });
-                },
-              })] }]
-            : []),
-          ...(!isCodexTask && stagedCfg.mode === 'acting'
-            ? [{ hooks: [async (input: any) => { if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(worker.id, input.tool_name); return {}; }] }]
-            : []),
+          ...stagedSelfReviewPreToolUse({
+            cfg: stagedCfg, isCodexTask, worker,
+            task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task), taskClass: (task as any).taskClass ?? null, mode: (task as any).mode ?? null },
+            record: createStagedRecorder(worker, m => this.addMilestone(worker, m)),
+            hookOverrides: { turns: () => worker.assistantTurns },
+          }),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
           // so a command it refuses never waits. See deps-gate.ts.
@@ -7195,6 +7188,7 @@ export class WorkerManager {
     }
 
     if (msg.type === 'assistant') {
+      worker.assistantTurns = (worker.assistantTurns ?? 0) + 1;
       // A steering message this reply answers has been read (instruction-acks.ts).
       this.acknowledgeInstructions(worker.id, this.instructionAcks.onAssistant(worker.id, msg as any));
 

@@ -53,7 +53,7 @@ import {
 import { isMeasuredForKind, type BuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
 import { loadMeasurementsSafe, measurementFor, type MeasurementReason, type StoredMeasurement } from './decision-model-measurements';
 import type { ChallengerRunInput, DecisionLedgerInput } from './decision-ledger';
-import { assignExperimentArm, type ExperimentAssignment } from './experiment-randomizer';
+import { assignExperimentArm, type ExperimentAssignment } from './arm-randomizer';
 import type { DecisionReplayCapture } from './decision-replay';
 
 export interface BuilddDecisionScope {

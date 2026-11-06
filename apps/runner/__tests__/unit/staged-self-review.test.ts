@@ -105,6 +105,30 @@ describe('R-3 / AC-2: fires at most once per worker', () => {
   });
 });
 
+describe('R-3: staged state survives hook rebuilds on one worker', () => {
+  const rebuild = async (worker: any, records: any[]) => {
+    const m = await load();
+    return m.createStagedSelfReviewHook({
+      worker, task: TASK, mode: 'acting', arm: 'treatment', openFailures: () => [],
+      record: (e: any) => { records.push(e); (worker.stagedSelfReview ??= []).push(e); }, log: () => {},
+    } as any);
+  };
+
+  test('a second hook for the same worker never denies', async () => {
+    const worker: any = { id: 'w-rebuild' };
+    const records: any[] = [];
+    const first = await rebuild(worker, records);
+    expect(denied(await first(completion()))).toBe(true);
+    const second = await rebuild(worker, records);
+    // The open denial carries over, so this answers it (recorded), not a new denial.
+    expect(denied(await second(completion({ summary: 'answered' })))).toBe(false);
+    const third = await rebuild(worker, records);
+    expect(denied(await third(completion()))).toBe(false);
+    expect(records.filter(r => r.outcome === 'denied')).toHaveLength(1);
+    expect(records.filter(r => r.outcome === 'answered')).toHaveLength(1);
+  });
+});
+
 describe('R-3 / AC-3: exemptions never deny and log the reason', () => {
   const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
     ['error report', { params: { error: 'could not do it' } }, {}],
@@ -112,8 +136,8 @@ describe('R-3 / AC-3: exemptions never deny and log the reason', () => {
     ['discardEdits', { params: { discardEdits: true, summary: 'x' } }, {}],
     ['reviewer task', { params: { summary: 'x' } }, { kind: 'reviewer' }],
     ['visual-auditor task', { params: { summary: 'x' } }, { kind: 'visual_auditor' }],
-    ['bookkeeping task', { params: { summary: 'x' } }, { kind: 'bookkeeping' }],
-    ['planning task', { params: { summary: 'x' } }, { kind: 'planning' }],
+    ['bookkeeping task', { params: { summary: 'x' } }, { taskClass: 'bookkeeping' }],
+    ['planning task', { params: { summary: 'x' } }, { mode: 'planning' }],
     ['alreadyShippedIn', { params: { alreadyShippedIn: 12, summary: 'x' } }, {}],
     ['output requirement none', { params: { summary: 'x' } }, { outputRequirement: 'none' }],
   ];
@@ -218,6 +242,35 @@ describe('R-6: what a staged task records', () => {
   });
 });
 
+describe('R-6: turn clock wiring (workers.ts hookOverrides.turns)', () => {
+  test('addedTurns is non-null and counts assistant turns between denial and answer', async () => {
+    const m = await load();
+    const records: any[] = [];
+    const worker: any = { id: 'w-turns', assistantTurns: 3 };
+    const [entry] = m.stagedSelfReviewPreToolUse({
+      cfg: { mode: 'acting', arm: 'treatment', propensity: 0.5 },
+      isCodexTask: false,
+      worker,
+      task: TASK as any,
+      record: (e: any) => records.push(e),
+      hookOverrides: { turns: () => worker.assistantTurns, openFailures: () => [], log: () => {} },
+    });
+    const hook = entry.hooks[0];
+    expect(denied(await hook(completion()))).toBe(true);
+    worker.assistantTurns += 2; // two assistant messages while answering
+    await hook(completion({ summary: 'ok', structuredOutput: { selfReview: [{ id: 'x', answer: 'met', evidence: 'because' }] } }));
+    const answered = records.find(r => r.outcome === 'answered');
+    expect(answered.addedTurns).toBe(2);
+  });
+
+  test('without a turn source addedTurns stays null', async () => {
+    const { hook, records } = await setup();
+    await hook(completion());
+    await hook(completion({ summary: 'ok', structuredOutput: { selfReview: [{ id: 'x', answer: 'met', evidence: 'b' }] } }));
+    expect(records.find(r => r.outcome === 'answered').addedTurns).toBeNull();
+  });
+});
+
 describe('resolveStagedConfig (AC-2 wiring)', () => {
   const exp = { id: 'e1', policyVersion: 1, treatmentFraction: 1 };
   test('acting + experiment + fraction 1 draws treatment', async () => {
@@ -227,6 +280,21 @@ describe('resolveStagedConfig (AC-2 wiring)', () => {
   test('acting without an experiment never treats', async () => {
     const m = await load();
     expect(m.resolveStagedConfig({ selfReview: 'acting' }, 'task-1').arm).toBe('control');
+  });
+  test('claimed workspace experiment reaches the draw (fetched config has none)', async () => {
+    const m = await load();
+    // getWorkspaceConfig never carries the experiment; the claim response does.
+    const fetched = { selfReview: 'acting' };
+    const claimed = { selfReview: 'acting', selfReviewExperiment: exp };
+    expect(m.resolveStagedConfig(fetched, 'task-1').arm).toBe('control');
+    const merged = m.stagedGitConfig(fetched, claimed);
+    expect(m.resolveStagedConfig(merged, 'task-1')).toMatchObject({ mode: 'acting', arm: 'treatment', propensity: 1 });
+  });
+  test('stagedGitConfig keeps the fetched config when the claim has no experiment', async () => {
+    const m = await load();
+    const fetched = { selfReview: 'acting' };
+    expect(m.stagedGitConfig(fetched, undefined)).toBe(fetched);
+    expect(m.stagedGitConfig(fetched, { selfReview: 'acting' })).toBe(fetched);
   });
   test('recording is never treatment; absent is off', async () => {
     const m = await load();

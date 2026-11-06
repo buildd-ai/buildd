@@ -524,9 +524,6 @@
     "packages/core/task-area-prediction-source.ts": {
       "packages/core/knowledge-store/pg-vector-store.ts": "knowledge"
     },
-    "packages/core/task-area-prediction.ts": {
-      "packages/core/experiment-randomizer.ts": "experiments"
-    },
     "packages/core/task-routing-preview.ts": {
       "packages/core/model-tier-defaults.ts": "model-tiers",
       "packages/core/role-model-routing.ts": "roles-skills"

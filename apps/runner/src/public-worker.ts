@@ -135,6 +135,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   reportedModel: true,
   resultMeta: true,
   stagedSelfReview: true,
+  assistantTurns: true,
   questionGate: true,
   claudeAiArtifacts: true,
   questionPushbacks: true,

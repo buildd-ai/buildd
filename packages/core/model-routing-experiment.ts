@@ -27,7 +27,7 @@
  *   row records `served: false`. Deferring would drop exactly the treatment
  *   tasks that landed on old runners — a selection effect on the arm.
  */
-import { assignExperimentArm, resolveEnrolmentFraction } from './experiment-randomizer';
+import { assignExperimentArm, resolveEnrolmentFraction } from './arm-randomizer';
 import { isReviewerTask, resolveInheritanceParent } from './experiment-lineage';
 import { mapRouterAlias } from './model-tier-registry';
 import { TIERS, type Tier as RegistryTier } from './model-tier-defaults';
