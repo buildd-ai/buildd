@@ -1225,6 +1225,8 @@ export interface ResultMeta {
    * that predate the capture or made no file tool call.
    */
   fileToolAreas?: Record<string, Record<string, number>>;
+  /** Full staged self-review records (mode, arm, outcome, checklist ids, answers, tool calls, added turns/tokens, change flag), in order. */
+  stagedSelfReview?: Array<Record<string, unknown>>;
   /**
    * Outcome of the one-shot "closing turn" the runner gives a session that
    * ended without the agent calling `complete_task`, before it falls back to
@@ -4222,7 +4224,7 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'tier_pool' | 'heartbeat_triage' | 'question_gate' | 'staged_self_review'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.

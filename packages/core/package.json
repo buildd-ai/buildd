@@ -13,6 +13,7 @@
     "./ui-verification": "./ui-verification.ts",
     "./decision-kind-ui-copy": "./decision-kind-ui-copy.ts",
     "./db": "./db/index.ts",
+    "./staged-self-review": "./staged-self-review.ts",
     "./run-evidence": "./run-evidence.ts",
     "./artifact-redaction": "./artifact-redaction.ts",
     "./artifact-read": "./artifact-read.ts",
@@ -340,6 +341,7 @@
     "./prompted-decision": "./prompted-decision.ts",
     "./prompt-catalog": "./prompt-catalog.ts",
     "./prompt-seed": "./prompt-seed.ts",
+    "./staged-self-review-readout-source": "./staged-self-review-readout-source.ts",
     "./prompt-seed-source": "./prompt-seed-source.ts"
   },
   "dependencies": {
