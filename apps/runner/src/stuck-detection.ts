@@ -177,13 +177,16 @@ export interface StuckCall {
   nonExecutionKind?: string;
 }
 
-const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob']);
+const COUNTED_FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
-/** Read-only exploration: failing here is normal and says nothing about being stuck. */
-function isReadOnlyCall(tc: Pick<StuckCall, 'name' | 'input'>): boolean {
-  if (READ_ONLY_TOOLS.has(tc.name)) return true;
-  if (tc.name === 'Bash') return isBenignBashCommand((tc.input?.command as string) || '');
-  return false;
+/**
+ * Whitelist of tools whose outcome counts toward a stuck scenario (R-3):
+ * non-benign Bash, file-mutating tools and MCP tools. Everything else (Read,
+ * Grep, Glob, LS, TodoWrite, WebFetch, Task, ...) is neither counted nor a break.
+ */
+function isCountedTool(tc: Pick<StuckCall, 'name' | 'input'>): boolean {
+  if (tc.name === 'Bash') return !isBenignBashCommand((tc.input?.command as string) || '');
+  return COUNTED_FILE_TOOLS.has(tc.name) || tc.name.startsWith('mcp__') || isBuilddActionTool(tc.name);
 }
 
 // gh subcommands that wait on or read CI/PR state: polling, not action.
@@ -206,11 +209,11 @@ function isPollingCall(tc: Pick<StuckCall, 'name' | 'input'>): boolean {
 
 /**
  * Calls that neither count toward nor break an outcome scenario: denied or
- * unresolved calls, read-only exploration, and polling. Shared by the error
+ * unresolved calls, tools outside the counted whitelist, and polling. Shared by the error
  * streak and alternation detectors so both agree on what "noise" is.
  */
 export function isIgnoredCall(tc: StuckCall): boolean {
-  return !!tc.nonExecutionKind || isReadOnlyCall(tc) || isPollingCall(tc);
+  return !!tc.nonExecutionKind || !isCountedTool(tc) || isPollingCall(tc);
 }
 
 // ── Error streak ─────────────────────────────────────────────────────────────
