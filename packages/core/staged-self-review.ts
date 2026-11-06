@@ -142,3 +142,40 @@ export function stagedReviewFootprint<T>(
   deps.initState?.();
   return deps.draw();
 }
+
+const SELF_REVIEW_PREFIX = 'Self-review: {';
+
+/**
+ * Stored records -> readout input. The runner writes each stage outcome as a
+ * `Self-review: {json}` status milestone; only `answered` entries carry a
+ * checklist answer. Labels with the prefix that do not parse (e.g. truncated) are
+ * counted in `skipped`; labels without the prefix are ignored.
+ */
+export function stagedReviewRecordsFromMilestones(
+  workersRows: readonly { taskId?: string | null; milestones?: unknown }[],
+): { records: StagedReviewRecord[]; skipped: number } {
+  const records: StagedReviewRecord[] = [];
+  let skipped = 0;
+  for (const w of workersRows) {
+    if (!Array.isArray(w.milestones)) continue;
+    for (const m of w.milestones as { label?: unknown }[]) {
+      const text = typeof m?.label === 'string' ? m.label : '';
+      if (!text.startsWith(SELF_REVIEW_PREFIX)) continue;
+      try {
+        // Runner caps labels at 300 chars, so long records arrive truncated and fail here: counted as skipped.
+        const e = JSON.parse(text.slice('Self-review: '.length)) as Record<string, unknown>;
+        if (e.outcome !== 'answered') continue;
+        const answers = Array.isArray(e.answers)
+          ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
+          : ['unanswered'];
+        records.push({
+          taskId: w.taskId ?? undefined,
+          toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
+          changedAfterDenial: e.workChangedAfterDenial === true,
+          answers,
+        });
+      } catch { skipped++; }
+    }
+  }
+  return { records, skipped };
+}
