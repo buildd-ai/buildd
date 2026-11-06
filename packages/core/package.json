@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.391.0",
+  "version": "0.392.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,7 @@
     "./ui-verification": "./ui-verification.ts",
     "./decision-kind-ui-copy": "./decision-kind-ui-copy.ts",
     "./db": "./db/index.ts",
-    "./staged-self-review": "./staged-self-review.ts",
+    "./staged-draw": "./staged-draw.ts",
     "./run-evidence": "./run-evidence.ts",
     "./artifact-redaction": "./artifact-redaction.ts",
     "./artifact-read": "./artifact-read.ts",
@@ -125,7 +125,7 @@
     "./memory-digest-readout-source": "./memory-digest-readout-source.ts",
     "./memory-digest-guardrail-monitor": "./memory-digest-guardrail-monitor.ts",
     "./experiment-cleanup": "./experiment-cleanup.ts",
-    "./experiment-randomizer": "./experiment-randomizer.ts",
+    "./arm-randomizer": "./arm-randomizer.ts",
     "./experiment-lineage": "./experiment-lineage.ts",
     "./model-routing-experiment": "./model-routing-experiment.ts",
     "./model-routing-experiment-source": "./model-routing-experiment-source.ts",

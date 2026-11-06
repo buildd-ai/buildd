@@ -11,7 +11,7 @@
 import { denyPreToolUse } from './hook-factory';
 import { runnerDenial } from './runner-denial';
 import { isBuilddActionTool } from '@buildd/shared';
-import { resolveStagedReviewMode, assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-self-review';
+import { resolveStagedReviewMode, assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-draw';
 import { unrecoveredVerifyFailures, type OpenVerifyFailure } from './error-trace-scanner';
 import { buildSelfReviewChecklist, selfReviewExemption, type SelfReviewTaskInput } from './self-review-checklist';
 
@@ -99,6 +99,24 @@ function reason(c: IntentChecklist): string {
     ...c.items.map((i, n) => `${n + 1}. [${i.id}] ${i.text}`),
     'Put answers in structuredOutput.selfReview as [{ id, answer: "met" | "unmet" | "n/a", evidence }]. If an item is unmet, fix it first.',
   ].join('\n');
+}
+
+/**
+ * The record() sink: appends each staged task's full entry (checklist ids,
+ * answers, toolCallsBetween, addedTurns/Tokens, workChangedAfterDenial) to
+ * worker.stagedSelfReview, which the completion report copies into
+ * resultMeta.stagedSelfReview for the readout. The milestone is only the short
+ * human-readable pointer.
+ */
+export function createStagedRecorder(
+  worker: { stagedSelfReview?: Array<Record<string, unknown>> },
+  addMilestone: (m: { type: 'status'; label: string; ts: number }) => void,
+  now: () => number = Date.now,
+): (entry: StagedEntry) => void {
+  return e => {
+    (worker.stagedSelfReview ??= []).push({ ...e, ts: now() });
+    addMilestone({ type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: now() });
+  };
 }
 
 export function createStagedSelfReviewHook(deps: StagedHookDeps) {
@@ -206,4 +224,46 @@ export function resolveStagedConfig(
   } catch {
     return { mode, arm: 'control', propensity: 1 };
   }
+}
+
+/**
+ * The fetched workspace config, with the running experiment taken from the
+ * claimed task's workspace. The claim route attaches `selfReviewExperiment`
+ * there (claim/staged-arm.ts); getWorkspaceConfig never does, so
+ * without this merge every acting task draws control at propensity 1.
+ */
+export function stagedGitConfig<T extends { selfReviewExperiment?: unknown } | null | undefined>(
+  fetched: T,
+  claimed: { selfReviewExperiment?: unknown } | null | undefined,
+): T {
+  const exp = claimed?.selfReviewExperiment;
+  if (!exp) return fetched;
+  return { ...(fetched ?? {}), selfReviewExperiment: exp } as T;
+}
+
+/**
+ * The PreToolUse matcher entries the runner registers for acting mode: the
+ * deny-once hook, then the tool-call counter. Empty for Codex (no PreToolUse
+ * seam) and for any mode but acting. workers.ts spreads this into the chain
+ * after the verify guard; tests drive the same function.
+ */
+export function stagedSelfReviewPreToolUse(opts: {
+  cfg: { mode: StagedMode; arm: StagedArm; propensity?: number };
+  isCodexTask: boolean;
+  worker: StagedHookDeps['worker'];
+  task: StagedTask;
+  record: (entry: StagedEntry) => void;
+  hookOverrides?: Partial<StagedHookDeps>;
+}): { hooks: ((input: any) => Promise<Record<string, unknown>>)[] }[] {
+  if (opts.isCodexTask || opts.cfg.mode !== 'acting') return [];
+  return [
+    { hooks: [createStagedSelfReviewHook({
+      worker: opts.worker, task: opts.task, mode: opts.cfg.mode, arm: opts.cfg.arm,
+      propensity: opts.cfg.propensity, record: opts.record, ...opts.hookOverrides,
+    })] },
+    { hooks: [async (input: any) => {
+      if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(opts.worker.id, input.tool_name);
+      return {};
+    }] },
+  ];
 }

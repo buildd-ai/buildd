@@ -228,6 +228,21 @@ describe('resolveStagedConfig (AC-2 wiring)', () => {
     const m = await load();
     expect(m.resolveStagedConfig({ selfReview: 'acting' }, 'task-1').arm).toBe('control');
   });
+  test('claimed workspace experiment reaches the draw (fetched config has none)', async () => {
+    const m = await load();
+    // getWorkspaceConfig never carries the experiment; the claim response does.
+    const fetched = { selfReview: 'acting' };
+    const claimed = { selfReview: 'acting', selfReviewExperiment: exp };
+    expect(m.resolveStagedConfig(fetched, 'task-1').arm).toBe('control');
+    const merged = m.stagedGitConfig(fetched, claimed);
+    expect(m.resolveStagedConfig(merged, 'task-1')).toMatchObject({ mode: 'acting', arm: 'treatment', propensity: 1 });
+  });
+  test('stagedGitConfig keeps the fetched config when the claim has no experiment', async () => {
+    const m = await load();
+    const fetched = { selfReview: 'acting' };
+    expect(m.stagedGitConfig(fetched, undefined)).toBe(fetched);
+    expect(m.stagedGitConfig(fetched, { selfReview: 'acting' })).toBe(fetched);
+  });
   test('recording is never treatment; absent is off', async () => {
     const m = await load();
     expect(m.resolveStagedConfig({ selfReview: 'recording', selfReviewExperiment: exp }, 't').arm).toBe('control');

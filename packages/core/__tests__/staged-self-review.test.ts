@@ -16,9 +16,9 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { stagedReviewRecordsFromMilestones, classifyStagedReview } from '../staged-self-review';
+import { stagedReviewRecordsFromMilestones, stagedReviewRecordsFromWorkers, classifyStagedReview, stagedReviewLabel } from '../staged-draw';
 
-const load = () => import('../staged-self-review');
+const load = () => import('../staged-draw');
 
 describe('R-4: off by default, with a recording mode', () => {
   test('R-4: no stored row means off; recording and acting are recognised', async () => {
@@ -148,5 +148,48 @@ describe('stagedReviewRecordsFromMilestones', () => {
   test('reads edits as a flip', () => {
     const { records } = stagedReviewRecordsFromMilestones([{ milestones: [label({ outcome: 'answered', answers: [{ answer: 'unmet' }], toolCallsBetween: ['Edit'], workChangedAfterDenial: true })] }]);
     expect(classifyStagedReview(records).flipRate).toBe(1);
+  });
+});
+
+describe('stagedReviewLabel (one readout for /readout and /staged-readout)', () => {
+  const label = (o: object) => ({ type: 'status', label: `Self-review: ${JSON.stringify(o)}` });
+  const answered = (o: object) => label({ outcome: 'answered', ...o });
+  const stamped = { answers: [{ id: 'a', answer: 'met' }], toolCallsBetween: [], workChangedAfterDenial: false };
+  const milestones = (n: number) => Array.from({ length: n }, (_, i) => ({ taskId: `t${i}`, milestones: [answered(stamped)] }));
+
+  test('an empty cohort is no_records, never a stamp', () => {
+    expect(stagedReviewLabel(classifyStagedReview([]))).toBe('no_records');
+  });
+  test('untouched, unchanged, all-met answers are rubber_stamped', () => {
+    const { records } = stagedReviewRecordsFromMilestones(milestones(10));
+    expect(stagedReviewLabel(classifyStagedReview(records))).toBe('rubber_stamped');
+  });
+  test('answers that touch and flip the work are not_rubber_stamped', () => {
+    const { records } = stagedReviewRecordsFromMilestones([{ taskId: 'x', milestones: [answered({ answers: [{ answer: 'unmet' }], toolCallsBetween: ['Edit'], workChangedAfterDenial: true })] }]);
+    expect(stagedReviewLabel(classifyStagedReview(records))).toBe('not_rubber_stamped');
+  });
+  test('a truncated label is skipped, not counted as a record', () => {
+    const { records, skipped } = stagedReviewRecordsFromMilestones([{ taskId: 'x', milestones: [{ label: 'Self-review: {"outcome":"answered","answers":[{"id"' }] }]);
+    expect(records).toHaveLength(0);
+    expect(skipped).toBe(1);
+    expect(stagedReviewLabel(classifyStagedReview(records))).toBe('no_records');
+  });
+});
+describe('stagedReviewRecordsFromWorkers (AC-8)', () => {
+  test('reads resultMeta.stagedSelfReview with only short milestone labels -> rubberStamped', () => {
+    const meta = (o: object) => ({ stagedSelfReview: [{ outcome: 'denied', ts: 1 }, { ...o, ts: 2 }] });
+    const rows = Array.from({ length: 3 }, (_, i) => ({
+      taskId: `t${i}`,
+      milestones: [{ type: 'status', label: 'Self-review: answered (treatment, acting)' }],
+      resultMeta: meta({ outcome: 'answered', answers: [{ id: 'a', answer: 'met' }], toolCallsBetween: [], workChangedAfterDenial: false }),
+    }));
+    const { records, skipped } = stagedReviewRecordsFromWorkers(rows);
+    expect(records).toHaveLength(3);
+    expect(skipped).toBe(0);
+    expect(classifyStagedReview(records).rubberStamped).toBe(true);
+  });
+  test('falls back to legacy JSON milestones when resultMeta has no records', () => {
+    const { records } = stagedReviewRecordsFromWorkers([{ resultMeta: null, milestones: [{ label: 'Self-review: {"outcome":"answered","answers":[{"answer":"met"}]}' }] }]);
+    expect(records).toHaveLength(1);
   });
 });

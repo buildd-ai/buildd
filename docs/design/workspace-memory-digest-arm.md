@@ -12,7 +12,7 @@ assertions:
   - id: "randomiser-extraction"
     type: "symbol"
     name: "assignExperimentArm"
-    path: "packages/core/experiment-randomizer.ts"
+    path: "packages/core/arm-randomizer.ts"
 ---
 
 # workspace-memory-digest-arm

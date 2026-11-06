@@ -19,7 +19,7 @@
  * arms inside a mission. The draw is deterministic on the mission id, so no
  * stored row is needed to keep a mission in its arm.
  */
-import { assignExperimentArm } from './experiment-randomizer';
+import { assignExperimentArm } from './arm-randomizer';
 
 export const HEARTBEAT_TRIAGE_EXPERIMENT_KIND = 'heartbeat_triage' as const;
 

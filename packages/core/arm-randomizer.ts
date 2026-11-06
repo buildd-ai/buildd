@@ -14,7 +14,7 @@
  * experiment to use it — task-area prediction, see `./task-area-prediction.ts`
  * — draws its arm server-side, at claim time, where the knowledge store is
  * reachable and the runner's module graph is not. There is exactly one copy:
- * any runner-side caller imports `@buildd/core/experiment-randomizer` directly.
+ * any runner-side caller imports `@buildd/core/arm-randomizer` directly.
  * Two copies of a version-salted draw that are supposed to agree, but are free
  * to drift, would make an arm assignment depend on which process asked.
  *
