@@ -6,6 +6,8 @@ import { countOf } from '@/lib/plural';
 import Card from '@/components/ui/Card';
 import Section from '@/components/ui/Section';
 import PrimaryAction from '@/components/ui/PrimaryAction';
+import MobileTopBarAction from '@/components/MobileTopBarAction';
+import { MOBILE_TOP_BAR_ACTION_CLASS } from '@/components/MobileTopBar';
 import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import { personalRoleEditorPath } from '@/lib/personal-roles-shared';
 import { displayTaskTitle } from '@/lib/task-title';
@@ -195,8 +197,15 @@ export function TeamGrid({
 
   return (
     <div className="space-y-8">
+      {/* Phones: New agent rides in the top bar, not on a row of its own. */}
+      {canCreateAny && (
+        <MobileTopBarAction>
+          <Link href={newRoleHref} data-testid="new-agent-mobile" className={`${MOBILE_TOP_BAR_ACTION_CLASS} btn-primary`}>New agent</Link>
+        </MobileTopBarAction>
+      )}
       {(canCreateAny || totalActiveWorkerCount > 0) && (
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        // With no one running, the row only holds New agent: a phone drops it.
+        <div data-testid="team-header-row" className={`${totalActiveWorkerCount > 0 ? 'flex' : 'hidden md:flex'} flex-wrap items-center justify-between gap-3`}>
           {totalActiveWorkerCount > 0 ? (
             <StatePill
               state="running"
@@ -204,7 +213,7 @@ export function TeamGrid({
               trailing={idleRoles.length > 0 && activeRoles.length > 0 ? `· ${idleRoles.length} idle` : undefined}
             />
           ) : <span />}
-          {canCreateAny && <PrimaryAction href={newRoleHref}>New agent</PrimaryAction>}
+          {canCreateAny && <PrimaryAction href={newRoleHref} className="hidden md:inline-flex">New agent</PrimaryAction>}
         </div>
       )}
 

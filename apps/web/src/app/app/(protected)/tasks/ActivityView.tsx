@@ -69,6 +69,15 @@ export interface ActivityViewProps {
   initialFilters?: { scope?: ActivityScope; outcome?: ActivityOutcome; who?: ActivityWho };
   /** "For me" / "Filed by me" can be answered from recorded lineage; otherwise they are not offered. */
   identityFilters?: boolean;
+  /** The newest merged delivery in the window: quiet Now's one pointer (R-24). Null when none. */
+  lastMerged?: LastMerged | null;
+}
+
+/** One merged delivery, for quiet Now's pointer. `mergedAt` is epoch ms. */
+export interface LastMerged {
+  id: string;
+  title: string;
+  mergedAt: number;
 }
 
 /** History's outcome chips, in the prototype's words. */
@@ -89,7 +98,7 @@ const WHO: ReadonlyArray<{ key: ActivityWho; label: string }> = [
 
 export { age };
 
-export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], loadError = false, historyReach = null, initialFilters, identityFilters = false }: ActivityViewProps) {
+export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], loadError = false, historyReach = null, initialFilters, identityFilters = false, lastMerged = null }: ActivityViewProps) {
   const [outcome, setOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
   const [whoPicked, setWho] = useState<ActivityWho>(initialFilters?.who ?? 'all');
   // Without reliable lineage there is no identity filter: everything shows.
@@ -135,7 +144,7 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
             <a href={hrefs[mode]} className="mt-2 inline-flex min-h-11 items-center text-meta text-accent-text">Try again ›</a>
           </div>
         ) : mode === 'now' ? (
-          <NowView now={now} nowMs={nowMs} sessions={missionFilter ? [] : localSessions} />
+          <NowView now={now} nowMs={nowMs} sessions={missionFilter ? [] : localSessions} lastMerged={lastMerged} />
         ) : (
           <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={outcome} onOutcomeChange={setOutcome} who={who} onWhoChange={identityFilters ? setWho : null} />
         )}
@@ -267,12 +276,20 @@ const COLUMNS: readonly PipelineStage[] = ['build', 'verify', 'deliver'];
  * groups, the cards, the YouStrip and the rail are all this array (AC-12).
  * Phone and desktop are two arrangements of it; only one is displayed.
  */
-function NowView({ now, nowMs, sessions }: { now: ActivityNow; nowMs: number; sessions: LocalSessionView[] }) {
+function NowView({ now, nowMs, sessions, lastMerged }: { now: ActivityNow; nowMs: number; sessions: LocalSessionView[]; lastMerged: LastMerged | null }) {
   const deliveries = useMemo(() => nowDeliveries(now), [now]);
   const byStage = useMemo(() => groupByStage(deliveries), [deliveries]);
   const waiting = useMemo(() => waitingOnYou(deliveries), [deliveries]);
   const missions = useMemo(() => missionsInMotion(now, deliveries), [now, deliveries]);
-  const empty = deliveries.length === 0;
+  // Nothing in any stage, queued included, so nobody can need to act (R-24).
+  if (deliveries.length === 0) {
+    return (
+      <>
+        <QuietNow nowMs={nowMs} lastMerged={lastMerged} />
+        <SessionsLine sessions={sessions} nowMs={nowMs} />
+      </>
+    );
+  }
   return (
     <>
       <div data-testid="activity-now-phone" className="mt-4 flex flex-col md:hidden">
@@ -311,12 +328,43 @@ function NowView({ now, nowMs, sessions }: { now: ActivityNow; nowMs: number; se
         </div>
       </div>
 
-      {empty && <Empty text="Nothing in motion. Finished work is in History." />}
       <div className="mt-6 flex flex-col gap-2 border-t border-border-default pt-2">
         {byStage.queued.length > 0 && <QueuedGroup deliveries={byStage.queued} nowMs={nowMs} />}
         <SessionsLine sessions={sessions} nowMs={nowMs} />
       </div>
     </>
+  );
+}
+
+/**
+ * Now with nothing in motion (spec 9430a28f R-24, R-26): two compact rows,
+ * the label with Missions beside it, then at most one pointer to the newest merge. History is
+ * the tab right above it, so it is not repeated here, and the tab strip's
+ * underline is the only rule (no second border or section spacing). Starting
+ * work is the header's Ask, or Missions' + New. It lists no missions and no
+ * other finished work: those are Missions' Done section and History. Phone
+ * and desktop share it.
+ */
+function QuietNow({ nowMs, lastMerged }: { nowMs: number; lastMerged: LastMerged | null }) {
+  const since = lastMerged ? age(lastMerged.mergedAt, nowMs) : '';
+  return (
+    <section data-testid="activity-quiet" aria-label="Nothing in motion" className="mt-2 text-meta text-text-muted md:max-w-[640px]">
+      <div className="flex items-center gap-3">
+        <h2 className="text-body font-semibold text-text-primary">Nothing in motion</h2>
+        <nav data-testid="activity-quiet-links" aria-label="Where to go" className="ml-auto shrink-0">
+          <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-8">Missions ›</Link>
+        </nav>
+      </div>
+      {lastMerged && (
+        <p data-testid="activity-quiet-last" className="flex min-w-0 items-baseline gap-1.5">
+          <span className="shrink-0">Last merged</span>
+          <Link href={`/app/tasks/${lastMerged.id}`} className="inline-flex min-h-11 min-w-0 items-center truncate text-text-primary hover:underline md:min-h-8" title={lastMerged.title}>
+            <span className="truncate">{displayTaskTitle(lastMerged.title)}</span>
+          </Link>
+          <time dateTime={new Date(lastMerged.mergedAt).toISOString()} className="shrink-0 whitespace-nowrap font-mono">· {since === 'now' ? 'just now' : `${since} ago`}</time>
+        </p>
+      )}
+    </section>
   );
 }
 

@@ -40,10 +40,26 @@ describe('missions page header', () => {
   });
 
   it('the create entry is a small .btn, not an orange 2px frame', () => {
-    const link = src.match(/<NewWorkLink[\s\S]*?>/)?.[0] ?? '';
+    const link = src.match(/<NewWorkLink[^>]*testId="new-mission-link"[\s\S]*?>/)?.[0] ?? '';
     expect(link).toMatch(/className="btn\b/);
+    // The phone copy in the top bar is the same small .btn.
+    expect(readFileSync(join(import.meta.dir, '../../../../components/MobileTopBar.tsx'), 'utf8'))
+      .toMatch(/MOBILE_TOP_BAR_ACTION_CLASS = 'btn\b/);
     expect(src).not.toMatch(/bg-prim[a]ry/);
     expect(src).not.toContain('border-2');
+  });
+
+  it('phones get no button row under the bar: + New rides in the top bar, the doors on the stats line', () => {
+    // The desktop cluster is md-only; the row around it holds only the sr-only h1 on a phone.
+    expect(src).toMatch(/<div className="ml-auto hidden flex-wrap items-center gap-3 md:flex">/);
+    expect(src).toMatch(/<MobileTopBarAction>\s*<NewWorkLink[\s\S]*?testId="new-mission-link-mobile"/);
+    expect(src).toContain('className={MOBILE_TOP_BAR_ACTION_CLASS}');
+    expect(src).toContain('doors={doors}');
+    expect(src).toMatch(/data-testid="missions-doors-mobile"[\s\S]*href="\/app\/specs"[\s\S]*href="\/app\/releases"/);
+  });
+
+  it('clears the top bar with its own gap: the list no longer starts flush under it', () => {
+    expect(src).toContain('pt-[4.5rem] md:pt-8');
   });
 
   it('no chat setup nudge and no team label kicker on Missions', () => {

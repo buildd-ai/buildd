@@ -102,7 +102,7 @@ export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilte
   { key: 'needs', label: 'Waiting on you', title: 'A decision only a person can make' },
   { key: 'motion', label: 'In progress', title: 'buildd is building, checking, fixing or merging it' },
   { key: 'waiting', label: 'Not started', title: 'Waiting for capacity, earlier work, a start or a plan' },
-  { key: 'landed', label: 'Done', title: 'Every task is done. A goal criterion hasn’t passed.' },
+  { key: 'landed', label: 'Checks pending', title: 'Every task is done. A goal criterion hasn’t passed.' },
 ];
 
 const MATCH: Record<PortfolioStatusFilter, (r: PortfolioRow) => boolean> = {

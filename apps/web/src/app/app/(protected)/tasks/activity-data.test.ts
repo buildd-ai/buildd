@@ -349,3 +349,15 @@ describe('attribution and verification (spec 9430a28f R-4, R-6, AC-4)', () => {
     expect(out.history.find(e => e.id === 'r1')?.verification).toBeNull();
   });
 });
+
+describe('newestMerge (quiet Now pointer, spec 9430a28f R-24)', () => {
+  it('picks the newer of the worker and kernel merges, and ignores rows with no time', async () => {
+    const { newestMerge } = await import('./activity-data');
+    expect(newestMerge([])).toBeNull();
+    expect(newestMerge([
+      { id: 'w', title: 'Worker merge', mergedAt: new Date('2026-11-02T10:00:00Z') },
+      { id: 'k', title: 'Kernel merge', mergedAt: '2026-11-03T09:00:00Z' },
+      { id: 'x', title: 'No time', mergedAt: null },
+    ])).toEqual({ id: 'k', title: 'Kernel merge', mergedAt: Date.parse('2026-11-03T09:00:00Z') });
+  });
+});

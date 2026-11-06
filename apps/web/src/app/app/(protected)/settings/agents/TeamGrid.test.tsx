@@ -150,6 +150,12 @@ describe('TeamGrid', () => {
       expect(html).not.toContain('New personal agent');
     });
 
+    it('on phones New agent leaves its own row: the row shows only when agents are running', () => {
+      const idle = render({ canCreatePersonalRole: true, canCreateTeamRole: true });
+      expect(idle).toMatch(/data-testid="team-header-row" class="hidden md:flex/);
+      expect(idle).toMatch(/class="[^"]*hidden md:inline-flex[^"]*"[^>]*>New agent/);
+    });
+
     it('an admin gets the plain New role link (the form offers both kinds)', () => {
       const html = render({ canCreatePersonalRole: true, canCreateTeamRole: true });
       expect(html).toContain('href="/app/settings/agents/new"');

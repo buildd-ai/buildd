@@ -578,6 +578,13 @@ export interface WorkspaceGitConfig {
   // 'apply' = claim in plan order. Read only through resolveClaimPlannerConfig()
   // (apps/web/src/app/api/workers/claim/claim-plan-input.ts).
   claimPlanner?: 'off' | 'record' | 'apply';
+
+  // A person's PR comment handed to the live worker that owns the PR
+  // (apps/web/src/lib/pr-comment-followup.ts): 'off' = nothing happens,
+  // 'recording' = the would-have-sent row on the gate ledger only, 'acting' =
+  // queued to the worker. Absent = 'off', except buildd's own repo ('acting').
+  // Read only through resolvePrCommentMode().
+  prCommentFollowup?: 'off' | 'recording' | 'acting';
   // Planner thresholds. Absent = declared/observed scope only: predictions
   // are ignored and the no-scope mission mutex stays.
   claimPlannerThresholds?: { thetaOrder: number; thetaSoft: number; thetaIdle: number } | null;

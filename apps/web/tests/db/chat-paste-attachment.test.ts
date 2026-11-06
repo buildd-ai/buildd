@@ -56,7 +56,7 @@ beforeAll(async () => {
   convA = await conversation(teamA, userA, wsA);
   convB = await conversation(teamB, userB, wsB);
   taskB = await seedTask(wsB);
-});
+}, 60_000); // cold CI database: seeding two teams can exceed bun's 5s default
 
 describe('a 60,000-character paste', () => {
   let messageId: string;

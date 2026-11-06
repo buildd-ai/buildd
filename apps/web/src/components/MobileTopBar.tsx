@@ -3,6 +3,12 @@ import type { ReactNode } from 'react';
 /** Id of the shell's content slot; Chat portals its crumbs into it. */
 export const MOBILE_TOP_BAR_SLOT_ID = 'mobile-top-bar-slot';
 
+/** Id of the trailing slot a page's create action portals into (MobileTopBarAction). */
+export const MOBILE_TOP_BAR_ACTION_ID = 'mobile-top-bar-action';
+
+/** Classes for a page action in the bar: a 44px `.btn`, never wider than its label. */
+export const MOBILE_TOP_BAR_ACTION_CLASS = 'btn h-11 shrink-0 whitespace-nowrap px-3';
+
 /**
  * The one geometry every top-level phone route shares: fixed 56px height,
  * 16px gutters, 8px gap, 1px rule, `--chat-bar` material. Controls inside are
