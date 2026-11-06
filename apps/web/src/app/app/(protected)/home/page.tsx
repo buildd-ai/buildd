@@ -64,7 +64,7 @@ import HomeLive, { type HomeRegion } from './HomeLive';
 import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeListedMission } from '@/lib/home-attention';
-import { awaitingApprovalCounts, mayApproveIn } from '@/lib/specs/approval-inbox';
+import { countAwaitingApprovalFor } from '@/lib/specs/approval-inbox';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { fleetHeartbeatsQuery, homeQuestionsFrom, homeQuestionWorkersQuery, admittedQuestionRows, loadHomeFleet, loadQueueHistory } from '@/lib/home-fleet';
 import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
@@ -495,8 +495,6 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
     // and the rest collapse to the owner row: one PR, one card.
     // One PR can sit on several worker rows; they collapse to one card below.
     openPrWorkers: hasWs ? openPrWorkersQuery(wsIds) : null,
-    // Spec revisions waiting for approval, per workspace; kept below only where this person may approve.
-    specApprovals: hasWs ? awaitingApprovalCounts(wsIds) : null,
     // PR blockers: pending tasks whose upstream deps may hold open PRs.
     pendingWithDeps: hasWs ? db.select({ id: tasks.id, missionId: tasks.missionId, dependsOn: tasks.dependsOn }).from(tasks)
       .where(and(
@@ -591,9 +589,8 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
   view.firstTask = firstTaskState(countsByStatus);
 
   const wsById = new Map((r1.inboxWorkspaces ?? []).map(ws => [ws.id, ws]));
-  view.specApprovals = (r1.specApprovals ?? [])
-    .filter(r => mayApproveIn(role, wsById.get(r.workspaceId)?.gitConfig, userId))
-    .reduce((n, r) => n + Number(r.n), 0);
+  // The same count and scope as the Awaiting your approval inbox: every workspace this person may approve in, not just the active team or workspace filter.
+  view.specApprovals = await countAwaitingApprovalFor(userId).catch(() => 0);
   const openPrWorkers = oneRowPerPr(r1.openPrWorkers ?? []);
   const openTaskIds = openPrWorkers.map(w => w.taskId).filter((id): id is string => !!id);
   const openPrNumbers = [...new Set(openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null))];

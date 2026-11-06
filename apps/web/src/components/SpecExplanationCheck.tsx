@@ -2,7 +2,8 @@
 
 import type { ReactNode } from 'react';
 import { ChangedText, CriterionChangeWords, Heading, Words } from '@/components/SpecReviewChanges';
-import type { CoverageItem, ExplanationCoverage, SpecExplanation } from '@buildd/spec-contract/explanation';
+import { questionToLead, type CoverageItem, type ExplanationCoverage, type SpecExplanation } from '@buildd/spec-contract/explanation';
+import SpecQuestion from './SpecQuestion';
 import type { WordOp } from '@buildd/spec-contract/criterion-review';
 
 const CHANGE: Record<CoverageItem['change'], string> = {
@@ -95,6 +96,7 @@ export default function SpecExplanationCheck({ explanation, coverage, sectionWor
   );
   return (
     <section aria-label="What this revision changes" className="flex flex-col gap-3" data-testid="spec-explain">
+      {questionToLead(explanation) ? <SpecQuestion question={questionToLead(explanation)!} /> : null}
       {explanation
         ? <p className="text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-explain-summary">{explanation.summary}</p>
         : <p className="text-body text-text-secondary" data-testid="spec-explain-summary">The author gave no explanation. Open each change to read it.</p>}

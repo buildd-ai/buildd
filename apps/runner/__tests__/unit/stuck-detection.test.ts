@@ -247,13 +247,106 @@ describe('stuck detection', () => {
         expect(r.abort).toBeUndefined();
         expect(r.error).toBeUndefined();
       }
-      expect(detectRepetitiveToolCalls(calls).action).not.toBe('abort');
     }
+  });
+
+  // Polling and read-only calls are "ignored" by both outcome scenarios (shared predicate).
+  const POLLING_BASH = ['sleep 60', 'gh run watch 123', 'gh run view 123', 'gh pr checks 45', 'gh pr view 45'];
+  const POLLING_BUILDD = ['get_task', 'list_tasks', 'get_mission'];
+  const pollingCalls = (): Array<[string, StuckCall]> => [
+    ...POLLING_BASH.map(cmd => [cmd, call('Bash', { command: cmd })] as [string, StuckCall]),
+    ...POLLING_BUILDD.map(action => [`buildd ${action}`, call('mcp__buildd__buildd_tasks', { action })] as [string, StuckCall]),
+  ];
+
+  for (const [label, poll] of pollingCalls()) {
+    test(`R-5: failing polling call ${label} does not count toward an error streak`, () => {
+      const failingPoll = { ...poll, isError: true, resultSignature: 'sig:fail', errorLine: 'boom' };
+      const five = [failBash(1), failBash(2), failEdit(3), failBash(4), failBash(5)];
+      expect(run([...five, failingPoll]).action).toBe('none');
+      // Polling between failures neither completes nor resets the streak.
+      const six = [failBash(1), failingPoll, failBash(2), failEdit(3), failingPoll, failBash(4), failBash(5), failBash(6)];
+      expect(run(six).signal?.scenario).toBe('error_streak');
+    });
+
+    test(`R-5: successful polling call ${label} does not end an error streak`, () => {
+      const okPoll = { ...poll, isError: false, resultSignature: 'sig:ok' };
+      const six = [failBash(1), failBash(2), okPoll, failEdit(3), failBash(4), failBash(5), failBash(6)];
+      expect(run(six).signal?.scenario).toBe('error_streak');
+    });
+
+    test(`R-5: polling call ${label} interleaved in an alternation does not break it`, () => {
+      const calls: StuckCall[] = [];
+      for (let i = 0; i < 8; i++) {
+        calls.push(i % 2 === 0 ? A() : B());
+        calls.push({ ...poll, id: `${poll.id}-${i}`, resultSignature: 'sig:poll' });
+      }
+      expect(run(calls).signal?.scenario).toBe('alternation');
+    });
+  }
+
+  test('R-5: a Read interleaved between A,B alternation steps does not break it', () => {
+    const calls: StuckCall[] = [];
+    for (let i = 0; i < 8; i++) {
+      calls.push(i % 2 === 0 ? A() : B());
+      calls.push(call('Read', { file_path: '/src/a.ts' }, { resultSignature: 'sig:read' }));
+    }
+    const r = run(calls);
+    expect(r.signal?.scenario).toBe('alternation');
+    expect(r.message).toContain('Bash');
+    expect(r.message).toContain('Edit');
+  });
+
+  test('R-5: Grep, Glob and benign Bash interleaved in an alternation do not break it', () => {
+    const noise = [
+      call('Grep', { pattern: 'x' }, { resultSignature: 'sig:grep' }),
+      call('Glob', { pattern: '**/*.ts' }, { resultSignature: 'sig:glob' }),
+      call('Bash', { command: 'git status' }, { resultSignature: 'sig:status' }),
+    ];
+    const calls: StuckCall[] = [];
+    for (let i = 0; i < 8; i++) {
+      calls.push(i % 2 === 0 ? A() : B());
+      calls.push(noise[i % noise.length]);
+    }
+    expect(run(calls).signal?.scenario).toBe('alternation');
+  });
+
+  test('R-5: a Read interleaved in an error streak neither extends nor breaks it', () => {
+    const calls = [failBash(1), call('Read', { file_path: '/x' }, { resultSignature: 'r' }), failBash(2), failEdit(3), failBash(4), failBash(5), failBash(6)];
+    expect(run(calls).signal?.scenario).toBe('error_streak');
   });
 
   test('R-10: result signature ignores digits and whitespace, keeps no text', () => {
     expect(resultSignature('failed at 12:01:05  count=7')).toBe(resultSignature('failed at 99:59:00 count=1'));
     expect(resultSignature('failed')).not.toBe(resultSignature('passed'));
     expect(resultSignature('secret-text')).not.toContain('secret');
+  });
+});
+
+describe('counted-tool whitelist (R-3)', () => {
+  const others = [
+    ['LS', { path: '/x' }],
+    ['TodoWrite', { todos: [] }],
+    ['WebFetch', { url: 'https://example.com' }],
+    ['Task', { prompt: 'p' }],
+  ] as const;
+
+  for (const [name] of others) {
+    test(`six failing ${name} calls report no error streak`, () => {
+      const calls = Array.from({ length: 6 }, (_, i) => call(name, { n: i }, { fail: true }));
+      expect(run(calls).action).toBe('none');
+    });
+  }
+
+  test('other tools neither count nor break an error streak', () => {
+    const calls = [failBash(1), failBash(2), call('LS', { path: '/' }), failEdit(3), call('TodoWrite', {}), failBash(4), call('WebFetch', { url: 'u' }), failEdit(5), failBash(6)];
+    expect(run(calls).action).not.toBe('none');
+  });
+
+  test('other tools are skipped by alternation', () => {
+    const a = (i: number) => call('Bash', { command: 'make a' }, { resultSignature: 'a' });
+    const b = (i: number) => call('Edit', { file_path: '/f', old_string: 'x', new_string: 'y' }, { resultSignature: 'b' });
+    const calls: StuckCall[] = [];
+    for (let i = 0; i < 4; i++) calls.push(a(i), call('LS', { path: `/${i}` }), b(i), call('Task', { prompt: `${i}` }));
+    expect(run(calls).scenario).toBe('alternation');
   });
 });

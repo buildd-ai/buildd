@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.391.0",
+  "version": "0.393.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,12 +13,14 @@
     "./ui-verification": "./ui-verification.ts",
     "./decision-kind-ui-copy": "./decision-kind-ui-copy.ts",
     "./db": "./db/index.ts",
+    "./staged-draw": "./staged-draw.ts",
     "./run-evidence": "./run-evidence.ts",
     "./artifact-redaction": "./artifact-redaction.ts",
     "./artifact-read": "./artifact-read.ts",
     "./db/*": "./db/*.ts",
     "./config": "./config.ts",
     "./token-scopes": "./token-scopes.ts",
+    "./platform-rerank-switch": "./platform-rerank-switch.ts",
     "./mcp-tools": "./mcp-tools.ts",
     "./mcp-tool-groups": "./mcp-tool-groups.ts",
     "./mcp-sub-actions": "./mcp-sub-actions.ts",
@@ -123,8 +125,7 @@
     "./memory-digest-readout-source": "./memory-digest-readout-source.ts",
     "./memory-digest-guardrail-monitor": "./memory-digest-guardrail-monitor.ts",
     "./experiment-cleanup": "./experiment-cleanup.ts",
-    "./experiment-randomizer": "./experiment-randomizer.ts",
-    "./staged-self-review": "./staged-self-review.ts",
+    "./arm-randomizer": "./arm-randomizer.ts",
     "./experiment-lineage": "./experiment-lineage.ts",
     "./model-routing-experiment": "./model-routing-experiment.ts",
     "./model-routing-experiment-source": "./model-routing-experiment-source.ts",
@@ -146,7 +147,6 @@
     "./heartbeat-triage-experiment-source": "./heartbeat-triage-experiment-source.ts",
     "./heartbeat-triage-readout": "./heartbeat-triage-readout.ts",
     "./heartbeat-triage-readout-source": "./heartbeat-triage-readout-source.ts",
-    "./staged-self-review-readout-source": "./staged-self-review-readout-source.ts",
     "./experiment-readout": "./experiment-readout.ts",
     "./experiment-readout-source": "./experiment-readout-source.ts",
     "./experiment-health": "./experiment-health.ts",
@@ -341,6 +341,7 @@
     "./prompted-decision": "./prompted-decision.ts",
     "./prompt-catalog": "./prompt-catalog.ts",
     "./prompt-seed": "./prompt-seed.ts",
+    "./staged-self-review-readout-source": "./staged-self-review-readout-source.ts",
     "./prompt-seed-source": "./prompt-seed-source.ts"
   },
   "dependencies": {

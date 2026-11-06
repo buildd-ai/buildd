@@ -16,7 +16,7 @@
  *   answers 404, never 403, so a non-operator cannot probe which keys or ids
  *   are in use. `canViewExperiment` is the one predicate for that.
  * - **Settings that shape the draw are versioned.** The randomiser salts with
- *   `policyVersion` (packages/core/experiment-randomizer.ts) and the readout
+ *   `policyVersion` (packages/core/arm-randomizer.ts) and the readout
  *   filters on it (packages/core/experiment-readout-source.ts). Changing the
  *   treatment fraction or config after the experiment first started therefore
  *   bumps the version — rows drawn under the old settings are analysed apart
@@ -32,7 +32,7 @@ import type {
   ExperimentVisibility,
   UpdateExperimentInput,
 } from '@buildd/shared';
-import { validateStagedExperimentConfig } from '@buildd/core/staged-self-review';
+import { validateStagedExperimentConfig } from '@buildd/core/staged-draw';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
@@ -160,6 +160,12 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
   const visibility = b.visibility ?? 'admins';
   if (!EXPERIMENT_VISIBILITIES.includes(visibility)) return { ok: false, status: 400, error: 'visibility must be "admins" or "team"' };
 
+  // The kill criterion is pre-registered: stored with the experiment up front.
+  if (kind === 'staged_self_review') {
+    const k = validateStagedExperimentConfig(b.config as Record<string, unknown> | undefined);
+    if (!k.ok) return { ok: false, status: 400, error: k.error! };
+  }
+
   return {
     ok: true,
     value: {
@@ -242,6 +248,15 @@ export function planExperimentPatch(current: ExperimentState, body: unknown, now
     if (!isPlainObject(b.config)) return { ok: false, status: 400, error: 'config must be an object' };
     const capError = validateDurationCap(b.config);
     if (capError) return { ok: false, status: 400, error: capError };
+    if (current.kind === 'staged_self_review') {
+      const k = validateStagedExperimentConfig(b.config);
+      if (!k.ok) return { ok: false, status: 400, error: k.error! };
+      // Pre-registered: the criterion cannot be edited once the experiment has started.
+      if (current.startedAt
+        && stableStringify((b.config as Record<string, unknown>).killCriterion) !== stableStringify(current.config.killCriterion)) {
+        return { ok: false, status: 400, error: 'killCriterion cannot change after the experiment has started' };
+      }
+    }
     if (stableStringify(b.config) !== stableStringify(current.config)) {
       set.config = b.config;
       // The duration cap bounds the experiment's life, not the draw: editing
@@ -265,10 +280,8 @@ export function planExperimentPatch(current: ExperimentState, body: unknown, now
       return { ok: false, status: 400, error: retiredKindMessage(current.kind) };
     }
     if (b.status === 'running' && current.kind === 'staged_self_review') {
-      // Validate the config the experiment will run with: the patch's, else the stored one.
-      const effective = (isPlainObject(b.config) ? b.config : current.config) as Record<string, unknown>;
-      const staged = validateStagedExperimentConfig(effective);
-      if (!staged.ok) return { ok: false, status: 400, error: staged.error! };
+      const k = validateStagedExperimentConfig(((set.config as Record<string, unknown> | undefined) ?? current.config));
+      if (!k.ok) return { ok: false, status: 400, error: k.error! };
     }
     transition = b.status;
   }
