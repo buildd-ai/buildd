@@ -146,6 +146,7 @@
     "./experiment-readout": "./experiment-readout.ts",
     "./experiment-readout-source": "./experiment-readout-source.ts",
     "./experiment-health": "./experiment-health.ts",
+    "./staged-self-review": "./staged-self-review.ts",
     "./experiment-health-source": "./experiment-health-source.ts",
     "./task-path-inference": "./task-path-inference.ts",
     "./task-area-prediction": "./task-area-prediction.ts",
