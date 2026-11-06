@@ -4,7 +4,7 @@ import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
-import { attachStagedExperiment } from './staged-arm';
+import { attachStagedExperiment, recordStagedAssignment } from './staged-arm';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
@@ -51,7 +51,6 @@ import {
   type DispatchModelRejection, type DispatchModelSource,
 } from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment, markDispatchFallback } from '@buildd/core/model-routing-experiment-source';
-import { recordStagedReviewAssignment } from '@buildd/core/staged-draw-assignment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
@@ -2808,11 +2807,11 @@ export async function POST(req: NextRequest) {
     if (poolDraw) {
       await recordAgentPoolAssignment(poolDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
     }
-    // Staged self-review draw (runner-side hook): recorded only where the runner
-    // wires the stage, i.e. not for Codex and not for a caller's own seat.
-    if (!isCodexTask && !runsOnCallersSeat) {
-      await recordStagedReviewAssignment({ teamId: taskTeamId, taskId: task.id, gitConfig: (task as any).workspace?.gitConfig });
-    }
+    // Staged self-review experiment attach + assignment record (runner-side
+    // hook): done once, below, when the claim response is built — the
+    // experiment is only known there (attachStagedExperiment reads it fresh
+    // per team), and recorded only where the runner wires the stage, i.e. not
+    // for Codex and not for a caller's own seat.
 
     if (account.managedRunner) {
       const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
@@ -3473,9 +3472,18 @@ export async function POST(req: NextRequest) {
 
   return jsonResponse({
     // The workspace dispatch token never leaves in a claim (lib/workspace-dispatch-token.ts).
-    workers: await Promise.all(claimedWorkers.map(async (cw) => (cw.task
-      ? { ...cw, task: { ...(cw.task as any), workspace: await attachStagedExperiment(withoutDispatchToken((cw.task as any).workspace) as any) } }
-      : cw))),
+    workers: await Promise.all(claimedWorkers.map(async (cw) => {
+      if (!cw.task) return cw;
+      const task = cw.task as any;
+      // The runner only wires the staged self-review hook outside Codex and
+      // outside a caller's own seat; attaching the experiment (and recording
+      // the draw) anywhere else would write a row for a stage that never runs.
+      const wiresStagedStage = task.backend !== 'codex' && !runsOnCallersSeat;
+      const baseWorkspace = withoutDispatchToken(task.workspace) as any;
+      const workspace = wiresStagedStage ? await attachStagedExperiment(baseWorkspace) : baseWorkspace;
+      if (wiresStagedStage) await recordStagedAssignment(workspace, cw.taskId);
+      return { ...cw, task: { ...task, workspace } };
+    })),
     // Only report partial budget exhaustion for background runners. Interactive sessions
     // have their own credentials and should not be told about account budget state.
     ...(accountBudgetExhausted && !runsOnCallersSeat && {
