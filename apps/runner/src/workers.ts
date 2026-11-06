@@ -92,7 +92,7 @@ import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
 import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
-import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
+import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall, stagedGitConfig } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5515,7 +5515,7 @@ export class WorkerManager {
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // tool activity hook (clears toolInFlight after each tool),
       // and lifecycle hooks (TaskCompleted, SubagentStart, SubagentStop).
-      const stagedCfg = resolveStagedConfig(gitConfig as any, String((task as any).id ?? ''));
+      const stagedCfg = resolveStagedConfig(stagedGitConfig(gitConfig as any, (task as any).workspace?.gitConfig) as any, String((task as any).id ?? ''));
       queryOptions.hooks = {
         PreToolUse: [
           ...(readJailPrefixes
