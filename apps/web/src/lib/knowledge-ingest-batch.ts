@@ -27,6 +27,8 @@ export interface IngestBatchResult {
   filesSkipped: number;
   filesDeleted: number;
   skippedUnchanged: number;
+  /** Chunks stored without a vector because the team's Voyage budget refused them. */
+  chunksLexicalOnly: number;
   /** New docs the plan's knowledge-base cap turned away (0 while BILLING_ENFORCED is off). */
   filesRefusedByPlan: number;
   /** The plain refusal to show the owner, when anything was refused. */
@@ -47,7 +49,7 @@ export async function ingestFileBatch(
   // drizzle/pgvector machinery at load time) — same as knowledge-ingest.ts.
   const { PgVectorStore, getVoyageEmbedder, buildNamespace, ingestFiles } =
     await import('@buildd/core/knowledge-store');
-  const store = new PgVectorStore(getVoyageEmbedder('voyage-code-3'));
+  const store = new PgVectorStore(getVoyageEmbedder('voyage-code-3'), null, { caller: 'ingest_batch' });
 
   let filesDeleted = 0;
   for (const path of deletions) {
@@ -110,16 +112,18 @@ export async function ingestFileBatch(
 
   let filesIngested = 0;
   let chunksUpserted = 0;
+  let chunksLexicalOnly = 0;
   for (const corpus of ['code', 'docs'] as const) {
     if (sources[corpus].length === 0) continue;
     const sourceFiles = sources[corpus].map(f => ({ ...f }));
     const res = await ingestFiles(store, workspaceId, corpus, sourceFiles);
     filesIngested += res.files;
     chunksUpserted += res.chunks;
+    chunksLexicalOnly += res.chunksLexicalOnly;
   }
 
   return {
-    filesIngested, chunksUpserted, filesSkipped, filesDeleted, skippedUnchanged,
+    filesIngested, chunksUpserted, filesSkipped, filesDeleted, skippedUnchanged, chunksLexicalOnly,
     filesRefusedByPlan: admission.refused.length,
     ...(admission.message ? { planLimitMessage: admission.message } : {}),
   };

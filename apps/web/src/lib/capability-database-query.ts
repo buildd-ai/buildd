@@ -44,6 +44,8 @@ export const DATABASE_QUERY_TABLES: readonly string[] = [
   'orchestration_decisions',
   'spec_outcome_verdicts',
   'tasks',
+  'voyage_usage_daily',
+  'voyage_usage_monthly',
   'workers',
   'workflow_attempts',
   'workflow_command_outbox',

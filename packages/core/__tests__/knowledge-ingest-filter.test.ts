@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   shouldIngestFile,
+  capFullIngest,
   classifyIngestCorpus,
   MAX_INGEST_FILE_BYTES,
 } from '../knowledge-store/ingest-filter';
@@ -58,6 +59,23 @@ describe('shouldIngestFile', () => {
     expect(shouldIngestFile('src/__generated__/types.ts')).toBe(false);
   });
 
+  it('rejects vendored directories', () => {
+    for (const p of ['vendor/lib/a.go', 'src/third_party/b.c', 'target/debug/c.rs', '.venv/lib/d.py', 'ios/Pods/e.swift']) {
+      expect(shouldIngestFile(p)).toBe(false);
+    }
+  });
+
+  it('rejects generated file names anywhere', () => {
+    for (const p of ['public/app.min.js', 'css/site.min.css', 'dist2/app.bundle.js', 'api/client.generated.ts', 'proto/a.pb.go', 'proto/a_pb2.py']) {
+      expect(shouldIngestFile(p)).toBe(false);
+    }
+  });
+
+  it('keeps ordinary files with similar names', () => {
+    expect(shouldIngestFile('src/vendors.ts')).toBe(true);
+    expect(shouldIngestFile('src/min.js')).toBe(true);
+  });
+
   it('rejects lockfiles', () => {
     expect(shouldIngestFile('bun.lockb')).toBe(false);
     expect(shouldIngestFile('bun.lock')).toBe(false);
@@ -75,5 +93,24 @@ describe('shouldIngestFile', () => {
   it('rejects oversized files when sizeBytes is provided', () => {
     expect(shouldIngestFile('src/big.ts', { sizeBytes: MAX_INGEST_FILE_BYTES + 1 })).toBe(false);
     expect(shouldIngestFile('src/small.ts', { sizeBytes: 1024 })).toBe(true);
+  });
+});
+
+describe('capFullIngest', () => {
+  const files = [{ n: 'a', s: 10 }, { n: 'b', s: 10 }, { n: 'c', s: 10 }];
+  const size = (f: { s: number }) => f.s;
+
+  it('keeps everything under the ceiling', () => {
+    expect(capFullIngest(files, size, { maxFiles: 10, maxBytes: 100 })).toEqual({ kept: files, dropped: 0, truncated: false });
+  });
+
+  it('stops at the byte ceiling, in order', () => {
+    const out = capFullIngest(files, size, { maxFiles: 10, maxBytes: 25 });
+    expect(out.kept.map(f => f.n)).toEqual(['a', 'b']);
+    expect(out).toMatchObject({ dropped: 1, truncated: true });
+  });
+
+  it('stops at the file ceiling', () => {
+    expect(capFullIngest(files, size, { maxFiles: 1, maxBytes: 1000 }).kept.map(f => f.n)).toEqual(['a']);
   });
 });

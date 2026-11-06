@@ -189,7 +189,7 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
     try {
       const [
         { createGitRepoReader: makeReader },
-        { shouldIngestFile, classifyIngestCorpus },
+        { shouldIngestFile, classifyIngestCorpus, MAX_FULL_INGEST_BYTES, MAX_FULL_INGEST_FILES },
         { PgVectorStore, ingestFiles },
         { getVoyageEmbedderForCorpus },
         { pruneOrphans },
@@ -207,13 +207,21 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
       const codeFiles: Array<{ path: string; content: string }> = [];
       let docsFiles: Array<{ path: string; content: string }> = [];
       let skipped = 0;
+      let bytesRead = 0;
+      let filesRead = 0;
+      let filesOverCeiling = 0;
 
       for (const filePath of allPaths) {
         if (!shouldIngestFile(filePath)) { skipped++; continue; }
         const corpus = classifyIngestCorpus(filePath);
         if (!corpus) { skipped++; continue; }
+        // Past the ceiling, count rather than read: a huge repo stays out of memory.
+        if (filesOverCeiling > 0 || filesRead >= MAX_FULL_INGEST_FILES) { filesOverCeiling++; continue; }
         const content = await reader.readFile(filePath);
         if (!content) { skipped++; continue; }
+        bytesRead += Buffer.byteLength(content, 'utf8');
+        if (bytesRead > MAX_FULL_INGEST_BYTES) { filesOverCeiling++; continue; }
+        filesRead++;
         if (corpus === 'code') codeFiles.push({ path: filePath, content });
         else docsFiles.push({ path: filePath, content });
       }
@@ -233,23 +241,26 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
       const BATCH = 50;
       let totalChunks = 0;
       let skippedUnchanged = 0;
+      let chunksLexicalOnly = 0;
 
-      const codeStore = new PgVectorStore(getVoyageEmbedderForCorpus('code'));
-      const docsStore = new PgVectorStore(getVoyageEmbedderForCorpus('docs'));
-      const specStore = new PgVectorStore(getVoyageEmbedderForCorpus('spec'));
+      const codeStore = new PgVectorStore(getVoyageEmbedderForCorpus('code'), null, { caller: 'ingest_runner' });
+      const docsStore = new PgVectorStore(getVoyageEmbedderForCorpus('docs'), null, { caller: 'ingest_runner' });
+      const specStore = new PgVectorStore(getVoyageEmbedderForCorpus('spec'), null, { caller: 'ingest_runner' });
 
       for (let i = 0; i < codeFiles.length; i += BATCH) {
         const res = await ingestFiles(codeStore, job.workspaceId, 'code', codeFiles.slice(i, i + BATCH));
         totalChunks += res.chunks;
         skippedUnchanged += res.skippedUnchanged;
+        chunksLexicalOnly += res.chunksLexicalOnly;
         await yieldToEventLoop();
       }
       for (let i = 0; i < docsFiles.length; i += BATCH) {
         const batch = docsFiles.slice(i, i + BATCH);
         const docsRes = await ingestFiles(docsStore, job.workspaceId, 'docs', batch);
-        await ingestFiles(specStore, job.workspaceId, 'spec', batch.map(f => ({ ...f })));
+        const specRes = await ingestFiles(specStore, job.workspaceId, 'spec', batch.map(f => ({ ...f })));
         totalChunks += docsRes.chunks;
         skippedUnchanged += docsRes.skippedUnchanged;
+        chunksLexicalOnly += docsRes.chunksLexicalOnly + specRes.chunksLexicalOnly;
         await yieldToEventLoop();
       }
 
@@ -258,11 +269,14 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
       // stored by old CI runs, not present in the seen set of "packages/core/...").
       const codeSeenPaths = new Set(codeFiles.map(f => f.path));
       const docsSeenPaths = new Set(docsFiles.map(f => f.path));
-      const [codePruned, docsPruned, specPruned] = await Promise.all([
-        pruneOrphans(codeStore, job.workspaceId, 'code', '', codeSeenPaths),
-        pruneOrphans(docsStore, job.workspaceId, 'docs', '', docsSeenPaths),
-        pruneOrphans(specStore, job.workspaceId, 'spec', '', docsSeenPaths),
-      ]);
+      // A truncated run saw only part of the tree: what it left out is not an orphan.
+      const [codePruned, docsPruned, specPruned] = filesOverCeiling > 0
+        ? [[], [], []]
+        : await Promise.all([
+            pruneOrphans(codeStore, job.workspaceId, 'code', '', codeSeenPaths),
+            pruneOrphans(docsStore, job.workspaceId, 'docs', '', docsSeenPaths),
+            pruneOrphans(specStore, job.workspaceId, 'spec', '', docsSeenPaths),
+          ]);
 
       const stats = {
         filesListed: allPaths.length,
@@ -272,6 +286,8 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
         ...(admission.message ? { planLimitMessage: admission.message } : {}),
         chunksUpserted: totalChunks,
         skippedUnchanged,
+        ...(chunksLexicalOnly > 0 ? { chunksLexicalOnly } : {}),
+        ...(filesOverCeiling > 0 ? { ingestTruncated: true, filesOverCeiling } : {}),
         prunedCode: codePruned.length,
         prunedDocs: docsPruned.length,
         prunedSpec: specPruned.length,
