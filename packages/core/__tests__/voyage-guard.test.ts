@@ -30,6 +30,8 @@ function harness(over: Partial<VoyageGuardDeps> = {}) {
     settle: async s => { calls.settle.push(s); },
     markDenied: async d => { calls.denied.push(d.kind); },
     trace: t => { calls.traced.push(t as unknown as Record<string, unknown>); },
+    // The platform rerank switch is on here: these tests predate it. Its own tests live in platform-rerank-switch.test.ts.
+    platformRerankOn: async () => true,
     ...over,
   };
   return { guard: createVoyageGuard(deps), calls };

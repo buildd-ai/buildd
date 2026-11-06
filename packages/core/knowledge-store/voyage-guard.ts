@@ -20,6 +20,7 @@ import {
   type VoyageKeySource,
   type VoyageKind,
 } from '../voyage-budget';
+import { loadPlatformRerankEnabled } from '../platform-rerank-switch';
 
 type Env = Record<string, string | undefined>;
 
@@ -83,6 +84,12 @@ export interface VoyageGuardDeps {
   /** Stamp the month as exhausted, so the team can be told. */
   markDenied(d: { teamId: string; month: string; kind: VoyageKind }): Promise<void>;
   trace(t: VoyageTrace): void;
+  /**
+   * The platform switch for reranking with the platform key (platform-rerank-switch.ts).
+   * Read only for a `rerank` call that would use the platform key; off denies it.
+   * Embeds and a team's own key never read it. Default: the shared switch.
+   */
+  platformRerankOn?(): Promise<boolean>;
 }
 
 /** How long a resolved team is trusted before it is read again. */
@@ -149,8 +156,22 @@ export function createVoyageGuard(deps: VoyageGuardDeps): VoyageGuard {
         settle: tokens => traced(teamId, 'platform', tokens, tokens > 0 ? 'ok' : 'failed'),
       });
 
+      // The platform switch denies rerank on the platform key while off. Checked
+      // only where the call would use the platform key, so embeds and BYOK are unaffected.
+      const platformAllowed = async (): Promise<boolean> => {
+        if (request.kind !== 'rerank') return true;
+        try {
+          return await (deps.platformRerankOn ?? loadPlatformRerankEnabled)();
+        } catch {
+          return false;
+        }
+      };
+
       const team = await teamOf(owner);
-      if (!team) return enforced ? deny(null) : unmetered(null);
+      if (!team) {
+        if (!(await platformAllowed())) return deny(null);
+        return enforced ? deny(null) : unmetered(null);
+      }
 
       const { teamId } = team;
       const now = nowOf();
@@ -170,6 +191,8 @@ export function createVoyageGuard(deps: VoyageGuardDeps): VoyageGuard {
       if (apiKey) {
         return { apiKey, settle: raw => record('byok', Math.max(0, Math.floor(raw)), 0) };
       }
+
+      if (!(await platformAllowed())) return deny(teamId);
 
       const capped = enforced && !isVoyageExempt(teamId, env);
       const cap = capped ? voyageCapFor(voyageCapsForPlan(team.plan, env), request.kind, request.inputType) : null;
