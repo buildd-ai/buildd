@@ -73,10 +73,11 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
       const turns = deps.turns?.();
       const common = `mode=${deps.mode} arm=none turns=${turns ?? 'unknown'} tokens=${tokens}`;
       let label: string;
+      let checklist: ReturnType<typeof buildSelfReviewChecklist> | null = null;
       if (exemption) {
         label = `Self-review: ${common} exempt=${exemption}`;
       } else {
-        const checklist = buildSelfReviewChecklist(deps.task);
+        checklist = buildSelfReviewChecklist(deps.task);
         label = checklist
           ? `Self-review: ${common} version=${checklist.version} items=${checklist.items.map(it => it.id).join(',') || 'none'}`
           : `Self-review: ${common} builder-failed`;
@@ -86,7 +87,6 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
       // Structured answer record (R-6): the same fields the acting stage records.
       // Recording never asks, so there is no denial: addedTurns/addedTokens are 0
       // and nothing changed after one; `answers` is whatever the agent volunteered.
-      const checklist = exemption ? null : buildSelfReviewChecklist(deps.task);
       const record = {
         mode: deps.mode,
         arm: 'none',
@@ -94,16 +94,43 @@ export function createSelfReviewGuardHook(deps: SelfReviewGuardDeps) {
         outcome: exemption ? 'exempt' : checklist ? 'eligible' : 'failed_open',
         checklistVersion: checklist?.version ?? null,
         itemIds: checklist?.items.map(it => it.id) ?? [],
-        answers: (params.structuredOutput as any)?.selfReview ?? null,
+        answers: boundAnswers((params.structuredOutput as any)?.selfReview),
         toolCallsBetween: [],
         addedTurns: 0,
         addedTokens: 0,
         workChangedAfterDenial: false,
       };
-      deps.addMilestone({ type: 'status', label: `Self-review record: ${JSON.stringify(record)}`.slice(0, 1000), ts: Date.now() });
+      deps.addMilestone({ type: 'status', label: serializeRecord(record), ts: Date.now() });
     } catch (err) {
       log(`Self-review recording failed open: ${err instanceof Error ? err.message : String(err)}`);
     }
     return {};
   };
+}
+
+const RECORD_PREFIX = 'Self-review record: ';
+const RECORD_MAX = 1000;
+const MAX_ANSWERS = 12;
+const MAX_FIELD = 80;
+
+/** Keep id/answer/evidence per item, each bounded, so the record stays small. */
+function boundAnswers(raw: unknown): unknown {
+  if (raw == null) return null;
+  const cap = (v: unknown) => (typeof v === 'string' ? v.slice(0, MAX_FIELD) : v);
+  if (Array.isArray(raw)) {
+    return raw.slice(0, MAX_ANSWERS).map(a =>
+      a && typeof a === 'object'
+        ? { id: cap((a as any).id), answer: cap((a as any).answer), evidence: cap((a as any).evidence) }
+        : cap(a));
+  }
+  return cap(typeof raw === 'string' ? raw : JSON.stringify(raw));
+}
+
+/** Always returns `prefix + valid JSON` within RECORD_MAX; never a cut-off string. */
+function serializeRecord(record: Record<string, unknown>): string {
+  let out = RECORD_PREFIX + JSON.stringify(record);
+  if (out.length <= RECORD_MAX) return out;
+  out = RECORD_PREFIX + JSON.stringify({ ...record, answers: null, truncated: true });
+  if (out.length <= RECORD_MAX) return out;
+  return RECORD_PREFIX + JSON.stringify({ ...record, itemIds: [], answers: null, truncated: true });
 }

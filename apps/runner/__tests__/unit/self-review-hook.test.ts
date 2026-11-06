@@ -60,6 +60,16 @@ describe('recording mode', () => {
     expect(j.answers[0].answer).toBe('met');
   });
 
+  test('record label stays valid JSON when answers carry long evidence', async () => {
+    const { hook, milestones } = setup();
+    const answers = Array.from({ length: 30 }, (_, i) => ({ id: `req-${i}`, answer: 'met', evidence: 'e'.repeat(5000) }));
+    await hook(complete({ structuredOutput: { selfReview: answers } }), undefined, signal);
+    const rec = labels(milestones).find(l => l.startsWith('Self-review record: '))!;
+    expect(rec.length).toBeLessThanOrEqual(1000);
+    const j = JSON.parse(rec.slice('Self-review record: '.length));
+    expect(j.outcome).toBe('eligible');
+  });
+
   test('fires at most once per worker', async () => {
     const { hook, milestones } = setup();
     await hook(complete(), undefined, signal);
