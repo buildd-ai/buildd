@@ -16,7 +16,7 @@ const src = readFileSync(join(import.meta.dir, '../../src/workers.ts'), 'utf8');
 describe('staged self-review wiring', () => {
   test('hook is registered after createVerifyGuardHook, Claude only', () => {
     const verify = src.indexOf('hooks: [createVerifyGuardHook(');
-    const staged = src.indexOf('createStagedSelfReviewHook({');
+    const staged = src.indexOf('...stagedSelfReviewPreToolUse({');
     expect(verify).toBeGreaterThan(-1);
     expect(staged).toBeGreaterThan(verify);
     expect(src.slice(verify, staged)).toContain('!isCodexTask');
@@ -27,7 +27,7 @@ describe('staged self-review wiring', () => {
     expect(src).toContain('resolveStagedConfig(stagedGitConfig(gitConfig as any, (task as any).workspace?.gitConfig) as any');
   });
   test('tool calls are noted for the staged stage', () => {
-    expect(src).toContain('noteStagedToolCall(worker.id, input.tool_name)');
+    expect(src).toContain('stagedSelfReviewPreToolUse(');
   });
   test('acting reachable, off by default, recording guard stands down on acting', () => {
     expect(resolveStagedConfig(undefined, 't1').mode).toBe('off');

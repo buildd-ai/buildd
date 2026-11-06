@@ -240,3 +240,30 @@ export function stagedGitConfig<T extends { selfReviewExperiment?: unknown } | n
   if (!exp) return fetched;
   return { ...(fetched ?? {}), selfReviewExperiment: exp } as T;
 }
+
+/**
+ * The PreToolUse matcher entries the runner registers for acting mode: the
+ * deny-once hook, then the tool-call counter. Empty for Codex (no PreToolUse
+ * seam) and for any mode but acting. workers.ts spreads this into the chain
+ * after the verify guard; tests drive the same function.
+ */
+export function stagedSelfReviewPreToolUse(opts: {
+  cfg: { mode: StagedMode; arm: StagedArm; propensity?: number };
+  isCodexTask: boolean;
+  worker: StagedHookDeps['worker'];
+  task: StagedTask;
+  record: (entry: StagedEntry) => void;
+  hookOverrides?: Partial<StagedHookDeps>;
+}): { hooks: ((input: any) => Promise<Record<string, unknown>>)[] }[] {
+  if (opts.isCodexTask || opts.cfg.mode !== 'acting') return [];
+  return [
+    { hooks: [createStagedSelfReviewHook({
+      worker: opts.worker, task: opts.task, mode: opts.cfg.mode, arm: opts.cfg.arm,
+      propensity: opts.cfg.propensity, record: opts.record, ...opts.hookOverrides,
+    })] },
+    { hooks: [async (input: any) => {
+      if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(opts.worker.id, input.tool_name);
+      return {};
+    }] },
+  ];
+}
