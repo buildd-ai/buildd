@@ -44,6 +44,7 @@ const UNIT_TEST_ROOTS = [
  * per criterion. The build task removes each entry once its file passes.
  */
 export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
+  'apps/runner/__tests__/unit/loop-previous-verification.test.ts', // spec "Loop retries: the next iteration sees what the last verification said" r1
 ];
 
 export function isUnitTestFile(path: string): boolean {
