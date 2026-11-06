@@ -111,6 +111,12 @@ export interface ToolCall {
    * scanning (workers.ts handleMessage `user`/tool_result branch).
    */
   toolUseId?: string;
+  /**
+   * What the matching tool_result said, set when it arrives (stuck-detection.ts).
+   * `sig` is a hash of the result with digits/whitespace removed — no result text
+   * is kept. `skipped` marks a denied/cancelled call. Absent until resolved.
+   */
+  outcome?: { isError: boolean; sig: string; skipped?: boolean };
 }
 
 // File checkpoint (from SDK files_persisted events)
@@ -446,6 +452,8 @@ export interface LocalWorker {
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
   // Flushed into resultMeta.toolCounts at completion.
   toolCounts?: Record<string, number>;
+  /** Assistant messages seen this session; the staged self-review hook's turn clock. */
+  assistantTurns?: number;
   /**
    * Bash sub-classification (see bash-classify.ts). The histogram above can
    * only ever show a single bar for `Bash` — by far the most-called tool — so
@@ -456,6 +464,8 @@ export interface LocalWorker {
   bashCommandCounts?: BashCommandCounts;
   /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
   fileToolAreas?: Record<string, Record<string, number>>;
+  /** Full staged self-review records, in order (staged-self-review.ts StagedEntry). */
+  stagedSelfReview?: Array<Record<string, unknown>>;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -530,6 +540,8 @@ export interface LocalWorker {
   lastAssistantMessage?: string;
   // Set after the first loop-guard nudge is injected so we don't double-send
   loopNudgeSent?: boolean;
+  // Latches + last signal for the error-streak / alternation scenarios (stuck-detection.ts)
+  stuckState?: import('./stuck-detection').StuckState;
   // Current prompt UUID (SDK v0.3.196 BaseHookInput.prompt_id) — correlates hook events
   // with SDK-emitted OTel spans at prompt grain (attribute: prompt.id).
   currentPromptId?: string;
@@ -598,6 +610,8 @@ export interface ResultMeta {
   bashCommandCounts?: BashCommandCounts;
   /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
   fileToolAreas?: Record<string, Record<string, number>>;
+  /** Full staged self-review records, in order (staged-self-review.ts StagedEntry). */
+  stagedSelfReview?: Array<Record<string, unknown>>;
   /**
    * Outcome of the one-shot "closing turn" a session that ends without
    * calling complete_task gets before the runner falls back to

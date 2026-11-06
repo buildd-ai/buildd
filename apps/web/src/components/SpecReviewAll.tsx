@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { rowRevisionLine } from '@/lib/specs/approval-row-line';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Card from '@/components/ui/Card';
@@ -8,6 +9,7 @@ import Disclosure from '@/components/ui/Disclosure';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import SpecDiffView from '@/components/SpecDiffView';
+import SpecShippedLine from '@/components/SpecShippedLine';
 import { approveAll, approveAllSummary, type ApproveAllItem, type ApproveAllResult, type ConfirmReply } from '@/lib/specs/approve-all';
 import type { ReviewAllRow } from '@/lib/specs/review-all-view';
 
@@ -72,13 +74,15 @@ export default function SpecReviewAll({ rows, initialResult = null, openSpecId =
                   </Link>
                   {outcome ? <span className="text-meta text-text-secondary" data-testid="spec-review-all-outcome">{OUTCOME_WORD[outcome]}</span> : null}
                 </div>
-                <p className="text-body text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-all-summary">
+                <p className={`text-text-primary [overflow-wrap:anywhere] ${r.isQuestion ? 'text-body font-semibold' : 'text-body'}`} data-testid="spec-review-all-summary" data-question={r.isQuestion ? 'yes' : undefined}>
                   {r.summary ?? 'No summary was written for this revision. Open the diff to see what changes.'}
                 </p>
                 <p className="text-meta text-text-muted [overflow-wrap:anywhere]">
-                  {r.workspaceName} · revision {r.headRevision}{r.approvedRevision ? ` replaces ${r.approvedRevision}` : ', first approval'} · by {r.author}
+                  {r.workspaceName} · {rowRevisionLine(r)} · by {r.author}
                   {r.diff ? ` · +${r.diff.linesAdded} −${r.diff.linesRemoved}` : ''}
                 </p>
+                <SpecShippedLine shipped={r.shipped} />
+                {r.coverage ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-review-all-coverage">{r.coverage}</p> : null}
                 <Disclosure summary="Show the diff" defaultOpen={openSpecId === r.specId}>
                   <div className="pt-2" data-testid="spec-review-all-diff">
                     {r.diff

@@ -287,3 +287,31 @@ describe('duration cap (config.maxDurationDays / config.endsAt)', () => {
     expect(c.ok && c.value.config).toEqual({ maxDurationDays: 21 });
   });
 });
+
+describe('staged_self_review kill criterion (pre-registered)', () => {
+  const kc = { minSample: 30, maxAddedCostPerTask: 0.05, rubberStampTouchRate: 0.8, rubberStampFlipRate: 0.05 };
+  const base = { key: 'ssr', title: 'SSR', kind: 'staged_self_review' };
+  const state = (over: Record<string, unknown> = {}) => ({
+    kind: 'staged_self_review', status: 'draft' as const, treatmentFraction: 0.5, policyVersion: 1,
+    config: {}, startedAt: null, decision: null, ...over,
+  });
+
+  it('create refuses without killCriterion, accepts with it', () => {
+    expect(parseCreateExperiment({ ...base }).ok).toBe(false);
+    expect(parseCreateExperiment({ ...base, config: {} }).ok).toBe(false);
+    expect(parseCreateExperiment({ ...base, config: { killCriterion: kc } }).ok).toBe(true);
+  });
+
+  it('start gate refuses a draft with no stored criterion', () => {
+    const r = planExperimentPatch(state(), { status: 'running' }, new Date());
+    expect(r.ok).toBe(false);
+    expect(planExperimentPatch(state({ config: { killCriterion: kc } }), { status: 'running' }, new Date()).ok).toBe(true);
+  });
+
+  it('criterion is frozen once started', () => {
+    const r = planExperimentPatch(
+      state({ status: 'paused', startedAt: new Date(), config: { killCriterion: kc } }),
+      { config: { killCriterion: { ...kc, minSample: 1 } } }, new Date());
+    expect(r.ok).toBe(false);
+  });
+});

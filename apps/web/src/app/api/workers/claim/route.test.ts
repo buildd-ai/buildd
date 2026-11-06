@@ -6,6 +6,7 @@ const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
 const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
 mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 import { NextRequest } from 'next/server';
+import { invalidateStagedExperimentCache } from './staged-arm';
 import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 
@@ -223,6 +224,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId', grantedByAccountId: 'grantedByAccountId' },
   connectorCatalogTeamPolicies: { teamId: 'teamId', slug: 'slug', policy: 'policy' },
   connectorCatalogEntries: { teamId: 'teamId', slug: 'slug' },
+  experiments: { id: 'id', teamId: 'teamId', status: 'status', kind: 'kind', policyVersion: 'policyVersion', treatmentFraction: 'treatmentFraction', startedAt: 'startedAt', config: 'config' },
 }));
 
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
@@ -2868,6 +2870,48 @@ describe('POST /api/workers/claim', () => {
     const text = await res.text();
     expect(JSON.parse(text).workers.length).toBe(1);
     expect(text).not.toContain('dispatch-secret');
+  });
+
+  // --- Staged self-review experiment attach (Living Spec f3742450) ---
+
+  describe('staged self-review experiment attach', () => {
+    const stagedTask = (gitConfig: any) => ({
+      id: 'task-1', workspaceId: 'ws-1', title: 'T', kind: 'engineering', complexity: 'normal',
+      priority: 0, dependsOn: [], requiredCapabilities: [], context: {},
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record', ...gitConfig }, teamId: 'team-staged' },
+    });
+    const claimReq = () => createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', environment: { tools: [], envKeys: [], mcp: [], labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'h' }, scannedAt: '2026-01-01T00:00:00.000Z', claudeCliVersion: '2.1.300' } },
+    });
+    async function claimWith(gitConfig: any, experimentRows: any[]) {
+      invalidateStagedExperimentCache();
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([stagedTask(gitConfig)]);
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+      mockDbSelect.mockReturnValue(makeSelectChain(experimentRows));
+      const res = await POST(claimReq());
+      expect(res.status).toBe(200);
+      return (await res.json()).workers[0].task.workspace.gitConfig;
+    }
+    const running = { id: 'exp-1', policyVersion: 3, treatmentFraction: 0.25, startedAt: new Date(), config: null };
+
+    it('selfReview=acting + running experiment: the claim carries selfReviewExperiment', async () => {
+      const gc = await claimWith({ selfReview: 'acting' }, [running]);
+      expect(gc.selfReviewExperiment).toEqual({ id: 'exp-1', policyVersion: 3, treatmentFraction: 0.25 });
+    });
+
+    it('selfReview off or unset: nothing is attached', async () => {
+      expect((await claimWith({ selfReview: 'off' }, [running])).selfReviewExperiment).toBeUndefined();
+      expect((await claimWith({}, [running])).selfReviewExperiment).toBeUndefined();
+    });
+
+    it('no running experiment: nothing is attached and the claim still succeeds', async () => {
+      expect((await claimWith({ selfReview: 'acting' }, [])).selfReviewExperiment).toBeUndefined();
+    });
   });
 
   // --- Model-routing experiment wiring ---

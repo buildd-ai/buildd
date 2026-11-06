@@ -28,6 +28,9 @@ mock.module('@buildd/core/tier-pool-admin', () => ({ runTierPoolReadout: mockPoo
 const mockHealth = mock(async (..._a: any[]) => [] as any[]);
 mock.module('@buildd/core/experiment-health-source', () => ({ runExperimentHealth: mockHealth }));
 
+const mockStaged = mock(async (..._a: any[]) => ({ touchRate: 0, flipRate: 0, contradictionRate: 0, rubberStamped: false, n: 0, skipped: 0 }) as any);
+mock.module('@buildd/core/staged-self-review-readout-source', () => ({ runStagedSelfReviewReadout: mockStaged }));
+
 import { GET } from './route';
 
 const T0 = new Date('2026-01-01T00:00:00.000Z');
@@ -164,5 +167,57 @@ describe('GET /api/experiments/[id]/readout — per-task token', () => {
       { params: Promise.resolve({ id: ID }) },
     );
     expect(res.status).toBe(200);
+  });
+});
+
+describe('GET readout: staged_self_review kill criterion', () => {
+  const kc = { minSample: 30, maxAddedCostPerTask: 0.5, rubberStampTouchRate: 0.8, rubberStampFlipRate: 0.05 };
+  const run = (qs = '') => get(qs);
+
+  it('reports switch_off when the verdict shows no detectable difference', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: { killCriterion: kc } });
+    mockRun.mockResolvedValueOnce({ verdict: 'no_detectable_difference' });
+    const body = await (await run()).json();
+    expect(body.killCriterion.action).toBe('switch_off');
+    expect(body.killCriterion.kill).toBe(true);
+    expect(mockRun.mock.calls.at(-1)![1]).toEqual({ minSamplePerArm: 30 });
+  });
+
+  it('reports switch_off on a rubber stamp or an over-limit cost, never tune', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: { killCriterion: kc } });
+    mockRun.mockResolvedValueOnce({ verdict: 'treatment_better' });
+    let body = await (await run('?touchRate=0.9&flipRate=0.01')).json();
+    expect(body.killCriterion.action).toBe('switch_off');
+    mockRun.mockResolvedValueOnce({ verdict: 'treatment_better' });
+    body = await (await run('?addedCostPerTask=2')).json();
+    expect(body.killCriterion.action).toBe('switch_off');
+    expect(body.killCriterion.addedCostMeasured).toBe(true);
+  });
+
+  it('labels a rubber stamp from stored records when no query rates are given', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: { killCriterion: kc } });
+    mockRun.mockResolvedValueOnce({ verdict: 'treatment_better' });
+    mockStaged.mockResolvedValueOnce({ touchRate: 0.95, flipRate: 0.0, contradictionRate: 0, rubberStamped: true, n: 40, skipped: 0 });
+    const body = await (await run()).json();
+    expect(body.stagedReview.rubberStamped).toBe(true);
+    expect(body.killCriterion.action).toBe('switch_off');
+    expect(body.killCriterion.reasons.join()).toContain('rubber-stamped');
+  });
+
+  it('continues when no limb is met', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: { killCriterion: kc } });
+    mockRun.mockResolvedValueOnce({ verdict: 'treatment_better' });
+    const body = await (await run('?touchRate=0.3&flipRate=0.2&addedCostPerTask=0.1')).json();
+    expect(body.killCriterion.action).toBe('continue');
+  });
+
+  it('422s a staged experiment with no stored killCriterion', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: {} });
+    expect((await run()).status).toBe(422);
   });
 });

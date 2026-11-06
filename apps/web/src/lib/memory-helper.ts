@@ -42,7 +42,7 @@ export async function getMemoryStoreForTeam(
  * null embedder falls back to lexical-only indexing.
  */
 export function getMemoryIndexStore(): KnowledgeStore {
-  return new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+  return new PgVectorStore(getVoyageEmbedder(), getVoyageReranker(), { caller: 'memory_index' });
 }
 
 /** @deprecated Use getMemoryStoreForTeam */

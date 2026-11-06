@@ -1,4 +1,4 @@
-export type { KnowledgeStore, UpsertChunk, QueryResult, QueryParams, QueryMode, Corpus, Embedder, EmbedInputType, Reranker, EntityRef, RelationRef, EntityKind, RelationType, EntityUpsert, EdgeUpsert, PendingRef } from './types';
+export type { KnowledgeStore, ReusableEmbeddings, UpsertChunk, QueryResult, QueryParams, QueryMode, Corpus, Embedder, EmbedInputType, Reranker, EntityRef, RelationRef, EntityKind, RelationType, EntityUpsert, EdgeUpsert, PendingRef } from './types';
 export {
   buildTaskCard,
   buildSessionCard,
@@ -12,7 +12,9 @@ export {
 export type { TaskCardInput, SessionCardInput, PrCardInput, ArtifactCardInput, PlanCardInput } from './cards';
 export { PgVectorStore, buildNamespace, reciprocalRankFusion } from './pg-vector-store';
 export { VoyageEmbedder, getVoyageEmbedder } from './voyage-embedder';
-export { VoyageReranker, getVoyageReranker, applyRerank } from './reranker';
+export { VoyageReranker, getVoyageReranker, applyRerank, clearsScoreFloor } from './reranker';
+export { getVoyageGuard, getWorkspaceVoyageBudget } from './voyage-guard';
+export type { VoyageCall, VoyageGuard, VoyagePermit, VoyageBudgetStatus } from './voyage-guard';
 export { chunkText, chunkMarkdown, chunkCode, chunkCodeSymbols } from './chunker';
 export { chunkPrDiff, chunkPrDiffFile, splitPatchHunks, PR_DIFF_CHUNK_OPTIONS } from './pr-diff-chunker';
 export type { PrDiffFileInput, PrDiffMeta } from './pr-diff-chunker';
