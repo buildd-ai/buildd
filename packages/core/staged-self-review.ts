@@ -179,3 +179,35 @@ export function stagedReviewRecordsFromMilestones(
   }
   return { records, skipped };
 }
+
+/**
+ * Stored records from `workers.resultMeta.stagedSelfReview` (full structured
+ * entries the runner persists). Workers without that array fall back to the
+ * legacy JSON milestone labels. Only `answered` entries become records.
+ */
+export function stagedReviewRecordsFromWorkers(
+  workersRows: readonly { taskId?: string | null; milestones?: unknown; resultMeta?: unknown }[],
+): { records: StagedReviewRecord[]; skipped: number } {
+  const records: StagedReviewRecord[] = [];
+  let skipped = 0;
+  const legacy: { taskId?: string | null; milestones?: unknown }[] = [];
+  for (const w of workersRows) {
+    const entries = (w.resultMeta as { stagedSelfReview?: unknown } | null | undefined)?.stagedSelfReview;
+    if (!Array.isArray(entries)) { legacy.push(w); continue; }
+    for (const raw of entries) {
+      const e = raw as Record<string, unknown> | null;
+      if (!e || typeof e !== 'object') { skipped++; continue; }
+      if (e.outcome !== 'answered') continue;
+      records.push({
+        taskId: w.taskId ?? undefined,
+        toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
+        changedAfterDenial: e.workChangedAfterDenial === true,
+        answers: Array.isArray(e.answers)
+          ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
+          : ['unanswered'],
+      });
+    }
+  }
+  const old = stagedReviewRecordsFromMilestones(legacy);
+  return { records: [...records, ...old.records], skipped: skipped + old.skipped };
+}
