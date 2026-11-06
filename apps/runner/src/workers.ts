@@ -92,7 +92,7 @@ import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
 import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
-import { stagedSelfReviewPreToolUse, resolveStagedConfig } from './staged-self-review';
+import { stagedSelfReviewPreToolUse, createStagedRecorder, resolveStagedConfig } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -5551,12 +5551,7 @@ export class WorkerManager {
           // recording only record. Replaces the recording-only hook above.
           ...stagedSelfReviewPreToolUse({
             cfg: stagedCfg, isCodexTask, worker, task: task as any,
-            record: e => {
-              // Full structured record rides resultMeta.stagedSelfReview; the
-              // milestone is only the short human-readable pointer.
-              (worker.stagedSelfReview ??= []).push({ ...e, ts: Date.now() });
-              this.addMilestone(worker, { type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: Date.now() });
-            },
+            record: createStagedRecorder(worker, m => this.addMilestone(worker, m)),
           }),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
