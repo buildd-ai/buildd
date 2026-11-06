@@ -58,6 +58,7 @@ import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
 import { startScopedGitHubSession, hostHasGitHubCredentials, type ScopedGitHubSession } from './agent-github-credentials';
 import { PusherManager, getPresenceState } from './pusher-manager';
+import {
   authContextOf,
   classifyClaimError,
   isAuthError,
@@ -90,9 +91,7 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
-import { createSelfReviewGuardHook, resolveSelfReviewMode, resolveSelfReviewStagedMode } from './self-review-guard';
-import { createStagedSelfReviewHook, noteStagedToolCall } from './staged-self-review';
-import { assignStagedReviewArm, STAGED_SELF_REVIEW_FEATURE } from '@buildd/core/staged-self-review';
+import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
 import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
@@ -106,6 +105,7 @@ import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session
 import { IdlePollTracker } from './idle-poll-tracker';
 import type { ClaimLogEntry } from './session-logger';
 import { ClaimOutcomeStore, outcomeFromDiagnostics, outcomeFromRefusal, type ClaimOutcome, type ClaimOutcomeSnapshot } from './claim-outcomes';
+import {
   SessionStderrCollector,
   flushStderrTrace,
   uploadSessionDiagnostics,
@@ -121,6 +121,7 @@ import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision, RunnerIsolationRecord } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
 import { heartbeatRunnerName, withRunnerName } from './runner-name';
+import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
   resolveMaxTurns,
@@ -140,6 +141,7 @@ import { BudgetWallProber, describeBudgetProbeRun, type BudgetProbeTrigger } fro
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
 import { deferOnPathCollision } from './path-collision-defer';
+import {
   runShipCheckpoint,
   CHECKPOINT_FETCH_DEADLINE_MS,
   CHECKPOINT_SYNC_DEADLINE_MS,
@@ -157,6 +159,7 @@ import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecre
 import { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/budget-error-classifier';
 import { describeWorktreeFallback } from '@buildd/core/mission-branch-trace';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
+import {
   resumeAtForReset,
   claimHealth,
   DEGRADED_CLAIM_POLL_MS,
@@ -173,6 +176,7 @@ import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
 import { preflightHookEntries } from './preflight-guard';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
+import {
   buildWorkerBwrapArgv,
   createBwrapSpawn,
   isMountAllowlistEnabled,
@@ -183,6 +187,7 @@ import { asksAQuestion } from './ask-user-question.js';
 import { gateTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
 import type { QuestionGateReply } from '@buildd/core/question-gate';
 import { QUESTION_GATE_RUNNER_TIMEOUT_MS } from '@buildd/core/question-gate';
+import {
   classifySessionEnd,
   genuinelyBlockedQuestionInput,
   GENUINELY_BLOCKED_FAIL_OPTION,
@@ -5558,34 +5563,6 @@ export class WorkerManager {
           ...(!isCodexTask && stagedCfg.mode === 'acting'
             ? [{ hooks: [async (input: any) => { if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(worker.id, input.tool_name); return {}; }] }]
             : []),
-          // Staged self-review (staged-self-review.ts), acting mode only: one
-          // intent checklist denial before complete_task, treatment arm only.
-          // Off by default (gitConfig.selfReview = 'acting' to enable). Record
-          // sink is the same milestone path as the recording guard.
-          ...(!isCodexTask && resolveSelfReviewStagedMode(gitConfig as any) === 'acting'
-            ? [{ hooks: [(() => {
-                const draw = assignStagedReviewArm({
-                  taskId: task.id,
-                  experiment: {
-                    id: STAGED_SELF_REVIEW_FEATURE,
-                    policyVersion: 'workspace-config',
-                    treatmentFraction: (gitConfig as any)?.selfReviewFraction ?? 0.5,
-                  },
-                });
-                return createStagedSelfReviewHook({
-                  worker,
-                  task: task as any,
-                  mode: 'acting',
-                  arm: draw.arm,
-                  propensity: draw.propensity,
-                  record: e => this.addMilestone(worker, {
-                    type: 'status',
-                    label: `Staged self-review: ${JSON.stringify(e)}`.slice(0, 300),
-                    ts: Date.now(),
-                  }),
-                });
-              })()] }]
-            : []),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
           // so a command it refuses never waits. See deps-gate.ts.
@@ -7293,7 +7270,6 @@ export class WorkerManager {
           // (R2) so a later tool_result can be correlated back to its source
           // tool for error-trace scanning (see the `user`/tool_result branch).
           const toolUseId = (block.id as string | undefined) || undefined;
-          noteStagedToolCall(worker.id, toolName);
           worker.toolCalls.push({
             name: toolName,
             timestamp: Date.now(),
