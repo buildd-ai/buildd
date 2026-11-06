@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 
 const ID = '11111111-1111-4111-8111-111111111111';
 let stored: any;
-const mockRun = mock(async (..._a: any[]) => ({ n: 0, label: 'no_records' }) as any);
+const mockRun = mock(async (..._a: any[]) => ({ n: 0, skipped: 0, label: 'no_records' }) as any);
 
 mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null } } } }));
 mock.module('@/lib/experiment-access', () => ({
@@ -11,7 +11,7 @@ mock.module('@/lib/experiment-access', () => ({
   bearerOf: (req: NextRequest) => req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null,
 }));
 mock.module('@/lib/experiments-store', () => ({ getTeamExperimentForReadout: async () => stored }));
-mock.module('@buildd/core/staged-self-review-readout-source', () => ({ runStagedReviewReadout: mockRun }));
+mock.module('@buildd/core/staged-self-review-readout-source', () => ({ runStagedSelfReviewReadout: mockRun }));
 
 import { GET } from './route';
 
@@ -35,6 +35,11 @@ describe('GET /api/experiments/[id]/staged-readout', () => {
     stored = row({ config: { killCriterion: { rubberStampTouchRate: 0.9, rubberStampFlipRate: 0.02 } } });
     await get();
     expect(mockRun.mock.calls[0][1]).toEqual({ touchRate: 0.9, flipRate: 0.02 });
+  });
+  it('returns the same stagedReview the /readout route returns', async () => {
+    mockRun.mockResolvedValueOnce({ n: 3, skipped: 1, touchRate: 1, flipRate: 0, rubberStamped: true, contradictionRate: 0, label: 'rubber_stamped' });
+    const body = await (await get()).json();
+    expect(body.stagedReview).toMatchObject({ n: 3, skipped: 1, label: 'rubber_stamped' });
   });
   it('422s another kind', async () => {
     stored = row({ kind: 'model_routing' });

@@ -1,12 +1,11 @@
 /**
- * GET /api/experiments/[id]/staged-readout — touch / flip rate of the staged
- * self-review stage computed from stored worker records, labelled
- * `rubber_stamped` when agents answer without touching the work and change
- * nothing (classifyStagedReview). Limits come from the experiment's stored
- * killCriterion when present. Same gate as the other readouts.
+ * GET /api/experiments/[id]/staged-readout — the staged self-review readout
+ * alone: the same `stagedReview` that GET /readout returns (touch / flip rate,
+ * label rubber_stamped | not_rubber_stamped | no_records). Limits come from the
+ * experiment's stored killCriterion when present. Same gate as the other readouts.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { runStagedReviewReadout } from '@buildd/core/staged-self-review-readout-source';
+import { runStagedSelfReviewReadout } from '@buildd/core/staged-self-review-readout-source';
 import { STAGED_SELF_REVIEW_FEATURE } from '@buildd/core/staged-self-review';
 import { bearerOf, resolveExperimentViewer } from '@/lib/experiment-access';
 import { isTaskToken } from '@/lib/task-token';
@@ -31,9 +30,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   }
   const kc = ((row.config ?? {}) as { killCriterion?: { rubberStampTouchRate?: unknown; rubberStampFlipRate?: unknown } }).killCriterion;
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
-  const readout = await runStagedReviewReadout(
+  // Same function and same limits as GET /readout's stagedReview: one readout, two routes.
+  const stagedReview = await runStagedSelfReviewReadout(
     { id: row.id, policyVersion: row.policyVersion },
     { touchRate: num(kc?.rubberStampTouchRate), flipRate: num(kc?.rubberStampFlipRate) },
   );
-  return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion: row.policyVersion, readout });
+  return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion: row.policyVersion, stagedReview });
 }
