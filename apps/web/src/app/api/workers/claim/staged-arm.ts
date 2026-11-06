@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { experiments } from '@buildd/core/db/schema';
+import { experiments, experimentAssignments } from '@buildd/core/db/schema';
+import { assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-draw';
 /** Mirrors STAGED_SELF_REVIEW_FEATURE in packages/core/staged-draw.ts. */
 const STAGED_SELF_REVIEW_FEATURE = 'staged_self_review';
 
@@ -81,5 +82,49 @@ export async function attachStagedExperiment<W extends { gitConfig?: any; teamId
   } catch (err) {
     console.warn('[claim] staged self-review experiment not attached:', err instanceof Error ? err.message : err);
     return workspace;
+  }
+}
+
+/**
+ * Pure: the assignment row for one acting task, or null. It repeats the
+ * runner's deterministic draw (same experiment, version, fraction, task id), so
+ * the stored arm is the arm the runner serves. Recording and off workspaces
+ * serve no stage and write nothing.
+ */
+export function buildStagedAssignment(
+  workspace: { gitConfig?: any } | null | undefined,
+  taskId: string,
+): typeof experimentAssignments.$inferInsert | null {
+  const gc = workspace?.gitConfig;
+  const exp = gc?.selfReviewExperiment;
+  if (gc?.selfReview !== 'acting' || !exp?.id || !taskId) return null;
+  try {
+    const drawn = assignStagedReviewArm({ taskId, experiment: { id: String(exp.id), policyVersion: exp.policyVersion ?? 1, treatmentFraction: exp.treatmentFraction } });
+    const arm = effectiveStagedArm({ mode: 'acting', arm: drawn.arm });
+    return {
+      experimentId: String(exp.id),
+      taskId,
+      unitType: 'task',
+      unitId: taskId,
+      arm,
+      propensity: drawn.propensity,
+      policyVersion: Number(exp.policyVersion ?? 1),
+      served: arm === 'treatment',
+      eligibility: { kind: STAGED_SELF_REVIEW_FEATURE, mode: 'acting' },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Idempotent on (experiment, task); never throws. */
+export async function recordStagedAssignment(workspace: { gitConfig?: any } | null | undefined, taskId: string): Promise<void> {
+  const row = buildStagedAssignment(workspace, taskId);
+  if (!row) return;
+  try {
+    await db.insert(experimentAssignments).values(row)
+      .onConflictDoNothing({ target: [experimentAssignments.experimentId, experimentAssignments.taskId] });
+  } catch (err) {
+    console.warn(`[claim] staged assignment not recorded for task ${taskId}:`, err instanceof Error ? err.message : err);
   }
 }
