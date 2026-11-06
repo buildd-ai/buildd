@@ -96,6 +96,14 @@ export function classifyStagedReview(
   };
 }
 
+export type StagedReviewLabel = 'rubber_stamped' | 'not_rubber_stamped' | 'no_records';
+
+/** The label every readout route reports for a classified cohort. */
+export function stagedReviewLabel(readout: Pick<StagedReviewReadout, 'n' | 'rubberStamped'>): StagedReviewLabel {
+  if (readout.n === 0) return 'no_records';
+  return readout.rubberStamped ? 'rubber_stamped' : 'not_rubber_stamped';
+}
+
 export interface KillCriterion {
   minSample: number;
   maxAddedCostPerTask: number;

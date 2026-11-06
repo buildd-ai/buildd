@@ -16,7 +16,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { stagedReviewRecordsFromMilestones, stagedReviewRecordsFromWorkers, classifyStagedReview } from '../staged-self-review';
+import { stagedReviewRecordsFromMilestones, stagedReviewRecordsFromWorkers, classifyStagedReview, stagedReviewLabel } from '../staged-self-review';
 
 const load = () => import('../staged-self-review');
 
@@ -151,6 +151,30 @@ describe('stagedReviewRecordsFromMilestones', () => {
   });
 });
 
+describe('stagedReviewLabel (one readout for /readout and /staged-readout)', () => {
+  const label = (o: object) => ({ type: 'status', label: `Self-review: ${JSON.stringify(o)}` });
+  const answered = (o: object) => label({ outcome: 'answered', ...o });
+  const stamped = { answers: [{ id: 'a', answer: 'met' }], toolCallsBetween: [], workChangedAfterDenial: false };
+  const milestones = (n: number) => Array.from({ length: n }, (_, i) => ({ taskId: `t${i}`, milestones: [answered(stamped)] }));
+
+  test('an empty cohort is no_records, never a stamp', () => {
+    expect(stagedReviewLabel(classifyStagedReview([]))).toBe('no_records');
+  });
+  test('untouched, unchanged, all-met answers are rubber_stamped', () => {
+    const { records } = stagedReviewRecordsFromMilestones(milestones(10));
+    expect(stagedReviewLabel(classifyStagedReview(records))).toBe('rubber_stamped');
+  });
+  test('answers that touch and flip the work are not_rubber_stamped', () => {
+    const { records } = stagedReviewRecordsFromMilestones([{ taskId: 'x', milestones: [answered({ answers: [{ answer: 'unmet' }], toolCallsBetween: ['Edit'], workChangedAfterDenial: true })] }]);
+    expect(stagedReviewLabel(classifyStagedReview(records))).toBe('not_rubber_stamped');
+  });
+  test('a truncated label is skipped, not counted as a record', () => {
+    const { records, skipped } = stagedReviewRecordsFromMilestones([{ taskId: 'x', milestones: [{ label: 'Self-review: {"outcome":"answered","answers":[{"id"' }] }]);
+    expect(records).toHaveLength(0);
+    expect(skipped).toBe(1);
+    expect(stagedReviewLabel(classifyStagedReview(records))).toBe('no_records');
+  });
+});
 describe('stagedReviewRecordsFromWorkers (AC-8)', () => {
   test('reads resultMeta.stagedSelfReview with only short milestone labels -> rubberStamped', () => {
     const meta = (o: object) => ({ stagedSelfReview: [{ outcome: 'denied', ts: 1 }, { ...o, ts: 2 }] });
