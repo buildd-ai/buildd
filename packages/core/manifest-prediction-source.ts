@@ -321,7 +321,7 @@ export async function loadNeighbourEvidence(
 
 async function defaultStore(): Promise<TaskAreaQuerier> {
   const { PgVectorStore, getVoyageEmbedder } = await import('./knowledge-store');
-  return new PgVectorStore(getVoyageEmbedder()) as unknown as TaskAreaQuerier;
+  return new PgVectorStore(getVoyageEmbedder(), null, { caller: 'manifest_prediction' }) as unknown as TaskAreaQuerier;
 }
 
 // ── The prediction ───────────────────────────────────────────────────────────

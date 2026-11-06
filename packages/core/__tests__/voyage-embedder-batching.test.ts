@@ -13,6 +13,9 @@ import {
   VOYAGE_MAX_TEXTS_PER_REQUEST,
 } from '../knowledge-store/voyage-embedder';
 
+const CALL = { namespace: 'ws-1:code', caller: 'test' };
+const GUARD = { admit: async () => ({ settle: () => {} }) };
+
 const realFetch = globalThis.fetch;
 let requests: string[][] = [];
 let respond: (input: string[]) => Response;
@@ -69,10 +72,10 @@ describe('planEmbedRequests', () => {
 
 describe('VoyageEmbedder.embed', () => {
   it('sends a large input as several requests and returns embeddings in input order', async () => {
-    const e = new VoyageEmbedder('k', 'voyage-code-3', 1024, { maxTokensPerRequest: 200 });
+    const e = new VoyageEmbedder('k', 'voyage-code-3', 1024, { maxTokensPerRequest: 200, guard: GUARD });
     // ~150 estimated tokens each: two never fit in one request.
     const texts = Array.from({ length: 5 }, (_, i) => `${i}`.padEnd(450, 'z'));
-    const out = await e.embed(texts);
+    const out = await e.embed(texts, 'document', CALL);
     expect(requests.length).toBe(5);
     expect(out).toHaveLength(5);
     // embedding[0] is the text length; every text is 450 chars.
@@ -95,9 +98,9 @@ describe('VoyageEmbedder.embed', () => {
       }
       return okResponse(input);
     };
-    const e = new VoyageEmbedder('k', 'voyage-code-3');
+    const e = new VoyageEmbedder('k', 'voyage-code-3', 1024, { guard: GUARD });
     const texts = ['a1', 'b22', 'c333', 'd4444'];
-    const out = await e.embed(texts);
+    const out = await e.embed(texts, 'document', CALL);
     expect(out.map(v => v[0])).toEqual([2, 3, 4, 5]);
     // One rejected request of 4, then two halves.
     expect(requests.map(r => r.length)).toEqual([4, 2, 2]);
@@ -105,15 +108,15 @@ describe('VoyageEmbedder.embed', () => {
 
   it('surfaces any other 400 instead of retrying it', async () => {
     respond = () => new Response('{"detail":"bad input"}', { status: 400 });
-    const e = new VoyageEmbedder('k', 'voyage-code-3');
-    await expect(e.embed(['a', 'b'])).rejects.toThrow(/Voyage AI embedding error 400/);
+    const e = new VoyageEmbedder('k', 'voyage-code-3', 1024, { guard: GUARD });
+    await expect(e.embed(['a', 'b'], 'document', CALL)).rejects.toThrow(/Voyage AI embedding error 400/);
     expect(requests.length).toBe(1);
   });
 
   it('surfaces a too-many-tokens rejection of a single text', async () => {
     respond = () =>
       new Response('{"error_code":"TOO_MANY_TOKENS_IN_BATCH"}', { status: 400 });
-    const e = new VoyageEmbedder('k', 'voyage-code-3');
-    await expect(e.embed(['only'])).rejects.toThrow(/TOO_MANY_TOKENS_IN_BATCH/);
+    const e = new VoyageEmbedder('k', 'voyage-code-3', 1024, { guard: GUARD });
+    await expect(e.embed(['only'], 'document', CALL)).rejects.toThrow(/TOO_MANY_TOKENS_IN_BATCH/);
   });
 });

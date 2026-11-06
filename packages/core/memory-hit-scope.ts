@@ -101,5 +101,5 @@ export async function memoryScopeFor(
 
 /** Minimal store shape: KnowledgeStore and the web app's KnowledgeQuerier both fit. */
 export type MemoryQuerier = {
-  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode; trackHits?: boolean }) => Promise<QueryResult[]>;
+  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode; trackHits?: boolean; caller?: string }) => Promise<QueryResult[]>;
 };

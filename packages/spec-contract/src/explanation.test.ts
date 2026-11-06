@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { EXPLANATION_QUESTION_MAX, questionToLead } from './explanation';
 import { explanationCoverage, parseExplanation, sectionWordChanges, type SpecExplanation } from './explanation';
 import type { ChangeLine, SectionTextChange } from './criterion-review';
 
@@ -103,5 +104,37 @@ describe('sectionWordChanges (R-17)', () => {
     const to = '# Spec\n\n## Context\n\nThe new words.\n\n## Requirements\n\n- R-1: one\n';
     const w = sectionWordChanges(from, to, [{ kind: 'changed', section: 'Spec > Context' }]);
     expect(w['Spec > Context']!.filter((o) => o.op !== '=').map((o) => `${o.op}${o.text}`)).toEqual(['-old', '+new']);
+  });
+});
+
+describe('explanation question', () => {
+  it('accepts an optional one-sentence question and trims it', () => {
+    const r = parseExplanation({ summary: 's', question: '  Should refunds stay out of scope?  ', lines: {} });
+    expect(r).toEqual({ ok: true, explanation: { summary: 's', question: 'Should refunds stay out of scope?', lines: {} } });
+  });
+
+  it('omits the question key when none was given or it is null', () => {
+    expect(parseExplanation({ summary: 's' })).toEqual({ ok: true, explanation: { summary: 's', lines: {} } });
+    expect(parseExplanation({ summary: 's', question: null })).toEqual({ ok: true, explanation: { summary: 's', lines: {} } });
+  });
+
+  it('refuses a question that is blank, not text, over one line, or too long', () => {
+    expect(parseExplanation({ summary: 's', question: '   ' }).ok).toBe(false);
+    expect(parseExplanation({ summary: 's', question: 3 }).ok).toBe(false);
+    expect(parseExplanation({ summary: 's', question: 'a\nb' }).ok).toBe(false);
+    expect(parseExplanation({ summary: 's', question: 'q'.repeat(EXPLANATION_QUESTION_MAX + 1) }).ok).toBe(false);
+  });
+
+  it('does not change the coverage check', () => {
+    const e = { summary: 's', question: 'Ok?', lines: { 'R-1': 'a' } };
+    expect(explanationCoverage(e, [changed('R-1')], []).passed).toBe(true);
+  });
+});
+
+describe('questionToLead', () => {
+  it('is the question when present, else null', () => {
+    expect(questionToLead({ summary: 's', question: 'Ok?', lines: {} })).toBe('Ok?');
+    expect(questionToLead({ summary: 's', lines: {} })).toBeNull();
+    expect(questionToLead(null)).toBeNull();
   });
 });

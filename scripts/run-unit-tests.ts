@@ -52,6 +52,7 @@ export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
   'packages/core/__tests__/skill-candidate-transition.test.ts',
   'packages/core/__tests__/skill-lifecycle-events.test.ts',
   'packages/core/__tests__/skill-retirement-rule.test.ts',
+  'apps/runner/__tests__/unit/loop-previous-verification.test.ts', // spec "Loop retries: the next iteration sees what the last verification said" r1
 ];
 
 export function isUnitTestFile(path: string): boolean {

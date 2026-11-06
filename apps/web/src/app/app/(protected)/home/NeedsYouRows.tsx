@@ -11,11 +11,11 @@ const action = 'inline-flex min-h-11 shrink-0 items-center text-body font-medium
 function Row({ item, line = true }: { item: HomeAttentionItem; line?: boolean }) {
   const go = item.primary ?? { label: 'Open', href: item.href };
   const sub = [item.meta, line ? decisionLine(item) : null].filter(Boolean).join(' · ');
-  // Title, then one truncated line (where · why); the action stays at the right edge.
+  // Title, then the why (where · why) on up to two lines, never cut mid-sentence on a phone; the action stays at the right edge.
   return <li data-testid="needs-you-row" className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 border-b border-border-default py-2.5 last:border-b-0">
     <span className="min-w-0">
       <span className="line-clamp-2 text-title font-medium text-text-primary [overflow-wrap:anywhere]">{displayTaskTitle(item.title)}</span>
-      {sub && <span className="block truncate text-meta text-text-secondary">{sub}</span>}
+      {sub && <span className="block line-clamp-2 text-meta text-text-secondary [overflow-wrap:anywhere]">{sub}</span>}
     </span>
     <Link href={go.href} className={action}>{go.label}</Link>
   </li>;

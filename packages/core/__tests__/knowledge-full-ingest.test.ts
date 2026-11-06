@@ -198,6 +198,42 @@ describe('runFullIngestJob', () => {
 // the whole job. Batches now default far smaller, and a batch that times out or
 // gets a 5xx is halved and retried before the job is failed.
 
+describe('runFullIngestJob — ceiling', () => {
+  const files = { 'src/a.ts': 'x'.repeat(40), 'src/b.ts': 'y'.repeat(40), 'src/c.ts': 'z'.repeat(40) };
+
+  it('truncates, records it, and does not sweep', async () => {
+    const { api, completions } = ceilingApi();
+    const res = await runFullIngestJob(job, fakeReader(files), api, undefined, { ceiling: { maxFiles: 100, maxBytes: 50 } });
+    expect(res.status).toBe('done');
+    expect(res.stats).toMatchObject({ ingestTruncated: true });
+    expect(Number(res.stats?.filesOverCeiling)).toBeGreaterThan(0);
+    expect(completions[0].sweep).toBe(false);
+  });
+
+  it('still sweeps a run that fits', async () => {
+    const { api, completions } = ceilingApi();
+    await runFullIngestJob(job, fakeReader(files), api, undefined, { ceiling: { maxFiles: 100, maxBytes: 10_000 } });
+    expect(completions[0].sweep).toBe(true);
+  });
+
+  it('counts files past the file ceiling', async () => {
+    const { api, completions } = ceilingApi();
+    const res = await runFullIngestJob(job, fakeReader(files), api, undefined, { ceiling: { maxFiles: 1, maxBytes: 10_000 } });
+    expect(res.stats?.filesOverCeiling).toBe(2);
+    expect(completions[0].sweep).toBe(false);
+  });
+});
+
+function ceilingApi() {
+  const completions: Array<{ sweep?: boolean }> = [];
+  const api = {
+    claimJob: async () => null,
+    pushFiles: async (_id: string, batch: unknown[]) => ({ filesIngested: batch.length, chunksUpserted: 1, filesSkipped: 0, filesDeleted: 0 }),
+    completeJob: async (_id: string, r: { sweep?: boolean }) => { completions.push(r); },
+  } as unknown as FullIngestApiClient;
+  return { api, completions };
+}
+
 describe('runFullIngestJob — adaptive batches', () => {
   it('defaults to a byte cap well under the old 1.5 MB that timed out', () => {
     expect(MAX_BATCH_BYTES).toBeLessThanOrEqual(400_000);

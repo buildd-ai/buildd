@@ -80,7 +80,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   store_design: 'tasks:write', manage_designs: 'tasks:write',
   manage_specs: 'tasks:write',
   list_schedules: 'tasks:read', trace_schedule: 'tasks:read', create_schedule: 'schedules:write', update_schedule: 'schedules:write', pause_schedules: 'schedules:write', delete_schedule: 'schedules:write',
-  explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
+  explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', get_embedding_usage: 'analytics:read', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
   get_budget_forecast: 'analytics:read', get_usage_stats: 'analytics:read', get_manifest_coverage: 'analytics:read', get_path_claim_stats: 'analytics:read', get_decision_stats: 'analytics:read', procedure_digest: 'analytics:read', list_runners: 'analytics:read', probe_budget_wall: 'tasks:write', list_connectors: 'analytics:read',
   resolve_capability: 'analytics:read',
   request_capability: 'tasks:write',
@@ -90,7 +90,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   manage_missions: 'missions:admin', manage_initiatives: 'missions:admin', link_tracker: 'missions:admin', get_visual_review: 'missions:admin', adjudicate_discrepancy: 'missions:admin', promote_discrepancy: 'missions:admin',
   list_skills: 'tasks:read', get_skill: 'tasks:read', register_skill: 'skills:admin', update_skill: 'skills:admin', delete_skill: 'skills:admin',
   manage_workspaces: 'workspaces:admin', manage_watched_projects: 'workspaces:admin',
-  manage_secrets: 'secrets', manage_providers: 'secrets', manage_model_tiers: 'admin', manage_evidence_backends: 'admin', manage_experiments: 'admin',
+  manage_secrets: 'secrets', manage_providers: 'secrets', manage_model_tiers: 'admin', manage_evidence_backends: 'admin', manage_experiments: 'admin', platform_rerank: 'admin',
   get_decision: 'admin', label_decision: 'admin',
   consolidate_knowledge: 'knowledge:admin', memory_delete: 'knowledge:admin',
 };

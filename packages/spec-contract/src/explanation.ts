@@ -14,10 +14,13 @@ import { wordDiff, type ChangeLine, type CriterionChange, type SectionTextChange
  */
 export interface SpecExplanation {
   summary: string;
+  /** One sentence naming the decision the author needs from the reader; leads the inbox row, the confirm page and Review all. */
+  question?: string;
   lines: Record<string, string>;
 }
 
 export const EXPLANATION_SUMMARY_MAX = 300;
+export const EXPLANATION_QUESTION_MAX = 300;
 export const EXPLANATION_LINE_MAX = 1000;
 export const EXPLANATION_KEY_MAX = 300;
 export const EXPLANATION_LINES_MAX = 300;
@@ -35,9 +38,15 @@ function normalKey(key: string): string {
 export function parseExplanation(input: unknown): { ok: true; explanation: SpecExplanation | null } | { ok: false; error: string } {
   if (input === undefined || input === null) return { ok: true, explanation: null };
   if (typeof input !== 'object' || Array.isArray(input)) return { ok: false, error: 'explanation must be { summary, lines: { "<criterion id or section heading>": "<what changed>" } }' };
-  const { summary, lines } = input as { summary?: unknown; lines?: unknown };
+  const { summary, lines, question } = input as { summary?: unknown; lines?: unknown; question?: unknown };
   if (typeof summary !== 'string' || !summary.trim()) return { ok: false, error: 'explanation.summary (one line saying what the revision does) is required' };
   if (/[\r\n]/.test(summary.trim()) || summary.trim().length > EXPLANATION_SUMMARY_MAX) return { ok: false, error: `explanation.summary is one line of at most ${EXPLANATION_SUMMARY_MAX} characters` };
+  let asked: string | undefined;
+  if (question !== undefined && question !== null) {
+    if (typeof question !== 'string' || !question.trim()) return { ok: false, error: 'explanation.question must be one sentence naming the decision you need, or omitted' };
+    if (/[\r\n]/.test(question.trim()) || question.trim().length > EXPLANATION_QUESTION_MAX) return { ok: false, error: `explanation.question is one line of at most ${EXPLANATION_QUESTION_MAX} characters` };
+    asked = question.trim();
+  }
   if (lines !== undefined && (typeof lines !== 'object' || lines === null || Array.isArray(lines))) return { ok: false, error: 'explanation.lines must be an object keyed by criterion id (R-3) or section heading' };
   const out: Record<string, string> = {};
   const entries = Object.entries((lines ?? {}) as Record<string, unknown>);
@@ -50,7 +59,7 @@ export function parseExplanation(input: unknown): { ok: true; explanation: SpecE
     if (key in out) return { ok: false, error: `explanation.lines names ${key} twice` };
     out[key] = text.trim();
   }
-  return { ok: true, explanation: { summary: summary.trim(), lines: out } };
+  return { ok: true, explanation: { summary: summary.trim(), ...(asked ? { question: asked } : {}), lines: out } };
 }
 
 /** One change the explanation has to cover. */
@@ -127,4 +136,9 @@ export function sectionWordChanges(fromBody: string, toBody: string, otherText: 
   const out: Record<string, WordOp[]> = {};
   for (const o of otherText) out[o.section] = wordDiff(a.get(o.section) ?? '', b.get(o.section) ?? '');
   return out;
+}
+
+/** The question that leads a row or page, or null when the author asked none. */
+export function questionToLead(explanation: SpecExplanation | null | undefined): string | null {
+  return explanation?.question?.trim() || null;
 }

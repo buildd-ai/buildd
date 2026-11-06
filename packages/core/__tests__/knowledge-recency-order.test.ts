@@ -34,8 +34,10 @@ function flatReranker(score: number) {
 }
 
 function finalize(store: any, results: QueryResult[], recencyAuthority: boolean) {
-  return store._finalize(results, 'query', 10, recencyAuthority);
+  return store._finalize(results, 'query', 10, recencyAuthority, CALL, { denied: false });
 }
+
+const CALL = { namespace: 'ws:memory', caller: 'test' };
 
 describe('_finalize: recency × authority survives rerank', () => {
   it('applies age decay to the reranked score instead of discarding it', async () => {
@@ -74,7 +76,7 @@ describe('_finalize: recency × authority survives rerank', () => {
   it('weights everything the reranker returned, then truncates', async () => {
     const store = new PgVectorStore(null, flatReranker(0.9) as any);
     const results = [hit('old', 0.5, 400), hit('mid', 0.5, 60), hit('fresh', 0.5, 1)];
-    const out = await store._finalize(results, 'query', 2, true);
+    const out = await store._finalize(results, 'query', 2, true, CALL, { denied: false });
 
     expect(out.map((r: QueryResult) => r.id)).toEqual(['fresh', 'mid']);
 

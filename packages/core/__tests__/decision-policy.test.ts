@@ -3,7 +3,7 @@ import { choice } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, listBuilddDecisionKinds, isMeasuredForKind } from '../decision-kinds';
 import { replayOf, resolveBuilddDecisionRuntime, runBuilddDecision, toDecisionLedgerInput, type BuilddDecisionDeps } from '../decision-policy';
 import type { DecisionLedgerInput } from '../decision-ledger';
-import { assignExperimentArm } from '../experiment-randomizer';
+import { assignExperimentArm } from '../arm-randomizer';
 
 /**
  * buildd's binding of the decision-kind contract: the team's inference policy

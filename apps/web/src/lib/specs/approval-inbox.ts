@@ -5,6 +5,8 @@ import { isUuid } from '@/lib/uuid';
 import { appBaseUrl } from '@/lib/app-url';
 import { roleHas } from '@/lib/permissions';
 import { requestingPerson } from '@/lib/request-person';
+import { proposalWhere } from './proposals';
+import type { SpecExplanation } from '@buildd/spec-contract/explanation';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -31,10 +33,11 @@ export const SPEC_REVIEW_ALL_PATH = '/app/specs/review-all';
 export const specApprovalInboxUrl = () => `${appBaseUrl()}${SPEC_APPROVAL_INBOX_PATH}`;
 export const specPageUrl = (specId: string) => `${appBaseUrl()}/app/specs/${encodeURIComponent(specId)}`;
 
-/** A specs row that waits on a decision: live, a head newer than what is approved, not an unconfirmed import. */
+/** A specs row that waits on a decision: live, a head newer than what is approved, not an unconfirmed import, not a proposal (./proposals.ts: an unrequested draft waits on a mission or a task first). */
 export const awaitingApprovalWhere = () => sql`${specs.status} NOT IN ('retired', 'superseded')
   AND (${specs.approvedRevision} IS NULL OR ${specs.headRevision} > ${specs.approvedRevision})
-  AND coalesce(${specs.repoSource}->>'state', '') <> 'imported'`;
+  AND coalesce(${specs.repoSource}->>'state', '') <> 'imported'
+  AND NOT (${proposalWhere()})`;
 
 /**
  * Waiting specs per workspace, as an un-run query (Home reads it in its first
@@ -86,33 +89,41 @@ export interface AwaitingApprovalRow {
   changeSummary: string | null;
   /** The one-line summary of the head's explanation (R-15); null when none was written. */
   explanationSummary: string | null;
+  /** The head's whole explanation (R-15), what coverage is measured against; null when none was written. */
+  explanation: SpecExplanation | null;
+  /** The spec's body artifact, for reading the approved-to-head change list. */
+  bodyArtifactId: string;
+  /**
+   * How many revisions this one row stands for: everything after the approved
+   * revision up to the head (R-30). One when the head sits directly on the
+   * approved revision; more when revisions are stacked unapproved.
+   */
+  revisionsCovered: number;
+  /** The decision the author needs, from the head's explanation; null when none was asked. */
+  question: string | null;
   proposedAt: string;
 }
 
-/** Every spec this person may approve whose head waits on a decision, newest proposal first. */
+/**
+ * Every spec this person may approve whose head waits on a decision, newest
+ * proposal first.
+ */
 export async function listAwaitingApproval(userId: string): Promise<AwaitingApprovalRow[]> {
   const ws = await approverWorkspaces(userId);
   if (!ws.length) return [];
   const names = new Map(ws.map((w) => [w.id, w.name]));
 
   const rows = rowsOf<{
-    id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number;
-    content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; created_at: string | Date;
-  }>(await db.execute(sql`
+    id: string; title: string; workspace_id: string; head_revision: number; approved_revision: number | null; version: number; content_hash: string; author_kind: string; author_name: string | null; change_summary: string | null; explanation_summary: string | null; explanation: SpecExplanation | null; body_artifact_id: string; explanation_question: string | null; created_at: string | Date; }>(await db.execute(sql`
     SELECT specs.id, specs.title, specs.workspace_id, specs.head_revision, specs.approved_revision, specs.version,
-      r.content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.created_at
+      r.content_hash, r.author_kind, coalesce(nullif(trim(u.name), ''), u.email) AS author_name, r.change_summary, r.explanation->>'summary' AS explanation_summary, r.explanation, specs.body_artifact_id, r.explanation->>'question' AS explanation_question, r.created_at
     FROM specs
     JOIN spec_revisions r ON r.spec_id = specs.id AND r.revision = specs.head_revision
     LEFT JOIN users u ON r.author_kind = 'user' AND u.id::text = r.author_id
     WHERE ${inArray(specs.workspaceId, ws.map((w) => w.id))} AND ${awaitingApprovalWhere()}
     ORDER BY r.created_at DESC, specs.id`));
   return rows.map((r) => ({
-    specId: r.id, title: r.title, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '',
-    headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision),
-    version: Number(r.version), contentHash: r.content_hash,
-    author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent',
-    changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null, proposedAt: new Date(r.created_at).toISOString(),
-  }));
+    specId: r.id, title: r.title, workspaceId: r.workspace_id, workspaceName: names.get(r.workspace_id) ?? '', headRevision: Number(r.head_revision), approvedRevision: r.approved_revision == null ? null : Number(r.approved_revision), version: Number(r.version), contentHash: r.content_hash, author: r.author_kind === 'user' ? (r.author_name ?? 'a person') : 'an agent', changeSummary: r.change_summary, explanationSummary: r.explanation_summary?.trim() || null, explanation: r.explanation ?? null, bodyArtifactId: r.body_artifact_id, revisionsCovered: Number(r.head_revision) - (r.approved_revision == null ? 0 : Number(r.approved_revision)), question: r.explanation_question?.trim() || null, proposedAt: new Date(r.created_at).toISOString(), }));
 }
 
 async function countWhere(where: SQL): Promise<number> {

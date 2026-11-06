@@ -66,7 +66,7 @@ describe('composition root', () => {
     expect(byEvent('team.created')).toEqual(['roles-skills:seed-default-roles']);
     expect(byEvent('task.retrying')).toEqual(['notifications:push-task-retrying']);
     // The evidence record is written before the verdict that reads it.
-    expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence', 'health-quality:failure-pattern-sentinel', 'jev-decisions:verdict-on-terminal']);
+    expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence', 'reviews:branch-retire-on-task-end', 'health-quality:failure-pattern-sentinel', 'jev-decisions:verdict-on-terminal']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('spec.approved')).toEqual(['knowledge:living-spec-index']);
     expect(byEvent('spec.approval_requested')).toEqual(['notifications:push-spec-approval-requested']);
@@ -106,8 +106,8 @@ describe('composition root', () => {
       'health-quality:failure-incident-recovery-on-pr-closed',
       'jev-decisions:verdict-on-close',
     ]);
-    expect(byEvent('pr.close_delivered')).toEqual(['jev-decisions:merge-readiness-outcome', 'reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
-    expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep', 'reviews:superseded-refresh-sweep', 'reviews:orphan-pr-sweep']);
+    expect(byEvent('pr.close_delivered')).toEqual(['jev-decisions:merge-readiness-outcome', 'reviews:pr-activity-on-close', 'reviews:review-callback-on-close', 'reviews:branch-retire-on-close']);
+    expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep', 'reviews:superseded-refresh-sweep', 'reviews:orphan-pr-sweep', 'reviews:branch-retire-sweep']);
     expect(byEvent('pr.red_check_unclassified')).toEqual(['jev-decisions:red-check-cause-judgement']);
     expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
     expect(byEvent('pr.review_comment_created')).toEqual(['reviews:capture-review-comment']);

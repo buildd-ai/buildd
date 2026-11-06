@@ -176,6 +176,11 @@ export interface RetryContinuityOptions {
   failureContext?: unknown;
   /** Where the prior attempt's last work was checkpointed, from `context.recoveryRef`. */
   recoveryRef?: unknown;
+  /** True when a `## Previous Verification` section renders; step 3 then points at it instead of repeating the summary. */
+  /** A `## Previous Verification` section follows; step 3 points at it instead of repeating the summary. */
+  loop?: boolean;
+  /** Alias of `loop`. */
+  hasVerificationSection?: boolean;
   /** The workspace default branch (e.g. `dev`/`main`) — required, always in scope. */
   defaultBranch: string;
 }
@@ -214,9 +219,11 @@ export function buildRetryContinuitySection(
 
   const recoveryRef = typeof opts.recoveryRef === 'string' && opts.recoveryRef ? opts.recoveryRef : undefined;
   const sha = lastCommitSha ?? `origin/${resumeBranch}`;
-  const failureLine = failureSummary ? [`3. The prior attempt failed with: ${failureSummary}`] : [];
-  const decideStep = failureSummary ? '4' : '3';
-  const logStep = failureSummary ? '5' : '4';
+  const failureLine = (opts.loop || opts.hasVerificationSection)
+    ? ['3. Read `## Previous Verification` below for what the verifier said about the prior attempt.']
+    : failureSummary ? [`3. The prior attempt failed with: ${failureSummary}`] : [];
+  const decideStep = failureLine.length ? '4' : '3';
+  const logStep = failureLine.length ? '5' : '4';
   return [
     '',
     '## Prior Attempt — Assess Before Starting',

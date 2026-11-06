@@ -24,7 +24,7 @@
  * turn and the step recomputed; a signal whose removal changes the result is a
  * cause.
  */
-import { hashUnitInterval } from './experiment-randomizer';
+import { hashUnitInterval } from './arm-randomizer';
 import { MIN_GRADED_UNITS, QUALITY_BY_SEVERITY, type Allocation, type PoolSurface, type Severity } from './tier-pool';
 
 export const EXPLORE_POLICY = {

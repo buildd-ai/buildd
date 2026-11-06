@@ -303,3 +303,27 @@ describe('/api/experiments/[id] — per-task token', () => {
     expect(mockApply).not.toHaveBeenCalled();
   });
 });
+
+describe('PATCH start of staged_self_review', () => {
+  const kc = { minSample: 30, maxAddedCostPerTask: 0.5, rubberStampTouchRate: 0.8, rubberStampFlipRate: 0.05 };
+  it('400s starting without a killCriterion', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: {} });
+    const res = await patch({ status: 'running' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/killCriterion/);
+    expect(mockApply).not.toHaveBeenCalled();
+  });
+
+  it('starts with a stored killCriterion', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: { killCriterion: kc } });
+    expect((await patch({ status: 'running' })).status).toBe(200);
+  });
+
+  it('starts when the same patch supplies the killCriterion', async () => {
+    as('operator');
+    stored = row({ kind: 'staged_self_review', config: {} });
+    expect((await patch({ status: 'running', config: { killCriterion: kc } })).status).toBe(200);
+  });
+});
