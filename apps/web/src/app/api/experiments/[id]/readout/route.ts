@@ -22,6 +22,7 @@ import { TIER_POOL_EXPERIMENT_KIND } from '@buildd/core/tier-pool';
 import { runTierPoolReadout } from '@buildd/core/tier-pool-admin';
 import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
+import { runStagedSelfReviewReadout } from '@buildd/core/staged-self-review-readout-source';
 import { bearerOf, resolveExperimentViewer } from '@/lib/experiment-access';
 import { isTaskToken } from '@/lib/task-token';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';
@@ -61,6 +62,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // Heartbeat triage is measured per mission, over its own look rows, not per task.
   if (row.kind === HEARTBEAT_TRIAGE_EXPERIMENT_KIND) {
     const readout = await runHeartbeatTriageReadout({ id: row.id, policyVersion }, parseHeartbeatTriageConfig(row.config));
+    return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
+  }
+  // Staged self-review is measured over stored stage records, not task outcomes.
+  if (row.kind === 'staged_self_review') {
+    const k = (row.config as { killCriterion?: { rubberStampTouchRate?: number; rubberStampFlipRate?: number } } | null)?.killCriterion;
+    const readout = await runStagedSelfReviewReadout({ id: row.id, policyVersion }, { touchRate: k?.rubberStampTouchRate, flipRate: k?.rubberStampFlipRate });
     return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
   }
   // Tier pools are measured per arm over their own assignment rows (chat turns or tasks).

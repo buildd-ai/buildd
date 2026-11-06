@@ -146,6 +146,7 @@
     "./heartbeat-triage-experiment-source": "./heartbeat-triage-experiment-source.ts",
     "./heartbeat-triage-readout": "./heartbeat-triage-readout.ts",
     "./heartbeat-triage-readout-source": "./heartbeat-triage-readout-source.ts",
+    "./staged-self-review-readout-source": "./staged-self-review-readout-source.ts",
     "./experiment-readout": "./experiment-readout.ts",
     "./experiment-readout-source": "./experiment-readout-source.ts",
     "./experiment-health": "./experiment-health.ts",

@@ -142,3 +142,38 @@ export function stagedReviewFootprint<T>(
   deps.initState?.();
   return deps.draw();
 }
+
+const SELF_REVIEW_LABEL = /^Self-review: (\{.*\})$/s;
+
+/**
+ * Stored records -> readout input. The runner writes each stage outcome as a
+ * `Self-review: {json}` status milestone; only `answered` entries carry a
+ * checklist answer. Unparseable (e.g. truncated) labels are skipped and counted.
+ */
+export function stagedReviewRecordsFromMilestones(
+  workersRows: readonly { taskId?: string | null; milestones?: unknown }[],
+): { records: StagedReviewRecord[]; skipped: number } {
+  const records: StagedReviewRecord[] = [];
+  let skipped = 0;
+  for (const w of workersRows) {
+    if (!Array.isArray(w.milestones)) continue;
+    for (const m of w.milestones as { label?: unknown }[]) {
+      const match = typeof m?.label === 'string' ? SELF_REVIEW_LABEL.exec(m.label) : null;
+      if (!match) continue;
+      try {
+        const e = JSON.parse(match[1]) as Record<string, unknown>;
+        if (e.outcome !== 'answered') continue;
+        const answers = Array.isArray(e.answers)
+          ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
+          : ['unanswered'];
+        records.push({
+          taskId: w.taskId ?? undefined,
+          toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
+          changedAfterDenial: e.workChangedAfterDenial === true,
+          answers,
+        });
+      } catch { skipped++; }
+    }
+  }
+  return { records, skipped };
+}
