@@ -322,3 +322,32 @@ describe('stuck detection', () => {
     expect(resultSignature('secret-text')).not.toContain('secret');
   });
 });
+
+describe('counted-tool whitelist (R-3)', () => {
+  const others = [
+    ['LS', { path: '/x' }],
+    ['TodoWrite', { todos: [] }],
+    ['WebFetch', { url: 'https://example.com' }],
+    ['Task', { prompt: 'p' }],
+  ] as const;
+
+  for (const [name] of others) {
+    test(`six failing ${name} calls report no error streak`, () => {
+      const calls = Array.from({ length: 6 }, (_, i) => call(name, { n: i }, { fail: true }));
+      expect(run(calls).action).toBe('none');
+    });
+  }
+
+  test('other tools neither count nor break an error streak', () => {
+    const calls = [failBash(1), failBash(2), call('LS', { path: '/' }), failEdit(3), call('TodoWrite', {}), failBash(4), call('WebFetch', { url: 'u' }), failEdit(5), failBash(6)];
+    expect(run(calls).action).not.toBe('none');
+  });
+
+  test('other tools are skipped by alternation', () => {
+    const a = (i: number) => call('Bash', { command: 'make a' }, { resultSignature: 'a' });
+    const b = (i: number) => call('Edit', { file_path: '/f', old_string: 'x', new_string: 'y' }, { resultSignature: 'b' });
+    const calls: StuckCall[] = [];
+    for (let i = 0; i < 4; i++) calls.push(a(i), call('LS', { path: `/${i}` }), b(i), call('Task', { prompt: `${i}` }));
+    expect(run(calls).scenario).toBe('alternation');
+  });
+});
