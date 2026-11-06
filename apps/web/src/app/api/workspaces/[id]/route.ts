@@ -427,6 +427,23 @@ export async function PATCH(
           { status: 400 },
         );
       }
+      // Staged self-review mode: exact values only. The experiment pointer is
+      // attached by the claim route; a client may only clear it.
+      if ('selfReview' in gitConfig) {
+        const mode = (gitConfig as Record<string, unknown>).selfReview;
+        if (mode !== null && mode !== 'off' && mode !== 'recording' && mode !== 'acting') {
+          return NextResponse.json(
+            { error: "gitConfig.selfReview must be 'off', 'recording', 'acting' or null" },
+            { status: 400 },
+          );
+        }
+      }
+      if ('selfReviewExperiment' in gitConfig && (gitConfig as Record<string, unknown>).selfReviewExperiment !== null) {
+        return NextResponse.json(
+          { error: 'gitConfig.selfReviewExperiment is set by buildd; send null to clear it' },
+          { status: 400 },
+        );
+      }
       // Member repo access (lib/member-repo-access.ts): exact values only, and
       // turning it on needs a linked repo, or every member would be refused.
       if ('memberRepoAccess' in gitConfig) {

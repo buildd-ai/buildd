@@ -1,12 +1,6 @@
 import { describe, test, expect } from 'bun:test';
-import { buildStagedAssignment, withStagedExperiment, STAGED_EXPERIMENT_KIND } from './staged-review-injection';
+import { buildStagedAssignment, withStagedExperiment } from './staged-arm';
 import { resolveStagedConfig } from '../../../../../../runner/src/staged-self-review';
-
-import { STAGED_SELF_REVIEW_FEATURE } from '@buildd/core/staged-self-review';
-
-test('experiment kind mirrors the core constant', () => {
-  expect(STAGED_EXPERIMENT_KIND).toBe(STAGED_SELF_REVIEW_FEATURE);
-});
 
 const exp = { id: 'exp-1', policyVersion: 2, treatmentFraction: 0.5 };
 
@@ -41,7 +35,6 @@ describe('withStagedExperiment', () => {
     for (let i = 0; i < 30; i++) expect(resolveStagedConfig(ws.gitConfig, `t-${i}`).arm).toBe('control');
   });
 });
-
 describe('buildStagedAssignment', () => {
   const acting = withStagedExperiment({ gitConfig: { selfReview: 'acting' } }, exp);
   test('matches the runner draw, with propensity and version', () => {

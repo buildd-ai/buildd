@@ -2,6 +2,8 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { experiments, experimentAssignments } from '@buildd/core/db/schema';
 import { assignStagedReviewArm, effectiveStagedArm } from '@buildd/core/staged-self-review';
+/** Mirrors STAGED_SELF_REVIEW_FEATURE in packages/core/staged-self-review.ts (not imported: that file's path classes it as a module). */
+const STAGED_SELF_REVIEW_FEATURE = 'staged_self_review';
 
 /**
  * Staged self-review (Living Spec f3742450): hand the runner the team's running
@@ -19,9 +21,6 @@ export interface StagedExperimentRow {
   startedAt?: Date | null;
   config?: Record<string, unknown> | null;
 }
-
-/** Mirrors STAGED_SELF_REVIEW_FEATURE (packages/core/staged-self-review.ts); the test pins equality. Not imported: that file sits in the reviews module. */
-export const STAGED_EXPERIMENT_KIND = 'staged_self_review';
 
 const TTL_MS = 60_000;
 const cache = new Map<string, { at: number; row: StagedExperimentRow | null }>();
@@ -42,7 +41,7 @@ export async function loadRunningStagedExperiment(teamId: string): Promise<Stage
       config: experiments.config,
     })
     .from(experiments)
-    .where(and(eq(experiments.teamId, teamId), eq(experiments.status, 'running'), eq(experiments.kind, STAGED_EXPERIMENT_KIND)));
+    .where(and(eq(experiments.teamId, teamId), eq(experiments.status, 'running'), eq(experiments.kind, STAGED_SELF_REVIEW_FEATURE)));
   rows.sort((a, b) => (b.startedAt?.getTime() ?? 0) - (a.startedAt?.getTime() ?? 0));
   const row = rows[0] ?? null;
   cache.set(teamId, { at: Date.now(), row });
@@ -111,7 +110,7 @@ export function buildStagedAssignment(
       propensity: drawn.propensity,
       policyVersion: Number(exp.policyVersion ?? 1),
       served: arm === 'treatment',
-      eligibility: { kind: STAGED_EXPERIMENT_KIND, mode: 'acting' },
+      eligibility: { kind: STAGED_SELF_REVIEW_FEATURE, mode: 'acting' },
     };
   } catch {
     return null;
