@@ -350,6 +350,20 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |---|---|---|---|---|
 | 70 | `pr-landing.ts:landPr` | `pr_landing` | deferred / rejected / warned / accepted | the landing decision; `deferred` = a wait with an owner (branch update in flight, checks pending, fix queued), `rejected` = a human is needed, `warned` = shadow, `accepted` = merged |
 
+### Review by risk (Living Spec 62e985a8, `lib/review-by-risk.ts`)
+
+Off unless a person turns on `gitConfig.mergePolicy.reviewByRisk`. Fired from
+the one rail every merge door and the kernel's merge rails share
+(`evaluateAutoMergeSafety`) and from the release-summary check every release
+door asks (`release/summary-store.ts:guardReleaseSummary`).
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 72 | `auto-merge.ts:evaluateAutoMergeSafety` | `review_by_risk` | deferred | an unattended merge into the workspace integration branch held: `detail.kind` `risk_area` (R-4; `detail.areas` names area, file, matched path or AC id) or `ac_untested` (R-1; `detail.untested`) |
+| 73 | `auto-merge.ts:evaluateAutoMergeSafety` | `review_by_risk` | bypassed | a person's own merge of a PR touching a risk area: the approval R-4 asks for; `detail.approvedBy` and `detail.areas` feed the release summary (R-7) |
+| 74 | `release/summary-store.ts:guardReleaseSummary` (from `release/record.ts`, `release/pinned-merge.ts`, `held-pr-tasks.ts:handleReleasePrCiSuccess`) | `review_by_risk` | deferred | a release held until a person approves its summary for that exact commit (R-6); `detail.kind: release_summary`, `headSha`, `source`, `target` |
+| 75 | `workspaces/[id]/release-summary/route.ts` POST | `review_by_risk` | bypassed | a person approved the release summary; `detail.kind: release_summary`, `headSha`, `approvedBy` |
+
 ### Model-tier ceilings (`docs/specs/model-tier-ceilings.md`)
 
 | # | file:line | gate | outcome | note |

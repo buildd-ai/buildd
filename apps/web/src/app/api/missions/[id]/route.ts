@@ -653,6 +653,9 @@ export async function PATCH(
             { status: 400 },
           );
         }
+        if (mergePolicy && typeof mergePolicy === 'object' && 'reviewByRisk' in mergePolicy) {
+          return NextResponse.json({ error: "mergePolicy.reviewByRisk is a workspace setting (the workspace Merge Policy page); a mission's merges keep their own rules", field: 'mergePolicy.reviewByRisk' }, { status: 400 });
+        }
         const result = mergePolicySchema.safeParse(mergePolicy);
         if (!result.success) {
           const msg = result.error.issues[0]?.message ?? 'invalid';
