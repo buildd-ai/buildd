@@ -313,7 +313,7 @@ Specific triggers to always check (in both memory and task corpora):
 
 If the work needs access you do not have (a provider such as Axiom or Vercel, another workspace, a model call):
 1. \`buildd action=resolve_capability\` says what serves the need (\`capability: "model.inference"\` for a model call).
-2. \`buildd action=request_capability\` asks. A person decides; keep working while it is pending.
+2. \`buildd action=request_capability\` asks. A person decides, and the run is held until they do: keep working on what does not need it, withdraw the request if you no longer need it, or complete with \`structuredOutput.blockedByCapability { requestId, whatIsMissing }\`.
 3. Spend a model grant with \`buildd action=invoke_model_inference\`.
 
 Never write a script that reads a database URL or a key of your own, and never end with "the sandbox has no X".
@@ -403,7 +403,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
 
 ## Missing Access — Ask, Never Build Around It
 
-If the research needs access you do not have (a provider such as Axiom, another workspace's data, a model call): \`buildd action=resolve_capability\` says what serves it (\`capability: "model.inference"\` for a model call), \`buildd action=request_capability\` asks, and a person decides; keep working while it is pending. Spend a model grant with \`buildd action=invoke_model_inference\`. Never use a script that reads a database URL or a key of your own, and never report "the sandbox has no X" as a finding without the request you made.
+If the research needs access you do not have (a provider such as Axiom, another workspace's data, a model call): \`buildd action=resolve_capability\` says what serves it (\`capability: "model.inference"\` for a model call), \`buildd action=request_capability\` asks, and a person decides; the run is held until they do, so keep working on what does not need it (for a database read pass the \`sql\` you intend, so the person sees it), and if the request is refused or expires, say so when you complete: \`blockedByCapability\` or \`proceededWithout { requestId, whatIsMissing }\`, never a result that quietly lacks the data. Spend a model grant with \`buildd action=invoke_model_inference\`. Never use a script that reads a database URL or a key of your own, and never report "the sandbox has no X" as a finding without the request you made.
 `,
     // Orchid — off the accent orange and warning amber; see role-colours.test.ts.
     color: '#B24C9C',

@@ -67,6 +67,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   request_capability: 'workers',
   invoke_model_inference: 'workers',
   query_database: 'workers',
+  withdraw_capability_request: 'workers',
   list_runners: 'workers',
   probe_budget_wall: 'workers',
   read_evidence: 'workers',
@@ -297,6 +298,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   request_capability: 'listed', // the skills and default roles name it for missing access
   invoke_model_inference: 'listed', // the skills and default roles name it for missing access
   query_database: 'listed', // delivery-forensics names it for production reads
+  withdraw_capability_request: 'listed', // the skills and the task-lifecycle topic name it for a pending request
   trace_schedule: 'more',
   create_schedule: 'more',
   update_schedule: 'more',
@@ -391,7 +393,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   runners: {
     parts: [
-      { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability', 'invoke_model_inference', 'query_database'] },
+      { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability', 'invoke_model_inference', 'query_database', 'withdraw_capability_request'] },
       { text: 'message an agent', actions: ['send_agent_message', 'answer_question'] },
     ],
   },
@@ -472,6 +474,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   request_capability: 'ask for access',
   invoke_model_inference: 'spend a model grant',
   query_database: 'read prod DB under a grant',
+  withdraw_capability_request: 'drop your access ask',
   list_runners: 'slots, branch, build, heartbeat',
   probe_budget_wall: 'recheck a limit',
   read_evidence: 'stored run logs',
@@ -554,6 +557,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   request_capability: '{provider, access, …}',
   invoke_model_inference: '{model, state, questions}',
   query_database: '{sql, params?, maxRows?}',
+  withdraw_capability_request: '{requestId}',
   register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
   update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, outcomeSpec?, description?, limit?, taskId?, …}',
@@ -753,7 +757,8 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('model', str, [{ text: 'A model your grant lists', actions: ['invoke_model_inference'] }]),
     param('state', str, [{ text: 'Text to judge', actions: ['invoke_model_inference'] }]),
     param('questions', { type: 'object' }, [{ text: '{name: {type, instructions}}', actions: ['invoke_model_inference'] }]),
-    param('sql', str, [{ text: 'One SELECT', actions: ['query_database'] }]),
+    param('sql', str, [{ text: 'One SELECT', actions: ['query_database'] }, { text: 'The statement you intend to run (shown to the approver)', actions: ['request_capability'] }]),
+    param('requestId', str, [{ text: 'request_capability id', actions: ['withdraw_capability_request'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message', 'answer_question'] }]),
     param('message', str, [{ text: 'Steering message for the running agent, or the answer to its question', actions: ['send_agent_message', 'answer_question'] }]),
   ],

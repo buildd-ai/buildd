@@ -288,7 +288,7 @@ Know when to stop and involve a human:
 |---------|--------|
 | 3+ failed attempts at the same fix | Stop patching. Question the approach. Describe what you tried. |
 | Change affects >3 unrelated subsystems | Present plan for review before executing |
-| Missing access (a provider, another workspace, a model call) | Ask for it with `request_capability` (see below), keep working while it is pending |
+| Missing access (a provider, another workspace, a model call) | Ask for it with `request_capability` (see below); the run is held until a person answers |
 | Blocked on an external dependency | Report blocker, move to next task if possible |
 | Test suite broken before your changes | Report the pre-existing failure, don't paper over it |
 | Stuck for >2 attempts with no progress | Stop. Describe the problem and what you've tried. Ask for guidance. |
@@ -304,7 +304,14 @@ path for it:
    model call pass `capability: "model.inference"`; the answer names the exact
    request to make and whether the team's route can be granted.
 2. `buildd action=request_capability` asks for it. A person decides. While it
-   is pending approval, keep working on everything that does not need it.
+   is pending, the run is held: `complete_task` is refused until the person
+   answers. Keep working on everything that does not need it (the decision
+   reaches you as a message); `withdraw_capability_request` if you no longer
+   need it; or complete with `structuredOutput.blockedByCapability
+   { requestId, whatIsMissing }` if the work cannot be finished without it.
+   A request that was refused, expired or withdrawn must be named in
+   `blockedByCapability` or `proceededWithout { requestId, whatIsMissing }`
+   when you complete, and the summary leads with it.
 3. Once granted, use it: a provider's tools through its connector, a model
    call with `buildd action=invoke_model_inference`. buildd holds the key and
    charges the grant's budget.

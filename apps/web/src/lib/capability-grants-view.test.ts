@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  accessIntent,
   accessStatusLine,
   defaultEffectText,
   approveLabel,
@@ -54,6 +55,9 @@ describe('accessStatusLine', () => {
     expect(accessStatusLine(row({ status: 'denied', decidedByName: 'Sam', decisionReason: 'use staging' }), NOW)).toContain('Denied by Sam: use staging');
     expect(accessStatusLine(row({ status: 'expired', decidedBy: 'system', decisionReason: 'task_terminal' }), NOW)).toContain('the task ended');
     expect(accessStatusLine(row({ status: 'expired', decidedBy: 'human' }), NOW)).toContain('can ask again');
+    expect(accessStatusLine(row({ status: 'expired', decidedBy: 'system', decisionReason: 'wait_window_elapsed' }), NOW)).toBe('Closed: nobody answered within the wait window. The agent finishes without it and says so.');
+    expect(accessStatusLine(row({ status: 'expired', decidedBy: 'agent', decisionReason: 'withdrawn' }), NOW)).toBe('Closed: the agent withdrew it. Nothing to decide.');
+    expect(accessStatusLine(row({ status: 'expired', decidedBy: 'agent', decisionReason: 'agent_stopped_waiting' }), NOW)).toContain('finished without waiting');
   });
 });
 
@@ -72,5 +76,15 @@ describe('defaultEffectText for a brokered Neon read', () => {
     expect(defaultEffectText('read', 'neon')).toBe('Ask a person');
     expect(defaultEffectText('read', 'axiom')).toBe('Allow if the agent uses it');
     expect(defaultEffectText('write', 'neon')).toBe('Ask a person');
+  });
+});
+
+describe('accessIntent', () => {
+  it('shows the SQL a database read declared, else its tables, and nothing for other asks', () => {
+    expect(accessIntent(row({ capability: 'database.query', scope: { sql: ' select id from tasks ' } }))).toBe('select id from tasks');
+    expect(accessIntent(row({ capability: 'database.query', scope: { tables: ['tasks', 'workers'] } }))).toBe('Tables: tasks, workers');
+    expect(accessIntent(row({ capability: 'database.query', scope: { sql: 'x'.repeat(700) } }))).toHaveLength(602);
+    expect(accessIntent(row({ capability: 'database.query', scope: null }))).toBeNull();
+    expect(accessIntent(row({ capability: 'model.inference', scope: { sql: 'select 1' } }))).toBeNull();
   });
 });
