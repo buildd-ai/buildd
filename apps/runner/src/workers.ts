@@ -4753,6 +4753,7 @@ export class WorkerManager {
             teamEndpoint: modelEnv.endpoint === 'team',
             authJson,
             envApiKey: cleanEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+            local: modelEnv.local,
           });
           sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
           worker.route = codexRunRoute({
@@ -4763,6 +4764,7 @@ export class WorkerManager {
             openAiBaseUrl: modelEnv.endpoint === 'team' ? undefined : cleanEnv.OPENAI_BASE_URL,
             codexLogin,
             credentialScope: worker.credentialDecision?.scope,
+            local: modelEnv.local,
           });
           if (worker.route) sessionLog(worker.id, 'info', 'run_route', `bucket=${worker.route.bucket} provider=${worker.route.provider} owner=${worker.route.owner}`, task.id);
         }
