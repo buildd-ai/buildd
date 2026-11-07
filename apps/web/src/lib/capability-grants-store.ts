@@ -64,7 +64,7 @@ export function grantView(r: GrantRecord & Partial<Pick<GrantRow, 'reason' | 'de
     risk: r.risk, tool: r.tool, resource: r.resource, environment: r.environment,
     workspaceId: r.workspaceId, taskId: r.taskId, workerId: r.workerId, roleSlug: r.roleSlug,
     decidedBy: r.decidedBy, ttlSeconds: r.ttlSeconds, expiresAt: r.expiresAt, revokedAt: r.revokedAt,
-    ...(r.capability === MODEL_INFERENCE_CAPABILITY && r.scope ? { scope: r.scope } : {}),
+    ...((r.capability === MODEL_INFERENCE_CAPABILITY || r.capability === DATABASE_QUERY_CAPABILITY) && r.scope ? { scope: r.scope } : {}),
     ...(r.reason !== undefined ? { reason: r.reason } : {}),
     ...(r.decisionReason !== undefined ? { decisionReason: r.decisionReason } : {}),
     ...(r.requestedAt !== undefined ? { requestedAt: r.requestedAt } : {}),
@@ -99,6 +99,10 @@ export async function loadPolicyRules(teamId: string): Promise<PolicyRule[]> {
 export async function expireLapsedTeamGrants(teamId: string, now: Date = new Date()): Promise<void> {
   await expireLapsed(eq(capabilityGrants.teamId, teamId), now);
   await closeEndedRunRequests(teamId, now);
+  // A pending request nobody answered inside the team's wait window expires
+  // too, and its worker is told (capability-hold-store.ts). Lazy: the hold
+  // store imports this module.
+  await import('./capability-hold-store').then(m => m.expireOverdueRequests({ teamId, now })).catch(() => undefined);
 }
 
 /**
@@ -217,7 +221,7 @@ export async function requestCapability(principal: AgentPrincipal, req: Capabili
     requestedByAccountId: principal.accountId, roleSlug: rp.roleSlug,
     capability: req.capability, provider: target.provider, connectorId: target.connectorId,
     risk: req.risk, tool: req.tool, resource: req.resource, environment: req.environment,
-    scope: req.modelInference ? { ...req.modelInference } : null,
+    scope: req.modelInference ? { ...req.modelInference } : req.intent ? { ...req.intent } : null,
     reason: req.reason,
     status: granted ? 'granted' : 'pending',
     decidedBy: granted ? 'policy' : null,
@@ -554,12 +558,15 @@ export const capabilityGrantSource: ModelInferenceGrantSource = {
  * grant, re-checked on every query with the same live facts as any use (task,
  * worker, role, policy). The broker writes the audit row; this does not.
  */
-export async function findDatabaseQueryGrant(principal: Pick<AgentPrincipal, 'teamId' | 'workspaceId' | 'taskId' | 'workerId'>, now: Date = new Date()): Promise<{ ok: true; grantId: string; expiresAt: Date } | { ok: false; reasonCode: UseRefusal | 'no_grant' }> {
+export async function findDatabaseQueryGrant(principal: Pick<AgentPrincipal, 'teamId' | 'workspaceId' | 'taskId' | 'workerId'>, now: Date = new Date()): Promise<
+  | { ok: true; grantId: string; expiresAt: Date }
+  | { ok: false; reasonCode: UseRefusal | 'no_grant' | 'request_pending' | 'request_denied' | 'request_closed'; requestId?: string; decisionReason?: string | null }
+> {
   const rows = await db.query.capabilityGrants.findMany({
     where: sqlWhere(and(eq(capabilityGrants.workerId, principal.workerId), eq(capabilityGrants.status, 'granted'), eq(capabilityGrants.capability, DATABASE_QUERY_CAPABILITY))),
     orderBy: sqlOrderBy([desc(capabilityGrants.decidedAt)]),
   });
-  if (rows.length === 0 || !principal.teamId) return { ok: false, reasonCode: 'no_grant' };
+  if (rows.length === 0 || !principal.teamId) return requestStandingRefusal(principal.workerId);
   const run = await loadRunState(principal.taskId, principal.workerId);
   const rules = await loadPolicyRules(principal.teamId);
   const rp: RequestPrincipal = { teamId: principal.teamId, workspaceId: principal.workspaceId, taskId: principal.taskId, workerId: principal.workerId, roleSlug: run.roleSlug };
@@ -571,6 +578,28 @@ export async function findDatabaseQueryGrant(principal: Pick<AgentPrincipal, 'te
     last = refusal;
   }
   return { ok: false, reasonCode: last };
+}
+
+/**
+ * With no live grant, the worker is told where its request stands rather
+ * than a bare "no grant": still waiting on a person (`request_pending`),
+ * refused by one (`request_denied`, with the reason), or closed without a
+ * grant (`request_closed`: withdrawn, expired unanswered). Only with no
+ * request at all is the answer `no_grant` and the ask to make.
+ */
+async function requestStandingRefusal(workerId: string): Promise<{ ok: false; reasonCode: 'no_grant' | 'request_pending' | 'request_denied' | 'request_closed'; requestId?: string; decisionReason?: string | null }> {
+  const rows = await db.query.capabilityGrants.findMany({
+    where: sqlWhere(and(eq(capabilityGrants.workerId, workerId), eq(capabilityGrants.capability, DATABASE_QUERY_CAPABILITY))),
+    orderBy: sqlOrderBy([desc(capabilityGrants.requestedAt)]),
+  });
+  const latest = rows[0];
+  if (!latest) return { ok: false, reasonCode: 'no_grant' };
+  if (latest.status === 'pending') return { ok: false, reasonCode: 'request_pending', requestId: latest.id };
+  if (latest.status === 'denied') return { ok: false, reasonCode: 'request_denied', requestId: latest.id, decisionReason: latest.decisionReason };
+  if (latest.status === 'expired' && (latest.decidedBy === 'system' || latest.decidedBy === 'agent')) {
+    return { ok: false, reasonCode: 'request_closed', requestId: latest.id, decisionReason: latest.decisionReason };
+  }
+  return { ok: false, reasonCode: 'no_grant' };
 }
 
 // ── Listing (people) ─────────────────────────────────────────────────────────

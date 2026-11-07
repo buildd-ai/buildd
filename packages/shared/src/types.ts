@@ -886,6 +886,41 @@ export interface TaskHandoff {
   leftUndone?: string[];
 }
 
+/**
+ * `structuredOutput.blockedByCapability`: the run could not finish part of its
+ * work because an access request it made (`request_capability`) was not
+ * granted: refused by a person, expired after the wait window, withdrawn, or
+ * granted but unusable (e.g. no query role configured). Accepted only for a
+ * request this worker made; naming a live grant is refused ("use it").
+ * The server fills `outcome` and `reason` from the request row.
+ */
+export interface BlockedByCapability {
+  /** The request id `request_capability` returned (`grant.id`). */
+  requestId: string;
+  /** What could not be delivered without it, in a sentence. */
+  whatIsMissing?: string;
+  /** Server-filled: how the request ended (`denied`, `expired`, `revoked`, `withdrawn`, `query_role_unconfigured`, …). */
+  outcome?: string;
+  /** Server-filled: the person's reason, or the closing reason code. */
+  reason?: string | null;
+}
+
+/**
+ * `structuredOutput.proceededWithout`: the run asked for access, did not get
+ * it, and finished anyway. Required on any completion whose worker has a
+ * request that was never granted and is not named in `blockedByCapability`,
+ * so a result never quietly ships with the data it asked for missing. The
+ * task summary leads with it.
+ */
+export interface ProceededWithout {
+  requestId: string;
+  /** What the result lacks because of it, in a sentence. */
+  whatIsMissing: string;
+  /** Server-filled, as on BlockedByCapability. */
+  outcome?: string;
+  reason?: string | null;
+}
+
 export interface TaskResult {
   summary?: string;
   branch?: string;

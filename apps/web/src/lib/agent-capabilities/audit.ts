@@ -27,6 +27,10 @@ export type CapabilityName =
   | 'capability.approve'
   | 'capability.deny'
   | 'capability.revoke'
+  // The agent closed its own pending request (withdrew it, or completed with blockedByCapability naming it).
+  | 'capability.withdraw'
+  // buildd closed a pending request nobody answered inside the team's wait window (capability-hold-store.ts).
+  | 'capability.expire'
   | 'capability.use'
   // Written by the connector gateway (connector-gateway-store.ts), awaited for writes.
   | 'connector.tool_call'

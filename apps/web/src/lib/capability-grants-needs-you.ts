@@ -19,7 +19,7 @@
  */
 import type { EscalationVerdict } from '@buildd/core/escalation-gate';
 import type { WaitingOnYouRawItem } from './action-queue';
-import { accessAsk, accessWho, approveLabel, formatLease, type AccessRequestView } from './capability-grants-view';
+import { accessAsk, accessIntent, accessWho, approveLabel, formatLease, type AccessRequestView } from './capability-grants-view';
 import { isOpenAccessRequest } from './open-ask';
 
 export const ACCESS_SUBJECT_TYPE = 'capability_request';
@@ -61,6 +61,7 @@ export function accessNeedsYouItems(rows: readonly AccessRequestOnRun[], baseUrl
       accessAsk: accessAsk(r),
       accessTtlSeconds: r.ttlSeconds,
       accessApproveLabel: approveLabel(r.ttlSeconds),
+      accessIntent: accessIntent(r),
       taskId: r.taskId,
       taskTitle: r.taskTitle ?? undefined,
       workspaceId: r.workspaceId,

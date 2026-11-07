@@ -130,6 +130,17 @@ export interface CapabilityRequest {
   reason: string | null;
   /** model.inference only. */
   modelInference: ModelInferenceScope | null;
+  /**
+   * database.query only: what the agent intends to run, so the person deciding
+   * sees the SQL (or the tables) on the card. Stored on the row's `scope`;
+   * never enforced here (the broker checks every statement when it runs).
+   */
+  intent: QueryIntent | null;
+}
+
+export interface QueryIntent {
+  sql?: string;
+  tables?: string[];
 }
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
@@ -137,7 +148,26 @@ const TOOL_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
 const RESOURCE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}$/;
 const ENV_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/;
-const ALLOWED_KEYS = new Set(['capability', 'access', 'provider', 'tool', 'resource', 'environment', 'risk', 'ttlSeconds', 'reason', 'models', 'operations', 'budget']);
+const ALLOWED_KEYS = new Set(['capability', 'access', 'provider', 'tool', 'resource', 'environment', 'risk', 'ttlSeconds', 'reason', 'models', 'operations', 'budget', 'sql', 'tables']);
+const INTENT_SQL_MAX = 4000;
+const TABLE_RE = /^[a-z_][a-z0-9_]{0,62}$/;
+
+/** `sql` and `tables` on a database.query ask: what the person deciding will see. */
+function parseQueryIntent(b: Record<string, unknown>): Parse<QueryIntent | null> {
+  const out: QueryIntent = {};
+  if (b.sql !== undefined && b.sql !== null) {
+    if (typeof b.sql !== 'string' || !b.sql.trim()) return { ok: false, error: 'sql must be the statement you intend to run' };
+    if (b.sql.length > INTENT_SQL_MAX) return { ok: false, error: `sql must be at most ${INTENT_SQL_MAX} characters` };
+    out.sql = b.sql.trim();
+  }
+  if (b.tables !== undefined && b.tables !== null) {
+    if (!Array.isArray(b.tables) || b.tables.length === 0 || b.tables.length > 20 || !b.tables.every(t => typeof t === 'string' && TABLE_RE.test(t.trim().toLowerCase()))) {
+      return { ok: false, error: 'tables must be 1-20 table names' };
+    }
+    out.tables = [...new Set((b.tables as string[]).map(t => t.trim().toLowerCase()))].sort();
+  }
+  return { ok: true, value: out.sql || out.tables ? out : null };
+}
 /** Things an agent must never hand the broker: it names needs, not plumbing. */
 const FORBIDDEN_KEYS = ['connectorId', 'credentialRef', 'apiKey', 'token', 'baseURL', 'endpoint', 'headers', 'url'];
 
@@ -199,12 +229,14 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
     }
     if (!isSaneModelInferenceBudget(b.budget as ModelInferenceBudget)) return { ok: false, error: 'model.inference needs a budget inside MODEL_INFERENCE_LIMITS' };
     if (val(tool) || val(resource) || val(environment)) return { ok: false, error: 'model.inference takes models, not tool/resource/environment' };
+    if (b.sql !== undefined || b.tables !== undefined) return { ok: false, error: 'sql and tables are for a database read (provider neon, access read) only' };
     return {
       ok: true,
       request: {
         capability, access: 'read', provider: p, tool: null, resource: null, environment: null,
         risk: maxRisk('query', declared ?? 'query'), ttlSeconds, reason,
         modelInference: { models: [...new Set(models as string[])].sort(), operations: [...new Set(operations as ModelInferenceOperation[])], budget: b.budget as ModelInferenceBudget },
+        intent: null,
       },
     };
   }
@@ -218,16 +250,19 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
     if (p && p !== DATABASE_QUERY_PROVIDER) return { ok: false, error: `${DATABASE_QUERY_CAPABILITY} is served for provider "${DATABASE_QUERY_PROVIDER}" only` };
     if (access && access !== 'read') return { ok: false, error: `${DATABASE_QUERY_CAPABILITY} is access read; a database write asks for { provider: "${DATABASE_QUERY_PROVIDER}", access: "write" } and a person decides` };
     if (val(tool) || val(resource) || val(environment) || b.models !== undefined || b.operations !== undefined || b.budget !== undefined) {
-      return { ok: false, error: `${DATABASE_QUERY_CAPABILITY} takes only reason and ttlSeconds: the tables it reads are buildd's allowlist` };
+      return { ok: false, error: `${DATABASE_QUERY_CAPABILITY} takes only reason, ttlSeconds and the sql (or tables) you intend to read: the tables it may read are buildd's allowlist` };
     }
+    const intent = parseQueryIntent(b);
+    if (!intent.ok) return { ok: false, error: intent.error };
     return {
       ok: true,
       request: {
         capability: DATABASE_QUERY_CAPABILITY, access: 'read', provider: DATABASE_QUERY_PROVIDER, tool: null, resource: null, environment: null,
-        risk: 'read', ttlSeconds, reason, modelInference: null,
+        risk: 'read', ttlSeconds, reason, modelInference: null, intent: intent.value,
       },
     };
   }
+  if (b.sql !== undefined || b.tables !== undefined) return { ok: false, error: 'sql and tables are for a database read (provider neon, access read) only' };
 
   // buildd's own capabilities: provider `buildd` + access, or the capability's own name.
   const named = isDelegationCapability(capability) ? capability : null;
@@ -246,7 +281,7 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
       ok: true,
       request: {
         capability: cap, access: accessOf, provider: TASK_FILING_PROVIDER, tool: null, resource: r.toLowerCase(), environment: null,
-        risk: accessOf === 'write' ? 'write' : 'read', ttlSeconds, reason, modelInference: null,
+        risk: accessOf === 'write' ? 'write' : 'read', ttlSeconds, reason, modelInference: null, intent: null,
       },
     };
   }
@@ -263,7 +298,7 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
     ok: true,
     request: {
       capability: `${p}:${access}`, access, provider: p, tool: t, resource: val(resource), environment: val(environment),
-      risk, ttlSeconds, reason, modelInference: null,
+      risk, ttlSeconds, reason, modelInference: null, intent: null,
     },
   };
 }
@@ -439,7 +474,7 @@ export interface GrantRecord {
   environment: string | null;
   scope: Record<string, unknown> | null;
   status: GrantStatus;
-  decidedBy: 'policy' | 'human' | 'system' | null;
+  decidedBy: 'policy' | 'human' | 'system' | 'agent' | null;
   ttlSeconds: number;
   expiresAt: Date | null;
   revokedAt: Date | null;
@@ -497,9 +532,20 @@ function decideCandidate(
   if (policy.effect === 'auto_grant') return { ...base, kind: 'auto_granted', reasonCode: policy.source === 'rule' ? 'policy_auto_grant' : 'default_auto_grant', policy };
   return {
     ...base, kind: 'pending_approval', reasonCode: isWriteRisk(req.risk) ? 'write_needs_human' : 'policy_ask_human', policy,
-    nextSteps: ['A team admin approves or denies this request on Settings → MCP connectors.'],
+    nextSteps: [...PENDING_NEXT_STEPS],
   };
 }
+
+/**
+ * What a pending request means for the run (capability-hold.ts): the run is
+ * held, not ended. complete_task is refused while this waits, so the person
+ * gets a real chance to answer; the decision reaches the agent as a message.
+ */
+export const PENDING_NEXT_STEPS: readonly string[] = [
+  'A person on your team approves or refuses this request (Home → Needs You, or Settings → Team → Apps → Agent access).',
+  'Your run is held on it: complete_task is refused while it is pending. Keep doing work that does not need it; the decision reaches you as a message, and request_capability with the same ask returns this request with its status.',
+  'If you no longer need it, withdraw_capability_request { requestId } frees the person; if the work cannot be finished without it, complete with structuredOutput.blockedByCapability { requestId, whatIsMissing }. Never ask_human for the same access.',
+];
 
 export interface ResolveContext {
   request: CapabilityRequest;
@@ -553,7 +599,7 @@ export function resolveCapabilityRequest(ctx: ResolveContext): Resolution {
       target,
       reasonCode: policy.effect === 'forbidden' ? 'policy_forbidden' : policy.effect === 'auto_grant' ? 'policy_auto_grant' : 'policy_ask_human',
       policy,
-      nextSteps: policy.effect === 'ask_human' ? ['A team admin approves or denies this request.'] : [],
+      nextSteps: policy.effect === 'ask_human' ? [...PENDING_NEXT_STEPS] : [],
     }];
   } else {
     const all = ctx.discovery?.candidates ?? [];

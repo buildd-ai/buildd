@@ -115,6 +115,18 @@ describe('summarizeAccess source', () => {
       const [i] = summarizeAccess([req], new Map(), run('completed', 'expired', 'completed'));
       expect(i).toMatchObject({ pending: false, closed: 'the task ended' });
     });
+    it('closed by the server without a grant: says why, from the row', () => {
+      const closed = (reason: string) => ({ taskStatus: 'in_progress', requests: new Map([['g1', { status: 'expired', workerStatus: 'running', decisionReason: reason }]]) });
+      expect(summarizeAccess([req], new Map(), closed('wait_window_elapsed'))[0]).toMatchObject({ pending: false, closed: 'nobody answered within the wait window' });
+      expect(summarizeAccess([req], new Map(), closed('withdrawn'))[0].closed).toBe('the agent withdrew it');
+    });
+    it('a withdraw or an expiry row decides the request, with its own label', () => {
+      const withdrawn = r('capability.withdraw', { decision: 'refused', resource: 'grant:g1', reasonCode: 'withdrawn', occurredAt: new Date(T0 + 60_000) });
+      const items = summarizeAccess([req, withdrawn]);
+      expect(items[0].pending).toBe(false);
+      expect(items[1]).toMatchObject({ label: 'Capability request withdrawn', reason: 'the agent withdrew it' });
+      expect(summarizeAccess([r('capability.expire', { decision: 'refused', resource: 'grant:g1', reasonCode: 'wait_window_elapsed' })])[0]).toMatchObject({ label: 'Capability request expired', reason: 'nobody answered within the wait window' });
+    });
     it('row still pending but the task is terminal: closed (fails closed)', () => {
       const [i] = summarizeAccess([req], new Map(), run('failed', 'pending', 'running'));
       expect(i).toMatchObject({ pending: false, closed: 'the task ended' });

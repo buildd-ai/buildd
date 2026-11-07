@@ -308,7 +308,8 @@ export interface QueryPrincipal {
 
 export type GrantLookup =
   | { ok: true; grantId: string; expiresAt: Date }
-  | { ok: false; reasonCode: string };
+  /** `request_pending` / `request_denied` / `request_closed` carry the request and, for a refusal, the person's reason. */
+  | { ok: false; reasonCode: string; requestId?: string; decisionReason?: string | null };
 
 export interface ExecuteResult {
   rows: Record<string, unknown>[];
@@ -372,7 +373,18 @@ export async function runDatabaseQuery(principal: QueryPrincipal, req: DatabaseQ
 
   const grant = await deps.findGrant(principal);
   if (!grant.ok) {
-    return refuse(403, 'no_grant', `No live database.query grant for this run (${grant.reasonCode}). Ask with request_capability { provider: "neon", access: "read" }; a person (or the team's Neon read policy) decides, then call this again.`, null);
+    // Refused means refused: the worker gets the standing of its request and
+    // the person's reason, not a bare "no grant" that reads like it never asked.
+    if (grant.reasonCode === 'request_pending') {
+      return refuse(403, 'request_pending', `Your database.query request${grant.requestId ? ` ${grant.requestId}` : ''} is still waiting on a person; completion is held until it is answered. Keep working on what does not need it; the decision reaches you as a message. Do not run this query another way.`, null);
+    }
+    if (grant.reasonCode === 'request_denied') {
+      return refuse(403, 'request_denied', `A person refused your database.query request${grant.requestId ? ` ${grant.requestId}` : ''}${grant.decisionReason ? `: "${grant.decisionReason}"` : ''}. Do not ask again on this run and do not run the query another way. Complete with structuredOutput.blockedByCapability { requestId, whatIsMissing } or proceededWithout { requestId, whatIsMissing }.`, null);
+    }
+    if (grant.reasonCode === 'request_closed') {
+      return refuse(403, 'request_closed', `Your database.query request${grant.requestId ? ` ${grant.requestId}` : ''} closed without a grant (${grant.decisionReason ?? 'closed'}). Complete with structuredOutput.blockedByCapability { requestId, whatIsMissing } or proceededWithout { requestId, whatIsMissing }; ask again only if you still need it and it was not refused.`, null);
+    }
+    return refuse(403, 'no_grant', `No live database.query grant for this run (${grant.reasonCode}). Ask with request_capability { provider: "neon", access: "read", sql }; a person (or the team's Neon read policy) decides, then call this again.`, null);
   }
   const live = { grantId: grant.grantId, expiresAt: grant.expiresAt };
 

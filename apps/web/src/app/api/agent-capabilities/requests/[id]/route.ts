@@ -15,6 +15,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { decideCapabilityRequest, loadGrant, type Decision } from '@/lib/capability-grants-store';
+import { notifyWorkerOfAccessDecision } from '@/lib/capability-hold-store';
 import { MANAGE_FORBIDDEN, resolveCapabilityAdminCaller } from '@/lib/capability-grants-auth';
 import { MAX_GRANT_TTL_SECONDS, MIN_GRANT_TTL_SECONDS, decisionClosesRequest } from '@/lib/capability-grants';
 import { isUuid } from '@/lib/uuid';
@@ -52,5 +53,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const out = await decideCapabilityRequest(row, decision, { userId: caller.userId }, { ttlSeconds, reason });
   if (!out.ok) return NextResponse.json({ error: out.error, code: out.code, closed: decisionClosesRequest(out.code, out.grant?.status), ...(out.grant ? { grant: out.grant } : {}) }, { status: out.status });
+  // The waiting worker hears the decision (lib/capability-hold-store.ts): an
+  // approval tells it to use the grant now, a refusal carries the reason and
+  // the two honest completions. Once per decision; a repeat is not re-sent.
+  if (!out.alreadyDecided && (decision === 'approve' || decision === 'deny')) {
+    void notifyWorkerOfAccessDecision({ id: row.id, capability: row.capability, workerId: row.workerId }, decision === 'approve' ? 'approved' : 'denied', { reason });
+  }
   return NextResponse.json({ grant: out.grant, alreadyDecided: out.alreadyDecided });
 }

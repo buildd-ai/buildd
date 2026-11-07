@@ -62,13 +62,16 @@ export interface AccessItem {
 /** Where each request this task made stands now, read from its grant row and run. */
 export interface RequestRunState {
   taskStatus: string | null;
-  /** By grant id: the row's status and its worker's status. */
-  requests: ReadonlyMap<string, { status: string; workerStatus: string | null }>;
+  /** By grant id: the row's status, why it closed (when the server closed it), and its worker's status. */
+  requests: ReadonlyMap<string, { status: string; workerStatus: string | null; decisionReason?: string | null }>;
 }
 
 const CLOSED_WHY: Record<string, string> = {
   task_terminal: 'the task ended',
   worker_not_live: 'the agent run stopped',
+  wait_window_elapsed: 'nobody answered within the wait window',
+  withdrawn: 'the agent withdrew it',
+  agent_stopped_waiting: 'the agent finished without it',
 };
 
 /** Run credentials: issued by buildd to the run itself, never requested or approved. */
@@ -83,6 +86,8 @@ const LABEL: Record<string, string> = {
   'capability.approve': 'Capability approved',
   'capability.deny': 'Capability denied',
   'capability.revoke': 'Capability revoked',
+  'capability.withdraw': 'Capability request withdrawn',
+  'capability.expire': 'Capability request expired',
   'capability.use': 'Capability use',
   'task_token.mint': 'buildd token',
   'runner.size': 'Runner size',
@@ -114,6 +119,12 @@ const REASON: Record<string, string> = {
   admin_no_repo_workspace: 'admin level needs a workspace with a repo',
   admin_level: 'admin level',
   no_grant: 'no live grant for this run',
+  request_pending: 'the request is still waiting on a person',
+  request_denied: 'a person refused the request',
+  request_closed: 'the request closed without a grant',
+  wait_window_elapsed: 'nobody answered within the wait window',
+  withdrawn: 'the agent withdrew it',
+  agent_stopped_waiting: 'the agent finished without waiting for an answer',
   table_not_allowed: 'a table outside the read allowlist',
   write_keyword: 'not a read: one SELECT only',
   not_select: 'not a read: one SELECT only',
@@ -186,7 +197,7 @@ export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: Reado
     });
   }
   // A request stops waiting once a later row decides the same grant.
-  const decided = new Set(out.filter(i => i.grantId && ['capability.approve', 'capability.deny', 'capability.revoke'].includes(i.capability)).map(i => i.grantId));
+  const decided = new Set(out.filter(i => i.grantId && ['capability.approve', 'capability.deny', 'capability.revoke', 'capability.withdraw', 'capability.expire'].includes(i.capability)).map(i => i.grantId));
   for (const i of out) if (i.pending && i.grantId && decided.has(i.grantId)) i.pending = false;
   // A request is waiting only while it is open (`isOpenAccessRequest`): one
   // whose row is gone, closed, or on an ended run reads as closed, never as a
@@ -197,7 +208,7 @@ export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: Reado
       const g = i.grantId ? run.requests.get(i.grantId) : undefined;
       if (g && isOpenAccessRequest(g.status, run.taskStatus, g.workerStatus)) continue;
       i.pending = false;
-      i.closed = CLOSED_WHY[runClosure(run.taskStatus, g?.workerStatus) ?? ''] ?? 'no longer open';
+      i.closed = CLOSED_WHY[g?.decisionReason ?? ''] ?? CLOSED_WHY[runClosure(run.taskStatus, g?.workerStatus) ?? ''] ?? 'no longer open';
     }
   }
   return out;
@@ -237,14 +248,14 @@ export async function loadTaskAccess(taskId: string, limit = 300): Promise<Acces
  */
 async function requestRunState(taskId: string): Promise<RequestRunState> {
   const grants = await db
-    .select({ id: capabilityGrants.id, status: capabilityGrants.status, workerStatus: workers.status, taskStatus: tasks.status })
+    .select({ id: capabilityGrants.id, status: capabilityGrants.status, decisionReason: capabilityGrants.decisionReason, workerStatus: workers.status, taskStatus: tasks.status })
     .from(capabilityGrants)
     .leftJoin(workers, eq(workers.id, capabilityGrants.workerId))
     .leftJoin(tasks, eq(tasks.id, capabilityGrants.taskId))
     .where(eq(capabilityGrants.taskId, taskId));
   return {
     taskStatus: grants[0]?.taskStatus ?? null,
-    requests: new Map(grants.map(g => [g.id, { status: g.status as string, workerStatus: (g.workerStatus as string | null) ?? null }])),
+    requests: new Map(grants.map(g => [g.id, { status: g.status as string, workerStatus: (g.workerStatus as string | null) ?? null, decisionReason: g.decisionReason ?? null }])),
   };
 }
 

@@ -28,7 +28,7 @@ export interface AccessRequestView {
   workspaceId: string;
   taskId: string;
   roleSlug: string | null;
-  decidedBy: 'policy' | 'human' | 'system' | null;
+  decidedBy: 'policy' | 'human' | 'system' | 'agent' | null;
   ttlSeconds: number;
   expiresAt: string | null;
   revokedAt: string | null;
@@ -39,6 +39,20 @@ export interface AccessRequestView {
   taskTitle?: string | null;
   workspaceName?: string | null;
   decidedByName?: string | null;
+  /** database.query: what the agent said it would run (`sql`, or `tables`); model.inference: its models and budget. */
+  scope?: Record<string, unknown> | null;
+}
+
+/**
+ * What a database read would run, for the person deciding: the SQL the agent
+ * declared, else the tables it named. Null when it declared neither.
+ */
+export function accessIntent(r: Pick<AccessRequestView, 'capability' | 'scope'>): string | null {
+  if (r.capability !== 'database.query' || !r.scope) return null;
+  const sql = typeof r.scope.sql === 'string' ? r.scope.sql.trim() : '';
+  if (sql) return sql.length > 600 ? `${sql.slice(0, 600)} …` : sql;
+  const tables = Array.isArray(r.scope.tables) ? r.scope.tables.filter((t): t is string => typeof t === 'string') : [];
+  return tables.length ? `Tables: ${tables.join(', ')}` : null;
 }
 
 export const RISK_LABEL: Record<AccessRisk, string> = { read: 'Read', query: 'Query', write: 'Write', admin: 'Admin' };
@@ -132,8 +146,9 @@ export function accessStatusLine(r: AccessRequestView, now: Date = new Date()): 
     case 'revoked':
       return `${by ? `Revoked by ${by}` : 'Revoked'}. The agent's next call is refused.`;
     case 'expired':
+      if (r.decidedBy === 'agent') return `Closed: ${EXPIRED_WHY[why ?? ''] ?? 'the agent closed it'}. Nothing to decide.`;
       return r.decidedBy === 'system' && why
-        ? `Closed: ${EXPIRED_WHY[why] ?? why}. The agent can ask again from a new run.`
+        ? `Closed: ${EXPIRED_WHY[why] ?? why}. ${why === 'wait_window_elapsed' ? 'The agent finishes without it and says so.' : 'The agent can ask again from a new run.'}`
         : 'The lease ran out. The agent can ask again if it still needs it.';
   }
 }
@@ -142,6 +157,9 @@ const EXPIRED_WHY: Record<string, string> = {
   task_terminal: 'the task ended',
   worker_not_live: 'the agent run stopped',
   role_changed: "the task's agent changed",
+  wait_window_elapsed: 'nobody answered within the wait window',
+  withdrawn: 'the agent withdrew it',
+  agent_stopped_waiting: 'the agent finished without waiting',
 };
 
 /** The approve button's words: the lease is part of the decision. */

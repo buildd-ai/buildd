@@ -110,6 +110,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   request_capability: 'write',
   invoke_model_inference: 'write',
   query_database: 'read',
+  withdraw_capability_request: 'write',
   probe_budget_wall: 'write',
   // get and set: multi-op, so a write whole (fail closed).
   platform_rerank: 'write',

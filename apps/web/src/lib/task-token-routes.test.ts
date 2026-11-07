@@ -43,6 +43,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/artifacts/[artifactId]/links/route.ts',
   // POST only: its own worker (taskScopeAllowsWorker + taskScopeAllowsWorkspace) asks for a capability; deciding is session-only.
   'apps/web/src/app/api/agent-capabilities/requests/route.ts',
+  // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace) withdraws its own pending request; the store confines the row to that worker.
+  'apps/web/src/app/api/agent-capabilities/requests/[id]/withdraw/route.ts',
   // Designs: the routes pass the token taskScope to the link caller (lib/designs/service.ts), which confines the design and its attach target to that workspace.
   'apps/web/src/app/api/artifacts/designs/[designId]/attach/route.ts',
   'apps/web/src/app/api/artifacts/designs/[designId]/screens/[screenId]/route.ts',

@@ -84,3 +84,18 @@ describe('accessPushPayload', () => {
     expect(p.url).toBe('https://buildd.example/app/settings/apps?request=r1#agent-access');
   });
 });
+
+describe('a database read shows what it will run', () => {
+  const neon = (scope: Record<string, unknown> | null) => req('n1', { capability: 'database.query', provider: 'neon', risk: 'read', reason: 'count stuck PRs', scope });
+  it('the SQL the agent declared is the card\'s detail; tables when it named only those; nothing otherwise', () => {
+    const [withSql] = accessNeedsYouItems([neon({ sql: 'select count(*) from tasks where status = $1' })]);
+    expect(withSql).toMatchObject({ accessAsk: 'Read Neon', accessIntent: 'select count(*) from tasks where status = $1' });
+    expect(accessNeedsYouItems([neon({ tables: ['tasks', 'workers'] })])[0].accessIntent).toBe('Tables: tasks, workers');
+    expect(accessNeedsYouItems([neon(null)])[0].accessIntent).toBeNull();
+    const queue = buildActionQueue(accessNeedsYouItems([neon({ sql: 'select 1 from tasks' })]), []);
+    expect(queue[0].accessIntent).toBe('select 1 from tasks');
+    const [home] = deriveHomeAttention({ queue, missions: [], questions: [], held: [], isActionable: () => true });
+    expect(home.sentence).toBe('Fix checkout latency in web: "count stuck PRs"');
+    expect(home.detail).toContain('select 1 from tasks');
+  });
+});

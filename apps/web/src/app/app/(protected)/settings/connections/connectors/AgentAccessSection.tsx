@@ -10,6 +10,7 @@ import {
   EFFECT_LABEL,
   RISK_LABEL,
   accessAsk,
+  accessIntent,
   accessStatusLine,
   accessWho,
   approveLabel,
@@ -226,6 +227,9 @@ function RequestRow({ r, canDecide, focused, onDecided }: {
             {accessWho(r)}
             {r.reason?.trim() && <> · &ldquo;{r.reason.trim()}&rdquo;</>}
           </div>
+          {accessIntent(r) && (
+            <code data-testid="access-intent" className="mt-1 block whitespace-pre-wrap break-words text-xs text-text-secondary">{accessIntent(r)}</code>
+          )}
           <div className="mt-0.5 text-xs text-text-muted" data-testid="access-status-line">{accessStatusLine(r)}</div>
         </div>
         {canDecide && r.status === 'pending' && (

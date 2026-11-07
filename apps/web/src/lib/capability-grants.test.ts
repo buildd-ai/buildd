@@ -408,6 +408,16 @@ describe('database.query', () => {
     expect(parseCapabilityRequest({ provider: 'neon', access: 'read', resource: 'secrets' }).ok).toBe(false);
   });
 
+  it('carries the SQL (or tables) the agent intends, for the person deciding; nowhere else', () => {
+    expect(req({ provider: 'neon', access: 'read', sql: ' select count(*) from tasks ' }).intent).toEqual({ sql: 'select count(*) from tasks' });
+    expect(req({ provider: 'neon', access: 'read', tables: ['Tasks', 'workers', 'tasks'] }).intent).toEqual({ tables: ['tasks', 'workers'] });
+    expect(req({ provider: 'neon', access: 'read' }).intent).toBeNull();
+    expect(parseCapabilityRequest({ provider: 'neon', access: 'read', sql: '' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'neon', access: 'read', tables: ['drop table'] }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'axiom', access: 'read', sql: 'select 1' }).ok).toBe(false);
+    expect(req({ provider: 'axiom', access: 'read' }).intent).toBeNull();
+  });
+
   it('asks a person by default, even where a role mounts the Neon connector', () => {
     const r = resolveCapabilityRequest(ctx({ request: req({ provider: 'neon', access: 'read' }), discovery: discovery([neonCand]) }));
     expect(r.kind).toBe('pending_approval');

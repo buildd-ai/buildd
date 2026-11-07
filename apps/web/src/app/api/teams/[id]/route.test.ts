@@ -195,6 +195,25 @@ describe('GET /api/teams/[id] — response columns', () => {
   });
 });
 
+describe('PATCH /api/teams/[id] — access wait window', () => {
+  it('stores the window in seconds, clears it with null, and refuses an out-of-range value', async () => {
+    expect((await PATCH(patchReq({ accessWaitWindowSeconds: 1800 }), ctx)).status).toBe(200);
+    expect(capturedUpdates[0].accessWaitWindowSeconds).toBe(1800);
+    expect((await PATCH(patchReq({ accessWaitWindowSeconds: null }), ctx)).status).toBe(200);
+    expect(capturedUpdates[1].accessWaitWindowSeconds).toBeNull();
+    expect((await PATCH(patchReq({ accessWaitWindowSeconds: 10 }), ctx)).status).toBe(400);
+    expect((await PATCH(patchReq({ accessWaitWindowSeconds: '4h' }), ctx)).status).toBe(400);
+    expect(capturedUpdates).toHaveLength(2);
+  });
+  it('is one of the columns the settings read', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ accessWaitWindowSeconds: true });
+    principal = null;
+  });
+});
+
 describe('PATCH /api/teams/[id] — chat tier policy', () => {
   it('an admin sets the default tier and turns the new-session cap on', async () => {
     const res = await PATCH(patchReq({ chatDefaultTier: 'standard', chatCapNewSessionTier: true }), ctx);

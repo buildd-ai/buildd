@@ -13,6 +13,8 @@ mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockUser }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockTeamIds }));
 mock.module('@/lib/permissions', () => ({ can: mockCan }));
 mock.module('@/lib/capability-grants-store', () => ({ loadGrant: mockLoadGrant, decideCapabilityRequest: mockDecide }));
+const mockNotifyWorker = mock((_r: any, _d: any, _o?: any) => Promise.resolve(true));
+mock.module('@/lib/capability-hold-store', () => ({ notifyWorkerOfAccessDecision: mockNotifyWorker }));
 
 import { POST } from './route';
 
@@ -21,7 +23,8 @@ import { POST } from './route';
 const GRANT_ID = '66666666-6666-4666-8666-666666666666';
 const TEAM_A = '77777777-7777-4777-8777-777777777777';
 const TEAM_B = '88888888-8888-4888-8888-888888888888';
-const ROW = { id: GRANT_ID, teamId: TEAM_A, status: 'pending' };
+const WORKER = '11111111-1111-4111-8111-111111111111';
+const ROW = { id: GRANT_ID, teamId: TEAM_A, status: 'pending', capability: 'database.query', workerId: WORKER };
 
 function req(body: unknown, headers: Record<string, string> = {}) {
   return new NextRequest(`http://localhost/api/agent-capabilities/requests/${GRANT_ID}`, {
@@ -31,7 +34,7 @@ function req(body: unknown, headers: Record<string, string> = {}) {
 const ctx = { params: Promise.resolve({ id: GRANT_ID }) };
 
 beforeEach(() => {
-  mockUser.mockReset(); mockTeamIds.mockReset(); mockCan.mockReset(); mockLoadGrant.mockReset(); mockDecide.mockReset();
+  mockUser.mockReset(); mockTeamIds.mockReset(); mockCan.mockReset(); mockLoadGrant.mockReset(); mockDecide.mockReset(); mockNotifyWorker.mockClear();
   mockUser.mockResolvedValue({ id: 'user-1' });
   mockTeamIds.mockResolvedValue([TEAM_A]);
   mockCan.mockResolvedValue(true);
@@ -103,5 +106,29 @@ describe('POST /api/agent-capabilities/requests/[id]', () => {
   it('401 without a session', async () => {
     mockUser.mockResolvedValue(null);
     expect((await POST(req({ decision: 'approve' }), ctx)).status).toBe(401);
+  });
+});
+
+describe('the waiting worker hears the decision', () => {
+  it('an approval tells the worker to use the grant; a refusal carries the reason', async () => {
+    expect((await POST(req({ decision: 'approve' }), ctx)).status).toBe(200);
+    expect(mockNotifyWorker).toHaveBeenCalledTimes(1);
+    expect(mockNotifyWorker.mock.calls[0].slice(0, 2)).toEqual([{ id: GRANT_ID, capability: 'database.query', workerId: WORKER }, 'approved']);
+
+    mockNotifyWorker.mockClear();
+    mockDecide.mockResolvedValue({ ok: true, grant: { id: GRANT_ID, status: 'denied' }, alreadyDecided: false });
+    expect((await POST(req({ decision: 'deny', reason: 'not for this task' }), ctx)).status).toBe(200);
+    expect(mockNotifyWorker.mock.calls[0][1]).toBe('denied');
+    expect(mockNotifyWorker.mock.calls[0][2]).toEqual({ reason: 'not for this task' });
+  });
+
+  it('a repeat decision, a revoke, or a refused decision sends nothing', async () => {
+    mockDecide.mockResolvedValue({ ok: true, grant: { id: GRANT_ID, status: 'granted' }, alreadyDecided: true });
+    await POST(req({ decision: 'approve' }), ctx);
+    mockDecide.mockResolvedValue({ ok: true, grant: { id: GRANT_ID, status: 'revoked' }, alreadyDecided: false });
+    await POST(req({ decision: 'revoke' }), ctx);
+    mockDecide.mockResolvedValue({ ok: false, status: 409, code: 'task_terminal', error: 'ended' });
+    await POST(req({ decision: 'approve' }), ctx);
+    expect(mockNotifyWorker).not.toHaveBeenCalled();
   });
 });

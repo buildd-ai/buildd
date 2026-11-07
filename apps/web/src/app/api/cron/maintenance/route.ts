@@ -48,6 +48,7 @@ import { removeOrphanChatAttachments } from '@/lib/artifact-attachment-cleanup';
 import { removeDetachedTeamFiles } from '@/lib/artifact-team-files';
 import { isStorageConfigured } from '@/lib/storage';
 import { sweepNoCriteriaChange } from '@/lib/specs/auto-approve';
+import { expireOverdueRequests } from '@/lib/capability-hold-store';
 
 export async function GET(req: NextRequest) {
   return withCronRun('maintenance', req, report => runCronJob(report));
@@ -84,9 +85,13 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
     console.error('[maintenance] no-criteria-change spec sweep failed', err instanceof Error ? err.message : err);
     return { checked: 0, approved: 0, failed: 0 };
   });
-  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, laneTasksSynced, uploads, chatAttachments, teamFiles, oauthClientsPruned, specsAutoApproved };
+  // 8. Access requests nobody answered inside the team's wait window
+  //    (lib/capability-hold-store.ts): expired, never "task ended", and the
+  //    waiting worker is told to complete with blockedByCapability.
+  const accessRequestsExpired = (await expireOverdueRequests({ now })).length;
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, laneTasksSynced, uploads, chatAttachments, teamFiles, oauthClientsPruned, specsAutoApproved, accessRequestsExpired };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
   // Every sweep logs and swallows its own failures, so errors stays 0 here.
-  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned + specsAutoApproved.approved, errors: 0, result });
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned + specsAutoApproved.approved + accessRequestsExpired, errors: 0, result });
   return NextResponse.json(result);
 }

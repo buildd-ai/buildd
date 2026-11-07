@@ -294,6 +294,8 @@ export interface WaitingOnYouRawItem {
   accessAsk?: string;
   /** kind === 'access' — the lease the agent asked for; approval can only narrow it. */
   accessTtlSeconds?: number;
+  /** kind === 'access' — for a database read, the SQL the agent intends (or the tables), so the person decides on what will run. */
+  accessIntent?: string | null;
   /** kind === 'access' — the approve button's words, lease included ("Approve for 1 hour"). */
   accessApproveLabel?: string;
   /** kind === 'spec_provisional' — a spec with merged work built ahead of approval and still unapproved (lib/specs/provisional.ts). */
@@ -605,11 +607,12 @@ export interface ActionQueueItem {
   specProvisional?: { specId: string; specTitle: string };
   /** Set when chip === 'SCHEDULE_MOVE' — the open proposal to move a schedule. */
   scheduleMove?: ScheduleMoveCard;
-  /** Set when chip === 'ACCESS' — the capability request, the ask and the lease asked for. */
+  /** Set when chip === 'ACCESS' — the capability request, the ask, the lease asked for and, for a database read, what it intends to run. */
   accessRequestId?: string;
   accessAsk?: string;
   accessTtlSeconds?: number;
   accessApproveLabel?: string;
+  accessIntent?: string | null;
   fixHref?: string;
   fixLabel?: string;
   /** Set when chip === 'DECIDE' — the escalation note this card links back to. */
@@ -1609,6 +1612,7 @@ export function buildActionQueue(
           accessAsk: item.accessAsk,
           accessTtlSeconds: item.accessTtlSeconds,
           accessApproveLabel: item.accessApproveLabel,
+          accessIntent: item.accessIntent ?? null,
           taskId: item.taskId,
           taskTitle: item.taskTitle,
           workspaceId: item.workspaceId,

@@ -2,13 +2,13 @@
 title: Capability Requests and Grants
 status: active
 owner: max
-last_verified: 2026-10-23
+last_verified: 2026-11-07
 summary: An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
-surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
+surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts, apps/web/src/lib/capability-hold.ts, apps/web/src/lib/capability-hold-store.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
-keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts, apps/web/src/lib/capability-path-guidance.test.ts]
+keywords: [hold, wait window, withdraw, blockedByCapability, proceededWithout, connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
+verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts, apps/web/src/lib/capability-path-guidance.test.ts, apps/web/src/lib/capability-hold.test.ts, apps/web/src/lib/capability-hold-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/withdraw/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts]
 supersedes: []
 assertions:
   - id: agent-reach-tests
@@ -29,6 +29,18 @@ assertions:
     method: PUT
     path: /api/agent-capabilities/policy
     file: apps/web/src/app/api/agent-capabilities/policy/route.ts
+  - id: withdraw-route
+    type: route
+    method: POST
+    path: /api/agent-capabilities/requests/[id]/withdraw
+    file: apps/web/src/app/api/agent-capabilities/requests/[id]/withdraw/route.ts
+  - id: hold-verdict
+    type: symbol
+    name: completionHoldVerdict
+    path: apps/web/src/lib/capability-hold.ts
+  - id: hold-tests
+    type: test_file
+    path: apps/web/src/lib/capability-hold.test.ts
   - id: resolve-request
     type: symbol
     name: resolveCapabilityRequest
@@ -144,8 +156,9 @@ without naming a connector id or seeing a credential.
   health). The capability names `tasks:create` / `analytics:read` are still
   accepted in place of provider + access. Its own workspace is `existing`; another team's is `forbidden`
   (no row); a target the task's delegation already grants is `existing`. A
-  `pending_approval` keeps the run alive: the next steps tell the agent to keep
-  working and ask again, never to end the run or ask_human for the same access.
+  `pending_approval` holds the run (see Holding the run): the agent keeps
+  doing independent work, never ends the run on it and never asks ask_human
+  for the same access.
   The approver must reach the target themselves (`approver_lacks_reach`
   otherwise). Approval writes the grant onto the task's own delegation
   (`tasks.delegation`, lib/task-delegation.ts), which the task token re-reads
@@ -161,6 +174,71 @@ without naming a connector id or seeing a credential.
 - AC-4: GIVEN the role mounts a provider WHEN an agent asks for `write` THEN it is `pending_approval` (`write_needs_human`), whatever the team rule says.
 - AC-5: WHEN a body names a connector id THEN the route returns 400.
 - AC-5a: GIVEN a running task with no delegation WHEN its agent asks for `buildd` `write` (or `read`) on a same-team workspace THEN the outcome is `pending_approval`; WHEN a person who reaches that workspace approves THEN the task's delegation grants `tasks:create` (`analytics:read` for read) there and a repeat ask is `existing`; WHEN revoked THEN the grant leaves the delegation.
+
+## Holding the run
+
+**Capability statement**: While an agent's request waits on a person, the
+run MUST NOT finish without saying so: the person MUST get a real chance to
+decide, a refusal MUST reach the agent as a refusal, and a result that goes
+without data it asked for MUST say what is missing.
+
+**Invariants**:
+- A pending request holds the run. While the worker has a `pending` request
+  it made, an agent-authored `complete_task` (`viaCompleteTask`, or an
+  interactive worker) is refused 400 `capability_request_pending` with the
+  three ways out: wait (keep doing independent work; `request_capability`
+  with the same ask returns the request with its status, and the decision
+  arrives as a message), withdraw it (`withdraw_capability_request`, `POST
+  /api/agent-capabilities/requests/[id]/withdraw`, own worker only), or
+  complete with `structuredOutput.blockedByCapability { requestId,
+  whatIsMissing? }`. A runner's end-of-session report has no agent turn to act
+  on a refusal and is not held; the request then closes with the run
+  (`task_terminal` / `worker_not_live`) as before. Rules:
+  `completionHoldVerdict` (`apps/web/src/lib/capability-hold.ts`); db half
+  `apps/web/src/lib/capability-hold-store.ts`; wired in the worker PATCH.
+- The person gets a real chance. The Needs You card and Settings row name
+  who asked, why (`reason`), and for `database.query` the SQL the agent
+  intends (`sql`) or the tables (`tables`), stored on the row's `scope`.
+  Approve and Deny are one tap. A decision (approve, deny) and an expiry are
+  queued on the worker's instruction queue (`notifyWorkerOfAccessDecision`,
+  the same channel as `send_agent_message`) with a Pusher wake: an approval
+  says what spends the grant, a refusal carries the person's reason and the
+  two honest completions. A worker that is no longer live is not told and
+  cannot be approved (unchanged).
+- Expiry is explicit. A request older than the team's wait window
+  (`teams.accessWaitWindowSeconds`, default 4 h, 5 min to 7 d, `PATCH
+  /api/teams/[id]`) is closed `expired`, `decidedBy: system`,
+  `decisionReason: wait_window_elapsed`, never `task_terminal`: by the
+  maintenance cron, by every team read (`expireLapsedTeamGrants`), and by
+  the completion gate itself. The worker is told and completes with
+  `blockedByCapability` naming it. A request the agent withdrew is
+  `expired`, `decidedBy: agent`, `withdrawn`; one it gave up on by completing
+  with `blockedByCapability` while pending is `agent_stopped_waiting`.
+- Honest results. A completion whose worker has a request that was never
+  granted (denied, expired unanswered, withdrawn, revoked before a grant, or
+  granted but unusable, e.g. `query_role_unconfigured` with no
+  `BUILDD_QUERY_DATABASE_URL`) must name it in `blockedByCapability` (the
+  work could not be done without it) or `proceededWithout { requestId,
+  whatIsMissing }` (it finished anyway); otherwise 400
+  `capability_outcome_unreported`. The server fills `outcome` and `reason`
+  on the declaration and the task summary leads with it. Naming a live,
+  usable grant is refused `capability_held`; a request id not this worker's
+  is `capability_request_unknown`. A granted request that was usable, or
+  lapsed after use, needs nothing. A worker with no request completes as
+  before.
+- Refused means refused. `query_database` with no live grant answers the
+  request's standing (`request_pending`, `request_denied` with the person's
+  reason, `request_closed`), not a bare `no_grant`; the trail records the
+  person (`decidedByUserId`) and every close (`capability.withdraw`,
+  `capability.expire` rows).
+
+**Acceptance criteria**:
+- AC-22: GIVEN a worker with a pending request WHEN it calls `complete_task` THEN 400 `capability_request_pending` with three options, and nothing is written.
+- AC-23: GIVEN a worker waiting on a `database.query` request WHEN a person approves THEN the worker's queue carries the approval naming `query_database`, the next `query_database` succeeds, and the trail shows request, approval and query.
+- AC-24: GIVEN a pending request older than the team's wait window WHEN the sweep or the gate runs THEN the row is `expired` with `wait_window_elapsed` (not `task_terminal`), the worker is told, and its completion needs `blockedByCapability` naming the request.
+- AC-25: GIVEN a worker that withdrew its request WHEN it completes without `proceededWithout` THEN 400 `capability_outcome_unreported`; WITH it THEN the summary leads with what is missing.
+- AC-26: GIVEN a worker that made no request WHEN it completes THEN nothing here applies.
+- AC-27: GIVEN a `database.query` request carrying `sql` WHEN an admin opens Home THEN the card shows the SQL under who asked and why.
 
 ## Agent reach
 

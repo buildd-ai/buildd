@@ -107,6 +107,11 @@ export const teams = pgTable('teams', {
   // absent feature = the default, which follows the billing model (a team key
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
+  // How long an agent's access request (capability_grants, status pending)
+  // waits for a person before buildd expires it and the agent completes with
+  // blockedByCapability. NULL = the default (4 h, apps/web/src/lib/capability-hold.ts).
+  // Set from team settings (PATCH /api/teams/[id] accessWaitWindowSeconds).
+  accessWaitWindowSeconds: integer('access_wait_window_seconds'),
   // The `opt_in` decision capabilities this team turned on (e.g.
   // 'task_role_shadow'). NULL = off. A new team starts with every one
   // (insert-time default, no DDL); an opt_in capability added later is not
@@ -6669,7 +6674,10 @@ export const capabilityGrants = pgTable('capability_grants', {
   scope: jsonb('scope').$type<Record<string, unknown>>(),
   reason: text('reason'),
   status: text('status').notNull().$type<'pending' | 'granted' | 'denied' | 'revoked' | 'expired'>(),
-  decidedBy: text('decided_by').$type<'policy' | 'human' | 'system'>(),
+  // `agent`: the requesting agent closed it itself (withdrew it, or completed
+  // with blockedByCapability while it was still pending); `system`: closed
+  // because its run ended or the team's wait window elapsed.
+  decidedBy: text('decided_by').$type<'policy' | 'human' | 'system' | 'agent'>(),
   decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   decisionReason: text('decision_reason'),
   ttlSeconds: integer('ttl_seconds').notNull(),
