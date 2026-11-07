@@ -7,6 +7,7 @@
  *   - api_key: a provider's own key (Anthropic, OpenAI). Per token.
  *   - gateway: OpenRouter, LiteLLM or a custom endpoint. Per token.
  *   - cloud:   Bedrock, Vertex, Foundry. Per token, by that account.
+ *   - local:   this machine's own model server (BUILDD_LOCAL_MODEL_URL). No charge, no dollar figure.
  * plus whose credential it is: this machine's, the person's own, or the team's.
  *
  * Derived from the same inputs as the cost basis (cost-basis.ts), in the same
@@ -41,8 +42,8 @@ import { applyModelEnv } from './agent-model-env';
 import { codexAuthJsonKind, CLOUD_MODEL_AUTH_ENV, isCredentialSet } from './cost-basis';
 import { modelAuthSourceMode, stripInheritedApiKeys } from './model-auth-source';
 
-export type RouteBucket = 'plan' | 'api_key' | 'gateway' | 'cloud';
-export type RouteProvider = 'anthropic' | 'openai' | 'openrouter' | 'litellm' | 'custom' | 'bedrock' | 'vertex' | 'foundry';
+export type RouteBucket = 'plan' | 'api_key' | 'gateway' | 'cloud' | 'local';
+export type RouteProvider = 'anthropic' | 'openai' | 'openrouter' | 'litellm' | 'custom' | 'bedrock' | 'vertex' | 'foundry' | 'local';
 /** Whose credential: this machine's, the requester's own (personal key policy), or the team's. */
 export type RouteOwner = 'machine' | 'personal' | 'team';
 export type RouteBackend = 'claude' | 'codex';
@@ -104,6 +105,8 @@ export function teamEndpointRoute(backend: RouteBackend, endpoint: RouteEndpoint
   }
 }
 
+const LOCAL_ROUTE = (backend: RouteBackend): RunRoute => ({ backend, bucket: 'local', provider: 'local', owner: 'machine' });
+
 const CLOUD_SWITCHES: Array<[string, RouteProvider]> = [
   ['CLAUDE_CODE_USE_BEDROCK', 'bedrock'],
   ['CLAUDE_CODE_USE_VERTEX', 'vertex'],
@@ -120,6 +123,8 @@ export interface ClaudeRouteInput {
   modelEnv: {
     env: Record<string, string | undefined>;
     endpoint: 'anthropic' | 'trusted' | 'team' | 'custom';
+    /** The run goes to this machine's local model endpoint. */
+    local?: boolean;
     machineLoginUsed?: boolean;
     injected?: string[];
     baseUrlOrigin?: string;
@@ -141,6 +146,7 @@ export function claudeRunRoute(input: ClaudeRouteInput): RunRoute | null {
   const env = modelEnv.env;
   const injected = modelEnv.injected ?? [];
   const serverOwner: RouteOwner = credentialScope === 'personal' ? 'personal' : 'team';
+  if (modelEnv.local) return LOCAL_ROUTE('claude');
   if (modelEnv.endpoint === 'team') return teamEndpointRoute('claude', input.teamEndpoint, credentialScope);
   if (modelEnv.endpoint === 'custom') {
     if (input.llmProvider?.provider === 'openrouter') {
@@ -179,10 +185,13 @@ export interface CodexRouteInput {
   /** decideCodexLogin: whose login the Codex home holds. */
   codexLogin?: 'machine' | 'server' | 'none';
   credentialScope?: CredentialScope;
+  /** applyModelEnv's `local`: the run goes to this machine's local model endpoint. */
+  local?: boolean;
 }
 
 /** A Codex run's route, in codexCostBasis's order. Null when nothing determines it. */
 export function codexRunRoute(input: CodexRouteInput): RunRoute | null {
+  if (input.local) return LOCAL_ROUTE('codex');
   if (input.endpoint === 'team') return teamEndpointRoute('codex', input.teamEndpoint, input.credentialScope);
   const serverOwner: RouteOwner = input.credentialScope === 'personal' ? 'personal' : 'team';
   const kind = codexAuthJsonKind(input.authJson);
@@ -213,12 +222,12 @@ export function cloudRunRoute(env: Record<string, string | undefined>, backend: 
 
 const PROVIDER_NAME: Record<RouteProvider, string> = {
   anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', litellm: 'LiteLLM', custom: 'custom endpoint',
-  bedrock: 'Bedrock', vertex: 'Vertex', foundry: 'Foundry',
+  bedrock: 'Bedrock', vertex: 'Vertex', foundry: 'Foundry', local: 'local model',
 };
 
 export const BACKEND_NAME: Record<RouteBackend, string> = { claude: 'Claude', codex: 'Codex' };
 
-export const BUCKET_NAME: Record<RouteBucket, string> = { plan: 'plan', api_key: 'API key', gateway: 'gateway', cloud: 'cloud account' };
+export const BUCKET_NAME: Record<RouteBucket, string> = { plan: 'plan', api_key: 'API key', gateway: 'gateway', cloud: 'cloud account', local: 'local model' };
 
 /** What the route is called: the provider, or a custom gateway's host. */
 export function providerName(route: Pick<RunRoute, 'provider' | 'label'>): string {
@@ -239,6 +248,7 @@ export function routeWords(route: RunRoute): string {
     case 'api_key': return 'API key' + ownerSuffix(route, true);
     case 'gateway': return providerName(route) + ownerSuffix(route, true);
     case 'cloud': return providerName(route) + ownerSuffix(route, false);
+    case 'local': return 'local model';
   }
 }
 
@@ -267,6 +277,7 @@ export interface RunSpend {
  * a per-token one, and null (no dollar figure) when the basis is unknown.
  */
 export function dollarKind(route: RunRoute | null | undefined, costBasis?: string | null): DollarKind | null {
+  if (route?.bucket === 'local') return null;
   if (!route) return costBasis === 'virtual' ? 'plan' : costBasis === 'real' ? 'estimated' : null;
   if (route.bucket === 'plan') return 'plan';
   // Only Anthropic's own key is priced from its provider's own list.
