@@ -11,6 +11,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Chip from '@/components/ui/Chip';
+import PrimaryAction from '@/components/ui/PrimaryAction';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import { grantAllBody, takeBackBody, type FiledAccessEntry } from './filed-access';
 
@@ -70,9 +71,9 @@ export default function TaskFiledAccess({ taskId, entries, canGrant, open }: {
       {waiting.length > 0 && open && (
         canGrant ? (
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            <button type="button" data-testid="task-filed-access-grant" className={`${BUTTON} bg-accent text-surface-1 border-accent hover:bg-accent`} disabled={busy} onClick={() => void send(grantAllBody(entries))}>
+            <PrimaryAction data-testid="task-filed-access-grant" pending={busy} onClick={() => void send(grantAllBody(entries))}>
               {busy ? 'Saving…' : 'Grant'}
-            </button>
+            </PrimaryAction>
             <span className="text-meta text-text-muted">Read only, within the limits buildd already applies. It holds for this task and its retries.</span>
           </div>
         ) : (
