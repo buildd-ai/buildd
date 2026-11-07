@@ -14,6 +14,11 @@ const loaded: WorkspaceReleaseConfig = {
 };
 
 describe('buildReleaseConfigPayload', () => {
+  it('keeps the review-by-risk summary approval setting through a save (spec 62e985a8 R-6)', () => {
+    expect(buildReleaseConfigPayload({ ...loaded, summaryApproval: false }, form()).summaryApproval).toBe(false);
+    expect(buildReleaseConfigPayload(loaded, form()).summaryApproval).toBeUndefined();
+  });
+
   it('keeps prodBranch and every field the form does not edit on a workflow_dispatch save', () => {
     const p = buildReleaseConfigPayload(loaded, form());
     expect(p).toMatchObject({

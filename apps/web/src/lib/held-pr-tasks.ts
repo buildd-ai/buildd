@@ -11,6 +11,7 @@
  *    above applies, retrying a merge a bounded number of times before failing the task.
  * Core: the GitHub webhook and the pr-reconcile cron both reach it.
  */
+import type { SummaryGateInput, SummaryGateResult } from '@/lib/release/summary-gate';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
@@ -39,6 +40,16 @@ async function releaseKernelLand(p: Parameters<typeof import('@/lib/workflow/ker
     if (!client.isDoorError(err)) throw err;
     console.warn(`[release-pr] the control plane did not land ${p.repoFullName}#${p.prNumber}; the release stays pending:`, err.message);
     return 'unavailable' as const;
+  }
+}
+
+/** The release-summary check through its hook. Like the check itself, it never fails a release by being absent. */
+async function releaseSummaryGate(q: SummaryGateInput): Promise<SummaryGateResult> {
+  try {
+    return await (await import('@/modules')).RELEASE_SUMMARY_GATE(q);
+  } catch (err) {
+    console.warn('[release-pr] summary check unavailable; summary approval not applied:', err);
+    return { blocks: false };
   }
 }
 
@@ -74,6 +85,16 @@ export async function handleReleasePrCiSuccess(
   const allPassed = await allCheckSuitesPassed(installationId, repoFullName, headSha);
   if (!allPassed) {
     console.log(`[release-pr] Not all suites passed for ${repoFullName}#${prNumber} — waiting for remaining checks`);
+    return;
+  }
+
+  // Review by risk (R-6): a branch_merge release waits for a person to approve the summary
+  // of exactly this commit. The release stays pending for the next green or sweep.
+  const summaryGate = await releaseSummaryGate({
+    workspaceId: pendingReleaseTasks[0]!.workspaceId, headSha, surface: 'release-pr ci-success', door: 'merge',
+  });
+  if (summaryGate.blocks) {
+    console.log(`[release-pr] Merge of ${repoFullName}#${prNumber} held: ${summaryGate.reason} ${summaryGate.clearedBy}`);
     return;
   }
 

@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import type { MergePolicy } from '@buildd/shared';
-import { parseMergePolicy } from '@buildd/shared';
+import { parseMergePolicy, reviewByRiskShapeError } from '@buildd/shared';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
+import { reviewByRiskFor } from '@/lib/review-by-risk';
 
 // Write-path schema. Hand-written `threshold.denyPaths` / `agentReview.escalateToPaths`
 // are deliberately absent, so `.strict()` refuses them; callers check
@@ -27,6 +28,17 @@ export const mergePolicySchema = z.object({
   dataMigrations: z.enum(['person', 'agent-review']).optional(),
   reviewOverride: z.enum(['admins', 'off']).optional(),
   autoReviewUnowned: z.boolean().optional(),
+  reviewByRisk: z.object({
+    enabled: z.boolean(),
+    areas: z.object({
+      access: z.array(z.string()).optional(),
+      credentials: z.array(z.string()).optional(),
+      dataMigrations: z.array(z.string()).optional(),
+    }).strict().optional(),
+  }).strict().superRefine((v, ctx) => {
+    const err = reviewByRiskShapeError(v);
+    if (err) ctx.addIssue({ code: 'custom', message: err });
+  }).optional(),
 }).strict();
 
 export const DEFAULT_MERGE_POLICY: MergePolicy = {
@@ -88,6 +100,8 @@ export { isMissionIntegrationBase } from '@buildd/core/mission-integration';
  *   1. task.requiresReview                → { tier: 'human' }
  *   2. PR based on the mission integration branch (Option A')
  *                                          → { tier: 'auto-threshold', threshold: <carried through> }
+ *   2b. review by risk on, PR based on the workspace integration branch
+ *                                          → { tier: 'auto-threshold', threshold: <carried>, reviewByRisk }
  *   3. mission.mergePolicy
  *   4. mission.requiresReview              → { tier: 'human' }
  *   5. workspace.gitConfig.mergePolicy
@@ -150,6 +164,22 @@ export function resolvePolicy(
     };
   }
 
+  // 2b. Review by risk (spec 62e985a8 R-1, R-9): the workspace has the mode on
+  //     and this PR targets its integration branch. It merges on its own under
+  //     the auto-threshold rails, carried threshold and all, with
+  //     `reviewByRisk` attached: that is what lifts the aggregate size cap and
+  //     adds the risk-area and acceptance-test holds in evaluateAutoMergeSafety.
+  //     Read from the workspace policy only; a mission's policy never turns it on.
+  const risk = reviewByRiskFor({ gitConfig: workspace.gitConfig, baseRef: pr?.baseRef, mission: mission ?? null });
+  if (risk) {
+    const carried = resolveChainBelowIntegrationBranch(workspace, mission);
+    return {
+      tier: 'auto-threshold',
+      threshold: carried.threshold ?? DEFAULT_MERGE_POLICY.threshold,
+      reviewByRisk: risk.policy,
+    };
+  }
+
   return resolveChainBelowIntegrationBranch(workspace, mission);
 }
 
@@ -162,15 +192,23 @@ function resolveChainBelowIntegrationBranch(
   workspace: { gitConfig?: WorkspaceGitConfig | null },
   mission?: { mergePolicy?: MergePolicy | null; requiresReview?: boolean } | null,
 ): MergePolicy {
+  // `reviewByRisk` is attached only by rule 2b, for the PRs it governs: a
+  // stored copy on a mission or workspace policy never rides along to others.
   // 3. Mission explicit policy
-  if (mission?.mergePolicy) return parseMergePolicyRead(mission.mergePolicy);
+  if (mission?.mergePolicy) return withoutReviewByRisk(parseMergePolicyRead(mission.mergePolicy));
 
   // 4. Mission requiresReview
   if (mission?.requiresReview) return { tier: 'human' };
 
   // 5. Workspace explicit policy
-  if (workspace.gitConfig?.mergePolicy) return parseMergePolicyRead(workspace.gitConfig.mergePolicy);
+  if (workspace.gitConfig?.mergePolicy) return withoutReviewByRisk(parseMergePolicyRead(workspace.gitConfig.mergePolicy));
 
   // 6. Default
   return DEFAULT_MERGE_POLICY;
+}
+
+function withoutReviewByRisk(policy: MergePolicy): MergePolicy {
+  if (!('reviewByRisk' in policy)) return policy;
+  const { reviewByRisk: _rbr, ...rest } = policy;
+  return rest;
 }

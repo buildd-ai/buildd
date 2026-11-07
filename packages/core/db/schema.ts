@@ -975,6 +975,12 @@ export interface WorkspaceReleaseConfig {
     amend?: ReleaseCandidateAmendContract;
   };
 
+  // Review by risk (spec 62e985a8 R-6): while the workspace merge policy has
+  // `reviewByRisk` on, a release waits for a person to approve one release
+  // summary for the exact commit it ships. `false` turns that approval off for
+  // this workspace. Absent ⇒ on (only consulted while the mode is on).
+  summaryApproval?: boolean;
+
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
     type: 'vercel';
@@ -6410,7 +6416,8 @@ export const releaseFlowSteps = pgTable('release_flow_steps', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   // Kept as a plain id: the record outlives the person's account.
   actorUserId: uuid('actor_user_id'),
-  step: text('step').notNull().$type<'include' | 'cut' | 'exclude' | 'release' | 'confirm_production'>(),
+  // `approve_summary`: a person approved the review-by-risk release summary for `candidateSha` (spec 62e985a8 R-6).
+  step: text('step').notNull().$type<'include' | 'cut' | 'exclude' | 'release' | 'confirm_production' | 'approve_summary'>(),
   outcome: text('outcome').notNull().$type<'succeeded' | 'refused' | 'pending' | 'failed'>(),
   // The candidate's version and SHA when the step ran (null before the cut).
   version: text('version'),

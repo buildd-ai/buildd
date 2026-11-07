@@ -125,6 +125,10 @@ export type HumanCause =
   | 'deny_path'
   | 'size_cap'
   | 'branch_protection'
+  /** Review by risk (spec 62e985a8 R-4): the PR touches a risk area and waits for a person to approve it. */
+  | 'risk_area'
+  /** Review by risk (R-1): an acceptance check it answers for has no passing test at the head. */
+  | 'ac_untested'
   | 'migration'
   | 'unsafe_other'
   /** The refresh cycle ran out while the base kept moving, and the gap was too big (or unlistable) to land across. Retried next cycle. */
@@ -852,6 +856,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       skipBaseFreshness: true,
       observed,
       gitConfig: input.gitConfig,
+      // A person's own landing is the approval review by risk asks for (R-4).
+      ...(actor.kind === 'human' ? { personApproves: { approvedBy: actor.userId ?? null } } : {}),
     });
 
   let safety = await runSafety(input.bound);
@@ -900,6 +906,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         return waiting(reason);
       case 'deny_path':
         return human('deny_path', reason);
+      case 'risk_area':
+        return human('risk_area', reason, { waitingOn: 'person' });
+      case 'ac_untested':
+        return human('ac_untested', reason);
       case 'migration':
         if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
         if (/^could not /.test(reason)) return waiting(reason);
