@@ -81,4 +81,21 @@ describe('TaskAccessSection', () => {
     expect(text(html)).toContain('select * from secrets');
     expect(text(html)).toContain('refused · a table outside the read allowlist');
   });
+
+  it('says where each grant came from', () => {
+    const g = { capability: 'capability.request', label: 'Capability request', source: 'grant' as const, target: null };
+    const html = render([
+      item({ ...g, grantSource: 'filed' }),
+      item({ ...g, grantSource: 'role_policy' }),
+      item({ ...g, grantSource: 'team_policy' }),
+      item({ ...g, capability: 'capability.approve', label: 'Capability approved', grantSource: 'asked' }),
+      // Something refused opens the section, so its rows are in the markup.
+      item({ ...g, decision: 'refused', reason: 'no live grant for this run' }),
+    ]);
+    const t = text(html);
+    expect(t).toContain('from filed with the task');
+    expect(t).toContain("from the role's standing policy");
+    expect(t).toContain("from the team's policy");
+    expect(t).toContain('from asked mid-run, approved by a person');
+  });
 });

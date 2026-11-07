@@ -391,6 +391,9 @@ mock.module('./role-env-injection', () => ({
 // lib/task-delegation-checks.test.ts; here only how the loop reacts.
 const mockCheckDelegationGate = mock(async (..._args: any[]): Promise<any> => null);
 mock.module('./delegation-gate', () => ({ checkDelegationGate: mockCheckDelegationGate }));
+// Access declared at filing (lib/capability-grants-filed.ts; its rules: capability-grants-filed.test.ts).
+const mockCheckAccessGate = mock(async (..._args: any[]): Promise<any> => null);
+mock.module('@/lib/capability-grants-filed', () => ({ checkAccessGate: mockCheckAccessGate, setTaskFiledAccess: mock(), filedAccessNeedsYouRead: mock() }));
 
 // Runner isolation gate (its rules: isolation-gate.test.ts and
 // lib/isolation-policy.test.ts). Default: the runner confines the task.
@@ -9821,6 +9824,29 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('update_task { delegation }');
     const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'delegation_unmet');
     expect(deferred?.detail?.gaps).toEqual(gaps);
+  });
+
+  it('a task filed needing provider access nobody granted is held access_unmet before any agent turn, forced or not', async () => {
+    const gaps = [{ provider: 'neon', access: 'read', reason: 'count failed runs' }];
+    mockCheckAccessGate.mockResolvedValueOnce({ gaps, detail: 'neon read ("count failed runs"): declared when the task was filed, not granted yet' });
+    mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+    mockWorkersInsert.mockClear();
+    mockTasksFindMany.mockResolvedValueOnce([task({ context: { accessNeeds: gaps } })]);
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(mockWorkersInsert).not.toHaveBeenCalled();
+    expect(data.diagnostics.deferrals.access_unmet).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('access_unmet');
+    expect(data.diagnostics.taskExclusion.detail).toContain('neon read');
+    const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'access_unmet');
+    expect(deferred?.detail?.gaps).toEqual(gaps);
+
+    // Granted (the gate now answers null): the same task is claimable.
+    mockTasksFindMany.mockResolvedValueOnce([task({ context: { accessNeeds: gaps } })]);
+    const after = await (await claim({ runner: 'mcp' })).json();
+    expect(after.diagnostics?.deferrals?.access_unmet ?? 0).toBe(0);
+    expect(mockWorkersInsert).toHaveBeenCalled();
   });
 
   it('an admin force claim does not start a task past an unmet delegation', async () => {

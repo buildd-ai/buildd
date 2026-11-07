@@ -156,7 +156,7 @@ const LEDGER_LIMITS: Readonly<Record<string, WaitingKind>> = {
 };
 const LEDGER_NO_RUNNER = new Set([
   'runner_capability', 'isolation_unenforced', 'connector_mismatch', 'role_env_unsatisfied', 'no_personal_credential',
-  'provider_unavailable', 'delegation_unmet', 'provider_not_allowed', 'tier_policy',
+  'provider_unavailable', 'delegation_unmet', 'access_unmet', 'provider_not_allowed', 'tier_policy',
 ]);
 
 export function ledgerLimitReasons(hold: LedgerHold | null, now: Date): WaitingReason[] {

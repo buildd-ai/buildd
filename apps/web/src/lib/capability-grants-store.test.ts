@@ -90,7 +90,8 @@ mock.module('./connector-capabilities', () => ({
   resolveProviderAccess: (_i: any, provider: string, access: string) => ({ capability: `${provider}:${access}`, role: null, candidates: candidate ? [candidate] : [], operator: null, unclassifiedConnectors: [], runtime: '', summary: '' }),
 }));
 
-const { requestCapability, decideCapabilityRequest, authorizeCapabilityUse, capabilityGrantSource, loadGrant, expireLapsedTeamGrants, listTeamRequests } = await import('./capability-grants-store');
+const { requestCapability, decideCapabilityRequest, authorizeCapabilityUse, capabilityGrantSource, loadGrant, expireLapsedTeamGrants, listTeamRequests, findDatabaseQueryGrant, revokeFiledGrants } = await import('./capability-grants-store');
+const { inheritTaskDelegation, stampTaskAccess, withTaskAccess } = await import('@buildd/core/token-delegation');
 const { parseCapabilityRequest } = await import('./capability-grants');
 
 // ── fixtures (illustrative) ──────────────────────────────────────────────────
@@ -420,5 +421,105 @@ describe('a pending request whose run ended is closed on read', () => {
     T.tasks[0].status = 'completed';
     await expireLapsedTeamGrants(TEAM);
     expect((await loadGrant(g.id))!.status).toBe('denied');
+  });
+});
+
+// ── Access granted when the task was filed, and standing grants per role ─────
+
+describe('access filed with the task', () => {
+  const NEON_READ = { provider: 'neon', access: 'read' as const, reason: 'count failed runs' };
+  const filedDelegation = () => withTaskAccess(null, stampTaskAccess([NEON_READ], 'user-filer'), { userId: 'user-filer' });
+  const policy = (over: Record<string, unknown>) => ({ teamId: TEAM, provider: 'neon', risk: 'read', workspaceId: null, roleSlug: null, environment: null, resource: null, maxTtlSeconds: null, ...over });
+
+  it('a person filed Neon read: the first query finds a grant with no request made by the agent', async () => {
+    T.tasks[0].delegation = filedDelegation();
+    const out = await findDatabaseQueryGrant(PRINCIPAL);
+    expect(out.ok).toBe(true);
+    expect(T.grants).toHaveLength(1);
+    expect(T.grants[0]).toMatchObject({ status: 'granted', decidedBy: 'human', decidedByUserId: 'user-filer', decisionReason: 'filed_with_task', capability: 'database.query', workerId: WORKER });
+    expect(audit.find(a => a.capability === 'capability.request')).toMatchObject({ decision: 'allowed', reasonCode: 'auto_granted:filed_with_task' });
+    // A second query reuses it.
+    expect((await findDatabaseQueryGrant(PRINCIPAL)).ok).toBe(true);
+    expect(T.grants).toHaveLength(1);
+  });
+
+  it('nothing filed: the query is refused no_grant and nothing is written', async () => {
+    expect(await findDatabaseQueryGrant(PRINCIPAL)).toEqual({ ok: false, reasonCode: 'no_grant' });
+    expect(T.grants).toHaveLength(0);
+  });
+
+  it('a filed grant answers an ask that team policy would leave to a person, but never a write', async () => {
+    T.policies = [policy({ id: 'p-team', effect: 'ask_human' })];
+    T.tasks[0].delegation = filedDelegation();
+    const read = await requestCapability(PRINCIPAL, ask({ provider: 'neon', access: 'read' }));
+    expect(read.ok && read.resolution).toMatchObject({ kind: 'auto_granted', reasonCode: 'filed_with_task' });
+    // A write goes to the Neon connector (none here) and is never answered by the filed read.
+    const write = await requestCapability(PRINCIPAL, ask({ provider: 'neon', access: 'write' }));
+    expect(write.ok && write.resolution.kind).not.toBe('auto_granted');
+    expect(T.grants.filter(g => g.status === 'granted')).toHaveLength(1);
+  });
+
+  it('never past a forbid', async () => {
+    T.policies = [policy({ id: 'p-forbid', effect: 'forbidden' })];
+    T.tasks[0].delegation = filedDelegation();
+    const out = await requestCapability(PRINCIPAL, ask({ provider: 'neon', access: 'read' }));
+    expect(out.ok && out.resolution.kind).toBe('forbidden');
+    expect((await findDatabaseQueryGrant(PRINCIPAL)).ok).toBe(false);
+  });
+
+  it('granted from the task page while an ask waited: the next ask decides that same row', async () => {
+    const first = await requestCapability(PRINCIPAL, ask({ provider: 'neon', access: 'read' }));
+    expect(first.ok && first.resolution.kind).toBe('pending_approval');
+    T.tasks[0].delegation = filedDelegation();
+    const again = await requestCapability(PRINCIPAL, ask({ provider: 'neon', access: 'read' }));
+    expect(again.ok && again.resolution.kind).toBe('auto_granted');
+    expect(T.grants).toHaveLength(1);
+    expect(T.grants[0]).toMatchObject({ status: 'granted', decisionReason: 'filed_with_task' });
+  });
+
+  it('a retry inherits the grant; another task of the same workspace does not', async () => {
+    const RETRY = '77777777-7777-4777-8777-777777777777';
+    const OTHER_TASK = '88888888-8888-4888-8888-888888888888';
+    T.tasks[0].delegation = filedDelegation();
+    T.tasks.push(
+      { id: RETRY, workspaceId: WS, status: 'in_progress', roleSlug: 'builder', delegation: inheritTaskDelegation({ id: TASK, delegation: T.tasks[0].delegation }), updatedAt: new Date(0) },
+      { id: OTHER_TASK, workspaceId: WS, status: 'in_progress', roleSlug: 'builder', delegation: null, updatedAt: new Date(0) },
+    );
+    T.workers.push({ id: 'w-retry', status: 'running' }, { id: 'w-other', status: 'running' });
+    expect((await findDatabaseQueryGrant({ ...PRINCIPAL, taskId: RETRY, workerId: 'w-retry' })).ok).toBe(true);
+    expect((await findDatabaseQueryGrant({ ...PRINCIPAL, taskId: OTHER_TASK, workerId: 'w-other' })).ok).toBe(false);
+  });
+
+  it('taking the filed access back revokes what runs hold from it', async () => {
+    T.tasks[0].delegation = filedDelegation();
+    expect((await findDatabaseQueryGrant(PRINCIPAL)).ok).toBe(true);
+    T.tasks[0].delegation = null;
+    await revokeFiledGrants(TASK, []);
+    expect(T.grants[0].status).toBe('revoked');
+    expect((await findDatabaseQueryGrant(PRINCIPAL)).ok).toBe(false);
+  });
+});
+
+describe('standing grants per role (role policy > team policy)', () => {
+  const policy = (over: Record<string, unknown>) => ({ teamId: TEAM, provider: 'neon', risk: 'read', workspaceId: null, environment: null, resource: null, maxTtlSeconds: null, ...over });
+
+  it('researcher: auto-grant by role policy, recorded as such; builder: the team policy asks a person', async () => {
+    T.policies = [policy({ id: 'p-role', roleSlug: 'researcher', effect: 'auto_grant' }), policy({ id: 'p-team', roleSlug: null, effect: 'ask_human' })];
+    T.tasks[0].roleSlug = 'researcher';
+    const r = await requestCapability(PRINCIPAL, ask({ provider: 'neon', access: 'read' }));
+    expect(r.ok && r.resolution).toMatchObject({ kind: 'auto_granted', reasonCode: 'role_policy_auto_grant' });
+    expect(T.grants[0]).toMatchObject({ status: 'granted', decidedBy: 'policy', decisionReason: 'role_policy_auto_grant' });
+    expect(audit.at(-1)).toMatchObject({ capability: 'capability.request', decision: 'allowed', reasonCode: 'auto_granted:role_policy_auto_grant' });
+
+    T.grants = [];
+    T.tasks[0].roleSlug = 'builder';
+    const b = await requestCapability(PRINCIPAL, ask({ provider: 'neon', access: 'read' }));
+    expect(b.ok && b.resolution.kind).toBe('pending_approval');
+  });
+
+  it('a team-wide auto-grant keeps its own reason', async () => {
+    T.policies = [policy({ id: 'p-team', roleSlug: null, effect: 'auto_grant' })];
+    const r = await requestCapability(PRINCIPAL, ask({ provider: 'neon', access: 'read' }));
+    expect(r.ok && r.resolution.reasonCode).toBe('policy_auto_grant');
   });
 });

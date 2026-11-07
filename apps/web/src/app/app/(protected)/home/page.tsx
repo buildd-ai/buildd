@@ -41,7 +41,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { ActionQueueItem, EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations, MISSION_SUMMARY_VERSION } from '@buildd/shared';
-import { ACCESS_NEEDS_YOU, SCHEDULE_MOVE_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, HOME_MISSION_SUMMARIES } from '@/modules';
+import { ACCESS_NEEDS_YOU, FILED_ACCESS, SCHEDULE_MOVE_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, HOME_MISSION_SUMMARIES } from '@/modules';
 import type { MissionHomeReading } from '@/lib/mission-summary';
 import type { LiveHomeReading } from '@/lib/mission-summary-home';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
@@ -440,6 +440,8 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
     home: sql<MissionHomeReading>`${home}`, computedAt: missionSummaries.computedAt,
   };
   const ACCESS = hasWs && roleHasPermission(role, 'manage_connectors') ? await ACCESS_NEEDS_YOU(teamId, wsIds) : null;
+  // Tasks held at claim on access declared when they were filed: the same people decide.
+  const FILED = hasWs && roleHasPermission(role, 'manage_connectors') ? await FILED_ACCESS.needsYou(wsIds) : null;
   const SCHEDULE_MOVES = hasWs && roleHasPermission(role, 'delegate_schedule_access') ? await SCHEDULE_MOVE_NEEDS_YOU(wsIds) : null;
   const r1 = await readRound({
     ss0: statusPlan.queries[0], ss1: statusPlan.queries[1], ss2: statusPlan.queries[2], ss3: statusPlan.queries[3],
@@ -571,6 +573,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
       extras: sqlExtras({ declaredStatus: sql<string | null>`${specDiscrepancies.evidence}->>'declaredStatus'` }),
     }) : null,
     access: ACCESS?.query ?? null,
+    filedAccess: FILED?.query ?? null,
     scheduleMoves: SCHEDULE_MOVES?.query ?? null,
   });
 
@@ -988,6 +991,8 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
 
   // 7. Agent access requests team policy leaves to a person.
   if (ACCESS && r1.access) waitingOnYou.push(...ACCESS.items(r1.access));
+  // 7b. Tasks filed needing access nobody has granted: the card opens the task's Grant.
+  if (FILED && r1.filedAccess) waitingOnYou.push(...FILED.items(r1.filedAccess));
   // 8. Schedule move proposals, for whoever holds delegate_schedule_access.
   if (SCHEDULE_MOVES && r1.scheduleMoves) waitingOnYou.push(...SCHEDULE_MOVES.items(r1.scheduleMoves));
 

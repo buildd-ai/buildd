@@ -63,6 +63,9 @@ import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip, loopHistoryOf } from '@/components/LoopStatus';
 import TaskArtifactsSection from './TaskArtifactsSection';
 import TaskAccessSection from './TaskAccessSection';
+import TaskFiledAccess from './TaskFiledAccess';
+import { filedAccessEntries } from './filed-access';
+import { can } from '@/lib/permissions';
 import { loadTaskAccess } from '@/lib/agent-capabilities/access-log';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
@@ -454,7 +457,10 @@ async function TaskDetailPage({
     console.warn('[task-page] timeline times unavailable:', err instanceof Error ? err.message : err);
     return [];
   });
-  const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus, dependentsLoaded, linkedRunTimes] = await Promise.all([
+  // Access filed with the task (declared, or granted by a person); no query.
+  // Only someone who decides access requests gets the Grant button.
+  const filedAccess = filedAccessEntries(task.context, task.delegation);
+  const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus, dependentsLoaded, linkedRunTimes, canGrantFiledAccess] = await Promise.all([
     evidenceReviewPromise,
     round2,
     (async () => {
@@ -507,6 +513,9 @@ async function TaskDetailPage({
     serviceStatusPromise,
     dependentsRead,
     linkedRunTimesPromise,
+    filedAccess.length > 0 && task.workspace?.teamId
+      ? can({ kind: 'user', userId: user.id }, 'manage_connectors', task.workspace.teamId).catch(() => false)
+      : Promise.resolve(false),
   ]);
   const taskArtifacts = (reads2(artifactsQuery) ?? []) as Awaited<NonNullable<typeof artifactsQuery>>;
   // The live worker's deliverables, counted from the rows above: no read of its own.
@@ -2022,6 +2031,9 @@ async function TaskDetailPage({
             the description, and the rest of the fleet. On mobile it follows the
             main column; the question or the Now strip stays the first screen. */}
         <aside data-testid="task-side-panel" className="mt-6 space-y-6">
+          {filedAccess.length > 0 && (
+            <TaskFiledAccess taskId={task.id} entries={filedAccess} canGrant={canGrantFiledAccess} open={!isTerminalTaskStatus(task.status)} />
+          )}
           <details data-testid="task-details" className="group border-y border-border-default">
             <summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">{shippedView ? 'Details' : 'More'}</summary>
           <TaskAccessSection items={accessItems} />

@@ -11,6 +11,8 @@ import {
   findDelegationGaps,
   mergeDelegationGrants,
   parseScheduleDelegationInput,
+  parseTaskAccessInput,
+  type TaskAccessNeed,
   readFilingTargets,
   readScheduleDelegation,
   removeDelegationCapability,
@@ -22,6 +24,7 @@ import { loadRawTaskGrants, teamsOf } from './task-delegation';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from './team-access';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { clearCallerCache, callerDep } from './caller-cache';
+import { can } from './permissions';
 
 type DelegatedTaskRow = Parameters<typeof loadRawTaskGrants>[0];
 
@@ -101,6 +104,26 @@ export async function resolveTaskDelegationWrite(
     ok: true,
     value: { grants: parsed.grants, grantedByUserId: personUserId, grantedByAccountId: null, grantedAt: new Date().toISOString() },
   };
+}
+
+export type FiledAccessResolution =
+  | { ok: true; needs: TaskAccessNeed[]; canGrant: boolean }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Parse a filed `access` list and say whether the caller may grant it: only a
+ * person (dashboard or their own OAuth session) who holds manage_connectors in
+ * the task's team, the same people who approve an access request. Anyone else
+ * (an agent, or a member who cannot decide) only declares the need. A write
+ * is refused 400 for everyone.
+ */
+export async function resolveFiledAccess(input: unknown, taskWorkspaceId: string, personUserId: string | null): Promise<FiledAccessResolution> {
+  const parsed = parseTaskAccessInput(input);
+  if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
+  if (!personUserId) return { ok: true, needs: parsed.needs, canGrant: false };
+  const teamId = (await teamsOf([taskWorkspaceId])).get(taskWorkspaceId);
+  const canGrant = !!teamId && await can({ kind: 'user', userId: personUserId }, 'manage_connectors', teamId);
+  return { ok: true, needs: parsed.needs, canGrant };
 }
 
 /**

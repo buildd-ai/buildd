@@ -145,7 +145,8 @@ const leftMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => 
 const roleChanged = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.role_changed');
 const joinedMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.joined_mission');
 const mockAnswerScope = mock(async (_p: any) => {});
-mock.module('@/modules', () => ({ MISSION_SCOPE_ANSWER: { answerQuietly: mockAnswerScope } }));
+const mockSetFiledAccess = mock(async (..._a: any[]): Promise<any> => ({ ok: true, access: [], revoked: 0 }));
+mock.module('@/modules', () => ({ MISSION_SCOPE_ANSWER: { answerQuietly: mockAnswerScope }, FILED_ACCESS: { set: mockSetFiledAccess } }));
 mock.module('@/lib/mission-link-scope', () => ({
   isMissionLinkable: mockIsMissionLinkable,
 }));
@@ -226,7 +227,14 @@ mock.module('@buildd/core/db/schema', () => ({
 const mockResolveTaskDelegationWrite = mock(async (input: unknown, _ws: string, person: string | null): Promise<any> =>
   person ? { ok: true, value: input ? { ...(input as object), grantedByUserId: person, grantedByAccountId: null, grantedAt: 'now' } : null }
     : { ok: false, status: 403, error: 'Only a person can grant a task delegation' });
-mock.module('@/lib/task-delegation-checks', () => ({ resolveTaskDelegationWrite: mockResolveTaskDelegationWrite }));
+// Filed access: parsed for real (packages/core/token-delegation.ts); whether the person may grant is the test's.
+let personCanGrant = true;
+const { parseTaskAccessInput } = await import('@buildd/core/token-delegation');
+const mockResolveFiledAccess = mock(async (input: unknown, _ws: string, person: string | null) => {
+  const p = parseTaskAccessInput(input);
+  return p.ok ? { ok: true, needs: p.needs, canGrant: !!person && personCanGrant } : { ok: false, status: 400, error: p.error };
+});
+mock.module('@/lib/task-delegation-checks', () => ({ resolveTaskDelegationWrite: mockResolveTaskDelegationWrite, resolveFiledAccess: mockResolveFiledAccess }));
 
 // Change version: a deleted task's scopes are read before the row goes, then bumped.
 const deleteOrder: string[] = [];
@@ -878,6 +886,52 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(403);
       expect(mockResolveTaskDelegationWrite.mock.calls.at(-1)![2]).toBeNull();
       expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('access (a person grants provider access on the task page)', () => {
+    const NEED = { provider: 'neon', access: 'read', reason: 'count failed runs' };
+    const task = (status = 'pending') => ({ id: TASK_ID, title: 'T', status, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' } });
+    const patch = (body: Record<string, unknown>, headers?: Record<string, string>) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', body, ...(headers ? { headers } : {}) }), TASK_ID);
+
+    it('a person who decides access grants it: the held task becomes claimable', async () => {
+      personCanGrant = true;
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-admin', email: 'a@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      mockSetFiledAccess.mockResolvedValueOnce({ ok: true, access: [{ ...NEED, grantedByUserId: 'user-admin', grantedAt: 'now' }], revoked: 0 });
+      const res = await patch({ access: [NEED] });
+      expect(res.status).toBe(200);
+      expect(mockSetFiledAccess.mock.calls.at(-1)).toEqual([TASK_ID, [NEED], 'user-admin']);
+      expect((await res.json()).access[0].provider).toBe('neon');
+    });
+
+    it('a member who cannot decide access is refused', async () => {
+      personCanGrant = false;
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-member', email: 'm@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      mockSetFiledAccess.mockClear();
+      expect((await patch({ access: [NEED] })).status).toBe(403);
+      expect(mockSetFiledAccess).not.toHaveBeenCalled();
+      personCanGrant = true;
+    });
+
+    it('a write is a 400; an ended task is a 409; it is sent on its own', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-admin', email: 'a@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      expect((await patch({ access: [{ provider: 'neon', access: 'write' }] })).status).toBe(400);
+      expect((await patch({ access: [NEED], title: 'x' })).status).toBe(400);
+      mockTasksFindFirst.mockResolvedValue(task('completed'));
+      expect((await patch({ access: [NEED] })).status).toBe(409);
+    });
+
+    it('an API key is not a person: refused', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'acct-admin', level: 'admin', teamId: 'team-1' });
+      mockTasksFindFirst.mockResolvedValue(task());
+      mockSetFiledAccess.mockClear();
+      expect((await patch({ access: [NEED] }, { Authorization: 'Bearer bld_admin' })).status).toBe(403);
+      expect(mockSetFiledAccess).not.toHaveBeenCalled();
     });
   });
 
