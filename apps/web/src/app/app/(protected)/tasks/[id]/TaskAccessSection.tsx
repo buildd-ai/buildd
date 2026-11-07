@@ -22,6 +22,7 @@ import Chip from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import type { AccessItem } from '@/lib/agent-capabilities/access-log';
+import { GRANT_SOURCE_TEXT } from '@/lib/agent-capabilities/grant-source';
 
 const ROW = 'flex flex-wrap md:flex-nowrap items-baseline gap-x-3 gap-y-1 px-3 py-2 md:px-4 border-b border-border-default/40 last:border-b-0';
 
@@ -95,6 +96,7 @@ function Governed({ item }: { item: AccessItem }) {
         ) : (
           <span className="text-text-muted">
             allowed{item.reason ? ` · ${item.reason}` : ''}
+            {item.grantSource && <span data-testid="task-access-source" data-source-kind={item.grantSource}> · from {GRANT_SOURCE_TEXT[item.grantSource]}</span>}
             {item.expiresAt && <> · until <ZonedTime value={item.expiresAt} format="time" /></>}
           </span>
         )}

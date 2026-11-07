@@ -160,7 +160,7 @@ const LIMIT_HOLD_KEY: Record<QueueLimit, string> = {
 const BUDGET_LIMITS: ReadonlySet<QueueLimit> = new Set<QueueLimit>(['mission_budget', 'budget', 'plan']);
 const NO_RUNNER_REASONS = new Set([
   'runner_capability', 'isolation_unenforced', 'connector_mismatch', 'role_env_unsatisfied',
-  'no_personal_credential', 'provider_unavailable', 'delegation_unmet', 'provider_not_allowed', 'tier_policy',
+  'no_personal_credential', 'provider_unavailable', 'delegation_unmet', 'access_unmet', 'provider_not_allowed', 'tier_policy',
 ]);
 const BUDGET_REASONS = new Set(['budget_paused', 'mission_budget', 'managed_runner_hours', 'hosted_runner_hours']);
 
