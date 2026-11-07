@@ -234,7 +234,8 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
     case 'ACCESS':
       // A pending capability request (lib/capability-grants-needs-you.ts): what was asked is the title,
       // who asked and why is the sentence. The card approves or denies in place; the link is the fallback.
-      return make({ label: 'access request', tone: 'warning', title: text(i.accessAsk), sentence: text(i.failureMessage), actionType: 'access', primary: { label: text(i.fixLabel) ?? 'Review', href: text(i.fixHref) ?? '' }, details: taskHref ? { label: 'View task', href: taskHref } : null });
+      // For a database read the SQL the agent intends (or the tables) is the detail, so the person decides on what will run.
+      return make({ label: 'access request', tone: 'warning', title: text(i.accessAsk), sentence: text(i.failureMessage), detail: i.accessIntent ? [text(i.failureMessage), i.accessIntent].filter(Boolean).join('\n') : null, actionType: 'access', primary: { label: text(i.fixLabel) ?? 'Review', href: text(i.fixHref) ?? '' }, details: taskHref ? { label: 'View task', href: taskHref } : null });
     case 'SCHEDULE_MOVE': {
       // A run of a schedule asked for the schedule to start in another workspace (lib/schedule-move-needs-you.ts).
       // The card answers it in place; the link is the fallback.

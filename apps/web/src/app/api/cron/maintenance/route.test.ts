@@ -57,6 +57,8 @@ const mockTeamFiles = mock(async (_opts: unknown) => ({ removed: 5, objectsRemov
 mock.module('@/lib/artifact-team-files', () => ({ removeDetachedTeamFiles: mockTeamFiles }));
 const mockSpecSweep = mock(async (_opts?: unknown) => ({ checked: 3, approved: 1, failed: 0 }));
 mock.module('@/lib/specs/auto-approve', () => ({ sweepNoCriteriaChange: mockSpecSweep }));
+const mockAccessExpiry = mock(async (_opts?: unknown) => [{ requestId: 'r1' }] as unknown[]);
+mock.module('@/lib/capability-hold-store', () => ({ expireOverdueRequests: mockAccessExpiry }));
 
 const { GET } = await import('./route');
 
@@ -108,9 +110,9 @@ describe('maintenance cron — the core sweeps', () => {
     const uploads = { finalized: 2, removed: 1, waiting: 0 };
     const chatAttachments = { removed: 4, objectsRemoved: 2 };
     const teamFiles = { removed: 5, objectsRemoved: 5 };
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 } });
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 }, accessRequestsExpired: 1 });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 25, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 } } });
+    expect(row).toMatchObject({ ok: true, changed: 26, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 }, accessRequestsExpired: 1 } });
   });
 
   it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {

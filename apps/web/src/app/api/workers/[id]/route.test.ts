@@ -454,6 +454,12 @@ mock.module('@buildd/core/worker-messages', () => ({
 
 const mockQueueSystemInstruction = mock(async (_workerId: string, _text: string) => true);
 mock.module('@/lib/system-instruction-queue', () => ({ queueSystemInstruction: mockQueueSystemInstruction }));
+// A pending access request holds the run (lib/capability-hold-store.ts). The
+// verdict has its own suite; here: that an agent-authored completion is
+// refused on it with the three ways out, that a declaration leads the summary,
+// and that a task with no request completes as before.
+const mockEvaluateCompletionHold = mock(async (_input: any): Promise<any> => ({ kind: 'pass', expire: [], stopWaiting: [], blockedByCapability: null, proceededWithout: null, summaryLead: null }));
+mock.module('@/lib/capability-hold-store', () => ({ evaluateCompletionHold: mockEvaluateCompletionHold }));
 
 mock.module('@buildd/core/routing-analytics', () => ({
   recordTaskOutcome: mockRecordTaskOutcome,
@@ -18282,5 +18288,95 @@ describe('PATCH /api/workers/[id] — interactive worker parked on a question', 
     setup({ ...interactive, status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
     await patch({ status: 'running', consumer: 'agent' });
     expect(capturedSet.updatedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('a pending access request holds the run (capability-requests → Holding the run)', () => {
+  const R1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  beforeEach(() => {
+    mockEvaluateCompletionHold.mockReset();
+    mockEvaluateCompletionHold.mockResolvedValue({ kind: 'pass', expire: [], stopWaiting: [], blockedByCapability: null, proceededWithout: null, summaryLead: null });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+      taskId: 'task-1', observedTouches: [], commitCount: 0, filesChanged: 0, pendingInstructions: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'writing', outputRequirement: 'none', taskClass: 'bookkeeping' });
+  });
+
+  it('complete_task with a pending request: 400 with the three ways out, nothing written', async () => {
+    mockEvaluateCompletionHold.mockResolvedValue({
+      kind: 'refuse', code: 'capability_request_pending', hint: 'wait_or_withdraw_or_blockedByCapability',
+      error: 'Completion is held: a person has not answered your access request for Read Neon.',
+      options: ['wait', 'withdraw', 'give up'], requestIds: [R1],
+    });
+    const sets: any[] = [];
+    mockWorkersUpdate.mockImplementation(() => ({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'worker-1' }])) })) }; }) }));
+    const res = await PATCH(createMockRequest({
+      method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', viaCompleteTask: true, summarySource: 'agent', summary: 'Shipped the report without the production half.' },
+    }), { params: mockParams });
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toMatchObject({ code: 'capability_request_pending', hint: 'wait_or_withdraw_or_blockedByCapability', requestIds: [R1] });
+    expect(json.options).toHaveLength(3);
+    expect(mockEvaluateCompletionHold.mock.calls[0][0]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' });
+    // Metrics only: the worker is not completed or failed.
+    expect(sets.some(v => v.status === 'completed' || v.status === 'failed')).toBe(false);
+  });
+
+  it('an ungranted request the completion does not declare is refused too', async () => {
+    mockEvaluateCompletionHold.mockResolvedValue({ kind: 'refuse', code: 'capability_outcome_unreported', hint: 'blockedByCapability_or_proceededWithout', error: 'You asked for access you did not get.', requestIds: [R1] });
+    const res = await PATCH(createMockRequest({
+      method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', viaCompleteTask: true, summarySource: 'agent', summary: 'Done.' },
+    }), { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('capability_outcome_unreported');
+  });
+
+  it('a runner end-of-session report (no agent turn left) is not held', async () => {
+    mockEvaluateCompletionHold.mockResolvedValue({ kind: 'refuse', code: 'capability_request_pending', hint: 'x', error: 'held' });
+    const res = await PATCH(createMockRequest({
+      method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summarySource: 'fallback', summary: 'Session ended.' },
+    }), { params: mockParams });
+    expect(res.status).not.toBe(400);
+    expect(mockEvaluateCompletionHold).not.toHaveBeenCalled();
+  });
+
+  it('a declared outcome leads the summary and is recorded on the structured output', async () => {
+    mockEvaluateCompletionHold.mockResolvedValue({
+      kind: 'pass', expire: [], stopWaiting: [R1],
+      blockedByCapability: [{ requestId: R1, whatIsMissing: 'No production counts.', outcome: 'abandoned', reason: null }],
+      proceededWithout: null,
+      summaryLead: 'Blocked: Read Neon was not answered before the run finished. No production counts.',
+    });
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockImplementation(() => ({ set: mock((v: any) => { taskSets.push(v); return { where: mock(() => Promise.resolve()) }; }) }));
+    mockWorkersUpdate.mockImplementation(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }])) })) })) }));
+    const res = await PATCH(createMockRequest({
+      method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', viaCompleteTask: true, summarySource: 'agent', summary: 'Report written from GitHub data only.', structuredOutput: { blockedByCapability: { requestId: R1, whatIsMissing: 'No production counts.' } } },
+    }), { params: mockParams });
+    expect(res.status).toBe(200);
+    const completed = taskSets.find(v => v.result?.summary);
+    expect(completed).toBeTruthy();
+    expect(completed.result.summary.startsWith('Blocked: Read Neon was not answered before the run finished. No production counts.')).toBe(true);
+    expect(completed.result.summary).toContain('Report written from GitHub data only.');
+    expect(completed.result.structuredOutput).toMatchObject({ blockedByCapability: { requestId: R1, outcome: 'abandoned' } });
+  });
+
+  it('a task with no request behaves as today', async () => {
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockImplementation(() => ({ set: mock((v: any) => { taskSets.push(v); return { where: mock(() => Promise.resolve()) }; }) }));
+    mockWorkersUpdate.mockImplementation(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }])) })) })) }));
+    const res = await PATCH(createMockRequest({
+      method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', viaCompleteTask: true, summarySource: 'agent', summary: 'Rotated the key.' },
+    }), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockEvaluateCompletionHold).toHaveBeenCalledTimes(1);
+    expect(taskSets.find(v => v.result?.summary)?.result.summary).toBe('Rotated the key.');
   });
 });
