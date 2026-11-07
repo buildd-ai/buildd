@@ -315,6 +315,15 @@ export const GATE_SLUGS = {
    * with reason `path_overlap` and `detail.lane`.
    */
   SERIAL_LANE: 'serial_lane',
+  /**
+   * Review by risk (spec 62e985a8). `deferred` = an unattended merge into the
+   * workspace integration branch held for a risk area (R-4) or an acceptance
+   * check with no passing test at the head (R-1), or a release held for its
+   * summary approval (R-6). `bypassed` = a person merged a PR touching a risk
+   * area, which is the approval R-4 asks for; `detail.approvedBy` names them
+   * and the release summary reads it (R-7).
+   */
+  REVIEW_BY_RISK: 'review_by_risk',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

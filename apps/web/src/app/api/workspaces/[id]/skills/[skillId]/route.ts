@@ -16,6 +16,7 @@ import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/rol
 import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isRestoration, recordRestored } from '@buildd/core/skill-lifecycle-events';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -209,6 +210,7 @@ export async function PATCH(
             .returning();
 
         const updatedSkill = updated;
+        if (isRestoration(existing.enabled, updatedSkill.enabled)) await recordRestored(updatedSkill);
         if (updatedSkill.isRole && isStorageConfigured()) {
             const oldStorageKey = existing.configStorageKey;
             const bundle = await packageRoleConfig(id, {

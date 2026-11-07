@@ -21,6 +21,7 @@
  * `verifiedHeadSha: null` means the door verified nothing of its own before
  * this call: the head read here is the one gated and pinned.
  */
+import { defaultSummaryGate } from '@/lib/release/summary-gate';
 import { githubApi } from '@/lib/github';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { requiredCheckHold } from '@/lib/required-check-hold';
@@ -54,7 +55,7 @@ export interface PinnedMergeInput {
 export type PinnedMergeResult =
   | { merged: true; sha: string | null; message: string; alreadyMerged?: boolean; via: 'kernel' | 'pinned' | 'github' }
   | {
-      merged: false; message: string; refused: 'head_moved' | 'review' | 'kernel' | 'unavailable' | 'unreadable' | 'merge_failed' | 'required_check'; headSha?: string | null;
+      merged: false; message: string; refused: 'head_moved' | 'review' | 'kernel' | 'unavailable' | 'unreadable' | 'merge_failed' | 'required_check' | 'summary'; headSha?: string | null;
       /** Wait and retry (the kernel has not approved it yet, the control plane did not answer, a required check has not passed yet): not a failure. */
       hold?: true;
       /** `required_check`: the check GitHub named as not passed yet (null when it gave only a count). */
@@ -70,6 +71,8 @@ export interface PinnedMergeDeps {
   land?: (p: LandingInput, principal: KernelPrincipal) => Promise<KernelLanding | null>;
   /** Whether a kernel delivery owns the PR (authority.ts), read locally: a PR it does not own never reaches the kernel. */
   owned?: (workspaceId: string, repoFullName: string, prNumber: number) => Promise<boolean>;
+  /** Review by risk's release-summary approval (release/summary-store.ts). */
+  summaryGate?: import('@/lib/release/summary-gate').SummaryGate;
 }
 
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 9) : 'unknown');
@@ -105,6 +108,13 @@ export async function mergeReleasePrPinned(p: PinnedMergeInput, deps: PinnedMerg
     };
   }
   const head = p.verifiedHeadSha ?? liveHead;
+
+  // Review by risk (R-6): a branch_merge release waits for a person to approve
+  // the summary of exactly this commit, whatever triggered it (AC-5).
+  const summary = await (deps.summaryGate ?? defaultSummaryGate())({ workspaceId: p.workspaceId, headSha: head, surface: p.surface, door: 'merge' });
+  if (summary.blocks) {
+    return { merged: false, refused: 'summary', hold: true, headSha: head, message: `${summary.reason} ${summary.clearedBy}` };
+  }
 
   const owned = await (deps.owned ?? (async (ws: string, repo: string, n: number) => !!(await kernelDeliveryForPr(ws, repo, n))))(p.workspaceId, p.repoFullName, p.prNumber);
   if (owned) {

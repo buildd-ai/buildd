@@ -975,6 +975,12 @@ export interface WorkspaceReleaseConfig {
     amend?: ReleaseCandidateAmendContract;
   };
 
+  // Review by risk (spec 62e985a8 R-6): while the workspace merge policy has
+  // `reviewByRisk` on, a release waits for a person to approve one release
+  // summary for the exact commit it ships. `false` turns that approval off for
+  // this workspace. Absent ⇒ on (only consulted while the mode is on).
+  summaryApproval?: boolean;
+
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
     type: 'vercel';
@@ -4172,6 +4178,25 @@ export const skillUsage = pgTable('skill_usage', {
   teamIdx: index('skill_usage_team_idx').on(t.teamId),
 }));
 
+// Append-only audit of skill lifecycle changes (spec "Skill candidates, usage
+// telemetry and retirement"). 'stale' / 'would_archive' are what the recording
+// mode writes; 'archived' (skill disabled, never deleted) only in acting mode;
+// 'restored' whenever a skill goes enabled false -> true.
+export const skillLifecycleEvents = pgTable('skill_lifecycle_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  action: text('action').notNull().$type<'stale' | 'would_archive' | 'archived' | 'restored'>(),
+  mode: text('mode').notNull().$type<'recording' | 'acting' | 'manual'>(),
+  reason: text('reason'),
+  previousEnabled: boolean('previous_enabled'),
+  previousContentHash: text('previous_content_hash'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  skillIdx: index('skill_lifecycle_events_skill_idx').on(t.skillId, t.createdAt),
+  teamIdx: index('skill_lifecycle_events_team_idx').on(t.teamId),
+}));
+
 // Per-task routing outcome — captured on completion/failure so the calibration
 // cron can quantify whether the router's model pick matched reality.
 // See plans/buildd/smart-model-routing.md — feedback loop requires this table.
@@ -6423,7 +6448,8 @@ export const releaseFlowSteps = pgTable('release_flow_steps', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   // Kept as a plain id: the record outlives the person's account.
   actorUserId: uuid('actor_user_id'),
-  step: text('step').notNull().$type<'include' | 'cut' | 'exclude' | 'release' | 'confirm_production'>(),
+  // `approve_summary`: a person approved the review-by-risk release summary for `candidateSha` (spec 62e985a8 R-6).
+  step: text('step').notNull().$type<'include' | 'cut' | 'exclude' | 'release' | 'confirm_production' | 'approve_summary'>(),
   outcome: text('outcome').notNull().$type<'succeeded' | 'refused' | 'pending' | 'failed'>(),
   // The candidate's version and SHA when the step ran (null before the cut).
   version: text('version'),

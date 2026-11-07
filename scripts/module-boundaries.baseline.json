@@ -19,6 +19,9 @@
       "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
       "apps/web/src/lib/stranded-tasks-sweep.ts": "health-quality"
     },
+    "apps/web/src/app/api/cron/skill-lifecycle/route.ts": {
+      "apps/web/src/lib/default-roles.ts": "roles-skills"
+    },
     "apps/web/src/app/api/github/pr/route.ts": {
       "apps/web/src/lib/auto-merge.ts": "reviews-merge",
       "apps/web/src/lib/base-refresh.ts": "reviews-merge",
