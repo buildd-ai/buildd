@@ -375,7 +375,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   prs: {
     parts: [
-      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr', 'update_pr'] },
+      { text: 'PRs', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr', 'update_pr'] },
       { text: 'reviews', actions: ['get_pr_review', 'request_pr_review', 'approve_pr_override'] },
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
@@ -384,8 +384,8 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     parts: [
       { text: 'coordination stats', actions: ['get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats', 'procedure_digest'] },
       { text: 'stuck work', actions: ['explain'] },
-      { text: 'errors, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
-      { text: 'Voyage spend (admin)', actions: ['get_embedding_usage'] },
+      { text: 'errors, logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
+      { text: 'Voyage spend', actions: ['get_embedding_usage'] },
       { text: 'budget, usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
       { text: 'runners', actions: ['list_runners', 'probe_budget_wall'] },
       { text: 'dispatch', actions: ['dispatch_health'] },
@@ -394,20 +394,20 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   runners: {
     parts: [
       { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability', 'invoke_model_inference', 'query_database', 'withdraw_capability_request'] },
-      { text: 'message an agent', actions: ['send_agent_message', 'answer_question'] },
+      { text: 'message agent', actions: ['send_agent_message', 'answer_question'] },
     ],
   },
   artifacts: {
     parts: [
       { text: 'artifacts', actions: ['list_artifacts', 'get_artifact', 'list_artifact_templates', 'update_artifact'] },
-      { text: 'link to a task, mission or chat', actions: ['link_artifact', 'list_artifact_links', 'store_design', 'manage_designs'] },
+      { text: 'link to task, mission, chat', actions: ['link_artifact', 'list_artifact_links', 'store_design', 'manage_designs'] },
       { text: 'Living Specs', actions: ['manage_specs'] },
     ],
   },
   schedules: {
     parts: [
-      { text: 'schedules and what they fired', actions: ['list_schedules', 'trace_schedule'] },
-      { text: 'create, edit, pause or delete them', actions: ['create_schedule', 'update_schedule', 'pause_schedules', 'delete_schedule'] },
+      { text: 'schedules and firings', actions: ['list_schedules', 'trace_schedule'] },
+      { text: 'create, edit, pause, delete', actions: ['create_schedule', 'update_schedule', 'pause_schedules', 'delete_schedule'] },
     ],
   },
   admin: {
@@ -468,7 +468,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_manifest_coverage: 'coverage by scope and kind',
   get_path_claim_stats: 'path-claim outcomes',
   get_decision_stats: 'decision-shadow counts',
-  procedure_digest: 'tool-name steps of a run',
+  procedure_digest: 'tool steps of a run',
   list_connectors: 'connector health',
   resolve_capability: 'who serves a need',
   request_capability: 'ask for access',
@@ -708,7 +708,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
       { text: 'update by UUID: moves the mission there (omit to only scope a title)', actions: MISSION_WRITES },
     ]),
     param('status', str, [{ text: 'list: open (default) or all; update: set it', actions: MISSION_WRITES }]),
-    param('priority', num, [{ text: 'create/update', actions: MISSION_WRITES }]),
+    param('priority', num, [{ text: 'create, update', actions: MISSION_WRITES }]),
     param('autoSurfaceAudit', bool, [{ text: 'Automatic visual audit when UI files change (default true)', actions: MISSION_WRITES }]),
     param('autoVerify', bool, [{ text: 'Auto-evaluate completion criteria (default true)', actions: MISSION_WRITES }]),
     param('startMode', { type: 'string', enum: ['armed', 'held'] }, [{ text: 'held: no task is claimed until armed', actions: MISSION_WRITES }]),
@@ -731,11 +731,11 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('limit', num, [{ text: 'Default 5, max 50', actions: ['list_tasks'] }]),
     param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts', 'scheduling', 'dispatch'] } }, [{ text: 'Default workers+artifacts', actions: ['get_task'] }]),
     param('fullDescription', bool, [{ text: 'Full text', actions: ['get_task'] }]),
-    param('title', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
-    param('priority', num, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
-    param('description', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
-    param('kind', { type: 'string', enum: ['coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation'] }, [{ text: 'Shape of the work', actions: ['create_task'] }]),
-    param('feedback', str, [{ text: 'Why the plan is rejected', actions: ['reject_plan'] }]),
+    param('title', str, [{ text: 'create, update', actions: ['create_task', 'update_task'] }]),
+    param('priority', num, [{ text: 'create, update', actions: ['create_task', 'update_task'] }]),
+    param('description', str, [{ text: 'create, update', actions: ['create_task', 'update_task'] }]),
+    param('kind', { type: 'string', enum: ['coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation'] }, [{ text: 'Work shape', actions: ['create_task'] }]),
+    param('feedback', str, [{ text: 'Why rejected', actions: ['reject_plan'] }]),
   ],
   analytics: [
     param('workspaceId', str, [
@@ -744,10 +744,10 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     ]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces', 'procedure_digest'] }]),
     param('missionId', str, [{ text: 'Mission UUID', actions: ['explain', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
-    param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Window (default 7d)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_embedding_usage', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
-    param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger, including changeIntent warnings', actions: ['get_failure_analytics'] }]),
-    param('errorPrefix', str, [{ text: 'Literal reason/signature prefix', actions: ['get_failure_analytics'] }]),
-    param('capability', str, [{ text: 'Ledger rows, e.g. question_gate', actions: ['get_decision_stats'] }]),
+    param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Window (7d default)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_embedding_usage', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
+    param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger incl. changeIntent warnings', actions: ['get_failure_analytics'] }]),
+    param('errorPrefix', str, [{ text: 'Reason/signature prefix', actions: ['get_failure_analytics'] }]),
+    param('capability', str, [{ text: 'e.g. question_gate', actions: ['get_decision_stats'] }]),
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
