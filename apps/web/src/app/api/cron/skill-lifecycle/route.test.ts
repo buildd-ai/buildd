@@ -5,13 +5,15 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const DAY = 86_400_000;
 const ago = (d: number) => new Date(Date.now() - d * DAY).toISOString();
 
-let tables: { skills: any[]; started: string | null; schedules: any[]; active: string[] };
+let tables: { links?: any[]; skills: any[]; started: string | null; schedules: any[]; active: string[] };
 const executed: string[] = [];
 const dialect = new PgDialect();
 
 const mockExecute = mock(async (q: any) => {
   const text = dialect.sqlToQuery(q).sql;
   executed.push(text);
+  if (text.includes('FROM skill_spec_links')) return { rows: tables.links ?? [] };
+  if (text.includes('FROM workspace_skills WHERE enabled')) return { rows: tables.skills };
   if (text.includes('FROM workspace_skills s')) return { rows: tables.skills };
   if (text.includes('min(first_claimed_at)')) return { rows: [{ started: tables.started }] };
   if (text.includes('FROM task_schedules')) return { rows: tables.schedules };
@@ -87,5 +89,23 @@ describe('GET /api/cron/skill-lifecycle', () => {
     const body = await (await GET(req())).json();
     expect(body.archivable).toBe(0);
     expect(updates()).toHaveLength(0);
+  });
+
+  describe('confirmed spec links', () => {
+    const link = (status: string) => ({ skill_id: '00000000-0000-0000-0000-000000000001', spec_id: 'sp', spec_status: status });
+    beforeEach(() => { tables.started = ago(5); }); // young telemetry: nothing is archivable
+
+    it('no confirmed link: no proposal event', async () => {
+      await GET(req());
+      expect(inserts().join()).not.toContain('retirement_proposed');
+      expect(inserts()).toHaveLength(0);
+    });
+    it('a confirmed link to a retired spec writes a proposal event and never disables, even in acting mode', async () => {
+      process.env.SKILL_RETIREMENT_MODE = 'acting';
+      tables.links = [link('retired')];
+      await GET(req());
+      expect(inserts()).toHaveLength(1);
+      expect(updates()).toHaveLength(0);
+    });
   });
 });

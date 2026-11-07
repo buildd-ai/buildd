@@ -20,6 +20,7 @@ import {
   evaluateRetirement, resolveRetirementMode, type RetirementSkill,
 } from '@buildd/core/skill-retirement-rule';
 import { archiveSkill, type LifecycleEvent } from '@buildd/core/skill-lifecycle-events';
+import { proposeLinkRetirements } from '@buildd/core/skill-spec-links';
 
 export const maxDuration = 60;
 
@@ -112,10 +113,28 @@ async function run(report: CronReport): Promise<NextResponse> {
     events.push(out.event);
   }
 
+  // Confirmed links to a retired/superseded spec: a proposal for a person, in either
+  // mode. It never disables; a similarity or path score is not an input here.
+  const linkRes = await db.execute(sql`
+    SELECT l.skill_id, l.spec_id, sp.status AS spec_status
+    FROM skill_spec_links l JOIN specs sp ON sp.id = l.spec_id
+    WHERE sp.status IN ('retired', 'superseded')`);
+  const linkRows = rowsOf(linkRes);
+  if (linkRows.length > 0) {
+    const live = rowsOf(await db.execute(sql`
+      SELECT id, team_id, enabled, content_hash FROM workspace_skills WHERE enabled = true`));
+    events.push(...proposeLinkRetirements({
+      links: linkRows.map(r => ({ skillId: String(r.skill_id), specId: String(r.spec_id) })),
+      specs: linkRows.map(r => ({ id: String(r.spec_id), status: String(r.spec_status) })),
+      skills: live.map(r => ({ id: String(r.id), teamId: String(r.team_id), enabled: !!r.enabled, contentHash: String(r.content_hash) })),
+      now,
+    }));
+  }
+
   if (events.length > 0) {
     const values = sql.join(events.map(e => sql`(${e.skillId}::uuid, ${e.teamId}::uuid, ${e.action}, ${e.mode},
       ${e.reason}, ${e.previousEnabled}, ${e.previousContentHash}, ${e.createdAt.toISOString()}::timestamptz)`), sql`, `);
-    // Archive rows are always new facts; stale / would_archive are throttled per skill and action.
+    // Archive rows are always new facts; stale / would_archive / retirement_proposed are throttled per skill and action.
     await db.execute(sql`
       INSERT INTO skill_lifecycle_events
         (skill_id, team_id, action, mode, reason, previous_enabled, previous_content_hash, created_at)
