@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { approvalInboxView, type InboxRow } from '@/lib/specs/approval-inbox-view';
 import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
+import { inboxShownCount, INBOX_PAGE_SIZE } from '@/lib/specs/approval-inbox-paging';
 import { rowRevisionLine } from '@/lib/specs/approval-row-line';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
 import SpecShippedLine from '@/components/SpecShippedLine';
@@ -22,11 +23,15 @@ export const dynamic = 'force-dynamic';
  * is the Review all page (R-24), linked from here, where each still goes
  * under its own request.
  */
-export default async function SpecApprovalsPage() {
+export default async function SpecApprovalsPage({ searchParams }: { searchParams?: Promise<{ shown?: string | string[] }> }) {
   const user = await getCurrentUser();
   if (!user) redirect(`/app/auth/signin?callbackUrl=${encodeURIComponent(SPEC_APPROVAL_INBOX_PATH)}`);
-  const rows = await approvalInboxView(user.id);
-  const n = rows.length;
+  const allRows = await approvalInboxView(user.id);
+  const n = allRows.length;
+  // Bounded first screen: judgement rows sort first, so the page shows those before low-risk ones.
+  const shown = inboxShownCount((await searchParams)?.shown, n);
+  const rows = allRows.slice(0, shown);
+  const remaining = n - shown;
   // Judgement first, low-risk grouped after (approvalInboxView sorts them); low-risk never auto-approves.
   const judgement = rows.filter((r) => r.risk.level === 'judgement');
   const lowRisk = rows.filter((r) => r.risk.level !== 'judgement');
@@ -60,6 +65,18 @@ export default async function SpecApprovalsPage() {
                 {lowRisk.map((r) => <li key={r.specId}><InboxRowCard row={r} open={n === 1} /></li>)}
               </ul>
             </Disclosure>
+          </div>
+        ) : null}
+        {remaining > 0 ? (
+          <div className="flex flex-col items-start gap-1" data-testid="spec-approvals-show-more">
+            <p className="text-meta text-text-muted">Showing {shown} of {n}.</p>
+            <Link
+              href={`${SPEC_APPROVAL_INBOX_PATH}?shown=${shown + INBOX_PAGE_SIZE * 2}`}
+              scroll={false}
+              className="inline-flex min-h-11 items-center text-body text-accent-text underline-offset-2 hover:underline md:min-h-0"
+            >
+              Show {Math.min(remaining, INBOX_PAGE_SIZE * 2)} more
+            </Link>
           </div>
         ) : null}
       </div>
