@@ -40,6 +40,7 @@
     "./skill-usage": "./skill-usage.ts",
     "./skill-retirement-rule": "./skill-retirement-rule.ts",
     "./skill-lifecycle-events": "./skill-lifecycle-events.ts",
+    "./skill-spec-links": "./skill-spec-links.ts",
     "./task-requester": "./task-requester.ts",
     "./task-routing-preview": "./task-routing-preview.ts",
     "./model-tier-registry": "./model-tier-registry.ts",

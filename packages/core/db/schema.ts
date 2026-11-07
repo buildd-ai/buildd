@@ -4186,7 +4186,7 @@ export const skillLifecycleEvents = pgTable('skill_lifecycle_events', {
   id: uuid('id').primaryKey().defaultRandom(),
   skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).notNull(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
-  action: text('action').notNull().$type<'stale' | 'would_archive' | 'archived' | 'restored'>(),
+  action: text('action').notNull().$type<'stale' | 'would_archive' | 'archived' | 'restored' | 'retirement_proposed'>(),
   mode: text('mode').notNull().$type<'recording' | 'acting' | 'manual'>(),
   reason: text('reason'),
   previousEnabled: boolean('previous_enabled'),
@@ -4195,6 +4195,21 @@ export const skillLifecycleEvents = pgTable('skill_lifecycle_events', {
 }, (t) => ({
   skillIdx: index('skill_lifecycle_events_skill_idx').on(t.skillId, t.createdAt),
   teamIdx: index('skill_lifecycle_events_team_idx').on(t.teamId),
+}));
+
+// A skill-to-spec link a person explicitly confirmed. Suggestions are computed
+// on read and never stored; only a confirmation lands here. A link to a
+// retired/superseded spec lets the retirement sweep record a proposal, never a disable.
+export const skillSpecLinks = pgTable('skill_spec_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  confirmedBy: text('confirmed_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pairUnique: uniqueIndex('skill_spec_links_pair_unique').on(t.skillId, t.specId),
+  specIdx: index('skill_spec_links_spec_idx').on(t.specId),
 }));
 
 // Per-task routing outcome — captured on completion/failure so the calibration

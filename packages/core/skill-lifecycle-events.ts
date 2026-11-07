@@ -14,7 +14,7 @@ export interface LifecycleSkillRow {
 export interface LifecycleEvent {
   skillId: string;
   teamId: string;
-  action: 'stale' | 'would_archive' | 'archived' | 'restored';
+  action: 'stale' | 'would_archive' | 'archived' | 'restored' | 'retirement_proposed';
   mode: 'recording' | 'acting' | 'manual';
   reason: string | null;
   previousEnabled: boolean;
