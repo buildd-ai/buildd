@@ -4172,6 +4172,25 @@ export const skillUsage = pgTable('skill_usage', {
   teamIdx: index('skill_usage_team_idx').on(t.teamId),
 }));
 
+// Append-only audit of skill lifecycle changes (spec "Skill candidates, usage
+// telemetry and retirement"). 'stale' / 'would_archive' are what the recording
+// mode writes; 'archived' (skill disabled, never deleted) only in acting mode;
+// 'restored' whenever a skill goes enabled false -> true.
+export const skillLifecycleEvents = pgTable('skill_lifecycle_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  action: text('action').notNull().$type<'stale' | 'would_archive' | 'archived' | 'restored'>(),
+  mode: text('mode').notNull().$type<'recording' | 'acting' | 'manual'>(),
+  reason: text('reason'),
+  previousEnabled: boolean('previous_enabled'),
+  previousContentHash: text('previous_content_hash'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  skillIdx: index('skill_lifecycle_events_skill_idx').on(t.skillId, t.createdAt),
+  teamIdx: index('skill_lifecycle_events_team_idx').on(t.teamId),
+}));
+
 // Per-task routing outcome — captured on completion/failure so the calibration
 // cron can quantify whether the router's model pick matched reality.
 // See plans/buildd/smart-model-routing.md — feedback loop requires this table.

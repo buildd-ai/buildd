@@ -17,6 +17,7 @@ import { normalizeBackend } from '@/lib/normalize-backend';
 import { roleHas } from '@/lib/permissions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { scheduleSkillIndex } from '@/lib/skills/knowledge';
+import { isRestoration, recordRestored } from '@buildd/core/skill-lifecycle-events';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 async function authenticateRequest(req: NextRequest) {
@@ -268,6 +269,8 @@ export async function POST(
                 })
                 .where(eq(workspaceSkills.id, existing.id))
                 .returning();
+
+            if (isRestoration(existing.enabled, updated.enabled)) await recordRestored(updated);
 
             if (updated.isRole && isStorageConfigured()) {
                 const bundle = await packageRoleConfig(id, {

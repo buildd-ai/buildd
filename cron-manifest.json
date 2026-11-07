@@ -243,6 +243,14 @@
       "method": "GET"
     },
     {
+      "$comment": "Skill retirement sweep. Daily at 04:30 EST. Defaults to recording: only writes skill_lifecycle_events and never changes a skill; SKILL_RETIREMENT_MODE=acting disables (never deletes) skills unclaimed past the archive window, and nothing is archivable until skill_usage telemetry has run that long.",
+      "title": "Buildd: Skill Lifecycle",
+      "profile": "module:knowledge",
+      "path": "/api/cron/skill-lifecycle",
+      "schedule": "30 4 * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Weekly archive of completed tasks. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 06:00 into the working day (EST). (was 0 6 * * 1)",
       "title": "Buildd: Task Archive",
       "profile": "core",

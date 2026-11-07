@@ -38,6 +38,8 @@
     "./role-model-routing": "./role-model-routing.ts",
     "./role-visibility": "./role-visibility.ts",
     "./skill-usage": "./skill-usage.ts",
+    "./skill-retirement-rule": "./skill-retirement-rule.ts",
+    "./skill-lifecycle-events": "./skill-lifecycle-events.ts",
     "./task-requester": "./task-requester.ts",
     "./task-routing-preview": "./task-routing-preview.ts",
     "./model-tier-registry": "./model-tier-registry.ts",
