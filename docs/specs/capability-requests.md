@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-11-07
 summary: An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
-surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts, apps/web/src/lib/capability-hold.ts, apps/web/src/lib/capability-hold-store.ts]
+surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/capability-grants-filed.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts, apps/web/src/lib/capability-hold.ts, apps/web/src/lib/capability-hold-store.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
-keywords: [hold, wait window, withdraw, blockedByCapability, proceededWithout, connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts, apps/web/src/lib/capability-path-guidance.test.ts, apps/web/src/lib/capability-hold.test.ts, apps/web/src/lib/capability-hold-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/withdraw/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts]
+keywords: [access declared at filing, access_unmet, accessNeeds, role policy, connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard, hold, wait window, withdraw, blockedByCapability, proceededWithout]
+verified_by: [packages/core/__tests__/provider-access-ask.test.ts, packages/core/__tests__/task-access.test.ts, apps/web/src/lib/capability-grants-filed.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskFiledAccess.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts, apps/web/src/lib/capability-path-guidance.test.ts, apps/web/src/lib/capability-hold.test.ts, apps/web/src/lib/capability-hold-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/withdraw/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts]
 supersedes: []
 assertions:
   - id: agent-reach-tests
@@ -98,6 +98,17 @@ assertions:
   - id: access-needs-you-tests
     type: test_file
     path: apps/web/src/lib/capability-grants-needs-you.test.ts
+  - id: filed-access-gate
+    type: symbol
+    name: checkAccessGate
+    path: apps/web/src/lib/capability-grants-filed.ts
+  - id: filed-access-parse
+    type: symbol
+    name: parseTaskAccessInput
+    path: packages/core/token-delegation.ts
+  - id: filed-access-tests
+    type: test_file
+    path: apps/web/src/lib/capability-grants-filed.test.ts
 ---
 
 # Capability Requests and Grants
@@ -175,6 +186,60 @@ without naming a connector id or seeing a credential.
 - AC-5: WHEN a body names a connector id THEN the route returns 400.
 - AC-5a: GIVEN a running task with no delegation WHEN its agent asks for `buildd` `write` (or `read`) on a same-team workspace THEN the outcome is `pending_approval`; WHEN a person who reaches that workspace approves THEN the task's delegation grants `tasks:create` (`analytics:read` for read) there and a repeat ask is `existing`; WHEN revoked THEN the grant leaves the delegation.
 
+## Access declared at filing
+
+**Capability statement**: Whoever files a task MUST be able to declare the
+provider access its run needs, in `request_capability`'s vocabulary, so the
+run never asks mid-way; a person who decides access requests MUST be able to
+grant it with the task, and an agent MUST only be able to declare it.
+
+**Invariants**:
+- `create_task` (`POST /api/tasks`) takes `access: [{ provider, access, reason }]`
+  (at most 5, one per provider; `parseTaskAccessInput`). Only `access: read`:
+  a write is refused 400 and stays a per-call ask a person decides, as does
+  `model.inference` (it needs a budget) and provider `buildd` (that is
+  `filingTargets` + `delegation`). Nothing is dropped silently.
+- The declaration is always recorded as a need (`context.accessNeeds`). When
+  the filer is a person (dashboard, or their own OAuth session) holding
+  `manage_connectors` in the task's team, it is also a grant, stamped with who
+  and when, on the task's delegation (`tasks.delegation.access`); the answer
+  says `accessOutcome: granted`. Filed by anyone else (an agent, a key, a
+  member who cannot decide) it is a need only (`accessOutcome: needs_grant`).
+  The split mirrors `filingTargets` (a need) and `delegation` (a grant).
+- Claim: a declared need that no filed grant covers and no policy auto-grants
+  for the task's role (role rule, else team rule, else held) holds the task
+  `access_unmet` before any agent turn (`checkAccessGate`), never forced past.
+- A person grants from the task page ("Access filed with this task", Grant)
+  or the Home card for the held task, which names the task, the access and the
+  reason and opens that page. `PATCH /api/tasks/[id] { access }` sets the
+  granted list (`[]` takes it all back), needs `manage_connectors` and a
+  person (any key, an agent's included, is refused 403), and works while the
+  task is open. Taking a provider back revokes every grant its runs hold from
+  it (`filed_access_removed`).
+- Using it: a filed grant is a capability grant like any other, made per
+  worker. The run's first `request_capability` for that provider at read is
+  `auto_granted` (`filed_with_task`, `decidedBy: human`, the filer as
+  decider), including an ask that was already pending. `query_database` with
+  no grant yet makes that request itself, so the first query just works. Its
+  lease is the policy's maximum (24 h ceiling); after it lapses the next ask or
+  query renews it. Every request, grant and query is on the task's trail.
+- Scope: the task and its retries and continuations (the delegation is copied,
+  `inheritTaskDelegation`), nothing else: a child task the run files inherits
+  nothing.
+- Limits unchanged: a filed grant is never a write, never lifts a forbidding
+  rule, a catalog block or a denial, and the broker's read-only role, table
+  allowlist, row cap and timeouts apply as to any grant.
+- Precedence: a grant filed with the task, then a role-scoped policy rule,
+  then a team-wide rule, then the default. A role auto-grant is recorded as
+  `role_policy_auto_grant`; a team one keeps `policy_auto_grant`.
+
+**Acceptance criteria**:
+- AC-22: GIVEN a person who decides access files a task with `access: [{ provider: neon, access: read }]` WHEN its worker's first `query_database` runs THEN it finds a grant with no request made by the agent, and the task's trail shows the grant as filed with the task.
+- AC-23: GIVEN an agent files the same task THEN it is held `access_unmet`; WHEN a person grants it on the task page THEN it is claimable and the query succeeds.
+- AC-24: GIVEN a role rule auto-granting Neon read for `researcher` and a team rule asking a person WHEN a researcher task asks THEN it is auto-granted (role policy); WHEN a builder task asks THEN it is pending.
+- AC-25: WHEN `access` names a write THEN `create_task` answers 400 and nothing is stored.
+- AC-26: GIVEN a task filed with a grant WHEN it is retried THEN the retry's run gets the grant; another task of the same workspace does not.
+
 ## Holding the run
 
 **Capability statement**: While an agent's request waits on a person, the
@@ -233,12 +298,12 @@ without data it asked for MUST say what is missing.
   `capability.expire` rows).
 
 **Acceptance criteria**:
-- AC-22: GIVEN a worker with a pending request WHEN it calls `complete_task` THEN 400 `capability_request_pending` with three options, and nothing is written.
-- AC-23: GIVEN a worker waiting on a `database.query` request WHEN a person approves THEN the worker's queue carries the approval naming `query_database`, the next `query_database` succeeds, and the trail shows request, approval and query.
-- AC-24: GIVEN a pending request older than the team's wait window WHEN the sweep or the gate runs THEN the row is `expired` with `wait_window_elapsed` (not `task_terminal`), the worker is told, and its completion needs `blockedByCapability` naming the request.
-- AC-25: GIVEN a worker that withdrew its request WHEN it completes without `proceededWithout` THEN 400 `capability_outcome_unreported`; WITH it THEN the summary leads with what is missing.
-- AC-26: GIVEN a worker that made no request WHEN it completes THEN nothing here applies.
-- AC-27: GIVEN a `database.query` request carrying `sql` WHEN an admin opens Home THEN the card shows the SQL under who asked and why.
+- AC-27: GIVEN a worker with a pending request WHEN it calls `complete_task` THEN 400 `capability_request_pending` with three options, and nothing is written.
+- AC-28: GIVEN a worker waiting on a `database.query` request WHEN a person approves THEN the worker's queue carries the approval naming `query_database`, the next `query_database` succeeds, and the trail shows request, approval and query.
+- AC-29: GIVEN a pending request older than the team's wait window WHEN the sweep or the gate runs THEN the row is `expired` with `wait_window_elapsed` (not `task_terminal`), the worker is told, and its completion needs `blockedByCapability` naming the request.
+- AC-30: GIVEN a worker that withdrew its request WHEN it completes without `proceededWithout` THEN 400 `capability_outcome_unreported`; WITH it THEN the summary leads with what is missing.
+- AC-31: GIVEN a worker that made no request WHEN it completes THEN nothing here applies.
+- AC-32: GIVEN a `database.query` request carrying `sql` WHEN an admin opens Home THEN the card shows the SQL under who asked and why.
 
 ## Agent reach
 
@@ -280,6 +345,11 @@ or is forbidden; team members MUST be able to read it and MUST NOT change it.
 - `auto_grant` is refused (400) for write and admin, and a stored one is
   clamped to `ask_human`: writes always need a person.
 - `maxTtlSeconds` caps every grant the rule covers (hard ceiling 24 h).
+- A rule may be scoped to a role (`roleSlug`), a standing grant for that
+  role: it is more specific than a team-wide rule, so it wins
+  ([Access declared at filing](#access-declared-at-filing) for the full
+  precedence). A role auto-grant still records every request, grant and query
+  on the task's trail.
 - Reading needs team membership; changing needs `manage_connectors` (owners
   and admins by default). Both need a signed-in session: any bearer
   credential, including an admin key, is refused 403 `session_required`.
@@ -375,6 +445,11 @@ for, what they hold and the policy, without being able to change any of it.
   "Not available" with no Connect and no reason. Members see offered entries,
   requests, grants and policy read-only, and can request an app the team has
   not set up (`POST /api/connectors/catalog/request`, which pages the team).
+- The task's Access section says where each grant came from: filed with the
+  task, the role's standing policy, the team's policy, or asked mid-run and
+  approved by a person (`grantSourceOf`). Access filed with the task is listed
+  apart, granted or waiting on a person, with Grant and Take back for those
+  who decide.
 - Agent access is compact: a one-line summary and the requests waiting for a
   decision, never folded; what agents hold, history and policy open below it,
   and open by themselves when `?request=<id>` points there.
@@ -492,6 +567,7 @@ both, and visibility never depends on `tools/list_changed`.
 - Gateway rules (pure): `apps/web/src/lib/connector-gateway.ts`; db half: `apps/web/src/lib/connector-gateway-store.ts`; route: `apps/web/src/app/api/mcp/c/[connectorId]/route.ts`; grant check: `authorizeConnectorToolUse`
 - Runner: `buildMcpServerEntries` (`apps/runner/src/workers.ts`), `buildCodexMcpServers` / `gatewayConnectorsOnly` (`apps/runner/src/mcp-json.ts`), persistence in `apps/runner/src/worker-store.ts`
 - Rules (pure): `apps/web/src/lib/capability-grants.ts` (`parseCapabilityRequest`, `classifyToolRisk`, `parsePolicyRule`, `effectivePolicy`, `resolveCapabilityRequest`, `checkGrantUse`, `approvalRefusal`, `toModelInferenceGrant`)
+- Filed access: rules `packages/core/token-delegation.ts` (`parseTaskAccessInput`, `readTaskAccessGrants`, `findAccessGaps`); gate, grant write and Home card `apps/web/src/lib/capability-grants-filed.ts` (`checkAccessGate`, `setTaskFiledAccess`, `filedAccessNeedsYouRead`), wired through `apps/web/src/modules.ts` (`FILED_ACCESS`); task page `TaskFiledAccess.tsx`
 - Store: `apps/web/src/lib/capability-grants-store.ts` (`requestCapability`, `decideCapabilityRequest`, `authorizeCapabilityUse`, `capabilityGrantSource`, `listTeamRequests`, `loadPolicyRules`)
 - Authority: `apps/web/src/lib/capability-grants-auth.ts`
 - Tables: `capabilityPolicies`, `capabilityGrants` in `packages/core/db/schema.ts`

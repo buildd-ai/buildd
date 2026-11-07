@@ -32,6 +32,7 @@ export const CLAIM_HOLD_PHRASES: Readonly<Record<ClaimHoldReason, string>> = {
   codex_single_flight: 'Codex runs one task at a time and is busy',
   role_env_unsatisfied: 'its role needs settings the runner does not have',
   delegation_unmet: 'it needs access to another workspace that nobody has granted yet',
+  access_unmet: 'it was filed needing provider access that nobody has granted yet',
   ordered_behind: 'it waits for earlier work in the queue',
   managed_concurrency: 'the managed runners are all busy',
   managed_runner_hours: 'the managed runner hours are used up',

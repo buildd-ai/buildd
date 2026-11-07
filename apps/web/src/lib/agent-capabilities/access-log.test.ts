@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildAgentAccessReport, reasonText, summarizeAccess, type CapabilityRow } from './access-log';
+import { buildAgentAccessReport, grantSourceOf, reasonText, summarizeAccess, type CapabilityRow } from './access-log';
 
 const T0 = Date.parse('2026-10-05T12:00:00.000Z');
 const row = (min: number, o: Partial<CapabilityRow>): CapabilityRow => ({
@@ -8,6 +8,22 @@ const row = (min: number, o: Partial<CapabilityRow>): CapabilityRow => ({
   reasonCode: null, expiresAt: null, sideEffect: null, ...o,
 });
 const REPOS = new Map([['row-1', 'acme/widget']]);
+
+describe('where a grant came from', () => {
+  const req = (reasonCode: string, decision = 'allowed') => row(0, { capability: 'capability.request', resource: 'grant:g1', reasonCode, decision });
+  it('filed with the task, a role policy, the team policy, or asked mid-run', () => {
+    expect(grantSourceOf(req('auto_granted:filed_with_task'))).toBe('filed');
+    expect(grantSourceOf(req('auto_granted:role_policy_auto_grant'))).toBe('role_policy');
+    expect(grantSourceOf(req('auto_granted:policy_auto_grant'))).toBe('team_policy');
+    expect(grantSourceOf(req('auto_granted:default_auto_grant'))).toBe('team_policy');
+    expect(grantSourceOf(row(0, { capability: 'capability.approve', resource: 'grant:g1', reasonCode: 'approved_by_human' }))).toBe('asked');
+  });
+  it('nothing for a pending ask, a refusal or a use', () => {
+    expect(grantSourceOf(req('pending_approval:policy_ask_human', 'refused'))).toBeNull();
+    expect(grantSourceOf(row(0, { capability: 'database.query' }))).toBeNull();
+    expect(summarizeAccess([req('auto_granted:filed_with_task')])[0].grantSource).toBe('filed');
+  });
+});
 
 describe('summarizeAccess', () => {
   it('folds hourly renewals of the same grant into one item with a count', () => {

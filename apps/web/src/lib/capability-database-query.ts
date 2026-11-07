@@ -304,6 +304,9 @@ export interface QueryPrincipal {
   workspaceId: string;
   taskId: string;
   workerId: string;
+  /** The run's own account and proof, when known: a grant filed with the task is recorded under them. */
+  accountId?: string;
+  via?: 'dispatch' | 'runner_key' | 'task_token' | 'worker_account';
 }
 
 export type GrantLookup =

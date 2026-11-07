@@ -290,6 +290,8 @@ export interface WaitingOnYouRawItem {
   failureMessage?: string;
   /** kind === 'access' — a pending capability request the escalation gate gave to a person (lib/capability-grants-needs-you.ts). */
   accessRequestId?: string;
+  /** kind === 'access' without a request: the task held on access declared when it was filed. */
+  accessFiledTaskId?: string;
   /** kind === 'access' — what the agent asked to do, in plain words ("Query Axiom · production"). */
   accessAsk?: string;
   /** kind === 'access' — the lease the agent asked for; approval can only narrow it. */
@@ -1603,8 +1605,10 @@ export function buildActionQueue(
       }
     } else if (item.kind === 'access') {
       // One card per request: the store already keeps one open row per (worker, target, exact ask).
-      const key = `access:${item.accessRequestId}`;
-      if (item.accessRequestId && !map.has(key)) {
+      // A task held at claim on access declared when it was filed has no request
+      // yet (lib/capability-grants-filed.ts): one card per task, granted on its page.
+      const key = item.accessRequestId ? `access:${item.accessRequestId}` : `access-filed:${item.accessFiledTaskId}`;
+      if ((item.accessRequestId || item.accessFiledTaskId) && !map.has(key)) {
         map.set(key, {
           subjectKey: key,
           chip: 'ACCESS',

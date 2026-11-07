@@ -55,8 +55,29 @@ export interface AccessItem {
    * run ended, or the request closed. Plain words for why; null otherwise.
    */
   closed: string | null;
+  /**
+   * Where a grant came from, for a request that was granted or an approval:
+   * filed with the task, a role's standing policy, the team's policy, or asked
+   * for mid-run and approved by a person. Null for anything else.
+   */
+  grantSource?: GrantSource | null;
   /** A database.query row: the SQL as sent, rows returned and time taken. Never the rows themselves. */
   query?: { sql: string; sqlTruncated: boolean; rowCount: number | null; durationMs: number | null; truncated: boolean } | null;
+}
+
+import type { GrantSource } from './grant-source';
+export { GRANT_SOURCE_TEXT, type GrantSource } from './grant-source';
+
+/** Pure: where a capability row's grant came from, read from its reason code. */
+export function grantSourceOf(row: Pick<CapabilityRow, 'capability' | 'decision' | 'reasonCode'>): GrantSource | null {
+  if (row.decision === 'refused') return null;
+  if (row.capability === 'capability.approve') return 'asked';
+  if (row.capability !== 'capability.request') return null;
+  const code = row.reasonCode ?? '';
+  if (code === 'auto_granted:filed_with_task') return 'filed';
+  if (code === 'auto_granted:role_policy_auto_grant') return 'role_policy';
+  if (code === 'auto_granted:policy_auto_grant' || code === 'auto_granted:default_auto_grant') return 'team_policy';
+  return null;
 }
 
 /** Where each request this task made stands now, read from its grant row and run. */
@@ -193,6 +214,7 @@ export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: Reado
       grantId: row.capability.startsWith('capability.') && r0(row).startsWith('grant:') ? r0(row).slice(6) : null,
       pending: row.capability === 'capability.request' && (row.reasonCode ?? '').startsWith('pending_approval:'),
       closed: null,
+      grantSource: grantSourceOf(row),
       ...(row.capability === 'database.query' ? { query: queryDetail(row) } : {}),
     });
   }

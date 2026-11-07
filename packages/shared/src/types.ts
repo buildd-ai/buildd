@@ -2117,6 +2117,7 @@ export interface ClaimDiagnostics {
      * before any agent turn; not forceable. See claim/delegation-gate.ts.
      */
     delegation_unmet?: number;
+    access_unmet?: number;
     /**
      * Commercial entitlement, managed-runner claims only (accounts.managedRunner):
      * the team is at its plan's parallel managed-run limit. Not an error; the

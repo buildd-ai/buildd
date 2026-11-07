@@ -149,6 +149,13 @@ export interface TaskDelegation extends ScheduleDelegation {
   inheritedFromTaskId?: string | null;
   /** The approved `tasks:create` capability requests that added grants. */
   capabilityGrantIds?: string[];
+  /**
+   * Provider access a person granted with the task (filed with it, or granted
+   * from the task page before or while it runs): `[{ provider, access: read }]`.
+   * Each run of the task, and each retry, gets it as a capability grant on its
+   * first ask or query without anyone being asked again.
+   */
+  access?: TaskAccessGrant[];
 }
 
 /**
@@ -195,10 +202,12 @@ export function removeDelegationCapability(
 export function inheritTaskDelegation(parent: { id: string; delegation?: unknown } | null | undefined): TaskDelegation | null {
   if (!parent?.delegation) return null;
   const grants = readScheduleDelegation(parent.delegation);
-  if (!grants.length) return null;
+  const access = readTaskAccessGrants(parent.delegation);
+  if (!grants.length && !access.length) return null;
   const d = parent.delegation as Partial<TaskDelegation>;
   return {
     grants,
+    ...(access.length ? { access } : {}),
     grantedByUserId: typeof d.grantedByUserId === 'string' ? d.grantedByUserId : null,
     grantedByAccountId: typeof d.grantedByAccountId === 'string' ? d.grantedByAccountId : null,
     grantedAt: typeof d.grantedAt === 'string' ? d.grantedAt : new Date().toISOString(),
@@ -236,6 +245,139 @@ export function readFilingTargets(context: unknown): string[] {
   const raw = (context as Record<string, unknown>)[FILING_TARGETS_CONTEXT_KEY];
   const parsed = parseFilingTargets(raw);
   return parsed.ok ? parsed.targets : [];
+}
+
+// ── Access declared at filing ────────────────────────────────────────────────
+//
+// The same split for provider access (request_capability's vocabulary:
+// `{ provider, access, reason }`, e.g. neon/read). Whoever files the task
+// declares what it needs (`context.accessNeeds`: a need, harmless anywhere,
+// forging one only holds your own task). A person who may decide access
+// requests grants it (`tasks.delegation.access`): when filing, or from the task
+// page. A need no grant and no auto-granting policy covers holds the task at
+// claim (`access_unmet`). Only reads: a write always goes through a person on
+// the run's own request, never in advance.
+
+export const ACCESS_NEEDS_CONTEXT_KEY = 'accessNeeds';
+export const TASK_ACCESS_MAX = 5;
+const ACCESS_PROVIDER_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+export interface TaskAccessNeed {
+  provider: string;
+  access: 'read';
+  reason: string | null;
+}
+
+export interface TaskAccessGrant extends TaskAccessNeed {
+  grantedByUserId: string;
+  /** ISO timestamp. */
+  grantedAt: string;
+}
+
+export type TaskAccessParse =
+  | { ok: true; needs: TaskAccessNeed[] }
+  | { ok: false; error: string };
+
+/**
+ * Parse a filed `access` list. A write, buildd's own capabilities (use
+ * filingTargets / delegation) and model.inference (needs a budget, asked per
+ * run) are refused, never dropped.
+ */
+export function parseTaskAccessInput(input: unknown): TaskAccessParse {
+  if (input === undefined || input === null) return { ok: true, needs: [] };
+  if (!Array.isArray(input)) return { ok: false, error: 'access must be an array of { provider, access, reason }' };
+  if (input.length > TASK_ACCESS_MAX) return { ok: false, error: `access may name at most ${TASK_ACCESS_MAX} entries` };
+  const out: TaskAccessNeed[] = [];
+  for (const e of input) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) return { ok: false, error: 'each access entry must be { provider, access, reason }' };
+    const { provider, access, reason, ...rest } = e as Record<string, unknown>;
+    if (Object.keys(rest).length) return { ok: false, error: `access entry has unknown field(s): ${Object.keys(rest).join(', ')}` };
+    const p = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+    if (p === 'model.inference') {
+      return { ok: false, error: 'model.inference is not granted at filing: the run asks with request_capability and a budget' };
+    }
+    if (!ACCESS_PROVIDER_RE.test(p)) return { ok: false, error: 'access.provider must be a catalog slug (e.g. neon)' };
+    if (p === 'buildd') return { ok: false, error: 'buildd access to another workspace is declared with filingTargets and granted with delegation' };
+    if (access === 'write') {
+      return { ok: false, error: `a write is never granted at filing: the run asks request_capability { provider: "${p}", access: "write" } and a person decides that one call` };
+    }
+    if (access !== 'read') return { ok: false, error: 'access.access must be read' };
+    if (reason !== undefined && reason !== null && typeof reason !== 'string') return { ok: false, error: 'access.reason must be a string' };
+    const r = typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 500) : null;
+    if (out.some(x => x.provider === p)) continue;
+    out.push({ provider: p, access: 'read', reason: r });
+  }
+  return { ok: true, needs: out };
+}
+
+/** Read declared access needs defensively from a task's context. */
+export function readAccessNeeds(context: unknown): TaskAccessNeed[] {
+  if (!context || typeof context !== 'object') return [];
+  const parsed = parseTaskAccessInput((context as Record<string, unknown>)[ACCESS_NEEDS_CONTEXT_KEY]);
+  return parsed.ok ? parsed.needs : [];
+}
+
+/** Read the access a person granted with the task; anything malformed grants nothing. */
+export function readTaskAccessGrants(delegation: unknown): TaskAccessGrant[] {
+  if (!delegation || typeof delegation !== 'object') return [];
+  const raw = (delegation as { access?: unknown }).access;
+  if (!Array.isArray(raw)) return [];
+  const out: TaskAccessGrant[] = [];
+  for (const g of raw.slice(0, TASK_ACCESS_MAX)) {
+    if (!g || typeof g !== 'object') continue;
+    const { provider, access, reason, grantedByUserId, grantedAt } = g as Record<string, unknown>;
+    if (typeof provider !== 'string' || !ACCESS_PROVIDER_RE.test(provider) || provider === 'buildd') continue;
+    if (access !== 'read' || typeof grantedByUserId !== 'string' || !grantedByUserId) continue;
+    out.push({ provider, access: 'read', reason: typeof reason === 'string' ? reason : null, grantedByUserId, grantedAt: typeof grantedAt === 'string' ? grantedAt : new Date(0).toISOString() });
+  }
+  return out;
+}
+
+/** Does the task's filed access cover a read of this provider? Never a write. */
+export function taskAccessCovers(grants: readonly TaskAccessGrant[], provider: string, access: 'read' | 'write'): TaskAccessGrant | null {
+  if (access !== 'read') return null;
+  return grants.find(g => g.provider === provider && g.access === 'read') ?? null;
+}
+
+/** Stamp a person's grant of these needs (who and when). */
+export function stampTaskAccess(needs: readonly TaskAccessNeed[], userId: string, at: Date = new Date()): TaskAccessGrant[] {
+  return needs.map(n => ({ ...n, grantedByUserId: userId, grantedAt: at.toISOString() }));
+}
+
+/**
+ * A task's delegation with its filed access replaced (`[]` clears it), keeping
+ * every workspace grant. Null when nothing is left.
+ */
+export function withTaskAccess(current: TaskDelegation | null | undefined, access: readonly TaskAccessGrant[], by: { userId: string; at?: Date }): TaskDelegation | null {
+  const grants = readScheduleDelegation(current);
+  if (!grants.length && !access.length) return null;
+  const base: TaskDelegation = current
+    ? { ...current, grants }
+    : { grants, grantedByUserId: by.userId, grantedByAccountId: null, grantedAt: (by.at ?? new Date()).toISOString() };
+  const next: TaskDelegation = { ...base };
+  if (access.length) next.access = [...access];
+  else delete next.access;
+  return next;
+}
+
+/**
+ * The declared needs nothing covers: no filed grant, and team policy (role
+ * rules included) would not auto-grant the read when the run asks. Pure: the
+ * caller says whether policy auto-grants a provider for this task's role.
+ */
+export function findAccessGaps(
+  needs: readonly TaskAccessNeed[],
+  grants: readonly TaskAccessGrant[],
+  policyAutoGrants: (provider: string) => boolean,
+): TaskAccessNeed[] {
+  return needs.filter(n => !taskAccessCovers(grants, n.provider, n.access) && !policyAutoGrants(n.provider));
+}
+
+/** One plain sentence for the claim refusal and the gate ledger. */
+export function describeAccessGaps(gaps: readonly TaskAccessNeed[]): string {
+  return gaps
+    .map(g => `${g.provider} ${g.access}${g.reason ? ` ("${g.reason.slice(0, 120)}")` : ''}: declared when the task was filed, not granted yet`)
+    .join('; ');
 }
 
 // ── Claim pre-flight ─────────────────────────────────────────────────────────
