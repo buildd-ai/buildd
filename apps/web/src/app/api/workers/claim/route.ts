@@ -118,7 +118,7 @@ import {
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
-import { VISUAL_AUDIT_ROUTES, CLAIM_LEARNING_HOOKS } from '@/modules';
+import { VISUAL_AUDIT_ROUTES, CLAIM_LEARNING_HOOKS, FILED_ACCESS } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
@@ -1175,6 +1175,7 @@ export async function POST(req: NextRequest) {
     codex_single_flight: 0,
     role_env_unsatisfied: 0,
     delegation_unmet: 0,
+    access_unmet: 0,
     ordered_behind: 0,
     managed_concurrency: 0,
     managed_runner_hours: 0,
@@ -1568,6 +1569,14 @@ export async function POST(req: NextRequest) {
       return { gaps: [], detail: 'the delegation pre-flight could not run; it is retried on the next poll' };
     });
     if (delegationGap) { deferTask(task, 'delegation_unmet', { gaps: delegationGap.gaps, message: delegationGap.detail }); continue; }
+    // Provider access declared at filing that no person granted and no policy
+    // auto-grants: held before any agent turn, never forced past
+    // (lib/capability-grants-filed.ts).
+    const accessGap = await FILED_ACCESS.checkGate(task as any).catch((err) => {
+      console.warn(`[claim] access pre-flight failed for task ${task.id}; holding it:`, (err as Error)?.message ?? err);
+      return { gaps: [], detail: 'the access pre-flight could not run; it is retried on the next poll' };
+    });
+    if (accessGap) { deferTask(task, 'access_unmet', { gaps: accessGap.gaps, message: accessGap.detail }); continue; }
 
     // Runner pin: a `runner:<name>` entry in requiredCapabilities restricts the
     // task to that one runner; every other runner defers it. The name may be the

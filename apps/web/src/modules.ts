@@ -333,6 +333,18 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
  */
 export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
 
+/**
+ * The connectors module's access declared at filing
+ * (lib/capability-grants-filed.ts): the claim gate (`access_unmet`), a person's
+ * grant from the task page, and Home's card for a task held on it. Lazy.
+ */
+type FiledAccess = typeof import('@/lib/capability-grants-filed');
+export const FILED_ACCESS = {
+  checkGate: async (...a: Parameters<FiledAccess['checkAccessGate']>) => (await import('@/lib/capability-grants-filed')).checkAccessGate(...a),
+  set: async (...a: Parameters<FiledAccess['setTaskFiledAccess']>) => (await import('@/lib/capability-grants-filed')).setTaskFiledAccess(...a),
+  needsYou: async (...a: Parameters<FiledAccess['filedAccessNeedsYouRead']>) => (await import('@/lib/capability-grants-filed')).filedAccessNeedsYouRead(...a),
+};
+
 /** Open schedule move proposals, for the people who may answer them (lib/schedule-move-needs-you.ts). */
 export const SCHEDULE_MOVE_NEEDS_YOU = async (workspaceIds: readonly string[]) =>
   (await import('@/lib/schedule-move-needs-you')).scheduleMoveNeedsYouRead(workspaceIds);
