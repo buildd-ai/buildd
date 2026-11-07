@@ -33,9 +33,11 @@ const set = isCredentialSet;
  * in the env beats a subscription token, so it decides first.
  */
 export function claudeCostBasis(
-  modelEnv: Pick<ModelEnvResult, 'env' | 'endpoint' | 'machineLoginUsed'>,
+  modelEnv: Pick<ModelEnvResult, 'env' | 'endpoint' | 'machineLoginUsed' | 'local'>,
 ): RunnerCostBasis {
   const env = modelEnv.env;
+  // This machine's own model server: nothing is charged per token.
+  if (modelEnv.local) return 'virtual';
   // A team endpoint or a per-machine provider is per-token traffic.
   if (modelEnv.endpoint === 'team' || modelEnv.endpoint === 'custom') return 'real';
   if (CLOUD_PROVIDER_SWITCHES.some(k => set(env[k]) && env[k] !== '0')) return 'real';
@@ -66,7 +68,10 @@ export function codexCostBasis(input: {
   /** Parsed `$CODEX_HOME/auth.json`, or null when there is none. */
   authJson: Record<string, unknown> | null;
   envApiKey?: string;
+  /** The run goes to this machine's local model endpoint (its OPENAI_API_KEY is a placeholder). */
+  local?: boolean;
 }): RunnerCostBasis {
+  if (input.local) return 'virtual';
   if (input.teamEndpoint) return 'real';
   const kind = codexAuthJsonKind(input.authJson);
   if (kind === 'api_key') return 'real';
