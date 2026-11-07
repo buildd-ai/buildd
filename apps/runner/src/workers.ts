@@ -91,8 +91,9 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { resolveManifest, runProvisionGate } from './env-verify';
 import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { applyBashTimeoutEnv, createVerifyGuardHook } from './verify-guard';
+import { deriveSpecCriterionIds } from './self-review-checklist';
 import { createSelfReviewGuardHook, resolveSelfReviewMode } from './self-review-guard';
-import { createStagedSelfReviewHook, resolveStagedConfig, noteStagedToolCall } from './staged-self-review';
+import { stagedSelfReviewPreToolUse, createStagedRecorder, resolveStagedConfig, stagedGitConfig } from './staged-self-review';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
@@ -4578,7 +4579,9 @@ export class WorkerManager {
         toolSearchDisabled: worker.toolSearchDisabled,
         budgetModel: bundledTierEntry('budget').model,
         runnerLocalAllowed,
+        localModel: this.config.localModel,
       });
+      const localModel = modelEnv.local ? this.config.localModel : undefined;
       // Preflight: a Codex task whose team agent model endpoint has no
       // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
       // fail clearly rather than silently falling back to local Codex auth as
@@ -4713,7 +4716,8 @@ export class WorkerManager {
           : undefined;
 
         // Use this machine's Codex login unless personal_only forbids it.
-        const machineCodexAuth = localCodexAuthPath();
+        // A local model needs no login; the machine's own is never linked in.
+        const machineCodexAuth = localModel ? null : localCodexAuthPath();
         const codexLogin = decideCodexLogin({
           serverCredentialType: worker.codexCredential?.credentialType ?? null,
           localAuthPath: machineCodexAuth,
@@ -4729,7 +4733,7 @@ export class WorkerManager {
           linkMachineCodexAuth(_ch, machineCodexAuth);
           console.log(`[Worker ${worker.id}] Codex login: this machine's own (codex login on the runner host)${worker.codexCredential ? '; the server-delivered Codex login is not used' : ''}`);
           sessionLog(worker.id, 'info', 'codex_login_source', `source=machine${worker.codexCredential ? ' server_login=skipped' : ''}`, task.id);
-        } else if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
+        } else if (!localModel && worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
           // A: API key credential — inject as env var. Stable home still needed for
           // config.toml (MCP servers, reasoning effort) but auth.json is not used.
           const { codexHome: home } = ensureStableCodexHome(worker.id, codexIsolatedPath);
@@ -4749,6 +4753,7 @@ export class WorkerManager {
             teamEndpoint: modelEnv.endpoint === 'team',
             authJson,
             envApiKey: cleanEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+            local: modelEnv.local,
           });
           sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
           worker.route = codexRunRoute({
@@ -4759,6 +4764,7 @@ export class WorkerManager {
             openAiBaseUrl: modelEnv.endpoint === 'team' ? undefined : cleanEnv.OPENAI_BASE_URL,
             codexLogin,
             credentialScope: worker.credentialDecision?.scope,
+            local: modelEnv.local,
           });
           if (worker.route) sessionLog(worker.id, 'info', 'run_route', `bucket=${worker.route.bucket} provider=${worker.route.provider} owner=${worker.route.owner}`, task.id);
         }
@@ -4821,6 +4827,7 @@ export class WorkerManager {
           workerId: worker.id,
           bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
           writableRoots: worktreeGitWritableRoots(cwd),
+          ...(localModel ? { localModel } : {}),
           ...(codexEffort ? { effort: codexEffort } : {}),
           ...(codexAdditionalServers.length > 0 ? { additionalMcpServers: codexAdditionalServers } : {}),
         });
@@ -5250,7 +5257,9 @@ export class WorkerManager {
         // Through a team endpoint the wire name may be an alias (§5); the
         // native id stays what is recorded and priced.
         ...(() => {
-          const wire = endpointSessionModels(teamEndpointApplied ? worker.modelEndpoint : undefined, { model: sessionModel, fallbackModel });
+          const wire = localModel
+            ? { model: localModel.model, fallbackModel: undefined as string | undefined }
+            : endpointSessionModels(teamEndpointApplied ? worker.modelEndpoint : undefined, { model: sessionModel, fallbackModel });
           return { model: wire.model, ...(wire.fallbackModel ? { fallbackModel: wire.fallbackModel } : {}) };
         })(),
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
@@ -5515,7 +5524,7 @@ export class WorkerManager {
       // Attach permission hook (blocks dangerous commands, allows safe bash),
       // tool activity hook (clears toolInFlight after each tool),
       // and lifecycle hooks (TaskCompleted, SubagentStart, SubagentStop).
-      const stagedCfg = resolveStagedConfig(gitConfig as any, String((task as any).id ?? ''));
+      const stagedCfg = resolveStagedConfig(stagedGitConfig(gitConfig as any, (task as any).workspace?.gitConfig) as any, String((task as any).id ?? ''));
       queryOptions.hooks = {
         PreToolUse: [
           ...(readJailPrefixes
@@ -5544,25 +5553,17 @@ export class WorkerManager {
           // Self-review recording (self-review-guard.ts): after the verify guard,
           // so its refusal wins. Records only, never denies; off by default.
           ...(!isCodexTask && stagedCfg.mode !== 'acting'
-            ? [{ hooks: [createSelfReviewGuardHook({ worker, task: task as any, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
+            ? [{ hooks: [createSelfReviewGuardHook({ worker, task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task), taskClass: (task as any).taskClass ?? null, mode: (task as any).mode ?? null }, mode: resolveSelfReviewMode(gitConfig as any), addMilestone: m => this.addMilestone(worker, m) })] }]
             : []),
           // Staged self-review acting mode (staged-self-review.ts): treatment
           // arm is denied once with an intent checklist; control and
           // recording only record. Replaces the recording-only hook above.
-          ...(!isCodexTask && stagedCfg.mode === 'acting'
-            ? [{ hooks: [createStagedSelfReviewHook({
-                worker, task: task as any, mode: stagedCfg.mode, arm: stagedCfg.arm, propensity: stagedCfg.propensity,
-                record: e => {
-                  // Full structured record rides resultMeta.stagedSelfReview; the
-                  // milestone is only the short human-readable pointer.
-                  (worker.stagedSelfReview ??= []).push({ ...e, ts: Date.now() });
-                  this.addMilestone(worker, { type: 'status', label: `Self-review: ${e.outcome} (${e.arm}, ${e.mode})`, ts: Date.now() });
-                },
-              })] }]
-            : []),
-          ...(!isCodexTask && stagedCfg.mode === 'acting'
-            ? [{ hooks: [async (input: any) => { if (input?.hook_event_name === 'PreToolUse' && input.tool_name) noteStagedToolCall(worker.id, input.tool_name); return {}; }] }]
-            : []),
+          ...stagedSelfReviewPreToolUse({
+            cfg: stagedCfg, isCodexTask, worker,
+            task: { ...(task as any), specCriterionIds: deriveSpecCriterionIds(task), taskClass: (task as any).taskClass ?? null, mode: (task as any).mode ?? null },
+            record: createStagedRecorder(worker, m => this.addMilestone(worker, m)),
+            hookOverrides: { turns: () => worker.assistantTurns },
+          }),
           // Deps gate (cloud): while the install runs behind the session,
           // hold the Bash commands that need it. After the permission hook,
           // so a command it refuses never waits. See deps-gate.ts.
@@ -5802,9 +5803,11 @@ export class WorkerManager {
       // account"). The runner's configured model is Claude by default, so for Codex
       // tasks strip a Claude model id and let Codex use the account default (or a
       // genuine codex model id passes through). Claude tasks are unaffected.
-      const backendModel = isCodexTask && /^claude/i.test(sessionModel || '')
-        ? undefined
-        : sessionModel;
+      const backendModel = localModel
+        ? localModel.model
+        : isCodexTask && /^claude/i.test(sessionModel || '')
+          ? undefined
+          : sessionModel;
 
       emitPhase('session_start');
       const backendStream = backend.runStreamed({
@@ -7195,6 +7198,7 @@ export class WorkerManager {
     }
 
     if (msg.type === 'assistant') {
+      worker.assistantTurns = (worker.assistantTurns ?? 0) + 1;
       // A steering message this reply answers has been read (instruction-acks.ts).
       this.acknowledgeInstructions(worker.id, this.instructionAcks.onAssistant(worker.id, msg as any));
 

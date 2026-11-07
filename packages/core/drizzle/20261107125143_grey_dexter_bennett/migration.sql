@@ -1,0 +1,1 @@
+ALTER TABLE "teams" ADD COLUMN "access_wait_window_seconds" integer;

@@ -14,7 +14,7 @@ import { MoveToTeamButton } from '@/components/MoveToTeamDialog';
 import { collectPolicySuggestions } from '@/lib/policy-suggestions';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { parseMergePolicyRead, resolvePolicy } from '@/lib/merge-policy';
 import { roleHas } from '@/lib/permissions';
 import { loadWorkspaceRepoFacts, memberHasRepoAccess } from '@/lib/member-repo-access';
 import { getRepoAccessView } from '@/lib/github-repo-access-store';
@@ -252,7 +252,13 @@ export default async function WorkspaceSettingsPage({
           <MergePolicyEditor
             workspaceId={workspaceId}
             workspaceName={workspace.name}
-            initial={resolvePolicy(workspace)}
+            initial={{
+              ...resolvePolicy(workspace),
+              // The stored review-by-risk setting, on or off: resolvePolicy only attaches it to the PRs it governs.
+              ...(workspace.gitConfig?.mergePolicy && parseMergePolicyRead(workspace.gitConfig.mergePolicy).reviewByRisk
+                ? { reviewByRisk: parseMergePolicyRead(workspace.gitConfig.mergePolicy).reviewByRisk }
+                : {}),
+            }}
             policyConfig={policyConfig}
             policySuggestions={policySuggestions}
             roles={roles.map(r => ({ slug: r.slug, name: r.name }))}

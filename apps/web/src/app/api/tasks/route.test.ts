@@ -250,6 +250,9 @@ mock.module('@/lib/pusher', () => ({
   },
 }));
 
+// Team roles for permission checks: none unless a test says so.
+const mockTeamMembersFindMany = mock(async (..._a: any[]): Promise<any[]> => []);
+
 // Mock database
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -261,6 +264,9 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: mockMissionsFindFirst },
       workers: { findFirst: mockWorkersFindFirst },
       workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst, findMany: mockWorkspaceSkillsFindMany },
+      // Team roles, for manage_connectors (lib/permissions.ts can()).
+      teamMembers: { findMany: mockTeamMembersFindMany },
+      teams: { findFirst: async () => null },
     },
     insert: mockTasksInsert,
     update: mockTasksUpdate,
@@ -1061,6 +1067,40 @@ describe('POST /api/tasks', () => {
       arrange({ [OWN]: 'team-1', [TARGET]: 'team-2' });
       const response = await fileAsPerson({ delegation: { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] } });
       expect(response.status).toBe(400);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('access filed by a person who decides access: granted on the task, and recorded as a need', async () => {
+      arrange({ [OWN]: 'team-1' });
+      mockTeamMembersFindMany.mockResolvedValueOnce([{ teamId: 'team-1', role: 'admin' }]);
+      const values = mock((_v: any) => ({ returning: mock(() => [created]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileAsPerson({ access: [{ provider: 'neon', access: 'read', reason: 'count failed runs' }] });
+      expect(response.status).toBe(200);
+      expect((await response.json()).accessOutcome).toBe('granted');
+      const row = values.mock.calls[0][0];
+      expect(row.delegation.access).toMatchObject([{ provider: 'neon', access: 'read', reason: 'count failed runs', grantedByUserId: 'user-owner' }]);
+      expect(row.context.accessNeeds).toEqual([{ provider: 'neon', access: 'read', reason: 'count failed runs' }]);
+    });
+
+    it('access filed by someone who cannot decide access: a need only, held until granted', async () => {
+      arrange({ [OWN]: 'team-1' });
+      mockTeamMembersFindMany.mockResolvedValueOnce([{ teamId: 'team-1', role: 'member' }]);
+      const values = mock((_v: any) => ({ returning: mock(() => [created]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileAsPerson({ access: [{ provider: 'neon', access: 'read' }] });
+      expect(response.status).toBe(200);
+      expect((await response.json()).accessOutcome).toBe('needs_grant');
+      const row = values.mock.calls[0][0];
+      expect(row.delegation?.access).toBeUndefined();
+      expect(row.context.accessNeeds).toEqual([{ provider: 'neon', access: 'read', reason: null }]);
+    });
+
+    it('a filed write is a 400, never stored', async () => {
+      arrange({ [OWN]: 'team-1' });
+      const response = await fileAsPerson({ access: [{ provider: 'neon', access: 'write', reason: 'fix rows' }] });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toMatch(/never granted at filing/);
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
 

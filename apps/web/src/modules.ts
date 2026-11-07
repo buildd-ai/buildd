@@ -46,6 +46,7 @@ import { fixWork, captureWork, reviewEscalate, reviewsHost, reviewWork } from '@
 import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
 import { externalMergeFixWork, trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
+import { defaultSummaryGate } from '@/lib/release/summary-gate';
 import { builddLandingRails } from '@/lib/workflow/auto-merge-rails';
 import { conflictEscalate, conflictFixWork, conflictsHost } from '@/lib/workflow/conflict-retry-effects';
 import { builddDecide } from '@/lib/workflow/decision-port';
@@ -162,6 +163,9 @@ export const RUN_PROGRESS_READERS: RunProgressReaders = {
  * (needs you) or the landing path merges it (merging).
  */
 export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
+
+/** Review by risk R-6: the release-summary check, for the core held-release door (lib/held-pr-tasks.ts). */
+export const RELEASE_SUMMARY_GATE = defaultSummaryGate();
 
 /**
  * The workflow kernel's slots (docs/specs/workflow-kernel-library.md §2). Core
@@ -328,6 +332,18 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
  * statement for Home's batch. A fixed rule; no model call, no write.
  */
 export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
+
+/**
+ * The connectors module's access declared at filing
+ * (lib/capability-grants-filed.ts): the claim gate (`access_unmet`), a person's
+ * grant from the task page, and Home's card for a task held on it. Lazy.
+ */
+type FiledAccess = typeof import('@/lib/capability-grants-filed');
+export const FILED_ACCESS = {
+  checkGate: async (...a: Parameters<FiledAccess['checkAccessGate']>) => (await import('@/lib/capability-grants-filed')).checkAccessGate(...a),
+  set: async (...a: Parameters<FiledAccess['setTaskFiledAccess']>) => (await import('@/lib/capability-grants-filed')).setTaskFiledAccess(...a),
+  needsYou: async (...a: Parameters<FiledAccess['filedAccessNeedsYouRead']>) => (await import('@/lib/capability-grants-filed')).filedAccessNeedsYouRead(...a),
+};
 
 /** Open schedule move proposals, for the people who may answer them (lib/schedule-move-needs-you.ts). */
 export const SCHEDULE_MOVE_NEEDS_YOU = async (workspaceIds: readonly string[]) =>

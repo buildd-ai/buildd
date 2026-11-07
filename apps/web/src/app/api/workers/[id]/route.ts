@@ -135,6 +135,8 @@ import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { formatWorkerMessages, type WorkerMessage } from '@buildd/core/worker-message-format';
 import { queueSystemInstruction } from '@/lib/system-instruction-queue';
+import { evaluateCompletionHold } from '@/lib/capability-hold-store';
+import { leadSummary } from '@/lib/capability-hold';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsAcknowledged, markInstructionsDelivered, pendingInstructionIds } from '@/lib/worker-instructions';
 import { pauseServed } from '@/lib/worker-pause-policy';
@@ -2101,6 +2103,60 @@ async function patchWorker(
             error: `Review verdict not recorded: ${parsed.reason}. Call complete_task again with structuredOutput { verdict: ${REVIEWER_VERDICTS.map((v) => `"${v}"`).join(' | ')}, confidence: <number 0-1>, summary: <string> }.`,
             hint: 'structuredOutput.verdict',
           }, { status: 400 });
+        }
+      }
+    }
+
+    // A pending access request holds the run (lib/capability-hold.ts, spec
+    // capability-requests → Holding the run). While this worker has a
+    // request_capability ask a person has not answered, an agent-authored
+    // completion is refused with the three ways out (wait, withdraw, or
+    // complete with blockedByCapability); a request that was never granted
+    // must be declared (blockedByCapability or proceededWithout), and the
+    // summary then leads with it. Only a completion the agent can read is
+    // held: a runner's end-of-session report has no turn left to act on it,
+    // and the request then closes with the run as before. A gate read that
+    // fails lets the completion through (the trail still shows the request).
+    if (worker.taskId && (worker.runner === 'mcp' || body.viaCompleteTask === true)) {
+      const hold = await evaluateCompletionHold({
+        workerId: worker.id, taskId: worker.taskId, workspaceId: worker.workspaceId, structuredOutput: body.structuredOutput,
+      }).catch((err) => {
+        console.error(`[capability-hold] completion hold check failed for worker ${worker.id} (allowing):`, err);
+        return null;
+      });
+      if (hold?.kind === 'refuse') {
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: ${hold.code}`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: hold.code, requestIds: hold.requestIds ?? [] },
+        });
+        return NextResponse.json({
+          error: hold.error, hint: hold.hint, code: hold.code, gate: GATE_SLUGS.OUTPUT_REQUIREMENT, frictionSignature,
+          ...(hold.options ? { options: hold.options } : {}),
+          ...(hold.requestIds ? { requestIds: hold.requestIds } : {}),
+        }, { status: 400 });
+      }
+      if (hold?.kind === 'pass' && (hold.blockedByCapability || hold.proceededWithout)) {
+        // Honest results: the recorded outcome carries the request's fate and
+        // the summary opens with what is missing.
+        const so = (body.structuredOutput && typeof body.structuredOutput === 'object' && !Array.isArray(body.structuredOutput) ? body.structuredOutput : {}) as Record<string, unknown>;
+        body.structuredOutput = {
+          ...so,
+          ...(hold.blockedByCapability ? { blockedByCapability: hold.blockedByCapability.length === 1 ? hold.blockedByCapability[0] : hold.blockedByCapability } : {}),
+          ...(hold.proceededWithout ? { proceededWithout: hold.proceededWithout.length === 1 ? hold.proceededWithout[0] : hold.proceededWithout } : {}),
+        };
+        const led = leadSummary(hold.summaryLead, body.summary);
+        if (led !== undefined) {
+          body.summary = led;
+          if (typeof body.summarySource !== 'string') body.summarySource = 'agent';
         }
       }
     }

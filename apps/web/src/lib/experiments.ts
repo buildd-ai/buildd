@@ -16,7 +16,7 @@
  *   answers 404, never 403, so a non-operator cannot probe which keys or ids
  *   are in use. `canViewExperiment` is the one predicate for that.
  * - **Settings that shape the draw are versioned.** The randomiser salts with
- *   `policyVersion` (packages/core/experiment-randomizer.ts) and the readout
+ *   `policyVersion` (packages/core/arm-randomizer.ts) and the readout
  *   filters on it (packages/core/experiment-readout-source.ts). Changing the
  *   treatment fraction or config after the experiment first started therefore
  *   bumps the version — rows drawn under the old settings are analysed apart
@@ -32,7 +32,7 @@ import type {
   ExperimentVisibility,
   UpdateExperimentInput,
 } from '@buildd/shared';
-import { validateStagedExperimentConfig } from '@buildd/core/staged-self-review';
+import { validateStagedExperimentConfig } from '@buildd/core/staged-draw';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
 
 export type TeamRole = 'owner' | 'admin' | 'member';

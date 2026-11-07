@@ -452,6 +452,8 @@ export interface LocalWorker {
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
   // Flushed into resultMeta.toolCounts at completion.
   toolCounts?: Record<string, number>;
+  /** Assistant messages seen this session; the staged self-review hook's turn clock. */
+  assistantTurns?: number;
   /**
    * Bash sub-classification (see bash-classify.ts). The histogram above can
    * only ever show a single bar for `Bash` — by far the most-called tool — so
@@ -888,6 +890,8 @@ export interface LocalUIConfig {
   model: string;
   // LLM provider configuration (default: anthropic)
   llmProvider?: ProviderConfig;
+  // Per-machine loopback model (Ollama); see local-model-endpoint.ts
+  localModel?: import('./local-model-endpoint').LocalModelEndpoint;
   // Serverless mode (no server connection)
   serverless?: boolean;
   // Direct access URL for this runner instance

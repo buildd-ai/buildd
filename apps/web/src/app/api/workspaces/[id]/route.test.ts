@@ -839,6 +839,41 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(capturedUpdates.gitConfig).toMatchObject({ runnerSizeDerived: null });
   });
 
+  it('accepts gitConfig.selfReview off|recording|acting and null to clear', async () => {
+    for (const value of ['off', 'recording', 'acting', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { selfReview: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ selfReview: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.selfReview mode', async () => {
+    for (const value of ['bogus', true, 1, {}]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { selfReview: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("gitConfig.selfReview must be 'off', 'recording', 'acting' or null");
+    }
+  });
+
+  it('gitConfig.selfReviewExperiment can only be cleared, never written', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const forged = createMockRequest({ method: 'PATCH', body: { gitConfig: { selfReviewExperiment: { id: 'x' } } } });
+    expect((await PATCH(forged, { params: mockParams })).status).toBe(400);
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { selfReviewExperiment: { id: 'x' } } });
+    const clear = createMockRequest({ method: 'PATCH', body: { gitConfig: { selfReviewExperiment: null } } });
+    expect((await PATCH(clear, { params: mockParams })).status).toBe(200);
+    expect(capturedUpdates.gitConfig).toMatchObject({ selfReviewExperiment: null });
+  });
+
   // Early release is a workspace opt-in (knowledge-base: buildd/design/early-release.md).
   it('accepts every gitConfig.earlyRelease mode and null to clear', async () => {
     for (const value of [{ mode: 'off' }, { mode: 'rule_only' }, { mode: 'rule_and_jev' }, null]) {

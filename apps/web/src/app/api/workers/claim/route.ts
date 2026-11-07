@@ -4,6 +4,7 @@ import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
+import { attachStagedExperiment, recordStagedAssignment } from './staged-arm';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, teams, connectors, connectorShares, connectorWorkspaces, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
@@ -117,7 +118,7 @@ import {
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
-import { VISUAL_AUDIT_ROUTES, CLAIM_LEARNING_HOOKS } from '@/modules';
+import { VISUAL_AUDIT_ROUTES, CLAIM_LEARNING_HOOKS, FILED_ACCESS } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
@@ -1174,6 +1175,7 @@ export async function POST(req: NextRequest) {
     codex_single_flight: 0,
     role_env_unsatisfied: 0,
     delegation_unmet: 0,
+    access_unmet: 0,
     ordered_behind: 0,
     managed_concurrency: 0,
     managed_runner_hours: 0,
@@ -1567,6 +1569,14 @@ export async function POST(req: NextRequest) {
       return { gaps: [], detail: 'the delegation pre-flight could not run; it is retried on the next poll' };
     });
     if (delegationGap) { deferTask(task, 'delegation_unmet', { gaps: delegationGap.gaps, message: delegationGap.detail }); continue; }
+    // Provider access declared at filing that no person granted and no policy
+    // auto-grants: held before any agent turn, never forced past
+    // (lib/capability-grants-filed.ts).
+    const accessGap = await FILED_ACCESS.checkGate(task as any).catch((err) => {
+      console.warn(`[claim] access pre-flight failed for task ${task.id}; holding it:`, (err as Error)?.message ?? err);
+      return { gaps: [], detail: 'the access pre-flight could not run; it is retried on the next poll' };
+    });
+    if (accessGap) { deferTask(task, 'access_unmet', { gaps: accessGap.gaps, message: accessGap.detail }); continue; }
 
     // Runner pin: a `runner:<name>` entry in requiredCapabilities restricts the
     // task to that one runner; every other runner defers it. The name may be the
@@ -2806,6 +2816,11 @@ export async function POST(req: NextRequest) {
     if (poolDraw) {
       await recordAgentPoolAssignment(poolDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });
     }
+    // Staged self-review experiment attach + assignment record (runner-side
+    // hook): done once, below, when the claim response is built — the
+    // experiment is only known there (attachStagedExperiment reads it fresh
+    // per team), and recorded only where the runner wires the stage, i.e. not
+    // for Codex and not for a caller's own seat.
 
     if (account.managedRunner) {
       const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
@@ -3466,9 +3481,18 @@ export async function POST(req: NextRequest) {
 
   return jsonResponse({
     // The workspace dispatch token never leaves in a claim (lib/workspace-dispatch-token.ts).
-    workers: claimedWorkers.map((cw) => (cw.task
-      ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
-      : cw)),
+    workers: await Promise.all(claimedWorkers.map(async (cw) => {
+      if (!cw.task) return cw;
+      const task = cw.task as any;
+      // The runner only wires the staged self-review hook outside Codex and
+      // outside a caller's own seat; attaching the experiment (and recording
+      // the draw) anywhere else would write a row for a stage that never runs.
+      const wiresStagedStage = task.backend !== 'codex' && !runsOnCallersSeat;
+      const baseWorkspace = withoutDispatchToken(task.workspace) as any;
+      const workspace = wiresStagedStage ? await attachStagedExperiment(baseWorkspace) : baseWorkspace;
+      if (wiresStagedStage) await recordStagedAssignment(workspace, cw.taskId);
+      return { ...cw, task: { ...task, workspace } };
+    })),
     // Only report partial budget exhaustion for background runners. Interactive sessions
     // have their own credentials and should not be told about account budget state.
     ...(accountBudgetExhausted && !runsOnCallersSeat && {

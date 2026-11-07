@@ -11,7 +11,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc } from 'drizzle-orm';
 import { requestingPerson } from '@/lib/request-person';
-import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
+import { resolveFiledAccess, resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
+import { readTaskAccessGrants, withTaskAccess, type TaskDelegation } from '@buildd/core/token-delegation';
 import { emit } from '@/lib/core-emit';
 import { noteWorkChanged } from '@/lib/work-changed';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
@@ -391,8 +392,13 @@ export async function PATCH(
       }
       const write = await resolveTaskDelegationWrite(body.delegation, task.workspaceId, requestingPerson(user, apiAccount));
       if (!write.ok) return NextResponse.json({ error: write.error }, { status: write.status });
+      // Workspace grants only: provider access filed with the task is set on its own (`access`) and kept here.
+      const filedAccess = readTaskAccessGrants(task.delegation);
+      const nextDelegation = filedAccess.length
+        ? withTaskAccess(write.value ?? (task.delegation as TaskDelegation | null), filedAccess, { userId: requestingPerson(user, apiAccount)! })
+        : write.value;
       const [updated] = await db.update(tasks)
-        .set({ delegation: write.value, updatedAt: new Date() })
+        .set({ delegation: nextDelegation, updatedAt: new Date() })
         .where(and(eq(tasks.id, id), eq(tasks.status, 'pending')))
         .returning({ id: tasks.id, delegation: tasks.delegation });
       if (!updated) {
@@ -401,6 +407,32 @@ export async function PATCH(
       // A token minted for this task reads its delegation through the caller cache.
       await clearCallerCache(callerDep.task(id));
       return NextResponse.json({ id: updated.id, delegation: updated.delegation });
+    }
+
+    // access: a person who can decide access requests grants (or takes back)
+    // the provider access this task's runs get without asking, e.g. Neon read
+    // (lib/capability-grants-filed.ts). The list replaces what was granted;
+    // [] takes it all back and revokes what its runs hold from it. An agent
+    // declares access when filing (create_task access) and never grants it.
+    if (body && typeof body === 'object' && 'access' in body) {
+      if (Object.keys(body).some(k => k !== 'access')) {
+        return NextResponse.json({ error: 'access is sent on its own, with no other fields' }, { status: 400 });
+      }
+      if (isTerminalTaskStatus(task.status)) {
+        return NextResponse.json({ error: `This task is ${task.status}; there is no run left to grant access to.`, code: 'task_terminal' }, { status: 409 });
+      }
+      const person = requestingPerson(user, apiAccount);
+      const filed = await resolveFiledAccess(body.access ?? [], task.workspaceId, person);
+      if (!filed.ok) return NextResponse.json({ error: filed.error }, { status: filed.status });
+      if (!person || !filed.canGrant) {
+        return NextResponse.json({
+          error: 'Only a person who can decide access requests (manage_connectors) grants or takes back access on a task. An agent declares what it needs when filing (create_task access) and a person grants it here.',
+        }, { status: 403 });
+      }
+      const { FILED_ACCESS } = await import('@/modules');
+      const out = await FILED_ACCESS.set(id, filed.needs, person);
+      if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status });
+      return NextResponse.json({ id, access: out.access, revoked: out.revoked });
     }
 
     // waitOn: the agent working this task found another task holds it, so the

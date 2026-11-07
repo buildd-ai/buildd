@@ -107,6 +107,11 @@ export const teams = pgTable('teams', {
   // absent feature = the default, which follows the billing model (a team key
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
+  // How long an agent's access request (capability_grants, status pending)
+  // waits for a person before buildd expires it and the agent completes with
+  // blockedByCapability. NULL = the default (4 h, apps/web/src/lib/capability-hold.ts).
+  // Set from team settings (PATCH /api/teams/[id] accessWaitWindowSeconds).
+  accessWaitWindowSeconds: integer('access_wait_window_seconds'),
   // The `opt_in` decision capabilities this team turned on (e.g.
   // 'task_role_shadow'). NULL = off. A new team starts with every one
   // (insert-time default, no DDL); an opt_in capability added later is not
@@ -974,6 +979,12 @@ export interface WorkspaceReleaseConfig {
     // every dispatch (packages/core/release-config-shape.ts).
     amend?: ReleaseCandidateAmendContract;
   };
+
+  // Review by risk (spec 62e985a8 R-6): while the workspace merge policy has
+  // `reviewByRisk` on, a release waits for a person to approve one release
+  // summary for the exact commit it ships. `false` turns that approval off for
+  // this workspace. Absent ⇒ on (only consulted while the mode is on).
+  summaryApproval?: boolean;
 
   // Deploy target for verifying the production deploy completed
   deployTarget?: {
@@ -4211,7 +4222,7 @@ export const taskOutcomes = pgTable('task_outcomes', {
  * docs/design/model-routing-experiment.md and docs/design/experiment-lifecycle.md.
  *
  * `policyVersion` is part of the randomiser's salt
- * (packages/core/experiment-randomizer.ts), so bumping it re-randomises every
+ * (packages/core/arm-randomizer.ts), so bumping it re-randomises every
  * unit. Bump it when the meaning of an arm changes; never edit arm semantics
  * in place under a running version.
  */
@@ -6410,7 +6421,8 @@ export const releaseFlowSteps = pgTable('release_flow_steps', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   // Kept as a plain id: the record outlives the person's account.
   actorUserId: uuid('actor_user_id'),
-  step: text('step').notNull().$type<'include' | 'cut' | 'exclude' | 'release' | 'confirm_production'>(),
+  // `approve_summary`: a person approved the review-by-risk release summary for `candidateSha` (spec 62e985a8 R-6).
+  step: text('step').notNull().$type<'include' | 'cut' | 'exclude' | 'release' | 'confirm_production' | 'approve_summary'>(),
   outcome: text('outcome').notNull().$type<'succeeded' | 'refused' | 'pending' | 'failed'>(),
   // The candidate's version and SHA when the step ran (null before the cut).
   version: text('version'),
@@ -6662,7 +6674,10 @@ export const capabilityGrants = pgTable('capability_grants', {
   scope: jsonb('scope').$type<Record<string, unknown>>(),
   reason: text('reason'),
   status: text('status').notNull().$type<'pending' | 'granted' | 'denied' | 'revoked' | 'expired'>(),
-  decidedBy: text('decided_by').$type<'policy' | 'human' | 'system'>(),
+  // `agent`: the requesting agent closed it itself (withdrew it, or completed
+  // with blockedByCapability while it was still pending); `system`: closed
+  // because its run ended or the team's wait window elapsed.
+  decidedBy: text('decided_by').$type<'policy' | 'human' | 'system' | 'agent'>(),
   decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   decisionReason: text('decision_reason'),
   ttlSeconds: integer('ttl_seconds').notNull(),
@@ -7078,7 +7093,7 @@ export const decisionRecords = pgTable('decision_records', {
   // What the decision was about (DecisionSubjectRef): outcomes are labelled by subject.
   subjectType: text('subject_type'),
   subjectId: text('subject_id'),
-  // Set only when the call's assignment came from experiment-randomizer.ts;
+  // Set only when the call's assignment came from arm-randomizer.ts;
   // the readout reports causal lift for these rows and no others.
   experimentId: text('experiment_id'),
   experimentArm: text('experiment_arm'),

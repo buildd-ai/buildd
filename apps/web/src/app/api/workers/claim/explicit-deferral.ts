@@ -139,6 +139,13 @@ export function describeExplicitDeferral(
         detail: `It needs cross-workspace reach its token would not carry${message ? `: ${message}` : ''}. A person who reaches the workspace grants it with update_task { delegation } before the run starts, or a runner account that reaches it claims the task. It is re-checked on every claim; forcing would only start an agent that hits the same wall.`,
       };
     }
+    case 'access_unmet': {
+      const message = str(detail.message);
+      return {
+        code: reason,
+        detail: `It was filed needing provider access nobody has granted yet${message ? `: ${message}` : ''}. A person who can decide access requests grants it on the task page (or its Needs You card), or a role or team policy that auto-grants the read lets it start. It is re-checked on every claim.`,
+      };
+    }
     case 'managed_concurrency': {
       const active = num(detail.active);
       const limit = num(detail.limit);

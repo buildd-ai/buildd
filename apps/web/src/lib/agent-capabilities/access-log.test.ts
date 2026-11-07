@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildAgentAccessReport, reasonText, summarizeAccess, type CapabilityRow } from './access-log';
+import { buildAgentAccessReport, grantSourceOf, reasonText, summarizeAccess, type CapabilityRow } from './access-log';
 
 const T0 = Date.parse('2026-10-05T12:00:00.000Z');
 const row = (min: number, o: Partial<CapabilityRow>): CapabilityRow => ({
@@ -8,6 +8,22 @@ const row = (min: number, o: Partial<CapabilityRow>): CapabilityRow => ({
   reasonCode: null, expiresAt: null, sideEffect: null, ...o,
 });
 const REPOS = new Map([['row-1', 'acme/widget']]);
+
+describe('where a grant came from', () => {
+  const req = (reasonCode: string, decision = 'allowed') => row(0, { capability: 'capability.request', resource: 'grant:g1', reasonCode, decision });
+  it('filed with the task, a role policy, the team policy, or asked mid-run', () => {
+    expect(grantSourceOf(req('auto_granted:filed_with_task'))).toBe('filed');
+    expect(grantSourceOf(req('auto_granted:role_policy_auto_grant'))).toBe('role_policy');
+    expect(grantSourceOf(req('auto_granted:policy_auto_grant'))).toBe('team_policy');
+    expect(grantSourceOf(req('auto_granted:default_auto_grant'))).toBe('team_policy');
+    expect(grantSourceOf(row(0, { capability: 'capability.approve', resource: 'grant:g1', reasonCode: 'approved_by_human' }))).toBe('asked');
+  });
+  it('nothing for a pending ask, a refusal or a use', () => {
+    expect(grantSourceOf(req('pending_approval:policy_ask_human', 'refused'))).toBeNull();
+    expect(grantSourceOf(row(0, { capability: 'database.query' }))).toBeNull();
+    expect(summarizeAccess([req('auto_granted:filed_with_task')])[0].grantSource).toBe('filed');
+  });
+});
 
 describe('summarizeAccess', () => {
   it('folds hourly renewals of the same grant into one item with a count', () => {
@@ -114,6 +130,18 @@ describe('summarizeAccess source', () => {
     it('closed because the task ended: not waiting, says why', () => {
       const [i] = summarizeAccess([req], new Map(), run('completed', 'expired', 'completed'));
       expect(i).toMatchObject({ pending: false, closed: 'the task ended' });
+    });
+    it('closed by the server without a grant: says why, from the row', () => {
+      const closed = (reason: string) => ({ taskStatus: 'in_progress', requests: new Map([['g1', { status: 'expired', workerStatus: 'running', decisionReason: reason }]]) });
+      expect(summarizeAccess([req], new Map(), closed('wait_window_elapsed'))[0]).toMatchObject({ pending: false, closed: 'nobody answered within the wait window' });
+      expect(summarizeAccess([req], new Map(), closed('withdrawn'))[0].closed).toBe('the agent withdrew it');
+    });
+    it('a withdraw or an expiry row decides the request, with its own label', () => {
+      const withdrawn = r('capability.withdraw', { decision: 'refused', resource: 'grant:g1', reasonCode: 'withdrawn', occurredAt: new Date(T0 + 60_000) });
+      const items = summarizeAccess([req, withdrawn]);
+      expect(items[0].pending).toBe(false);
+      expect(items[1]).toMatchObject({ label: 'Capability request withdrawn', reason: 'the agent withdrew it' });
+      expect(summarizeAccess([r('capability.expire', { decision: 'refused', resource: 'grant:g1', reasonCode: 'wait_window_elapsed' })])[0]).toMatchObject({ label: 'Capability request expired', reason: 'nobody answered within the wait window' });
     });
     it('row still pending but the task is terminal: closed (fails closed)', () => {
       const [i] = summarizeAccess([req], new Map(), run('failed', 'pending', 'running'));

@@ -86,10 +86,17 @@ Details, including `discardEdits` and `alreadyShippedIn`: topic
   answer): ask for it, never build around it.
   `buildd action=resolve_capability` says what serves the need (pass
   `capability: "model.inference"` for a model call), and
-  `buildd action=request_capability` asks; a person decides, so keep working
-  while it is pending approval. Spend a model grant with
-  `buildd action=invoke_model_inference`. Never write a script that reads a
-  database URL or a key of its own, and never end with "the sandbox has no X".
+  `buildd action=request_capability` asks; a person decides. A pending
+  request holds the run: `complete_task` is refused until it is answered, so
+  keep doing work that does not need it (the decision reaches you as a
+  message), `withdraw_capability_request` if you no longer need it, or
+  complete with `structuredOutput.blockedByCapability { requestId,
+  whatIsMissing }` if the work cannot be finished without it. A request that
+  was refused, expired or withdrawn must be named in `blockedByCapability` or
+  `proceededWithout { requestId, whatIsMissing }` when you complete. Spend a
+  model grant with `buildd action=invoke_model_inference`. Never write a
+  script that reads a database URL or a key of its own, and never end with
+  "the sandbox has no X".
 
 A user's global CLAUDE.md may name other reporting tools. In a buildd worker
 session, buildd's own actions are the record; a named tool that does not exist

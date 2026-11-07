@@ -3,7 +3,7 @@
  * f3742450). Pure functions: mode switch, arm draw, rubber-stamp readout and
  * the pre-registered kill criterion. Off means no footprint (AC-9).
  */
-import { assignExperimentArm } from './experiment-randomizer';
+import { assignExperimentArm } from './arm-randomizer';
 
 export const STAGED_SELF_REVIEW_FEATURE = 'staged_self_review';
 
@@ -46,6 +46,55 @@ export function assignStagedReviewArm(args: { taskId: string; experiment: Staged
     unitId: args.taskId,
     fraction: args.experiment.treatmentFraction,
   });
+}
+
+export interface StagedAssignmentRow {
+  experimentId: string;
+  taskId: string;
+  unitType: 'task';
+  unitId: string;
+  arm: StagedReviewArm;
+  propensity: number;
+  policyVersion: number;
+  served: boolean;
+}
+
+/**
+ * The assignment row the server records for one staged draw. Mirrors the
+ * runner's resolveStagedConfig (same mode, same draw inputs), so the recorded
+ * arm is the arm the runner acts on. Null unless acting with a registered
+ * experiment: recording and off never write a row, so the treatment arm holds
+ * only tasks where the stage could act.
+ */
+export function stagedAssignmentRow(
+  taskId: string,
+  gitConfig: { selfReview?: unknown; selfReviewExperiment?: any } | null | undefined,
+): StagedAssignmentRow | null {
+  const exp = gitConfig?.selfReviewExperiment;
+  if (!exp?.id || !taskId) return null;
+  const mode = resolveStagedReviewMode(
+    gitConfig?.selfReview === 'acting' || gitConfig?.selfReview === 'recording'
+      ? { mode: String(gitConfig.selfReview), checklistVersion: exp.checklistVersion }
+      : null,
+    { checklistVersion: undefined },
+  );
+  if (mode !== 'acting') return null;
+  const policyVersion = Number(exp.policyVersion ?? 1);
+  const drawn = assignStagedReviewArm({
+    taskId,
+    experiment: { id: String(exp.id), policyVersion, treatmentFraction: exp.treatmentFraction },
+  });
+  const arm = effectiveStagedArm({ mode, arm: drawn.arm });
+  return {
+    experimentId: String(exp.id),
+    taskId,
+    unitType: 'task',
+    unitId: taskId,
+    arm,
+    propensity: drawn.propensity,
+    policyVersion,
+    served: arm === 'treatment',
+  };
 }
 
 /** Only acting mode lets the treatment arm act; otherwise the task sees no stage. */
@@ -94,6 +143,14 @@ export function classifyStagedReview(
     rubberStamped: touchRate >= (limits.touchRate ?? RUBBER_STAMP_TOUCH_RATE) && flipRate <= (limits.flipRate ?? RUBBER_STAMP_FLIP_RATE),
     n,
   };
+}
+
+export type StagedReviewLabel = 'rubber_stamped' | 'not_rubber_stamped' | 'no_records';
+
+/** The label every readout route reports for a classified cohort. */
+export function stagedReviewLabel(readout: Pick<StagedReviewReadout, 'n' | 'rubberStamped'>): StagedReviewLabel {
+  if (readout.n === 0) return 'no_records';
+  return readout.rubberStamped ? 'rubber_stamped' : 'not_rubber_stamped';
 }
 
 export interface KillCriterion {
@@ -145,6 +202,19 @@ export function stagedReviewFootprint<T>(
 
 const SELF_REVIEW_PREFIX = 'Self-review: {';
 
+function recordFromEntry(e: Record<string, unknown>, taskId?: string | null): StagedReviewRecord | null {
+  if (e.outcome !== 'answered') return null;
+  const answers = Array.isArray(e.answers)
+    ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
+    : ['unanswered'];
+  return {
+    taskId: taskId ?? undefined,
+    toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
+    changedAfterDenial: e.workChangedAfterDenial === true,
+    answers,
+  };
+}
+
 /**
  * Stored records -> readout input. The runner writes each stage outcome as a
  * `Self-review: {json}` status milestone; only `answered` entries carry a
@@ -164,18 +234,42 @@ export function stagedReviewRecordsFromMilestones(
       try {
         // Runner caps labels at 300 chars, so long records arrive truncated and fail here: counted as skipped.
         const e = JSON.parse(text.slice('Self-review: '.length)) as Record<string, unknown>;
-        if (e.outcome !== 'answered') continue;
-        const answers = Array.isArray(e.answers)
-          ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
-          : ['unanswered'];
-        records.push({
-          taskId: w.taskId ?? undefined,
-          toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
-          changedAfterDenial: e.workChangedAfterDenial === true,
-          answers,
-        });
+        const r = recordFromEntry(e, w.taskId);
+        if (r) records.push(r);
       } catch { skipped++; }
     }
   }
   return { records, skipped };
+}
+
+/**
+ * Stored records from `workers.resultMeta.stagedSelfReview` (full structured
+ * entries the runner persists). Workers without that array fall back to the
+ * legacy JSON milestone labels. Only `answered` entries become records.
+ */
+export function stagedReviewRecordsFromWorkers(
+  workersRows: readonly { taskId?: string | null; milestones?: unknown; resultMeta?: unknown }[],
+): { records: StagedReviewRecord[]; skipped: number } {
+  const records: StagedReviewRecord[] = [];
+  let skipped = 0;
+  const legacy: { taskId?: string | null; milestones?: unknown }[] = [];
+  for (const w of workersRows) {
+    const entries = (w.resultMeta as { stagedSelfReview?: unknown } | null | undefined)?.stagedSelfReview;
+    if (!Array.isArray(entries)) { legacy.push(w); continue; }
+    for (const raw of entries) {
+      const e = raw as Record<string, unknown> | null;
+      if (!e || typeof e !== 'object') { skipped++; continue; }
+      if (e.outcome !== 'answered') continue;
+      records.push({
+        taskId: w.taskId ?? undefined,
+        toolCallsBetween: Array.isArray(e.toolCallsBetween) ? e.toolCallsBetween.map(String) : [],
+        changedAfterDenial: e.workChangedAfterDenial === true,
+        answers: Array.isArray(e.answers)
+          ? e.answers.map(a => String((a as { answer?: unknown })?.answer ?? 'unanswered'))
+          : ['unanswered'],
+      });
+    }
+  }
+  const old = stagedReviewRecordsFromMilestones(legacy);
+  return { records: [...records, ...old.records], skipped: skipped + old.skipped };
 }

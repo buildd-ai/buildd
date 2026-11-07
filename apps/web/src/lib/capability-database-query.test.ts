@@ -130,6 +130,19 @@ describe('runDatabaseQuery', () => {
     expect(h.audits).toEqual([{ decision: 'refused', grantId: null, reasonCode: 'no_grant', expiresAt: null, sideEffect: { sql: 'select id from tasks', sqlTruncated: false, rowCount: null, durationMs: null } }]);
   });
 
+  it('refused means refused: the standing of the request and the person\'s reason, never a bare no_grant', async () => {
+    const denied = harness({ findGrant: async () => ({ ok: false, reasonCode: 'request_denied', requestId: 'r1', decisionReason: 'not for this task' }) });
+    const out = await runDatabaseQuery(PRINCIPAL, req('select id from tasks'), denied.deps);
+    expect(out).toMatchObject({ ok: false, status: 403, code: 'request_denied' });
+    expect((out as { error: string }).error).toContain('"not for this task"');
+    expect((out as { error: string }).error).toContain('blockedByCapability');
+    expect(out).not.toHaveProperty('requestWith');
+    expect(denied.sent).toHaveLength(0);
+    expect(denied.audits[0].reasonCode).toBe('request_denied');
+    const pending = harness({ findGrant: async () => ({ ok: false, reasonCode: 'request_pending', requestId: 'r1' }) });
+    expect(await runDatabaseQuery(PRINCIPAL, req('select id from tasks'), pending.deps)).toMatchObject({ ok: false, code: 'request_pending', error: expect.stringContaining('held') });
+  });
+
   it('a granted run still cannot send INSERT, UPDATE or DDL', async () => {
     for (const sql of ['insert into tasks (id) values (1)', 'update tasks set status = $1', 'drop table tasks', 'with d as (delete from tasks returning id) select * from d']) {
       const h = harness();

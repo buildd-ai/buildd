@@ -7,6 +7,7 @@ import { teams, teamMembers, users, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
+import { MAX_ACCESS_WAIT_WINDOW_SECONDS, MIN_ACCESS_WAIT_WINDOW_SECONDS } from '@/lib/capability-hold';
 import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
@@ -110,6 +111,7 @@ export async function GET(
         chatDefaultTier: true,
         chatCapNewSessionTier: true,
         taskEstimates: true,
+        accessWaitWindowSeconds: true,
         timezone: true,
       },
     });
@@ -186,7 +188,7 @@ export async function PATCH(
         { status: 403 },
       );
     }
-    const { name, slug, enabledBackends, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, taskEstimates, codingPolicy } = body;
+    const { name, slug, enabledBackends, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, taskEstimates, codingPolicy, accessWaitWindowSeconds } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -240,6 +242,19 @@ export async function PATCH(
       }
       const current = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, id)), columns: { decisionModel: true } });
       updates.decisionModel = withDecisionModelDefault(current?.decisionModel ?? null, normalized.value);
+    }
+    // How long an agent's access request waits for a person before buildd
+    // expires it and the agent completes with blockedByCapability
+    // (lib/capability-hold.ts). `null` reverts to the default (4 h).
+    if (accessWaitWindowSeconds !== undefined) {
+      if (accessWaitWindowSeconds !== null && (typeof accessWaitWindowSeconds !== 'number' || !Number.isInteger(accessWaitWindowSeconds)
+        || accessWaitWindowSeconds < MIN_ACCESS_WAIT_WINDOW_SECONDS || accessWaitWindowSeconds > MAX_ACCESS_WAIT_WINDOW_SECONDS)) {
+        return NextResponse.json(
+          { error: `accessWaitWindowSeconds must be an integer from ${MIN_ACCESS_WAIT_WINDOW_SECONDS} to ${MAX_ACCESS_WAIT_WINDOW_SECONDS}, or null for the default` },
+          { status: 400 },
+        );
+      }
+      updates.accessWaitWindowSeconds = accessWaitWindowSeconds;
     }
     if (timezone !== undefined) {
       // The team's canonical working zone — used wherever a shared artifact needs a

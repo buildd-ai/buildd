@@ -512,6 +512,67 @@ export interface MergePolicy {
    * (`autoReviewUnownedEnabled`).
    */
   autoReviewUnowned?: boolean;
+
+  /**
+   * Review by risk (spec 62e985a8): a mode next to the tier, off unless
+   * `enabled`. Read from the WORKSPACE policy only (a mission's policy never
+   * turns it on). While on, a worker PR into the workspace's integration branch
+   * merges on its own when green, conflict-free, not change-requested and
+   * AC-tested; a PR touching a risk area waits for a person; and a release
+   * waits for a person to approve one summary. Only a person changes it.
+   * See apps/web/src/lib/review-by-risk.ts.
+   */
+  reviewByRisk?: ReviewByRiskPolicy;
+}
+
+/** The three risk areas a workspace lists paths for (R-5). Acceptance tests are found by AC id, so they need none. */
+export const REVIEW_BY_RISK_PATH_AREAS = ['access', 'credentials', 'dataMigrations'] as const;
+export type ReviewByRiskPathArea = (typeof REVIEW_BY_RISK_PATH_AREAS)[number];
+/** Every R-4 area, path-listed or not. */
+export type ReviewByRiskArea = ReviewByRiskPathArea | 'acceptanceTests';
+
+export interface ReviewByRiskPolicy {
+  enabled: boolean;
+  /**
+   * Repo paths per area: a path ending in `/` matches everything under it, one
+   * ending in `*` is a prefix, anything else is an exact file (or a directory
+   * prefix). An area with no paths holds nothing.
+   */
+  areas?: Partial<Record<ReviewByRiskPathArea, string[]>>;
+}
+
+const REVIEW_BY_RISK_KEYS = new Set(['enabled', 'areas']);
+const MAX_REVIEW_BY_RISK_PATHS = 100;
+
+/** Shape-check `mergePolicy.reviewByRisk`. Null = valid; a string = the error. */
+export function reviewByRiskShapeError(val: unknown): string | null {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return 'mergePolicy.reviewByRisk must be an object';
+  const o = val as Record<string, unknown>;
+  for (const key of Object.keys(o)) {
+    if (!REVIEW_BY_RISK_KEYS.has(key)) return `mergePolicy.reviewByRisk has unknown field: ${key}`;
+  }
+  if (typeof o.enabled !== 'boolean') return 'mergePolicy.reviewByRisk.enabled must be a boolean';
+  if (o.areas === undefined) return null;
+  if (!o.areas || typeof o.areas !== 'object' || Array.isArray(o.areas)) return 'mergePolicy.reviewByRisk.areas must be an object';
+  for (const [area, paths] of Object.entries(o.areas as Record<string, unknown>)) {
+    if (!(REVIEW_BY_RISK_PATH_AREAS as readonly string[]).includes(area)) {
+      return `mergePolicy.reviewByRisk.areas has unknown area: ${area} (one of ${REVIEW_BY_RISK_PATH_AREAS.join(', ')}; acceptance tests are found by AC id and need no paths)`;
+    }
+    if (!Array.isArray(paths) || paths.length > MAX_REVIEW_BY_RISK_PATHS
+      || !paths.every((p) => typeof p === 'string' && p.trim() && !p.startsWith('/') && !p.includes('..'))) {
+      return `mergePolicy.reviewByRisk.areas.${area} must be a list of at most ${MAX_REVIEW_BY_RISK_PATHS} repo-relative paths`;
+    }
+  }
+  return null;
+}
+
+/** The workspace's review-by-risk setting, or null when it is off or malformed (a malformed one reads as off). */
+export function reviewByRiskOf(mergePolicy: unknown): ReviewByRiskPolicy | null {
+  if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return null;
+  const raw = (mergePolicy as { reviewByRisk?: unknown }).reviewByRisk;
+  if (raw == null || reviewByRiskShapeError(raw)) return null;
+  const rbr = raw as ReviewByRiskPolicy;
+  return rbr.enabled ? rbr : null;
 }
 
 export type DataMigrationsPolicy = 'person' | 'agent-review';
@@ -624,7 +685,7 @@ export function visualReviewPolicyOf(gitConfig: unknown): VisualReviewPolicyMode
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride', 'autoReviewUnowned']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride', 'autoReviewUnowned', 'reviewByRisk']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -732,6 +793,13 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
     return { ok: false, error: 'mergePolicy.autoReviewUnowned must be a boolean', field: 'autoReviewUnowned' };
   }
 
+  // Not tied to the tier (see the memory on write-time threshold validation):
+  // the mode sits next to whatever tier the workspace runs.
+  if (obj.reviewByRisk !== undefined) {
+    const err = reviewByRiskShapeError(obj.reviewByRisk);
+    if (err) return { ok: false, error: err, field: 'reviewByRisk' };
+  }
+
   if (obj.threshold !== undefined) {
     if (!obj.threshold || typeof obj.threshold !== 'object' || Array.isArray(obj.threshold)) {
       return { ok: false, error: 'mergePolicy.threshold must be an object', field: 'threshold' };
@@ -816,6 +884,41 @@ export interface TaskHandoff {
   gotchas?: string[];
   /** Named, explicitly — not "everything else". */
   leftUndone?: string[];
+}
+
+/**
+ * `structuredOutput.blockedByCapability`: the run could not finish part of its
+ * work because an access request it made (`request_capability`) was not
+ * granted: refused by a person, expired after the wait window, withdrawn, or
+ * granted but unusable (e.g. no query role configured). Accepted only for a
+ * request this worker made; naming a live grant is refused ("use it").
+ * The server fills `outcome` and `reason` from the request row.
+ */
+export interface BlockedByCapability {
+  /** The request id `request_capability` returned (`grant.id`). */
+  requestId: string;
+  /** What could not be delivered without it, in a sentence. */
+  whatIsMissing?: string;
+  /** Server-filled: how the request ended (`denied`, `expired`, `revoked`, `withdrawn`, `query_role_unconfigured`, …). */
+  outcome?: string;
+  /** Server-filled: the person's reason, or the closing reason code. */
+  reason?: string | null;
+}
+
+/**
+ * `structuredOutput.proceededWithout`: the run asked for access, did not get
+ * it, and finished anyway. Required on any completion whose worker has a
+ * request that was never granted and is not named in `blockedByCapability`,
+ * so a result never quietly ships with the data it asked for missing. The
+ * task summary leads with it.
+ */
+export interface ProceededWithout {
+  requestId: string;
+  /** What the result lacks because of it, in a sentence. */
+  whatIsMissing: string;
+  /** Server-filled, as on BlockedByCapability. */
+  outcome?: string;
+  reason?: string | null;
 }
 
 export interface TaskResult {
@@ -2014,6 +2117,7 @@ export interface ClaimDiagnostics {
      * before any agent turn; not forceable. See claim/delegation-gate.ts.
      */
     delegation_unmet?: number;
+    access_unmet?: number;
     /**
      * Commercial entitlement, managed-runner claims only (accounts.managedRunner):
      * the team is at its plan's parallel managed-run limit. Not an error; the

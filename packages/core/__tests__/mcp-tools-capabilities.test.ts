@@ -174,3 +174,34 @@ describe('query_database', () => {
     expect(res.content[0].text).toContain('request_capability {"provider":"neon","access":"read"');
   });
 });
+
+describe('withdraw_capability_request', () => {
+  let api: ReturnType<typeof mock>;
+  beforeEach(() => { api = mock(); });
+  const R1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+  it('is a worker-level action beside request_capability, never trigger-level', () => {
+    expect(workerActions as readonly string[]).toContain('withdraw_capability_request');
+    expect(triggerActions as readonly string[]).not.toContain('withdraw_capability_request');
+    expect(mcpGroupOf('withdraw_capability_request')).toBe(mcpGroupOf('request_capability'));
+    expect(requiredScopeForAction('withdraw_capability_request')).toBe('tasks:write');
+  });
+
+  it('posts the withdraw as this worker', async () => {
+    api.mockResolvedValueOnce({ requestId: R1, status: 'expired', alreadyClosed: false });
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'withdraw_capability_request', { requestId: R1 }, ctx());
+    expect(res.isError).toBeFalsy();
+    expect(api.mock.calls[0][0]).toBe(`/api/agent-capabilities/requests/${R1}/withdraw`);
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ workerId: '00000000-0000-0000-0000-000000000002' });
+  });
+
+  it('needs a request id, and relays a refusal as one', async () => {
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'withdraw_capability_request', { requestId: 'g1' }, ctx());
+    expect(res.isError).toBe(true);
+    expect(api).not.toHaveBeenCalled();
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"granted","code":"already_granted"}'));
+    const refused = await handleBuilddAction(api as unknown as ApiFn, 'withdraw_capability_request', { requestId: R1 }, ctx());
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain('already_granted');
+  });
+});

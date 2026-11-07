@@ -1342,6 +1342,7 @@ export const EXCLUSION_WORDS: Record<string, string> = {
   account_cap: 'account has no free slot',
   rate_limited: 'claimed too recently, retry soon',
   delegation_unmet: 'needs access a person has not granted',
+  access_unmet: 'needs provider access a person has not granted',
 };
 
 /** Codes that only say the task moved; the list catches up on its own. */

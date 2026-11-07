@@ -384,6 +384,51 @@ describe('POST /api/workspaces/[id]/config', () => {
     expect(errData.error).toMatch(/unknown field/i);
   });
 
+  it('review by risk (spec 62e985a8 R-5, R-9): a person turns it on; an API key cannot change it, and a save without it keeps it', async () => {
+    const post = (body: unknown, headers: Record<string, string> = {}) => POST(new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json', ...headers }),
+      body: JSON.stringify(body),
+    }), { params: mockParams });
+    const on = { tier: 'agent-review', agentReview: { reviewerRole: 'builder' }, reviewByRisk: { enabled: true, areas: { dataMigrations: ['db/'] } } };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: null });
+    const byPerson = await post({ mergePolicy: on });
+    expect(byPerson.status).toBe(200);
+    expect((await byPerson.json()).gitConfig.mergePolicy.reviewByRisk).toEqual(on.reviewByRisk);
+
+    // The same write from an API key (an agent, an MCP session) is refused.
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: null });
+    const byKey = await post({ mergePolicy: on }, { authorization: 'Bearer bld_x' });
+    expect(byKey.status).toBe(403);
+    expect((await byKey.json()).field).toBe('mergePolicy.reviewByRisk');
+
+    // A person saving the tier alone keeps the stored setting.
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { mergePolicy: on } });
+    const kept = await post({ mergePolicy: { tier: 'human' } });
+    expect(kept.status).toBe(200);
+    expect((await kept.json()).gitConfig.mergePolicy).toEqual({ tier: 'human', reviewByRisk: on.reviewByRisk });
+  });
+
+  it('parses releaseConfig.summaryApproval (spec 62e985a8 R-6) and refuses a non-boolean', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+    const post = (rc: unknown) => POST(new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ releaseConfig: rc }),
+    }), { params: mockParams });
+    const ok = await post({ enabled: true, strategy: 'branch_merge', prodBranch: 'main', summaryApproval: false });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).releaseConfig.summaryApproval).toBe(false);
+    expect((await post({ enabled: true, strategy: 'branch_merge', prodBranch: 'main', summaryApproval: 'no' })).status).toBe(422);
+  });
+
   it('persists branchStrategy=direct and round-trips it', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });

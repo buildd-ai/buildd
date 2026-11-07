@@ -32,7 +32,7 @@ assertions:
   - id: "arm-assignment-randomizer"
     type: "symbol"
     name: "hashUnitInterval"
-    path: "packages/core/experiment-randomizer.ts"
+    path: "packages/core/arm-randomizer.ts"
     skip_until: "2026-12-19"
     skip_reason: "hashUnitInterval genuinely shipped (extracted from the memory-digest arm ahead of the registry) — not a false positive — but it is pre-existing infrastructure this doc reuses, not one of its remaining deliverables (lifecycle states, pin manifest, stopping rules). Unsuppressed, it would make the doc read as implemented while those are unbuilt."
   - id: "experiment-cleanup-task-precedent"

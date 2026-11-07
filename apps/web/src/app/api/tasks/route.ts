@@ -54,9 +54,9 @@ import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
 import { isUuid } from '@/lib/uuid';
-import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
+import { resolveFiledAccess, resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
 import { checkDependencyReach, dependencyViewerOf, UNREACHABLE_DEPENDENCY_ERROR } from '@/lib/task-dependency-reach';
-import { FILING_TARGETS_CONTEXT_KEY, parseFilingTargets, type TaskDelegation } from '@buildd/core/token-delegation';
+import { ACCESS_NEEDS_CONTEXT_KEY, FILING_TARGETS_CONTEXT_KEY, parseFilingTargets, stampTaskAccess, withTaskAccess, type TaskDelegation } from '@buildd/core/token-delegation';
 import {
   GATE_SLUGS,
   fireGateEvent,
@@ -586,6 +586,9 @@ export async function POST(req: NextRequest) {
       // workspaces it declares it will file tasks in (lib/task-delegation.ts).
       delegation: rawDelegation,
       filingTargets: rawFilingTargets,
+      // Provider access the task needs, e.g. [{ provider: 'neon', access: 'read', reason }]:
+      // granted at filing when a person who can decide access files it, else a need the claim holds on.
+      access: rawAccess,
       // Explicit PR reach grant for coordination tasks (person only): explicit PR numbers or workspace-wide scope.
       prReachScope: rawPrReachScope,
     } = body;
@@ -816,6 +819,22 @@ export async function POST(req: NextRequest) {
     if (!filingTargets.ok) return NextResponse.json({ error: filingTargets.error }, { status: 400 });
     if (filingTargets.targets.length > 0) {
       incomingContext = { ...(incomingContext ?? {}), [FILING_TARGETS_CONTEXT_KEY]: filingTargets.targets } as typeof rawIncomingContext;
+    }
+    // Access declared at filing (lib/capability-grants-filed.ts): always a
+    // need in context; also a grant on the task's delegation when the filer is
+    // a person who can decide access requests. A write is refused here.
+    let accessOutcome: 'granted' | 'needs_grant' | null = null;
+    if (rawAccess !== undefined && rawAccess !== null) {
+      const filed = await resolveFiledAccess(rawAccess, workspaceId, grantPerson);
+      if (!filed.ok) return NextResponse.json({ error: filed.error }, { status: filed.status });
+      if (filed.needs.length > 0) {
+        incomingContext = { ...(incomingContext ?? {}), [ACCESS_NEEDS_CONTEXT_KEY]: filed.needs } as typeof rawIncomingContext;
+        accessOutcome = 'needs_grant';
+        if (filed.canGrant && grantPerson) {
+          taskDelegation = withTaskAccess(taskDelegation, stampTaskAccess(filed.needs, grantPerson), { userId: grantPerson });
+          accessOutcome = 'granted';
+        }
+      }
     }
     gateWorkspaceId = workspaceId;
 
@@ -2114,6 +2133,10 @@ export async function POST(req: NextRequest) {
       } : {}),
       ...(duplicateSuggestion ? { duplicateSuggestion } : {}),
       ...(specWarnings.length > 0 ? { specWarnings } : {}),
+      // granted: its runs get the access with no ask. needs_grant: it waits at
+      // claim (access_unmet) until a person grants it on the task page, unless
+      // a role or team policy auto-grants the read.
+      ...(accessOutcome ? { accessOutcome } : {}),
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'file_anyway_reason_required') {
