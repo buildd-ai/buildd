@@ -45,7 +45,6 @@ const UNIT_TEST_ROOTS = [
  */
 export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
   'apps/web/src/app/api/analytics/procedure-digest.test.ts',
-  'apps/web/src/app/api/workers/claim/skill-usage.test.ts',
   'packages/core/__tests__/skill-candidate-extract.test.ts',
   'packages/core/__tests__/skill-candidate-isolation.test.ts',
   'packages/core/__tests__/skill-candidate-sanitiser.test.ts',

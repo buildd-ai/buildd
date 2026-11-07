@@ -4159,6 +4159,19 @@ export const workspaceSkills = pgTable('workspace_skills', {
   accountIdx: index('workspace_skills_account_idx').on(t.accountId),
 }));
 
+// Record-only claim counter per skill (spec "Skill candidates, usage telemetry
+// and retirement"). One row per skill, raised by one each time a claim delivers
+// it; nothing reads it to act yet.
+export const skillUsage = pgTable('skill_usage', {
+  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).primaryKey(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  claimCount: integer('claim_count').notNull().default(0),
+  firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }).notNull().defaultNow(),
+  lastClaimedAt: timestamp('last_claimed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  teamIdx: index('skill_usage_team_idx').on(t.teamId),
+}));
+
 // Per-task routing outcome — captured on completion/failure so the calibration
 // cron can quantify whether the router's model pick matched reality.
 // See plans/buildd/smart-model-routing.md — feedback loop requires this table.
