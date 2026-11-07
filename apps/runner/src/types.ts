@@ -890,6 +890,8 @@ export interface LocalUIConfig {
   model: string;
   // LLM provider configuration (default: anthropic)
   llmProvider?: ProviderConfig;
+  // Per-machine loopback model (Ollama); see local-model-endpoint.ts
+  localModel?: import('./local-model-endpoint').LocalModelEndpoint;
   // Serverless mode (no server connection)
   serverless?: boolean;
   // Direct access URL for this runner instance

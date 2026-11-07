@@ -8,6 +8,7 @@ import { join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
 import { headlessRunnerKey, runnerHostName, wslIdentityNotice } from './runner-host';
 import { resolveBuilddServer } from './server-url';
+import { resolveLocalModelEndpoint } from './local-model-endpoint';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { DEFAULT_LOGIN_MODE, freeSlots, parseLoginMode } from '@buildd/shared';
 import { sandboxPosture } from './isolation-check';
@@ -748,6 +749,7 @@ const config: LocalUIConfig = {
   model: process.env.MODEL || savedConfig.model || bundledTierEntry('standard').model,
   // LLM provider (OpenRouter, etc.)
   llmProvider: buildProviderConfig(),
+  localModel: resolveLocalModelEndpoint(process.env),
   // Serverless only if no API key configured
   serverless: resolvedApiKey ? false : (savedConfig.serverless || false),
   // Direct access URL (auto-detected or explicit override)

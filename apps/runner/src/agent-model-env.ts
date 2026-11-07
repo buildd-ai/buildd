@@ -42,6 +42,7 @@
 import type { ClaimModelEndpoint } from '@buildd/shared';
 import { mapAgentModel } from '@buildd/core/agent-endpoint';
 import type { ProviderConfig } from './types';
+import { applyLocalModelEnv, type LocalModelEndpoint } from './local-model-endpoint';
 
 export const ANTHROPIC_API_ORIGIN = 'https://api.anthropic.com';
 export const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api';
@@ -85,6 +86,12 @@ export interface ModelEnvInput {
    * server credential: the run fails closed rather than sending the key there.
    */
   runnerLocalAllowed?: boolean;
+  /**
+   * This runner's own loopback model endpoint (local-model-endpoint.ts). When
+   * set (and runnerLocalAllowed) it wins over a team endpoint and a per-machine
+   * provider: all model traffic stays on this machine. Unset = nothing changes.
+   */
+  localModel?: LocalModelEndpoint;
 }
 
 /** Machine model variables removed from the agent env when runnerLocalAllowed is false. */
@@ -106,6 +113,8 @@ export interface ModelEnvResult {
   toolSearch: boolean;
   /** Origin of the effective base URL (no path, no userinfo), when one is set and parseable. */
   baseUrlOrigin?: string;
+  /** The run's model traffic goes to this machine's local model endpoint. */
+  local?: boolean;
   injected: ServerCredential[];
   /** Server credentials that were available but not given to the agent. */
   withheld: ServerCredential[];
@@ -172,6 +181,16 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
   const llmProvider = localAllowed ? input.llmProvider : undefined;
   const inputMachineLogin = localAllowed ? input.machineLogin : null;
   if (!localAllowed) for (const k of MACHINE_MODEL_VARS) delete env[k];
+
+  // The machine's own local model: nothing server-managed reaches it.
+  if (localAllowed && input.localModel) {
+    applyLocalModelEnv(env, input.localModel, isCodexTask);
+    return {
+      env, endpoint: 'custom', local: true, baseUrlOrigin: originOf(input.localModel.baseUrl),
+      injected: [], withheld: !isCodexTask && serverApiKey ? ['serverApiKey'] : [],
+      teamEndpointIgnored: !!input.modelEndpoint || !!input.teamEndpointWithheld, toolSearch: false,
+    };
+  }
 
   // Only the team endpoint branch below may turn deferred tool loading on.
   delete env[TOOL_SEARCH_ENV];
