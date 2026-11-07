@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { stableCodexHomeIsolatedPath as _stableCodexHomeIsolatedPath } from './isolation-paths.js';
+import { codexLocalProviderToml, type LocalModelEndpoint } from './local-model-endpoint';
 import { restrictToOwnerAcl, tryRestrictToOwnerAcl } from './secure-file';
 
 export { stableCodexHomeIsolatedPath } from './isolation-paths.js';
@@ -138,6 +139,8 @@ export interface CodexMcpConfig {
    * `git fetch`/`add`/`commit` fail without them.
    */
   writableRoots?: string[];
+  /** Per-machine local model (Ollama): emit a model_providers entry for it. */
+  localModel?: LocalModelEndpoint;
 }
 
 /**
@@ -187,12 +190,15 @@ export function materializeCodexHome(workerId: string): { codexHome: string } {
 export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): void {
   fs.mkdirSync(codexHome, { recursive: true });
   const mcpUrl = `${config.builddServer}/api/mcp?workspace=${encodeURIComponent(config.workspaceId)}&worker=${encodeURIComponent(config.workerId)}`;
+  const local = config.localModel ? codexLocalProviderToml(config.localModel) : undefined;
   const content = [
+    ...(local ? local.topLevel : []),
     // Reasoning effort (Phase 3C) MUST be a TOP-LEVEL key emitted BEFORE any
     // `[table]` header — otherwise TOML scopes it INTO the table
     // (`mcp_servers.buildd.model_reasoning_effort`), which `--strict-config`
     // rejects as an unknown field. Verified live against codex-cli 0.140.
     ...(config.effort ? [`model_reasoning_effort = ${tomlString(codexReasoningEffort(config.effort))}`, ''] : []),
+    ...(local ? local.tables : []),
     '[mcp_servers.buildd]',
     `url = ${tomlString(mcpUrl)}`,
     `bearer_token_env_var = ${tomlString(config.bearerTokenEnvVar)}`,
