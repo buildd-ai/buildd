@@ -4579,7 +4579,9 @@ export class WorkerManager {
         toolSearchDisabled: worker.toolSearchDisabled,
         budgetModel: bundledTierEntry('budget').model,
         runnerLocalAllowed,
+        localModel: this.config.localModel,
       });
+      const localModel = modelEnv.local ? this.config.localModel : undefined;
       // Preflight: a Codex task whose team agent model endpoint has no
       // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
       // fail clearly rather than silently falling back to local Codex auth as
@@ -4714,7 +4716,8 @@ export class WorkerManager {
           : undefined;
 
         // Use this machine's Codex login unless personal_only forbids it.
-        const machineCodexAuth = localCodexAuthPath();
+        // A local model needs no login; the machine's own is never linked in.
+        const machineCodexAuth = localModel ? null : localCodexAuthPath();
         const codexLogin = decideCodexLogin({
           serverCredentialType: worker.codexCredential?.credentialType ?? null,
           localAuthPath: machineCodexAuth,
@@ -4730,7 +4733,7 @@ export class WorkerManager {
           linkMachineCodexAuth(_ch, machineCodexAuth);
           console.log(`[Worker ${worker.id}] Codex login: this machine's own (codex login on the runner host)${worker.codexCredential ? '; the server-delivered Codex login is not used' : ''}`);
           sessionLog(worker.id, 'info', 'codex_login_source', `source=machine${worker.codexCredential ? ' server_login=skipped' : ''}`, task.id);
-        } else if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
+        } else if (!localModel && worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
           // A: API key credential — inject as env var. Stable home still needed for
           // config.toml (MCP servers, reasoning effort) but auth.json is not used.
           const { codexHome: home } = ensureStableCodexHome(worker.id, codexIsolatedPath);
@@ -4750,6 +4753,7 @@ export class WorkerManager {
             teamEndpoint: modelEnv.endpoint === 'team',
             authJson,
             envApiKey: cleanEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+            local: modelEnv.local,
           });
           sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
           worker.route = codexRunRoute({
@@ -4760,6 +4764,7 @@ export class WorkerManager {
             openAiBaseUrl: modelEnv.endpoint === 'team' ? undefined : cleanEnv.OPENAI_BASE_URL,
             codexLogin,
             credentialScope: worker.credentialDecision?.scope,
+            local: modelEnv.local,
           });
           if (worker.route) sessionLog(worker.id, 'info', 'run_route', `bucket=${worker.route.bucket} provider=${worker.route.provider} owner=${worker.route.owner}`, task.id);
         }
@@ -4822,6 +4827,7 @@ export class WorkerManager {
           workerId: worker.id,
           bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
           writableRoots: worktreeGitWritableRoots(cwd),
+          ...(localModel ? { localModel } : {}),
           ...(codexEffort ? { effort: codexEffort } : {}),
           ...(codexAdditionalServers.length > 0 ? { additionalMcpServers: codexAdditionalServers } : {}),
         });
@@ -5251,7 +5257,9 @@ export class WorkerManager {
         // Through a team endpoint the wire name may be an alias (§5); the
         // native id stays what is recorded and priced.
         ...(() => {
-          const wire = endpointSessionModels(teamEndpointApplied ? worker.modelEndpoint : undefined, { model: sessionModel, fallbackModel });
+          const wire = localModel
+            ? { model: localModel.model, fallbackModel: undefined as string | undefined }
+            : endpointSessionModels(teamEndpointApplied ? worker.modelEndpoint : undefined, { model: sessionModel, fallbackModel });
           return { model: wire.model, ...(wire.fallbackModel ? { fallbackModel: wire.fallbackModel } : {}) };
         })(),
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
@@ -5795,9 +5803,11 @@ export class WorkerManager {
       // account"). The runner's configured model is Claude by default, so for Codex
       // tasks strip a Claude model id and let Codex use the account default (or a
       // genuine codex model id passes through). Claude tasks are unaffected.
-      const backendModel = isCodexTask && /^claude/i.test(sessionModel || '')
-        ? undefined
-        : sessionModel;
+      const backendModel = localModel
+        ? localModel.model
+        : isCodexTask && /^claude/i.test(sessionModel || '')
+          ? undefined
+          : sessionModel;
 
       emitPhase('session_start');
       const backendStream = backend.runStreamed({
