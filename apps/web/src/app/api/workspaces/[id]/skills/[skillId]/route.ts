@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { scheduleSkillIndex, scheduleSkillRemoval } from '@/lib/skills/knowledge';
 import { NextRequest, NextResponse } from 'next/server';
 import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { patchClaudeAiArtifactsMetadata } from '@buildd/shared';
@@ -15,6 +16,7 @@ import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/rol
 import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isRestoration, recordRestored } from '@buildd/core/skill-lifecycle-events';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -208,6 +210,7 @@ export async function PATCH(
             .returning();
 
         const updatedSkill = updated;
+        if (isRestoration(existing.enabled, updatedSkill.enabled)) await recordRestored(updatedSkill);
         if (updatedSkill.isRole && isStorageConfigured()) {
             const oldStorageKey = existing.configStorageKey;
             const bundle = await packageRoleConfig(id, {
@@ -238,6 +241,7 @@ export async function PATCH(
             updatedSkill.configStorageKey = configStorageKey;
         }
 
+        scheduleSkillIndex(updatedSkill);
         return NextResponse.json({ skill: updatedSkill });
     } catch (error) {
         console.error('Update workspace skill error:', error);
@@ -289,6 +293,7 @@ export async function DELETE(
             .delete(workspaceSkills)
             .where(eq(workspaceSkills.id, skillId));
 
+        scheduleSkillRemoval(id, skillId);
         return NextResponse.json({ success: true });
     } catch (error) {
         console.error('Delete workspace skill error:', error);

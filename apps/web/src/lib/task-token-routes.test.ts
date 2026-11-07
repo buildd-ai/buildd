@@ -90,6 +90,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/stats/usage/route.ts',
   'apps/web/src/app/api/tasks/[id]/approve-plan/route.ts',
   'apps/web/src/app/api/tasks/[id]/error-traces/route.ts',
+  'apps/web/src/app/api/tasks/[id]/procedure-digest/route.ts',
   'apps/web/src/app/api/tasks/[id]/evidence/route.ts',
   'apps/web/src/app/api/tasks/[id]/messages/route.ts',
   'apps/web/src/app/api/tasks/[id]/notes/route.ts',

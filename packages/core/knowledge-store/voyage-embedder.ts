@@ -8,7 +8,7 @@ const DEFAULT_DIMENSIONS = 1024;
 
 export type VoyageModel = 'voyage-4-large' | 'voyage-code-3';
 
-const CODE_CORPORA = new Set<Corpus>(['code', 'docs', 'spec']);
+const CODE_CORPORA = new Set<Corpus>(['code', 'docs', 'spec', 'skill']);
 
 interface VoyageResponse {
   data: Array<{ embedding: number[]; index: number }>;
@@ -257,7 +257,7 @@ export function isCodeCorpus(corpus: Corpus): boolean {
 // voyage-code-3 outperforms voyage-4-large on code retrieval while matching
 // it on prose — so code/docs/spec all use it. The same 1024-dim HNSW index
 // serves both models; namespace filtering provides semantic isolation.
-const CODE_MODEL_CORPORA = new Set<Corpus>(['code', 'docs', 'spec']);
+const CODE_MODEL_CORPORA = new Set<Corpus>(['code', 'docs', 'spec', 'skill']);
 
 /**
  * Return the right VoyageEmbedder for a given corpus:
