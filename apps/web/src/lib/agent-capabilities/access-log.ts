@@ -65,15 +65,8 @@ export interface AccessItem {
   query?: { sql: string; sqlTruncated: boolean; rowCount: number | null; durationMs: number | null; truncated: boolean } | null;
 }
 
-export type GrantSource = 'filed' | 'role_policy' | 'team_policy' | 'asked';
-
-/** Plain words for where a grant came from (the task page's Access section). */
-export const GRANT_SOURCE_TEXT: Record<GrantSource, string> = {
-  filed: 'filed with the task',
-  role_policy: "the role's standing policy",
-  team_policy: "the team's policy",
-  asked: 'asked mid-run, approved by a person',
-};
+import type { GrantSource } from './grant-source';
+export { GRANT_SOURCE_TEXT, type GrantSource } from './grant-source';
 
 /** Pure: where a capability row's grant came from, read from its reason code. */
 export function grantSourceOf(row: Pick<CapabilityRow, 'capability' | 'decision' | 'reasonCode'>): GrantSource | null {

@@ -21,7 +21,8 @@
 import Chip from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
 import { ZonedTime } from '@/components/DisplayTimezone';
-import { GRANT_SOURCE_TEXT, type AccessItem } from '@/lib/agent-capabilities/access-log';
+import type { AccessItem } from '@/lib/agent-capabilities/access-log';
+import { GRANT_SOURCE_TEXT } from '@/lib/agent-capabilities/grant-source';
 
 const ROW = 'flex flex-wrap md:flex-nowrap items-baseline gap-x-3 gap-y-1 px-3 py-2 md:px-4 border-b border-border-default/40 last:border-b-0';
 
