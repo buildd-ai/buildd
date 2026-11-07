@@ -100,8 +100,8 @@ waiting. Each message comes back once.
   on `timedOut: true` call again). Do not call `update_progress` while
   parked. Unanswered questions expire (24 h, 4 h in a mission).
 - **Waiting on access you asked for** (`request_capability` answered
-  `pending_approval`): the run is held. `complete_task` is refused
-  (`capability_request_pending`) until a person answers; the decision
+  "pending_approval"): the run is held. `complete_task` is refused
+  ("capability_request_pending") until a person answers; the decision
   reaches you as a message, and asking again returns the same request with
   its status. Keep doing work that does not need it. If you no longer need
   it, `buildd action=withdraw_capability_request params={ requestId }`. If

@@ -27,6 +27,26 @@
 import type { BlockedByCapability, ProceededWithout } from '@buildd/shared';
 
 /** The team's wait window before an unanswered request expires. */
+/**
+ * The capability a production database read is asked under. Defined here, in
+ * core, because the completion hold reads it; capability-database-query.ts
+ * (connectors module) re-exports it.
+ */
+export const DATABASE_QUERY_CAPABILITY = 'database.query';
+
+const RISK_VERB: Record<string, string> = { read: 'Read', query: 'Query', write: 'Write to', admin: 'Administer' };
+
+/**
+ * What a held request asked for, in the words agent-facing refusals and
+ * notices use: "Read neon · logs". The dashboard's richer label (catalog
+ * provider names) is accessAsk in capability-grants-view.ts, a module file
+ * core does not import.
+ */
+export function heldRequestAsk(r: Pick<HeldRequestRow, 'capability' | 'provider' | 'risk' | 'tool' | 'resource'>): string {
+  const what = r.capability === 'model.inference' ? `Use ${r.provider} models` : `${RISK_VERB[r.risk] ?? 'Use'} ${r.provider}`;
+  return [what, r.tool, r.resource].filter(Boolean).join(' · ');
+}
+
 export const DEFAULT_ACCESS_WAIT_WINDOW_SECONDS = 4 * 60 * 60;
 export const MIN_ACCESS_WAIT_WINDOW_SECONDS = 5 * 60;
 export const MAX_ACCESS_WAIT_WINDOW_SECONDS = 7 * 24 * 60 * 60;

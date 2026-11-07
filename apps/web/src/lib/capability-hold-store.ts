@@ -23,10 +23,10 @@ import { and, eq, inArray, lte } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { recordCapabilityDecision } from './agent-capabilities/audit';
 import type { AgentPrincipal } from './agent-capabilities/principal';
-import { accessAsk } from './capability-grants-view';
-import { DATABASE_QUERY_CAPABILITY } from './capability-database-query';
 import {
   CLOSE_REASONS,
+  DATABASE_QUERY_CAPABILITY,
+  heldRequestAsk,
   accessDecisionNotice,
   accessNoticeMarker,
   completionHoldVerdict,
@@ -45,8 +45,7 @@ function toHeld(r: GrantRow): HeldRequestRow {
   };
 }
 
-const askOf = (r: Pick<HeldRequestRow, 'capability' | 'provider' | 'risk' | 'tool' | 'resource'>) =>
-  accessAsk({ capability: r.capability, provider: r.provider, risk: r.risk as 'read' | 'query' | 'write' | 'admin', tool: r.tool, resource: r.resource, environment: null });
+const askOf = heldRequestAsk;
 
 /** Why a granted row cannot be spent on this deployment, or null. */
 export function unusableGrantReason(r: Pick<HeldRequestRow, 'capability'>, env: NodeJS.ProcessEnv = process.env): string | null {

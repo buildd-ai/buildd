@@ -25,7 +25,7 @@
  * Spec: docs/specs/database-query-agent-capability.md
  */
 
-export const DATABASE_QUERY_CAPABILITY = 'database.query';
+export { DATABASE_QUERY_CAPABILITY } from './capability-hold';
 /** The provider an agent names to ask for it. Neon is the first database:query provider. */
 export const DATABASE_QUERY_PROVIDER = 'neon';
 /** The role the query runs as; scripts/query-role-grants.ts prints its grants. */
