@@ -1,0 +1,136 @@
+{
+  "formatVersion": 2,
+  "id": "find-absent-quota",
+  "version": 1,
+  "contentHash": "8db613dbd795621297a9bf352eca1dee82c3fb171b0c41718fa28a7e6217f180",
+  "category": "find-by-behaviour",
+  "files": {
+    "snapshot": [
+      "snapshot/README.md",
+      "snapshot/config/defaults.json",
+      "snapshot/docs/ROADMAP.md",
+      "snapshot/package.json",
+      "snapshot/src/config.ts",
+      "snapshot/src/generated/routes.gen.ts",
+      "snapshot/src/handlers/accounts.ts",
+      "snapshot/src/handlers/entries.ts",
+      "snapshot/src/server.ts",
+      "snapshot/src/ui/debounce.ts",
+      "snapshot/test/server.spec.ts",
+      "snapshot/third_party/tiny-id/index.ts",
+      "snapshot/third_party/tiny-id/package.json"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/answer.json"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "cites-config",
+        "cites-generated"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/answer.json",
+        "candidates/cites-config/answer.json",
+        "candidates/cites-generated/answer.json"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 600,
+    "maxTurns": 30,
+    "toolBudget": 60
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "find"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented project. The behaviour is deliberately absent; a config key, a generated table and a UI debounce match by name.",
+  "expected": {
+    "kind": "abstain",
+    "searchScope": {
+      "filesSearched": "all-snapshot",
+      "dependencyTreeSearched": true,
+      "generatedAndConfigSearched": true,
+      "method": "author-session: scripted keyword audit of every snapshot file, plus a read of the call graph from the entry points",
+      "auditor": "author-session",
+      "identifiers": [
+        "rateLimit",
+        "rate_limit",
+        "throttle",
+        "requestsPerMinute",
+        "limiter",
+        "limitKey",
+        "quota",
+        "tokenBucket",
+        "slidingWindow",
+        "perMinute"
+      ],
+      "behaviourKeywords": [
+        "429",
+        "too many requests",
+        "per minute",
+        "per caller",
+        "reject",
+        "exceeded",
+        "count requests by caller"
+      ],
+      "confirmer": "independent-reviewer-agent (separate subagent session; read every file in the tree and traced entry points; was not shown the expected answer or the candidates)"
+    }
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "scope recorded, confirmed by a second person"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

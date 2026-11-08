@@ -3,6 +3,58 @@
   "suiteVersion": "v2",
   "formatVersion": 2,
   "scoringVersion": "score-v2",
-  "skills": ["find", "review", "long-context", "compaction", "fix"],
-  "cases": []
+  "skills": [
+    "find",
+    "review",
+    "long-context",
+    "compaction",
+    "fix"
+  ],
+  "cases": [
+    {
+      "id": "change-board-helper-markers",
+      "version": 1,
+      "contentHash": "1761354731c5cb46106c48a7776b844b136627871dfa69e4b6483eedf60b034a"
+    },
+    {
+      "id": "change-money-currency",
+      "version": 1,
+      "contentHash": "cc14ae0170ddc4d8aaca29b9b8a344e1d8ede87889548535744a8d58e2573e1d"
+    },
+    {
+      "id": "change-soft-delete",
+      "version": 1,
+      "contentHash": "f2815f06584668001d32738cfdf0b63ad386539ff709803d1d8900aa23d4ebcf"
+    },
+    {
+      "id": "debug-date-only-shift",
+      "version": 1,
+      "contentHash": "c1d03a98f0886c36c0cd1a62637a227627d4d8d13211f8912054aed3a3835d17"
+    },
+    {
+      "id": "debug-messageless-failures",
+      "version": 1,
+      "contentHash": "d91d1d3cf21dca88cf06db8380f35f99628c23ac73d007ddeae316a6eaae498a"
+    },
+    {
+      "id": "debug-price-cache-key",
+      "version": 1,
+      "contentHash": "66d2b8f3abf19fb792f2a3c47edb842bef419b963806de459be97f6218795018"
+    },
+    {
+      "id": "find-absent-quota",
+      "version": 1,
+      "contentHash": "8db613dbd795621297a9bf352eca1dee82c3fb171b0c41718fa28a7e6217f180"
+    },
+    {
+      "id": "find-signature-normalizer",
+      "version": 1,
+      "contentHash": "42273db30ee4e4ad05b4e3c25408ce1d8817a9ff8b573e509d8f8aeb74ad4011"
+    },
+    {
+      "id": "find-two-retry-sites",
+      "version": 1,
+      "contentHash": "315f9be494cea61fc4298e7f0f7cf0b88a9f7349a533c770ae366100758766ee"
+    }
+  ]
 }

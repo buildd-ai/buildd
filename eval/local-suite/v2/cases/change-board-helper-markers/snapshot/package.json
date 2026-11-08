@@ -1,0 +1,1 @@
+{ "name": "mission-board", "type": "module", "scripts": { "test": "bun test" } }

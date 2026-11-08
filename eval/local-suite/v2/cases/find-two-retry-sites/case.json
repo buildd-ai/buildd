@@ -1,0 +1,120 @@
+{
+  "formatVersion": 2,
+  "id": "find-two-retry-sites",
+  "version": 1,
+  "contentHash": "315f9be494cea61fc4298e7f0f7cf0b88a9f7349a533c770ae366100758766ee",
+  "category": "find-by-behaviour",
+  "files": {
+    "snapshot": [
+      "snapshot/README.md",
+      "snapshot/package.json",
+      "snapshot/src/http/client.ts",
+      "snapshot/src/http/errors.ts",
+      "snapshot/src/http/transport.ts",
+      "snapshot/src/index.ts",
+      "snapshot/src/net/retry.ts",
+      "snapshot/src/queue/redelivery.ts",
+      "snapshot/src/queue/worker.ts",
+      "snapshot/test/transport.spec.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/answer.json"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "dead-only",
+        "wrong-live",
+        "live-only"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/answer.json",
+        "candidates/dead-only/answer.json",
+        "candidates/live-only/answer.json",
+        "candidates/wrong-live/answer.json"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 600,
+    "maxTurns": 30,
+    "toolBudget": 60
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "find"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented project name and layout, no public counterpart. Holds a never-imported helper that matches the behaviour by name and shape.",
+  "expected": {
+    "kind": "answer",
+    "locations": [
+      {
+        "file": "src/http/transport.ts",
+        "symbol": "sendWithBackoff"
+      },
+      {
+        "file": "src/net/retry.ts",
+        "symbol": "withRetry"
+      }
+    ],
+    "decoys": [
+      "src/queue/redelivery.ts"
+    ],
+    "liveSite": "src/http/transport.ts"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 3 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

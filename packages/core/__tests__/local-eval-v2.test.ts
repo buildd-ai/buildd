@@ -178,6 +178,16 @@ describe('isolation export and leak scan (AC-8)', () => {
     expect(probe(t.files, ['c1', 'c2'])).toContain('2 commits');
     expect(probe(t.files, ['c1'], ['origin'])).toContain('remote');
   });
+  it('a whole-file reference that repeats unchanged snapshot lines is not a leak, a changed line still is', () => {
+    const long = 'export const shared = computeSomethingQuiteLong(argumentOne, two);';
+    const files: CaseFiles = { ...FILES, 'snapshot/src/a.ts': `${long}\nexport const a = 1;\n`, 'reference/src/a.ts': `${long}\nexport const a = 2; // changed and long enough to be fingerprinted\n` };
+    const m = manifest();
+    m.files.reference = ['reference/src/a.ts'];
+    const t = exportAgentTree(m, files);
+    expect(leakFindingsV2(m, files, { files: t.files, commits: ['c1'], remotes: [] })).toEqual([]);
+    const planted = { ...t.files, 'notes.md': 'export const a = 2; // changed and long enough to be fingerprinted' };
+    expect(leakFindingsV2(m, files, { files: planted, commits: ['c1'], remotes: [] }).join()).toContain('line of withheld reference/src/a.ts');
+  });
   it('export fails loudly on a missing snapshot file', () => {
     expect(() => exportAgentTree(manifest(), {})).toThrow('snapshot file missing');
   });

@@ -1,0 +1,100 @@
+{
+  "formatVersion": 2,
+  "id": "debug-date-only-shift",
+  "version": 1,
+  "contentHash": "c1d03a98f0886c36c0cd1a62637a227627d4d8d13211f8912054aed3a3835d17",
+  "category": "causal-debugging",
+  "files": {
+    "snapshot": [
+      "snapshot/CHANGELOG.md",
+      "snapshot/package.json",
+      "snapshot/src/emails.ts",
+      "snapshot/src/sanitize.ts",
+      "snapshot/src/shift.ts",
+      "snapshot/test/sanitize.spec.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/src/shift.ts"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "naive-ms",
+        "strip-dates"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/src/shift.ts",
+        "candidates/naive-ms/src/shift.ts",
+        "candidates/strip-dates/src/shift.ts"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 900,
+    "maxTurns": 40,
+    "toolBudget": 100
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "fix"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "this-repo",
+    "licence": "FSL-1.1-ALv2 (this repository LICENSE); re-written reduction, no copied files",
+    "note": "Reduced from a public fix in this repository to the timestamp-shifting function; the pre-fix failure is the snapshot failing the hidden verifier."
+  },
+  "contamination": "Derived from a public repository fix and its follow-up; names, layout and code are rewritten, but a model that has seen the original may recall the approach.",
+  "expected": {
+    "kind": "verifier"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

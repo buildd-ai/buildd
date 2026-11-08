@@ -346,12 +346,17 @@ export function leakFindingsV2(m: CaseManifestV2, hidden: CaseFiles, probe: Tree
   const hiddenPaths = [...m.files.verifier, ...m.files.reference, ...(m.files.rubric ? [m.files.rubric] : []), ...m.files.candidates.files];
   const hiddenHashes = new Map<string, string>();
   for (const p of hiddenPaths) if (hidden[p] !== undefined && hidden[p].trim().length >= 8) hiddenHashes.set(sha(hidden[p]), p);
+  // A line the agent is meant to see (it is in the snapshot) cannot leak: a reference or candidate that
+  // replaces a whole file legitimately repeats every unchanged line of it.
+  const visible = new Set<string>();
+  for (const sp of m.files.snapshot) for (const line of (hidden[sp] ?? '').split('\n')) visible.add(line.trim());
+  const lines = hiddenLines(hidden, hiddenPaths).filter(([h]) => !visible.has(h));
   for (const [p, c] of Object.entries(probe.files)) {
     if (HIDDEN_PATH.test(p)) out.push(`hidden or grading path present: ${p}`);
     const hp = hiddenHashes.get(sha(c));
     if (hp) out.push(`${p} is byte-identical to withheld ${hp}`);
     // A line-level copy of the hidden material (>= 40 chars) catches a pasted verifier or reference.
-    for (const [h, src] of hiddenLines(hidden, hiddenPaths)) if (c.includes(h)) { out.push(`${p} contains a line of withheld ${src}`); break; }
+    for (const [h, src] of lines) if (c.includes(h)) { out.push(`${p} contains a line of withheld ${src}`); break; }
   }
   if (probe.commits.length > 1) out.push(`workspace has ${probe.commits.length} commits; expected one baseline commit`);
   if (probe.remotes.length) out.push('workspace has a Git remote');
