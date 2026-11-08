@@ -1,0 +1,72 @@
+{
+  "caseId": "change-soft-delete",
+  "version": 2,
+  "contentHash": "e999a16af443d901f168a1ba19987ee83a038786212bc8ae9e49e735caa76346",
+  "admitted": true,
+  "gates": [
+    {
+      "gate": "reference-passes",
+      "ok": true,
+      "detail": "verifier passes the reference"
+    },
+    {
+      "gate": "deterministic",
+      "ok": true,
+      "detail": "3 identical runs"
+    },
+    {
+      "gate": "negative-control-fails",
+      "ok": true,
+      "detail": "fails the snapshot and 4 broken candidate(s)"
+    },
+    {
+      "gate": "independent-of-patch",
+      "ok": true,
+      "detail": "3 different correct solutions pass"
+    },
+    {
+      "gate": "absence-audited",
+      "ok": true,
+      "detail": "not an answer-absent case"
+    },
+    {
+      "gate": "isolation-holds",
+      "ok": true,
+      "detail": "probe agent tree is clean"
+    }
+  ],
+  "verdicts": {
+    "reference": [
+      true,
+      true,
+      true
+    ],
+    "snapshot": [
+      false
+    ],
+    "broken:filter-service-only": [
+      false
+    ],
+    "broken:repeat-delete": [
+      false
+    ],
+    "broken:trash-copy": [
+      false
+    ],
+    "broken:unmarked-destroy": [
+      false
+    ],
+    "alternative:alt": [
+      true
+    ],
+    "alternative:clone-on-write": [
+      true
+    ],
+    "alternative:filtered-find": [
+      true
+    ]
+  },
+  "leaks": [],
+  "toolchain": "bun 1.3.11; linux-arm64",
+  "checkedOn": "2026-11-08"
+}
