@@ -20,6 +20,7 @@ mock.module('drizzle-orm', () => {
   return { and: () => ({}), eq: () => ({}), ne: () => ({}), sql };
 });
 mock.module('@/lib/core-emit', () => ({ emit }));
+mock.module('@/lib/model-observation-store', () => ({ recordObservationEvidence: async () => false }));
 mock.module('@/lib/model-policy-outcomes', () => ({ reportTaskPolicyOutcome: async () => {} }));
 const resolveCompletedTask = mock(async (_id: string, _ws: string) => {});
 mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: async () => {}, resolveCompletedTask }));

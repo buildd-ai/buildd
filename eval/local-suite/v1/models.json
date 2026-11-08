@@ -1,0 +1,31 @@
+{
+  "modelsFormatVersion": 1,
+  "note": "Digests are recorded by the first run that observes the tag, from /api/tags. Never fill one in by hand. Order is the run order: baseline first, then candidates, then later.",
+  "models": [
+    {
+      "tag": "gemma4:26b",
+      "digest": null,
+      "tier": "baseline"
+    },
+    {
+      "tag": "qwen3-coder:30b",
+      "digest": null,
+      "tier": "candidate"
+    },
+    {
+      "tag": "qwen3.5:27b",
+      "digest": null,
+      "tier": "candidate"
+    },
+    {
+      "tag": "devstral-small-2:24b",
+      "digest": null,
+      "tier": "later"
+    },
+    {
+      "tag": "glm-4.7-flash",
+      "digest": null,
+      "tier": "later"
+    }
+  ]
+}

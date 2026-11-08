@@ -150,6 +150,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   get_path_claim_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_decision_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_budget_forecast: one(read('GET /api/health/budget')),
+  get_model_comparison: one(deferred('aggregate read; chat users see it on the Models page')),
   list_connectors: one(read('GET /api/connectors/mounted')),
   resolve_capability: one(deferred('planner/agent discovery before routing; chat users see connectors on Settings')),
   get_usage_stats: one(deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),

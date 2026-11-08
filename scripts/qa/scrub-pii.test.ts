@@ -255,6 +255,8 @@ const SAFE: Record<string, string[]> = {
   github_repos: ['default_branch'],
   workspace_skills: ['content_hash', 'model', 'color', 'config_hash', 'config_storage_key'],
   task_outcomes: ['kind', 'complexity', 'classified_by', 'predicted_model', 'actual_model', 'total_cost_usd', 'exit_cause'],
+  // Closed vocabularies and runner-reported descriptors (model id, backend, quantization); no prompt, path or credential text.
+  model_observations: ['resolved_model', 'endpoint_kind', 'model_version', 'quantization', 'backend', 'harness_version', 'runtime', 'task_class', 'terminal_outcome', 'exit_cause', 'failure_origin', 'cost_basis', 'unavailable', 'review_verdict', 'ci_state', 'spec_verdict', 'pr_outcome', 'evaluation'],
   // arm: 'control' | 'treatment' or a tier_pool_arms id (docs/design/tier-model-pools.md).
   experiment_assignments: ['default_model', 'assigned_model', 'runner_cli_version', 'arm'],
   // Decision labels, versions and model ids; no user content.

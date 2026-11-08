@@ -1,0 +1,194 @@
+{
+  "suiteId": "buildd-local-replay",
+  "suiteVersion": "v1",
+  "formatVersion": 1,
+  "scoringVersion": "score-v1",
+  "policy": {
+    "promptTemplate": "You are working in a TypeScript monorepo checked out at the current directory. Resolve the problem below by editing the source code. Do not edit, skip or delete existing tests to make them pass; you may add tests. There is no network access and no credentials. When you are done, stop and say what you changed.\n\nProblem:\n{{problem}}",
+    "maxTurns": 40,
+    "wallClockSeconds": 1800,
+    "contextTokens": [
+      16384,
+      32768
+    ],
+    "trials": 3,
+    "context": "problem-and-pre-fix-tree-only"
+  },
+  "cases": [
+    {
+      "id": "board-task-context",
+      "title": "Mission board drops task context",
+      "difficulty": "easy",
+      "problem": "On the mission board, a mission-level check task (a final verification, a per-criterion check or an acceptance-test run) shows up as an ordinary cell in the build bar, when it should be treated as a helper run and left out. The helper-run and deliverable-role logic reads markers from a task's `context`, but the function that converts a loaded task row into the board's task input (`toBoardTaskInput` in `apps/web/src/lib/mission-board.ts`) never passes the context along. Make the conversion forward the task's context. The mission page loads that same column under the name `contextDigest`; use it when `context` is absent.",
+      "reference": {
+        "fixSha": "b2de6959affc93c244de9f13347c45d51520769f",
+        "preFixSha": "31e843beaa406e100b18ea85481eac7cb22dd897",
+        "subject": "fix(mission-board): forward task context through toBoardTaskInput (#5817)"
+      },
+      "hiddenTests": [
+        "apps/web/src/lib/mission-board.test.ts"
+      ],
+      "visibleTests": [
+        "apps/web/src/lib/mission-board-waiting.test.ts",
+        "apps/web/src/lib/mission-build-stage.test.ts"
+      ],
+      "fixTouchesFiles": 1,
+      "setup": {
+        "requires": [
+          "bun"
+        ],
+        "network": false,
+        "credentials": false
+      },
+      "expected": "Task input built from a row with `context` carries it through; a row with only `contextDigest` carries that instead; helper markers then classify the task as a helper run.",
+      "contamination": "Replayed from this repository's public history; a model may have seen the fix or its tests in training. Replay evidence only, not an uncontaminated generalisation claim.",
+      "admission": {
+        "preFix": "fail",
+        "reference": "pass",
+        "visibleOnPreFix": "pass",
+        "admittedOn": "2026-11-08",
+        "toolchain": "bun 1.3.11; linux-arm64"
+      }
+    },
+    {
+      "id": "needs-you-names-dependents",
+      "title": "Decision card names the tasks waiting on it",
+      "difficulty": "medium",
+      "problem": "A decision card in the Needs You list builds its summary from the question's context text only, so a person cannot tell what is blocked on their answer. Extend `decisionFromQuestion` in `apps/web/src/lib/needs-you-card.ts` with an optional input `dependents`, a list of task names that wait on the decision. When there are names, append one sentence to the summary naming them: one name reads `<name> waits on this.`, several read `<a>, <b> and <c> wait on this.` Collapse whitespace inside each name and ignore empty names. With no names the summary is unchanged, and when there is no context text the summary is just the waiting sentence. A summary with neither stays null.",
+      "reference": {
+        "fixSha": "9ae3efff310321197e8cdef8a0429bbf2efc11cb",
+        "preFixSha": "7d67658bfe2770a8385354a77f70a80125ac89b2",
+        "subject": "fix(needs-you): name what waits on a decision in its summary (#5808)"
+      },
+      "hiddenTests": [
+        "apps/web/src/lib/needs-you-card.test.ts"
+      ],
+      "visibleTests": [
+        "apps/web/src/lib/mission-decisions.criteria.test.ts"
+      ],
+      "fixTouchesFiles": 1,
+      "setup": {
+        "requires": [
+          "bun"
+        ],
+        "network": false,
+        "credentials": false
+      },
+      "expected": "Summary is the context sentence followed, when present, by the waiting sentence; unchanged without dependents.",
+      "contamination": "Replayed from this repository's public history; a model may have seen the fix or its tests in training. Replay evidence only, not an uncontaminated generalisation claim.",
+      "admission": {
+        "preFix": "fail",
+        "reference": "pass",
+        "visibleOnPreFix": "pass",
+        "admittedOn": "2026-11-08",
+        "toolchain": "bun 1.3.11; linux-arm64"
+      }
+    },
+    {
+      "id": "plan-coordinate-only",
+      "title": "Approving a plan on a coordinate-only mission",
+      "difficulty": "medium",
+      "problem": "A mission can be marked coordinate-only (the stored flag `decompositionSkipped`), meaning the planning agent must not break the goal into tasks. The planning prompt says so, but if the agent returns a plan anyway, `approvePlan` in `apps/web/src/lib/approve-plan.ts` creates the child tasks without checking the flag. Enforce it there: when the planning task belongs to a mission with `decompositionSkipped` set and the planning task's `creationSource` is `orchestrator`, drop every plan step instead of creating tasks, reporting each one in the dropped-steps list with reason `coordinate_only` (extend the reason type). A plan filed by a person or another source is not a decomposition and must still be approved normally, and missions without the flag are unaffected.",
+      "reference": {
+        "fixSha": "55df05654d4c4dee9ba2a3baa64efced6b054163",
+        "preFixSha": "a2a859ed947d702817718a127186e88f3c34e5e0",
+        "subject": "fix(missions): approvePlan honours the persisted decompositionSkipped flag (#5804)"
+      },
+      "hiddenTests": [
+        "apps/web/src/lib/approve-plan.test.ts"
+      ],
+      "visibleTests": [
+        "apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts"
+      ],
+      "fixTouchesFiles": 1,
+      "setup": {
+        "requires": [
+          "bun"
+        ],
+        "network": false,
+        "credentials": false
+      },
+      "expected": "Orchestrator plan on a coordinate-only mission creates no tasks and lists each step as dropped with coordinate_only; other plans unchanged.",
+      "contamination": "Replayed from this repository's public history; a model may have seen the fix or its tests in training. Replay evidence only, not an uncontaminated generalisation claim.",
+      "admission": {
+        "preFix": "fail",
+        "reference": "pass",
+        "visibleOnPreFix": "pass",
+        "admittedOn": "2026-11-08",
+        "toolchain": "bun 1.3.11; linux-arm64"
+      }
+    },
+    {
+      "id": "build-complete-predicate",
+      "title": "One definition of a finished build (rejected at admission)",
+      "difficulty": "hard",
+      "problem": "Three places decide whether a mission's build is finished and each uses its own rule, so they disagree. The mission card (`completionAttempted` in `apps/web/src/lib/mission-card-view.ts`) uses `progress >= 100`; the criteria evaluation (`buildDone` in `apps/web/src/lib/mission-criteria-eval.ts`) uses `!hasPendingDeliverableWork(tasks)`; and the re-verify trigger (`recheckReason` in `apps/web/src/lib/mission-verify-recheck.ts`) checks that every non-cancelled build deliverable is completed or is the task that just merged. A shared predicate `isBuildComplete` already exists in `apps/web/src/lib/mission-checks.ts`, taking `{ done, total }` deliverable counts, and `missionDeliverableCounts` in `apps/web/src/lib/mission-pulse.ts` computes those counts. Route all three decisions through `isBuildComplete`. For the criteria evaluation, the task rows it loads must carry the columns the counting needs to tell build work from repair, verification and maintenance work (the task's `context` and `roleSlug`). Keep behaviour otherwise the same.",
+      "reference": {
+        "fixSha": "c9b616557c2faa3cb66d8e6bb130fd4992867eee",
+        "preFixSha": "3af733a6dc31d722bc3971f8a9397ae05aed18ee",
+        "subject": "fix: one isBuildComplete predicate for card gate, re-verify trigger and final-verification dispatch (#5809)"
+      },
+      "hiddenTests": [
+        "apps/web/src/lib/mission-criteria-eval.test.ts",
+        "apps/web/src/lib/mission-verify-recheck.test.ts"
+      ],
+      "visibleTests": [
+        "apps/web/src/lib/mission-card-view.test.ts",
+        "apps/web/src/lib/mission-card-views.test.ts"
+      ],
+      "fixTouchesFiles": 4,
+      "setup": {
+        "requires": [
+          "bun"
+        ],
+        "network": false,
+        "credentials": false
+      },
+      "expected": "Final verification is dispatched once build deliverables are complete even if repair or verification tasks remain pending; the card and re-verify trigger agree with the same predicate.",
+      "contamination": "Replayed from this repository's public history; a model may have seen the fix or its tests in training. Replay evidence only, not an uncontaminated generalisation claim.",
+      "admission": {
+        "preFix": "pass",
+        "reference": "pass",
+        "visibleOnPreFix": "pass",
+        "admittedOn": null,
+        "toolchain": "bun 1.3.11; linux-arm64"
+      }
+    },
+    {
+      "id": "connector-no-refresh-token",
+      "title": "Connector login that cannot renew itself is not explained",
+      "difficulty": "hard",
+      "problem": "When a person connects an OAuth connector whose provider issues no refresh token, the login silently expires later with no explanation. Fix it in two places. (1) The connector OAuth callback route (`apps/web/src/app/api/connectors/callback/route.ts`): when the token response has no `refresh_token`, add a `no_refresh_hours` query parameter to the redirect back to the apps settings page, set to the access token lifetime in hours (`expires_in` seconds divided by 3600, rounded, at least 1; use 0 when `expires_in` is absent). The existing `connected` parameter stays. (2) `refreshMcpConnectorCredential` in `apps/web/src/lib/mcp-connector-refresh.ts`: when the stored credential has no refresh token it currently just returns `no_credential`. Keep that return value, but first record why on the secret row by setting its `lastVerificationError` to a message starting `no_refresh_token:` and explaining the login cannot renew itself and needs reconnecting.",
+      "reference": {
+        "fixSha": "36285686caa02a6db070055ddd1bfbb2dc672644",
+        "preFixSha": "c9b616557c2faa3cb66d8e6bb130fd4992867eee",
+        "subject": "fix(connectors): say so when a provider issues no refresh token (#5826)"
+      },
+      "hiddenTests": [
+        "apps/web/src/app/api/connectors/callback/route.test.ts",
+        "apps/web/src/lib/mcp-connector-refresh.test.ts"
+      ],
+      "visibleTests": [
+        "apps/web/src/app/api/connectors/route.test.ts",
+        "apps/web/src/lib/connector-gateway.test.ts"
+      ],
+      "fixTouchesFiles": 4,
+      "setup": {
+        "requires": [
+          "bun"
+        ],
+        "network": false,
+        "credentials": false
+      },
+      "expected": "Redirect carries no_refresh_hours when no refresh token was issued; the refresh path records a no_refresh_token reason on the row and still returns no_credential.",
+      "contamination": "Replayed from this repository's public history; a model may have seen the fix or its tests in training. Replay evidence only, not an uncontaminated generalisation claim.",
+      "admission": {
+        "preFix": "fail",
+        "reference": "pass",
+        "visibleOnPreFix": "pass",
+        "admittedOn": "2026-11-08",
+        "toolchain": "bun 1.3.11; linux-arm64"
+      }
+    }
+  ]
+}

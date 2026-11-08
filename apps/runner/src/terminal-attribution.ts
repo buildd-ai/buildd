@@ -1,5 +1,6 @@
 import type { LocalWorker } from './types';
 import { resolveActualModel } from './prompt-builder';
+import { buildModelObservationPayload } from './model-observation';
 
 /**
  * Cost + model attribution for a terminal worker update.
@@ -25,6 +26,7 @@ export function buildTerminalAttributionPayload(worker: LocalWorker): {
   outputTokens?: number;
   claudeLoginUsed?: ClaudeLoginUsed;
   claudeLoginId?: string;
+  modelObservation?: Record<string, unknown>;
 } {
   const meta = worker.resultMeta;
   const reportedCost = meta?.totalCostUsd;
@@ -48,6 +50,8 @@ export function buildTerminalAttributionPayload(worker: LocalWorker): {
     // Which login that was (host-seat.ts claudeLoginIdentity, a one-way
     // hash), so the wall holds every runner on it, not only this one.
     ...(worker.claudeLoginId ? { claudeLoginId: worker.claudeLoginId } : {}),
+    // Attempt configuration for the per-attempt model observation (no content, no URLs).
+    ...(buildModelObservationPayload(worker) ? { modelObservation: buildModelObservationPayload(worker) } : {}),
   };
 }
 
