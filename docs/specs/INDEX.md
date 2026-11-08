@@ -214,12 +214,14 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
-## Draft (9)
+## Draft (10)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-15
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
+- [Local Tool Call Trace](./local-tool-call-trace.md) · @max — verified 2026-11-08
+  The runner MUST record a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats made after files changed, and send the platform only enum counts, never commands, queries, paths, hashes or output.
 - [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-10-10
   The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-15
