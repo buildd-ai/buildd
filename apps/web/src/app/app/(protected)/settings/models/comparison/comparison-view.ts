@@ -99,16 +99,16 @@ const FINDING_LABEL: Record<string, string> = {
   redundant_read_unchanged: 'file re-read with no change',
   broad_search_rerun_unnarrowed: 'broad search re-run without narrowing',
   command_quoting_retry: 'command retried after a quoting error',
-  poll_without_new_evidence: 'polling with no new evidence',
+  poll_without_new_evidence: 'repeated checks with no new result',
   failure_without_verification: 'failure never followed by a check',
 };
 const FAILURE_LABEL: Record<string, string> = {
   error: 'errors', path_unavailable: 'path unavailable', denied: 'denied', timeout: 'timeouts', cancelled: 'cancelled', nonzero_unmodeled: 'other non-zero exits',
 };
 const REVIEW_LABEL: Record<string, string> = {
-  absence_from_limited_search: 'absence claimed from a limited search',
+  absence_from_limited_search: 'absence from a limited search',
   failure_treated_as_absence: 'failure read as absence',
-  success_after_failed_check: 'success claimed after a failed check',
+  success_after_failed_check: 'success after a failed check',
   claim_contradicted_by_output: 'claim contradicted by output',
   completion_without_verified_scope: 'completion without verified scope',
 };
@@ -120,7 +120,7 @@ export function toolEfficiencyView(c: ConfigSummary): ToolEfficiencyView {
   const noAgg = t.withoutAggregate;
   const total = t.withAggregate + noAgg;
   if (t.withAggregate === 0) {
-    return { empty: `No analysed tool trace for ${plural(total, 'attempt')}. Not recorded, not clean.`, measured: [], estimated: [], coverage: [], review: [], versions: '' };
+    return { empty: `Tool use not recorded for ${plural(total, 'attempt')}.`, measured: [], estimated: [], coverage: [], review: [], versions: '' };
   }
   const measured = [`${t.calls} tool calls across ${plural(t.withAggregate, 'attempt')}${noAgg > 0 ? `, ${noAgg} not recorded` : ''}`];
   if (t.meanP50Ms !== null) measured.push(`median call time about ${durationText(t.meanP50Ms)}`);
@@ -142,4 +142,4 @@ export function toolEfficiencyView(c: ConfigSummary): ToolEfficiencyView {
 }
 
 /** Where a candidate is corrected: on the machine that holds the trace, never on this page. */
-export const CORRECTION_NOTE = 'Candidates are heuristic and never a score. They stay on the runner; confirm or dismiss one there with the tool-trace report command.';
+export const CORRECTION_NOTE = 'Heuristic candidates. Confirm or dismiss on the runner with tool-trace report.';

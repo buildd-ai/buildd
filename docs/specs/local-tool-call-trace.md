@@ -228,7 +228,7 @@ block with four labelled parts: **Measured** (calls, failure classes, median cal
 **Estimated, heuristic candidates** (finding-kind counts, never a score), **Coverage**
 (recorded, dropped, without an observed result, sampled out) and **Reviewer** candidates
 by status (open, confirmed, dismissed). Analyser, schema and reviewer versions are shown.
-Attempts with no analysed trace read "Not recorded, not clean", never zero.
+Attempts with no analysed trace read "Tool use not recorded", not zero.
 
 Candidates stay on the runner, so the page cannot change one. The correction action is
 local: `bun apps/runner/src/tool-trace-report.ts --correct <candidates.json> <id>

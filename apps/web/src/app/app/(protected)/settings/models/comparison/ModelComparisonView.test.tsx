@@ -68,9 +68,9 @@ describe('tool use block', () => {
     timing: { observedCalls: 20, totalMs: 2000, p50Ms: 80, p90Ms: 200, maxMs: 400 },
     coverage: { recorded: 20, dropped: 3, unobserved: 1, sampledOut: 0 }, ...over,
   });
-  it('says not recorded, not clean, when no attempt has an analysed trace', () => {
+  it('says tool use is not recorded when no attempt has an analysed trace', () => {
     const html = render([row(), row()]);
-    expect(html).toContain('No analysed tool trace for 2 attempts. Not recorded, not clean.');
+    expect(html).toContain('Tool use not recorded for 2 attempts.');
     expect(html).not.toContain('tool-efficiency-measured');
   });
   it('separates measured from estimated, shows coverage, versions and candidate status', () => {
@@ -85,7 +85,7 @@ describe('tool use block', () => {
     expect(html).toContain('3 dropped');
     expect(html).toContain('3 candidates: 1 open, 1 confirmed, 1 dismissed');
     expect(html).toContain('Analyser tea-v1, schema 1, reviewer rev-v1');
-    expect(html).toContain('confirm or dismiss one there');
+    expect(html).toContain('Confirm or dismiss on the runner with tool-trace report');
     expect(html.toLowerCase()).not.toContain('wasted');
   });
 });
