@@ -1040,6 +1040,9 @@ export class FakeGithub {
       return { body: { total_count: runs.length, workflow_runs: runs } };
     }
 
+    // Branch rulesets: the fake models none, so no rule restricts the merge method.
+    if (a === 'rules' && b1 === 'branches' && method === 'GET') return { body: [] };
+
     if (a === 'branches' && b1 && method === 'GET') {
       const name = rest.slice(1).join('/');
       const sha = repo.branches.get(name);

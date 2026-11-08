@@ -5317,6 +5317,59 @@ describe('PUT /api/github/pr', () => {
     expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'rebase', 'sha-42');
   });
 
+  describe('merge method the base accepts (release #6051: a merge-only ruleset on main)', () => {
+    const mergeOnlyBase = () => {
+      const fallback = mockGithubApi.getMockImplementation()!;
+      mockGithubApi.mockImplementation(((inst: number, path: string) => {
+        if (path === '/repos/owner/repo') return Promise.resolve({ allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: true });
+        if (path === '/repos/owner/repo/rules/branches/dev') return Promise.resolve([{ type: 'pull_request', parameters: { allowed_merge_methods: ['merge'] } }]);
+        return (fallback as any)(inst, path);
+      }) as any);
+    };
+    const setup = () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, prUrl: null, workspace: WORKSPACE_OK });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+    };
+
+    it('no mergeMethod picks merge when the base ruleset allows only merge commits', async () => {
+      setup();
+      mergeOnlyBase();
+      const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42 } }));
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'merge', 'sha-42');
+    });
+
+    it('an explicit method the base refuses is a 400 naming the allowed ones, not a needs-human, and nothing merges', async () => {
+      setup();
+      mergeOnlyBase();
+      const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42, mergeMethod: 'squash' } }));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ merged: false, reason: 'merge_method_not_allowed', allowedMergeMethods: ['merge'] });
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('an invalid mergeMethod is a 400', async () => {
+      setup();
+      const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42, mergeMethod: 'fast-forward' } }));
+      expect(res.status).toBe(400);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('a real merge refusal on the allowed method still reports the failure', async () => {
+      setup();
+      mergeOnlyBase();
+      mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Repository rule violations found' });
+      const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42 } }));
+      const body = await res.json();
+      expect(body.merged).toBe(false);
+      expect(body.reason).not.toBe('merge_method_not_allowed');
+      expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'merge', 'sha-42');
+      expect(JSON.stringify(body)).toContain('Repository rule violations');
+    });
+  });
+
   it('returns 403 with hint when GitHub App lacks contents:write permission', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({

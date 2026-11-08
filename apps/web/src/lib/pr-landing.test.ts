@@ -1979,6 +1979,41 @@ describe('landPr — merge call failures', () => {
     expect(await land()).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'c1' });
   });
 
+  // Release #6051: the `main` ruleset allows only merge commits; a no-method merge_pr sent
+  // squash, GitHub answered 405, and that read as needs_human(merge_failed).
+  it('no method on a merge-only base merges with a merge commit, not squash', async () => {
+    const read = mock(async () => ['merge' as const]);
+    expect(await land({}, { ...deps(), readAllowedMergeMethods: read })).toMatchObject({ kind: 'merged' });
+    expect(read).toHaveBeenCalledWith(7, 'buildd-ai/buildd', gh.baseRef);
+    expect(mockMergePullRequest.mock.calls.at(-1)![3]).toBe('merge');
+  });
+
+  it('no method where squash is allowed stays squash', async () => {
+    await land({}, { ...deps(), readAllowedMergeMethods: async () => ['squash', 'merge', 'rebase'] });
+    expect(mockMergePullRequest.mock.calls.at(-1)![3]).toBe('squash');
+  });
+
+  it('an explicit method is sent as asked, without reading the base', async () => {
+    const read = mock(async () => ['merge' as const]);
+    await land({ mergeMethod: 'rebase' }, { ...deps(), readAllowedMergeMethods: read });
+    expect(read).not.toHaveBeenCalled();
+    expect(mockMergePullRequest.mock.calls.at(-1)![3]).toBe('rebase');
+  });
+
+  it('a real policy refusal on an allowed method is still a human outcome', async () => {
+    mockMergePullRequest.mockImplementation(async () => ({ merged: false, message: 'Repository rule violations found\n\nRequired status check "build" is expected.' }));
+    const out = await land({}, { ...deps(), readAllowedMergeMethods: async () => ['merge'] });
+    expect(mockMergePullRequest.mock.calls.at(-1)![3]).toBe('merge');
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'merge_failed', reason: expect.stringContaining('Required status check') });
+  });
+
+  it('a 405 method refusal on a method we chose is a wait, not a human outcome; an explicit method stays human', async () => {
+    mockMergePullRequest.mockImplementation(async () => ({ merged: false, message: 'Squash merges are not allowed on this repository.' }));
+    const out = await land({}, { ...deps(), readAllowedMergeMethods: async () => null });
+    expect(out.kind).not.toBe('needs_human');
+    expect(await land({ mergeMethod: 'squash' }, deps())).toMatchObject({ kind: 'needs_human', cause: 'merge_failed' });
+  });
+
   it('any other refusal is a human outcome with the message', async () => {
     mockMergePullRequest.mockImplementation(async () => ({ merged: false, message: 'Repository rule violations found' }));
     expect(await land()).toMatchObject({ kind: 'needs_human', cause: 'merge_failed', reason: expect.stringContaining('Repository rule violations') });
