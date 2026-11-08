@@ -114,3 +114,64 @@ runner (`runner` on `create_task`) only routes it to that machine's runner
 process; it does not make the work local-executor work, and the API cannot pin
 "interactive claim only". The task therefore states the commands and asks for a
 local session; nothing enforces it server-side.
+
+## v2 suite runbook (coding evaluation playground)
+
+Contract: `docs/specs/coding-eval-playground.md`. Cases: `eval/local-suite/v2/`.
+Rules: `packages/core/local-eval-v2.ts` and `local-eval-v2-ops.ts`. The v1 text above is unchanged and v1 runs stay in
+the readout, as a separate block.
+
+### Status: no v2 scores exist, and GPU runs are deferred
+
+**No model has been run against the v2 suite, so there are no scores.** Everything
+below that touches a model is a procedure, not a result. GPU runs are deferred
+until **09:00 America/New_York on 2026-11-08** (`GPU_WINDOW_OPENS_AT`); before then
+`run` refuses every case and starts nothing. What exists and was verified without a
+model: case admission evidence (the hidden verifier passes the reference, fails the
+negative controls and agrees on an alternative solution), the pure graders, ingest
+validation, the per-category aggregation and redaction.
+
+**Known gap before the first run.** Every shipped case is `cpuOnly: true`, and the
+guard never lets a `cpuOnly` case start a model (that flag describes the case's own
+tooling). `run` therefore plans the cases and refuses them with that reason. A case
+version with `cpuOnly: false` and an `estimatedVramMb` is needed first (bump `version`,
+re-seal, re-admit); that is a suite decision, not something the CLI works around.
+
+### Commands (all `bun run scripts/local-eval/cli.ts <command> --suite v2 ...`)
+
+| Command | What it does |
+|---|---|
+| `list [--skill s] [--difficulty d] [--category c] [--context 8192\|16384\|32768] [--resource cpu-only\|needs-gpu\|vram<=N] [--split dev\|sealed-holdout] [--json]` | Lists cases with labels and split. Sealed-holdout cases show as descriptors only. |
+| `inspect --case id` | Prints the brief an agent is allowed to see: instruction, snapshot paths, budgets. Never the verifier, reference, rubric or candidates. |
+| `run --model tag --harness name --context N (--preset smoke \| --all \| --case id) [--trials n] [--track single-context\|tool-retrieval] [--dry-run]` | Plans runs for one explicit model, harness and context policy and applies the inference guard per case. `--preset smoke` is at most four dev cases (find, debugging, review, long-context; exposing cases first), one trial. Do it first; `--all` is every dev case, three trials by default. `--dry-run` prints the plan and starts nothing. Sealed-holdout is never run from here. A case the adapter cannot serve is recorded `unsupported: <capability>` (`--no-tool-calling`, `--no-system-prompt`, `--no-structured-output` declare the adapter), never altered. |
+| `regrade --dir <artifacts>` | Re-scores stored artifacts with the grader id each was recorded with; an unknown grader id is an error, not a substitution. Prints `CHANGED` when the outcome differs from the recorded one. |
+| `redact --dir <runs>` | Rewrites stored artifacts with secret-shaped strings removed and user paths reduced to `~`. |
+| `ingest --dir <runs> --workspace <id>` | Validates and POSTs `run.json` records to `/api/model-observations/replay` (`BUILDD_API_KEY` in the environment). A record containing a secret-shaped string is refused, not sent. A v2 run scored `score-v1` (or the reverse) is rejected (HTTP 422 when every record is refused) and writes nothing. |
+| `prune --dir <runs> [--days 30] [--apply]` | Deletes raw transcripts, diffs, grading output and per-run config older than 30 days; `run.json` is kept. Dry run unless `--apply`. |
+| `validate`, `admit`, `export` | As in the v2 README; CPU only, no model. |
+
+### Order of work once the window is open
+
+1. `gpu-check`, then `run --preset smoke --dry-run`, then the same without `--dry-run`.
+2. Read the smoke runs: harness or infrastructure errors are counted apart from model failures; fix those before spending a full run.
+3. `run --all` for the same policy, then `redact` and `ingest`.
+4. Read `/app/settings/models/comparison` (section "Coding evaluation runs"), `GET /api/model-comparison` (`replay.v2`) or the `get_model_comparison` MCP tool. Same data, three doors.
+
+### Reading the profile
+
+Per configuration, per split (dev and sealed-holdout are never pooled), per category: pass rate with a Wilson interval
+and the runs behind it, cases and trials, cases whose trials disagreed, errors by origin (model, harness, infra),
+median latency and tokens, peak VRAM (a machine-level upper bound), retries, grader flags, and the drilldown a grader
+recorded: review precision and recall, citation correctness, regression success, invariants, constraint retention per
+compaction stage. Unmeasured is shown as "Not recorded", never zero. A paired comparison of two configurations on the
+cases both ran says `insufficient_n` below 20 resolved runs a side. There is no composite score, rank or winner.
+
+**Conclusions to confirm independently.** A run flagged `fabrication`, `wrong_abstention`, `followed_superseded` or
+`constraint_dropped`, or a passing abstention on an absence case, is listed as a candidate. It is not a verdict:
+confirm it with a second search or a person before it supports any claim.
+
+### Redaction and retention
+
+Run records carry ids, labels, counts and rates, never a transcript; the optional `v2` block is bounded and rejects
+unknown fields. Raw agent output stays on the evaluating machine and is pruned after 30 days. Sealed-holdout content
+is never in the repository, only its hash.
