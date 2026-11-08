@@ -24,7 +24,9 @@
  * any non-Anthropic ANTHROPIC_BASE_URL. `ENABLE_TOOL_SEARCH=true` is set only
  * for a Claude run under a team endpoint whose claim says `toolSearch` (the
  * winning row's effective capability) — derived per run, so one runner can
- * serve endpoints that differ. Every other path deletes the variable: it is
+ * serve endpoints that differ. A Claude run on this machine's local model gets
+ * `ENABLE_TOOL_SEARCH=false` (local-model-endpoint.ts: the CLI still defers
+ * tools for a loopback base URL). Every other path deletes the variable: it is
  * not in RUNNER_ENV_PASSTHROUGH, and an inherited one is never trusted.
  *
  * A Codex task applies it differently: `OPENAI_BASE_URL` = the endpoint's

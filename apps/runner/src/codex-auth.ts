@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { stableCodexHomeIsolatedPath as _stableCodexHomeIsolatedPath } from './isolation-paths.js';
-import { codexLocalProviderToml, type LocalModelEndpoint } from './local-model-endpoint';
+import { codexLocalModelCatalog, codexLocalProviderToml, LOCAL_CODEX_CATALOG_FILE, type LocalModelEndpoint } from './local-model-endpoint';
 import { restrictToOwnerAcl, tryRestrictToOwnerAcl } from './secure-file';
 
 export { stableCodexHomeIsolatedPath } from './isolation-paths.js';
@@ -190,7 +190,14 @@ export function materializeCodexHome(workerId: string): { codexHome: string } {
 export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): void {
   fs.mkdirSync(codexHome, { recursive: true });
   const mcpUrl = `${config.builddServer}/api/mcp?workspace=${encodeURIComponent(config.workspaceId)}&worker=${encodeURIComponent(config.workerId)}`;
-  const local = config.localModel ? codexLocalProviderToml(config.localModel) : undefined;
+  // A local model also gets its own model catalog, so Codex has metadata for
+  // the Ollama tag instead of failing over to fallback metadata.
+  let local: ReturnType<typeof codexLocalProviderToml> | undefined;
+  if (config.localModel) {
+    const catalogPath = join(codexHome, LOCAL_CODEX_CATALOG_FILE);
+    fs.writeFileSync(catalogPath, JSON.stringify(codexLocalModelCatalog(config.localModel), null, 2));
+    local = codexLocalProviderToml(config.localModel, catalogPath);
+  }
   const content = [
     ...(local ? local.topLevel : []),
     // Reasoning effort (Phase 3C) MUST be a TOP-LEVEL key emitted BEFORE any
