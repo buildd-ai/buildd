@@ -3,7 +3,7 @@ title: Coding Evaluation Playground
 status: draft
 owner: max
 last_verified: 2026-11-08
-summary: The coding evaluation playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden independent verifiers and admission gates, and report capability profiles, never a single winner.
+summary: The playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden verifiers and admission gates, and report capability profiles, never a single winner.
 domain: surfaces
 surfaces: [packages/core/local-eval.ts, scripts/local-eval/cli.ts, eval/local-suite/v1/suite.json, docs/specs/model-comparison.md]
 related: [model-comparison, model-inference-agent-capability, model-routing-and-tiers]

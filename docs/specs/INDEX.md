@@ -219,7 +219,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
 - [Coding Evaluation Playground](./coding-eval-playground.md) · @max — verified 2026-11-08
-  The coding evaluation playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden independent verifiers and admission gates, and report capability profiles, never a single winner.
+  The playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden verifiers and admission gates, and report capability profiles, never a single winner.
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-15
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 - [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-10-10
