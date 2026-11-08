@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
-  RETENTION_DAYS, caseRow, filterCases, hasSecret, isExpired, permittedBrief, planRuns, redactDeep, redactText, smokeCases, validatePolicy,
+  RETENTION_DAYS, caseRow, filterCases, hasSecret, isExpired, permittedBrief, planRuns, redactDeep, resourceLabel, sealedRow, redactText, smokeCases, validatePolicy,
   type CaseRow, type RunPolicy,
 } from '../local-eval-v2-ops';
 import type { CaseManifestV2 } from '../local-eval-v2';
@@ -100,5 +100,18 @@ describe('redaction and retention', () => {
     expect(isExpired(new Date('2026-11-10T00:00:00Z'), now)).toBe(true);
     expect(isExpired(new Date('2026-12-01T00:00:00Z'), now)).toBe(false);
     expect(RETENTION_DAYS).toBe(30);
+  });
+});
+
+describe('resourceLabel', () => {
+  it('shows a sealed descriptor as unknown, never as a GPU figure', () => {
+    const r = sealedRow({ id: 's', category: 'find-by-behaviour', version: 1, difficulty: 'hard', skills: ['find'], exposing: false });
+    expect(resourceLabel(r)).toBe('resource unknown');
+    expect(resourceLabel(r)).not.toContain('MiB');
+  });
+  it('labels open cases by their recorded need', () => {
+    expect(resourceLabel(row({ cpuOnly: true }))).toBe('cpu-only');
+    expect(resourceLabel(row({ cpuOnly: false, estimatedVramMb: 8192 }))).toBe('gpu 8192MiB');
+    expect(resourceLabel(row({ cpuOnly: false, estimatedVramMb: null }))).toBe('gpu (vram not estimated)');
   });
 });

@@ -55,7 +55,7 @@
     "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
     "note": "Small fixture written from scratch for this case."
   },
-  "contamination": "Authored fixture; invented requirements. The figure asked for is explicitly undecided; a near-by figure (the upload limit) matches by name only.",
+  "contamination": "Authored fixture; invented requirements. The figure asked for is explicitly undecided; a near-by figure (the upload limit) matches by name only. Abstention here is licensed by an in-evidence statement (REQ-341 says the figure is undecided), not by absence from a tree, so there is no search scope to audit: the whole evidence file is the scope and the verifier checks the abstention against that statement. The absence-audited gate therefore reports it as not an answer-absent case.",
   "expected": {
     "kind": "verifier"
   },

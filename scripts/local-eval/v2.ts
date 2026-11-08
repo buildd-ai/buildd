@@ -18,7 +18,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync, appendFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
-  RETENTION_DAYS, caseRow, filterCases, hasSecret, isExpired, permittedBrief, planRuns, redactDeep, redactText, sealedRow, smokeCases, validatePolicy,
+  RETENTION_DAYS, caseRow, filterCases, hasSecret, isExpired, permittedBrief, planRuns, redactDeep, resourceLabel, redactText, sealedRow, smokeCases, validatePolicy,
   type CaseRow, type RunPolicy, type SealedDescriptor,
 } from '../../packages/core/local-eval-v2-ops';
 import { validateRunRecord } from '../../packages/core/local-eval';
@@ -245,7 +245,7 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     if (f.error) { console.error(f.error); return 2; }
     if (has('json')) console.log(JSON.stringify(f.rows, null, 2));
     else {
-      for (const r of f.rows) console.log(`${r.id}\tv${r.version}\t${r.category}\t${r.difficulty}\t${r.split}${r.available ? '' : ' (sealed)'}\t${r.cpuOnly ? 'cpu-only' : `gpu ${r.estimatedVramMb ?? '?'}MiB`}\t${r.skills.join(',')}${r.contextSizes.length ? `\tctx ${r.contextSizes.join('/')}` : ''}`);
+      for (const r of f.rows) console.log(`${r.id}\tv${r.version}\t${r.category}\t${r.difficulty}\t${r.split}${r.available ? '' : ' (sealed)'}\t${resourceLabel(r)}\t${r.skills.join(',')}${r.contextSizes.length ? `\tctx ${r.contextSizes.join('/')}` : ''}`);
       console.log(`${f.rows.length} case(s)`);
     }
     return 0;

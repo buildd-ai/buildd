@@ -36,11 +36,37 @@ describe('shipped v2 cases', () => {
     }
   });
 
-  it('cases run with no GPU and no model', () => {
+  it('every smoke-preset case is GPU-runnable once the window opens; the rest stay cpu-only', async () => {
+    const { caseRow, smokeCases } = await import('../../packages/core/local-eval-v2-ops');
+    const { inferenceGuard } = await import('../../packages/core/local-eval-v2');
+    const smoke = new Set(smokeCases(list.map((m) => caseRow(m, 'dev'))).map((r) => r.id));
+    expect(smoke.size).toBeGreaterThan(0);
     for (const m of list) {
-      expect(m.resources.cpuOnly, m.id).toBe(true);
-      expect(m.resources.estimatedVramMb, m.id).toBeNull();
+      if (smoke.has(m.id)) {
+        expect(m.resources.cpuOnly, m.id).toBe(false);
+        expect(m.resources.estimatedVramMb, m.id).toBeGreaterThan(0);
+        expect(m.version, m.id).toBeGreaterThan(1);
+        const g = inferenceGuard({ cpuOnly: false, estimatedVramMb: m.resources.estimatedVramMb, gpus: [{ index: 0, name: 'x', totalMb: 24000, usedMb: 0 } as never], loadedModels: [], now: new Date('2999-01-01'), purpose: 'model-run' });
+        expect(g.reason, m.id).not.toContain('cpuOnly');
+        expect(g.reason, m.id).not.toContain('no estimatedVramMb');
+      } else {
+        expect(m.resources.cpuOnly, m.id).toBe(true);
+        expect(m.resources.estimatedVramMb, m.id).toBeNull();
+      }
     }
+  });
+
+  it('ctx-unanswerable-limit documents why its abstention needs no search audit', () => {
+    const m = list.find((x) => x.id === 'ctx-unanswerable-limit')!;
+    expect(m.expected.kind).toBe('verifier');
+    expect(m.contamination).toContain('in-evidence statement');
+  });
+
+  it('the absence gate does not claim a second person confirmed an agent-confirmed audit', () => {
+    const m = list.find((x) => x.id === 'find-absent-quota')!;
+    const gate = m.admission!.gates.find((g) => g.gate === 'absence-audited')!;
+    expect(gate.detail).not.toContain('second person');
+    expect(gate.detail).toContain('independent reviewer');
   });
 
   it('answer-absent cases record a confirmer who is not the auditor', () => {

@@ -1,6 +1,6 @@
 {
   "caseId": "debug-date-only-shift",
-  "version": 1,
+  "version": 2,
   "contentHash": "c1d03a98f0886c36c0cd1a62637a227627d4d8d13211f8912054aed3a3835d17",
   "admitted": true,
   "gates": [

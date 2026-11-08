@@ -1,7 +1,7 @@
 {
   "formatVersion": 2,
   "id": "review-authz-gap",
-  "version": 1,
+  "version": 2,
   "contentHash": "6f1d0e2d6e810d8545e4434baadccac1bac8f75a63ccb49c5849087b5803de74",
   "category": "code-review",
   "files": {
@@ -39,8 +39,8 @@
     "bun": "1.x"
   },
   "resources": {
-    "cpuOnly": true,
-    "estimatedVramMb": null,
+    "cpuOnly": false,
+    "estimatedVramMb": 12288,
     "estimatedRamMb": null,
     "wallClockSeconds": 600,
     "maxTurns": 25,
