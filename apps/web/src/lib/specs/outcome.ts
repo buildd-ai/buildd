@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { recordObservationEvidence } from '@/lib/model-observation-store';
 import { artifactReads, specDiscrepancies, specOutcomeVerdicts, specRevisions, specs, tasks } from '@buildd/core/db/schema';
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import {
@@ -265,6 +266,7 @@ export async function recordSpecVerdict(caller: SpecCaller, taskId: unknown, inp
     evidence: { refs, readIds, ...(observed ? { observed } : {}), recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
   await settleVerdictSource(row.id);
+  if (verdict === 'pass' || verdict === 'fail') void recordObservationEvidence({ workspaceId: l.task.workspaceId, taskId: l.task.id }, { specVerdict: verdict });
   return { ok: true, verdictId: row.id, outcome: await fold(l) };
 }
 

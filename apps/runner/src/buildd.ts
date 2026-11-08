@@ -510,6 +510,8 @@ export class BuilddClient {
      * deriving it from resultMeta.
      */
     actualModel?: string;
+    /** Per-attempt model configuration (no content, no URLs); whitelisted again server-side. */
+    modelObservation?: Record<string, unknown>;
     // SDK result metadata
     resultMeta?: Record<string, unknown>;
     // Completion summary (from SDK Stop hook last_assistant_message)

@@ -171,6 +171,7 @@ import {
 import { InstructionAckTracker } from './instruction-acks';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload, claudeLoginUsed } from './terminal-attribution';
+import { newObservationState, startVramSampler } from './model-observation';
 import { claudeCostBasis, cloudCostBasis, codexCostBasis } from './cost-basis';
 import { claudeRunRoute, clearRedoneLogins, cloudRunRoute, codexRunRoute, machineRoutes, nextLoginFailures, type LoginFailures, type RouteProblem, type RunRoute } from './run-route';
 import { runMcpPreflight, settleOptionalConnectorFailures, type McpPreflightFailure } from './mcp-preflight';
@@ -5185,6 +5186,16 @@ export class WorkerManager {
       // behaves exactly as before.
       const sessionModel = resolveSessionModel(task.context, this.config.model);
       worker.sessionModel = sessionModel;
+      {
+        // Per-attempt observation: a label for how the model is reached (never the URL), and
+        // bounded optional VRAM sampling. Content is never recorded.
+        const localObs = modelEnv.local ? this.config.localModel : undefined;
+        worker.observation = newObservationState({
+          ...(localObs ? { endpointKind: 'local_loopback' as const } : {}),
+          ...(localObs?.contextWindow ? { contextWindow: localObs.contextWindow } : {}),
+        });
+        startVramSampler(worker.observation);
+      }
       if (sessionModel !== this.config.model) {
         console.log(`[Worker ${worker.id}] Using per-task model from claim: ${sessionModel} (runner default: ${this.config.model})`);
       }
@@ -7488,6 +7499,7 @@ export class WorkerManager {
                 sig: resultSignature(text),
                 ...(denied ? { skipped: true } : {}),
               };
+              if (!denied && block.is_error === true && worker.observation) worker.observation.toolFailures++;
               if (!denied) {
                 const mode = stuckMode();
                 if (mode !== 'off') {

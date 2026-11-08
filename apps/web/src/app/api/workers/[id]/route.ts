@@ -145,6 +145,7 @@ import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capa
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { recordModelObservation } from '@/lib/model-observation-store';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearTeamCache } from '@/lib/team-cache';
 import { readRound } from '@/lib/read-round';
@@ -4707,6 +4708,17 @@ async function patchWorker(
       if (!shouldAutoRetry) {
         if (!releaseHeld) {
           recordTaskOutcome({ ...outcomeAnalytics, taskId: completedTaskId, outcome: effectiveOutcome }).catch(() => {});
+          // One observation per execution attempt (model-performance-measurement spec). The runner's
+          // descriptor is untrusted and whitelisted; telemetry only, never throws into this path.
+          void recordModelObservation({
+            workerId: id,
+            rawDescriptor: body.modelObservation,
+            actualModel: sessionActualModel,
+            exitCause: outcomeAnalytics.exitCause,
+            status: effectiveOutcome,
+            costUsd: outcomeAnalytics.totalCostUsd as number | string | null,
+            durationMs: outcomeAnalytics.durationMs,
+          });
         }
         // Model policy: the run's duration and cost against the policy decision
         // the claim stored. A no-op unless a policy service issued it.
