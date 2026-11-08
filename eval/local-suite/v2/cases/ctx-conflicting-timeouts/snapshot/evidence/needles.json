@@ -1,0 +1,14 @@
+[
+  {
+    "id": "REQ-188",
+    "text": "REQ-188 (2026-01-12, Platform, limits): The upload API request timeout is 20 seconds."
+  },
+  {
+    "id": "REQ-204",
+    "text": "REQ-204 (2026-04-02, Payments, limits, replaces REQ-188): The upload API request timeout is 30 seconds. This is the current requirement."
+  },
+  {
+    "id": "REQ-219",
+    "text": "REQ-219 (2026-04-02, Platform, limits, replaces REQ-188): The upload API request timeout is 45 seconds. This is the current requirement."
+  }
+]

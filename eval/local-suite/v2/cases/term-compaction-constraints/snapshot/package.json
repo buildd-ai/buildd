@@ -1,0 +1,1 @@
+{ "name": "ledger", "type": "module", "scripts": { "test": "bun test" } }

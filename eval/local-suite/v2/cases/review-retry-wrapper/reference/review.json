@@ -1,0 +1,1 @@
+{"findings":[{"file":"src/payments.ts","line":10,"description":"chargeCard is retried, but the gateway does not de-duplicate and takes no idempotency key: a request that timed out after the charge went through is sent again and charges the card twice"}]}

@@ -4,6 +4,7 @@ import Notice from '@/components/ui/Notice';
 import Section from '@/components/ui/Section';
 import { TonePill } from '@/components/ui/StatePill';
 import type { ConfigSummary, ModelComparison } from '@buildd/core/model-comparison';
+import ReplayProfile from './ReplayProfile';
 import {
   EVIDENCE_NOTICE, NOT_RECORDED, costText, coverageLines, durationText, numericText, rateText, sampleLabel, tokensText, verdictLine,
 } from './comparison-view';
@@ -115,6 +116,8 @@ export default function ModelComparisonView({ data }: { data: ModelComparison })
         )}
         <p className="text-sm text-text-muted mt-2">{data.evidence.controlled.note}</p>
       </Section>
+
+      <ReplayProfile replay={data.replay} />
 
       <Section title="Public benchmark scores">
         <p className="text-sm text-text-muted mb-2">{data.priors.note}</p>
