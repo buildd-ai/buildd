@@ -1,0 +1,1 @@
+ALTER TABLE "model_observations" ADD COLUMN "tool_efficiency" jsonb;

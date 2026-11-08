@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.396.0",
+  "version": "0.396.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -33,6 +33,7 @@
     "./model-catalog-cache": "./model-catalog-cache.ts",
     "./chat-model-eligibility": "./chat-model-eligibility.ts",
     "./model-observation": "./model-observation.ts",
+    "./tool-efficiency": "./tool-efficiency.ts",
     "./model-comparison": "./model-comparison.ts",
     "./local-eval": "./local-eval.ts",
     "./model-prices": "./model-prices.ts",

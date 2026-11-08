@@ -21,6 +21,7 @@
  *   mcp_tool_call                -> tool_use { name:'mcp__'+server+'__'+tool, input:arguments, id }
  *   web_search                   -> tool_use { name:'WebSearch', input:{query}, id }
  *   todo_list                    -> nothing (R7: would trip loop detection)
+ *   completed command            -> ALSO a user tool_result (exit_code + output) when the event has them
  *   failed command/mcp item      -> ALSO a user tool_result block (R2) for error-trace + MCP-failure paths
  *   turn.completed / turn.started / item.started / item.updated / error -> nothing
  *
@@ -45,7 +46,7 @@ function assistantMessage(content: any[]): SdkMessage {
   return { type: 'assistant', message: { role: 'assistant', content } };
 }
 
-function userToolResult(toolUseId: string, text: string, isError: boolean): SdkMessage {
+function userToolResult(toolUseId: string, text: string, isError: boolean, exitCode?: number): SdkMessage {
   return {
     type: 'user',
     message: {
@@ -55,6 +56,8 @@ function userToolResult(toolUseId: string, text: string, isError: boolean): SdkM
           type: 'tool_result',
           tool_use_id: toolUseId,
           ...(isError ? { is_error: true } : {}),
+          // Structured exit code, only when the SDK event carried one (read by ToolTraceRecorder).
+          ...(typeof exitCode === 'number' ? { exit_code: exitCode } : {}),
           content: text,
         },
       ],
@@ -101,11 +104,17 @@ export function mapCodexEventToSdkMessages(event: unknown, _ctx: CodexEventCtx):
           { type: 'tool_use', id, name: 'Bash', input: { command: String(item.command ?? '') } },
         ]),
       ];
+      const exitCode = typeof item.exit_code === 'number' ? item.exit_code : undefined;
       if (commandFailed(item)) {
         const detail =
           String(item.aggregated_output ?? '') ||
-          `command failed${typeof item.exit_code === 'number' ? ` (exit ${item.exit_code})` : ''}`;
-        out.push(userToolResult(id, detail, true));
+          `command failed${exitCode !== undefined ? ` (exit ${exitCode})` : ''}`;
+        out.push(userToolResult(id, detail, true, exitCode));
+      } else if (exitCode !== undefined || typeof item.aggregated_output === 'string') {
+        // Completed command: report what the SDK gave us (exit code, output) so the
+        // local tool trace can observe it. With neither field present nothing is
+        // emitted and the call stays unobserved rather than guessed.
+        out.push(userToolResult(id, typeof item.aggregated_output === 'string' ? item.aggregated_output : '', false, exitCode));
       }
       return out;
     }
