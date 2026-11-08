@@ -46,9 +46,9 @@ describe('shipped v2 cases', () => {
         expect(m.resources.cpuOnly, m.id).toBe(false);
         expect(m.resources.estimatedVramMb, m.id).toBeGreaterThan(0);
         expect(m.version, m.id).toBeGreaterThan(1);
-        const g = inferenceGuard({ cpuOnly: false, estimatedVramMb: m.resources.estimatedVramMb, gpus: [{ index: 0, name: 'x', totalMb: 24000, usedMb: 0 } as never], loadedModels: [], now: new Date('2999-01-01'), purpose: 'model-run' });
+        const g = inferenceGuard({ requiredVramMb: m.resources.estimatedVramMb, gpus: [{ index: 0, name: 'x', totalMb: 24000, usedMb: 0 } as never], loadedModels: [], now: new Date('2999-01-01'), purpose: 'model-run' });
         expect(g.reason, m.id).not.toContain('cpuOnly');
-        expect(g.reason, m.id).not.toContain('no estimatedVramMb');
+        expect(g.reason, m.id).not.toContain('no VRAM figure');
       } else {
         expect(m.resources.cpuOnly, m.id).toBe(true);
         expect(m.resources.estimatedVramMb, m.id).toBeNull();

@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { computeContentHash, namedPaths, type CaseFiles, type CaseManifestV2 } from '../../packages/core/local-eval-v2';
 import { DEFAULT_ROOT, admitOne, exportToDisk, loadCase, loadSuiteV2, makeVerifier, probeTree, runV2, validateV2 } from './v2';
 import { tempDir } from './lib';
+import { GPU_WINDOW_OPENS_AT } from '../../packages/core/local-eval-v2';
 
 /** A tiny answer-style case: the verifier passes iff the candidate's answer.json cites src/live.ts. */
 const VERIFIER = `import { readFileSync, existsSync } from 'node:fs';
@@ -114,15 +115,24 @@ process.exit(readFileSync(process.env.CANDIDATE_DIR + '/answer.json','utf8') ===
 describe('cli --suite v2 guard (AC-15)', () => {
   const env = { minFreeMb: 1, readGpu: () => [{ usedMb: 0, totalMb: 24000 }], loaded: async () => [] as string[] };
   const opts = (root: string, extra: Record<string, string> = {}) => (n: string) => (n === 'root' ? root : { model: 'qwen3-coder:30b', harness: 'claude-code', context: '8192', case: 'find-total', ...extra }[n]);
-  it('refuses a run on a cpuOnly case and exits non-zero without loading anything', async () => {
-    const root = fresh(); build(root, FILES());
-    expect(await runV2('run', opts(root), () => false, env)).toBe(3);
+  const models = (root: string) => writeFileSync(join(root, 'models.json'), JSON.stringify({ modelsFormatVersion: 2, models: [{ tag: 'qwen3-coder:30b', digest: null, estimatedVramMb: 18000 }] }));
+  const noLoad = { tagInfo: async () => { throw new Error('must not query'); }, loadModel: async () => { throw new Error('must not load'); }, unloadModel: async () => undefined };
+  it('a cpuOnly case is not refused for being cpuOnly: the plan allows it once the GPU checks pass', async () => {
+    const root = fresh(); build(root, FILES()); models(root);
+    expect(await runV2('run', opts(root), (n) => n === 'dry-run', { ...env, ollama: noLoad })).toBe(0);
     rmSync(root, { recursive: true, force: true });
   });
-  it('refuses a model-running case with no GPU gate pass', async () => {
-    const root = fresh();
+  it('refuses an unlisted model tag without querying or loading anything', async () => {
+    const root = fresh(); build(root, FILES());
+    writeFileSync(join(root, 'models.json'), JSON.stringify({ modelsFormatVersion: 2, models: [] }));
+    expect(await runV2('run', opts(root), () => false, { ...env, ollama: noLoad })).toBe(2);
+    rmSync(root, { recursive: true, force: true });
+  });
+  it('refuses a model run with no GPU gate pass, and loads nothing (AC-15)', async () => {
+    const root = fresh(); models(root);
     build(root, FILES(), { resources: { cpuOnly: false, estimatedVramMb: 18000, estimatedRamMb: null, wallClockSeconds: 60, maxTurns: 10, toolBudget: 20 } });
-    expect(await runV2('run', opts(root), () => false, { ...env, readGpu: () => null })).toBe(3);
+    expect(await runV2('run', opts(root, { out: join(root, 'runs') }), () => false, { ...env, readGpu: () => null, ollama: noLoad })).toBe(3);
+    expect(existsSync(join(root, 'runs'))).toBe(false);
     rmSync(root, { recursive: true, force: true });
   });
   it('validate and admit never consult the GPU environment', async () => {
@@ -152,7 +162,7 @@ describe('shipped default suite', () => {
 });
 
 describe('cli --suite v2 operations', () => {
-  const env = { minFreeMb: 1, readGpu: () => [{ usedMb: 0, totalMb: 24000 }], loaded: async () => [] as string[] };
+  const env = { minFreeMb: 1, readGpu: () => [{ usedMb: 0, totalMb: 24000 }], loaded: async () => [] as string[], now: () => new Date(Date.parse(GPU_WINDOW_OPENS_AT) - 60_000) };
   const o = (extra: Record<string, string>) => (n: string) => ({ root: DEFAULT_ROOT, ...extra }[n]);
   const capture = async (fn: () => Promise<number>) => {
     const lines: string[] = []; const log = console.log; const err = console.error;
@@ -174,14 +184,14 @@ describe('cli --suite v2 operations', () => {
     expect((await capture(() => runV2('inspect', o({ case: 'sealed-find-a' }), () => false, env))).out).toContain('sealed-holdout');
   });
   it('smoke preset plans four cases and starts nothing before the GPU window', async () => {
-    const r = await capture(() => runV2('run', o({ preset: 'smoke', model: 'm:1', harness: 'claude-code', context: '8192', 'dry-run': '1' }), (n) => n === 'dry-run', env));
+    const r = await capture(() => runV2('run', o({ preset: 'smoke', model: 'qwen3-coder:30b', harness: 'claude-code', context: '8192', 'dry-run': '1' }), (n) => n === 'dry-run', env));
     expect(r.code).toBe(0);
     expect(r.out).toContain('4 planned run(s)');
     // The smoke cases are GPU-runnable (cpuOnly: false, VRAM estimate), so the only thing holding them back is the deferred window.
     expect(r.out).toContain('refused');
     expect(r.out).toContain('GPU runs are deferred');
     expect(r.out).not.toContain('cpuOnly');
-    const live = await capture(() => runV2('run', o({ preset: 'smoke', model: 'm:1', harness: 'claude-code', context: '8192' }), () => false, env));
+    const live = await capture(() => runV2('run', o({ preset: 'smoke', model: 'qwen3-coder:30b', harness: 'claude-code', context: '8192' }), () => false, env));
     expect(live.code).toBe(3);
   });
   it('run requires an explicit policy and exactly one selector', async () => {

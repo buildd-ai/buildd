@@ -7,7 +7,13 @@
 Cases here: find-by-behaviour, causal-debugging and multi-file-change, three open
 cases each (a fourth per category is sealed), and code-review, long-context-requirements
 and terminal-recovery-compaction, four open cases each. Nothing here has been run
-against a model.
+against a model. `run` executes cases (runbook: `docs/local-model-evaluation.md`);
+`models.json` lists the tags a v2 run may load. A sealed case runs only from content
+supplied with `--sealed-root` whose hash matches `splits.json`.
+
+`resources.cpuOnly` says the case's verifier needs no inference. It does not decide
+whether a model may run; the GPU guard does, from the model's VRAM figure and the case's
+`estimatedVramMb` when it has one.
 
 How the newer categories are laid out:
 
