@@ -27,7 +27,6 @@ import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { handleReleasePrCiSuccess, settleHeldReleasesOnClose } from '@/lib/held-pr-tasks';
 import { PR_OPENED_POLICY, maybeAutoReviewUnownedPr, republishPrHeads } from '@/modules';
-import { maybeAdoptReleaseCandidatePr } from '@/lib/release-candidate-adopt';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
 import { completeTaskOnBranchMatchMerge, legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
@@ -861,18 +860,15 @@ async function handlePullRequestEvent(event: {
     // keyed on workers.prNumber) answer "not found" for a PR that is open and
     // legitimate. This binds it — adoption only, never a review request and
     // never a merge — so those surfaces resolve it like any other known PR.
-    try {
-      const candidateOutcome = await maybeAdoptReleaseCandidatePr({
-        action, installationId: event.installation.id, repoFullName: repository.full_name, pr,
-      });
-      // The candidate has its own gate: the adoption binds a bookkeeping worker, so the
-      // PR-opened policy (reviewer dispatch), review_ready and no-CI auto-merge below
-      // must leave it alone for this event, exactly as for an auto-review adoption.
-      if (candidateOutcome === 'adopted' || candidateOutcome === 'already_owned') autoReviewAdopted = true;
-      if (candidateOutcome === 'adopted') console.log(`[release-candidate-adopt] ${repository.full_name}#${pr.number} (${action}): adopted`);
-    } catch (err) {
-      console.error(`[release-candidate-adopt] ${repository.full_name}#${pr.number} failed:`, err);
-    }
+    // Isolated by emit(): a failed adoption never fails the webhook.
+    const candidate: { owned?: boolean } = {};
+    await emit({
+      type: 'pr.candidate_adoption_requested', action, installationId: event.installation.id,
+      repoFullName: repository.full_name, pr, outcome: candidate,
+    });
+    // The candidate has its own gate: the PR-opened policy (reviewer dispatch), review_ready
+    // and no-CI auto-merge below must leave it alone for this event.
+    if (candidate.owned) autoReviewAdopted = true;
   }
   if ((action === 'opened' || action === 'reopened' || action === 'synchronize') && event.installation?.id) {
     await flagAcceptanceEditsForPr({ installationId: event.installation.id, repoFullName: repository.full_name, prNumber: pr.number, headSha: pr.head.sha });
