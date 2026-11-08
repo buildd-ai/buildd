@@ -75,6 +75,7 @@ import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCr
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
+import { ToolTraceRecorder, toolTraceConfigFromEnv, pruneTraceDir } from './tool-trace';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp, commitMessageOf } from './tool-milestones';
 import { describeInjectedMessage } from '@buildd/core/worker-message-format';
@@ -6794,6 +6795,7 @@ export class WorkerManager {
 
       // Clean up the per-worker secret redactor now that the session is fully done.
       this.secretRedactors.delete(worker.id);
+      try { worker.toolTrace?.close(); } catch { /* observation only */ }
 
       if (!bwrapRetryAfterCleanup) this.recordCanaryOutcome(worker, task.roleSlug);
 
@@ -7345,6 +7347,28 @@ export class WorkerManager {
             recordBashCommand(worker.bashCommandCounts, (input as { command?: unknown })?.command);
           }
 
+          // Local per-call trace (tool-trace.ts): observation only, bounded, raw
+          // text stays on this machine. Wrapped so it can never affect the run.
+          try {
+            if (!worker.toolTrace) {
+              const cfg = toolTraceConfigFromEnv(process.env);
+              if (cfg.enabled) {
+                if (cfg.persistDir) pruneTraceDir(cfg.persistDir);
+                worker.toolTrace = new ToolTraceRecorder({
+                  taskId: worker.taskId,
+                  workerId: worker.id,
+                  harness: worker.taskBackend ?? 'unknown',
+                  model: worker.sessionModel ?? null,
+                  root: worker.worktreePath,
+                  persistDir: cfg.persistDir,
+                  captureExcerpts: cfg.captureExcerpts,
+                  redact: this.secretRedactors.get(worker.id),
+                });
+              }
+            }
+            worker.toolTrace?.onToolUse({ id: toolUseId, name: toolName, input: rawInput });
+          } catch { /* observation only */ }
+
           // Per-call event for the buildd MCP tool's decomposed action (see
           // action-events.ts). The tool histogram above can only ever show one
           // aggregate bar for this tool; RUNTIME-vs-WORK classification for an
@@ -7472,6 +7496,7 @@ export class WorkerManager {
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block?.type !== 'tool_result') continue;
+          try { worker.toolTrace?.onToolResult(block); } catch { /* observation only */ }
           // Tool result content can be a string or an array of text blocks.
           let text = '';
           if (typeof block.content === 'string') {

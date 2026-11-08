@@ -464,6 +464,8 @@ export interface LocalWorker {
    * coarse search-pattern shapes only; no command or pattern text is retained.
    */
   bashCommandCounts?: BashCommandCounts;
+  /** Local per-call trace (tool-trace.ts). Observation only; never synced raw. */
+  toolTrace?: import('./tool-trace').ToolTraceRecorder;
   /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
   fileToolAreas?: Record<string, Record<string, number>>;
   /** Full staged self-review records, in order (staged-self-review.ts StagedEntry). */

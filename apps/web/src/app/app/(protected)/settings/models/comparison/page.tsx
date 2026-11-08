@@ -4,6 +4,7 @@ import { loadSettingsContext } from '../../_lib/settings-context';
 import { loadModelComparison, parseComparisonFilters } from '@/lib/model-comparison-query';
 import { FilterSelect } from './FilterSelect';
 import ModelComparisonView from './ModelComparisonView';
+import { resolveComparisonQaData } from './qa-state';
 import { resolveComparisonWorkspace } from './workspace-pick';
 
 export const dynamic = 'force-dynamic';
@@ -23,9 +24,13 @@ const FIELDS: Array<{ name: string; label: string; placeholder: string }> = [
  * workspace's real work. Read-only: it never changes which model runs. Only
  * workspaces the viewer can reach are offered; anything else falls back to the
  * first one they can.
+ *
+ * `?state=populated` (dev server only) renders sample attempts so the visual
+ * audit can see the populated page — see ./qa-state.ts.
  */
 export default async function ModelComparisonPage({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
+  const qaData = resolveComparisonQaData(sp.state);
   const { currentTeam, workspaces } = await loadSettingsContext();
   const description = 'Model results on your work.';
 
@@ -41,12 +46,12 @@ export default async function ModelComparisonPage({ searchParams }: { searchPara
 
   const parsed = parseComparisonFilters((k) => one(sp[k]));
   const filters = parsed.ok ? parsed.filters : { window: '30d' as const };
-  const data = await loadModelComparison(picked.id, filters);
+  const data = qaData ?? (await loadModelComparison(picked.id, filters));
 
   return (
     <SettingsPage title="Compare models" description={description} wide>
       <Link href="/app/settings/models" className="text-sm text-text-secondary underline underline-offset-2 py-2 inline-block">Model settings</Link>
-      <form method="get" className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="comparison-filters">
+      <form method="get" className="grid grid-cols-2 gap-x-2 gap-y-2 sm:gap-3 lg:grid-cols-3" data-testid="comparison-filters">
         {teamWorkspaces.length > 1 && (
           <FilterSelect name="workspace" label="Workspace" initial={picked.id} options={teamWorkspaces.map((w) => ({ value: w.id, label: w.name }))} />
         )}
@@ -60,7 +65,7 @@ export default async function ModelComparisonPage({ searchParams }: { searchPara
           { value: '24h', label: 'Last 24 hours' }, { value: '7d', label: 'Last 7 days' },
           { value: '30d', label: 'Last 30 days' }, { value: '90d', label: 'Last 90 days' },
         ]} />
-        <div className="flex items-end">
+        <div className="col-span-2 flex items-end lg:col-span-1">
           <button type="submit" className="btn min-h-11 w-full sm:w-auto">Apply</button>
         </div>
       </form>

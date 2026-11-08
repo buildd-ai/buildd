@@ -4310,6 +4310,8 @@ export const modelObservations = pgTable('model_observations', {
   // NULL = unpriced or unreported. Never 0 by default.
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }),
   costBasis: text('cost_basis'),
+  // Bounded structural tool-efficiency aggregate (tool-efficiency.ts); NULL = no analysed trace.
+  toolEfficiency: jsonb('tool_efficiency').$type<import('../tool-efficiency').ToolEfficiencyAggregate | null>(),
   // metric -> why it is NULL.
   unavailable: jsonb('unavailable').$type<Record<string, string>>().notNull().default({}),
   // Late, independent evidence.

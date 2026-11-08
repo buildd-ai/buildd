@@ -194,3 +194,36 @@ describe('buildModelComparison', () => {
     expect(out.comparisons).toEqual([]);
   });
 });
+
+describe('tool efficiency link', () => {
+  test('summarizeConfig carries per-config tool-efficiency, unknown when absent', async () => {
+    const { summarizeConfig } = await import('../model-comparison');
+    const base: any = { workerId: 'w', taskId: 't', chainId: null, resolvedModel: 'm', endpointKind: 'hosted', modelVersion: null, quantization: null, backend: 'claude', harnessVersion: '1', runtime: null, taskClass: 'bug/low', startedAt: null, endedAt: null, createdAt: new Date(), durationMs: 1, inputTokens: null, outputTokens: null, tokensPerSecond: null, terminalOutcome: 'completed', failureOrigin: 'none', costUsd: null, reviewVerdict: null, ciState: null, specVerdict: null, prOutcome: null, reworked: false };
+    const agg = { schemaVersion: 1, analyserVersion: 'tea-v1', harness: 'claude', calls: 10, findingKinds: { redundant_read_unchanged: 2 }, failureClasses: { error: 1 }, timing: { observedCalls: 10, totalMs: 100, p50Ms: 10, p90Ms: 20, maxMs: 30 }, coverage: { recorded: 10, dropped: 0, unobserved: 0, sampledOut: 0 } };
+    const s = summarizeConfig('k', [{ ...base, toolEfficiency: agg }, { ...base, workerId: 'w2' }]);
+    expect(s.toolEfficiency).toMatchObject({ withAggregate: 1, withoutAggregate: 1, calls: 10, findingKinds: { redundant_read_unchanged: 2 }, meanP50Ms: 10 });
+    expect(s.quality.status).toBe('no_data'); // finding counts feed no rate
+  });
+});
+
+describe('tool-efficiency summary: review and coverage', () => {
+  const agg = (over: Record<string, unknown> = {}) => ({
+    schemaVersion: 1 as const, analyserVersion: 'tea-v1', harness: 'claude' as const, calls: 10,
+    findingKinds: {}, failureClasses: {},
+    timing: { observedCalls: 10, totalMs: 100, p50Ms: 10, p90Ms: 20, maxMs: 30 },
+    coverage: { recorded: 10, dropped: 2, unobserved: 1, sampledOut: 3 },
+    ...over,
+  });
+  test('folds review candidates by status and counts attempts that never ran a reviewer as absent', () => {
+    const s = summarizeConfig('k', [
+      row({ toolEfficiency: agg({ review: { reviewerVersion: 'rev-v1', candidates: 3, confirmed: 1, dismissed: 1, kinds: { absence_from_limited_search: 3 } } }) }),
+      row({ toolEfficiency: agg() }),
+      row({ toolEfficiency: null }),
+    ]).toolEfficiency;
+    expect(s.withAggregate).toBe(2);
+    expect(s.withoutAggregate).toBe(1);
+    expect(s.review).toMatchObject({ attempts: 1, candidates: 3, confirmed: 1, dismissed: 1, open: 1, reviewerVersions: ['rev-v1'] });
+    expect(s.coverage).toMatchObject({ dropped: 4, sampledOut: 6 });
+    expect(s.schemaVersions).toEqual([1]);
+  });
+});
