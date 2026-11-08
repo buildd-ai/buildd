@@ -97,7 +97,7 @@ export function makeVerifier(c: LoadedCase, timeoutMs = 120_000): (candidate: st
       for (const p of m.files.snapshot) snap[p.replace(/^snapshot\//, '')] = c.files[p];
       write(cand, snap);
       const overlay = candidate === 'snapshot' ? null : candidate === 'reference' ? { prefix: null, paths: m.files.reference }
-        : { prefix: `candidates/${candidate === 'alternative' ? m.files.candidates.alternative : candidate.replace(/^broken:/, '')}/`, paths: m.files.candidates.files };
+        : { prefix: `candidates/${candidate === 'alternative' ? m.files.candidates.alternative : candidate.replace(/^(broken|alternative):/, '')}/`, paths: m.files.candidates.files };
       if (overlay) {
         for (const p of overlay.paths) {
           if (overlay.prefix && !p.startsWith(overlay.prefix)) continue;

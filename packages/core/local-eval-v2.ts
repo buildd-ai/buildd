@@ -71,7 +71,12 @@ export interface CaseManifestV2 {
     reference: string[];
     rubric: string | null;
     /** Overlay trees (files under `candidates/<name>/`) used only by admission. */
-    candidates: { broken: string[]; alternative: string | null; files: string[] };
+    /**
+     * `alternative` is one correct solution other than the reference, or a list
+     * of them when the brief admits several genuinely different designs; every
+     * one must pass. A list is run as `alternative:<name>`.
+     */
+    candidates: { broken: string[]; alternative: string | string[] | null; files: string[] };
   };
   deps: Record<string, string>;
   resources: {
@@ -242,7 +247,7 @@ export type AdmissionGate = (typeof ADMISSION_GATES)[number];
 
 export const DETERMINISM_RUNS = 3;
 
-/** Run the hidden verifier on one candidate tree: 'snapshot' | 'reference' | 'broken:<name>' | 'alternative'. */
+/** Run the hidden verifier on one candidate tree: 'snapshot' | 'reference' | 'broken:<name>' | 'alternative' | 'alternative:<name>'. */
 export type VerifyFn = (candidate: string) => boolean | Promise<boolean>;
 
 export interface AdmissionEvidence {
@@ -287,10 +292,16 @@ export async function admitCase(m: CaseManifestV2, verify: VerifyFn, probe: { le
   gate('negative-control-fails', negOk, passedBad.length ? `verifier PASSES: ${passedBad.join(', ')}` : brokenNames.length < needBroken ? `needs ${needBroken} named broken candidates, has ${brokenNames.length}` : `fails the snapshot and ${brokenNames.length} broken candidate(s)`);
 
   const alt = m.files.candidates.alternative;
-  if (!alt) gate('independent-of-patch', false, 'no alternative correct solution recorded');
-  else {
+  if (!alt || (Array.isArray(alt) && !alt.length)) gate('independent-of-patch', false, 'no alternative correct solution recorded');
+  else if (!Array.isArray(alt)) {
     const a = await run('alternative');
     gate('independent-of-patch', a[0] === true, a[0] ? 'a different correct solution passes' : 'the alternative correct solution FAILS: the verifier matches the reference patch, not the behaviour');
+  } else {
+    const failed: string[] = [];
+    for (const name of alt) if (!(await run(`alternative:${name}`))[0]) failed.push(name);
+    gate('independent-of-patch', !failed.length, failed.length
+      ? `alternative correct solution(s) FAIL: ${failed.join(', ')}; the verifier matches the reference patch, not the behaviour`
+      : `${alt.length} different correct solutions pass`);
   }
 
   if (m.expected.kind === 'abstain') {
