@@ -57,6 +57,7 @@ const ALLOWLIST: string[] = [
   'packages/core/mcp-tools.ts', // help/param documentation strings only
   'apps/runner/src/index.ts', // runner UI model dropdown
   'apps/runner/src/backends/codex-backend.ts', // brokers OpenAI/codex model IDs for the SDK
+  'apps/runner/src/local-model-endpoint.ts', // local-model route: a concrete Claude Code-known ID the Ollama tag is mapped onto via modelOverrides; a tier alias would not satisfy the CLI's model check
   'apps/web/src/lib/config-helpers.ts', // mission-config UI dropdown options
   'apps/web/src/app/api/models/route.ts', // filters legacy generations out of the live catalog
   'packages/core/model-capability-requirements.ts', // min-CLI-version floor per model: a registry keyed by model ID

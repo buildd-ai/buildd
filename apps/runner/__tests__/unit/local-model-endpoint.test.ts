@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { applyModelEnv } from '../../src/agent-model-env';
 import { writeCodexMcpConfig } from '../../src/codex-auth';
-import { resolveLocalModelEndpoint, LOCAL_MODEL_URL_ENV, LOCAL_MODEL_ENV, LOCAL_MODEL_CONTEXT_ENV } from '../../src/local-model-endpoint';
+import { resolveLocalModelEndpoint, claudeLocalModelSettings, codexLocalModelCatalog, LOCAL_MODEL_URL_ENV, LOCAL_MODEL_ENV, LOCAL_MODEL_CONTEXT_ENV, LOCAL_CLAUDE_REFERENCE_MODEL, LOCAL_CODEX_CATALOG_FILE, LOCAL_CODEX_DEFAULT_CONTEXT } from '../../src/local-model-endpoint';
 
 const ENV = { [LOCAL_MODEL_URL_ENV]: 'http://localhost:11434', [LOCAL_MODEL_ENV]: 'qwen3-coder', [LOCAL_MODEL_CONTEXT_ENV]: '65536' };
 const local = resolveLocalModelEndpoint(ENV)!;
@@ -39,6 +39,25 @@ describe('applyModelEnv with a local model', () => {
     expect(r.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('qwen3-coder');
     expect(Object.values(r.env)).not.toContain('server-key');
     expect(r).toMatchObject({ local: true, endpoint: 'custom', injected: [], withheld: ['serverApiKey'], teamEndpointIgnored: true });
+  });
+
+  test('Claude: tool search explicitly off, compaction at the local window', () => {
+    const r = applyModelEnv({ ENABLE_TOOL_SEARCH: 'true' }, { isCodexTask: false, localModel: local });
+    expect(r.env.ENABLE_TOOL_SEARCH).toBe('false');
+    expect(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('65536');
+    const noCtx = resolveLocalModelEndpoint({ ...ENV, [LOCAL_MODEL_CONTEXT_ENV]: '' })!;
+    const r2 = applyModelEnv({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '999999' }, { isCodexTask: false, localModel: noCtx });
+    expect(r2.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+  });
+
+  test('Claude settings map a model the CLI knows to the local tag', () => {
+    expect(claudeLocalModelSettings(local)).toEqual({ modelOverrides: { [LOCAL_CLAUDE_REFERENCE_MODEL]: 'qwen3-coder' } });
+    expect(LOCAL_CLAUDE_REFERENCE_MODEL).toMatch(/^claude-/);
+  });
+
+  test('Codex: an inherited ENABLE_TOOL_SEARCH does not reach the CLI', () => {
+    const r = applyModelEnv({ ENABLE_TOOL_SEARCH: 'true' }, { isCodexTask: true, localModel: local });
+    expect('ENABLE_TOOL_SEARCH' in r.env).toBe(false);
   });
 
   test('Codex: no base URL env, no Anthropic key, dummy OpenAI key', () => {
@@ -93,10 +112,31 @@ describe('Codex config.toml for a local model', () => {
     expect(toml).not.toContain('env_key');
   });
 
+  test('writes a model catalog for the local tag and points config.toml at it', () => {
+    writeCodexMcpConfig(dir, { ...base, localModel: local });
+    const toml = readFileSync(join(dir, 'config.toml'), 'utf-8');
+    const catalogPath = join(dir, LOCAL_CODEX_CATALOG_FILE);
+    expect(toml).toContain(`model_catalog_json = ${JSON.stringify(catalogPath)}`);
+    expect(toml).toContain('web_search = "disabled"');
+    expect(toml.indexOf('model_catalog_json')).toBeLessThan(toml.indexOf('['));
+    const catalog = JSON.parse(readFileSync(catalogPath, 'utf-8'));
+    expect(catalog).toEqual(codexLocalModelCatalog(local));
+    expect(catalog.models).toHaveLength(1);
+    expect(catalog.models[0]).toMatchObject({ slug: 'qwen3-coder', context_window: 65536, shell_type: 'shell_command', input_modalities: ['text'], supported_reasoning_levels: [] });
+    expect(typeof catalog.models[0].base_instructions).toBe('string');
+  });
+
+  test('catalog context defaults when BUILDD_LOCAL_MODEL_CONTEXT is unset', () => {
+    const noCtx = resolveLocalModelEndpoint({ ...ENV, [LOCAL_MODEL_CONTEXT_ENV]: '' })!;
+    expect(codexLocalModelCatalog(noCtx).models[0].context_window).toBe(LOCAL_CODEX_DEFAULT_CONTEXT);
+  });
+
   test('without a local model the config has no provider override', () => {
     writeCodexMcpConfig(dir, base);
     const toml = readFileSync(join(dir, 'config.toml'), 'utf-8');
     expect(toml).not.toContain('model_provider');
     expect(toml).not.toContain('model_providers');
+    expect(toml).not.toContain('model_catalog_json');
+    expect(toml).not.toContain('web_search');
   });
 });
