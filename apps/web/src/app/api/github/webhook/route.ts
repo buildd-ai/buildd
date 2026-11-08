@@ -865,6 +865,10 @@ async function handlePullRequestEvent(event: {
       const candidateOutcome = await maybeAdoptReleaseCandidatePr({
         action, installationId: event.installation.id, repoFullName: repository.full_name, pr,
       });
+      // The candidate has its own gate: the adoption binds a bookkeeping worker, so the
+      // PR-opened policy (reviewer dispatch), review_ready and no-CI auto-merge below
+      // must leave it alone for this event, exactly as for an auto-review adoption.
+      if (candidateOutcome === 'adopted' || candidateOutcome === 'already_owned') autoReviewAdopted = true;
       if (candidateOutcome === 'adopted') console.log(`[release-candidate-adopt] ${repository.full_name}#${pr.number} (${action}): adopted`);
     } catch (err) {
       console.error(`[release-candidate-adopt] ${repository.full_name}#${pr.number} failed:`, err);

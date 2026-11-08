@@ -3024,6 +3024,18 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
+    for (const outcome of ['adopted', 'already_owned']) {
+      it(`a release-candidate PR (${outcome}) is not also taken by the PR-opened policy or the no-CI auto-merge`, async () => {
+        withAutoMergeWorkspaceAndWorker();
+        mockHasCheckSuites.mockReturnValue(Promise.resolve(false));
+        mockTryAutoMergeWorkerPr.mockClear();
+        mockMaybeAdoptReleaseCandidatePr.mockImplementationOnce(async () => outcome);
+        const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+        expect(res.status).toBe(200);
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      });
+    }
+
     it('a failed auto-review request never fails the webhook', async () => {
       mockMaybeAutoReviewUnownedPr.mockImplementationOnce(async () => { throw new Error('boom'); });
       const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));

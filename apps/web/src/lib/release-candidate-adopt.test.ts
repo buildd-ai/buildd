@@ -16,7 +16,7 @@ const ws = (over: Partial<AutoReviewWorkspace> = {}): AutoReviewWorkspace => ({
   githubRepoId: 'gr-1', githubInstallationId: 'gi-1',
   gitConfig: { defaultBranch: 'dev' },
   webhookConfig: null,
-  releaseConfig: { candidate: { branches: ['release/v*'], authors: ['buildd-release[bot]'], prodBranch: 'main', sourceBranch: 'dev' } } as never,
+  releaseConfig: { enabled: true, prodBranch: 'main', candidate: { branches: ['release/v*'], authors: ['buildd-release[bot]'], sourceBranch: 'dev' } } as never,
   ...over,
 });
 
@@ -108,6 +108,34 @@ describe('maybeAdoptReleaseCandidatePr', () => {
   it('an unlinked repo adopts nothing', async () => {
     deps.linkedWorkspaces = async () => [];
     expect(await run()).toBe('skipped_unlinked');
+    expect(adopt).not.toHaveBeenCalled();
+  });
+});
+
+// The real `classifyReleasePr` (no `classify` stub): the only gate between "shaped
+// like a candidate" and "adopted", so it is exercised end to end, sequentially.
+describe('maybeAdoptReleaseCandidatePr with the real classifier', () => {
+  const meta = (over: Record<string, unknown> = {}) => `<!-- release-candidate ${JSON.stringify({
+    schema: 1, version: 'v0.395.2', branch: 'release/v0.395.2', sourceRef: 'dev', sourceSha: 's1',
+    candidateSha: 'cand-sha', baseRef: 'main', baseSha: 'b1', previousTag: null, amendment: 0,
+    previousCandidateSha: null, supersedes: null, cutAt: '2026-11-01T00:00:00Z', ...over,
+  })} -->`;
+  const realRun = (prOver: Record<string, unknown>, action = 'opened') =>
+    maybeAdoptReleaseCandidatePr({ action, installationId: 7, repoFullName: 'org/repo', pr: pr(prOver) as never },
+      { linkedWorkspaces: deps.linkedWorkspaces, owningWorkerId: deps.owningWorkerId, adopt: deps.adopt });
+
+  it('adopts a genuine candidate, then a duplicate delivery and a later event adopt nothing', async () => {
+    expect(await realRun({ body: meta() })).toBe('adopted');
+    expect(await realRun({ body: meta() })).toBe('already_owned');
+    expect(await realRun({ body: meta() }, 'synchronize')).toBe('already_owned');
+    expect(adopt).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses what the real classifier rejects', async () => {
+    expect(await realRun({ body: '<!-- release-candidate {} -->' })).toBe('skipped_not_candidate');
+    expect(await realRun({ body: meta({ candidateSha: 'other' }) })).toBe('skipped_not_candidate');
+    expect(await realRun({ body: meta(), user: { login: 'someone', type: 'User' } })).toBe('skipped_not_candidate');
+    expect(await realRun({ body: meta(), head: { sha: 'cand-sha', ref: 'release/v0.395.2', repo: { full_name: 'fork/repo' } } })).toBe('skipped_not_candidate');
     expect(adopt).not.toHaveBeenCalled();
   });
 });
