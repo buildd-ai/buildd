@@ -7,7 +7,7 @@
  * run may start is `inferenceGuard`'s call, made again per case at run time.
  */
 import {
-  CONTEXT_SIZES, exportAgentTree, inferenceGuard, unsupportedCapabilities,
+  CONTEXT_SIZES, exportAgentTree, inferenceGuard, requiredVramMb, unsupportedCapabilities,
   type CaseFiles, type CaseManifestV2, type Category, type ModelAdapter,
 } from './local-eval-v2';
 
@@ -141,11 +141,15 @@ export interface PlanInput {
   gpus: { usedMb: number; totalMb: number }[] | null;
   loadedModels: string[];
   windowOpensAt?: string;
+  /** False for an adapter that loads no model (the deterministic fixture): no GPU guard applies. */
+  startsModel: boolean;
+  /** The model profile's VRAM figure, or the operator's declared floor; null = unknown. */
+  modelVramMb: number | null;
 }
 
 /**
- * One planned run per case and trial. A holdout case is refused (its content is
- * not here). A case the adapter cannot serve is `unsupported` (recorded, never
+ * One planned run per case and trial. A holdout case whose content is not
+ * present is refused. A case the adapter cannot serve is `unsupported` (recorded, never
  * altered to fit). The guard is evaluated now for each case and again by the
  * runner immediately before it loads a model.
  */
@@ -157,11 +161,12 @@ export function planRuns(i: PlanInput): PlannedRun[] {
     for (let trial = 1; trial <= i.policy.trials; trial++) {
       const runId = `v2.${c.id}.${safe}.${i.policy.track}.t${trial}`;
       const base = { runId, caseId: c.id, trial, configId, split: c.split };
-      if (!c.available) { out.push({ ...base, action: 'refused', reason: 'sealed-holdout content is not in this repository; it is run only for a decision, by whoever holds it' }); continue; }
+      if (!c.available) { out.push({ ...base, action: 'refused', reason: 'sealed-holdout content is not in this repository and no --sealed-root supplied it (a descriptor and hash are not a runnable case); it is run only for a decision, by whoever holds it' }); continue; }
       const need = i.needs[c.id];
       const lacking = need ? unsupportedCapabilities(i.adapter, { ...need, contextTokens: Math.max(need.contextTokens, i.policy.contextTokens) }) : [];
       if (lacking.length) { out.push({ ...base, action: 'unsupported', reason: `unsupported: ${lacking.join(', ')}` }); continue; }
-      const g = inferenceGuard({ cpuOnly: c.cpuOnly, estimatedVramMb: c.estimatedVramMb, gpus: i.gpus, loadedModels: i.loadedModels, now: i.now, purpose: 'model-run', windowOpensAt: i.windowOpensAt });
+      if (!i.startsModel) { out.push({ ...base, action: 'run', reason: null }); continue; }
+      const g = inferenceGuard({ requiredVramMb: requiredVramMb(c.estimatedVramMb, i.modelVramMb), gpus: i.gpus, loadedModels: i.loadedModels, now: i.now, purpose: 'model-run', windowOpensAt: i.windowOpensAt });
       out.push({ ...base, action: g.allowed ? 'run' : 'refused', reason: g.allowed ? null : g.reason });
     }
   }
