@@ -304,7 +304,32 @@ export function validateRunRecord(r: unknown): string[] {
     if (typeof o[k] !== 'string' || !(o[k] as string) || (o[k] as string).length > 120) errs.push(`${k} is required`);
   }
   if (!Number.isInteger(o.trial) || (o.trial as number) < 1) errs.push('trial must be a positive integer');
-  if (!o.model || typeof o.model.tag !== 'string' || !o.model.tag) errs.push('model.tag is required');
+  const bounded = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
+  if (!o.model || typeof o.model !== 'object' || !bounded(o.model.tag, 120) || !o.model.tag) errs.push('model.tag is required (at most 120 characters)');
+  else {
+    if (o.model.digest != null && !bounded(o.model.digest, 200)) errs.push('model.digest must be a string of at most 200 characters or null');
+    if (o.model.quantization != null && !bounded(o.model.quantization, 60)) errs.push('model.quantization must be a string of at most 60 characters or null');
+  }
+  if (!o.harness || typeof o.harness !== 'object' || !bounded(o.harness.name, 120) || !o.harness.name) errs.push('harness.name is required');
+  else if (o.harness.version != null && !bounded(o.harness.version, 120)) errs.push('harness.version must be a string or null');
+  for (const k of ['hidden', 'visible'] as const) {
+    const c = o[k] as Partial<CheckOutcome> | undefined;
+    if (!c || typeof c !== 'object' || typeof c.ran !== 'boolean' || (c.passed !== null && typeof c.passed !== 'boolean')) errs.push(`${k} must be {ran: boolean, passed: boolean|null}`);
+  }
+  const finite = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+  if (!finite(o.durationMs) || (o.durationMs as number) < 0) errs.push('durationMs must be a finite number');
+  if (!finite(o.contextTokens) || (o.contextTokens as number) <= 0) errs.push('contextTokens must be a finite positive number');
+  for (const k of ['inputTokens', 'outputTokens', 'turns', 'peakVramMb', 'vramSamples'] as const) {
+    if (o[k] !== null && o[k] !== undefined && (!finite(o[k]) || (o[k] as number) < 0)) errs.push(`${k} must be a finite number or null`);
+  }
+  for (const k of ['tampering', 'leaks'] as const) {
+    if (!Array.isArray(o[k]) || (o[k] as unknown[]).some(x => typeof x !== 'string')) errs.push(`${k} must be an array of strings`);
+  }
+  if (o.review != null) {
+    const v = o.review as Partial<ReviewRecord>;
+    if (typeof v !== 'object' || !bounded(v.reviewer, 120) || !bounded(v.rubricVersion, 120) || !['approved', 'changes_requested'].includes(v.verdict as string) || !finite(v.reworkRounds) || (v.reworkRounds as number) < 0) errs.push('review must be null or {reviewer, rubricVersion, verdict, reworkRounds}');
+  }
+  if (o.runtime != null && (typeof o.runtime !== 'object' || Array.isArray(o.runtime))) errs.push('runtime must be an object or null');
   if (!['pass', 'fail', 'invalid', 'error', 'unscored'].includes(o.result as string)) errs.push('result is not a known value');
   if (o.scoringVersion && o.scoringVersion !== SCORING_VERSION) errs.push(`scoringVersion ${o.scoringVersion} is not ${SCORING_VERSION}`);
   if (Number.isNaN(Date.parse(o.startedAt ?? '')) || Number.isNaN(Date.parse(o.endedAt ?? ''))) errs.push('startedAt and endedAt must be ISO times');

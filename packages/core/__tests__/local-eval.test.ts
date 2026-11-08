@@ -161,6 +161,17 @@ describe('validateRunRecord', () => {
     expect(validateRunRecord({}).length).toBeGreaterThan(3);
     expect(validateRunRecord(null).length).toBeGreaterThan(3);
   });
+  it('refuses records the mapper would crash on or the database would reject', () => {
+    const { harness: _h, ...noHarness } = run();
+    const { visible: _v, ...noVisible } = run();
+    expect(validateRunRecord(noHarness).join()).toContain('harness');
+    expect(validateRunRecord(noVisible).join()).toContain('visible');
+    expect(validateRunRecord({ ...run(), durationMs: '300' }).join()).toContain('durationMs');
+    expect(validateRunRecord({ ...run(), peakVramMb: Infinity }).join()).toContain('peakVramMb');
+    expect(validateRunRecord({ ...run(), tampering: [1] }).join()).toContain('tampering');
+    expect(validateRunRecord({ ...run(), review: { verdict: 'x' } }).join()).toContain('review');
+    expect(validateRunRecord({ ...run(), model: { tag: 'x'.repeat(500), digest: null, quantization: null } }).join()).toContain('model.tag');
+  });
 });
 
 describe('GPU gate and digests', () => {

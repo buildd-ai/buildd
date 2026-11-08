@@ -77,7 +77,7 @@ export default function ModelComparisonView({ data }: { data: ModelComparison })
       ) : (
         <Section title="Models and setups" count={data.configs.length}>
           <p className="text-sm text-text-secondary mb-3">
-            {data.totals.attempts} attempts. A rate needs {min} attempts with a recorded review, CI or merge result before it counts as more than a hint.
+            {data.totals.attempts} attempts. A rate needs {min} attempts with a recorded review, CI or merge result before a rate counts.
           </p>
           <div className="grid gap-3 md:grid-cols-2">
             {data.configs.map((c) => <ConfigCard key={c.key} c={c} min={min} />)}

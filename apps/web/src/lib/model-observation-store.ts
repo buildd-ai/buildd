@@ -196,14 +196,18 @@ export async function ingestReplayRuns(workspaceId: string, records: unknown[]):
     const errors = validateRunRecord(raw);
     if (errors.length) { rejected.push({ index, errors }); continue; }
     const run = raw as RunRecord;
-    const { values, evaluation, evidence } = runToObservation(run, { workspaceId, teamId: ws.teamId });
-    const row = { ...values, costUsd: null, evaluation: evaluation as unknown as Record<string, unknown>, ...evidence, evidenceUpdatedAt: new Date() };
-    const { workerId: _w, attempt: _a, ...update } = row;
-    await db.insert(modelObservations).values(row).onConflictDoUpdate({
-      target: [modelObservations.workerId, modelObservations.attempt],
-      set: { ...update, updatedAt: new Date() },
-    });
-    ingested.push(run.runId);
+    try {
+      const { values, evaluation, evidence } = runToObservation(run, { workspaceId, teamId: ws.teamId });
+      const row = { ...values, costUsd: null, evaluation: evaluation as unknown as Record<string, unknown>, ...evidence, evidenceUpdatedAt: new Date() };
+      const { workerId: _w, attempt: _a, ...update } = row;
+      await db.insert(modelObservations).values(row).onConflictDoUpdate({
+        target: [modelObservations.workerId, modelObservations.attempt],
+        set: { ...update, updatedAt: new Date() },
+      });
+      ingested.push(run.runId);
+    } catch (err) {
+      rejected.push({ index, errors: [`could not be stored: ${err instanceof Error ? err.message.slice(0, 200) : 'unknown error'}`] });
+    }
   }
   return { ingested, rejected };
 }

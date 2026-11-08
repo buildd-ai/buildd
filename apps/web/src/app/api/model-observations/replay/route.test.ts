@@ -52,4 +52,13 @@ describe('POST /api/model-observations/replay', () => {
     mockIngest.mockResolvedValue({ ingested: [], rejected: [{ index: 0, errors: ['x'] }] });
     expect((await POST(post({ workspaceId: 'w', runs: [{}] }))).status).toBe(422);
   });
+
+  it('a malformed record in a batch is reported rejected while the others are ingested', async () => {
+    mockIngest.mockResolvedValue({ ingested: ['r1', 'r3'], rejected: [{ index: 1, errors: ['harness.name is required'] }] });
+    const res = await POST(post({ workspaceId: 'w', runs: [{ runId: 'r1' }, { runId: 'bad' }, { runId: 'r3' }] }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(JSON.stringify(body)).toContain('harness.name is required');
+    expect(JSON.stringify(body)).toContain('r3');
+  });
 });
