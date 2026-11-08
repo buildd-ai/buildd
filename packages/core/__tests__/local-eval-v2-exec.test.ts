@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
-  HARNESS_TREATMENT_V2, buildPromptV2, classifyAgentExit, defaultEvidenceSize, extractJsonAnswer, gradeRunV2, parseAgentStream, readoutV2, tamperingV2,
+  HARNESS_TREATMENT_V2, HARNESS_TREATMENT_BARE_V2, buildPromptV2, classifyAgentExit, defaultEvidenceSize, extractJsonAnswer, gradeRunV2, parseAgentStream, readoutV2, tamperingV2,
   treatmentHash, validateModelsV2, verifySealedContent, type ExitClass,
 } from '../local-eval-v2-exec';
 import { computeContentHash, namedPaths, type CaseFiles, type CaseManifestV2 } from '../local-eval-v2';
@@ -27,6 +27,15 @@ describe('harness treatment', () => {
     expect(HARNESS_TREATMENT_V2.reserveTokens).toBe(HARNESS_TREATMENT_V2.toolSchemaTokens + HARNESS_TREATMENT_V2.maxOutputTokens);
     expect(HARNESS_TREATMENT_V2.thinking).toBe('disabled');
     expect(treatmentHash({ ...HARNESS_TREATMENT_V2, maxOutputTokens: 4096 })).not.toBe(treatmentHash());
+  });
+  it('the bare treatment is separate: its own id, hash, smaller tool set and allowance; the default is untouched', () => {
+    expect(HARNESS_TREATMENT_BARE_V2.id).toBe('claude-code-bare-v1');
+    expect(HARNESS_TREATMENT_BARE_V2.flags[0]).toBe('--bare');
+    expect(HARNESS_TREATMENT_BARE_V2.tools).toEqual(['Read', 'Edit', 'Bash']);
+    expect(HARNESS_TREATMENT_BARE_V2.reserveTokens).toBe(2048 + 2048);
+    expect(treatmentHash(HARNESS_TREATMENT_BARE_V2)).not.toBe(treatmentHash());
+    expect(HARNESS_TREATMENT_V2.flags).not.toContain('--bare');
+    expect(HARNESS_TREATMENT_V2.reserveTokens).toBe(6144 + 2048);
   });
 });
 
@@ -82,6 +91,9 @@ describe('classifyAgentExit', () => {
   it('separates budget exhaustion (model) from harness, server and context failures', () => {
     expect(x({ timedOut: true, code: 143 }).kind).toBe('budget_exhausted');
     expect(x({ timedOut: true, code: 143, err: 'API Error: Connection error (ECONNREFUSED), retrying' }).kind).toBe('infra');
+    // A retry notice in the stream counts; the model's own words naming an error do not.
+    expect(x({ timedOut: true, code: 143, out: JSON.stringify({ type: 'system', subtype: 'api_retry', error: 'connect ECONNREFUSED 127.0.0.1:11435' }) }).kind).toBe('infra');
+    expect(x({ timedOut: true, code: 143, out: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'the client handles ECONNREFUSED by retrying' }] } }) }).kind).toBe('budget_exhausted');
     expect(x({ out: res({ subtype: 'error_max_turns', is_error: true }) }).kind).toBe('budget_exhausted');
     expect(x({ spawnError: 'ENOENT', code: 127 }).kind).toBe('harness');
     expect(x({ code: 1, err: 'crash' }).kind).toBe('harness');

@@ -432,10 +432,14 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     const toolCalling = !has('no-tool-calling');
     const origin = opt('origin') ?? 'http://127.0.0.1:11435';
     const { claudeAdapter, fixtureAdapter, resolveClaudeBin } = await import('./v2-agent');
+    const { HARNESS_TREATMENTS_V2, HARNESS_TREATMENT_V2 } = await import('../../packages/core/local-eval-v2-exec');
+    const treatment = HARNESS_TREATMENTS_V2[opt('treatment') ?? HARNESS_TREATMENT_V2.id];
+    if (!treatment) { console.error(`--treatment must be one of ${Object.keys(HARNESS_TREATMENTS_V2).join(', ')}`); return 2; }
+    if (harness === 'fixture' && opt('treatment')) { console.error('--treatment applies to claude-code only'); return 2; }
     const bin = harness === 'fixture' ? { cmd: null, reason: null } : resolveClaudeBin();
     const adapter = harness === 'fixture'
       ? fixtureAdapter({ fixtureDir: resolve(opt('fixture-dir')!), contextTokens: p.contextTokens, toolCalling, baseEnv: process.env })
-      : claudeAdapter({ origin, tag: p.model, contextTokens: p.contextTokens, toolCalling, systemPrompt: !has('no-system-prompt'), structuredOutput: !has('no-structured-output'), baseEnv: process.env, cmd: env.claudeBin ?? bin.cmd ?? 'claude' });
+      : claudeAdapter({ origin, tag: p.model, contextTokens: p.contextTokens, toolCalling, systemPrompt: !has('no-system-prompt'), structuredOutput: !has('no-structured-output'), baseEnv: process.env, cmd: env.claudeBin ?? bin.cmd ?? 'claude', treatment });
     // Tool calling is needed everywhere except a single-context long-context case, whose answer can come back as the final message.
     const needs = Object.fromEntries(selected.filter((r) => all[r.id]).map((r) => [r.id, { toolCalling: p.track === 'tool-retrieval' || r.category !== 'long-context-requirements', systemPrompt: false, structuredOutput: false, contextTokens: 0 }]));
     let modelVramMb: number | null = null;
@@ -455,20 +459,26 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     }
     const gpus = adapter.startsModel ? env.readGpu() : null; const loaded = adapter.startsModel ? await env.loaded().catch(() => []) : [];
     const now = env.now?.() ?? new Date();
+    // The default treatment keeps the plain config id; any other treatment is a separate configuration.
+    const treatSuffix = treatment.id === HARNESS_TREATMENT_V2.id ? '' : `~${treatment.id}`;
     // Run ids name everything that changes what the agent sees: no-tools runs and, for long-context cases, the evidence set and position.
     const { defaultEvidenceSize } = await import('../../packages/core/local-eval-v2-exec');
     const variant = (id: string) => {
       const c = all[id];
       const ev = c?.manifest.category === 'long-context-requirements' ? `.e${evidenceSize ?? defaultEvidenceSize(c.manifest.longContext?.sizes ?? [8192], p.contextTokens)}-${position ?? 'dispersed'}` : '';
-      return `${toolCalling ? '' : '.notools'}${ev}`;
+      return `${toolCalling ? '' : '.notools'}${treatSuffix ? '.bare' : ''}${ev}`;
     };
     const plan = planRuns({ cases: selected, needs, policy: p, adapter, now, gpus, loadedModels: loaded, startsModel: adapter.startsModel, modelVramMb })
-      .map((r) => ({ ...r, runId: r.runId.replace(/\.t(\d+)$/, `${variant(r.caseId)}.t$1`), configId: toolCalling ? r.configId : `${r.configId}+notools` }));
+      .map((r) => ({ ...r, runId: r.runId.replace(/\.t(\d+)$/, `${variant(r.caseId)}.t$1`), configId: `${r.configId}${toolCalling ? '' : '+notools'}${treatSuffix}` }));
     if (adapter.startsModel) console.log(`model VRAM figure ${modelVramMb} MiB (from ${vramSource}); each case's own estimate raises it when larger`);
     else console.log('fixture adapter: no model is loaded; outputs are operator-authored fixtures, NOT model results');
     for (const r of plan) console.log(`${r.runId}\t${r.split}\t${r.action}${r.reason ? `\t${r.reason}` : ''}`);
     const bad = plan.filter((r) => r.action !== 'run');
     console.log(`${plan.length} planned run(s), ${plan.length - bad.length} allowed, ${bad.length} not started`);
+    const toolchain = `bun ${Bun.version}; ${process.platform}-${process.arch}`;
+    const otherToolchain = [...new Set(plan.map((r) => r.caseId))].filter((id) => all[id] && all[id].manifest.admission?.toolchain !== toolchain);
+    if (otherToolchain.length) console.log(`warning: ${otherToolchain.length} case(s) were admitted on a different toolchain than ${toolchain}; run \`admit --suite v2\` here (evidence to a scratch --evidence dir) before trusting their verdicts. Each run records both.`);
+    console.log(`treatment ${treatment.id}`);
     if (has('dry-run')) return 0;
     // A sealed descriptor without content is reported, not scored, and does not block the rest.
     const guardRefusals = bad.filter((r) => r.action === 'refused' && all[r.caseId]);
@@ -479,7 +489,7 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     const pending = plan.filter((r) => r.action !== 'refused' && !existsSync(join(resolve(out), r.runId, 'run.json')));
     if (!pending.length) { console.log('every planned run is already recorded; nothing to start'); return 0; }
     mkdirSync(resolve(out), { recursive: true });
-    const { executeRun, spawnAgentReal } = await import('./v2-exec');
+    const { executeRun, spawnAgentReal, abortLive } = await import('./v2-exec');
     const log = (l: string) => console.log(l);
     const deps = { spawnAgent: spawnAgentReal, sampleVramMb: () => { const g = env.readGpu(); return g ? g.reduce((a, x) => a + x.usedMb, 0) : null; }, now: () => new Date(), log, ...env.exec };
     let model = { tag: p.model, digest: null as string | null, quantization: null as string | null };
@@ -508,6 +518,9 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     let stopping = false;
     const onSignal = (sig: NodeJS.Signals) => {
       if (stopping) return; stopping = true;
+      // The agent runs in its own process group, so the terminal's Ctrl-C does not reach it: end it first,
+      // or it would keep calling Ollama and load the model again.
+      abortLive();
       console.error(`${sig}: stopping the batch${adapter.startsModel ? ' and unloading the model' : ''}`);
       void (adapter.startsModel && ollama ? ollama.unloadModel(origin, p.model).catch(() => {}) : Promise.resolve()).finally(() => process.exit(130));
     };

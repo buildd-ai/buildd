@@ -13,7 +13,7 @@
  *   its records are labelled `harness: fixture` and `ingest` refuses them.
  */
 import { join, resolve } from 'node:path';
-import { HARNESS_TREATMENT_V2 } from '../../packages/core/local-eval-v2-exec';
+import { HARNESS_TREATMENT_V2, type HarnessTreatment } from '../../packages/core/local-eval-v2-exec';
 import type { ModelAdapter } from '../../packages/core/local-eval-v2';
 
 export interface AgentInvocation { cmd: string; args: string[]; env: Record<string, string> }
@@ -28,6 +28,8 @@ export interface InvocationContext {
 
 export interface AdapterV2 extends ModelAdapter {
   harness: 'claude-code' | 'fixture';
+  /** The harness treatment this adapter applies; recorded on every run. */
+  treatment: HarnessTreatment;
   /** False: no model is loaded and no GPU guard applies. */
   startsModel: boolean;
   invocation(ctx: InvocationContext): AgentInvocation;
@@ -58,14 +60,14 @@ export function resolveClaudeBin(env: Record<string, string | undefined> = proce
   return { cmd, reason: null };
 }
 
-export function claudeInvocationV2(o: { origin: string; tag: string; contextTokens: number; maxTurns: number; configDir: string; homeDir: string; toolCalling: boolean; baseEnv: Record<string, string | undefined>; cmd?: string }): AgentInvocation {
-  const t = HARNESS_TREATMENT_V2;
+export function claudeInvocationV2(o: { origin: string; tag: string; contextTokens: number; maxTurns: number; configDir: string; homeDir: string; toolCalling: boolean; baseEnv: Record<string, string | undefined>; cmd?: string; treatment?: HarnessTreatment }): AgentInvocation {
+  const t = o.treatment ?? HARNESS_TREATMENT_V2;
   const env = cleanEnv(o.baseEnv, o.homeDir);
   Object.assign(env, {
     CLAUDE_CONFIG_DIR: o.configDir,
     ANTHROPIC_BASE_URL: o.origin,
-    ANTHROPIC_AUTH_TOKEN: 'ollama',
-    ANTHROPIC_API_KEY: '',
+    // A placeholder, never a real credential: the local server ignores it.
+    ...(t.auth === 'api-key' ? { ANTHROPIC_API_KEY: 'ollama' } : { ANTHROPIC_AUTH_TOKEN: 'ollama', ANTHROPIC_API_KEY: '' }),
     ANTHROPIC_DEFAULT_HAIKU_MODEL: o.tag,
     ANTHROPIC_DEFAULT_SONNET_MODEL: o.tag,
     ANTHROPIC_DEFAULT_OPUS_MODEL: o.tag,
@@ -93,11 +95,11 @@ export function claudeInvocationV2(o: { origin: string; tag: string; contextToke
   };
 }
 
-export function claudeAdapter(o: { origin: string; tag: string; contextTokens: number; toolCalling: boolean; systemPrompt: boolean; structuredOutput: boolean; baseEnv: Record<string, string | undefined>; cmd?: string }): AdapterV2 {
+export function claudeAdapter(o: { origin: string; tag: string; contextTokens: number; toolCalling: boolean; systemPrompt: boolean; structuredOutput: boolean; baseEnv: Record<string, string | undefined>; cmd?: string; treatment?: HarnessTreatment }): AdapterV2 {
   return {
-    id: `claude-code:${o.tag}`, harness: 'claude-code', startsModel: true,
+    id: `claude-code:${o.tag}`, harness: 'claude-code', startsModel: true, treatment: o.treatment ?? HARNESS_TREATMENT_V2,
     capabilities: { toolCalling: o.toolCalling, systemPrompt: o.systemPrompt, structuredOutput: o.structuredOutput, contextTokens: o.contextTokens },
-    invocation: (c) => claudeInvocationV2({ origin: o.origin, tag: o.tag, contextTokens: o.contextTokens, maxTurns: c.maxTurns, configDir: c.configDir, homeDir: c.homeDir, toolCalling: c.toolCalling, baseEnv: o.baseEnv, cmd: o.cmd }),
+    invocation: (c) => claudeInvocationV2({ origin: o.origin, tag: o.tag, contextTokens: o.contextTokens, maxTurns: c.maxTurns, configDir: c.configDir, homeDir: c.homeDir, toolCalling: c.toolCalling, baseEnv: o.baseEnv, cmd: o.cmd, treatment: o.treatment }),
   };
 }
 
@@ -105,7 +107,7 @@ export const FIXTURE_AGENT = resolve(import.meta.dir, 'fixture-agent.ts');
 
 export function fixtureAdapter(o: { fixtureDir: string; contextTokens: number; toolCalling: boolean; baseEnv: Record<string, string | undefined> }): AdapterV2 {
   return {
-    id: `fixture:${o.fixtureDir}`, harness: 'fixture', startsModel: false,
+    id: `fixture:${o.fixtureDir}`, harness: 'fixture', startsModel: false, treatment: HARNESS_TREATMENT_V2,
     capabilities: { toolCalling: o.toolCalling, systemPrompt: true, structuredOutput: true, contextTokens: o.contextTokens },
     invocation: (c) => ({
       cmd: process.execPath,

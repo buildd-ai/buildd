@@ -58,10 +58,37 @@ export const HARNESS_TREATMENT_V2 = {
   get reserveTokens(): number { return this.toolSchemaTokens + this.maxOutputTokens; },
   /** Compaction is the harness's own mechanism at the loaded window (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`). */
   compaction: 'claude-code auto-compact at the loaded context',
+  /** How the placeholder credential reaches the local server: `auth-token` (ANTHROPIC_AUTH_TOKEN) or `api-key` (ANTHROPIC_API_KEY, which `--bare` requires). */
+  auth: 'auth-token' as 'auth-token' | 'api-key',
 } as const;
 
-export function treatmentHash(t: { id: string; systemPrompt: string; tools: readonly string[]; flags: readonly string[]; maxOutputTokens: number; thinking: string; toolSchemaTokens: number } = HARNESS_TREATMENT_V2): string {
-  return createHash('sha256').update(JSON.stringify({ id: t.id, systemPrompt: t.systemPrompt, tools: t.tools, flags: t.flags, maxOutputTokens: t.maxOutputTokens, thinking: t.thinking, toolSchemaTokens: t.toolSchemaTokens })).digest('hex');
+export type HarnessTreatment = Omit<typeof HARNESS_TREATMENT_V2, 'id' | 'tools' | 'flags' | 'auth' | 'reserveTokens' | 'toolSchemaTokens' | 'maxOutputTokens'> & { id: string; tools: readonly string[]; toolSchemaTokens: number; maxOutputTokens: number; flags: readonly string[]; auth: 'auth-token' | 'api-key'; readonly reserveTokens: number };
+
+/**
+ * `claude-code-bare-v1`: the same prompt, output cap and thinking setting,
+ * plus `--bare` (no hooks, plugins, LSP, attribution, auto-memory, background
+ * prefetches, keychain reads or CLAUDE.md discovery). A separate treatment,
+ * applied identically to every model; it never replaces
+ * `claude-code-minimal-v1` in place, and results from the two are separate
+ * configurations. Its tool set is smaller: with Claude Code 2.1.310, `--bare`
+ * offers only Read, Edit and Bash whatever `--tools` names (seen against a
+ * mock endpoint), so that is what it declares rather than claiming six.
+ */
+export const HARNESS_TREATMENT_BARE_V2: HarnessTreatment = {
+  ...HARNESS_TREATMENT_V2,
+  id: 'claude-code-bare-v1',
+  tools: ['Read', 'Edit', 'Bash'],
+  flags: ['--bare', ...HARNESS_TREATMENT_V2.flags],
+  // The first request of this treatment against the mock endpoint was about 4.6K characters of JSON (about 1.1K tokens at chars/4).
+  toolSchemaTokens: 2048,
+  auth: 'api-key',
+  get reserveTokens(): number { return this.toolSchemaTokens + this.maxOutputTokens; },
+};
+
+export const HARNESS_TREATMENTS_V2: Record<string, HarnessTreatment> = { [HARNESS_TREATMENT_V2.id]: HARNESS_TREATMENT_V2, [HARNESS_TREATMENT_BARE_V2.id]: HARNESS_TREATMENT_BARE_V2 };
+
+export function treatmentHash(t: { id: string; systemPrompt: string; tools: readonly string[]; flags: readonly string[]; maxOutputTokens: number; thinking: string; toolSchemaTokens: number; auth?: string } = HARNESS_TREATMENT_V2): string {
+  return createHash('sha256').update(JSON.stringify({ id: t.id, systemPrompt: t.systemPrompt, tools: t.tools, flags: t.flags, maxOutputTokens: t.maxOutputTokens, thinking: t.thinking, toolSchemaTokens: t.toolSchemaTokens, auth: t.auth })).digest('hex');
 }
 
 /** Things this harness cannot measure; recorded on every run so a reader does not mistake them for zero. */
@@ -212,9 +239,11 @@ export function classifyAgentExit(x: AgentExit): ExitClass {
     resultText: typeof result?.result === 'string' ? result.result : null,
   };
   const all = `${base.resultText ?? ''}\n${x.err}`;
+  // Harness status lines (retries, system notices) in the stream, but not the model's own words, which may mention any error text.
+  const harnessLines = x.out.split('\n').filter((l) => { const t = l.trim(); if (!t.startsWith('{')) return t.length > 0; try { const o = JSON.parse(t); return o?.type !== 'assistant' && o?.type !== 'user'; } catch { return false; } }).join('\n');
   if (x.spawnError) return { ...base, kind: 'harness', note: `agent could not start: ${x.spawnError}` };
   // A run that hit the wall clock while the server was failing is the server's failure, not the model's.
-  if (x.timedOut && INFRA_RE.test(all)) return { ...base, kind: 'infra', note: 'wall-clock reached while the model server was failing or unreachable' };
+  if (x.timedOut && (INFRA_RE.test(all) || INFRA_RE.test(harnessLines))) return { ...base, kind: 'infra', note: 'wall-clock reached while the model server was failing or unreachable' };
   if (x.timedOut) return { ...base, kind: 'budget_exhausted', note: 'wall-clock budget reached; graded on the tree it left' };
   if (result) {
     if (result.is_error || (typeof result.subtype === 'string' && result.subtype !== 'success')) {

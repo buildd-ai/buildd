@@ -160,6 +160,19 @@ long-context cases' smallest evidence set (8K) does not fit a 16K window on the 
 them with `--track tool-retrieval`, or use `--context 32768` for single-context. What the harness cannot measure
 (schema tokens, Ollama truncation, the model tokenizer, mid-run tool budget) is listed in each run's `execution.json`.
 
+A second treatment, `claude-code-bare-v1` (`--treatment claude-code-bare-v1`), adds `--bare` (no hooks, plugins, LSP,
+auto-memory, prefetches, keychain or CLAUDE.md discovery) and passes the placeholder as `ANTHROPIC_API_KEY`, which bare
+mode requires. It is a separate configuration (`configId` suffix `~claude-code-bare-v1`, run id `.bare`), applied the
+same way to every model, and never replaces the first in place. Its tool set differs: with Claude Code 2.1.310, bare
+mode offers only Read, Edit and Bash whatever `--tools` names, so that is what it declares; its first request against
+the mock endpoint was about 4.6K characters of JSON against 25.6K, so its schema allowance is 2048 and 8K evidence fits a
+16K window on the single-context track. Compare models within one treatment, never across the two.
+
+Admission evidence is per toolchain. Each run records the Bun version it graded with next to the one the case was
+admitted on, and `run` warns when they differ; re-run `admit --suite v2 --evidence <scratch dir>` on the evaluating
+machine's toolchain before trusting verdicts there. `LOCAL_EVAL_TMP` must be outside the repository, so neither the
+agent tree nor the grader resolves modules from the checkout's `node_modules`; cases depend on Bun alone.
+
 The agent works in a fresh temporary directory (canonical long path, outside the repository and outside `--out`) with
 an empty per-run `HOME` and Claude config dir; its final tree is copied to `<out>/<runId>/tree` afterwards. This is
 isolation by location, not a sandbox: the agent's Bash tool is not prevented from reading the disk by absolute path or

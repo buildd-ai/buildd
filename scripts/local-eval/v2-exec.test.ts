@@ -287,6 +287,54 @@ describe('v2TempDir', () => {
   });
 });
 
+describe('temp dirs and abort', () => {
+  it('refuses a LOCAL_EVAL_TMP inside the repository (module resolution would reach its node_modules)', async () => {
+    const { v2TempDir } = await import('./v2-exec');
+    const prev = process.env.LOCAL_EVAL_TMP;
+    process.env.LOCAL_EVAL_TMP = join(import.meta.dir, '..', '..', 'node_modules', '.cache');
+    try { expect(() => v2TempDir('x-')).toThrow(/inside the repository/); } finally { if (prev === undefined) delete process.env.LOCAL_EVAL_TMP; else process.env.LOCAL_EVAL_TMP = prev; }
+  });
+  it.skipIf(process.platform === 'win32')('abortLive ends a running agent group and deletes live temp dirs', async () => {
+    const { v2TempDir, abortLive, spawnAgentReal } = await import('./v2-exec');
+    const d = v2TempDir('v2-abort-');
+    const run = spawnAgentReal({ cmd: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: { PATH: process.env.PATH ?? '' } }, { cwd: d, input: 'x', timeoutMs: 60_000 });
+    await new Promise((r) => setTimeout(r, 300));
+    abortLive();
+    const exit = await run;
+    expect(exit.timedOut).toBe(false);
+    expect(existsSync(d)).toBe(false);
+  });
+});
+
+describe('treatments', () => {
+  it('claude-code-bare-v1 adds --bare and an api-key placeholder, and is its own configuration', async () => {
+    const root = buildSuite(); const out = join(root, 'runs');
+    const agent = fakeAgent((cwd) => { writeFileSync(join(cwd, 'answer.json'), '{"citations":[{"file":"src/live.ts"}]}'); });
+    await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', trials: '1', out, treatment: 'claude-code-bare-v1' }), () => false, envWith(agent.spawnAgent)));
+    const c = agent.calls[0];
+    expect(c.inv.args[0]).toBe('-p');
+    expect(c.inv.args).toContain('--bare');
+    expect(c.inv.env.ANTHROPIC_API_KEY).toBe('ollama');
+    expect(c.inv.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    const rec = readRun(out, 'v2.find-total.m_1@16384.single-context.bare.t1');
+    expect(rec.configId).toBe('m:1@16384~claude-code-bare-v1');
+    const ex = JSON.parse(readFileSync(join(out, 'v2.find-total.m_1@16384.single-context.bare.t1', 'execution.json'), 'utf8'));
+    expect(ex.treatment.id).toBe('claude-code-bare-v1');
+    expect(ex.toolchain.now).toContain(`bun ${Bun.version}`);
+    // The default treatment is unchanged: no --bare.
+    const plain = fakeAgent((cwd) => { writeFileSync(join(cwd, 'answer.json'), '{}'); });
+    await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', trials: '1', out }), () => false, envWith(plain.spawnAgent)));
+    expect(plain.calls[0].inv.args).not.toContain('--bare');
+    expect((await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', out, treatment: 'nope' }), () => false, envWith(plain.spawnAgent)))).value).toBe(2);
+    // Its smaller allowance lets 8K evidence fit a 16K window on the single-context track; the default treatment's does not.
+    const ctxAgent = fakeAgent((cwd) => { writeFileSync(join(cwd, 'answer.json'), '{"answer":"7"}'); });
+    await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'ctx-limit', trials: '1', out, treatment: 'claude-code-bare-v1' }), () => false, envWith(ctxAgent.spawnAgent)));
+    expect(ctxAgent.calls).toHaveLength(1);
+    expect(readRun(out, 'v2.ctx-limit.m_1@16384.single-context.bare.e8192-dispersed.t1').result).toBe('pass');
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
 describe('resolveClaudeBin', () => {
   it('prefers LOCAL_EVAL_CLAUDE_BIN and refuses a .cmd shim, which needs a shell that would re-split arguments', async () => {
     const { resolveClaudeBin } = await import('./v2-agent');

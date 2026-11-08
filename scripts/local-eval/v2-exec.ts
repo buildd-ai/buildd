@@ -11,7 +11,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import {
   buildPromptV2, buildRunRecordV2, classifyAgentExit, extractJsonAnswer, answerFileOf, gradeRunV2, tamperingV2, treatmentHash, visibleTestPaths,
   HARNESS_TREATMENT_V2, HARNESS_UNKNOWNS_V2,
@@ -41,10 +41,37 @@ export interface ExecDeps {
  * and denies edits despite `acceptEdits`. The canonical path fixes that without
  * widening any permission.
  */
+const REPO_ROOT = realpathSync.native(join(import.meta.dir, '..', '..'));
+
 export function v2TempDir(prefix: string): string {
   const base = process.env.LOCAL_EVAL_TMP ?? tmpdir();
   mkdirSync(base, { recursive: true });
-  return realpathSync.native(mkdtempSync(join(realpathSync.native(base), prefix)));
+  const real = realpathSync.native(base);
+  // Inside the checkout, module resolution from the agent tree or the grader would walk up into the
+  // repository's own node_modules and files: the candidate must resolve against its snapshot only.
+  const rel = relative(REPO_ROOT, real);
+  if (!rel || (!rel.startsWith('..') && !isAbsolute(rel))) throw new Error(`LOCAL_EVAL_TMP (${real}) is inside the repository; use a directory outside it`);
+  const d = realpathSync.native(mkdtempSync(join(real, prefix)));
+  LIVE_TEMP.add(d);
+  return d;
+}
+
+/** Remove a v2 temporary directory and forget it. */
+export function dropTemp(d: string) { rmSync(d, { recursive: true, force: true }); LIVE_TEMP.delete(d); }
+
+const LIVE_TEMP = new Set<string>();
+const LIVE_AGENTS = new Set<number>();
+
+/**
+ * For a signal handler: end every agent still running (their process groups) and
+ * delete every temporary directory in use, including grading dirs that hold a
+ * hidden verifier, so nothing is left for the next agent to find.
+ */
+export function abortLive() {
+  for (const pid of LIVE_AGENTS) killTree(pid, 'SIGKILL');
+  LIVE_AGENTS.clear();
+  for (const d of LIVE_TEMP) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+  LIVE_TEMP.clear();
 }
 
 /** Keep the tail: the result record is the last line. */
@@ -55,7 +82,9 @@ const keepTail = (acc: string, d: string) => { const s = acc + d; return s.lengt
 function killTree(pid: number | undefined, signal: NodeJS.Signals) {
   if (!pid) return;
   if (process.platform === 'win32') { spawnSync('taskkill', ['/pid', String(pid), '/T', '/F']); return; }
-  try { process.kill(-pid, signal); } catch { try { process.kill(pid, signal); } catch { /* already gone */ } }
+  // The agent leads its own process group (detached), so the group id is its pid. No plain-pid fallback:
+  // after the agent has exited, that pid may belong to an unrelated process.
+  try { process.kill(-pid, signal); } catch { /* group already gone */ }
 }
 
 export function spawnAgentReal(inv: AgentInvocation, o: { cwd: string; input: string; timeoutMs: number }): Promise<AgentExit> {
@@ -64,14 +93,18 @@ export function spawnAgentReal(inv: AgentInvocation, o: { cwd: string; input: st
     const p = spawn(inv.cmd, inv.args, { cwd: o.cwd, env: inv.env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
     p.stdout.on('data', (d) => { so = keepTail(so, String(d)); });
     p.stderr.on('data', (d) => { se = keepTail(se, String(d)); });
+    if (p.pid) LIVE_AGENTS.add(p.pid);
     p.stdin.on('error', () => { /* agent closed stdin early: its exit says why */ });
     p.stdin.end(o.input);
     const t = setTimeout(() => { timedOut = true; killTree(p.pid, 'SIGTERM'); setTimeout(() => killTree(p.pid, 'SIGKILL'), 5000).unref(); }, o.timeoutMs);
     p.on('error', (e) => { spawnError = String(e); });
     p.on('close', (code) => {
       clearTimeout(t);
-      // Background processes the agent left behind must not touch the tree while it is graded.
-      killTree(p.pid, 'SIGKILL');
+      if (p.pid) LIVE_AGENTS.delete(p.pid);
+      // Background processes the agent left behind must not touch the tree while it is graded. POSIX only:
+      // the group outlives its leader; on Windows the tree cannot be found from an exited parent, and
+      // killing a pid after exit could hit a reused one.
+      if (process.platform !== 'win32') killTree(p.pid, 'SIGKILL');
       done({ code: code ?? (spawnError ? 127 : 143), out: so, err: se, timedOut, spawnError });
     });
   });
@@ -123,7 +156,7 @@ export function verifyCandidateDir(c: LoadedCase, candidateDir: string, timeoutM
     const r = sh(process.execPath, ['run', join(vdir, entry.replace(/^verifier\//, ''))], { cwd: root, env: toolEnv(root, { ...extraEnv, CANDIDATE_DIR: cand }), timeoutMs });
     if (r.code === 143) return { ran: true, passed: false, stdout: r.out, stderr: `${r.err}\nverifier timed out on the candidate after ${timeoutMs} ms` };
     return { ran: true, passed: r.code === 0, stdout: r.out, stderr: r.err };
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { dropTemp(root); }
 }
 
 /** The snapshot's own tests, with pristine copies restored first so an edited test cannot grade itself. Null when the case ships none. A timeout is a failed check. */
@@ -136,7 +169,7 @@ export function runVisibleChecks(c: LoadedCase, candidateDir: string, timeoutMs 
     for (const t of tests) { mkdirSync(dirname(join(root, t)), { recursive: true }); writeFileSync(join(root, t), c.files[`snapshot/${t}`]); }
     const r = sh(process.execPath, ['test', ...tests.map((t) => `./${t}`)], { cwd: root, env: toolEnv(root), timeoutMs });
     return { ran: true, passed: r.code === 0, output: `${r.out}\n${r.err}${r.code === 143 ? `\nvisible checks timed out after ${timeoutMs} ms` : ''}`.slice(-20000) };
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { dropTemp(root); }
 }
 
 export interface ExecuteInput {
@@ -171,9 +204,12 @@ export async function executeRun(i: ExecuteInput): Promise<CaseResultV2> {
   const m = c.manifest;
   mkdirSync(runDir, { recursive: true });
   const toolCalling = adapter.capabilities.toolCalling;
-  const prompt = buildPromptV2({ manifest: m, files: c.files, track: policy.track, contextTokens: policy.contextTokens, evidenceSize: i.evidenceSize, position: i.position, toolCalling });
+  const t = adapter.treatment;
+  const prompt = buildPromptV2({ manifest: m, files: c.files, track: policy.track, contextTokens: policy.contextTokens, evidenceSize: i.evidenceSize, position: i.position, toolCalling, systemPrompt: t.systemPrompt, reserveTokens: t.reserveTokens });
   const execution: Record<string, unknown> = {
-    treatment: { id: HARNESS_TREATMENT_V2.id, hash: treatmentHash(), tools: toolCalling ? HARNESS_TREATMENT_V2.tools : [], toolSchemaTokens: HARNESS_TREATMENT_V2.toolSchemaTokens, maxOutputTokens: HARNESS_TREATMENT_V2.maxOutputTokens, thinking: HARNESS_TREATMENT_V2.thinking, reserveTokens: HARNESS_TREATMENT_V2.reserveTokens, compaction: HARNESS_TREATMENT_V2.compaction },
+    treatment: { id: t.id, hash: treatmentHash(t), flags: t.flags, tools: toolCalling ? t.tools : [], toolSchemaTokens: t.toolSchemaTokens, maxOutputTokens: t.maxOutputTokens, thinking: t.thinking, reserveTokens: t.reserveTokens, compaction: t.compaction, auth: t.auth },
+    // Admission evidence is per toolchain; a different Bun may grade differently until the case is re-admitted on it.
+    toolchain: { now: `bun ${Bun.version}; ${process.platform}-${process.arch}`, admittedOn: m.admission?.toolchain ?? null, matchesAdmission: m.admission?.toolchain === `bun ${Bun.version}; ${process.platform}-${process.arch}` },
     harness: adapter.harness, adapterId: adapter.id, fixture: adapter.harness === 'fixture',
     budgets: { maxTurns: m.resources.maxTurns, toolBudget: m.resources.toolBudget, wallClockSeconds: m.resources.wallClockSeconds },
     caseVersion: m.version, contentHash: m.contentHash,
@@ -254,7 +290,7 @@ export async function executeRun(i: ExecuteInput): Promise<CaseResultV2> {
   } finally {
     // Keep the final tree (regular files and Git data; links stay links) for review and regrade, then drop the workspace.
     try { if (existsSync(tree)) cpSync(tree, join(runDir, 'tree'), { recursive: true, verbatimSymlinks: true }); } catch { /* retention is best effort */ }
-    rmSync(work, { recursive: true, force: true });
+    dropTemp(work);
   }
 }
 
