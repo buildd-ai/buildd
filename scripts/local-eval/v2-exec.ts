@@ -22,6 +22,7 @@ import { redactDeep, redactText, type PlannedRun, type RunPolicy, type Split } f
 import { changedFiles, fullDiff, sh } from './lib';
 import { cleanEnv, type AdapterV2, type AgentInvocation } from './v2-agent';
 import { exportToDisk, type LoadedCase } from './v2';
+import { toolEfficiencyOfRun } from './v2-tools';
 
 export interface ExecDeps {
   /** Start the agent. Called exactly once per executed trial. */
@@ -219,11 +220,14 @@ export async function executeRun(i: ExecuteInput): Promise<CaseResultV2> {
   };
   writeFileSync(join(runDir, 'prompt.txt'), prompt.text);
   const started = deps.now();
+  // The analysed local tool trace of the agent subprocess; null until the agent ran (unknown, not clean).
+  let toolEfficiency: ReturnType<typeof toolEfficiencyOfRun> = null;
   const finish = (exit: ExitClass | null, verifier: VerifierRun, visible: { ran: boolean; passed: boolean | null } | null, grade: ReturnType<typeof gradeRunV2>, note: string | null, vram: { peak: number | null; samples: number | null } = { peak: null, samples: null }): CaseResultV2 => {
     const rec = buildRunRecordV2({
       planned: p, manifest: m, split, policy, model: i.model, harness: { name: adapter.harness, version: i.harnessVersion }, runtime: i.runtime as never,
       promptHash: prompt.hash, startedAt: started, endedAt: deps.now(), exit, peakVramMb: vram.peak, vramSamples: vram.samples, verifier, visible, grade, note,
     });
+    if (toolEfficiency) rec.toolEfficiency = toolEfficiency;
     writeRecord(runDir, rec, execution, grade.artifacts);
     return { ...base, outcome: rec.result, failureClass: rec.v2!.failureClass, notes: grade.score.notes };
   };
@@ -252,7 +256,10 @@ export async function executeRun(i: ExecuteInput): Promise<CaseResultV2> {
     const sampler = adapter.startsModel ? setInterval(() => { const v = deps.sampleVramMb(); if (v !== null) { samples++; peak = Math.max(peak ?? 0, v); } }, 2000) : null;
     execution.agentStarted = true;
     const raw = await deps.spawnAgent(inv, { cwd: tree, input: prompt.text, timeoutMs: m.resources.wallClockSeconds * 1000 }).finally(() => { if (sampler) clearInterval(sampler); });
-    writeFileSync(join(runDir, 'agent.stdout.txt'), redactText(raw.out));
+    const storedOut = redactText(raw.out);
+    writeFileSync(join(runDir, 'agent.stdout.txt'), storedOut);
+    // From the stored (redacted) stdout, so `enrich-tools` on the same run reproduces this block exactly.
+    toolEfficiency = toolEfficiencyOfRun(adapter.harness, storedOut);
     writeFileSync(join(runDir, 'agent.stderr.txt'), redactText(raw.err));
     const exit = classifyAgentExit(raw);
     execution.exit = { kind: exit.kind, note: exit.note, code: raw.code, timedOut: raw.timedOut, toolCalls: exit.toolCalls };
