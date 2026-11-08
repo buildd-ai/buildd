@@ -40,6 +40,7 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { workerOwnsPr, workerOwnsPrUrl } from '@/lib/repo-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { recordObservationEvidence } from '@/lib/model-observation-store';
 
 /** What the merge did to the task: the `task.pr_merged` event's `transition`. */
 export type MergeTaskTransition = 'flipped' | 'already_completed' | 'not_flipped';
@@ -160,6 +161,8 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
     const releaseTaskId = worker.taskId;
     await afterOrNow(`releaseAndNotify(${releaseTaskId})`, () => releaseAndNotify(releaseTaskId, 'merged'));
   }
+
+  await recordObservationEvidence({ workerId: worker.id }, { prOutcome: 'merged' });
 
   // Close open changeIntent rows, drop merge reservations and re-drive the PR
   // waiting behind it (missions); the reviews module measures the merge

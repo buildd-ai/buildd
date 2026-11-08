@@ -4213,6 +4213,76 @@ export const taskOutcomes = pgTable('task_outcomes', {
 }));
 
 /**
+ * One observation per execution attempt (worker attempt): what model actually
+ * ran, under what configuration, and how it ended. Spec: "Model performance
+ * measurement". Extends task_outcomes / experiments / runner_usage; a readout
+ * joins them, this table is not a second analytics system.
+ *
+ * Natural key (worker_id, attempt): a redelivered report upserts. Every metric
+ * an attempt could not supply is NULL and named in `unavailable`; nothing is
+ * backfilled. `endpoint_kind` is a closed label, never a URL or credential.
+ * Correctness evidence columns come only from records the worker did not
+ * write and arrive late; `terminal_outcome` is the worker's own claim.
+ */
+export const modelObservations = pgTable('model_observations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // No FK: workers are pruned on a different cadence than observations.
+  workerId: uuid('worker_id').notNull(),
+  attempt: integer('attempt').notNull().default(1),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // Root task of the retry chain, and the previous attempt's worker.
+  chainId: uuid('chain_id'),
+  parentWorkerId: uuid('parent_worker_id'),
+  resolvedModel: text('resolved_model'),
+  endpointKind: text('endpoint_kind').notNull().default('unknown'),
+  modelVersion: text('model_version'),
+  quantization: text('quantization'),
+  contextWindow: integer('context_window'),
+  backend: text('backend'),
+  harnessVersion: text('harness_version'),
+  runtime: jsonb('runtime').$type<{ os?: string; arch?: string; gpu?: string; gpuMemoryMb?: number; cpuCount?: number } | null>(),
+  taskClass: text('task_class'),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  generationMs: integer('generation_ms'),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  tokensPerSecond: real('tokens_per_second'),
+  turns: integer('turns'),
+  retries: integer('retries').notNull().default(0),
+  toolFailures: integer('tool_failures'),
+  terminalOutcome: text('terminal_outcome').notNull().default('unknown'),
+  exitCause: text('exit_cause'),
+  failureOrigin: text('failure_origin').notNull().default('unknown'),
+  // Machine-level upper bound sampled at a bounded interval; NULL without a sampler.
+  peakVramMb: integer('peak_vram_mb'),
+  vramSamples: integer('vram_samples'),
+  // NULL = unpriced or unreported. Never 0 by default.
+  costUsd: decimal('cost_usd', { precision: 10, scale: 6 }),
+  costBasis: text('cost_basis'),
+  // metric -> why it is NULL.
+  unavailable: jsonb('unavailable').$type<Record<string, string>>().notNull().default({}),
+  // Late, independent evidence.
+  reviewVerdict: text('review_verdict'),
+  ciState: text('ci_state'),
+  specVerdict: text('spec_verdict'),
+  prOutcome: text('pr_outcome'),
+  reworked: boolean('reworked').notNull().default(false),
+  evidenceUpdatedAt: timestamp('evidence_updated_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workerAttemptIdx: uniqueIndex('model_observations_worker_attempt_idx').on(t.workerId, t.attempt),
+  teamModelIdx: index('model_observations_team_model_idx').on(t.teamId, t.resolvedModel),
+  workspaceCreatedIdx: index('model_observations_workspace_created_idx').on(t.workspaceId, t.createdAt),
+  chainIdx: index('model_observations_chain_idx').on(t.chainId),
+  taskIdx: index('model_observations_task_idx').on(t.taskId),
+}));
+
+/**
  * Experiment registry — one row per declared experiment, scoped to a team.
  *
  * The row is the source of truth for the declaration (hypothesis, arms,

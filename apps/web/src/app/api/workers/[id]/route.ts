@@ -145,6 +145,7 @@ import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capa
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { recordModelObservation } from '@/lib/model-observation-store';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearTeamCache } from '@/lib/team-cache';
 import { readRound } from '@/lib/read-round';
@@ -4704,6 +4705,18 @@ async function patchWorker(
       // status: a contract guard or a completion-policy slot that failed a
       // reported completion records failed. Fire-and-forget.
       const effectiveOutcome = contractViolation || slotFailure ? 'failed' : status;
+      // One observation per execution attempt (model-performance-measurement spec). Recorded for EVERY terminal report, including an
+      // auto-retried or CI-held attempt, so a failed model's row (and its failure origin) is kept. The runner's
+      // descriptor is untrusted and whitelisted; telemetry only, never throws into this path.
+      void recordModelObservation({
+        workerId: id,
+        rawDescriptor: body.modelObservation,
+        actualModel: sessionActualModel,
+        exitCause: outcomeAnalytics.exitCause,
+        status: effectiveOutcome,
+        costUsd: outcomeAnalytics.totalCostUsd as number | string | null,
+        durationMs: outcomeAnalytics.durationMs,
+      });
       if (!shouldAutoRetry) {
         if (!releaseHeld) {
           recordTaskOutcome({ ...outcomeAnalytics, taskId: completedTaskId, outcome: effectiveOutcome }).catch(() => {});
