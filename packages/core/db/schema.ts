@@ -4272,6 +4272,8 @@ export const modelObservations = pgTable('model_observations', {
   prOutcome: text('pr_outcome'),
   reworked: boolean('reworked').notNull().default(false),
   evidenceUpdatedAt: timestamp('evidence_updated_at', { withTimezone: true }),
+  // Set only on controlled replay runs (packages/core/local-eval.ts): suite, case, trial and configuration ids. NULL = production attempt.
+  evaluation: jsonb('evaluation').$type<Record<string, unknown> | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

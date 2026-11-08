@@ -34,6 +34,7 @@
     "./chat-model-eligibility": "./chat-model-eligibility.ts",
     "./model-observation": "./model-observation.ts",
     "./model-comparison": "./model-comparison.ts",
+    "./local-eval": "./local-eval.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
     "./role-model-routing": "./role-model-routing.ts",
