@@ -71,6 +71,8 @@ interface ResolvedTarget {
     githubInstallationId?: string | null;
     gitConfig?: Record<string, unknown> | null;
     webhookConfig?: unknown;
+    /** The full row carries it: a frozen release candidate is reviewed by its composition. */
+    releaseConfig?: import('@buildd/core/db/schema').WorkspaceReleaseConfig | null;
   };
 }
 

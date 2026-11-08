@@ -20,6 +20,7 @@ import { applyCorrection, summarizeReview, type ReviewCandidate } from './tool-t
 import { ToolTraceRecorder, TRACE_SCHEMA_VERSION, type TraceCounters, type TraceEvent, type TraceHeader } from './tool-trace';
 import { analyseToolTrace, buildToolEfficiencyAggregate, ANALYSER_VERSION, type ToolFinding } from './tool-trace-analysis';
 import type { ToolEfficiencyAggregate } from '@buildd/core/tool-efficiency';
+import type { ReplayToolEfficiency } from '@buildd/core/local-eval';
 
 export type TraceSource = 'runner_trace' | 'claude_transcript';
 
@@ -30,6 +31,8 @@ export interface LoadedTrace {
   counters: Partial<TraceCounters>;
   /** What this source cannot tell you. */
   limits: string[];
+  /** `measured` per-call timing (runner trace), `approximate` (line timestamps) or `unknown` (no timestamps; elapsed is null). */
+  timing: 'measured' | 'approximate' | 'unknown';
 }
 
 function lines(text: string): unknown[] {
@@ -63,7 +66,7 @@ export function loadRunnerTrace(rows: unknown[]): LoadedTrace {
     else if (r?.kind === 'summary' && r.counters) counters = r.counters;
   }
   return {
-    source: 'runner_trace', header, events: [...byId.values()].sort((a, b) => a.seq - b.seq), counters,
+    source: 'runner_trace', header, events: [...byId.values()].sort((a, b) => a.seq - b.seq), counters, timing: 'measured',
     limits: ['Raw commands are not kept unless excerpts were opted into; findings rest on fingerprints and enums.'],
   };
 }
@@ -72,24 +75,33 @@ export function loadRunnerTrace(rows: unknown[]): LoadedTrace {
 export function importClaudeTranscript(rows: unknown[], meta: { taskId?: string } = {}): LoadedTrace {
   let clock = 0;
   const rec = new ToolTraceRecorder({ taskId: meta.taskId ?? 'imported', harness: 'claude', now: () => clock });
+  // A call is timed only when both its tool_use and its tool_result line carried a timestamp;
+  // otherwise its elapsed time is unknown (null), never the 0 ms a still clock would report.
+  const usedAt = new Set<string>();
+  const resultAt = new Set<string>();
   for (const r of rows as any[]) {
     const t = typeof r?.timestamp === 'string' ? Date.parse(r.timestamp) : NaN;
-    if (Number.isFinite(t)) clock = t;
+    const stamped = Number.isFinite(t);
+    if (stamped) clock = t;
     const content = r?.message?.content;
     if (!Array.isArray(content)) continue;
     for (const b of content) {
-      if (r.type === 'assistant' && b?.type === 'tool_use') rec.onToolUse({ id: b.id, name: b.name, input: b.input });
-      else if (r.type === 'user' && b?.type === 'tool_result') rec.onToolResult({ tool_use_id: b.tool_use_id, content: b.content, is_error: b.is_error === true });
+      if (r.type === 'assistant' && b?.type === 'tool_use') { rec.onToolUse({ id: b.id, name: b.name, input: b.input }); if (stamped && b.id) usedAt.add(b.id); }
+      else if (r.type === 'user' && b?.type === 'tool_result') { rec.onToolResult({ tool_use_id: b.tool_use_id, content: b.content, is_error: b.is_error === true }); if (stamped && b.tool_use_id) resultAt.add(b.tool_use_id); }
     }
   }
   rec.close();
+  const events = rec.events.map((e) => (usedAt.has(e.callId) && resultAt.has(e.callId) ? e : { ...e, elapsedMs: null }));
+  const timed = events.some((e) => e.elapsedMs !== null);
   return {
     source: 'claude_transcript',
     header: { harness: 'claude', taskId: meta.taskId ?? 'imported', model: null },
-    events: [...rec.events], counters: { ...rec.counters },
+    events, counters: { ...rec.counters }, timing: timed ? 'approximate' : 'unknown',
     limits: [
       'Imported from a transcript: exit codes are parsed from result text or inferred from is_error.',
-      'Timings are differences between transcript line timestamps and are approximate.',
+      timed
+        ? 'Timings are differences between transcript line timestamps and are approximate; calls without timestamps are untimed.'
+        : 'The transcript has no line timestamps: call timings are unknown.',
       'File changes made outside recorded tool calls are invisible, so repeats may be over- or under-reported.',
       'No Codex desktop import exists; only sessions run through the runner adapter are traced for Codex.',
     ],
@@ -102,6 +114,21 @@ export function loadTraceFile(path: string, format: 'auto' | 'trace' | 'claude-t
   if (fmt === 'trace') return loadRunnerTrace(rows);
   if (fmt === 'claude-transcript') return importClaudeTranscript(rows);
   throw new Error('Unrecognised file: expected a runner trace or a Claude Code transcript (JSON Lines).');
+}
+
+/**
+ * The replay evaluator's path: the Claude Code `stream-json` stdout of one
+ * controlled run, imported and analysed exactly like a transcript, reduced to
+ * the bounded aggregate plus provenance for the run record. Null when the
+ * stdout holds no assistant/user lines (nothing was traced: unknown, not clean).
+ * Runs locally; the findings, commands and fingerprints stay on this machine.
+ */
+export function replayToolEfficiencyFromStream(stdout: string): ReplayToolEfficiency | null {
+  const rows = lines(stdout);
+  if (!rows.some((r: any) => (r?.type === 'assistant' || r?.type === 'user') && Array.isArray(r?.message?.content))) return null;
+  const t = importClaudeTranscript(rows, { taskId: 'replay' });
+  const { aggregate } = buildReport(t);
+  return { aggregate, source: 'claude_stream_json', timing: t.timing === 'approximate' ? 'approximate' : 'unknown' };
 }
 
 export interface ToolTraceReport {

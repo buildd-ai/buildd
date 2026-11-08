@@ -116,6 +116,11 @@ mock.module('@buildd/core/db', () => ({
 const mockRequestKernelReview = mock(async (_p: any): Promise<any> => ({ handled: false }));
 mock.module('@/lib/workflow/seam', () => ({ requestReview: mockRequestKernelReview }));
 
+// A frozen release candidate's composition (lib/workflow/candidate-review.ts). Default: not a
+// candidate, so every case outside the release-candidate block runs unchanged.
+const mockCandidateReview = mock(async (_p: any): Promise<any> => ({ kind: 'not_candidate' }));
+mock.module('@/lib/workflow/candidate-review', () => ({ candidateReviewScope: mockCandidateReview }));
+
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
@@ -240,6 +245,86 @@ beforeEach(() => {
   mockReadPrReviewStatus.mockReset();
   mockReadPrReviewStatus.mockReturnValue({ state: 'queued', terminal: false });
   mockFireGateEvent.mockClear();
+  mockCandidateReview.mockReset();
+  mockCandidateReview.mockResolvedValue({ kind: 'not_candidate' });
+});
+
+describe('POST /api/github/pr/review — a frozen release candidate is reviewed by its composition', () => {
+  const CANDIDATE_PR = {
+    ...OPEN_PR,
+    number: 77,
+    title: 'Release v1.2.3',
+    html_url: 'https://github.com/buildd-ai/buildd/pull/77',
+    head: { ref: 'release/v1.2.3', sha: 'cand-head' },
+    base: { ref: 'main', sha: 'main-sha' },
+  };
+  const RELEASE_WS = { ...WORKSPACE, releaseConfig: { candidate: {} } };
+  beforeEach(() => {
+    mockResolveWorkspace.mockReturnValue(RELEASE_WS);
+    mockGithubApi.mockImplementation((_i: number, path: string) =>
+      Promise.resolve(typeof path === 'string' && path.includes('/files') ? [] : CANDIDATE_PR));
+  });
+
+  it('every change approved on its own PR at this head: no reviewer is filed, so nobody is asked to sign off again', async () => {
+    mockCandidateReview.mockResolvedValue({ kind: 'composed', headSha: 'cand-head', constituents: 2 });
+    const res = await POST(post({ prNumber: 77, workspaceId: 'buildd' }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toMatchObject({ ok: true, reviewNotOwed: true, headSha: 'cand-head', reviewTaskId: null, composition: { kind: 'composed', constituents: 2 } });
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    expect(mockCandidateReview).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-1', prNumber: 77, repoFullName: 'buildd-ai/buildd', releaseConfig: { candidate: {} } }));
+  });
+
+  it('commits no earlier review covered: one reviewer, scoped to those commits (no release-PR escalation over the whole candidate)', async () => {
+    const commits = [{ sha: 'd'.repeat(40), reason: 'direct_commit', paths: ['apps/web/x.ts'] }];
+    const files = [{ filename: 'apps/web/x.ts', status: 'modified', additions: 1, deletions: 0 }];
+    mockCandidateReview.mockResolvedValue({ kind: 'delta', headSha: 'cand-head', commits, paths: ['apps/web/x.ts'], files });
+    const res = await POST(post({ prNumber: 77, workspaceId: 'buildd' }));
+    expect(res.status).toBe(201);
+    const params = (mockCreateReviewerTask.mock.calls[0] as any[])[0];
+    expect(params.compositionScope).toEqual({ novelDeltaPaths: ['apps/web/x.ts'], novelCommits: commits });
+    expect(params.prFiles).toEqual(files);
+    expect(params.headSha).toBe('cand-head');
+  });
+
+  it('a candidate whose head changed since the attestation (an amendment) keeps the full review', async () => {
+    mockCandidateReview.mockResolvedValue({ kind: 'composed', headSha: 'old-head', constituents: 2 });
+    const res = await POST(post({ prNumber: 77, workspaceId: 'buildd' }));
+    expect(res.status).toBe(201);
+    const params = (mockCreateReviewerTask.mock.calls[0] as any[])[0];
+    expect(params.compositionScope).toBeUndefined();
+  });
+
+  it('a composition that cannot be proved, or a read that fails, keeps the full review', async () => {
+    mockCandidateReview.mockResolvedValue({ kind: 'unverifiable', headSha: 'cand-head', reason: 'commit_list_truncated' });
+    expect((await POST(post({ prNumber: 77, workspaceId: 'buildd' }))).status).toBe(201);
+    expect(((mockCreateReviewerTask.mock.calls[0] as any[])[0]).compositionScope).toBeUndefined();
+
+    mockCreateReviewerTask.mockClear();
+    mockCandidateReview.mockRejectedValue(new Error('github down'));
+    expect((await POST(post({ prNumber: 77, workspaceId: 'buildd' }))).status).toBe(201);
+    expect(((mockCreateReviewerTask.mock.calls[0] as any[])[0]).compositionScope).toBeUndefined();
+  });
+
+  it('not a trusted candidate (no candidate release config): never asks for a composition; the full review stays', async () => {
+    mockResolveWorkspace.mockReturnValue(WORKSPACE);
+    mockCandidateReview.mockResolvedValue({ kind: 'composed', headSha: 'cand-head', constituents: 2 });
+    expect((await POST(post({ prNumber: 77, workspaceId: 'buildd' }))).status).toBe(201);
+    expect(mockCandidateReview).not.toHaveBeenCalled();
+    expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('an agent forcing a review of a composed candidate still files none; a person forcing one gets the full review', async () => {
+    mockCandidateReview.mockResolvedValue({ kind: 'composed', headSha: 'cand-head', constituents: 2 });
+    const agent = await POST(post({ prNumber: 77, workspaceId: 'buildd', force: true }));
+    expect((await agent.json()).reviewNotOwed).toBe(true);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+
+    mockAuthenticateApiKey.mockReturnValue({ ...ACCOUNT, sessionUserId: 'user-7' });
+    const personRes = await POST(post({ prNumber: 77, workspaceId: 'buildd', force: true }));
+    expect(personRes.status).toBe(201);
+    expect(((mockCreateReviewerTask.mock.calls[0] as any[])[0]).compositionScope).toBeUndefined();
+  });
 });
 
 describe('POST /api/github/pr/review — auth and validation', () => {

@@ -1173,10 +1173,13 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // conflict-resolution task IS the merge commit that catches a mission's
   // integration branch up with dev, and squashing it would drop that
   // ancestry — the same conflict would reappear on the next refresh.
+  // A release PR (a frozen candidate, or the legacy release PR) lands with a merge commit, as the
+  // release executor merges it: the prod branch refuses a squash, and sync-dev needs the ancestry.
+  const releaseMerge = !!adoption && 'why' in adoption && adoption.why === 'release';
   // No method asked for: one the base accepts (a ruleset on a release target can allow only
   // `merge`), so the default never fails as a GitHub 405 dressed as a person's decision.
   const mergeMethod = await resolveAllowedMergeMethod(
-    { context: mergingTask?.context, requested: input.mergeMethod, installationId, repoFullName, baseRef },
+    { context: mergingTask?.context, requested: input.mergeMethod ?? (releaseMerge ? 'merge' : undefined), installationId, repoFullName, baseRef },
     deps.readAllowedMergeMethods,
   );
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
