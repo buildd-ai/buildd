@@ -34,7 +34,7 @@ function suite(): string {
     files: { snapshot: ['snapshot/src/live.ts'], instruction: 'instruction.md', verifier: ['verifier/check.ts'], reference: ['reference/answer.json'], rubric: null, candidates: { broken: ['b'], alternative: null, files: ['candidates/b/answer.json'] } },
     deps: {}, resources: { cpuOnly: true, estimatedVramMb: null, estimatedRamMb: null, wallClockSeconds: 90, maxTurns: 4, toolBudget: 4 },
     labels: { difficulty: 'easy', skills: ['find'] }, exposing: false, provenance: { source: 'authored', licence: 'l', note: 'n' }, contamination: 'c',
-    expected: { kind: 'verifier' }, admission: null,
+    expected: { kind: 'verifier' }, admission: { admittedOn: '2026-11-08', toolchain: 'test', gates: ['reference-passes', 'deterministic', 'negative-control-fails', 'independent-of-patch', 'absence-audited', 'isolation-holds'].map((gate) => ({ gate, ok: true, detail: 'fixture' })) } as never,
   } as CaseManifestV2;
   m.contentHash = computeContentHash(files, namedPaths(m));
   const dir = join(root, 'cases', m.id);

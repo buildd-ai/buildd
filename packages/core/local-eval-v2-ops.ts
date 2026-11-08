@@ -26,6 +26,12 @@ export interface CaseRow {
   split: Split;
   /** Sealed cases are descriptors only: their content is not in this repository. */
   available: boolean;
+  /**
+   * False when the case's own manifest records no passing admission on any
+   * toolchain. Such a case is refused, never scored: a rejected admission is
+   * an invalid case, not a model failure. Absent = not known (sealed descriptor).
+   */
+  admitted?: boolean;
 }
 
 export interface SealedDescriptor { id: string; category: string; version: number; difficulty: string; skills: string[]; exposing: boolean }
@@ -34,7 +40,7 @@ export function caseRow(m: CaseManifestV2, split: Split): CaseRow {
   return {
     id: m.id, version: m.version, category: m.category, difficulty: m.labels.difficulty, skills: [...m.labels.skills],
     contextSizes: m.longContext?.sizes ? [...m.longContext.sizes] : [], cpuOnly: m.resources.cpuOnly, estimatedVramMb: m.resources.estimatedVramMb,
-    exposing: m.exposing, split, available: true,
+    exposing: m.exposing, split, available: true, admitted: !!m.admission?.admittedOn,
   };
 }
 
@@ -162,6 +168,7 @@ export function planRuns(i: PlanInput): PlannedRun[] {
       const runId = `v2.${c.id}.${safe}.${i.policy.track}.t${trial}`;
       const base = { runId, caseId: c.id, trial, configId, split: c.split };
       if (!c.available) { out.push({ ...base, action: 'refused', reason: 'sealed-holdout content is not in this repository and no --sealed-root supplied it (a descriptor and hash are not a runnable case); it is run only for a decision, by whoever holds it' }); continue; }
+      if (c.admitted === false) { out.push({ ...base, action: 'refused', reason: 'case is not admitted: its admission gates did not all pass, so any verdict would be about the case, not the model. Run `admit --suite v2` and fix the case' }); continue; }
       const need = i.needs[c.id];
       const lacking = need ? unsupportedCapabilities(i.adapter, { ...need, contextTokens: Math.max(need.contextTokens, i.policy.contextTokens) }) : [];
       if (lacking.length) { out.push({ ...base, action: 'unsupported', reason: `unsupported: ${lacking.join(', ')}` }); continue; }
