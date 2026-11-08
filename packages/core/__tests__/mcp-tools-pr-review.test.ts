@@ -201,6 +201,165 @@ describe('get_pr_review', () => {
   });
 });
 
+describe('a composition-covered release candidate', () => {
+  const COVERED_STATUS = {
+    state: 'composition_covered',
+    terminal: true,
+    verdict: null,
+    confidence: null,
+    reviewTaskId: null,
+    prState: 'open',
+    merged: false,
+    mergeBlocked: null,
+    coveredBy: { kind: 'composition', headSha: 'f6a70684a05', constituents: 2 },
+  };
+  const COVERED_REQUEST = {
+    ok: true,
+    reviewNotOwed: true,
+    prNumber: 77,
+    headSha: 'f6a70684a05',
+    composition: { kind: 'composed', headSha: 'f6a70684a05', constituents: 2 },
+    reviewTaskId: null,
+    autoMergeExpected: true,
+    status: COVERED_STATUS,
+  };
+  async function reply(action: string, params: Record<string, unknown>, data: unknown): Promise<string> {
+    const { api } = recordingApi({ '/api/github/pr/review': data, '/api/github/pr': { pr: { number: 77, title: 't', url: 'u', state: 'open' } } });
+    const result = await handleBuilddAction(api, action, params, context());
+    return (result.content[0] as { text: string }).text;
+  }
+
+  describe('request_pr_review', () => {
+    it('says no reviewer is owed, with no empty ids and no human-only or waiting instruction', async () => {
+      const text = await reply('request_pr_review', { prNumber: 77 }, COVERED_REQUEST);
+      expect(text).toContain('#77');
+      expect(text).toContain('f6a7068');
+      expect(text).toMatch(/composition/i);
+      expect(text).toContain('2 ');
+      expect(text).not.toContain('null');
+      expect(text).not.toContain('undefined');
+      expect(text).not.toContain('Review requested');
+      expect(text).not.toContain('left to a human');
+      expect(text).not.toContain('waitSeconds');
+    });
+
+    it('does not read as a reviewer approval or a person\'s sign-off, and keeps the merge gates in front of it', async () => {
+      const text = await reply('request_pr_review', { prNumber: 77 }, COVERED_REQUEST);
+      expect(text).toMatch(/not a reviewer approval/i);
+      expect(text).toMatch(/human sign-off/i);
+      expect(text).toMatch(/CI/);
+      expect(text).toMatch(/open findings/i);
+    });
+
+    it('says a callback will not fire, because this reply is the outcome', async () => {
+      const text = await reply('request_pr_review', { prNumber: 77, callbackUrl: 'https://example.test/hook' }, COVERED_REQUEST);
+      expect(text).toMatch(/no callback/i);
+    });
+
+    it('a merge policy that keeps the merge for a person says exactly that', async () => {
+      const text = await reply('request_pr_review', { prNumber: 77 }, {
+        ...COVERED_REQUEST, autoMergeExpected: false, status: { ...COVERED_STATUS, mergeBlocked: 'awaiting_human' },
+      });
+      expect(text).toMatch(/merge policy leaves the merge to a person/i);
+      expect(text).not.toMatch(/\bapproved, but\b/i);
+    });
+
+    it('an earlier verdict still on file is named rather than reported as covered', async () => {
+      const text = await reply('request_pr_review', { prNumber: 77, force: true }, {
+        ...COVERED_REQUEST, status: { state: 'changes_requested', terminal: true, verdict: 'request-changes', reviewTaskId: 'older-review' },
+      });
+      expect(text).toContain('changes_requested');
+      expect(text).toContain('older-review');
+      expect(text).not.toMatch(/\bcovered by composition, so\b/i);
+    });
+
+    it('an uncovered delta reads as a real scoped review with its task and the way to wait', async () => {
+      const text = await reply('request_pr_review', { prNumber: 77 }, {
+        ...REVIEW_RESPONSE, prNumber: 77, adopted: false,
+        composition: { kind: 'delta', headSha: 'f6a70684a05', commits: 1, paths: 3 },
+      });
+      expect(text).toContain('Review requested');
+      expect(text).toContain('review-1');
+      expect(text).toMatch(/1 commit .*no earlier review covered/);
+      expect(text).toContain('waitSeconds');
+    });
+
+    it('an ordinary request is unchanged', async () => {
+      const text = await reply('request_pr_review', { prNumber: 42 }, { ...REVIEW_RESPONSE, adopted: false });
+      expect(text).toContain('Review requested');
+      expect(text).toContain('Mapped to existing task task-1');
+      expect(text).not.toMatch(/composition/i);
+    });
+
+    it('a real person-only merge policy keeps its human-merge line', async () => {
+      const text = await reply('request_pr_review', { prNumber: 42 }, { ...REVIEW_RESPONSE, adopted: false, autoMergeExpected: false });
+      expect(text).toContain('On approval the merge is left to a human');
+    });
+  });
+
+  describe('create_pr with requestReview', () => {
+    it('reports the coverage rather than a review that was never requested', async () => {
+      const text = await reply('create_pr', { title: 't', head: 'release/v1', lede: 'A release.', requestReview: true }, COVERED_REQUEST);
+      expect(text).toContain('composition');
+      expect(text).not.toContain('Review requested');
+      expect(text).not.toContain('Wait for the verdict');
+    });
+  });
+
+  describe('get_pr_review', () => {
+    it('reads as a settled review by composition, never not_requested or a reviewer verdict', async () => {
+      const text = await reply('get_pr_review', { prNumber: 77 }, { ok: true, prNumber: 77, timedOut: false, status: COVERED_STATUS, composition: COVERED_REQUEST.composition });
+      expect(text).toContain('composition_covered');
+      expect(text).toContain('terminal: yes');
+      expect(text).toContain('f6a7068');
+      expect(text).toMatch(/not a reviewer approval/i);
+      expect(text).toMatch(/open findings/i);
+      expect(text).not.toContain('Verdict:');
+      expect(text).not.toContain('not_requested');
+      expect(text).not.toContain('undefined');
+    });
+
+    it('tells a merge-waiter the review is done and the merge is what it is waiting on', async () => {
+      const text = await reply('get_pr_review', { prNumber: 77, waitFor: 'merge' }, {
+        ok: true, prNumber: 77, timedOut: true, status: { ...COVERED_STATUS, terminal: false }, composition: COVERED_REQUEST.composition,
+      });
+      expect(text).toContain('terminal: no');
+      expect(text).toMatch(/call again/);
+      expect(text).not.toContain('still composition_covered');
+    });
+
+    it('a person-held merge on a covered head does not claim an approval', async () => {
+      const text = await reply('get_pr_review', { prNumber: 77 }, {
+        ok: true, prNumber: 77, timedOut: false, status: { ...COVERED_STATUS, mergeBlocked: 'awaiting_human' }, composition: COVERED_REQUEST.composition,
+      });
+      expect(text).toMatch(/merge policy leaves the merge to a person/i);
+      expect(text).not.toContain('Approved, but');
+    });
+
+    it('an uncovered delta says what is owed and how to file it, not to keep waiting', async () => {
+      const text = await reply('get_pr_review', { prNumber: 77 }, {
+        ok: true, prNumber: 77, timedOut: true,
+        status: { state: 'not_requested', terminal: false, verdict: null, prState: 'open' },
+        composition: { kind: 'delta', headSha: 'f6a70684a05', commits: 2, paths: 3 },
+      });
+      expect(text).toContain('not_requested');
+      expect(text).toContain('terminal: no');
+      expect(text).toMatch(/2 commits .*no earlier review covered/);
+      expect(text).toContain('request_pr_review');
+      expect(text).not.toContain('call again');
+    });
+
+    it('an ordinary not_requested read is unchanged', async () => {
+      const text = await reply('get_pr_review', { prNumber: 42 }, {
+        ok: true, prNumber: 42, timedOut: true, status: { state: 'not_requested', terminal: false, prState: 'open' }, composition: null,
+      });
+      expect(text).toContain('not_requested');
+      expect(text).toContain('call again');
+      expect(text).not.toMatch(/composition/i);
+    });
+  });
+});
+
 describe('create_pr requestReview', () => {
   it('requests a review on the PR it just opened', async () => {
     const { api, calls } = recordingApi({

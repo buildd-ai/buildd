@@ -8,7 +8,7 @@ domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
-verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/candidate-fix-commit.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/candidate-review.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/release-executor.test.ts]
+verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/candidate-fix-commit.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/candidate-review.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/release-executor.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, packages/core/__tests__/mcp-tools-pr-review.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -290,6 +290,12 @@ path escalation or the migration inspector.
 - AC-27: GIVEN a constituent touching `packages/core/drizzle/` that was
   approved on its own PR THEN it does not escalate the candidate, while a
   migration inside the delta still does.
+- AC-30: GIVEN a candidate with no review on file under an `agent-review` tier
+  WHEN its review is requested or read THEN a head composition fully covers
+  reads `composition_covered`, terminal for a verdict-waiter, with no verdict
+  and no review task; a moved head loses that reading, a delta stays
+  `not_requested` and names its commits, a `human` tier keeps the ordinary
+  review, and no merge door reads this state.
 
 - AC-19: GIVEN a trusted candidate whose CI is red at its recorded head WHEN
   the check-suite webhook or the red-PR sweep reports it THEN one fix task is
