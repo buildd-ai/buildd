@@ -66,6 +66,7 @@ import BranchPanelFixture from './BranchPanelFixture';
 import HomeCardsFixture from './HomeCardsFixture';
 import ServiceStatusFixture from './ServiceStatusFixture';
 import ClosedPrFixture from './ClosedPrFixture';
+import ReplayProfileFixture from './ReplayProfileFixture';
 import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import DesignPreviewFixture from './DesignPreviewFixture';
 import CapacityAndIdleAlertFixture, { CAPACITY_FIXTURE_STATE } from './CapacityAndIdleAlertFixture';
@@ -394,6 +395,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_DETAIL_COMPACT_FIXTURE_STATE) {
         return <MissionDetailCompactFixture />;
+    }
+
+    if (state === 'replay-profile') {
+        return <ReplayProfileFixture />;
     }
 
     if (state === CLOSED_PR_FIXTURE_STATE) {

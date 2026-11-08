@@ -257,7 +257,32 @@ export interface RunRecord {
   leaks: string[];
   review: ReviewRecord | null;
   harnessNote: string | null;
+  /** v2 runs only (docs/specs/coding-eval-playground.md). Absent on every v1 run. */
+  v2?: RunDetailV2;
 }
+
+/** Optional v2 fields on a run record. Bounded and free of transcripts: ids, labels, counts and rates only. */
+export interface RunDetailV2 {
+  category: string;
+  split: 'dev' | 'sealed-holdout' | 'prospective';
+  graderId: string;
+  /** Present on every non-pass result so harness and infra errors never read as model failures. */
+  failureClass: 'model' | 'harness' | 'infra' | null;
+  track?: 'single-context' | 'tool-retrieval';
+  retrievalPolicy?: string;
+  skills?: string[];
+  difficulty?: string;
+  retries?: number;
+  /** Grader flags, e.g. `fabrication`, `wrong_abstention`, `followed_superseded`, `constraint_dropped`. */
+  flags?: string[];
+  /** The run concluded something was absent (abstained): a conclusion that needs independent confirmation. */
+  absenceClaimed?: boolean;
+  /** Drilldown numbers a grader produced; null = not measured. */
+  detail?: { precision?: number | null; recall?: number | null; falsePositives?: number | null; retention?: (number | null)[]; citationsCorrect?: number | null; citationsTotal?: number | null; regressionPassed?: boolean | null; invariantsPassed?: number | null; invariantsTotal?: number | null };
+}
+
+export const V2_SPLITS = ['dev', 'sealed-holdout', 'prospective'] as const;
+export const V2_FLAGS_NEEDING_CONFIRMATION = ['fabrication', 'wrong_abstention', 'followed_superseded', 'constraint_dropped'] as const;
 
 /** Stored on the observation row. Marks it controlled and says which case and configuration it answers. */
 export interface EvaluationAttribution {
@@ -272,6 +297,8 @@ export interface EvaluationAttribution {
   contextTokens: number;
   promptHash: string;
   result: RunResult;
+  /** v2 runs only. */
+  v2?: RunDetailV2;
 }
 
 export function evaluationOf(r: RunRecord): EvaluationAttribution {
@@ -287,6 +314,7 @@ export function evaluationOf(r: RunRecord): EvaluationAttribution {
     contextTokens: r.contextTokens,
     promptHash: r.promptHash,
     result: r.result,
+    ...(r.v2 ? { v2: r.v2 } : {}),
   };
 }
 
@@ -331,8 +359,46 @@ export function validateRunRecord(r: unknown): string[] {
   }
   if (o.runtime != null && (typeof o.runtime !== 'object' || Array.isArray(o.runtime))) errs.push('runtime must be an object or null');
   if (!['pass', 'fail', 'invalid', 'error', 'unscored'].includes(o.result as string)) errs.push('result is not a known value');
-  if (o.scoringVersion && o.scoringVersion !== SCORING_VERSION) errs.push(`scoringVersion ${o.scoringVersion} is not ${SCORING_VERSION}`);
+  // A run is scored by the version its suite names: v2 runs are never accepted as score-v1, nor v1 runs as score-v2.
+  const wantScoring = o.suiteVersion === 'v2' ? 'score-v2' : SCORING_VERSION;
+  if (o.scoringVersion && o.scoringVersion !== wantScoring) errs.push(`scoringVersion ${o.scoringVersion} is not ${wantScoring}`);
+  if (o.suiteVersion !== 'v2' && o.v2 != null) errs.push('v2 fields are only accepted on a v2 suite run');
+  if (o.suiteVersion === 'v2') errs.push(...validateDetailV2(o.v2));
   if (Number.isNaN(Date.parse(o.startedAt ?? '')) || Number.isNaN(Date.parse(o.endedAt ?? ''))) errs.push('startedAt and endedAt must be ISO times');
+  return errs;
+}
+
+const V2_FAILURE_CLASSES = ['model', 'harness', 'infra'];
+const V2_CATEGORIES = ['find-by-behaviour', 'causal-debugging', 'multi-file-change', 'code-review', 'long-context-requirements', 'terminal-recovery-compaction'];
+
+/** Why the v2 block of a record is refused; empty = fine. Everything is bounded: nothing here can carry a transcript. */
+export function validateDetailV2(v: unknown): string[] {
+  if (v == null || typeof v !== 'object' || Array.isArray(v)) return ['v2 block is required on a v2 suite run'];
+  const d = v as Partial<RunDetailV2>;
+  const errs: string[] = [];
+  const short = (x: unknown, max = 80) => typeof x === 'string' && x.length > 0 && x.length <= max;
+  if (!short(d.category) || !V2_CATEGORIES.includes(d.category as string)) errs.push('v2.category is not a known category');
+  if (!(V2_SPLITS as readonly string[]).includes(d.split as string)) errs.push('v2.split must be dev, sealed-holdout or prospective');
+  if (!short(d.graderId)) errs.push('v2.graderId is required (the grader version a regrade must use)');
+  if (d.failureClass != null && !V2_FAILURE_CLASSES.includes(d.failureClass)) errs.push('v2.failureClass must be model, harness, infra or null');
+  if (d.track != null && !['single-context', 'tool-retrieval'].includes(d.track)) errs.push('v2.track is not a known track');
+  for (const k of ['retrievalPolicy', 'difficulty'] as const) if (d[k] != null && !short(d[k])) errs.push(`v2.${k} must be a short string`);
+  for (const k of ['skills', 'flags'] as const) {
+    const a = d[k];
+    if (a != null && (!Array.isArray(a) || a.length > 20 || a.some((x) => !short(x)))) errs.push(`v2.${k} must be at most 20 short strings`);
+  }
+  if (d.retries != null && (!Number.isInteger(d.retries) || d.retries < 0 || d.retries > 1000)) errs.push('v2.retries must be a non-negative integer');
+  if (d.detail != null) {
+    const x = d.detail as Record<string, unknown>;
+    if (typeof x !== 'object' || Array.isArray(x)) errs.push('v2.detail must be an object');
+    else for (const [k, val] of Object.entries(x)) {
+      const num = (n: unknown) => n === null || (typeof n === 'number' && Number.isFinite(n));
+      if (k === 'retention') { if (!Array.isArray(val) || val.length > 20 || !val.every(num)) errs.push('v2.detail.retention must be numbers or null'); }
+      else if (k === 'regressionPassed') { if (val !== null && typeof val !== 'boolean') errs.push('v2.detail.regressionPassed must be boolean or null'); }
+      else if (['precision', 'recall', 'falsePositives', 'citationsCorrect', 'citationsTotal', 'invariantsPassed', 'invariantsTotal'].includes(k)) { if (!num(val)) errs.push(`v2.detail.${k} must be a number or null`); }
+      else errs.push(`v2.detail.${k} is not a known field`);
+    }
+  }
   return errs;
 }
 

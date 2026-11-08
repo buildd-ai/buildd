@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local coding eval suite v2",
+  "type": "object",
+  "required": ["suiteId", "suiteVersion", "formatVersion", "scoringVersion", "skills", "cases"],
+  "properties": {
+    "suiteId": { "type": "string" },
+    "suiteVersion": { "const": "v2" },
+    "formatVersion": { "const": 2 },
+    "scoringVersion": { "const": "score-v2" },
+    "skills": { "type": "array", "items": { "type": "string" } },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version", "contentHash"],
+        "properties": {
+          "id": { "type": "string" },
+          "version": { "type": "integer", "minimum": 1 },
+          "contentHash": { "type": "string" }
+        }
+      }
+    }
+  }
+}

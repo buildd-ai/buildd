@@ -1,0 +1,63 @@
+{
+  "caseId": "term-session-staged-conventions",
+  "version": 1,
+  "contentHash": "63088b7a0c2bdada9272cd37937c63c39666cdfaa56df64f3a7ca8994ab3c682",
+  "admitted": true,
+  "gates": [
+    {
+      "gate": "reference-passes",
+      "ok": true,
+      "detail": "verifier passes the reference"
+    },
+    {
+      "gate": "deterministic",
+      "ok": true,
+      "detail": "3 identical runs"
+    },
+    {
+      "gate": "negative-control-fails",
+      "ok": true,
+      "detail": "fails the snapshot and 3 broken candidate(s)"
+    },
+    {
+      "gate": "independent-of-patch",
+      "ok": true,
+      "detail": "a different correct solution passes"
+    },
+    {
+      "gate": "absence-audited",
+      "ok": true,
+      "detail": "not an answer-absent case"
+    },
+    {
+      "gate": "isolation-holds",
+      "ok": true,
+      "detail": "probe agent tree is clean"
+    }
+  ],
+  "verdicts": {
+    "reference": [
+      true,
+      true,
+      true
+    ],
+    "snapshot": [
+      false
+    ],
+    "broken:adds-dependency": [
+      false
+    ],
+    "broken:default-export": [
+      false
+    ],
+    "broken:reads-clock": [
+      false
+    ],
+    "alternative": [
+      true
+    ]
+  },
+  "leaks": [],
+  "toolchain": "bun 1.3.11; linux-arm64",
+  "checkedOn": "2026-11-08"
+}

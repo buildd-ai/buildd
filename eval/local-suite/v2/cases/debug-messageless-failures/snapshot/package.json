@@ -1,0 +1,1 @@
+{ "name": "failure-watch", "type": "module", "scripts": { "test": "bun test" } }

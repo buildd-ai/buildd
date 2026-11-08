@@ -1,0 +1,1 @@
+{"findings":[{"file":"src/projects.ts","line":29,"description":"deleteProject only requires a signed-in user and never calls requireOwner, so any user can delete any project; the README says only the owner may delete"}]}

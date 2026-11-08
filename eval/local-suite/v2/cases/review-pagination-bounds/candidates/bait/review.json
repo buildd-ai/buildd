@@ -1,0 +1,5 @@
+{"findings":[
+ {"file":"src/paginate.ts","line":11,"description":"off-by-one: page is 1-based, start must be (page - 1) * pageSize"},
+ {"file":"src/handler.ts","line":8,"description":"pageSize is not validated; zero or negative values break paging"},
+ {"file":"src/orders.ts","line":9,"description":"ORDERS is a mutable module-level array shared by every request; this is a thread-safety problem"}
+]}

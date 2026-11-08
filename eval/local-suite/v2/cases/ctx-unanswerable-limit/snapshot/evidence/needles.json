@@ -1,0 +1,14 @@
+[
+  {
+    "id": "REQ-310",
+    "text": "REQ-310 (2026-02-02, Platform, limits): The upload API accepts files up to 25 MB."
+  },
+  {
+    "id": "REQ-322",
+    "text": "REQ-322 (2026-02-19, Platform, limits): A client may run at most 4 downloads at the same time."
+  },
+  {
+    "id": "REQ-341",
+    "text": "REQ-341 (2026-05-02, Platform, limits): The maximum size of a single file in the download API has not been decided; it waits for the capacity review. The upload limit in REQ-310 must not be assumed to apply to downloads."
+  }
+]

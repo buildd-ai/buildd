@@ -1,0 +1,63 @@
+{
+  "caseId": "term-compaction-constraints",
+  "version": 1,
+  "contentHash": "ab3ce4621c7b3d0278e25ffa50438a066861614777729c517fab02987db7b37e",
+  "admitted": true,
+  "gates": [
+    {
+      "gate": "reference-passes",
+      "ok": true,
+      "detail": "verifier passes the reference"
+    },
+    {
+      "gate": "deterministic",
+      "ok": true,
+      "detail": "3 identical runs"
+    },
+    {
+      "gate": "negative-control-fails",
+      "ok": true,
+      "detail": "fails the snapshot and 3 broken candidate(s)"
+    },
+    {
+      "gate": "independent-of-patch",
+      "ok": true,
+      "detail": "a different correct solution passes"
+    },
+    {
+      "gate": "absence-audited",
+      "ok": true,
+      "detail": "not an answer-absent case"
+    },
+    {
+      "gate": "isolation-holds",
+      "ok": true,
+      "detail": "probe agent tree is clean"
+    }
+  ],
+  "verdicts": {
+    "reference": [
+      true,
+      true,
+      true
+    ],
+    "snapshot": [
+      false
+    ],
+    "broken:console-log": [
+      false
+    ],
+    "broken:edits-vendor": [
+      false
+    ],
+    "broken:float-fee": [
+      false
+    ],
+    "alternative": [
+      true
+    ]
+  },
+  "leaks": [],
+  "toolchain": "bun 1.3.11; linux-arm64",
+  "checkedOn": "2026-11-08"
+}
