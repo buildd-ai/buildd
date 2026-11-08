@@ -497,6 +497,32 @@ describe('landPr — a PR with no delivery (D2/D3, AC-13)', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('a release PR lands with a merge commit by default (the prod branch refuses a squash); an explicit method is kept', async () => {
+    const outside: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+    };
+    await land({}, d);
+    expect(outside[0].mergeMethod).toBe('merge');
+    await land({ mergeMethod: 'rebase' }, d);
+    expect(outside[1].mergeMethod).toBe('rebase');
+  });
+
+  it('a dependency bot PR through the same gate keeps the default squash', async () => {
+    const outside: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'dependency_bot' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+    };
+    await land({}, d);
+    expect(outside[0].mergeMethod).toBe('squash');
+  });
+
   it('a release candidate the release gate holds (a required check) is a wait, never a failed merge', async () => {
     const d: LandPrDeps = {
       ...deps(),
