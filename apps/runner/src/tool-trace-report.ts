@@ -15,7 +15,8 @@
  *  - Codex: only through the runner's own adapter. There is no importer for a
  *    Codex desktop session and none is claimed.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { applyCorrection, summarizeReview, type ReviewCandidate } from './tool-trace-review';
 import { ToolTraceRecorder, TRACE_SCHEMA_VERSION, type TraceCounters, type TraceEvent, type TraceHeader } from './tool-trace';
 import { analyseToolTrace, buildToolEfficiencyAggregate, ANALYSER_VERSION, type ToolFinding } from './tool-trace-analysis';
 import type { ToolEfficiencyAggregate } from '@buildd/core/tool-efficiency';
@@ -147,8 +148,29 @@ export function renderText(r: ToolTraceReport): string {
   return out.join('\n');
 }
 
+/**
+ * Correct one reviewer candidate in a candidates file (a JSON array of ReviewCandidate).
+ * `bun tool-trace-report.ts --correct <candidates.json> <id> confirmed|dismissed|candidate [--note "..."]`.
+ * History is append-only; the platform only ever sees the resulting counts.
+ */
+export function correctCandidatesFile(file: string, id: string, to: string, note?: string): string {
+  if (to !== 'confirmed' && to !== 'dismissed' && to !== 'candidate') throw new Error('status must be confirmed, dismissed or candidate');
+  const list = JSON.parse(readFileSync(file, 'utf8')) as ReviewCandidate[];
+  if (!Array.isArray(list) || !list.some((c) => c.id === id)) throw new Error(`no candidate ${id} in ${file}`);
+  const next = applyCorrection(list, id, { to, by: 'human', ...(note ? { note } : {}) });
+  writeFileSync(file, JSON.stringify(next, null, 2));
+  const s = summarizeReview(next);
+  return `${id} -> ${to}. ${s.candidates} candidates: ${s.confirmed} confirmed, ${s.dismissed} dismissed.`;
+}
+
 if (import.meta.main) {
   const args = process.argv.slice(2);
+  if (args[0] === '--correct') {
+    const ni = args.indexOf('--note');
+    try { console.log(correctCandidatesFile(args[1], args[2], args[3], ni >= 0 ? args[ni + 1] : undefined)); }
+    catch (e) { console.error(e instanceof Error ? e.message : String(e)); process.exit(1); }
+    process.exit(0);
+  }
   const file = args.find((a) => !a.startsWith('--'));
   const fi = args.indexOf('--format');
   const format = (fi >= 0 ? args[fi + 1] : 'auto') as 'auto' | 'trace' | 'claude-transcript';

@@ -5,7 +5,7 @@ import Section from '@/components/ui/Section';
 import { TonePill } from '@/components/ui/StatePill';
 import type { ConfigSummary, ModelComparison } from '@buildd/core/model-comparison';
 import {
-  EVIDENCE_NOTICE, NOT_RECORDED, costText, coverageLines, durationText, numericText, rateText, sampleLabel, tokensText, verdictLine,
+  CORRECTION_NOTE, EVIDENCE_NOTICE, NOT_RECORDED, costText, coverageLines, durationText, numericText, rateText, sampleLabel, toolEfficiencyView, tokensText, verdictLine,
 } from './comparison-view';
 
 function Fact({ label, value, detail }: { label: string; value: string; detail?: string }) {
@@ -15,6 +15,26 @@ function Fact({ label, value, detail }: { label: string; value: string; detail?:
       <dt className="text-xs text-text-muted">{label}</dt>
       <dd className={`text-sm ${unknown ? 'text-text-muted' : 'text-text-primary font-medium'} break-words`}>{value}</dd>
       {detail ? <dd className="text-xs text-text-muted break-words">{detail}</dd> : null}
+    </div>
+  );
+}
+
+function ToolEfficiency({ c }: { c: ConfigSummary }) {
+  const v = toolEfficiencyView(c);
+  return (
+    <div className="space-y-2 border-t border-border-default pt-3" data-testid="tool-efficiency">
+      <h4 className="text-xs font-semibold text-text-primary">Tool use</h4>
+      {v.empty ? <p className="text-xs text-text-muted" data-testid="tool-efficiency-empty">{v.empty}</p> : (
+        <>
+          <p className="text-xs text-text-secondary break-words" data-testid="tool-efficiency-measured"><span className="font-medium">Measured:</span> {v.measured.join('; ')}.</p>
+          <p className="text-xs text-text-secondary break-words" data-testid="tool-efficiency-estimated">
+            <span className="font-medium">Estimated, heuristic candidates:</span> {v.estimated.length ? `${v.estimated.join('; ')}.` : 'none flagged.'}
+          </p>
+          <p className="text-xs text-text-muted break-words" data-testid="tool-efficiency-coverage">Coverage: {v.coverage.join(', ')}.</p>
+          {v.review.length > 0 && <p className="text-xs text-text-secondary break-words" data-testid="tool-efficiency-review"><span className="font-medium">Reviewer:</span> {v.review.join('; ')}.</p>}
+          <p className="text-xs text-text-muted break-words">{v.versions}. {CORRECTION_NOTE}</p>
+        </>
+      )}
     </div>
   );
 }
@@ -50,6 +70,7 @@ function ConfigCard({ c, min }: { c: ConfigSummary; min: number }) {
       {gaps.length > 0 && (
         <p className="text-xs text-text-muted" data-testid="comparison-coverage">{gaps.join('. ')}.</p>
       )}
+      <ToolEfficiency c={c} />
       {taskLinks.length > 0 && (
         <p className="text-xs text-text-secondary flex flex-wrap gap-x-3 gap-y-1">
           {taskLinks.map((l) => (

@@ -119,7 +119,19 @@ export interface ToolEfficiencySummary {
   failureClasses: Partial<Record<FailureClass, number>>;
   /** Mean of per-attempt median call time, over attempts that measured one. Null = none measured. */
   meanP50Ms: number | null;
-  coverage: { recorded: number; dropped: number; unobserved: number };
+  coverage: { recorded: number; dropped: number; unobserved: number; sampledOut: number };
+  schemaVersions: number[];
+  /**
+   * Opt-in reviewer candidates, counted by status. `attempts` = attempts that carried a review block; the
+   * rest never ran a reviewer (unknown, not zero). Candidates are never ground truth.
+   */
+  review: {
+    attempts: number; reviewerVersions: string[];
+    candidates: number; confirmed: number; dismissed: number;
+    /** Still unresolved: candidates - confirmed - dismissed. */
+    open: number;
+    kinds: Partial<Record<ReviewKind, number>>;
+  };
 }
 
 /** Fold per-attempt aggregates for one configuration. Mixed analyser versions are listed, not merged away. */
@@ -127,14 +139,19 @@ export function summarizeToolEfficiency(items: ReadonlyArray<ToolEfficiencyAggre
   const s: ToolEfficiencySummary = {
     withAggregate: 0, withoutAggregate: 0, analyserVersions: [], calls: 0,
     findingKinds: {}, failureClasses: {}, meanP50Ms: null,
-    coverage: { recorded: 0, dropped: 0, unobserved: 0 },
+    coverage: { recorded: 0, dropped: 0, unobserved: 0, sampledOut: 0 },
+    schemaVersions: [],
+    review: { attempts: 0, reviewerVersions: [], candidates: 0, confirmed: 0, dismissed: 0, open: 0, kinds: {} },
   };
   const versions = new Set<string>();
+  const schemas = new Set<number>();
+  const reviewers = new Set<string>();
   const p50s: number[] = [];
   for (const a of items) {
     if (!a) { s.withoutAggregate++; continue; }
     s.withAggregate++;
     versions.add(a.analyserVersion);
+    schemas.add(a.schemaVersion);
     s.calls += a.calls;
     for (const k of FINDING_KINDS) if (a.findingKinds[k]) s.findingKinds[k] = (s.findingKinds[k] ?? 0) + a.findingKinds[k]!;
     for (const k of FAILURE_CLASSES) if (a.failureClasses[k]) s.failureClasses[k] = (s.failureClasses[k] ?? 0) + a.failureClasses[k]!;
@@ -142,7 +159,19 @@ export function summarizeToolEfficiency(items: ReadonlyArray<ToolEfficiencyAggre
     s.coverage.recorded += a.coverage.recorded;
     s.coverage.dropped += a.coverage.dropped;
     s.coverage.unobserved += a.coverage.unobserved;
+    s.coverage.sampledOut += a.coverage.sampledOut;
+    if (a.review) {
+      s.review.attempts++;
+      reviewers.add(a.review.reviewerVersion);
+      s.review.candidates += a.review.candidates;
+      s.review.confirmed += a.review.confirmed;
+      s.review.dismissed += a.review.dismissed;
+      for (const k of REVIEW_KINDS) if (a.review.kinds[k]) s.review.kinds[k] = (s.review.kinds[k] ?? 0) + a.review.kinds[k]!;
+    }
   }
+  s.review.open = Math.max(0, s.review.candidates - s.review.confirmed - s.review.dismissed);
+  s.review.reviewerVersions = [...reviewers].sort();
+  s.schemaVersions = [...schemas].sort((x, y) => x - y);
   s.analyserVersions = [...versions].sort();
   if (p50s.length) s.meanP50Ms = Math.round(p50s.reduce((x, y) => x + y, 0) / p50s.length);
   return s;

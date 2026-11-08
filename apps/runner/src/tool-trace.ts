@@ -648,12 +648,17 @@ export class ToolTraceRecorder {
     let searchFamily: string | undefined;
     let excerptSource: string | null = null;
     const root = this.opts.root;
+    // Raw path (never emitted) for native tools, so two different files that both normalise to
+    // '<abs>' / '<outside>' are not mistaken for one repeated call.
+    const rawPath = (v: unknown) => (typeof v === 'string' ? v : '');
+    let fpRaw = '';
 
     switch (tool) {
       case 'Grep': {
         category = 'search'; origin = 'native';
         patternText = typeof input.pattern === 'string' ? input.pattern : null;
         const p = normaliseTracePath(input.path, root);
+        fpRaw = rawPath(input.path);
         const opts = ['-i', '-n', '-A', '-B', '-C', 'multiline'].filter(k => input[k] !== undefined && input[k] !== false);
         if (typeof input.glob === 'string') opts.push('glob');
         if (typeof input.type === 'string') opts.push('type');
@@ -668,6 +673,7 @@ export class ToolTraceRecorder {
         category = 'find'; origin = 'native';
         patternText = typeof input.pattern === 'string' ? input.pattern : null;
         const p = normaliseTracePath(input.path, root);
+        fpRaw = rawPath(input.path);
         scope = { paths: p ? [p] : [], options: [], patternShape: null, parse: patternText ? 'full' : 'none' };
         excerptSource = patternText;
         break;
@@ -675,6 +681,7 @@ export class ToolTraceRecorder {
       case 'Read': {
         category = 'read'; origin = 'native';
         readPath = normaliseTracePath(input.file_path, root);
+        fpRaw = rawPath(input.file_path);
         limit = typeof input.limit === 'number' ? input.limit : null;
         const off = typeof input.offset === 'number' ? input.offset : 0;
         scope = { paths: readPath ? [readPath] : [], options: [], patternShape: null, parse: readPath ? 'full' : 'none' };
@@ -716,8 +723,11 @@ export class ToolTraceRecorder {
     // Fingerprint + repetition (searches, finds, reads only).
     let fingerprint: string | null = null;
     let repeat: TraceEvent['repeat'] = { kind: 'none' };
-    if ((category === 'search' || category === 'find' || category === 'read') && scope && scope.parse !== 'none') {
-      const key = [category, origin === 'shell' ? 'sh' : 'nat', searchFamily ?? tool, patternText ?? '', flagsKey, [...scope.paths].sort().join('\0')].join('\u0001');
+    // A shell search whose path could not be made relative has no stable identity: skip it rather than
+    // collapse every such path into one fingerprint.
+    const unresolvable = origin === 'shell' && !!scope && scope.paths.some((x) => x === '<abs>' || x === '<outside>');
+    if ((category === 'search' || category === 'find' || category === 'read') && scope && scope.parse !== 'none' && !unresolvable) {
+      const key = [category, origin === 'shell' ? 'sh' : 'nat', searchFamily ?? tool, patternText ?? '', flagsKey, [...scope.paths].sort().join('\0'), fpRaw].join('\u0001');
       fingerprint = createHmac('sha256', this.header.salt).update(key).digest('hex').slice(0, 20);
       const prior = this.fps.get(fingerprint);
       const scopeClock = this.scopeClock(scope.paths);

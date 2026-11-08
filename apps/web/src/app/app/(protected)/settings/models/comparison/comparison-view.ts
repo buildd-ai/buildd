@@ -81,3 +81,65 @@ export const EVIDENCE_NOTICE = {
   title: 'Observed in production',
   body: 'Production attempts, routed rather than randomised. This page never changes routing.',
 } as const;
+
+export interface ToolEfficiencyView {
+  /** Null when no attempt carried an analysed trace: the block says so rather than showing zeros. */
+  empty: string | null;
+  /** Counted directly from the trace. */
+  measured: string[];
+  /** Heuristic signals. Candidates only: never a score, never ground truth. */
+  estimated: string[];
+  coverage: string[];
+  review: string[];
+  versions: string;
+}
+
+const FINDING_LABEL: Record<string, string> = {
+  identical_search_unchanged: 'identical search repeated on unchanged files',
+  redundant_read_unchanged: 'file re-read with no change',
+  broad_search_rerun_unnarrowed: 'broad search re-run without narrowing',
+  command_quoting_retry: 'command retried after a quoting error',
+  poll_without_new_evidence: 'polling with no new evidence',
+  failure_without_verification: 'failure never followed by a check',
+};
+const FAILURE_LABEL: Record<string, string> = {
+  error: 'errors', path_unavailable: 'path unavailable', denied: 'denied', timeout: 'timeouts', cancelled: 'cancelled', nonzero_unmodeled: 'other non-zero exits',
+};
+const REVIEW_LABEL: Record<string, string> = {
+  absence_from_limited_search: 'absence claimed from a limited search',
+  failure_treated_as_absence: 'failure read as absence',
+  success_after_failed_check: 'success claimed after a failed check',
+  claim_contradicted_by_output: 'claim contradicted by output',
+  completion_without_verified_scope: 'completion without verified scope',
+};
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+export function toolEfficiencyView(c: ConfigSummary): ToolEfficiencyView {
+  const t = c.toolEfficiency;
+  const noAgg = t.withoutAggregate;
+  const total = t.withAggregate + noAgg;
+  if (t.withAggregate === 0) {
+    return { empty: `No analysed tool trace for ${plural(total, 'attempt')}. Not recorded, not clean.`, measured: [], estimated: [], coverage: [], review: [], versions: '' };
+  }
+  const measured = [`${t.calls} tool calls across ${plural(t.withAggregate, 'attempt')}${noAgg > 0 ? `, ${noAgg} not recorded` : ''}`];
+  if (t.meanP50Ms !== null) measured.push(`median call time about ${durationText(t.meanP50Ms)}`);
+  for (const [k, n] of Object.entries(t.failureClasses)) measured.push(`${n} ${FAILURE_LABEL[k] ?? k}`);
+  const estimated = Object.entries(t.findingKinds).map(([k, n]) => `${n} ${FINDING_LABEL[k] ?? k}`);
+  const cov = t.coverage;
+  const coverage = [`${cov.recorded} calls recorded`];
+  if (cov.dropped > 0) coverage.push(`${cov.dropped} dropped`);
+  if (cov.unobserved > 0) coverage.push(`${cov.unobserved} without an observed result`);
+  if (cov.sampledOut > 0) coverage.push(`${cov.sampledOut} sampled out`);
+  const r = t.review;
+  const review: string[] = [];
+  if (r.attempts > 0) {
+    review.push(`${plural(r.candidates, 'candidate')}: ${r.open} open, ${r.confirmed} confirmed, ${r.dismissed} dismissed (${plural(r.attempts, 'attempt')} reviewed)`);
+    for (const [k, n] of Object.entries(r.kinds)) review.push(`${n} ${REVIEW_LABEL[k] ?? k}`);
+  }
+  const versions = `Analyser ${t.analyserVersions.join(', ')}, schema ${t.schemaVersions.join(', ')}${r.reviewerVersions.length ? `, reviewer ${r.reviewerVersions.join(', ')}` : ''}`;
+  return { empty: null, measured, estimated, coverage, review, versions };
+}
+
+/** Where a candidate is corrected: on the machine that holds the trace, never on this page. */
+export const CORRECTION_NOTE = 'Candidates are heuristic and never a score. They stay on the runner; confirm or dismiss one there with the tool-trace report command.';
