@@ -83,8 +83,11 @@ describe('mapCodexEventToSdkMessages', () => {
     const tu = firstToolUse(msgs);
     expect(tu).toMatchObject({ type: 'tool_use', name: 'Bash', id: 'cmd-1' });
     expect(tu.input.command).toBe('git commit -m "x"');
-    // a successful command yields no synthetic tool_result
-    expect(toolResults(msgs)).toHaveLength(0);
+    // a successful command now carries its exit code so the local trace can observe it
+    const trs = toolResults(msgs);
+    expect(trs).toHaveLength(1);
+    expect(trs[0]).toMatchObject({ tool_use_id: 'cmd-1', exit_code: 0 });
+    expect(trs[0].is_error).toBeUndefined();
   });
 
   test('file_change add->Write, update->Edit, delete->Bash, one tool_use per change with unique ids', () => {
