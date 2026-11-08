@@ -303,7 +303,7 @@ export async function admitCase(m: CaseManifestV2, verify: VerifyFn, probe: { le
     if (!s.method?.trim() || !s.auditor?.trim()) problems.push('audit method or auditor missing');
     if (!s.confirmer?.trim()) problems.push('no second confirmer');
     else if (s.confirmer === s.auditor) problems.push('confirmer is the auditor');
-    gate('absence-audited', !problems.length, problems.length ? problems.join('; ') : `scope recorded, confirmed by a second person`);
+    gate('absence-audited', !problems.length, problems.length ? problems.join('; ') : `scope recorded, confirmed by an independent reviewer (named in searchScope.confirmer)`);
   } else gate('absence-audited', true, 'not an answer-absent case');
 
   gate('isolation-holds', probe.leaks.length === 0, probe.leaks.length ? `agent tree leaks: ${probe.leaks.join('; ')}` : 'probe agent tree is clean');

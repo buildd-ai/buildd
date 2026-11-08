@@ -53,6 +53,13 @@ export interface CaseFilter {
   split?: Split;
 }
 
+/** What `cli list` prints for a case's resource need. A sealed descriptor does not carry one: say so rather than print a GPU figure. */
+export function resourceLabel(r: CaseRow): string {
+  if (!r.available) return 'resource unknown';
+  if (r.cpuOnly) return 'cpu-only';
+  return r.estimatedVramMb === null ? 'gpu (vram not estimated)' : `gpu ${r.estimatedVramMb}MiB`;
+}
+
 export function parseResourceFilter(v: string): { ok: true; test: (r: CaseRow) => boolean } | { ok: false; error: string } {
   if (v === 'cpu-only') return { ok: true, test: (r) => r.cpuOnly };
   if (v === 'needs-gpu') return { ok: true, test: (r) => !r.cpuOnly };

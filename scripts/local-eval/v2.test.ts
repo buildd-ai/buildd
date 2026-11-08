@@ -177,9 +177,10 @@ describe('cli --suite v2 operations', () => {
     const r = await capture(() => runV2('run', o({ preset: 'smoke', model: 'm:1', harness: 'claude-code', context: '8192', 'dry-run': '1' }), (n) => n === 'dry-run', env));
     expect(r.code).toBe(0);
     expect(r.out).toContain('4 planned run(s)');
-    // Every shipped case is cpuOnly: true, which the guard never lets start a model (a case version with cpuOnly: false and a VRAM estimate is needed first).
+    // The smoke cases are GPU-runnable (cpuOnly: false, VRAM estimate), so the only thing holding them back is the deferred window.
     expect(r.out).toContain('refused');
-    expect(r.out).toContain('cpuOnly');
+    expect(r.out).toContain('GPU runs are deferred');
+    expect(r.out).not.toContain('cpuOnly');
     const live = await capture(() => runV2('run', o({ preset: 'smoke', model: 'm:1', harness: 'claude-code', context: '8192' }), () => false, env));
     expect(live.code).toBe(3);
   });
