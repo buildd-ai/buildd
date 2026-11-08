@@ -205,3 +205,25 @@ describe('tool efficiency link', () => {
     expect(s.quality.status).toBe('no_data'); // finding counts feed no rate
   });
 });
+
+describe('tool-efficiency summary: review and coverage', () => {
+  const agg = (over: Record<string, unknown> = {}) => ({
+    schemaVersion: 1 as const, analyserVersion: 'tea-v1', harness: 'claude' as const, calls: 10,
+    findingKinds: {}, failureClasses: {},
+    timing: { observedCalls: 10, totalMs: 100, p50Ms: 10, p90Ms: 20, maxMs: 30 },
+    coverage: { recorded: 10, dropped: 2, unobserved: 1, sampledOut: 3 },
+    ...over,
+  });
+  test('folds review candidates by status and counts attempts that never ran a reviewer as absent', () => {
+    const s = summarizeConfig('k', [
+      row({ toolEfficiency: agg({ review: { reviewerVersion: 'rev-v1', candidates: 3, confirmed: 1, dismissed: 1, kinds: { absence_from_limited_search: 3 } } }) }),
+      row({ toolEfficiency: agg() }),
+      row({ toolEfficiency: null }),
+    ]).toolEfficiency;
+    expect(s.withAggregate).toBe(2);
+    expect(s.withoutAggregate).toBe(1);
+    expect(s.review).toMatchObject({ attempts: 1, candidates: 3, confirmed: 1, dismissed: 1, open: 1, reviewerVersions: ['rev-v1'] });
+    expect(s.coverage).toMatchObject({ dropped: 4, sampledOut: 6 });
+    expect(s.schemaVersions).toEqual([1]);
+  });
+});

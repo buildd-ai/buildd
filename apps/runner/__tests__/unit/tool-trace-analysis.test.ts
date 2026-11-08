@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { ToolTraceRecorder, type TraceEvent } from '../../src/tool-trace';
 import { analyseToolTrace, buildToolEfficiencyAggregate, ANALYSER_VERSION } from '../../src/tool-trace-analysis';
 import { applyCorrection, buildReviewPrompt, extractClaims, parseReviewReply, reviewConfigFromEnv, reviewSession, summarizeReview } from '../../src/tool-trace-review';
-import { buildReport, importClaudeTranscript, renderText, loadRunnerTrace } from '../../src/tool-trace-report';
+import { correctCandidatesFile, buildReport, importClaudeTranscript, renderText, loadRunnerTrace } from '../../src/tool-trace-report';
 import { sanitizeToolEfficiency, summarizeToolEfficiency } from '@buildd/core/tool-efficiency';
 
 let t = 1000;
@@ -249,5 +249,37 @@ describe('report and importer', () => {
     const rows = [r.header, ...r.events, { kind: 'summary', counters: r.counters }];
     expect(loadRunnerTrace(rows).events).toHaveLength(1);
     expect(() => loadRunnerTrace([{ ...r.header, v: 99 }])).toThrow(/newer/);
+  });
+});
+
+describe('correction command', () => {
+  test('confirms a candidate in a file, keeps history, rejects unknown ids', () => {
+    const { mkdtempSync, writeFileSync, readFileSync } = require('node:fs');
+    const dir = mkdtempSync(require('node:os').tmpdir() + '/corr-');
+    const f = dir + '/c.json';
+    writeFileSync(f, JSON.stringify([{ id: 'rc1', kind: 'absence_from_limited_search', status: 'candidate', corrections: [] }]));
+    expect(correctCandidatesFile(f, 'rc1', 'confirmed', 'checked by hand')).toContain('1 confirmed');
+    const after = JSON.parse(readFileSync(f, 'utf8'));
+    expect(after[0].status).toBe('confirmed');
+    expect(after[0].corrections[0]).toMatchObject({ by: 'human', from: 'candidate', to: 'confirmed', note: 'checked by hand' });
+    expect(() => correctCandidatesFile(f, 'nope', 'confirmed')).toThrow();
+    expect(() => correctCandidatesFile(f, 'rc1', 'bogus')).toThrow();
+  });
+});
+
+describe('regression: distinct files outside the root are not one repeated read', () => {
+  test('reads of different absolute paths with no root raise no finding; the same path still does', () => {
+    const r = new ToolTraceRecorder({ taskId: 'x', harness: 'claude', now: () => (t += 10) });
+    call(r, 'Read', { file_path: '/elsewhere/a.ts' }, 'a');
+    call(r, 'Read', { file_path: '/elsewhere/b.ts' }, 'b');
+    expect(analyseToolTrace(r.events)).toEqual([]);
+    call(r, 'Read', { file_path: '/elsewhere/b.ts' }, 'b');
+    expect(analyseToolTrace(r.events).map((f) => f.kind)).toEqual(['redundant_read_unchanged']);
+  });
+  test('outside a known root likewise', () => {
+    const r = mk();
+    call(r, 'Read', { file_path: '/other/a.ts' }, 'a');
+    call(r, 'Read', { file_path: '/other/b.ts' }, 'b');
+    expect(analyseToolTrace(r.events)).toEqual([]);
   });
 });

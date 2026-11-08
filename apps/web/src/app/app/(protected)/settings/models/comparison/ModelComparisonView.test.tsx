@@ -61,6 +61,35 @@ describe('ModelComparisonView', () => {
   });
 });
 
+describe('tool use block', () => {
+  const agg = (over: Record<string, unknown> = {}) => ({
+    schemaVersion: 1 as const, analyserVersion: 'tea-v1', harness: 'claude' as const, calls: 20,
+    findingKinds: { identical_search_unchanged: 2 }, failureClasses: { error: 1 },
+    timing: { observedCalls: 20, totalMs: 2000, p50Ms: 80, p90Ms: 200, maxMs: 400 },
+    coverage: { recorded: 20, dropped: 3, unobserved: 1, sampledOut: 0 }, ...over,
+  });
+  it('says tool use is not recorded when no attempt has an analysed trace', () => {
+    const html = render([row(), row()]);
+    expect(html).toContain('Tool use not recorded for 2 attempts.');
+    expect(html).not.toContain('tool-efficiency-measured');
+  });
+  it('separates measured from estimated, shows coverage, versions and candidate status', () => {
+    const html = render([
+      row({ toolEfficiency: agg({ review: { reviewerVersion: 'rev-v1', candidates: 3, confirmed: 1, dismissed: 1, kinds: { absence_from_limited_search: 3 } } }) }),
+      row({ toolEfficiency: null }),
+    ]);
+    expect(html).toContain('Measured:');
+    expect(html).toContain('20 tool calls across 1 attempt, 1 not recorded');
+    expect(html).toContain('Estimated, heuristic candidates:');
+    expect(html).toContain('2 identical search repeated on unchanged files');
+    expect(html).toContain('3 dropped');
+    expect(html).toContain('3 candidates: 1 open, 1 confirmed, 1 dismissed');
+    expect(html).toContain('Analyser tea-v1, schema 1, reviewer rev-v1');
+    expect(html).toContain('Confirm or dismiss on the runner with tool-trace report');
+    expect(html.toLowerCase()).not.toContain('wasted');
+  });
+});
+
 describe('view helpers', () => {
   it('rate text carries n, interval and unrecorded count', () => {
     const r = rateText({ k: 3, n: 4, unknown: 2, rate: 0.75, interval: { lower: 0.3, upper: 0.95 }, status: 'small_sample' });

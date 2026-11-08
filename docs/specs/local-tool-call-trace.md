@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-11-08
 summary: The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
 domain: runners
-surfaces: [apps/runner/src/tool-trace.ts, apps/runner/src/tool-trace-analysis.ts, apps/runner/src/tool-trace-review.ts, apps/runner/src/tool-trace-report.ts, packages/core/tool-efficiency.ts, apps/runner/src/bash-classify.ts, apps/runner/src/tool-metrics.ts, apps/runner/src/workers.ts]
+surfaces: [apps/web/src/app/app/(protected)/settings/models/comparison/ModelComparisonView.tsx, apps/web/src/app/app/(protected)/settings/models/comparison/comparison-view.ts, apps/runner/src/tool-trace.ts, apps/runner/src/tool-trace-analysis.ts, apps/runner/src/tool-trace-review.ts, apps/runner/src/tool-trace-report.ts, packages/core/tool-efficiency.ts, apps/runner/src/bash-classify.ts, apps/runner/src/tool-metrics.ts, apps/runner/src/workers.ts]
 related: [runner-model-auth-source, model-comparison]
 keywords: [tool trace, per-call trace, rg exit code, no matches, repeated search, result_observed, fingerprint, evidence gap, tool efficiency, tool-call-feedback-loop-spec]
 verified_by: [apps/runner/__tests__/unit/tool-trace.test.ts, apps/runner/__tests__/unit/tool-trace-analysis.test.ts]
@@ -218,6 +218,33 @@ versions, coverage) is sent, inside `modelObservation.toolEfficiency`, stored in
 - AC-12: GIVEN a repeat after an edit, a retry after a failure, or changing poll output WHEN analysed THEN no finding is produced.
 - AC-13: GIVEN a reviewer reply with unknown refs or an ungrounded kind WHEN parsed THEN it is rejected and counted, and kept candidates start as `candidate`.
 - AC-14: GIVEN the aggregate WHEN serialised THEN it holds no pattern, path, call id or claim text.
+
+### Owner readout
+
+The aggregate is read through existing surfaces only: the `get_model_comparison` MCP
+action (and `GET /api/model-comparison`) and the Models comparison page. Each
+configuration carries a `toolEfficiency` summary and the page renders it as a "Tool use"
+block with four labelled parts: **Measured** (calls, failure classes, median call time),
+**Estimated, heuristic candidates** (finding-kind counts, never a score), **Coverage**
+(recorded, dropped, without an observed result, sampled out) and **Reviewer** candidates
+by status (open, confirmed, dismissed). Analyser, schema and reviewer versions are shown.
+Attempts with no analysed trace read "Tool use not recorded", not zero.
+
+Candidates stay on the runner, so the page cannot change one. The correction action is
+local: `bun apps/runner/src/tool-trace-report.ts --correct <candidates.json> <id>
+confirmed|dismissed|candidate [--note ...]`, append-only history; the platform sees only
+the resulting counts on the next report.
+
+- AC-15: GIVEN attempts with and without an aggregate WHEN a configuration is summarised THEN attempts without one are counted as not recorded, review candidates are split open/confirmed/dismissed, and dropped and sampled-out counts are summed.
+- AC-16: GIVEN reads of two different files that both fall outside the trace root WHEN analysed THEN no repeated-read finding is produced; the same file read twice still is one.
+
+**Evidence of precision (heuristic, small sample).** Run over a sample of the owner's own
+permitted historical Claude Code transcripts, a first pass flagged only repeated reads, and
+a manual check against the raw transcripts found every one was a different file whose path
+had collapsed to one fingerprint (fixed, AC-16). After the fix the remaining candidates
+were `failure_without_verification` only; of those checked, most were true, one was a
+failed chained probe unrelated to verification. Figures live in the private knowledge-base.
+Findings stay candidates; no precision claim is made beyond that sample.
 
 ## Out of scope
 
