@@ -201,7 +201,7 @@ export function loadArtifacts(dir: string): StoredArtifact[] {
 function sealedHoldoutHas(root: string, id: string): boolean { return loadSplits(root).sealedHoldout.some((d) => d.id === id); }
 
 /** Dispatch for `--suite v2`. Returns the process exit code. */
-export async function runV2(cmd: string | undefined, opt: (n: string) => string | undefined, has: (n: string) => boolean, env: { minFreeMb: number; readGpu: () => { usedMb: number; totalMb: number }[] | null; loaded: () => Promise<string[]> }): Promise<number> {
+export async function runV2(cmd: string | undefined, opt: (n: string) => string | undefined, has: (n: string) => boolean, env: { minFreeMb: number; readGpu: () => { usedMb: number; totalMb: number }[] | null; loaded: () => Promise<string[]>; now?: () => Date }): Promise<number> {
   const root = resolve(opt('root') ?? DEFAULT_ROOT);
   if (cmd === 'validate') {
     const errs = validateV2(root);
@@ -331,7 +331,7 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     const adapter = { id: `${p.harness}:${p.model}`, capabilities: { toolCalling: !has('no-tool-calling'), systemPrompt: !has('no-system-prompt'), structuredOutput: !has('no-structured-output'), contextTokens: p.contextTokens } };
     const needs = Object.fromEntries(selected.filter((r) => cases[r.id]).map((r) => [r.id, { toolCalling: p.track === 'tool-retrieval' || r.category !== 'long-context-requirements', systemPrompt: false, structuredOutput: false, contextTokens: 0 }]));
     const gpus = env.readGpu(); const loaded = await env.loaded().catch(() => []);
-    const plan = planRuns({ cases: selected, needs, policy: p, adapter, now: new Date(), gpus, loadedModels: loaded });
+    const plan = planRuns({ cases: selected, needs, policy: p, adapter, now: env.now?.() ?? new Date(), gpus, loadedModels: loaded });
     for (const r of plan) console.log(`${r.runId}\t${r.split}\t${r.action}${r.reason ? `\t${r.reason}` : ''}`);
     const bad = plan.filter((r) => r.action !== 'run');
     console.log(`${plan.length} planned run(s), ${plan.length - bad.length} allowed, ${bad.length} not started`);

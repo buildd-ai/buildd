@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { computeContentHash, namedPaths, type CaseFiles, type CaseManifestV2 } from '../../packages/core/local-eval-v2';
 import { DEFAULT_ROOT, admitOne, exportToDisk, loadCase, loadSuiteV2, makeVerifier, probeTree, runV2, validateV2 } from './v2';
 import { tempDir } from './lib';
+import { GPU_WINDOW_OPENS_AT } from '../../packages/core/local-eval-v2';
 
 /** A tiny answer-style case: the verifier passes iff the candidate's answer.json cites src/live.ts. */
 const VERIFIER = `import { readFileSync, existsSync } from 'node:fs';
@@ -152,7 +153,7 @@ describe('shipped default suite', () => {
 });
 
 describe('cli --suite v2 operations', () => {
-  const env = { minFreeMb: 1, readGpu: () => [{ usedMb: 0, totalMb: 24000 }], loaded: async () => [] as string[] };
+  const env = { minFreeMb: 1, readGpu: () => [{ usedMb: 0, totalMb: 24000 }], loaded: async () => [] as string[], now: () => new Date(Date.parse(GPU_WINDOW_OPENS_AT) - 60_000) };
   const o = (extra: Record<string, string>) => (n: string) => ({ root: DEFAULT_ROOT, ...extra }[n]);
   const capture = async (fn: () => Promise<number>) => {
     const lines: string[] = []; const log = console.log; const err = console.error;
