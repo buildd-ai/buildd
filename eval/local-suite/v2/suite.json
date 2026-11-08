@@ -1,0 +1,120 @@
+{
+  "suiteId": "local-coding-eval",
+  "suiteVersion": "v2",
+  "formatVersion": 2,
+  "scoringVersion": "score-v2",
+  "skills": [
+    "find",
+    "review",
+    "long-context",
+    "compaction",
+    "fix"
+  ],
+  "cases": [
+    {
+      "id": "change-board-helper-markers",
+      "version": 1,
+      "contentHash": "1761354731c5cb46106c48a7776b844b136627871dfa69e4b6483eedf60b034a"
+    },
+    {
+      "id": "change-money-currency",
+      "version": 1,
+      "contentHash": "cc14ae0170ddc4d8aaca29b9b8a344e1d8ede87889548535744a8d58e2573e1d"
+    },
+    {
+      "id": "change-soft-delete",
+      "version": 1,
+      "contentHash": "f2815f06584668001d32738cfdf0b63ad386539ff709803d1d8900aa23d4ebcf"
+    },
+    {
+      "id": "ctx-conflicting-timeouts",
+      "version": 2,
+      "contentHash": "cd996b8c5c901dd24a693dff86e3ed21f50cd4ebad1afa74b3119d8df7d721b1"
+    },
+    {
+      "id": "ctx-dispersed-total",
+      "version": 1,
+      "contentHash": "fccdb3aecee9aaaa8fddc5c559636edb2fd74c7caebf503440345b63138aec0f"
+    },
+    {
+      "id": "ctx-retention-superseded",
+      "version": 1,
+      "contentHash": "2c086504751f8815e2397a3e1ac36b32c5bf0cf6805d679607a36393ab0355a1"
+    },
+    {
+      "id": "ctx-unanswerable-limit",
+      "version": 1,
+      "contentHash": "26a0afc52d98886c9776c724326ee737e6a3df10596616a9336a28af614fa11f"
+    },
+    {
+      "id": "debug-date-only-shift",
+      "version": 2,
+      "contentHash": "c1d03a98f0886c36c0cd1a62637a227627d4d8d13211f8912054aed3a3835d17"
+    },
+    {
+      "id": "debug-messageless-failures",
+      "version": 1,
+      "contentHash": "d91d1d3cf21dca88cf06db8380f35f99628c23ac73d007ddeae316a6eaae498a"
+    },
+    {
+      "id": "debug-price-cache-key",
+      "version": 1,
+      "contentHash": "66d2b8f3abf19fb792f2a3c47edb842bef419b963806de459be97f6218795018"
+    },
+    {
+      "id": "find-absent-quota",
+      "version": 2,
+      "contentHash": "8db613dbd795621297a9bf352eca1dee82c3fb171b0c41718fa28a7e6217f180"
+    },
+    {
+      "id": "find-signature-normalizer",
+      "version": 1,
+      "contentHash": "42273db30ee4e4ad05b4e3c25408ce1d8817a9ff8b573e509d8f8aeb74ad4011"
+    },
+    {
+      "id": "find-two-retry-sites",
+      "version": 1,
+      "contentHash": "315f9be494cea61fc4298e7f0f7cf0b88a9f7349a533c770ae366100758766ee"
+    },
+    {
+      "id": "review-authz-gap",
+      "version": 2,
+      "contentHash": "6f1d0e2d6e810d8545e4434baadccac1bac8f75a63ccb49c5849087b5803de74"
+    },
+    {
+      "id": "review-clean-extract-helper",
+      "version": 1,
+      "contentHash": "7ec1189414c2d765f170fdae9bedb0a98ccf7176b5a595439c307a2f2598783b"
+    },
+    {
+      "id": "review-pagination-bounds",
+      "version": 1,
+      "contentHash": "278f769b78ece989f332975c47cd597c8a6c737eac9c946da9b89ec269c2014e"
+    },
+    {
+      "id": "review-retry-wrapper",
+      "version": 1,
+      "contentHash": "6602e1ef9eac0c9772d55e313ea3962ab4f4db18c50f468e512a9308514faa9d"
+    },
+    {
+      "id": "term-compaction-constraints",
+      "version": 1,
+      "contentHash": "ab3ce4621c7b3d0278e25ffa50438a066861614777729c517fab02987db7b37e"
+    },
+    {
+      "id": "term-recovery-journal",
+      "version": 1,
+      "contentHash": "4014a27473fb7c26376d0ad84af099b456d5e62a5a90d332ae1d0192bb43b670"
+    },
+    {
+      "id": "term-recovery-stale-lock",
+      "version": 1,
+      "contentHash": "1a0c1c6fe38a2976e6d2a910ecccd855119ef2476d3aaa0f0a4e47f1cad45057"
+    },
+    {
+      "id": "term-session-staged-conventions",
+      "version": 1,
+      "contentHash": "63088b7a0c2bdada9272cd37937c63c39666cdfaa56df64f3a7ca8994ab3c682"
+    }
+  ]
+}

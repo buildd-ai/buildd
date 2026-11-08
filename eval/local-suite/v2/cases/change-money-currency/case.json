@@ -1,0 +1,112 @@
+{
+  "formatVersion": 2,
+  "id": "change-money-currency",
+  "version": 1,
+  "contentHash": "cc14ae0170ddc4d8aaca29b9b8a344e1d8ede87889548535744a8d58e2573e1d",
+  "category": "multi-file-change",
+  "files": {
+    "snapshot": [
+      "snapshot/package.json",
+      "snapshot/src/invoice.ts",
+      "snapshot/src/receipt.ts",
+      "snapshot/src/report.ts",
+      "snapshot/src/summary.ts",
+      "snapshot/test/money.spec.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/src/invoice.ts",
+      "reference/src/money.ts",
+      "reference/src/receipt.ts",
+      "reference/src/report.ts",
+      "reference/src/summary.ts"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "unified-format",
+        "invoice-only"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/src/invoice.ts",
+        "candidates/alt/src/receipt.ts",
+        "candidates/alt/src/report.ts",
+        "candidates/alt/src/summary.ts",
+        "candidates/invoice-only/src/invoice.ts",
+        "candidates/invoice-only/src/summary.ts",
+        "candidates/unified-format/src/invoice.ts",
+        "candidates/unified-format/src/money.ts",
+        "candidates/unified-format/src/receipt.ts",
+        "candidates/unified-format/src/report.ts",
+        "candidates/unified-format/src/summary.ts"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 1200,
+    "maxTurns": 50,
+    "toolBudget": 150
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "fix"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented project. The three formatters differ on purpose and the hidden tests pin each one.",
+  "expected": {
+    "kind": "verifier"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "caseId": "review-retry-wrapper",
+  "version": 1,
+  "contentHash": "6602e1ef9eac0c9772d55e313ea3962ab4f4db18c50f468e512a9308514faa9d",
+  "admitted": true,
+  "gates": [
+    {
+      "gate": "reference-passes",
+      "ok": true,
+      "detail": "verifier passes the reference"
+    },
+    {
+      "gate": "deterministic",
+      "ok": true,
+      "detail": "3 identical runs"
+    },
+    {
+      "gate": "negative-control-fails",
+      "ok": true,
+      "detail": "fails the snapshot and 2 broken candidate(s)"
+    },
+    {
+      "gate": "independent-of-patch",
+      "ok": true,
+      "detail": "a different correct solution passes"
+    },
+    {
+      "gate": "absence-audited",
+      "ok": true,
+      "detail": "not an answer-absent case"
+    },
+    {
+      "gate": "isolation-holds",
+      "ok": true,
+      "detail": "probe agent tree is clean"
+    }
+  ],
+  "verdicts": {
+    "reference": [
+      true,
+      true,
+      true
+    ],
+    "snapshot": [
+      false
+    ],
+    "broken:missed": [
+      false
+    ],
+    "broken:noise": [
+      false
+    ],
+    "alternative": [
+      true
+    ]
+  },
+  "leaks": [],
+  "toolchain": "bun 1.3.11; linux-arm64",
+  "checkedOn": "2026-11-08"
+}

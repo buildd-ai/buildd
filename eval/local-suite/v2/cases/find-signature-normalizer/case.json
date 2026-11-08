@@ -1,0 +1,107 @@
+{
+  "formatVersion": 2,
+  "id": "find-signature-normalizer",
+  "version": 1,
+  "contentHash": "42273db30ee4e4ad05b4e3c25408ce1d8817a9ff8b573e509d8f8aeb74ad4011",
+  "category": "find-by-behaviour",
+  "files": {
+    "snapshot": [
+      "snapshot/packages/core/error-signature.ts",
+      "snapshot/packages/core/failure-friction-signature.ts",
+      "snapshot/packages/core/gate-friction-signature.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/answer.json"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "wrapper",
+        "hasher"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/answer.json",
+        "candidates/hasher/answer.json",
+        "candidates/wrapper/answer.json"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 600,
+    "maxTurns": 30,
+    "toolBudget": 60
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "find"
+    ]
+  },
+  "exposing": false,
+  "provenance": {
+    "source": "this-repo",
+    "licence": "FSL-1.1-ALv2 (this repository LICENSE); files are unmodified copies from this repository",
+    "note": "Three files copied unmodified from packages/core at the time of authoring."
+  },
+  "contamination": "Real repository code, public. A model may have seen this repository; the answer is not stated in any comment.",
+  "expected": {
+    "kind": "answer",
+    "locations": [
+      {
+        "file": "packages/core/error-signature.ts",
+        "symbol": "normalizeErrorSignature"
+      }
+    ],
+    "decoys": [
+      "packages/core/gate-friction-signature.ts",
+      "packages/core/failure-friction-signature.ts"
+    ]
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

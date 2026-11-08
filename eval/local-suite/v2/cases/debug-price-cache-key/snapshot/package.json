@@ -1,0 +1,1 @@
+{ "name": "shop-pricing", "type": "module", "scripts": { "test": "bun test" } }

@@ -1,0 +1,1 @@
+{"answer":"The requirements in force disagree: REQ-204 says 30 seconds and REQ-219 says 45 seconds, both current and both replacing REQ-188. No single value can be given.","conflicts":["REQ-204","REQ-219"]}

@@ -1,0 +1,4 @@
+{"findings":[
+ {"file":"src/paginate.ts","line":11,"description":"page is 1-based but start = page * pageSize, so page 1 skips the first pageSize items; start should be (page - 1) * pageSize"},
+ {"file":"src/handler.ts","line":8,"description":"pageSize comes from the query string with no validation: 0, a negative number, NaN or a huge value is passed straight to paginate; clamp it to a sane range"}
+]}

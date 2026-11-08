@@ -30,6 +30,7 @@
  */
 import { correctnessOf, EMPTY_EVIDENCE, type Correctness } from './model-observation';
 import { summarizeToolEfficiency, type ToolEfficiencyAggregate, type ToolEfficiencySummary } from './tool-efficiency';
+import { buildV2Profile, isV2Row, type V2Profile } from './model-comparison-v2';
 import { newcombeInterval, wilsonInterval, type Interval } from './stat-intervals';
 
 /** Resolved attempts needed per configuration before a rate is more than a hint. */
@@ -79,7 +80,9 @@ export interface ComparisonRow {
   /** Bounded structural tool-efficiency aggregate; null/absent = no analysed trace (unknown). */
   toolEfficiency?: ToolEfficiencyAggregate | null;
   /** Set only on controlled replay runs (packages/core/local-eval.ts). */
-  evaluation?: { provenance?: string; suiteId?: string; suiteVersion?: string; scoringVersion?: string; caseId?: string; configId?: string; trial?: number; result?: string } | null;
+  evaluation?: { provenance?: string; suiteId?: string; suiteVersion?: string; scoringVersion?: string; caseId?: string; configId?: string; trial?: number; runId?: string; result?: string; v2?: import('./local-eval').RunDetailV2 } | null;
+  retries?: number | null;
+  peakVramMb?: number | null;
 }
 
 export interface ComparisonFilters {
@@ -441,6 +444,8 @@ export interface ReplayComparison {
   commonCases: string[];
   /** Always not_computed: a handful of replayed cases supports no ranking. */
   verdict: 'not_computed' | 'no_runs';
+  /** Per-category capability profile of v2 runs. v2 runs are not in `configs` above; v1 runs are not in this. */
+  v2: V2Profile;
 }
 
 /** Rows ingested by the replay harness; production figures never include them. */
@@ -448,13 +453,17 @@ export function isReplayRow(r: ComparisonRow): boolean {
   return r.evaluation?.provenance === 'controlled_replay';
 }
 
-export function buildReplayComparison(rows: readonly ComparisonRow[]): ReplayComparison {
+export function buildReplayComparison(allReplayRows: readonly ComparisonRow[]): ReplayComparison {
+  // v1 keeps its own per-case readout, byte for byte; v2 runs get the per-category profile instead of being pooled into it.
+  const rows = allReplayRows.filter((r) => !isV2Row(r));
   const byConfig = new Map<string, ComparisonRow[]>();
   const versions = new Map<string, number>();
   for (const r of rows) {
     const id = r.evaluation?.configId ?? 'config unknown';
     const g = byConfig.get(id);
     if (g) g.push(r); else byConfig.set(id, [r]);
+  }
+  for (const r of allReplayRows) {
     const vk = `${r.evaluation?.suiteVersion ?? 'unknown'}|${r.evaluation?.scoringVersion ?? 'unknown'}`;
     versions.set(vk, (versions.get(vk) ?? 0) + 1);
   }
@@ -480,7 +489,8 @@ export function buildReplayComparison(rows: readonly ComparisonRow[]): ReplayCom
     versions: [...versions.entries()].map(([k, runs]) => { const [suiteVersion, scoringVersion] = k.split('|'); return { suiteVersion, scoringVersion, runs }; }),
     configs,
     commonCases,
-    verdict: rows.length ? 'not_computed' : 'no_runs',
+    verdict: allReplayRows.length ? 'not_computed' : 'no_runs',
+    v2: buildV2Profile(allReplayRows, { minResolved: MIN_RESOLVED }),
   };
 }
 

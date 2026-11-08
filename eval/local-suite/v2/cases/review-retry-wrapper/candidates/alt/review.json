@@ -1,0 +1,1 @@
+{"findings":[{"file":"src/payments.ts","line":10,"description":"POST /charges is not idempotent, so wrapping it in withRetry can create duplicate payments after a timeout; only the read (search) is safe to repeat"}]}
