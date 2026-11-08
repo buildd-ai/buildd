@@ -53,6 +53,7 @@ import { promptEvalDeps } from '@/lib/prompt-evals/store';
 // A green head is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { observeBase, observeCiGreen, observePrState, systemPrincipal, withWebhookBudget } from '@/lib/workflow/kernel-client';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { recordObservationEvidence } from '@/lib/model-observation-store';
 import { invalidateGithubApproval } from '@/lib/github-approval';
 import { flagAcceptanceEditsForPr } from '@/lib/acceptance-edit-store';
 import { kernelDeliveriesLandingAt } from '@/lib/workflow/authority';
@@ -525,6 +526,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         });
         // Model policy: CI on the run's PR is its tests observation.
         await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: false }]);
+        await recordObservationEvidence({ workerId: worker.id }, { ciState: 'failed' });
       }
     }
     // Per PR: the subscriptions ledger records "CI went red on PR N" (one row
@@ -590,6 +592,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         // Model policy: every check suite passed on the run's PR (once per transition to green).
         if (greened.length > 0) {
           await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
+          await recordObservationEvidence({ workerId: worker.id }, { ciState: 'passed' });
           await emit({
             type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id,
             workspaceId: workspace.id, workerId: worker.id, taskId: worker.taskId,
@@ -848,6 +851,24 @@ async function handlePullRequestEvent(event: {
       console.error(`[auto-review] ${repository.full_name}#${pr.number} failed:`, err);
     }
     await republishPrHeads(event.installation.id, repository.full_name, [{ number: pr.number, sha: pr.head.sha }]);
+
+    // `maybeAutoReviewUnownedPr` above explicitly refuses a release candidate
+    // (it has its own gate, never an agent reviewer) without adopting it —
+    // nothing else does either, since `registerLocalPr` below only matches an
+    // existing worker's own task branch, and a candidate's `release/vX.Y.Z`
+    // branch was never one. Left unadopted, get_pr/merge_pr/list_prs (all
+    // keyed on workers.prNumber) answer "not found" for a PR that is open and
+    // legitimate. This binds it — adoption only, never a review request and
+    // never a merge — so those surfaces resolve it like any other known PR.
+    // Isolated by emit(): a failed adoption never fails the webhook.
+    const candidate: { owned?: boolean } = {};
+    await emit({
+      type: 'pr.candidate_adoption_requested', action, installationId: event.installation.id,
+      repoFullName: repository.full_name, pr, outcome: candidate,
+    });
+    // The candidate has its own gate: the PR-opened policy (reviewer dispatch), review_ready
+    // and no-CI auto-merge below must leave it alone for this event.
+    if (candidate.owned) autoReviewAdopted = true;
   }
   if ((action === 'opened' || action === 'reopened' || action === 'synchronize') && event.installation?.id) {
     await flagAcceptanceEditsForPr({ installationId: event.installation.id, repoFullName: repository.full_name, prNumber: pr.number, headSha: pr.head.sha });
@@ -1374,6 +1395,8 @@ async function handlePullRequestEvent(event: {
         );
       }
     }
+
+    await recordObservationEvidence({ workerId: worker.id }, { prOutcome: 'closed' });
 
     // Close any open changeIntent rows for this PR, drop its merge
     // reservations and re-drive the PR waiting behind it (missions). Then the

@@ -1,0 +1,1 @@
+{"findings":[{"file":"src/projects.ts","line":27,"description":"Missing authorization: unlike renameProject and archiveProject, delete does not check that the caller owns the project, so a stranger with a login can remove it"}]}

@@ -1,0 +1,1 @@
+{ "name": "accounts-migration", "type": "module", "scripts": { "test": "bun test" } }

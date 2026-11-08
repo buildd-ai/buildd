@@ -435,6 +435,8 @@ export interface LocalWorker {
    * task_outcomes.actual_model reflects what really ran.
    */
   sessionModel?: string;
+  /** Per-attempt model observation state (model-observation.ts): tool failures, VRAM peak. */
+  observation?: import('./model-observation').WorkerObservationState;
   /** Model id the SDK reported on the init message, when it provides one. */
   reportedModel?: string;
   // SDK result metadata (populated on completion)

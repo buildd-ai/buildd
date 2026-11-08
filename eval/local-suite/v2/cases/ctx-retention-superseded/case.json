@@ -1,0 +1,111 @@
+{
+  "formatVersion": 2,
+  "id": "ctx-retention-superseded",
+  "version": 1,
+  "contentHash": "2c086504751f8815e2397a3e1ac36b32c5bf0cf6805d679607a36393ab0355a1",
+  "category": "long-context-requirements",
+  "files": {
+    "snapshot": [
+      "snapshot/README.md",
+      "snapshot/evidence/filler.md",
+      "snapshot/evidence/needles.json",
+      "snapshot/package.json"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/answer.json"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "regional-misapplied",
+        "superseded"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/answer.json",
+        "candidates/regional-misapplied/answer.json",
+        "candidates/superseded/answer.json"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 900,
+    "maxTurns": 30,
+    "toolBudget": 60
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "long-context"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented requirements. The 90-day figure is superseded and the 30-day figure is for another region: following either is the incorrect success conclusion this case exposes. Distractor notes talk about other data kinds, some with EU/elsewhere splits.",
+  "expected": {
+    "kind": "verifier"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  },
+  "longContext": {
+    "sizes": [
+      8192,
+      16384,
+      32768
+    ],
+    "positions": [
+      "start",
+      "middle",
+      "end",
+      "dispersed"
+    ]
+  }
+}

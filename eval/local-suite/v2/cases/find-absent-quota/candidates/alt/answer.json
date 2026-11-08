@@ -1,0 +1,5 @@
+{
+  "citations": [],
+  "abstain": true,
+  "notes": "requestsPerMinute is configured but never read; limitKey is always null; debounce is UI-only."
+}

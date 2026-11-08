@@ -1,0 +1,101 @@
+{
+  "formatVersion": 2,
+  "id": "debug-messageless-failures",
+  "version": 1,
+  "contentHash": "d91d1d3cf21dca88cf06db8380f35f99628c23ac73d007ddeae316a6eaae498a",
+  "category": "causal-debugging",
+  "files": {
+    "snapshot": [
+      "snapshot/CHANGELOG.md",
+      "snapshot/package.json",
+      "snapshot/src/index.ts",
+      "snapshot/src/patterns.ts",
+      "snapshot/src/thresholds.ts",
+      "snapshot/src/window.ts",
+      "snapshot/test/patterns.spec.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/src/patterns.ts"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "drop-messageless",
+        "raise-threshold"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/src/patterns.ts",
+        "candidates/drop-messageless/src/patterns.ts",
+        "candidates/raise-threshold/src/patterns.ts"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 900,
+    "maxTurns": 40,
+    "toolBudget": 100
+  },
+  "labels": {
+    "difficulty": "hard",
+    "skills": [
+      "fix"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "this-repo",
+    "licence": "FSL-1.1-ALv2 (this repository LICENSE); re-written reduction, no copied files",
+    "note": "Reduced from a public fix in this repository to the grouping function; the pre-fix failure is the snapshot failing the hidden verifier."
+  },
+  "contamination": "Derived from a public repository fix; rewritten, but a model that has seen the original may recall the approach. Distractors: a recently lowered threshold and a time-window helper.",
+  "expected": {
+    "kind": "verifier"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

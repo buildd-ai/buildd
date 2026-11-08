@@ -1,0 +1,154 @@
+{
+  "note": "dev cases are the open directories listed in suite.json and may be used to build and tune. sealed-holdout cases are listed here by hash and descriptor only: their content is not in this repository, is never to be edited after hashing, and is run only for a decision, then rotated into dev under a new version. Results are reported per split and never pooled.",
+  "dev": [
+    "change-board-helper-markers",
+    "change-money-currency",
+    "change-soft-delete",
+    "ctx-conflicting-timeouts",
+    "ctx-dispersed-total",
+    "ctx-retention-superseded",
+    "ctx-unanswerable-limit",
+    "debug-date-only-shift",
+    "debug-messageless-failures",
+    "debug-price-cache-key",
+    "find-absent-quota",
+    "find-signature-normalizer",
+    "find-two-retry-sites",
+    "review-authz-gap",
+    "review-clean-extract-helper",
+    "review-pagination-bounds",
+    "review-retry-wrapper",
+    "term-compaction-constraints",
+    "term-recovery-journal",
+    "term-recovery-stale-lock",
+    "term-session-staged-conventions"
+  ],
+  "sealedHoldout": [
+    {
+      "id": "sealed-change-a",
+      "category": "multi-file-change",
+      "version": 1,
+      "contentHash": "fe3d28bcbc9612ef6567d884e275a4984396444e47fc151be3136e3e4de98c0c",
+      "difficulty": "hard",
+      "skills": [
+        "fix"
+      ],
+      "exposing": true,
+      "admission": {
+        "admitted": true,
+        "checkedOn": "2026-11-08",
+        "toolchain": "bun 1.3.11; linux-arm64",
+        "gates": [
+          {
+            "gate": "reference-passes",
+            "ok": true
+          },
+          {
+            "gate": "deterministic",
+            "ok": true
+          },
+          {
+            "gate": "negative-control-fails",
+            "ok": true
+          },
+          {
+            "gate": "independent-of-patch",
+            "ok": true
+          },
+          {
+            "gate": "absence-audited",
+            "ok": true
+          },
+          {
+            "gate": "isolation-holds",
+            "ok": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "sealed-debug-a",
+      "category": "causal-debugging",
+      "version": 1,
+      "contentHash": "9acca914bf921038a02f6660f8cb6c1c315d6d2341b28fb5707853a35050c44d",
+      "difficulty": "medium",
+      "skills": [
+        "fix"
+      ],
+      "exposing": true,
+      "admission": {
+        "admitted": true,
+        "checkedOn": "2026-11-08",
+        "toolchain": "bun 1.3.11; linux-arm64",
+        "gates": [
+          {
+            "gate": "reference-passes",
+            "ok": true
+          },
+          {
+            "gate": "deterministic",
+            "ok": true
+          },
+          {
+            "gate": "negative-control-fails",
+            "ok": true
+          },
+          {
+            "gate": "independent-of-patch",
+            "ok": true
+          },
+          {
+            "gate": "absence-audited",
+            "ok": true
+          },
+          {
+            "gate": "isolation-holds",
+            "ok": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "sealed-find-a",
+      "category": "find-by-behaviour",
+      "version": 1,
+      "contentHash": "5b80e0ee6057aa7e72084d2afd506715c8e3ddfcde33cb6f501aae070c4a539b",
+      "difficulty": "medium",
+      "skills": [
+        "find"
+      ],
+      "exposing": true,
+      "admission": {
+        "admitted": true,
+        "checkedOn": "2026-11-08",
+        "toolchain": "bun 1.3.11; linux-arm64",
+        "gates": [
+          {
+            "gate": "reference-passes",
+            "ok": true
+          },
+          {
+            "gate": "deterministic",
+            "ok": true
+          },
+          {
+            "gate": "negative-control-fails",
+            "ok": true
+          },
+          {
+            "gate": "independent-of-patch",
+            "ok": true
+          },
+          {
+            "gate": "absence-audited",
+            "ok": true
+          },
+          {
+            "gate": "isolation-holds",
+            "ok": true
+          }
+        ]
+      }
+    }
+  ]
+}

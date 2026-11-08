@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import Section from '@/components/ui/Section';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
@@ -70,6 +71,10 @@ export default async function ModelsSettingsPage({
         <TierLimitSection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ChatTierPolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ModelUpgradePolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
+      </Section>
+
+      <Section title="Results" id="results">
+        <Link href="/app/settings/models/comparison" className="text-sm text-text-primary underline underline-offset-2 inline-block py-2">Compare models on your work</Link>
       </Section>
     </SettingsPage>
   );
