@@ -221,7 +221,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-15
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 - [Local Tool Call Trace](./local-tool-call-trace.md) · @max — verified 2026-11-08
-  The runner MUST record a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats made after files changed, and send the platform only enum counts, never commands, queries, paths, hashes or output.
+  The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
 - [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-10-10
   The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-15

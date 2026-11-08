@@ -3,7 +3,7 @@ title: Local Tool Call Trace
 status: draft
 owner: max
 last_verified: 2026-11-08
-summary: The runner MUST record a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats made after files changed, and send the platform only enum counts, never commands, queries, paths, hashes or output.
+summary: The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
 domain: runners
 surfaces: [apps/runner/src/tool-trace.ts, apps/runner/src/bash-classify.ts, apps/runner/src/tool-metrics.ts, apps/runner/src/workers.ts]
 related: [runner-model-auth-source, model-comparison]
