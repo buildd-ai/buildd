@@ -229,6 +229,23 @@ export type CoreEvent =
   /** A workspace row is written (POST /api/workspaces). `origin` is the request origin, for OAuth callbacks. */
   | { type: 'workspace.created'; workspaceId: string; teamId: string; origin: string }
   /**
+   * A PR was opened/reopened/pushed/readied on a linked repo. The releases
+   * module adopts it when it is a trusted release candidate (so get_pr/
+   * merge_pr resolve it) and reports back through `outcome`, which the webhook
+   * reads after emit() resolves: an adopted or already-owned candidate keeps its
+   * own gate, so reviewer dispatch and no-CI auto-merge leave it alone.
+   */
+  | {
+      type: 'pr.candidate_adoption_requested';
+      action: string;
+      installationId: number;
+      repoFullName: string;
+      /** The webhook's PR payload, passed through opaque (this file imports nothing). */
+      pr: object;
+      /** Set by the subscriber: true when the PR is a release candidate this module now owns. */
+      outcome: { owned?: boolean };
+    }
+  /**
    * A PR merged. `delivery` is present when the GitHub webhook delivered the
    * merge (every delivery, redeliveries included); reconciliation emits the
    * same fact without it.

@@ -36,6 +36,8 @@ import { detectArchetype } from '@buildd/core/release-archetype';
 import { buildWorkflowRunOutcome, hasOpenReleasePr, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
+import { maybeAdoptReleaseCandidatePr } from '@/lib/release-candidate-adopt';
+import type { AutoReviewPr } from '@/lib/auto-review-unowned';
 import { subscriber, type AnySubscriber, type EventOf, type WorkflowRunFact } from '@/lib/core-events';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -606,7 +608,17 @@ async function readBackWorkflowRun(e: EventOf<'workflow_run.completed'>): Promis
   }
 }
 
+async function adoptReleaseCandidate(e: EventOf<'pr.candidate_adoption_requested'>): Promise<void> {
+  const pr = e.pr as AutoReviewPr;
+  const result = await maybeAdoptReleaseCandidatePr({
+    action: e.action, installationId: e.installationId, repoFullName: e.repoFullName, pr,
+  });
+  if (result === 'adopted' || result === 'already_owned') e.outcome.owned = true;
+  if (result === 'adopted') console.log(`[release-candidate-adopt] ${e.repoFullName}#${pr.number} (${e.action}): adopted`);
+}
+
 export const releaseSubscribers: readonly AnySubscriber[] = [
+  subscriber('releases', 'pr.candidate_adoption_requested', 'release-candidate-adopt', adoptReleaseCandidate),
   subscriber('releases', 'pr.merged', 'release-record-prod-merge', recordProdMerge),
   subscriber('releases', 'pr.merged', 'release-candidate-amend-on-fix', amendCandidateOnFix),
   subscriber('releases', 'task.completed', 'release-candidate-amend-on-fix-completion', amendCandidateOnFixCompleted),

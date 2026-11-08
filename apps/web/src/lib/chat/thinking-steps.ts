@@ -35,6 +35,7 @@ const VERBS: Record<string, Verb> = {
   read_evidence: v('Reading', 'Read', 'the run logs', undefined, "Couldn't read the run logs"),
   get_failure_analytics: v('Looking at', 'Looked at', 'what has been failing', undefined, "Couldn't look at the failures"),
   get_budget_forecast: v('Checking', 'Checked', 'the budget', undefined, "Couldn't check the budget"),
+  get_model_comparison: v('Comparing', 'Compared', 'model outcomes', undefined, "Couldn't compare model outcomes"),
   list_connectors: v('Checking', 'Checked', 'the connected services', undefined, "Couldn't check the connected services"),
   get_pr: v('Checking', 'Checked', 'the change', 'changes', "Couldn't check the change"),
   list_prs: v('Looking over', 'Looked over', 'open changes', undefined, "Couldn't list the changes"),

@@ -35,6 +35,7 @@ export const WITHHELD_WORKER_FIELDS = [
   'roleInstructions',
   'skillBundles',
   'roleBundle',
+  'observation', // internal counters and a sampler handle, not for clients
 ] as const satisfies ReadonlyArray<keyof LocalWorker>;
 
 export type WithheldWorkerField = (typeof WITHHELD_WORKER_FIELDS)[number];
@@ -72,6 +73,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   prUrl: true,
   sessionEndPushCount: true,
   sessionEndPushes: true,
+  observation: false,
   lastToolDenial: true,
   lastCompleteTaskAttempt: true, // the agent's own complete_task params, already in toolCalls
   output: true,

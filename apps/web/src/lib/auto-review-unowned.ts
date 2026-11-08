@@ -103,7 +103,8 @@ export interface AutoReviewDeps extends ForeignPrDeps {
   request?: (input: RequestPrReviewInput) => Promise<RequestPrReviewResult>;
 }
 
-async function linkedWorkspacesLive(repoFullName: string): Promise<AutoReviewWorkspace[]> {
+/** Exported for `release-candidate-adopt.ts`: the same "which workspaces link this repo" read, so the two never drift. */
+export async function linkedWorkspacesLive(repoFullName: string): Promise<AutoReviewWorkspace[]> {
   const res = (await db.execute(sql`-- auto_review_unowned:linked_workspaces
 SELECT w.id, w.team_id, w.name, w.repo, w.github_repo_id, w.github_installation_id, w.git_config, w.webhook_config, w.release_config
 FROM workspaces w

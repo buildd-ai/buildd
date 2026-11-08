@@ -41,6 +41,10 @@ const REFUSED_CALLS: Record<string, Record<string, string>> = {
     'apps/web/src/app/api/prs/[prNumber]/merge/route.ts':
       'only chat (a signed-in person, in process) takes this branch; it is a session route, and a task token never reaches it',
   },
+  get_model_comparison: {
+    'apps/web/src/app/api/model-comparison/route.ts':
+      'a read of the whole workspace\'s model outcomes, for a signed-in member or a workspace key; a task has no claim on its siblings\' results',
+  },
   manage_experiments: {
     'apps/web/src/app/api/experiments/[id]/readout/route.ts':
       'a readout counts tasks across every workspace on the team; narrowing it to one would change what it measures',

@@ -56,7 +56,8 @@ import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
-import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
+import { wakeOldestPendingTaskOnCapacityFreed, wakeMissionSlotWaiter } from '@/lib/capacity-freed-wake';
+
 import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation, applyCopyReviewGate, parseCopyFindings } from '@/lib/reviewer';
@@ -145,6 +146,7 @@ import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capa
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { recordModelObservation } from '@/lib/model-observation-store';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearTeamCache } from '@/lib/team-cache';
 import { readRound } from '@/lib/read-round';
@@ -4704,6 +4706,18 @@ async function patchWorker(
       // status: a contract guard or a completion-policy slot that failed a
       // reported completion records failed. Fire-and-forget.
       const effectiveOutcome = contractViolation || slotFailure ? 'failed' : status;
+      // One observation per execution attempt (model-performance-measurement spec). Recorded for EVERY terminal report, including an
+      // auto-retried or CI-held attempt, so a failed model's row (and its failure origin) is kept. The runner's
+      // descriptor is untrusted and whitelisted; telemetry only, never throws into this path.
+      void recordModelObservation({
+        workerId: id,
+        rawDescriptor: body.modelObservation,
+        actualModel: sessionActualModel,
+        exitCause: outcomeAnalytics.exitCause,
+        status: effectiveOutcome,
+        costUsd: outcomeAnalytics.totalCostUsd as number | string | null,
+        durationMs: outcomeAnalytics.durationMs,
+      });
       if (!shouldAutoRetry) {
         if (!releaseHeld) {
           recordTaskOutcome({ ...outcomeAnalytics, taskId: completedTaskId, outcome: effectiveOutcome }).catch(() => {});
@@ -5275,6 +5289,11 @@ async function patchWorker(
   // than waiting for the cloud runner's own backoff retry or a slow sweep.
   // No-ops for a workspace with no active cloud-dispatch webhook.
   if (isTerminalStatus) await wakeOldestPendingTaskOnCapacityFreed(worker.workspaceId, worker.taskId ?? null);
+  // It also frees a slot against its mission's maxConcurrentTasks cap. A sibling
+  // the claim route deferred on `mission_concurrent` is woken here, on any
+  // workspace: a host runner is push-driven and would otherwise wait for its
+  // hourly fallback poll (lib/capacity-freed-wake.ts).
+  if (isTerminalStatus) await wakeMissionSlotWaiter(worker.taskId ?? null);
   // A managed run ending frees a slot against the team's commercial
   // entitlement, pooled across its workspaces: wake the oldest task waiting on
   // it, wherever it is (lib/entitlements/managed-runner.ts).
