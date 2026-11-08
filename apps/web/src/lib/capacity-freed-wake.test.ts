@@ -23,6 +23,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 mock.module('@buildd/core/db/schema', () => ({
+  missions: { id: 'id', maxConcurrentTasks: 'max_concurrent_tasks' },
   workspaces: { id: 'id', webhookConfig: 'webhook_config' },
   tasks: { id: 'id', workspaceId: 'workspace_id', priority: 'priority', createdAt: 'created_at' },
 }));
@@ -33,6 +34,9 @@ mock.module('drizzle-orm', () => ({
 }));
 mock.module('@/app/api/cron/queue-stall/fleet-idle', () => ({
   claimablePendingWhere: (cutoff: Date) => ({ type: 'claimablePendingWhere', cutoff }),
+}));
+mock.module('@/app/api/workers/claim/deps-gate', () => ({
+  depsGate: () => ({ type: 'depsGate' }),
 }));
 mock.module('@/lib/dispatch-authority', () => ({
   wakeTask: (...args: [string, string]) => mockWakeTask(...args),
