@@ -33,6 +33,7 @@
     "./model-catalog-cache": "./model-catalog-cache.ts",
     "./chat-model-eligibility": "./chat-model-eligibility.ts",
     "./model-observation": "./model-observation.ts",
+    "./model-comparison": "./model-comparison.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
     "./role-model-routing": "./role-model-routing.ts",

@@ -8,7 +8,7 @@
  */
 import { db } from '@buildd/core/db';
 import { modelObservations, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gte, lte } from 'drizzle-orm';
 import { knownPriceForModel } from '@buildd/core/model-prices';
 import {
   buildObservation,
@@ -165,3 +165,17 @@ export async function listModelObservations(workspaceId: string, limit = 100) {
     .limit(n);
 }
 
+
+/** The window a comparison reads: bounded so one page cannot scan a workspace's whole history. */
+export const COMPARISON_ROW_LIMIT = 5000;
+
+/** One workspace's observations since `since`, newest first (access is checked by the caller). */
+export async function listObservationsForComparison(workspaceId: string, since: Date | null, until: Date | null = null) {
+  const conds = [eq(modelObservations.workspaceId, workspaceId)];
+  if (since) conds.push(gte(modelObservations.createdAt, since));
+  if (until) conds.push(lte(modelObservations.createdAt, until));
+  return db.select().from(modelObservations)
+    .where(and(...conds))
+    .orderBy(desc(modelObservations.createdAt))
+    .limit(COMPARISON_ROW_LIMIT);
+}
