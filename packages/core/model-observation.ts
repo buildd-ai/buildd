@@ -12,6 +12,7 @@
  * and the evidence merge are functions of their arguments. The I/O lives in
  * apps/web/src/lib/model-observation-store.ts.
  */
+import { sanitizeToolEfficiency, type ToolEfficiencyAggregate } from './tool-efficiency';
 
 /** A closed label for how the model was reached. Never a URL, host or credential. */
 export const ENDPOINT_KINDS = [
@@ -62,6 +63,8 @@ export interface ObservationDescriptor {
   peakVramMb?: number;
   vramSamples?: number;
   attempt?: number;
+  /** Bounded structural tool-efficiency aggregate (tool-efficiency.ts). Re-whitelisted here. */
+  toolEfficiency?: ToolEfficiencyAggregate;
 }
 
 const MAX_TEXT = 80;
@@ -117,6 +120,8 @@ export function sanitizeDescriptor(raw: unknown): ObservationDescriptor {
   if (vram !== undefined && vram > 0) out.peakVramMb = vram;
   const vs = boundedInt(r.vramSamples, 100_000);
   if (vs !== undefined) out.vramSamples = vs;
+  const te = sanitizeToolEfficiency(r.toolEfficiency);
+  if (te) out.toolEfficiency = te;
   const attempt = boundedInt(r.attempt, 10_000);
   if (attempt !== undefined && attempt >= 1) out.attempt = attempt;
   if (r.runtime && typeof r.runtime === 'object' && !Array.isArray(r.runtime)) {
@@ -251,6 +256,8 @@ export interface ObservationValues {
   vramSamples: number | null;
   costUsd: number | null;
   costBasis: string | null;
+  /** NULL = no analysed trace for this attempt (unknown, not zero). */
+  toolEfficiency: ToolEfficiencyAggregate | null;
   unavailable: UnavailableReasons;
 }
 
@@ -279,6 +286,7 @@ export function buildObservation(input: ObservationInput): ObservationValues {
   const inputTokens = need('inputTokens', input.inputTokens && input.inputTokens > 0 ? input.inputTokens : null, 'no token usage reported');
   const outputTokens = need('outputTokens', input.outputTokens && input.outputTokens > 0 ? input.outputTokens : null, 'no token usage reported');
   const toolFailures = need('toolFailures', d.toolFailures, 'runner did not count tool failures');
+  const toolEfficiency = need('toolEfficiency', d.toolEfficiency, 'no analysed local tool trace for this attempt');
   const peakVramMb = need('peakVramMb', d.peakVramMb, 'no GPU sampler available on this runner');
 
   let tokensPerSecond: number | null = null;
@@ -332,6 +340,7 @@ export function buildObservation(input: ObservationInput): ObservationValues {
     vramSamples: peakVramMb === null ? null : d.vramSamples ?? null,
     costUsd,
     costBasis: input.costBasis,
+    toolEfficiency,
     unavailable,
   };
 }

@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-11-08
 summary: The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
 domain: runners
-surfaces: [apps/runner/src/tool-trace.ts, apps/runner/src/bash-classify.ts, apps/runner/src/tool-metrics.ts, apps/runner/src/workers.ts]
+surfaces: [apps/runner/src/tool-trace.ts, apps/runner/src/tool-trace-analysis.ts, apps/runner/src/tool-trace-review.ts, apps/runner/src/tool-trace-report.ts, packages/core/tool-efficiency.ts, apps/runner/src/bash-classify.ts, apps/runner/src/tool-metrics.ts, apps/runner/src/workers.ts]
 related: [runner-model-auth-source, model-comparison]
 keywords: [tool trace, per-call trace, rg exit code, no matches, repeated search, result_observed, fingerprint, evidence gap, tool efficiency, tool-call-feedback-loop-spec]
-verified_by: [apps/runner/__tests__/unit/tool-trace.test.ts]
+verified_by: [apps/runner/__tests__/unit/tool-trace.test.ts, apps/runner/__tests__/unit/tool-trace-analysis.test.ts]
 supersedes: []
 ---
 
@@ -184,8 +184,40 @@ write.
   "Exit code N" text when present, else inferred from `is_error`.
 - Shell write paths are not parsed, so any shell write invalidates every
   fingerprint. This over-reports `repeat_after_change`, never under-reports it.
-- Nothing consumes the trace yet. Uploading even the summary, and any link to the
-  post-session findings ledger, is a separate task.
+- The post-session findings ledger (run-keyed, server-side analysis) is not
+  written from the runner. Finding-kind counts reach the platform only through
+  the model observation row (`tool_efficiency`), where the model comparison reads them.
+
+## Analyser, reviewer and report (tool-efficiency, `tea-v1`)
+
+`analyseToolTrace` is a pure, versioned pass over the events. Each finding names the
+exact call ids and seqs that support it. Kinds: `identical_search_unchanged`,
+`redundant_read_unchanged`, `broad_search_rerun_unnarrowed`, `command_quoting_retry`,
+`poll_without_new_evidence` (three identical calls, identical result digest, no write
+between), `failure_without_verification` (a failed test/build/gh call with no later
+success). A repeat after a change, a retry after a failure, a changed poll result and a
+later passing check are not findings. There is no call-count score and no
+retrieved-path/touched-path overlap. Findings are heuristics, never ground truth.
+
+The trace gains additive per-event fields `parseFailure`, `callKey` and `resultDigest`
+(enum label and HMACs; local only).
+
+The optional reviewer (`BUILDD_TOOL_TRACE_REVIEW=1`, off by default, no model wired by
+default) reads final claims and structured results only. Output is validated against
+the trace; candidates carry claim/call refs, reason, confidence, provenance and status
+`candidate`, and change only via `applyCorrection`, which keeps history.
+
+`bun apps/runner/src/tool-trace-report.ts <file> [--json]` prints a report from a runner
+trace or an imported Claude Code transcript and lists what the source cannot show. No
+Codex desktop importer exists.
+
+Only `ToolEfficiencyAggregate` (counts, timings, failure classes, finding kinds,
+versions, coverage) is sent, inside `modelObservation.toolEfficiency`, stored in
+`model_observations.tool_efficiency` and summarised per configuration in the model comparison.
+
+- AC-12: GIVEN a repeat after an edit, a retry after a failure, or changing poll output WHEN analysed THEN no finding is produced.
+- AC-13: GIVEN a reviewer reply with unknown refs or an ungrounded kind WHEN parsed THEN it is rejected and counted, and kept candidates start as `candidate`.
+- AC-14: GIVEN the aggregate WHEN serialised THEN it holds no pattern, path, call id or claim text.
 
 ## Out of scope
 

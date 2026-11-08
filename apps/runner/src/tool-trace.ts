@@ -102,6 +102,12 @@ export interface TraceEvent {
   /** HMAC of the scoped call; null for categories that are never compared. */
   fingerprint: string | null;
   repeat: { kind: RepeatKind; priorSeq?: number; priorCount?: number; priorOutcome?: TraceOutcome };
+  /** Why a shell command was left `unknown` (e.g. `unbalanced_quote`). An enum label, never text. Additive; readers may ignore it. */
+  parseFailure?: string;
+  /** HMAC of the exact call (tool + input) for non-write calls; compares within one trace only. Additive. */
+  callKey?: string;
+  /** HMAC of the first 8 KB of the result text, when a result was seen. Additive. */
+  resultDigest?: string;
   /** Present only when excerpts are opted into: redacted and length-bounded. */
   excerpt?: string;
 }
@@ -534,13 +540,18 @@ export function commandText(input: unknown): string | null {
 interface Pending {
   callId: string; seq: number; ts: number; tool: string; category: TraceCategory; origin: TraceOrigin;
   shell?: ShellTraceClass; scope: TraceScope | null; fingerprint: string | null; repeat: TraceEvent['repeat'];
-  limit: number | null; excerpt?: string; writePath: string | null; searchFamily?: string; clockAtStart: number;
+  limit: number | null; excerpt?: string; writePath: string | null; searchFamily?: string; clockAtStart: number; callKey?: string;
 }
 
 interface FpEntry { seq: number; clock: number; count: number; outcome?: TraceOutcome }
 
 export interface ToolUseBlock { id?: string; name: string; input?: unknown }
 export interface ToolResultBlock { tool_use_id?: string; content?: unknown; is_error?: boolean; tool_result_meta?: { non_execution_kind?: unknown } | null; exit_code?: number | null }
+
+function digestOf(text: string | null, salt: string): { resultDigest?: string } {
+  if (text === null) return {};
+  return { resultDigest: createHmac('sha256', salt).update(text.slice(0, 8192)).digest('hex').slice(0, 20) };
+}
 
 export class ToolTraceRecorder {
   readonly header: TraceHeader;
@@ -726,6 +737,12 @@ export class ToolTraceRecorder {
       }
     }
 
+    let callKey: string | undefined;
+    if (category !== 'write' && category !== 'agent') {
+      const material = commandText(input) ?? JSON.stringify(input ?? {});
+      callKey = createHmac('sha256', this.header.salt).update(`${tool}\u0001${material.slice(0, 4000)}`).digest('hex').slice(0, 20);
+    }
+
     let excerpt: string | undefined;
     if (this.opts.captureExcerpts && excerptSource) {
       excerpt = redactExcerpt(excerptSource, this.opts.redact).slice(0, this.lim.excerptChars);
@@ -739,6 +756,7 @@ export class ToolTraceRecorder {
     this.pending.set(callId, {
       callId, seq, ts, tool, category, origin, ...(shell ? { shell } : {}), scope, fingerprint, repeat, limit,
       ...(excerpt ? { excerpt } : {}), writePath, ...(searchFamily ? { searchFamily } : {}), clockAtStart: this.clock,
+      ...(callKey ? { callKey } : {}),
     });
   }
 
@@ -792,6 +810,9 @@ export class ToolTraceRecorder {
       resultObserved: !!block, output: derived.output, truncated: derived.truncated, limit: p.limit,
       ...(derived.denial ? { denial: derived.denial } : {}),
       scope: p.scope, fingerprint: p.fingerprint, repeat: p.repeat,
+      ...(p.callKey ? { callKey: p.callKey } : {}),
+      ...(block ? digestOf(resultText(block.content), this.header.salt) : {}),
+      ...(p.shell?.unknownReason ? { parseFailure: p.shell.unknownReason } : {}),
       ...(p.excerpt ? { excerpt: p.excerpt } : {}),
     };
     this.keep(event);
