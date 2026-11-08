@@ -8,8 +8,9 @@
  * verifier in a separate temporary directory. The reference solution is never
  * read or copied by any of this.
  */
-import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   buildPromptV2, buildRunRecordV2, classifyAgentExit, extractJsonAnswer, answerFileOf, gradeRunV2, tamperingV2, treatmentHash, visibleTestPaths,
@@ -18,8 +19,8 @@ import {
 } from '../../packages/core/local-eval-v2-exec';
 import type { CaseFiles, EvidencePosition } from '../../packages/core/local-eval-v2';
 import { redactDeep, redactText, type PlannedRun, type RunPolicy, type Split } from '../../packages/core/local-eval-v2-ops';
-import { changedFiles, fullDiff, sh, tempDir } from './lib';
-import type { AdapterV2, AgentInvocation } from './v2-agent';
+import { changedFiles, fullDiff, sh } from './lib';
+import { cleanEnv, type AdapterV2, type AgentInvocation } from './v2-agent';
 import { exportToDisk, type LoadedCase } from './v2';
 
 export interface ExecDeps {
@@ -32,43 +33,82 @@ export interface ExecDeps {
   verifierTimeoutMs?: number;
 }
 
+/**
+ * A fresh temporary directory outside the repository and the run output
+ * (LOCAL_EVAL_TMP, else the OS temp dir), as its canonical long path. On
+ * Windows the temp dir is often an 8.3 short path (`C:\Users\ADMINI~1\...`);
+ * Claude Code's permission check does not treat that as the working directory
+ * and denies edits despite `acceptEdits`. The canonical path fixes that without
+ * widening any permission.
+ */
+export function v2TempDir(prefix: string): string {
+  const base = process.env.LOCAL_EVAL_TMP ?? tmpdir();
+  mkdirSync(base, { recursive: true });
+  return realpathSync.native(mkdtempSync(join(realpathSync.native(base), prefix)));
+}
+
+/** Keep the tail: the result record is the last line. */
+const STREAM_CAP = 32 * 1024 * 1024;
+const keepTail = (acc: string, d: string) => { const s = acc + d; return s.length > STREAM_CAP ? s.slice(s.length - STREAM_CAP) : s; };
+
+/** Ends the agent and everything it started (its own process group on POSIX, the process tree on Windows). */
+function killTree(pid: number | undefined, signal: NodeJS.Signals) {
+  if (!pid) return;
+  if (process.platform === 'win32') { spawnSync('taskkill', ['/pid', String(pid), '/T', '/F']); return; }
+  try { process.kill(-pid, signal); } catch { try { process.kill(pid, signal); } catch { /* already gone */ } }
+}
+
 export function spawnAgentReal(inv: AgentInvocation, o: { cwd: string; input: string; timeoutMs: number }): Promise<AgentExit> {
   return new Promise((done) => {
     let so = ''; let se = ''; let timedOut = false; let spawnError: string | null = null;
-    const cap = 64 * 1024 * 1024;
-    const p = spawn(inv.cmd, inv.args, { cwd: o.cwd, env: inv.env, stdio: ['pipe', 'pipe', 'pipe'] });
-    p.stdout.on('data', (d) => { if (so.length < cap) so += d; });
-    p.stderr.on('data', (d) => { if (se.length < cap) se += d; });
+    const p = spawn(inv.cmd, inv.args, { cwd: o.cwd, env: inv.env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
+    p.stdout.on('data', (d) => { so = keepTail(so, String(d)); });
+    p.stderr.on('data', (d) => { se = keepTail(se, String(d)); });
     p.stdin.on('error', () => { /* agent closed stdin early: its exit says why */ });
     p.stdin.end(o.input);
-    const t = setTimeout(() => { timedOut = true; p.kill('SIGTERM'); setTimeout(() => p.kill('SIGKILL'), 5000).unref(); }, o.timeoutMs);
+    const t = setTimeout(() => { timedOut = true; killTree(p.pid, 'SIGTERM'); setTimeout(() => killTree(p.pid, 'SIGKILL'), 5000).unref(); }, o.timeoutMs);
     p.on('error', (e) => { spawnError = String(e); });
-    p.on('close', (code) => { clearTimeout(t); done({ code: code ?? (spawnError ? 127 : 143), out: so, err: se, timedOut, spawnError }); });
+    p.on('close', (code) => {
+      clearTimeout(t);
+      // Background processes the agent left behind must not touch the tree while it is graded.
+      killTree(p.pid, 'SIGKILL');
+      done({ code: code ?? (spawnError ? 127 : 143), out: so, err: se, timedOut, spawnError });
+    });
   });
 }
 
-function filesOf(dir: string, rel = ''): string[] {
-  const out: string[] = [];
+/** Files of a tree without Git data or dependencies; symlinks are listed apart and never followed. */
+function walkTree(dir: string, rel = '', out: { files: string[]; links: string[] } = { files: [], links: [] }) {
   for (const n of readdirSync(join(dir, rel))) {
     if (n === '.git' || n === 'node_modules') continue;
     const r = rel ? `${rel}/${n}` : n;
-    if (statSync(join(dir, r)).isDirectory()) out.push(...filesOf(dir, r)); else out.push(r);
+    const st = lstatSync(join(dir, r));
+    if (st.isSymbolicLink()) out.links.push(r);
+    else if (st.isDirectory()) walkTree(dir, r, out);
+    else if (st.isFile()) out.files.push(r);
   }
   return out;
 }
 
-/** Copy a candidate tree without its Git data or dependencies. */
+/** Copy a candidate's regular files only. A symlink could point a grader at material outside the tree, so none is copied. */
 function copyCandidate(from: string, to: string) {
-  for (const f of filesOf(from)) { mkdirSync(dirname(join(to, f)), { recursive: true }); cpSync(join(from, f), join(to, f)); }
+  for (const f of walkTree(from).files) { mkdirSync(dirname(join(to, f)), { recursive: true }); cpSync(join(from, f), join(to, f)); }
+}
+
+/** Environment for verifier and visible-check subprocesses: enough to start Bun and Git on any OS, nothing else. */
+function toolEnv(home: string, extra: Record<string, string> = {}): Record<string, string> {
+  return { ...cleanEnv(process.env, home), ...extra };
 }
 
 /**
  * Run the case's hidden verifier on a candidate directory. The candidate is
  * copied into `<tmp>/candidate`, the verifier into `<tmp>/verifier`; nothing
- * else (no reference, no candidates, no rubric) is written there.
+ * else (no reference, no candidates, no rubric) is written there. Admission
+ * proved the verifier terminates on the reference and the broken candidates,
+ * so a timeout here is the candidate's doing: a failed check, not a harness error.
  */
 export function verifyCandidateDir(c: LoadedCase, candidateDir: string, timeoutMs = 120_000, extraEnv: Record<string, string> = {}): VerifierRun & { stderr: string } {
-  const root = tempDir('eval-grade-');
+  const root = v2TempDir('eval-grade-');
   try {
     const cand = join(root, 'candidate');
     mkdirSync(cand, { recursive: true });
@@ -80,22 +120,22 @@ export function verifyCandidateDir(c: LoadedCase, candidateDir: string, timeoutM
     }
     const entry = c.manifest.files.verifier.find((p) => p.endsWith('.ts'));
     if (!entry) return { ran: false, passed: null, stdout: '', stderr: 'no verifier entry' };
-    const r = sh(process.execPath, ['run', join(vdir, entry.replace(/^verifier\//, ''))], { cwd: root, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...extraEnv, CANDIDATE_DIR: cand }, timeoutMs });
-    if (r.code === 143) return { ran: false, passed: null, stdout: r.out, stderr: `${r.err}\nverifier timed out` };
+    const r = sh(process.execPath, ['run', join(vdir, entry.replace(/^verifier\//, ''))], { cwd: root, env: toolEnv(root, { ...extraEnv, CANDIDATE_DIR: cand }), timeoutMs });
+    if (r.code === 143) return { ran: true, passed: false, stdout: r.out, stderr: `${r.err}\nverifier timed out on the candidate after ${timeoutMs} ms` };
     return { ran: true, passed: r.code === 0, stdout: r.out, stderr: r.err };
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
-/** The snapshot's own tests, with pristine copies restored first so an edited test cannot grade itself. Null when the case ships none. */
+/** The snapshot's own tests, with pristine copies restored first so an edited test cannot grade itself. Null when the case ships none. A timeout is a failed check. */
 export function runVisibleChecks(c: LoadedCase, candidateDir: string, timeoutMs = 120_000): { ran: boolean; passed: boolean | null; output: string } | null {
   const tests = visibleTestPaths(c.manifest);
   if (!tests.length) return null;
-  const root = tempDir('eval-visible-');
+  const root = v2TempDir('eval-visible-');
   try {
     copyCandidate(candidateDir, root);
     for (const t of tests) { mkdirSync(dirname(join(root, t)), { recursive: true }); writeFileSync(join(root, t), c.files[`snapshot/${t}`]); }
-    const r = sh(process.execPath, ['test', ...tests.map((t) => `./${t}`)], { cwd: root, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' }, timeoutMs });
-    return { ran: r.code !== 143, passed: r.code === 143 ? null : r.code === 0, output: `${r.out}\n${r.err}`.slice(-20000) };
+    const r = sh(process.execPath, ['test', ...tests.map((t) => `./${t}`)], { cwd: root, env: toolEnv(root), timeoutMs });
+    return { ran: true, passed: r.code === 0, output: `${r.out}\n${r.err}${r.code === 143 ? `\nvisible checks timed out after ${timeoutMs} ms` : ''}`.slice(-20000) };
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -133,7 +173,7 @@ export async function executeRun(i: ExecuteInput): Promise<CaseResultV2> {
   const toolCalling = adapter.capabilities.toolCalling;
   const prompt = buildPromptV2({ manifest: m, files: c.files, track: policy.track, contextTokens: policy.contextTokens, evidenceSize: i.evidenceSize, position: i.position, toolCalling });
   const execution: Record<string, unknown> = {
-    treatment: { id: HARNESS_TREATMENT_V2.id, hash: treatmentHash(), tools: toolCalling ? HARNESS_TREATMENT_V2.tools : [], reserveTokens: HARNESS_TREATMENT_V2.reserveTokens, compaction: HARNESS_TREATMENT_V2.compaction },
+    treatment: { id: HARNESS_TREATMENT_V2.id, hash: treatmentHash(), tools: toolCalling ? HARNESS_TREATMENT_V2.tools : [], toolSchemaTokens: HARNESS_TREATMENT_V2.toolSchemaTokens, maxOutputTokens: HARNESS_TREATMENT_V2.maxOutputTokens, thinking: HARNESS_TREATMENT_V2.thinking, reserveTokens: HARNESS_TREATMENT_V2.reserveTokens, compaction: HARNESS_TREATMENT_V2.compaction },
     harness: adapter.harness, adapterId: adapter.id, fixture: adapter.harness === 'fixture',
     budgets: { maxTurns: m.resources.maxTurns, toolBudget: m.resources.toolBudget, wallClockSeconds: m.resources.wallClockSeconds },
     caseVersion: m.version, contentHash: m.contentHash,
@@ -160,52 +200,77 @@ export async function executeRun(i: ExecuteInput): Promise<CaseResultV2> {
   if (p.action === 'unsupported') return finish(null, notRun, null, gradeWith({ exit: null, unsupported: (p.reason ?? 'unsupported').replace(/^unsupported: /, '') }), p.reason);
   if (prompt.overflow) return finish(null, notRun, null, gradeWith({ exit: null, overflow: prompt.overflow }), 'prompt does not fit the loaded context; the agent was not started and nothing was truncated');
 
-  const tree = join(runDir, 'tree');
-  const exported = exportToDisk(c, tree, prompt.extraFiles);
-  if (exported.leaks.length) return finish(null, notRun, null, gradeWith({ exit: null, leaks: exported.leaks }), 'agent tree leaked hidden material; the agent was not started');
-  const baseline = sh('git', ['rev-parse', 'HEAD'], { cwd: tree }).out.trim();
-  const configDir = join(runDir, 'claude-config');
-  mkdirSync(configDir, { recursive: true });
-  const inv = adapter.invocation({ prompt: prompt.text, caseId: m.id, configDir, maxTurns: m.resources.maxTurns, toolCalling });
+  // The agent works in a fresh temporary directory: not inside the repository (no case files, no parent
+  // CLAUDE.md) and not inside the run output (no earlier trial's records or grader artifacts nearby).
+  const work = v2TempDir('eval-agent-');
+  const tree = join(work, 'tree');
+  try {
+    const exported = exportToDisk(c, tree, prompt.extraFiles);
+    if (exported.leaks.length) return finish(null, notRun, null, gradeWith({ exit: null, leaks: exported.leaks }), 'agent tree leaked hidden material; the agent was not started');
+    const baseline = sh('git', ['rev-parse', 'HEAD'], { cwd: tree }).out.trim();
+    const configDir = join(work, 'claude-config'); const homeDir = join(work, 'home');
+    mkdirSync(configDir, { recursive: true }); mkdirSync(homeDir, { recursive: true });
+    const inv = adapter.invocation({ prompt: prompt.text, caseId: m.id, configDir, homeDir, maxTurns: m.resources.maxTurns, toolCalling });
 
-  let peak: number | null = null; let samples = 0;
-  const sampler = adapter.startsModel ? setInterval(() => { const v = deps.sampleVramMb(); if (v !== null) { samples++; peak = Math.max(peak ?? 0, v); } }, 2000) : null;
-  execution.agentStarted = true;
-  const raw = await deps.spawnAgent(inv, { cwd: tree, input: prompt.text, timeoutMs: m.resources.wallClockSeconds * 1000 });
-  if (sampler) clearInterval(sampler);
-  writeFileSync(join(runDir, 'agent.stdout.txt'), redactText(raw.out));
-  writeFileSync(join(runDir, 'agent.stderr.txt'), redactText(raw.err));
-  const exit = classifyAgentExit(raw);
-  execution.exit = { kind: exit.kind, note: exit.note, code: raw.code, timedOut: raw.timedOut, toolCalls: exit.toolCalls };
-  const vram = { peak, samples: peak === null ? null : samples };
+    let peak: number | null = null; let samples = 0;
+    const sampler = adapter.startsModel ? setInterval(() => { const v = deps.sampleVramMb(); if (v !== null) { samples++; peak = Math.max(peak ?? 0, v); } }, 2000) : null;
+    execution.agentStarted = true;
+    const raw = await deps.spawnAgent(inv, { cwd: tree, input: prompt.text, timeoutMs: m.resources.wallClockSeconds * 1000 }).finally(() => { if (sampler) clearInterval(sampler); });
+    writeFileSync(join(runDir, 'agent.stdout.txt'), redactText(raw.out));
+    writeFileSync(join(runDir, 'agent.stderr.txt'), redactText(raw.err));
+    const exit = classifyAgentExit(raw);
+    execution.exit = { kind: exit.kind, note: exit.note, code: raw.code, timedOut: raw.timedOut, toolCalls: exit.toolCalls };
+    const vram = { peak, samples: peak === null ? null : samples };
+    try {
+      const answerFile = answerFileOf(m);
+      if (prompt.answerChannel === 'final-message' && answerFile && (exit.kind === 'completed' || exit.kind === 'budget_exhausted')) {
+        const j = extractJsonAnswer(exit.resultText);
+        if (j && !existsSync(join(tree, answerFile))) writeFileSync(join(tree, answerFile), j);
+      }
+      const tampering: string[] = [];
+      try {
+        const changed = changedFiles({ dir: tree, baseline });
+        writeFileSync(join(runDir, 'agent.diff'), redactText(fullDiff({ dir: tree, baseline })));
+        tampering.push(...tamperingV2(changed, m));
+        execution.changedFiles = changed.map((f) => `${f.status} ${f.path}`);
+      } catch (e) {
+        tampering.push(`the agent damaged the baseline Git data, so its changes cannot be audited (${String((e as Error).message).slice(0, 120)})`);
+      }
+      // A symlink in the result could point a grader at material outside the tree.
+      for (const l of walkTree(tree).links) tampering.push(`symlink ${l} in the result`);
+      if (exit.kind !== 'completed' && exit.kind !== 'budget_exhausted') return finish(exit, notRun, null, gradeWith({ exit, tampering }), exit.note, vram);
 
-  const answerFile = answerFileOf(m);
-  if (prompt.answerChannel === 'final-message' && answerFile && (exit.kind === 'completed' || exit.kind === 'budget_exhausted')) {
-    const j = extractJsonAnswer(exit.resultText);
-    if (j && !existsSync(join(tree, answerFile))) writeFileSync(join(tree, answerFile), j);
+      const verifier = verifyCandidateDir(c, tree, deps.verifierTimeoutMs ?? 120_000);
+      const visible = runVisibleChecks(c, tree, deps.verifierTimeoutMs ?? 120_000);
+      writeFileSync(join(runDir, 'grading.txt'), redactText(`# hidden verifier (${verifier.ran ? (verifier.passed ? 'pass' : 'fail') : 'did not run'})\n${verifier.stdout}\n${verifier.stderr}\n# visible checks\n${visible ? visible.output : '(case ships none)'}\n`));
+      const answer = answerFile && existsSync(join(tree, answerFile)) && lstatSync(join(tree, answerFile)).isFile() ? readFileSync(join(tree, answerFile), 'utf8') : null;
+      const vis = visible ? { ran: visible.ran, passed: visible.passed } : null;
+      return finish(exit, verifier, vis, gradeWith({ exit, tampering, verifier, visible: vis, answer }), exit.note, vram);
+    } catch (e) {
+      // Recorded, so a rerun does not start the agent again for this trial.
+      const ex: ExitClass = { ...exit, kind: 'harness', note: `grading failed: ${String((e as Error).message).slice(0, 200)}` };
+      return finish(ex, notRun, null, gradeWith({ exit: ex }), ex.note, vram);
+    }
+  } finally {
+    // Keep the final tree (regular files and Git data; links stay links) for review and regrade, then drop the workspace.
+    try { if (existsSync(tree)) cpSync(tree, join(runDir, 'tree'), { recursive: true, verbatimSymlinks: true }); } catch { /* retention is best effort */ }
+    rmSync(work, { recursive: true, force: true });
   }
-  const changed = changedFiles({ dir: tree, baseline });
-  writeFileSync(join(runDir, 'agent.diff'), redactText(fullDiff({ dir: tree, baseline })));
-  const tampering = tamperingV2(changed, m);
-  execution.changedFiles = changed.map((f) => `${f.status} ${f.path}`);
-  if (exit.kind !== 'completed' && exit.kind !== 'budget_exhausted') return finish(exit, notRun, null, gradeWith({ exit, tampering }), exit.note, vram);
-
-  const verifier = verifyCandidateDir(c, tree, deps.verifierTimeoutMs ?? 120_000);
-  const visible = runVisibleChecks(c, tree, deps.verifierTimeoutMs ?? 120_000);
-  writeFileSync(join(runDir, 'grading.txt'), redactText(`# hidden verifier (${verifier.ran ? (verifier.passed ? 'pass' : 'fail') : 'did not run'})\n${verifier.stdout}\n${verifier.stderr}\n# visible checks\n${visible ? visible.output : '(case ships none)'}\n`));
-  const answer = answerFile && existsSync(join(tree, answerFile)) ? readFileSync(join(tree, answerFile), 'utf8') : null;
-  return finish(exit, verifier, visible ? { ran: visible.ran, passed: visible.passed } : null, gradeWith({ exit, tampering, verifier, visible: visible ? { ran: visible.ran, passed: visible.passed } : null, answer }), exit.note, vram);
 }
 
 /** Re-run the hidden verifier on each stored final tree and compare with the recorded verdict. */
-export function reverifyRuns(dir: string, caseOf: (id: string) => LoadedCase | null): { runId: string; recorded: boolean | null; now: boolean | null; changed: boolean }[] {
-  const out: { runId: string; recorded: boolean | null; now: boolean | null; changed: boolean }[] = [];
+export interface Reverify { runId: string; recorded: boolean | null; now: boolean | null; changed: boolean; skipped?: string }
+export function reverifyRuns(dir: string, caseOf: (id: string) => LoadedCase | null): Reverify[] {
+  const out: Reverify[] = [];
   for (const d of readdirSync(dir).map((n) => join(dir, n)).filter((x) => statSync(x).isDirectory())) {
     const recPath = join(d, 'run.json'); const tree = join(d, 'tree');
     if (!existsSync(recPath) || !existsSync(tree)) continue;
     const rec = JSON.parse(readFileSync(recPath, 'utf8'));
     if (!rec.hidden?.ran) continue;
     const c = caseOf(rec.caseId); if (!c) continue;
+    // Regrading against edited case bytes would compare different cases.
+    const ex = existsSync(join(d, 'execution.json')) ? JSON.parse(readFileSync(join(d, 'execution.json'), 'utf8')) : null;
+    if (ex?.contentHash && ex.contentHash !== c.manifest.contentHash) { out.push({ runId: rec.runId, recorded: rec.hidden.passed, now: null, changed: false, skipped: `case ${c.manifest.id} is now ${c.manifest.contentHash.slice(0, 12)}, the run used ${String(ex.contentHash).slice(0, 12)}` }); continue; }
     const v = verifyCandidateDir(c, tree);
     out.push({ runId: rec.runId, recorded: rec.hidden.passed, now: v.passed, changed: v.passed !== rec.hidden.passed });
   }

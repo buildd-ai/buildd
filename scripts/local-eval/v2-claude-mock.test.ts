@@ -10,7 +10,7 @@
  * how a real model behaves. Skipped when `claude` is not on PATH.
  */
 import { describe, it, expect } from 'bun:test';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { computeContentHash, namedPaths, GPU_WINDOW_OPENS_AT, type CaseManifestV2 } from '../../packages/core/local-eval-v2';
 import { HARNESS_TREATMENT_V2 } from '../../packages/core/local-eval-v2-exec';
@@ -53,7 +53,10 @@ function sse(events: object[]): Response {
 describe.skipIf(!haveClaude)('v2 executor with the real Claude Code CLI against a mock endpoint (CPU only)', () => {
   it('delivers the treatment, runs the tool call in the tree and grades it', async () => {
     const root = suite(); const out = join(root, 'runs');
-    const tree = join(out, 'v2.find-mock.mock_1@16384.single-context.t1', 'tree');
+    // The executor puts the agent in a fresh temporary directory; point that at a place the mock can see.
+    const work = join(root, 'agent-tmp'); mkdirSync(work, { recursive: true });
+    const prevTmp = process.env.LOCAL_EVAL_TMP; process.env.LOCAL_EVAL_TMP = work;
+    const agentTree = () => { const d = readdirSync(work).find((n) => n.startsWith('eval-agent-')); return d ? join(work, d, 'tree') : 'missing'; };
     const requests: any[] = [];
     const server = Bun.serve({
       hostname: '127.0.0.1', port: 0,
@@ -67,7 +70,7 @@ describe.skipIf(!haveClaude)('v2 executor with the real Claude Code CLI against 
         if (!answered) {
           return sse([start,
             { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: 'Write', input: {} } },
-            { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: join(tree, 'answer.json'), content: '{"file":"src/live.ts"}\n' }) } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: join(agentTree(), 'answer.json'), content: '{"file":"src/live.ts"}\n' }) } },
             { type: 'content_block_stop', index: 0 },
             { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 20 } },
             { type: 'message_stop' }]);
@@ -85,7 +88,7 @@ describe.skipIf(!haveClaude)('v2 executor with the real Claude Code CLI against 
       const env = {
         minFreeMb: 1, readGpu: () => [{ usedMb: 0, totalMb: 24000 }], loaded: async () => [] as string[], now: () => new Date(Date.parse(GPU_WINDOW_OPENS_AT) + 60_000),
         ollama: { tagInfo: async () => ({ digest: 'sha256:mock', quantization: null }), loadModel: async () => undefined, unloadModel: async () => undefined },
-        harnessVersion: () => sh('claude', ['--version']).out.trim() || null,
+        harnessVersion: () => sh('claude', ['--version']).out.trim() || null, claudeBin: Bun.which('claude') ?? 'claude',
       };
       const opt = (n: string) => ({ root, model: 'mock:1', harness: 'claude-code', context: '16384', case: 'find-mock', trials: '1', out, origin } as Record<string, string>)[n];
       const code = await runV2('run', opt, () => false, env);
@@ -97,14 +100,18 @@ describe.skipIf(!haveClaude)('v2 executor with the real Claude Code CLI against 
       expect(system).toContain(HARNESS_TREATMENT_V2.systemPrompt);
       expect(first.tools.map((t: any) => t.name).sort()).toEqual([...HARNESS_TREATMENT_V2.tools].sort());
       expect(JSON.stringify(first.messages)).toContain(SENTINEL);
+      // Output reservation and thinking are what the treatment declares.
+      expect(first.max_tokens).toBe(HARNESS_TREATMENT_V2.maxOutputTokens);
+      expect(first.thinking?.type === 'enabled').toBe(false);
       const rec = JSON.parse(readFileSync(join(out, 'v2.find-mock.mock_1@16384.single-context.t1', 'run.json'), 'utf8'));
       expect(rec).toMatchObject({ result: 'pass', hidden: { ran: true, passed: true }, harness: { name: 'claude-code' } });
       const ex = JSON.parse(readFileSync(join(out, 'v2.find-mock.mock_1@16384.single-context.t1', 'execution.json'), 'utf8'));
       expect(ex.exit.kind).toBe('completed');
       expect(ex.exit.toolCalls).toBe(1);
       // Size of the first request, for the record (characters of JSON, not tokens).
-      process.stdout.write(`mock: ${requests.length} request(s); first main request ${JSON.stringify(first).length} JSON chars, system ${system.length} chars, ${first.tools.length} tools; harness ${rec.harness.version}\n`);
+      process.stdout.write(`mock: ${requests.length} request(s); first main request ${JSON.stringify(first).length} JSON chars, system ${system.length} chars, ${first.tools.length} tools, max_tokens ${first.max_tokens}, thinking ${JSON.stringify(first.thinking ?? null)}; harness ${rec.harness.version}\n`);
     } finally {
+      if (prevTmp === undefined) delete process.env.LOCAL_EVAL_TMP; else process.env.LOCAL_EVAL_TMP = prevTmp;
       server.stop(true);
       rmSync(root, { recursive: true, force: true });
     }

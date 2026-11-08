@@ -44,7 +44,9 @@ async function main() {
   if (opt('suite') === 'v2') {
     process.exit(await runV2(cmd, opt, has, {
       minFreeMb: MIN_FREE_MB, readGpu: () => readGpu(), loaded: async () => (await loadedModels(opt('origin') ?? 'http://127.0.0.1:11435')).map((m) => m.name),
-      ollama: { tagInfo, loadModel, unloadModel }, harnessVersion: () => sh('claude', ['--version']).out.trim() || null, gpuName,
+      ollama: { tagInfo, loadModel, unloadModel }, gpuName,
+      // The version of the same binary the v2 adapter starts (LOCAL_EVAL_CLAUDE_BIN or claude on PATH), so Windows records it too.
+      harnessVersion: () => { const b = process.env.LOCAL_EVAL_CLAUDE_BIN || Bun.which('claude'); return b && !/\.(cmd|bat)$/i.test(b) ? sh(b, ['--version']).out.trim() || null : null; },
     }));
   }
   const suite = loadSuite(SUITE_PATH);

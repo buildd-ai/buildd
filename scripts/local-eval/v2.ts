@@ -204,7 +204,7 @@ export function loadModelsV2(root: string): ModelsV2 {
 }
 
 /** Raw agent output kept for regrade and review; deleted after the retention period. The run record is not in this list. */
-const RAW_ARTIFACTS = ['agent.stdout.txt', 'agent.stderr.txt', 'agent.diff', 'grading.txt', 'prompt.txt', 'claude-config', 'tree', 'trajectory.json'];
+const RAW_ARTIFACTS = ['agent.stdout.txt', 'agent.stderr.txt', 'agent.diff', 'grading.txt', 'prompt.txt', 'claude-config', 'tree', 'trajectory.json', 'grader-artifacts.json'];
 
 export function runDirs(dir: string): string[] {
   return readdirSync(dir).map((d) => join(dir, d)).filter((p) => statSync(p).isDirectory());
@@ -257,6 +257,8 @@ export interface V2Env {
   };
   harnessVersion?: () => string | null;
   gpuName?: () => string | null;
+  /** The Claude Code binary; default: LOCAL_EVAL_CLAUDE_BIN, else `claude` on PATH (an `.exe` on Windows). */
+  claudeBin?: string;
   exec?: Partial<import('./v2-exec').ExecDeps>;
 }
 
@@ -369,6 +371,7 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
       const sealed = loadSealedContent(root, opt('sealed-root')).cases;
       const { reverifyRuns } = await import('./v2-exec');
       for (const r of reverifyRuns(d, (id) => cases[id] ?? sealed[id] ?? null)) {
+        if (r.skipped) { console.log(`${r.runId} verifier-v1: not regraded (${r.skipped})`); continue; }
         n++; if (r.changed) changed++;
         console.log(`${r.runId} verifier-v1: ${r.now ? 'pass' : 'fail'}${r.changed ? ' (CHANGED from recorded)' : ''}`);
       }
@@ -407,6 +410,8 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     if (policy.track !== 'single-context' && policy.track !== 'tool-retrieval') perr.push('--track must be single-context or tool-retrieval');
     if (opt('preset') && opt('preset') !== 'smoke') perr.push('--preset must be smoke');
     if (harness === 'fixture' && !opt('fixture-dir')) perr.push('--harness fixture needs --fixture-dir <dir> (operator-authored outputs per case id)');
+    // A fixture run must never share a run id with a model run.
+    if (harness === 'fixture' && opt('model') && opt('model') !== 'fixture') perr.push('--harness fixture runs no model: leave out --model');
     const position = opt('position') as EvidencePosition | undefined;
     if (position && !(POSITIONS as readonly string[]).includes(position)) perr.push(`--position must be one of ${POSITIONS.join(', ')}`);
     const evidenceSize = opt('evidence-size') ? Number(opt('evidence-size')) : undefined;
@@ -426,10 +431,11 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     const p = policy as RunPolicy;
     const toolCalling = !has('no-tool-calling');
     const origin = opt('origin') ?? 'http://127.0.0.1:11435';
-    const { claudeAdapter, fixtureAdapter } = await import('./v2-agent');
+    const { claudeAdapter, fixtureAdapter, resolveClaudeBin } = await import('./v2-agent');
+    const bin = harness === 'fixture' ? { cmd: null, reason: null } : resolveClaudeBin();
     const adapter = harness === 'fixture'
       ? fixtureAdapter({ fixtureDir: resolve(opt('fixture-dir')!), contextTokens: p.contextTokens, toolCalling, baseEnv: process.env })
-      : claudeAdapter({ origin, tag: p.model, contextTokens: p.contextTokens, toolCalling, systemPrompt: !has('no-system-prompt'), structuredOutput: !has('no-structured-output'), baseEnv: process.env });
+      : claudeAdapter({ origin, tag: p.model, contextTokens: p.contextTokens, toolCalling, systemPrompt: !has('no-system-prompt'), structuredOutput: !has('no-structured-output'), baseEnv: process.env, cmd: env.claudeBin ?? bin.cmd ?? 'claude' });
     // Tool calling is needed everywhere except a single-context long-context case, whose answer can come back as the final message.
     const needs = Object.fromEntries(selected.filter((r) => all[r.id]).map((r) => [r.id, { toolCalling: p.track === 'tool-retrieval' || r.category !== 'long-context-requirements', systemPrompt: false, structuredOutput: false, contextTokens: 0 }]));
     let modelVramMb: number | null = null;
@@ -449,7 +455,15 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     }
     const gpus = adapter.startsModel ? env.readGpu() : null; const loaded = adapter.startsModel ? await env.loaded().catch(() => []) : [];
     const now = env.now?.() ?? new Date();
-    const plan = planRuns({ cases: selected, needs, policy: p, adapter, now, gpus, loadedModels: loaded, startsModel: adapter.startsModel, modelVramMb });
+    // Run ids name everything that changes what the agent sees: no-tools runs and, for long-context cases, the evidence set and position.
+    const { defaultEvidenceSize } = await import('../../packages/core/local-eval-v2-exec');
+    const variant = (id: string) => {
+      const c = all[id];
+      const ev = c?.manifest.category === 'long-context-requirements' ? `.e${evidenceSize ?? defaultEvidenceSize(c.manifest.longContext?.sizes ?? [8192], p.contextTokens)}-${position ?? 'dispersed'}` : '';
+      return `${toolCalling ? '' : '.notools'}${ev}`;
+    };
+    const plan = planRuns({ cases: selected, needs, policy: p, adapter, now, gpus, loadedModels: loaded, startsModel: adapter.startsModel, modelVramMb })
+      .map((r) => ({ ...r, runId: r.runId.replace(/\.t(\d+)$/, `${variant(r.caseId)}.t$1`), configId: toolCalling ? r.configId : `${r.configId}+notools` }));
     if (adapter.startsModel) console.log(`model VRAM figure ${modelVramMb} MiB (from ${vramSource}); each case's own estimate raises it when larger`);
     else console.log('fixture adapter: no model is loaded; outputs are operator-authored fixtures, NOT model results');
     for (const r of plan) console.log(`${r.runId}\t${r.split}\t${r.action}${r.reason ? `\t${r.reason}` : ''}`);
@@ -461,6 +475,9 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     if (guardRefusals.length) { console.error('no model started: the guard refused at least one run (see above)'); return 3; }
     const out = opt('out');
     if (!out) { console.error('--out <dir> is required to execute runs'); return 2; }
+    if (adapter.startsModel && !env.claudeBin && !bin.cmd) { console.error(`no agent started: ${bin.reason}`); return 2; }
+    const pending = plan.filter((r) => r.action !== 'refused' && !existsSync(join(resolve(out), r.runId, 'run.json')));
+    if (!pending.length) { console.log('every planned run is already recorded; nothing to start'); return 0; }
     mkdirSync(resolve(out), { recursive: true });
     const { executeRun, spawnAgentReal } = await import('./v2-exec');
     const log = (l: string) => console.log(l);
@@ -481,10 +498,23 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
       const again = planRuns({ cases: selected.filter((r) => all[r.id]), needs, policy: { ...p, trials: 1 }, adapter, now: env.now?.() ?? new Date(), gpus: env.readGpu(), loadedModels: await env.loaded().catch(() => []), startsModel: true, modelVramMb });
       const refusedNow = again.filter((r) => r.action === 'refused');
       if (refusedNow.length) { console.error(`no model started: ${refusedNow[0].reason}`); return 3; }
-      try { await ollama.loadModel(origin, p.model, p.contextTokens); } catch (e) { console.error(`model not loaded: ${(e as Error).message}`); await ollama.unloadModel(origin, p.model).catch(() => {}); return 3; }
     }
+    const gpuMem = adapter.startsModel ? env.readGpu() : null;
+    const gpu = adapter.startsModel ? env.gpuName?.() ?? null : null;
+    const runtime = { os: process.platform, arch: process.arch, ...(gpu ? { gpu } : {}), ...(gpuMem?.length ? { gpuMemoryMb: gpuMem.reduce((a, g) => a + g.totalMb, 0) } : {}) };
+    const harnessVersion = env.harnessVersion?.() ?? null;
     const results: CaseResultV2[] = [];
-    const runtime = { os: process.platform, arch: process.arch, ...(env.gpuName?.() ? { gpu: env.gpuName!()! } : {}) };
+    // Unload on Ctrl-C or a kill too, not only on a normal finish: a loaded model would hold the GPU for keep_alive.
+    let stopping = false;
+    const onSignal = (sig: NodeJS.Signals) => {
+      if (stopping) return; stopping = true;
+      console.error(`${sig}: stopping the batch${adapter.startsModel ? ' and unloading the model' : ''}`);
+      void (adapter.startsModel && ollama ? ollama.unloadModel(origin, p.model).catch(() => {}) : Promise.resolve()).finally(() => process.exit(130));
+    };
+    process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal);
+    if (adapter.startsModel && ollama) {
+      try { await ollama.loadModel(origin, p.model, p.contextTokens); } catch (e) { console.error(`model not loaded: ${(e as Error).message}`); await ollama.unloadModel(origin, p.model).catch(() => {}); process.off('SIGINT', onSignal); process.off('SIGTERM', onSignal); return 3; }
+    }
     try {
       for (const r of plan) {
         if (adapter.startsModel && r.action === 'run' && ollama) {
@@ -493,13 +523,14 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
         }
         const res = await executeRun({
           caseOf: (id) => (all[id] ? { loaded: all[id], split: rows.find((x) => x.id === id)!.split } : null),
-          planned: r, policy: p, adapter, out: resolve(out), model, harnessVersion: env.harnessVersion?.() ?? null, runtime, evidenceSize, position, deps,
+          planned: r, policy: p, adapter, out: resolve(out), model, harnessVersion, runtime, evidenceSize, position, deps,
         });
         results.push(res);
         console.log(`${res.runId}\t${res.outcome}${res.failureClass ? `\t${res.failureClass}` : ''}\t${res.notes.join('; ')}`);
       }
     } finally {
-      if (adapter.startsModel && ollama) await ollama.unloadModel(origin, p.model).catch((e) => console.error(`unload failed: ${e}`));
+      process.off('SIGINT', onSignal); process.off('SIGTERM', onSignal);
+      if (adapter.startsModel && ollama && !stopping) await ollama.unloadModel(origin, p.model).catch((e) => console.error(`unload failed: ${e}`));
     }
     const count = (f: (x: CaseResultV2) => boolean) => results.filter(f).length;
     console.log(`${results.length} run(s): ${count((x) => x.outcome === 'pass')} pass, ${count((x) => x.failureClass === 'model' && x.outcome !== 'pass')} model fail/invalid, ${count((x) => x.failureClass === 'harness')} harness error, ${count((x) => x.failureClass === 'infra')} infra error, ${count((x) => x.outcome === 'unscored')} unscored, ${count((x) => x.outcome === 'skipped')} not run${adapter.harness === 'fixture' ? ' (fixture: NOT a model result)' : ''}`);

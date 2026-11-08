@@ -23,6 +23,10 @@ describe('harness treatment', () => {
     expect(treatmentHash({ ...HARNESS_TREATMENT_V2, systemPrompt: 'x' })).not.toBe(treatmentHash());
     // Small enough that a 16K window is not spent on the harness.
     expect(HARNESS_TREATMENT_V2.systemPrompt.length).toBeLessThan(800);
+    // Output and tool schemas are both reserved; thinking is off so no hidden tokens spend the window.
+    expect(HARNESS_TREATMENT_V2.reserveTokens).toBe(HARNESS_TREATMENT_V2.toolSchemaTokens + HARNESS_TREATMENT_V2.maxOutputTokens);
+    expect(HARNESS_TREATMENT_V2.thinking).toBe('disabled');
+    expect(treatmentHash({ ...HARNESS_TREATMENT_V2, maxOutputTokens: 4096 })).not.toBe(treatmentHash());
   });
 });
 
@@ -77,6 +81,7 @@ describe('classifyAgentExit', () => {
   });
   it('separates budget exhaustion (model) from harness, server and context failures', () => {
     expect(x({ timedOut: true, code: 143 }).kind).toBe('budget_exhausted');
+    expect(x({ timedOut: true, code: 143, err: 'API Error: Connection error (ECONNREFUSED), retrying' }).kind).toBe('infra');
     expect(x({ out: res({ subtype: 'error_max_turns', is_error: true }) }).kind).toBe('budget_exhausted');
     expect(x({ spawnError: 'ENOENT', code: 127 }).kind).toBe('harness');
     expect(x({ code: 1, err: 'crash' }).kind).toBe('harness');

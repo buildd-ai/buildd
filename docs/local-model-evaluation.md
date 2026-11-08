@@ -151,12 +151,24 @@ unavailable and never scored.
 
 v2 runs use a fixed treatment, `claude-code-minimal-v1` (`HARNESS_TREATMENT_V2`): a short replacement system prompt,
 exactly the tools Read, Edit, Write, Glob, Grep and Bash, `--strict-mcp-config` with an empty MCP config,
-`--setting-sources ''`, `stream-json` output, an empty per-run config dir and the prompt on stdin. Claude Code's default
-system prompt and tool set do not fit a 16K window; this one leaves room. A prompt whose estimate (including a 6144-token
-allowance for tool schemas and the reply) does not fit `--context` is recorded `overflow` and the agent is not started.
-At `--context 8192` the long-context cases therefore record overflow: their smallest evidence set is 8K. What the
-harness cannot measure (schema tokens, Ollama truncation, the model tokenizer, mid-run tool budget) is listed in each
-run's `execution.json` as unknown.
+`--setting-sources ''`, `stream-json` output, extended thinking off (`MAX_THINKING_TOKENS=0`), a 2048-token output cap
+per request (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`), and the prompt on stdin. Claude Code's default system prompt and tool set
+do not fit a 16K window; this one leaves room. The fit check holds back 6144 tokens for the tool schemas (measured once
+against a mock endpoint: about 25.6K characters of JSON) plus the 2048-token output cap. A prompt that does not fit
+`--context` is recorded `overflow` and the agent is not started. Consequence, by arithmetic and not by a model run: the
+long-context cases' smallest evidence set (8K) does not fit a 16K window on the single-context track, so at 16K run
+them with `--track tool-retrieval`, or use `--context 32768` for single-context. What the harness cannot measure
+(schema tokens, Ollama truncation, the model tokenizer, mid-run tool budget) is listed in each run's `execution.json`.
+
+The agent works in a fresh temporary directory (canonical long path, outside the repository and outside `--out`) with
+an empty per-run `HOME` and Claude config dir; its final tree is copied to `<out>/<runId>/tree` afterwards. This is
+isolation by location, not a sandbox: the agent's Bash tool is not prevented from reading the disk by absolute path or
+from using the network.
+
+Windows: set `LOCAL_EVAL_CLAUDE_BIN` to `claude.exe` if `claude` on PATH is an npm `claude.cmd` shim (a shim needs a
+shell, which would re-split the system prompt, so the run refuses it). Native Ollama listens on
+`--origin http://127.0.0.1:11434` by default. Temporary paths are canonicalised because an 8.3 short path
+(`ADMINI~1`) makes Claude Code deny edits despite `acceptEdits`; nothing widens permissions.
 
 ### Commands (all `bun run scripts/local-eval/cli.ts <command> --suite v2 ...`)
 

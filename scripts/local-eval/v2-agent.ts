@@ -18,7 +18,13 @@ import type { ModelAdapter } from '../../packages/core/local-eval-v2';
 
 export interface AgentInvocation { cmd: string; args: string[]; env: Record<string, string> }
 
-export interface InvocationContext { prompt: string; caseId: string; configDir: string; maxTurns: number; toolCalling: boolean }
+export interface InvocationContext {
+  prompt: string; caseId: string; maxTurns: number; toolCalling: boolean;
+  /** Empty per-run Claude config dir, outside the agent tree. */
+  configDir: string;
+  /** Empty per-run home dir: the operator's ~/.claude, ~/.ssh and dotfiles are not reachable through HOME. */
+  homeDir: string;
+}
 
 export interface AdapterV2 extends ModelAdapter {
   harness: 'claude-code' | 'fixture';
@@ -27,17 +33,34 @@ export interface AdapterV2 extends ModelAdapter {
   invocation(ctx: InvocationContext): AgentInvocation;
 }
 
-const KEEP_ENV = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'BUN_INSTALL', 'SystemRoot', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP'];
+/** Variables a subprocess needs to start at all, on Linux, macOS and Windows. Nothing that carries a credential. */
+const KEEP_ENV = ['PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TMPDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'BUN_INSTALL'];
 
-function cleanEnv(base: Record<string, string | undefined>): Record<string, string> {
+export function cleanEnv(base: Record<string, string | undefined>, homeDir?: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const k of KEEP_ENV) { const v = base[k]; if (v) env[k] = v; }
+  const home = homeDir ?? base.HOME ?? base.USERPROFILE;
+  if (home) { env.HOME = home; if (process.platform === 'win32') { env.USERPROFILE = home; env.APPDATA = join(home, 'AppData', 'Roaming'); env.LOCALAPPDATA = join(home, 'AppData', 'Local'); } }
   return env;
 }
 
-export function claudeInvocationV2(o: { origin: string; tag: string; contextTokens: number; maxTurns: number; configDir: string; toolCalling: boolean; baseEnv: Record<string, string | undefined>; cmd?: string }): AgentInvocation {
+/**
+ * The Claude Code binary to start. `LOCAL_EVAL_CLAUDE_BIN` wins. On Windows a
+ * bare `claude` usually resolves to `claude.cmd`, which cannot be started
+ * without a shell (and a shell would re-split the system prompt), so an
+ * explicit `.exe` is required there; a `.cmd` is refused with that reason.
+ */
+export function resolveClaudeBin(env: Record<string, string | undefined> = process.env, which: (c: string) => string | null = (c) => Bun.which(c)): { cmd: string | null; reason: string | null } {
+  const explicit = env.LOCAL_EVAL_CLAUDE_BIN;
+  const cmd = explicit || which('claude');
+  if (!cmd) return { cmd: null, reason: 'claude not found on PATH (set LOCAL_EVAL_CLAUDE_BIN)' };
+  if (/\.(cmd|bat)$/i.test(cmd)) return { cmd: null, reason: `${cmd} is a shell script; set LOCAL_EVAL_CLAUDE_BIN to the claude executable (claude.exe) so arguments reach it unchanged` };
+  return { cmd, reason: null };
+}
+
+export function claudeInvocationV2(o: { origin: string; tag: string; contextTokens: number; maxTurns: number; configDir: string; homeDir: string; toolCalling: boolean; baseEnv: Record<string, string | undefined>; cmd?: string }): AgentInvocation {
   const t = HARNESS_TREATMENT_V2;
-  const env = cleanEnv(o.baseEnv);
+  const env = cleanEnv(o.baseEnv, o.homeDir);
   Object.assign(env, {
     CLAUDE_CONFIG_DIR: o.configDir,
     ANTHROPIC_BASE_URL: o.origin,
@@ -50,6 +73,8 @@ export function claudeInvocationV2(o: { origin: string; tag: string; contextToke
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(o.contextTokens),
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DISABLE_AUTOUPDATER: '1',
+    MAX_THINKING_TOKENS: '0',
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(t.maxOutputTokens),
   });
   const tools = o.toolCalling ? t.tools.join(',') : '';
   return {
@@ -72,7 +97,7 @@ export function claudeAdapter(o: { origin: string; tag: string; contextTokens: n
   return {
     id: `claude-code:${o.tag}`, harness: 'claude-code', startsModel: true,
     capabilities: { toolCalling: o.toolCalling, systemPrompt: o.systemPrompt, structuredOutput: o.structuredOutput, contextTokens: o.contextTokens },
-    invocation: (c) => claudeInvocationV2({ origin: o.origin, tag: o.tag, contextTokens: o.contextTokens, maxTurns: c.maxTurns, configDir: c.configDir, toolCalling: c.toolCalling, baseEnv: o.baseEnv, cmd: o.cmd }),
+    invocation: (c) => claudeInvocationV2({ origin: o.origin, tag: o.tag, contextTokens: o.contextTokens, maxTurns: c.maxTurns, configDir: c.configDir, homeDir: c.homeDir, toolCalling: c.toolCalling, baseEnv: o.baseEnv, cmd: o.cmd }),
   };
 }
 
@@ -85,7 +110,7 @@ export function fixtureAdapter(o: { fixtureDir: string; contextTokens: number; t
     invocation: (c) => ({
       cmd: process.execPath,
       args: ['run', FIXTURE_AGENT],
-      env: { ...cleanEnv(o.baseEnv), FIXTURE_DIR: join(resolve(o.fixtureDir), c.caseId), FIXTURE_MAX_TURNS: String(c.maxTurns) },
+      env: { ...cleanEnv(o.baseEnv, c.homeDir), FIXTURE_DIR: join(resolve(o.fixtureDir), c.caseId), FIXTURE_MAX_TURNS: String(c.maxTurns) },
     }),
   };
 }

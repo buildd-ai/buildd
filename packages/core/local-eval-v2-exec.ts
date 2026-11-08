@@ -43,20 +43,25 @@ export const HARNESS_TREATMENT_V2 = {
   // the replaced system prompt, exactly these tools, no MCP servers, no settings sources.
   flags: ['--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits'],
   /**
-   * Tokens held back for tool schemas and the reply when checking that a
-   * prompt fits. A declared allowance, not a tokenizer count: with Claude Code
+   * Tokens held back for the six tool schemas when checking that a prompt
+   * fits. A declared allowance, not a tokenizer count: with Claude Code
    * 2.1.310 the first request of this treatment against a mock endpoint was
-   * about 25.6K characters of JSON, almost all of it the six tool schemas
-   * (about 6K tokens at chars/4), so 6144 covers the schemas and leaves the
-   * reply to the remaining window.
+   * about 25.6K characters of JSON, almost all of it the tool schemas (about
+   * 6K tokens at chars/4).
    */
-  reserveTokens: 6144,
+  toolSchemaTokens: 6144,
+  /** Per-request output cap (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`), reserved in the fit check. */
+  maxOutputTokens: 2048,
+  /** Extended thinking is off (`MAX_THINKING_TOKENS=0`): a thinking model's hidden tokens would otherwise eat the window unreported. */
+  thinking: 'disabled' as const,
+  /** Everything the fit check holds back besides the system prompt and the prompt. */
+  get reserveTokens(): number { return this.toolSchemaTokens + this.maxOutputTokens; },
   /** Compaction is the harness's own mechanism at the loaded window (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`). */
   compaction: 'claude-code auto-compact at the loaded context',
 } as const;
 
-export function treatmentHash(t: { id: string; systemPrompt: string; tools: readonly string[]; flags: readonly string[] } = HARNESS_TREATMENT_V2): string {
-  return createHash('sha256').update(JSON.stringify({ id: t.id, systemPrompt: t.systemPrompt, tools: t.tools, flags: t.flags })).digest('hex');
+export function treatmentHash(t: { id: string; systemPrompt: string; tools: readonly string[]; flags: readonly string[]; maxOutputTokens: number; thinking: string; toolSchemaTokens: number } = HARNESS_TREATMENT_V2): string {
+  return createHash('sha256').update(JSON.stringify({ id: t.id, systemPrompt: t.systemPrompt, tools: t.tools, flags: t.flags, maxOutputTokens: t.maxOutputTokens, thinking: t.thinking, toolSchemaTokens: t.toolSchemaTokens })).digest('hex');
 }
 
 /** Things this harness cannot measure; recorded on every run so a reader does not mistake them for zero. */
@@ -65,6 +70,8 @@ export const HARNESS_UNKNOWNS_V2 = [
   'Ollama may truncate input beyond num_ctx without reporting it; truncation is unknown unless the agent reports an overflow',
   'token counts before the run use approx-chars/4, not the model tokenizer',
   'toolBudget is recorded and checked after the run; the harness does not stop at it',
+  'filesystem isolation is by location (a fresh temporary directory outside the repository and the run output, an empty HOME), not a sandbox: an agent that searches the whole disk by absolute path is not stopped',
+  'network is not blocked by the harness',
 ];
 
 // ─── Prompt ──────────────────────────────────────────────────────────────────
@@ -206,6 +213,8 @@ export function classifyAgentExit(x: AgentExit): ExitClass {
   };
   const all = `${base.resultText ?? ''}\n${x.err}`;
   if (x.spawnError) return { ...base, kind: 'harness', note: `agent could not start: ${x.spawnError}` };
+  // A run that hit the wall clock while the server was failing is the server's failure, not the model's.
+  if (x.timedOut && INFRA_RE.test(all)) return { ...base, kind: 'infra', note: 'wall-clock reached while the model server was failing or unreachable' };
   if (x.timedOut) return { ...base, kind: 'budget_exhausted', note: 'wall-clock budget reached; graded on the tree it left' };
   if (result) {
     if (result.is_error || (typeof result.subtype === 'string' && result.subtype !== 'success')) {

@@ -115,7 +115,7 @@ const afterWindow = () => new Date(Date.parse(GPU_WINDOW_OPENS_AT) + 3_600_000);
 function envWith(spawnAgent: ExecDeps['spawnAgent'], over: Partial<V2Env> = {}): V2Env {
   return {
     minFreeMb: 20000, readGpu: () => [{ usedMb: 500, totalMb: 24000 }], loaded: async () => [], now: afterWindow,
-    ollama: fakeOllama(), harnessVersion: () => '2.1.310 (Claude Code)', exec: { spawnAgent, sampleVramMb: () => null }, ...over,
+    ollama: fakeOllama(), harnessVersion: () => '2.1.310 (Claude Code)', claudeBin: 'claude', exec: { spawnAgent, sampleVramMb: () => null }, ...over,
   };
 }
 
@@ -140,7 +140,11 @@ describe('v2 executor: claude-code adapter with a fake subprocess', () => {
     expect(ollamaLog).toEqual(['tag m:1', 'load m:1@16384', 'tag m:1', 'tag m:1', 'unload m:1']);
     for (const [i, c] of agent.calls.entries()) {
       const runId = `v2.find-total.m_1@16384.single-context.t${i + 1}`;
-      expect(c.cwd).toBe(join(out, runId, 'tree'));
+      // The agent works outside the run output and the repository; its final tree is kept afterwards.
+      expect(c.cwd.startsWith(out)).toBe(false);
+      expect(c.cwd.startsWith(root)).toBe(false);
+      expect(existsSync(c.cwd)).toBe(false);
+      expect(readFileSync(join(out, runId, 'tree', 'answer.json'), 'utf8')).toContain('src/live.ts');
       // Only the snapshot and the instruction: no verifier, reference or candidates.
       expect(c.treeFiles).toEqual(['TASK.md', 'src/dead.ts', 'src/live.ts', 'test/live.spec.ts']);
       expect(c.input).toContain('Which file computes the total?');
@@ -153,7 +157,10 @@ describe('v2 executor: claude-code adapter with a fake subprocess', () => {
       expect(c.inv.args[c.inv.args.indexOf('--tools') + 1]).toBe('Read,Edit,Write,Glob,Grep,Bash');
       expect(c.inv.args).toEqual(expect.arrayContaining(['--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']));
       expect(c.inv.args).not.toContain(c.input); // the prompt is on stdin, not argv
-      expect(c.inv.env.CLAUDE_CONFIG_DIR).toBe(join(out, runId, 'claude-config'));
+      expect(c.inv.env.CLAUDE_CONFIG_DIR).toBe(join(dirname(c.cwd), 'claude-config'));
+      expect(c.inv.env.HOME).toBe(join(dirname(c.cwd), 'home'));
+      expect(c.inv.env.MAX_THINKING_TOKENS).toBe('0');
+      expect(c.inv.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe(String(HARNESS_TREATMENT_V2.maxOutputTokens));
       expect(c.inv.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:11435');
       expect(c.inv.env.ANTHROPIC_API_KEY).toBe('');
       expect(c.inv.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('16384');
@@ -219,17 +226,17 @@ describe('v2 executor: claude-code adapter with a fake subprocess', () => {
     const agent = fakeAgent((cwd) => { writeFileSync(join(cwd, 'answer.json'), '{"answer":"the limit is 7"}'); });
     await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '8192', case: 'ctx-limit', trials: '1', out }), () => false, envWith(agent.spawnAgent)));
     expect(agent.calls).toHaveLength(0);
-    const rec = readRun(out, 'v2.ctx-limit.m_1@8192.single-context.t1');
+    const rec = readRun(out, 'v2.ctx-limit.m_1@8192.single-context.e8192-dispersed.t1');
     expect(rec).toMatchObject({ result: 'error', v2: { failureClass: 'infra' } });
     expect(rec.harnessNote).toContain('nothing was truncated');
-    const ex = JSON.parse(readFileSync(join(out, 'v2.ctx-limit.m_1@8192.single-context.t1', 'execution.json'), 'utf8'));
+    const ex = JSON.parse(readFileSync(join(out, 'v2.ctx-limit.m_1@8192.single-context.e8192-dispersed.t1', 'execution.json'), 'utf8'));
     expect(ex.overflow.kind).toBe('overflow');
     expect(ex.agentStarted).toBe(false);
     await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'ctx-limit', trials: '1', out, position: 'middle' }), () => false, envWith(agent.spawnAgent)));
     expect(agent.calls).toHaveLength(1);
     expect(agent.calls[0].input).toContain('<evidence>');
     expect(agent.calls[0].input).toContain('REQ-1: the limit is 7.');
-    expect(readRun(out, 'v2.ctx-limit.m_1@16384.single-context.t1').result).toBe('pass');
+    expect(readRun(out, 'v2.ctx-limit.m_1@16384.single-context.e8192-middle.t1').result).toBe('pass');
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -239,7 +246,7 @@ describe('v2 executor: claude-code adapter with a fake subprocess', () => {
     await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'ctx-limit', trials: '1', out, track: 'tool-retrieval' }), () => false, envWith(agent.spawnAgent)));
     expect(agent.calls[0].treeFiles).toContain('evidence/context-8192.md');
     expect(agent.calls[0].input).not.toContain('<evidence>');
-    expect(readRun(out, 'v2.ctx-limit.m_1@16384.tool-retrieval.t1').v2.track).toBe('tool-retrieval');
+    expect(readRun(out, 'v2.ctx-limit.m_1@16384.tool-retrieval.e8192-dispersed.t1').v2.track).toBe('tool-retrieval');
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -248,7 +255,7 @@ describe('v2 executor: claude-code adapter with a fake subprocess', () => {
     const agent = fakeAgent(() => {});
     await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', trials: '1', out }), (n) => n === 'no-tool-calling', envWith(agent.spawnAgent)));
     expect(agent.calls).toHaveLength(0);
-    expect(readRun(out, 'v2.find-total.m_1@16384.single-context.t1')).toMatchObject({ result: 'unscored', v2: { failureClass: null } });
+    expect(readRun(out, 'v2.find-total.m_1@16384.single-context.notools.t1')).toMatchObject({ result: 'unscored', configId: 'm:1@16384+notools', v2: { failureClass: null } });
     const sealed = await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', all: '1', split: 'sealed-holdout', trials: '1', out }), (n) => n === 'all', envWith(agent.spawnAgent)));
     expect(agent.calls).toHaveLength(0);
     expect(sealed.out).toContain('descriptor and hash are not a runnable case');
@@ -265,6 +272,70 @@ describe('v2 executor: claude-code adapter with a fake subprocess', () => {
     expect((await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', out }), () => false, envWith(agent.spawnAgent, { loaded: async () => ['other:1'] })))).value).toBe(3);
     expect(ollamaLog.filter((l) => l.startsWith('load'))).toEqual([]);
     expect(agent.calls).toHaveLength(0);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('v2TempDir', () => {
+  it('returns the canonical path (no 8.3 short names or symlinked temp roots), outside the cwd', async () => {
+    const { v2TempDir } = await import('./v2-exec');
+    const { realpathSync } = await import('node:fs');
+    const d = v2TempDir('v2-canon-');
+    expect(d).toBe(realpathSync.native(d));
+    expect(d.startsWith(process.cwd())).toBe(false);
+    rmSync(d, { recursive: true, force: true });
+  });
+});
+
+describe('resolveClaudeBin', () => {
+  it('prefers LOCAL_EVAL_CLAUDE_BIN and refuses a .cmd shim, which needs a shell that would re-split arguments', async () => {
+    const { resolveClaudeBin } = await import('./v2-agent');
+    expect(resolveClaudeBin({ LOCAL_EVAL_CLAUDE_BIN: 'C:\\tools\\claude.exe' }, () => null)).toEqual({ cmd: 'C:\\tools\\claude.exe', reason: null });
+    expect(resolveClaudeBin({}, () => 'C:\\npm\\claude.cmd').cmd).toBeNull();
+    expect(resolveClaudeBin({}, () => null).reason).toContain('not found');
+    expect(resolveClaudeBin({}, () => '/usr/local/bin/claude').cmd).toBe('/usr/local/bin/claude');
+  });
+});
+
+describe('v2 executor: hostile candidates', () => {
+  it.skipIf(process.platform === 'win32')('a symlink in the result is tampering and is never followed by the grader', async () => {
+    const root = buildSuite(); const out = join(root, 'runs');
+    const { symlinkSync } = await import('node:fs');
+    const agent = fakeAgent((cwd) => { symlinkSync(join(root, 'cases', 'find-total', 'reference', 'answer.json'), join(cwd, 'answer.json')); });
+    await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', trials: '1', out }), () => false, envWith(agent.spawnAgent)));
+    const rec = readRun(out, 'v2.find-total.m_1@16384.single-context.t1');
+    expect(rec).toMatchObject({ result: 'invalid', v2: { failureClass: 'model' } });
+    expect(rec.tampering.join()).toContain('symlink answer.json');
+    expect(rec.hidden.passed).toBe(false); // the verifier saw no answer: the link was not copied
+    rmSync(root, { recursive: true, force: true });
+  });
+  it('a candidate that hangs the verifier fails as a model outcome', async () => {
+    const root = buildSuite(); const out = join(root, 'runs');
+    // Replace the verifier with one that imports candidate code; the candidate loops forever.
+    const agent = fakeAgent((cwd) => { writeFileSync(join(cwd, 'answer.json'), '{"citations":[{"file":"src/live.ts"}]}'); writeFileSync(join(cwd, 'src/live.ts'), 'while (true) {}\nexport const total = 0;\n'); });
+    const env = envWith(agent.spawnAgent, {}); env.exec!.verifierTimeoutMs = 1500;
+    // The visible spec imports src/live.ts, so the visible check hangs and times out.
+    await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', trials: '1', out }), () => false, env));
+    const rec = readRun(out, 'v2.find-total.m_1@16384.single-context.t1');
+    expect(rec).toMatchObject({ result: 'fail', v2: { failureClass: 'model' } });
+    expect(readFileSync(join(out, 'v2.find-total.m_1@16384.single-context.t1', 'grading.txt'), 'utf8')).toContain('timed out');
+    rmSync(root, { recursive: true, force: true });
+  }, 30_000);
+  it('an agent that deletes the baseline Git data is invalid, recorded, and not rerun', async () => {
+    const root = buildSuite(); const out = join(root, 'runs');
+    const agent = fakeAgent((cwd) => { rmSync(join(cwd, '.git'), { recursive: true, force: true }); writeFileSync(join(cwd, 'answer.json'), '{"citations":[{"file":"src/live.ts"}]}'); });
+    await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', trials: '1', out }), () => false, envWith(agent.spawnAgent)));
+    const rec = readRun(out, 'v2.find-total.m_1@16384.single-context.t1');
+    expect(rec.result).toBe('invalid');
+    expect(rec.tampering.join()).toContain('baseline Git data');
+    await quiet(() => runV2('run', opts({ root, model: 'm:1', harness: 'claude-code', context: '16384', case: 'find-total', trials: '1', out }), () => false, envWith(agent.spawnAgent)));
+    expect(agent.calls).toHaveLength(1);
+    rmSync(root, { recursive: true, force: true });
+  });
+  it('a fixture run cannot borrow a model tag (it would share run ids with a model run)', async () => {
+    const root = buildSuite();
+    const r = await quiet(() => runV2('run', opts({ root, harness: 'fixture', 'fixture-dir': root, model: 'm:1', context: '16384', case: 'find-total', out: join(root, 'runs') }), () => false, { minFreeMb: 1, readGpu: () => null, loaded: async () => [] }));
+    expect(r.value).toBe(2);
     rmSync(root, { recursive: true, force: true });
   });
 });
@@ -290,23 +361,42 @@ describe('v2 executor: fixture adapter (real subprocess, no model)', () => {
 });
 
 describe('shipped v2 suite is executable end to end (fixture adapter, no model)', () => {
-  it('every dev case in all six categories runs, is graded by its hidden verifier, and none errors at 16K', async () => {
+  const noGpu = { minFreeMb: 1, readGpu: () => null, loaded: async () => [] as string[] };
+  type Rec = { caseId: string; result: string; hidden: { ran: boolean }; harnessNote: string | null; v2: { category: string; failureClass: string | null; track: string } };
+  const records = (out: string): Rec[] => readdirSync(out).map((d) => JSON.parse(readFileSync(join(out, d, 'run.json'), 'utf8')));
+  it('every dev case in all six categories is graded by its hidden verifier; long-context fits at 16K only on tool-retrieval', async () => {
     const { DEFAULT_ROOT, loadSuiteV2 } = await import('./v2');
     const { CATEGORIES } = await import('../../packages/core/local-eval-v2');
-    const ids = Object.keys(loadSuiteV2(DEFAULT_ROOT).cases).sort();
-    const tmp = tempDir('v2-shipped-'); const fx = join(tmp, 'fx'); const out = join(tmp, 'runs');
+    const cases = loadSuiteV2(DEFAULT_ROOT).cases;
+    const ids = Object.keys(cases).sort();
+    const isCtx = (id: string) => cases[id].manifest.category === 'long-context-requirements';
+    const tmp = tempDir('v2-shipped-'); const fx = join(tmp, 'fx');
     for (const id of ids) mkdirSync(join(fx, id), { recursive: true }); // empty fixtures: the agent changes nothing
-    const r = await quiet(() => runV2('run', opts({ root: DEFAULT_ROOT, harness: 'fixture', 'fixture-dir': fx, context: '16384', all: '1', trials: '1', out }), (n) => n === 'all', { minFreeMb: 1, readGpu: () => null, loaded: async () => [] }));
-    expect(r.value).toBe(0);
-    const recs: { caseId: string; result: string; hidden: { ran: boolean }; v2: { category: string } }[] = readdirSync(out).map((d) => JSON.parse(readFileSync(join(out, d, 'run.json'), 'utf8')));
-    expect(recs.map((x) => x.caseId).sort()).toEqual(ids);
-    expect(new Set(recs.map((x) => x.v2.category))).toEqual(new Set(CATEGORIES));
-    for (const x of recs) {
-      expect(x.result, x.caseId).not.toBe('error');
-      expect(x.hidden.ran, x.caseId).toBe(true);
-      // An untouched snapshot is not a solution (admission proved the verifier fails it), and an answer case with no answer file fails too.
-      expect(x.result, x.caseId).toBe('fail');
+    const run = (out: string, extra: Record<string, string>) => quiet(() => runV2('run', opts({ root: DEFAULT_ROOT, harness: 'fixture', 'fixture-dir': fx, all: '1', trials: '1', out, ...extra }), (n) => n === 'all', noGpu));
+
+    const single16 = join(tmp, 's16');
+    expect((await run(single16, { context: '16384' })).value).toBe(0);
+    const s16 = records(single16);
+    expect(s16.map((x) => x.caseId).sort()).toEqual(ids);
+    for (const x of s16) {
+      if (isCtx(x.caseId)) {
+        // 8K of evidence + tool schemas + the output reservation do not fit 16K: recorded, not started, not a model failure.
+        expect([x.result, x.v2.failureClass, x.hidden.ran], x.caseId).toEqual(['error', 'infra', false]);
+        expect(x.harnessNote ?? '', x.caseId).toContain('nothing was truncated');
+      } else {
+        // An untouched snapshot is not a solution (admission proved the verifier fails it), and an answer case with no answer file fails too.
+        expect([x.result, x.v2.failureClass, x.hidden.ran], x.caseId).toEqual(['fail', 'model', true]);
+      }
     }
+    const tool16 = join(tmp, 't16');
+    expect((await run(tool16, { context: '16384', track: 'tool-retrieval' })).value).toBe(0);
+    const single32 = join(tmp, 's32');
+    expect((await run(single32, { context: '32768' })).value).toBe(0);
+    const ctxGraded = [...records(tool16), ...records(single32)].filter((x) => isCtx(x.caseId));
+    expect(ctxGraded.length).toBe(ids.filter(isCtx).length * 2);
+    for (const x of ctxGraded) expect([x.result, x.hidden.ran], `${x.caseId} ${x.v2.track}`).toEqual(['fail', true]);
+    const graded = new Set([...s16, ...ctxGraded].filter((x) => x.hidden.ran).map((x) => x.v2.category));
+    expect(graded).toEqual(new Set(CATEGORIES));
     rmSync(tmp, { recursive: true, force: true });
-  }, 120_000);
+  }, 240_000);
 });
