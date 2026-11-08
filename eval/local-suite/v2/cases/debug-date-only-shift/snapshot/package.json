@@ -1,0 +1,1 @@
+{ "name": "corpus-shift", "type": "module", "scripts": { "test": "bun test" } }

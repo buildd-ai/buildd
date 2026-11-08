@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 3,
+  "accounts": [
+    { "id": "a1", "firstName": "Ana", "lastName": "Ruiz", "balanceCents": 1250 },
+    { "id": "a2", "firstName": "Ben van", "lastName": "Dyk", "balanceCents": 29 },
+    { "id": "a3", "firstName": "Cleo", "lastName": "Marsh", "balanceCents": 115 },
+    { "id": "a4", "firstName": "Dev", "lastName": "Patel", "balanceCents": 0 }
+  ]
+}

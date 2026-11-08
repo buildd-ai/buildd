@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local coding eval case manifest v2 (case.json)",
+  "description": "Structural summary; packages/core/local-eval-v2.ts validateManifestV2 is authoritative.",
+  "type": "object",
+  "required": ["formatVersion", "id", "version", "contentHash", "category", "files", "deps", "resources", "labels", "exposing", "provenance", "contamination", "expected", "admission"],
+  "properties": {
+    "formatVersion": { "const": 2 },
+    "id": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "contentHash": { "type": "string" },
+    "category": { "type": "string" },
+    "files": {
+      "type": "object",
+      "required": ["snapshot", "instruction", "verifier", "reference", "rubric", "candidates"],
+      "properties": {
+        "snapshot": { "type": "array", "items": { "type": "string" } },
+        "instruction": { "type": "string" },
+        "verifier": { "type": "array", "items": { "type": "string" } },
+        "reference": { "type": "array", "items": { "type": "string" } },
+        "rubric": { "type": ["string", "null"] },
+        "candidates": {
+          "type": "object",
+          "required": ["broken", "alternative", "files"],
+          "properties": {
+            "broken": { "type": "array", "items": { "type": "string" } },
+            "alternative": { "type": ["string", "null"] },
+            "files": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "deps": { "type": "object", "additionalProperties": { "type": "string" } },
+    "resources": {
+      "type": "object",
+      "required": ["cpuOnly", "estimatedVramMb", "estimatedRamMb", "wallClockSeconds", "maxTurns", "toolBudget"],
+      "properties": {
+        "cpuOnly": { "type": "boolean" },
+        "estimatedVramMb": { "type": ["integer", "null"] },
+        "estimatedRamMb": { "type": ["integer", "null"] },
+        "wallClockSeconds": { "type": "number" },
+        "maxTurns": { "type": "integer" },
+        "toolBudget": { "type": "integer" }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "required": ["difficulty", "skills"],
+      "properties": { "difficulty": { "type": "string" }, "skills": { "type": "array", "items": { "type": "string" } } }
+    },
+    "exposing": { "type": "boolean" },
+    "provenance": {
+      "type": "object",
+      "required": ["source", "licence", "note"],
+      "properties": { "source": { "enum": ["authored", "this-repo"] }, "licence": { "type": "string" }, "note": { "type": "string" } }
+    },
+    "contamination": { "type": "string" },
+    "expected": { "type": "object" },
+    "admission": { "type": ["object", "null"] },
+    "longContext": { "type": "object" }
+  }
+}

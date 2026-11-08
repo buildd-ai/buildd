@@ -1,0 +1,114 @@
+{
+  "formatVersion": 2,
+  "id": "term-recovery-journal",
+  "version": 1,
+  "contentHash": "4014a27473fb7c26376d0ad84af099b456d5e62a5a90d332ae1d0192bb43b670",
+  "category": "terminal-recovery-compaction",
+  "files": {
+    "snapshot": [
+      "snapshot/.migrate/journal.json",
+      "snapshot/NOTES.md",
+      "snapshot/data/accounts.backup.json",
+      "snapshot/data/accounts.json",
+      "snapshot/package.json",
+      "snapshot/scripts/migrate.ts",
+      "snapshot/test/migrate.spec.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/.migrate/journal.json",
+      "reference/data/accounts.json",
+      "reference/scripts/migrate.ts"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "drop-converted",
+        "rescale",
+        "touches-backup"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/.migrate/journal.json",
+        "candidates/alt/data/accounts.json",
+        "candidates/alt/scripts/migrate.ts",
+        "candidates/drop-converted/.migrate/journal.json",
+        "candidates/drop-converted/data/accounts.json",
+        "candidates/drop-converted/scripts/migrate.ts",
+        "candidates/rescale/.migrate/journal.json",
+        "candidates/rescale/data/accounts.json",
+        "candidates/rescale/scripts/migrate.ts",
+        "candidates/touches-backup/.migrate/journal.json",
+        "candidates/touches-backup/data/accounts.backup.json",
+        "candidates/touches-backup/data/accounts.json",
+        "candidates/touches-backup/scripts/migrate.ts"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 1200,
+    "maxTurns": 40,
+    "toolBudget": 100
+  },
+  "labels": {
+    "difficulty": "hard",
+    "skills": [
+      "compaction"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented project. A migration interrupted partway through a non-idempotent step: re-running it reports success while corrupting data. The visible checks only look at types and the schema version, so lost or rescaled data still passes them.",
+  "expected": {
+    "kind": "verifier"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 3 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

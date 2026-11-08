@@ -1,0 +1,147 @@
+{
+  "formatVersion": 2,
+  "id": "review-pagination-bounds",
+  "version": 1,
+  "contentHash": "278f769b78ece989f332975c47cd597c8a6c737eac9c946da9b89ec269c2014e",
+  "category": "code-review",
+  "files": {
+    "snapshot": [
+      "snapshot/README.md",
+      "snapshot/change.diff",
+      "snapshot/package.json",
+      "snapshot/src/handler.ts",
+      "snapshot/src/orders.ts",
+      "snapshot/src/paginate.ts",
+      "snapshot/test/paginate.spec.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/review.json"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "bait",
+        "only-offset"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/review.json",
+        "candidates/bait/review.json",
+        "candidates/only-offset/review.json"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 600,
+    "maxTurns": 25,
+    "toolBudget": 50
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "review"
+    ]
+  },
+  "exposing": false,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented project. Two seeded defects in a new pagination change; the shared module-level array is a deliberate non-defect bait.",
+  "expected": {
+    "kind": "review",
+    "defects": [
+      {
+        "id": "offset",
+        "file": "src/paginate.ts",
+        "startLine": 11,
+        "endLine": 11,
+        "cause": [
+          [
+            "1-based",
+            "one-based",
+            "off-by-one",
+            "off by one",
+            "page - 1",
+            "page-1",
+            "skips",
+            "skipped",
+            "first page",
+            "zero-based",
+            "0-based",
+            "offset"
+          ]
+        ]
+      },
+      {
+        "id": "page-size",
+        "file": "src/handler.ts",
+        "startLine": 7,
+        "endLine": 8,
+        "cause": [
+          [
+            "validat",
+            "clamp",
+            "upper bound",
+            "maximum",
+            "max ",
+            "limit",
+            "NaN",
+            "negative",
+            "zero",
+            "unbounded",
+            "sanitiz",
+            "bounds"
+          ]
+        ]
+      }
+    ]
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

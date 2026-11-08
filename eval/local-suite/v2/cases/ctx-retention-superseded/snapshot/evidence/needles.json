@@ -1,0 +1,14 @@
+[
+  {
+    "id": "REQ-101",
+    "text": "REQ-101 (2026-01-09, Security, retention): Audit log entries are kept for 90 days, then deleted."
+  },
+  {
+    "id": "REQ-117",
+    "text": "REQ-117 (2026-02-20, Security, retention, amends REQ-101): Audit log retention is reduced to 60 days. The 90-day figure in REQ-101 no longer applies."
+  },
+  {
+    "id": "REQ-133",
+    "text": "REQ-133 (2026-03-14, Security, retention, regional): For tenants hosted in the EU region, audit log entries are kept 30 days. Every other region follows the current global audit log figure."
+  }
+]

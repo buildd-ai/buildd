@@ -1,0 +1,8 @@
+{
+  "liveSite": "./src/http/transport.ts",
+  "citations": [
+    { "file": "./src/net/retry.ts" },
+    { "file": "./src/http/transport.ts", "symbol": "sendWithBackoff" }
+  ],
+  "notes": "client.ts imports transport; nothing imports net/retry"
+}

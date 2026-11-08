@@ -1,0 +1,4 @@
+{"findings":[
+ {"file":"src/payments.ts","line":10,"description":"Retrying the charge can double charge the card because the gateway is not idempotent"},
+ {"file":"src/payments.ts","line":14,"description":"listCharges retries a POST; retries on POST are always unsafe"}
+]}

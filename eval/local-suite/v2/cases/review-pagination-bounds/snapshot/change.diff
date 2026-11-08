@@ -1,0 +1,46 @@
+--- a/src/orders.ts
++++ b/src/orders.ts
+@@ -1,3 +1,5 @@
++import { paginate, type Page } from './paginate';
++
+ export interface Order {
+   id: string;
+   customer: string;
+@@ -15,3 +17,7 @@
+ export function listOrders(customer: string): Order[] {
+   return ORDERS.filter((o) => o.customer === customer);
+ }
++
++export function listOrdersPage(customer: string, page: number, pageSize: number): Page<Order> {
++  return paginate(listOrders(customer), page, pageSize);
++}
+--- /dev/null
++++ b/src/paginate.ts
+@@ -0,0 +1,14 @@
++export interface Page<T> {
++  items: T[];
++  page: number;
++  pageSize: number;
++  total: number;
++  hasNext: boolean;
++}
++
++/** `page` is 1-based, as documented in the README. */
++export function paginate<T>(all: T[], page: number, pageSize: number): Page<T> {
++  const start = page * pageSize;
++  const items = all.slice(start, start + pageSize);
++  return { items, page, pageSize, total: all.length, hasNext: start + pageSize < all.length };
++}
+--- /dev/null
++++ b/src/handler.ts
+@@ -0,0 +1,10 @@
++import { listOrdersPage } from './orders';
++
++type Query = Record<string, string | undefined>;
++
++/** GET /orders?customer=ana&page=1&pageSize=20 */
++export function handleList(q: Query) {
++  const page = Number(q.page ?? '1');
++  const pageSize = Number(q.pageSize ?? '20');
++  return listOrdersPage(q.customer ?? '', page, pageSize);
++}

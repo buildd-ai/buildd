@@ -22,6 +22,7 @@ import { VRAM_SAMPLING, parseNvidiaSmiMemory } from '../../packages/core/model-o
 import { answerBearingTests, applyReference, changedFiles, createWorkspace, fullDiff, injectHiddenTests, loadSuite, probeWorkspace, restoreRunner, runTests, sh, tempDir } from './lib';
 import { assertLoopback, gpuName, loadModel, loadedModels, readGpu, tagInfo, unloadModel } from './ollama';
 import { claudeInvocation, parseClaudeJson } from './agent';
+import { runV2 } from './v2';
 
 const SUITE_PATH = resolve(import.meta.dir, '../../eval/local-suite/v1/suite.json');
 const MODELS_PATH = resolve(import.meta.dir, '../../eval/local-suite/v1/models.json');
@@ -40,6 +41,9 @@ function pickCases(suite: Suite) {
 }
 
 async function main() {
+  if (opt('suite') === 'v2') {
+    process.exit(await runV2(cmd, opt, has, { minFreeMb: MIN_FREE_MB, readGpu: () => readGpu(), loaded: async () => (await loadedModels(opt('origin') ?? 'http://127.0.0.1:11435')).map((m) => m.name) }));
+  }
   const suite = loadSuite(SUITE_PATH);
   if (cmd === 'validate') {
     const errs = validateSuite(suite);

@@ -1,0 +1,1 @@
+{"findings":[],"note":"Pure refactor: formatAmount keeps the sign, the zero-decimal branch and the two-decimal branch of the old code; renderTotal sums the same values."}
