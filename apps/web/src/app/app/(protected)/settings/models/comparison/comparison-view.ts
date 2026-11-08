@@ -96,4 +96,4 @@ export function categoryTitle(c: string): string {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-export const REPLAY_EMPTY = 'No evaluation runs have been recorded yet.';
+export const REPLAY_EMPTY = 'No evaluation runs.';
