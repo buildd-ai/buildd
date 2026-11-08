@@ -41,6 +41,7 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['read_evidence', { evidenceId: '00000000-0000-0000-0000-0000000000e1' }],
   ['get_budget_forecast', {}],
   ['get_usage_stats', {}],
+  ['get_model_comparison', {}],
   ['get_manifest_coverage', {}],
   ['get_path_claim_stats', {}],
   ['get_decision_stats', {}],
