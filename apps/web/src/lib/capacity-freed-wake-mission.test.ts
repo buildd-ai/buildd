@@ -21,6 +21,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 mock.module('@buildd/core/db/schema', () => ({
+  workspaces: { id: 'id', webhookConfig: 'webhook_config' },
   tasks: { id: 'id', missionId: 'mission_id', priority: 'priority', createdAt: 'created_at' },
   missions: { id: 'id', maxConcurrentTasks: 'max_concurrent_tasks' },
 }));
@@ -43,7 +44,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   wakeTask: (...args: [string, string]) => mockWakeTask(...args),
 }));
 
-const { wakeMissionSlotWaiter } = await import('./mission-slot-freed-wake');
+const { wakeMissionSlotWaiter } = await import('./capacity-freed-wake');
 
 const FINISHED = 'criterion-check';
 const MISSION = 'mission-1';

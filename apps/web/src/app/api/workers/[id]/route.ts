@@ -56,8 +56,8 @@ import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
-import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
-import { wakeMissionSlotWaiter } from '@/lib/mission-slot-freed-wake';
+import { wakeOldestPendingTaskOnCapacityFreed, wakeMissionSlotWaiter } from '@/lib/capacity-freed-wake';
+
 import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation, applyCopyReviewGate, parseCopyFindings } from '@/lib/reviewer';
@@ -5279,7 +5279,7 @@ async function patchWorker(
   // It also frees a slot against its mission's maxConcurrentTasks cap. A sibling
   // the claim route deferred on `mission_concurrent` is woken here, on any
   // workspace: a host runner is push-driven and would otherwise wait for its
-  // hourly fallback poll (lib/mission-slot-freed-wake.ts).
+  // hourly fallback poll (lib/capacity-freed-wake.ts).
   if (isTerminalStatus) await wakeMissionSlotWaiter(worker.taskId ?? null);
   // A managed run ending frees a slot against the team's commercial
   // entitlement, pooled across its workspaces: wake the oldest task waiting on

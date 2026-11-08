@@ -526,9 +526,9 @@ mock.module('@/lib/merge-policy', () => ({
 
 // A terminal worker wakes its mission's next slot waiter. Stubbed so its own
 // task/mission reads do not consume the once-mocks the tests below queue up;
-// its behaviour is covered in lib/mission-slot-freed-wake.test.ts.
+// its behaviour is covered in lib/capacity-freed-wake-mission.test.ts.
 const mockWakeMissionSlotWaiter = mock((..._args: unknown[]) => Promise.resolve());
-mock.module('@/lib/mission-slot-freed-wake', () => ({ wakeMissionSlotWaiter: mockWakeMissionSlotWaiter }));
+mock.module('@/lib/capacity-freed-wake', () => ({ wakeMissionSlotWaiter: mockWakeMissionSlotWaiter }));
 
 // Every requeue/fix path wakes through the dispatch authority with a cause.
 // The full export surface is mocked: mock.module is process-global.
