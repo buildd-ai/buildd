@@ -13,6 +13,16 @@ import os from 'node:os';
 import { PeakTracker, VRAM_SAMPLING, parseNvidiaSmiMemory, type EndpointKind } from '@buildd/core/model-observation';
 import { PKG_VERSION } from './updater';
 import type { LocalWorker } from './types';
+import { buildToolEfficiencyAggregate } from './tool-trace-analysis';
+
+/** Bounded structural aggregate of the local trace, or undefined. Never throws: telemetry must not fail a terminal report. */
+function toolEfficiencyOf(worker: LocalWorker): Record<string, unknown> | undefined {
+  try {
+    const t = worker.toolTrace;
+    if (!t || t.events.length === 0) return undefined;
+    return buildToolEfficiencyAggregate({ header: t.header, events: t.events, counters: t.counters }) as unknown as Record<string, unknown>;
+  } catch { return undefined; }
+}
 
 export interface WorkerObservationState {
   endpointKind?: EndpointKind;
@@ -65,6 +75,7 @@ export function buildModelObservationPayload(worker: LocalWorker): Record<string
     backend: worker.taskBackend ?? 'claude',
     harnessVersion: PKG_VERSION,
     toolFailures: st.toolFailures,
+    ...(toolEfficiencyOf(worker) ? { toolEfficiency: toolEfficiencyOf(worker) } : {}),
     ...(st.tracker.peak !== null ? { peakVramMb: st.tracker.peak, vramSamples: st.tracker.samples } : {}),
     runtime: { os: os.platform(), arch: os.arch(), ...(cpus.length ? { cpuCount: cpus.length } : {}) },
   };
