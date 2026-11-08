@@ -461,6 +461,9 @@ mock.module('@/lib/system-instruction-queue', () => ({ queueSystemInstruction: m
 const mockEvaluateCompletionHold = mock(async (_input: any): Promise<any> => ({ kind: 'pass', expire: [], stopWaiting: [], blockedByCapability: null, proceededWithout: null, summaryLead: null }));
 mock.module('@/lib/capability-hold-store', () => ({ evaluateCompletionHold: mockEvaluateCompletionHold }));
 
+const mockRecordModelObservation = mock(async (_input: any) => true);
+mock.module('@/lib/model-observation-store', () => ({ recordModelObservation: mockRecordModelObservation }));
+
 mock.module('@buildd/core/routing-analytics', () => ({
   recordTaskOutcome: mockRecordTaskOutcome,
 }));
@@ -9312,6 +9315,28 @@ describe('PATCH /api/workers/[id]', () => {
       const arg = mockRecordTaskOutcome.mock.calls[0][0];
       expect(arg.workerId).toBe(WORKER_ID);
       expect(arg.exitCause).toBe('infra_failure');
+    });
+
+    // One observation per execution attempt: an attempt that fails and is
+    // auto-retried (mission task, first failure) must still leave its row, or
+    // model comparison only sees the survivors of a retry chain.
+    it('records a model observation for a failed attempt that is auto-retried', async () => {
+      setupTerminal();
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', outputRequirement: 'none', missionId: 'mission-1', context: {}, status: 'in_progress',
+      });
+      mockRecordModelObservation.mockClear();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'boom' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Retried, so no task_outcomes row (one per terminal outcome)...
+      expect(mockRecordTaskOutcome).not.toHaveBeenCalled();
+      // ...but the attempt itself is observed, with its failed status.
+      expect(mockRecordModelObservation).toHaveBeenCalledTimes(1);
+      expect(mockRecordModelObservation.mock.calls[0][0]).toMatchObject({ workerId: WORKER_ID, status: 'failed' });
     });
 
     it('stays null when an older runner reports no model at all', async () => {
