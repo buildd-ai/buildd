@@ -68,3 +68,20 @@ describe('GET /api/model-observations', () => {
     expect(body.observations.map((o: any) => o.correctness)).toEqual(['unknown', 'supported']);
   });
 });
+
+describe('spec acceptance checks', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockList.mockReset();
+  });
+  it('AC-6: a caller without access to a workspace never sees its rows', async () => {
+    mockList.mockResolvedValue([{ workerId: 'secret-row', terminalOutcome: 'completed' }]);
+    mockGetCurrentUser.mockReturnValue({ id: 'u' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+    const res = await GET(req('?workspaceId=ws-other'));
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(await res.json())).not.toContain('secret-row');
+    expect(mockList).not.toHaveBeenCalled();
+  });
+});

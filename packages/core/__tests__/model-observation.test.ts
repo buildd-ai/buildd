@@ -207,3 +207,68 @@ describe('bounded VRAM sampling (R-7)', () => {
     expect(t.peak).toBe(900);
   });
 });
+
+// ---- Acceptance tests: spec "Model performance measurement", revision 1 ----
+import { getTableConfig } from 'drizzle-orm/pg-core';
+import { modelObservations } from '../db/schema';
+
+describe('spec acceptance checks', () => {
+  test('AC-1: a redelivered report for the same (workerId, attempt) yields one row with the latest values', () => {
+    const cfg = getTableConfig(modelObservations);
+    const uniq = cfg.indexes.find((i) => i.config.unique && i.config.columns.map((c: any) => c.name).join(',') === 'worker_id,attempt');
+    expect(uniq).toBeDefined();
+    const first = buildObservation({ ...base, inputTokens: 100, outputTokens: 10, status: 'failed', exitCause: 'infra_failure' });
+    const redelivered = buildObservation({ ...base, inputTokens: 900, outputTokens: 90, status: 'completed' });
+    expect([redelivered.workerId, redelivered.attempt]).toEqual([first.workerId, first.attempt]);
+    expect(redelivered.inputTokens).toBe(900);
+    expect(redelivered.terminalOutcome).toBe('completed');
+  });
+
+  test('AC-2: missing generation time, VRAM and price are NULL with a reason each, and cost is not 0', () => {
+    const row = buildObservation({ ...base, costUsd: null, priced: false, resolvedModel: 'local-model' });
+    for (const k of ['generationMs', 'peakVramMb', 'costUsd'] as const) {
+      expect(row[k]).toBeNull();
+      expect(row.unavailable[k]).toBeTruthy();
+    }
+    expect(row.costUsd).not.toBe(0);
+  });
+
+  test('AC-3: a fallback on retry shares the chain id, names the first as parent, and each row keeps its model', () => {
+    const t0 = new Date('2026-01-01T00:00:00Z');
+    const t1 = new Date('2026-01-01T01:00:00Z');
+    const first = buildObservation({ ...base, workerId: 'w1', chainId: 'root', resolvedModel: 'model-a', startedAt: t0, status: 'failed', exitCause: 'budget_limited' });
+    const parent = parentAttemptOf([{ workerId: 'w1', startedAt: t0 }], { workerId: 'w2', startedAt: t1 });
+    const second = buildObservation({ ...base, workerId: 'w2', chainId: 'root', resolvedModel: 'model-b', startedAt: t1, parentWorkerId: parent, retries: 1 });
+    expect(second.chainId).toBe(first.chainId);
+    expect(second.parentWorkerId).toBe('w1');
+    expect([first.resolvedModel, second.resolvedModel]).toEqual(['model-a', 'model-b']);
+  });
+
+  test('AC-4: auth, budget and infrastructure failures are platform or harness; only a wrong result is model', () => {
+    for (const cause of ['auth_failure', 'budget_limited', 'infra_failure', 'sandbox_mount_gap', 'silent_start']) {
+      expect(['platform', 'harness']).toContain(failureOriginOf('failed', cause));
+    }
+    expect(failureOriginOf('failed', 'code_failure')).toBe('model');
+    expect(failureOriginOf('failed', 'something_new')).not.toBe('model');
+  });
+
+  test('AC-5: a late review, CI result, spec verdict or merge updates the evidence; completion alone leaves correctness unknown', () => {
+    expect(correctnessOf(EMPTY_EVIDENCE)).toBe('unknown');
+    for (const patch of [{ reviewVerdict: 'approved' }, { ciState: 'passed' }, { specVerdict: 'pass' }, { prOutcome: 'merged' }] as const) {
+      expect(evidenceColumns(patch)).toEqual(patch);
+      expect(correctnessOf(applyEvidence(EMPTY_EVIDENCE, patch))).toBe('supported');
+    }
+  });
+
+  test('AC-7: a descriptor carrying a credentialed URL or token is stored as a kind label only', () => {
+    const d = sanitizeDescriptor({
+      endpointKind: 'https://user:secret@gpu.internal:8000/v1',
+      baseUrl: 'https://user:secret@gpu.internal:8000/v1',
+      backend: 'Bearer abc123',
+      modelVersion: 'sk-ant-api03-abcdef',
+    });
+    const row = buildObservation({ ...base, localModel: true, descriptor: d });
+    expect(row.endpointKind).toBe('local_loopback');
+    expect(JSON.stringify(row)).not.toMatch(/secret|gpu\.internal|https?:|abc123|sk-ant/i);
+  });
+});
