@@ -108,8 +108,8 @@
     },
     {
       "id": "term-recovery-stale-lock",
-      "version": 1,
-      "contentHash": "1a0c1c6fe38a2976e6d2a910ecccd855119ef2476d3aaa0f0a4e47f1cad45057"
+      "version": 2,
+      "contentHash": "ff7bb6bbc0cf070ee275a081bf4f690b9e4e4373e811cdf53f492d24766a0f5c"
     },
     {
       "id": "term-session-staged-conventions",

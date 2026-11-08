@@ -20,7 +20,7 @@ function expectedBundle(base: string): string {
 const bundleOk = (base: string) => existsSync(join(base, 'out/bundle.js')) && readFileSync(join(base, 'out/bundle.js'), 'utf8') === expectedBundle(base);
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } };
 const build = (cwd: string) => {
-  const r = Bun.spawnSync(['bun', 'scripts/build.ts'], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  const r = Bun.spawnSync([process.execPath, 'scripts/build.ts'], { cwd, stdout: 'pipe', stderr: 'pipe' });
   return { code: r.exitCode, text: r.stdout.toString() + r.stderr.toString() };
 };
 function inCopy<T>(fn: (c: string) => T): T {
@@ -60,7 +60,8 @@ function stageTests(stage: number): boolean {
     }
     if (stage === 3) {
       return inCopy((c) => {
-        const sleeper = Bun.spawn(['sleep', '60']);
+        // A live process that needs no external tool (a native Windows PATH has no Unix utilities): the running Bun itself, idle on a timer.
+        const sleeper = Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 60000)'], { stdout: 'ignore', stderr: 'ignore' });
         try {
           writeFileSync(join(c, 'out/.lock'), String(sleeper.pid));
           const before = readFileSync(join(c, 'out/bundle.js'), 'utf8');
