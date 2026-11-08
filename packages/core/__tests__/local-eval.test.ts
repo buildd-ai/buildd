@@ -174,6 +174,65 @@ describe('validateRunRecord', () => {
   });
 });
 
+describe('replay tool efficiency (validate -> mapping)', () => {
+  const scope = { workspaceId: 'w', teamId: 't' };
+  const aggregate = () => ({
+    schemaVersion: 1, analyserVersion: 'tea-v1', harness: 'claude', calls: 7,
+    findingKinds: { identical_search_unchanged: 1, redundant_read_unchanged: 2 },
+    failureClasses: { error: 1 },
+    timing: { observedCalls: 0, totalMs: 0, p50Ms: null, p90Ms: null, maxMs: null },
+    coverage: { recorded: 7, dropped: 0, unobserved: 1, sampledOut: 0 },
+  });
+  const te = (over: Record<string, unknown> = {}) => ({ aggregate: aggregate(), source: 'claude_stream_json', timing: 'unknown', ...over });
+
+  it('carries a bounded aggregate onto the row and its provenance onto the evaluation', () => {
+    const r = run({ toolEfficiency: te() as never });
+    expect(validateRunRecord(r)).toEqual([]);
+    const { values, evaluation } = runToObservation(r, scope);
+    expect(values.toolEfficiency).toMatchObject({ analyserVersion: 'tea-v1', calls: 7, findingKinds: { identical_search_unchanged: 1, redundant_read_unchanged: 2 }, failureClasses: { error: 1 } });
+    expect(values.toolEfficiency!.timing).toEqual({ observedCalls: 0, totalMs: 0, p50Ms: null, p90Ms: null, maxMs: null });
+    expect(values.unavailable.toolEfficiency).toBeUndefined();
+    expect(evaluation.toolEfficiency).toEqual({ source: 'claude_stream_json', timing: 'unknown', analyserVersion: 'tea-v1' });
+  });
+
+  it('a record without a trace keeps tool efficiency unknown, not clean (backward compatible)', () => {
+    for (const r of [run(), run({ toolEfficiency: null })]) {
+      expect(validateRunRecord(r)).toEqual([]);
+      const { values, evaluation } = runToObservation(r, scope);
+      expect(values.toolEfficiency).toBeNull();
+      expect(values.unavailable.toolEfficiency).toBeTruthy();
+      expect(evaluation.toolEfficiency).toBeUndefined();
+    }
+  });
+
+  it('secrets, raw text and unknown fields inside the aggregate never reach the row', () => {
+    const dirty = {
+      ...aggregate(),
+      command: 'grep -r sk-live-secret /home/me/src', paths: ['/home/me/src/a.ts'], fingerprint: 'abc123', claims: ['done'],
+      findingKinds: { identical_search_unchanged: 1, made_up_kind: 4, prompt: 'leak' },
+      review: { reviewerVersion: 'rev-v1', candidates: 1, confirmed: 0, dismissed: 0, kinds: {}, excerpt: 'ghp_token' },
+    };
+    const r = run({ toolEfficiency: te({ aggregate: dirty }) as never });
+    expect(validateRunRecord(r)).toEqual([]);
+    const stored = JSON.stringify(runToObservation(r, scope));
+    for (const s of ['sk-live', '/home/me', 'abc123', 'claims', 'made_up_kind', 'leak', 'ghp_', 'excerpt', 'command']) expect(stored).not.toContain(s);
+  });
+
+  it('refuses unknown wrapper fields, unknown provenance and invented timings', () => {
+    expect(validateRunRecord(run({ toolEfficiency: te({ prompt: 'the whole prompt' }) as never })).join()).toContain('toolEfficiency.prompt');
+    expect(validateRunRecord(run({ toolEfficiency: te({ source: 'somewhere' }) as never })).join()).toContain('toolEfficiency.source');
+    expect(validateRunRecord(run({ toolEfficiency: te({ timing: 'exact' }) as never })).join()).toContain('toolEfficiency.timing');
+    expect(validateRunRecord(run({ toolEfficiency: te({ aggregate: { ...aggregate(), schemaVersion: 99 } }) as never })).join()).toContain('toolEfficiency.aggregate');
+    expect(validateRunRecord(run({ toolEfficiency: 'x' as never })).join()).toContain('toolEfficiency');
+    // Timing the source could not observe is not recorded as measured.
+    const timed = { ...aggregate(), timing: { observedCalls: 3, totalMs: 30, p50Ms: 10, p90Ms: 10, maxMs: 10 } };
+    expect(validateRunRecord(run({ toolEfficiency: te({ aggregate: timed }) as never })).join()).toContain('timing');
+    expect(validateRunRecord(run({ toolEfficiency: te({ aggregate: timed, source: 'claude_stream_json', timing: 'measured' }) as never })).join()).toContain('measured');
+    expect(validateRunRecord(run({ toolEfficiency: te({ aggregate: timed, source: 'claude_transcript', timing: 'approximate' }) as never }))).toEqual([]);
+    expect(validateRunRecord(run({ toolEfficiency: te({ aggregate: timed, source: 'runner_trace', timing: 'measured' }) as never }))).toEqual([]);
+  });
+});
+
 describe('GPU gate and digests', () => {
   it('parses nvidia-smi and refuses unreadable, busy or already-loaded GPUs', () => {
     expect(parseGpuMemory('1200, 24576\n')).toEqual([{ usedMb: 1200, totalMb: 24576 }]);

@@ -45,7 +45,7 @@ function writeCase(root: string, id: string, m: Omit<CaseManifestV2, 'contentHas
 
 const common = {
   formatVersion: 2 as const, version: 1, deps: { bun: '1.x' }, labels: { difficulty: 'easy' as const, skills: ['find'] }, exposing: false,
-  provenance: { source: 'authored' as const, licence: 'repository licence', note: 'authored for this test' }, contamination: 'authored fixture', admission: null,
+  provenance: { source: 'authored' as const, licence: 'repository licence', note: 'authored for this test' }, contamination: 'authored fixture', admission: { admittedOn: '2026-11-08', toolchain: 'test', gates: ['reference-passes', 'deterministic', 'negative-control-fails', 'independent-of-patch', 'absence-audited', 'isolation-holds'].map((gate) => ({ gate, ok: true, detail: 'fixture' })) } as never,
 };
 
 function buildSuite(): string {
