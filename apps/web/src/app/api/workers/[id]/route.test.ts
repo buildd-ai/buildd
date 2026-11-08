@@ -527,6 +527,12 @@ mock.module('@/lib/merge-policy', () => ({
   },
 }));
 
+// A terminal worker wakes its mission's next slot waiter. Stubbed so its own
+// task/mission reads do not consume the once-mocks the tests below queue up;
+// its behaviour is covered in lib/capacity-freed-wake-mission.test.ts.
+const mockWakeMissionSlotWaiter = mock((..._args: unknown[]) => Promise.resolve());
+mock.module('@/lib/capacity-freed-wake', () => ({ wakeMissionSlotWaiter: mockWakeMissionSlotWaiter }));
+
 // Every requeue/fix path wakes through the dispatch authority with a cause.
 // The full export surface is mocked: mock.module is process-global.
 const mockAnnounceTaskCreated = mock((..._args: unknown[]) => Promise.resolve());
@@ -1251,6 +1257,7 @@ describe('GET /api/workers/[id] — dashboard session', () => {
 describe('PATCH /api/workers/[id]', () => {
   beforeEach(() => {
     mockWakeTask.mockClear();
+    mockWakeMissionSlotWaiter.mockClear();
     mockAnnounceTaskCreated.mockClear();
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
@@ -13416,6 +13423,8 @@ describe('PATCH /api/workers/[id]', () => {
         1,
       );
       expect(taskSetCalls.some((updates: any) => updates.status === 'failed')).toBe(true);
+      // The terminal write frees a mission slot: the next waiter is woken on any workspace.
+      expect(mockWakeMissionSlotWaiter).toHaveBeenCalledWith('task-1');
     });
 
     it('does not set exitCause for non-terminal status updates', async () => {
@@ -13446,6 +13455,8 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedSet.exitCause).toBeUndefined();
+      // A live worker still holds its mission slot: nothing to wake.
+      expect(mockWakeMissionSlotWaiter).not.toHaveBeenCalled();
     });
 
     it('re-queues task (not failed) on budget_limited exit and leaves task pending', async () => {
