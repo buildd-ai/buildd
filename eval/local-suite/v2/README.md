@@ -5,7 +5,30 @@
 (descriptor and hash only; the content is not in this repository).
 
 Cases here: find-by-behaviour, causal-debugging and multi-file-change, three open
-cases each (a fourth per category is sealed). Nothing here has been run against a model.
+cases each (a fourth per category is sealed), and code-review, long-context-requirements
+and terminal-recovery-compaction, four open cases each. Nothing here has been run
+against a model.
+
+How the newer categories are laid out:
+
+- **code-review** (`review-*`): `snapshot/change.diff` plus the post-change tree. The
+  agent writes `review.json`. Seeded defects have a file, line range and word groups
+  naming the cause; `review-clean-extract-helper` is a clean control where any finding is
+  a false positive. `review-calibration/calibration.json` holds known-answer probes that
+  pin the deterministic grader; model-grader and person agreement is not recorded yet.
+- **long-context-requirements** (`ctx-*`): `snapshot/evidence/needles.json` is the
+  numbered requirements and `filler.md` the surrounding notes. The harness builds the
+  8K, 16K and 32K evidence with `buildEvidence` (same filler at every size, needles at a
+  recorded start, middle, end or dispersed position) and either puts it in the prompt
+  or writes `evidence/context-<size>.md` for the tool-retrieval track. The agent writes
+  `answer.json`.
+- **terminal-recovery-compaction** (`term-*`): standing rules and stages in the
+  instruction. The hidden verifier checks the rules and the stage tests; `STAGE=<n>`
+  checks one stage (a harness calls it after each stage, including after compaction)
+  and a JSON vector is printed for `gradeCompaction`.
+
+Case directories under a fixture are named so that no `.gitignore` rule hides them
+(for example `out/`, not `dist/`).
 
 Editing a case changes its hash. After an edit:
 

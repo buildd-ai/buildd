@@ -1,0 +1,22 @@
+[
+  {
+    "id": "REQ-401",
+    "text": "REQ-401 (2026-01-15, Growth, pricing): The Pro plan costs 12 per seat per month."
+  },
+  {
+    "id": "REQ-402",
+    "text": "REQ-402 (2026-01-15, Growth, pricing): The Pro plan has a one-time onboarding fee of 150."
+  },
+  {
+    "id": "REQ-409",
+    "text": "REQ-409 (2026-02-08, Growth, pricing): An account on the Pro plan is billed for at least 5 seats, even if it uses fewer."
+  },
+  {
+    "id": "REQ-415",
+    "text": "REQ-415 (2026-03-03, Growth, pricing): Annual billing takes 15% off the Pro plan seat fees. The onboarding fee is never discounted."
+  },
+  {
+    "id": "REQ-422",
+    "text": "REQ-422 (2026-04-01, Growth, pricing, replaces REQ-402): The Pro plan one-time onboarding fee is 200."
+  }
+]

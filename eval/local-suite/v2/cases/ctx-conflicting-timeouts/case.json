@@ -1,0 +1,111 @@
+{
+  "formatVersion": 2,
+  "id": "ctx-conflicting-timeouts",
+  "version": 1,
+  "contentHash": "cd996b8c5c901dd24a693dff86e3ed21f50cd4ebad1afa74b3119d8df7d721b1",
+  "category": "long-context-requirements",
+  "files": {
+    "snapshot": [
+      "snapshot/README.md",
+      "snapshot/evidence/filler.md",
+      "snapshot/evidence/needles.json",
+      "snapshot/package.json"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/answer.json"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "over-reports",
+        "picks-one"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/answer.json",
+        "candidates/over-reports/answer.json",
+        "candidates/picks-one/answer.json"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 900,
+    "maxTurns": 30,
+    "toolBudget": 60
+  },
+  "labels": {
+    "difficulty": "hard",
+    "skills": [
+      "long-context"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented requirements. Two requirements in force disagree and both replace an older one; naming a single value is the incorrect conclusion. Distractor notes are about other services.",
+  "expected": {
+    "kind": "verifier"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  },
+  "longContext": {
+    "sizes": [
+      8192,
+      16384,
+      32768
+    ],
+    "positions": [
+      "start",
+      "middle",
+      "end",
+      "dispersed"
+    ]
+  }
+}

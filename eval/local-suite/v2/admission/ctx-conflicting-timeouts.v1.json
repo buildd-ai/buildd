@@ -1,0 +1,60 @@
+{
+  "caseId": "ctx-conflicting-timeouts",
+  "version": 1,
+  "contentHash": "cd996b8c5c901dd24a693dff86e3ed21f50cd4ebad1afa74b3119d8df7d721b1",
+  "admitted": true,
+  "gates": [
+    {
+      "gate": "reference-passes",
+      "ok": true,
+      "detail": "verifier passes the reference"
+    },
+    {
+      "gate": "deterministic",
+      "ok": true,
+      "detail": "3 identical runs"
+    },
+    {
+      "gate": "negative-control-fails",
+      "ok": true,
+      "detail": "fails the snapshot and 2 broken candidate(s)"
+    },
+    {
+      "gate": "independent-of-patch",
+      "ok": true,
+      "detail": "a different correct solution passes"
+    },
+    {
+      "gate": "absence-audited",
+      "ok": true,
+      "detail": "not an answer-absent case"
+    },
+    {
+      "gate": "isolation-holds",
+      "ok": true,
+      "detail": "probe agent tree is clean"
+    }
+  ],
+  "verdicts": {
+    "reference": [
+      true,
+      true,
+      true
+    ],
+    "snapshot": [
+      false
+    ],
+    "broken:over-reports": [
+      false
+    ],
+    "broken:picks-one": [
+      false
+    ],
+    "alternative": [
+      true
+    ]
+  },
+  "leaks": [],
+  "toolchain": "bun 1.3.11; linux-arm64",
+  "checkedOn": "2026-11-08"
+}

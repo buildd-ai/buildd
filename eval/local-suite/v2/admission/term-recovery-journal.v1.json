@@ -1,0 +1,63 @@
+{
+  "caseId": "term-recovery-journal",
+  "version": 1,
+  "contentHash": "4014a27473fb7c26376d0ad84af099b456d5e62a5a90d332ae1d0192bb43b670",
+  "admitted": true,
+  "gates": [
+    {
+      "gate": "reference-passes",
+      "ok": true,
+      "detail": "verifier passes the reference"
+    },
+    {
+      "gate": "deterministic",
+      "ok": true,
+      "detail": "3 identical runs"
+    },
+    {
+      "gate": "negative-control-fails",
+      "ok": true,
+      "detail": "fails the snapshot and 3 broken candidate(s)"
+    },
+    {
+      "gate": "independent-of-patch",
+      "ok": true,
+      "detail": "a different correct solution passes"
+    },
+    {
+      "gate": "absence-audited",
+      "ok": true,
+      "detail": "not an answer-absent case"
+    },
+    {
+      "gate": "isolation-holds",
+      "ok": true,
+      "detail": "probe agent tree is clean"
+    }
+  ],
+  "verdicts": {
+    "reference": [
+      true,
+      true,
+      true
+    ],
+    "snapshot": [
+      false
+    ],
+    "broken:drop-converted": [
+      false
+    ],
+    "broken:rescale": [
+      false
+    ],
+    "broken:touches-backup": [
+      false
+    ],
+    "alternative": [
+      true
+    ]
+  },
+  "leaks": [],
+  "toolchain": "bun 1.3.11; linux-arm64",
+  "checkedOn": "2026-11-08"
+}
