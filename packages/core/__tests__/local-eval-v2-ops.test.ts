@@ -28,6 +28,21 @@ describe('filterCases', () => {
   });
 });
 
+describe('planRuns admission guard', () => {
+  const base = { policy: { model: 'm', harness: 'fixture', contextTokens: 8192, trials: 2, track: 'single-context', retrievalPolicy: 'none' } as RunPolicy, adapter: { startsModel: false } as never, gpus: null, loadedModels: [], startsModel: false, modelVramMb: null, now: new Date('2026-11-08T00:00:00Z'), needs: {} };
+  it('refuses every trial of a case whose admission was rejected, with a reason that names admission', () => {
+    const plan = planRuns({ ...base, cases: [row({ id: 'bad', admitted: false }), row({ id: 'good', admitted: true })] });
+    expect(plan.filter((r) => r.caseId === 'bad').map((r) => r.action)).toEqual(['refused', 'refused']);
+    expect(plan.find((r) => r.caseId === 'bad')!.reason).toContain('not admitted');
+    expect(plan.filter((r) => r.caseId === 'good').map((r) => r.action)).toEqual(['run', 'run']);
+  });
+  it('caseRow reads admission from the manifest', () => {
+    const m = (admission: unknown) => ({ id: 'c', version: 1, category: 'x', labels: { difficulty: 'easy', skills: [] }, resources: { cpuOnly: true, estimatedVramMb: null }, exposing: false, admission }) as unknown as CaseManifestV2;
+    expect(caseRow(m(null), 'dev').admitted).toBe(false);
+    expect(caseRow(m({ admittedOn: '2026-11-08', gates: [] }), 'dev').admitted).toBe(true);
+  });
+});
+
 describe('permittedBrief', () => {
   it('shows the instruction and snapshot paths, never verifier, reference or candidates', () => {
     const m = { id: 'c', category: 'find-by-behaviour', resources: { cpuOnly: true }, files: { snapshot: ['snapshot/a.ts'], instruction: 'instruction.md', verifier: ['verifier/check.ts'], reference: ['reference/answer.json'], rubric: null, candidates: { broken: [], alternative: null, files: [] } } } as unknown as CaseManifestV2;
