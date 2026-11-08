@@ -113,7 +113,7 @@ process.exit(readFileSync(process.env.CANDIDATE_DIR + '/answer.json','utf8') ===
 
 describe('cli --suite v2 guard (AC-15)', () => {
   const env = { minFreeMb: 1, readGpu: () => [{ usedMb: 0, totalMb: 24000 }], loaded: async () => [] as string[] };
-  const opts = (root: string) => (n: string) => (n === 'root' ? root : undefined);
+  const opts = (root: string, extra: Record<string, string> = {}) => (n: string) => (n === 'root' ? root : { model: 'qwen3-coder:30b', harness: 'claude-code', context: '8192', case: 'find-total', ...extra }[n]);
   it('refuses a run on a cpuOnly case and exits non-zero without loading anything', async () => {
     const root = fresh(); build(root, FILES());
     expect(await runV2('run', opts(root), () => false, env)).toBe(3);
@@ -148,5 +148,58 @@ describe('shipped default suite', () => {
     const root = tempDir('eval-empty-');
     expect(() => loadSuiteV2(root)).toThrow(/suite\.json/);
     rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('cli --suite v2 operations', () => {
+  const env = { minFreeMb: 1, readGpu: () => [{ usedMb: 0, totalMb: 24000 }], loaded: async () => [] as string[] };
+  const o = (extra: Record<string, string>) => (n: string) => ({ root: DEFAULT_ROOT, ...extra }[n]);
+  const capture = async (fn: () => Promise<number>) => {
+    const lines: string[] = []; const log = console.log; const err = console.error;
+    console.log = (...a: unknown[]) => { lines.push(a.join(' ')); }; console.error = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    try { return { code: await fn(), out: lines.join('\n') }; } finally { console.log = log; console.error = err; }
+  };
+  it('lists the shipped suite with sealed descriptors, and filters', async () => {
+    const all = await capture(() => runV2('list', o({ json: '1' }), (n) => n === 'json', env));
+    const rows = JSON.parse(all.out) as { id: string; split: string; available: boolean }[];
+    expect(rows.some((r) => r.split === 'sealed-holdout' && !r.available)).toBe(true);
+    const ctx = await capture(() => runV2('list', o({ category: 'long-context-requirements', context: '16384', json: '1' }), (n) => n === 'json', env));
+    expect((JSON.parse(ctx.out) as { id: string }[]).every((r) => r.id.startsWith('ctx-'))).toBe(true);
+    expect((await capture(() => runV2('list', o({ resource: 'nope' }), () => false, env))).code).toBe(2);
+  });
+  it('inspect prints the permitted brief only', async () => {
+    const r = await capture(() => runV2('inspect', o({ case: 'find-two-retry-sites' }), () => false, env));
+    expect(r.code).toBe(0);
+    expect(r.out).not.toMatch(/verifier|reference\/|candidates\//);
+    expect((await capture(() => runV2('inspect', o({ case: 'sealed-find-a' }), () => false, env))).out).toContain('sealed-holdout');
+  });
+  it('smoke preset plans four cases and starts nothing before the GPU window', async () => {
+    const r = await capture(() => runV2('run', o({ preset: 'smoke', model: 'm:1', harness: 'claude-code', context: '8192', 'dry-run': '1' }), (n) => n === 'dry-run', env));
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('4 planned run(s)');
+    // Every shipped case is cpuOnly: true, which the guard never lets start a model (a case version with cpuOnly: false and a VRAM estimate is needed first).
+    expect(r.out).toContain('refused');
+    expect(r.out).toContain('cpuOnly');
+    const live = await capture(() => runV2('run', o({ preset: 'smoke', model: 'm:1', harness: 'claude-code', context: '8192' }), () => false, env));
+    expect(live.code).toBe(3);
+  });
+  it('run requires an explicit policy and exactly one selector', async () => {
+    expect((await capture(() => runV2('run', o({ preset: 'smoke' }), () => false, env))).code).toBe(2);
+    expect((await capture(() => runV2('run', o({ model: 'm', harness: 'h', context: '8192' }), () => false, env))).out).toContain('choose exactly one');
+  });
+  it('redact rewrites stored artifacts and prune deletes only expired raw output, keeping run.json', async () => {
+    const { utimesSync } = await import('node:fs');
+    const dir = tempDir('v2-art-'); const run = join(dir, 'r1'); mkdirSync(run, { recursive: true });
+    writeFileSync(join(run, 'agent.stdout.txt'), 'token bld_abcdef123456 at /home/someone/x');
+    writeFileSync(join(run, 'run.json'), '{"runId":"r1"}');
+    expect((await capture(() => runV2('redact', o({ dir }), () => false, env))).out).toContain('redacted 1');
+    expect(readFileSync(join(run, 'agent.stdout.txt'), 'utf8')).not.toMatch(/bld_abc|someone/);
+    const old = new Date(Date.now() - 40 * 86_400_000); utimesSync(join(run, 'run.json'), old, old);
+    await capture(() => runV2('prune', o({ dir }), () => false, env));
+    expect(existsSync(join(run, 'agent.stdout.txt'))).toBe(true);
+    await capture(() => runV2('prune', o({ dir, apply: '1' }), (n) => n === 'apply', env));
+    expect(existsSync(join(run, 'agent.stdout.txt'))).toBe(false);
+    expect(existsSync(join(run, 'run.json'))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

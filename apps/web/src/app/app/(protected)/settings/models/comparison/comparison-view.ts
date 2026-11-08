@@ -81,3 +81,19 @@ export const EVIDENCE_NOTICE = {
   title: 'Observed in production',
   body: 'Production attempts, routed rather than randomised. This page never changes routing.',
 } as const;
+
+/** v2 profile wording. A rate always shows the runs behind it; a unit with no runs says so. */
+export function v2RateText(r: { k: number; n: number; rate: number | null; interval: { lower: number; upper: number } | null } | null): string {
+  if (!r || r.n === 0 || r.rate === null) return NOT_RECORDED;
+  const range = r.interval ? `, ${pct(r.interval.lower)} to ${pct(r.interval.upper)}` : '';
+  return `${pct(r.rate)} (${r.k} of ${r.n}${range})`;
+}
+
+export const SPLIT_LABEL: Record<string, string> = { dev: 'Dev cases', 'sealed-holdout': 'Sealed holdout', prospective: 'Prospective' };
+
+export function categoryTitle(c: string): string {
+  const t = c.replace(/-/g, ' ');
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+export const REPLAY_EMPTY = 'No evaluation runs.';

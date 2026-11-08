@@ -8,10 +8,20 @@
  *   cli.ts admit    --suite v2 [--case id] [--evidence <dir>] [--write]
  *   cli.ts export   --suite v2 --case id --out <dir>      (agent tree: one commit, no remote)
  *   cli.ts regrade  --suite v2 --dir <artifacts dir>
- *   cli.ts run      --suite v2 ...                          (guard only; see below)
+ *   cli.ts list     --suite v2 [--skill s] [--difficulty d] [--category c] [--context 8192|16384|32768] [--resource cpu-only|needs-gpu|vram<=N] [--split dev|sealed-holdout] [--json]
+ *   cli.ts inspect  --suite v2 --case id                    (the permitted brief only)
+ *   cli.ts run      --suite v2 --model tag --harness name --context N (--preset smoke | --all | --case id) [--trials n] [--track single-context|tool-retrieval] [--dry-run]
+ *   cli.ts ingest   --suite v2 --dir <runs dir> --workspace <id> [--api url]   (redacts, then POSTs run.json records)
+ *   cli.ts redact   --suite v2 --dir <runs dir>              (rewrite stored artifacts with secrets and user paths removed)
+ *   cli.ts prune    --suite v2 --dir <runs dir> [--days 30] [--apply]   (delete raw transcripts older than the retention period; run.json is kept)
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync, appendFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import {
+  RETENTION_DAYS, caseRow, filterCases, hasSecret, isExpired, permittedBrief, planRuns, redactDeep, redactText, sealedRow, smokeCases, validatePolicy,
+  type CaseRow, type RunPolicy, type SealedDescriptor,
+} from '../../packages/core/local-eval-v2-ops';
+import { validateRunRecord } from '../../packages/core/local-eval';
 import {
   admitCase, exportAgentTree, inferenceGuard, leakFindingsV2, regrade, validateSuiteV2,
   type CaseFiles, type CaseManifestV2, type StoredArtifact, type SuiteV2, type AdmissionEvidence,
@@ -136,9 +146,59 @@ export async function admitOne(c: LoadedCase, evidenceDir: string): Promise<Admi
   } finally { rmSync(probeDir, { recursive: true, force: true }); }
 }
 
+export function loadSplits(root: string): { dev: string[]; sealedHoldout: SealedDescriptor[] } {
+  const f = join(root, 'splits.json');
+  if (!existsSync(f)) return { dev: [], sealedHoldout: [] };
+  const j = JSON.parse(readFileSync(f, 'utf8')) as { dev?: string[]; sealedHoldout?: SealedDescriptor[] };
+  return { dev: j.dev ?? [], sealedHoldout: j.sealedHoldout ?? [] };
+}
+
+/** Every case this checkout knows: open cases with their split, then sealed descriptors (not runnable here). */
+export function listCaseRows(root: string): CaseRow[] {
+  const { cases } = loadSuiteV2(root);
+  const { sealedHoldout } = loadSplits(root);
+  const open = Object.values(cases).map((c) => caseRow(c.manifest, 'dev'));
+  return [...open, ...sealedHoldout.map(sealedRow)];
+}
+
+/** Raw agent output kept for regrade and review; deleted after the retention period. The run record is not in this list. */
+const RAW_ARTIFACTS = ['agent.stdout.txt', 'agent.stderr.txt', 'agent.diff', 'grading.txt', 'claude-config', 'tree', 'trajectory.json'];
+
+export function runDirs(dir: string): string[] {
+  return readdirSync(dir).map((d) => join(dir, d)).filter((p) => statSync(p).isDirectory());
+}
+
+export function redactRunDir(runDir: string): number {
+  let changed = 0;
+  for (const name of readdirSync(runDir)) {
+    const p = join(runDir, name);
+    if (!statSync(p).isFile() || !/\.(txt|json|diff|md)$/.test(name)) continue;
+    const before = readFileSync(p, 'utf8');
+    let after: string;
+    if (name === 'run.json') {
+      const parsed = JSON.parse(before);
+      const red = redactDeep(parsed);
+      after = JSON.stringify(red) === JSON.stringify(parsed) ? before : JSON.stringify(red, null, 2) + '\n';
+    } else after = redactText(before);
+    if (after !== before) { writeFileSync(p, after); changed++; }
+  }
+  return changed;
+}
+
+export function pruneRunDir(runDir: string, now: Date, days: number, apply: boolean): string[] {
+  const rec = join(runDir, 'run.json');
+  if (!existsSync(rec)) return [];
+  if (!isExpired(statSync(rec).mtime, now, days)) return [];
+  const gone = RAW_ARTIFACTS.map((n) => join(runDir, n)).filter(existsSync);
+  if (apply) for (const g of gone) rmSync(g, { recursive: true, force: true });
+  return gone;
+}
+
 export function loadArtifacts(dir: string): StoredArtifact[] {
   return readdirSync(dir).filter((f) => f.endsWith('.json')).sort().map((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')) as StoredArtifact);
 }
+
+function sealedHoldoutHas(root: string, id: string): boolean { return loadSplits(root).sealedHoldout.some((d) => d.id === id); }
 
 /** Dispatch for `--suite v2`. Returns the process exit code. */
 export async function runV2(cmd: string | undefined, opt: (n: string) => string | undefined, has: (n: string) => boolean, env: { minFreeMb: number; readGpu: () => { usedMb: number; totalMb: number }[] | null; loaded: () => Promise<string[]> }): Promise<number> {
@@ -177,6 +237,67 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     console.log(r.leaks.length ? `LEAKS:\n${r.leaks.join('\n')}` : `exported ${id}: one commit, no remote, no hidden material`);
     return r.leaks.length ? 1 : 0;
   }
+  if (cmd === 'list') {
+    const f = filterCases(listCaseRows(root), {
+      skill: opt('skill'), difficulty: opt('difficulty'), category: opt('category'), context: opt('context') ? Number(opt('context')) : undefined,
+      resource: opt('resource'), split: opt('split') as 'dev' | 'sealed-holdout' | undefined,
+    });
+    if (f.error) { console.error(f.error); return 2; }
+    if (has('json')) console.log(JSON.stringify(f.rows, null, 2));
+    else {
+      for (const r of f.rows) console.log(`${r.id}\tv${r.version}\t${r.category}\t${r.difficulty}\t${r.split}${r.available ? '' : ' (sealed)'}\t${r.cpuOnly ? 'cpu-only' : `gpu ${r.estimatedVramMb ?? '?'}MiB`}\t${r.skills.join(',')}${r.contextSizes.length ? `\tctx ${r.contextSizes.join('/')}` : ''}`);
+      console.log(`${f.rows.length} case(s)`);
+    }
+    return 0;
+  }
+  if (cmd === 'inspect') {
+    const id = opt('case');
+    if (!id) { console.error('--case is required'); return 2; }
+    const c = Object.values(loadSuiteV2(root).cases).find((x) => x.manifest.id === id);
+    if (!c) { console.error(sealedHoldoutHas(root, id) ? `${id} is sealed-holdout: its content is not in this repository` : `no case ${id}`); return 2; }
+    const b = permittedBrief(c.manifest, c.files);
+    console.log(`# ${b.id} (${b.category})\n\n${b.instruction}\nFiles the agent receives:\n${b.snapshotPaths.map((p) => `  ${p}`).join('\n')}\nBudget: ${b.resources.maxTurns} turns, ${b.resources.toolBudget} tool calls, ${b.resources.wallClockSeconds}s`);
+    return 0;
+  }
+  if (cmd === 'redact') {
+    const dir = opt('dir'); if (!dir) { console.error('--dir is required'); return 2; }
+    let n = 0; for (const d of runDirs(resolve(dir))) n += redactRunDir(d);
+    console.log(`redacted ${n} file(s)`);
+    return 0;
+  }
+  if (cmd === 'prune') {
+    const dir = opt('dir'); if (!dir) { console.error('--dir is required'); return 2; }
+    const days = Number(opt('days') ?? RETENTION_DAYS);
+    let n = 0;
+    for (const d of runDirs(resolve(dir))) { const gone = pruneRunDir(d, new Date(), days, has('apply')); n += gone.length; for (const g of gone) console.log(`${has('apply') ? 'deleted' : 'would delete'} ${g}`); }
+    console.log(`${n} raw artifact(s) older than ${days} days${has('apply') ? ' deleted' : ' (dry run; pass --apply)'}`);
+    return 0;
+  }
+  if (cmd === 'ingest') {
+    const dir = opt('dir'); const workspaceId = opt('workspace');
+    if (!dir || !workspaceId) { console.error('--dir and --workspace are required'); return 2; }
+    const key = process.env.BUILDD_API_KEY;
+    if (!key) { console.error('BUILDD_API_KEY is required in the environment'); return 2; }
+    const api = (opt('api') ?? 'https://buildd.dev').replace(/\/$/, '');
+    const runs: unknown[] = [];
+    for (const d of runDirs(resolve(dir))) {
+      const p = join(d, 'run.json'); if (!existsSync(p)) continue;
+      const raw = readFileSync(p, 'utf8');
+      // A record that would store a secret-shaped string is invalid and is not sent.
+      if (hasSecret(raw)) { console.error(`${p}: contains a secret-shaped string; run \`redact\` first. Not sent.`); return 1; }
+      const rec = JSON.parse(raw);
+      const errs = validateRunRecord(rec);
+      if (errs.length) { console.error(`${p}: ${errs.join('; ')}`); return 1; }
+      runs.push(rec);
+    }
+    if (!runs.length) { console.error('no run.json records found'); return 2; }
+    for (let i = 0; i < runs.length; i += 100) {
+      const res = await fetch(`${api}/api/model-observations/replay`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ workspaceId, runs: runs.slice(i, i + 100) }) });
+      console.log(res.status, JSON.stringify(await res.json()));
+      if (!res.ok) return 1;
+    }
+    return 0;
+  }
   if (cmd === 'regrade') {
     const dir = opt('dir');
     if (!dir) { console.error('--dir is required'); return 2; }
@@ -189,19 +310,37 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     return changed ? 1 : 0;
   }
   if (cmd === 'run') {
-    // Guard first, for every case, before anything could load a model. This task ships the guard; the v2 model runner is not built.
-    const id = opt('case');
+    const rows = listCaseRows(root);
+    const policy: Partial<RunPolicy> = {
+      model: opt('model'), harness: opt('harness'), contextTokens: Number(opt('context')),
+      trials: Number(opt('trials') ?? (opt('preset') === 'smoke' ? 1 : 3)),
+      track: (opt('track') as RunPolicy['track'] | undefined) ?? 'single-context', retrievalPolicy: opt('retrieval') ?? 'none',
+    };
+    const perr = validatePolicy(policy);
+    if (opt('preset') && opt('preset') !== 'smoke') perr.push('--preset must be smoke');
+    const modes = [opt('preset') ? 1 : 0, has('all') ? 1 : 0, opt('case') ? 1 : 0].reduce((a, b) => a + b, 0);
+    if (modes !== 1) perr.push('choose exactly one of --preset smoke, --all, --case <id>');
+    if (perr.length) { console.error(perr.join('\n')); return 2; }
+    const selected = opt('preset') === 'smoke' ? smokeCases(rows)
+      : opt('case') ? rows.filter((r) => r.id === opt('case'))
+      : rows.filter((r) => r.split === 'dev');
+    if (!selected.length) { console.error(`no v2 case matched${opt('case') ? ` ${opt('case')}` : ''}`); return 2; }
     const { cases } = loadSuiteV2(root);
-    const list = Object.values(cases).filter((c) => !id || c.manifest.id === id);
-    if (!list.length) { console.error('no v2 cases to run'); return 2; }
+    const p = policy as RunPolicy;
+    // Declared capabilities of the chosen adapter; each can be turned off to record `unsupported` without touching the case.
+    const adapter = { id: `${p.harness}:${p.model}`, capabilities: { toolCalling: !has('no-tool-calling'), systemPrompt: !has('no-system-prompt'), structuredOutput: !has('no-structured-output'), contextTokens: p.contextTokens } };
+    const needs = Object.fromEntries(selected.filter((r) => cases[r.id]).map((r) => [r.id, { toolCalling: p.track === 'tool-retrieval' || r.category !== 'long-context-requirements', systemPrompt: false, structuredOutput: false, contextTokens: 0 }]));
     const gpus = env.readGpu(); const loaded = await env.loaded().catch(() => []);
-    for (const c of list) {
-      const g = inferenceGuard({ cpuOnly: c.manifest.resources.cpuOnly, estimatedVramMb: c.manifest.resources.estimatedVramMb, gpus, loadedModels: loaded, now: new Date(), purpose: 'model-run' });
-      if (!g.allowed) { console.error(`${c.manifest.id}: no model started: ${g.reason}`); return 3; }
-    }
+    const plan = planRuns({ cases: selected, needs, policy: p, adapter, now: new Date(), gpus, loadedModels: loaded });
+    for (const r of plan) console.log(`${r.runId}\t${r.split}\t${r.action}${r.reason ? `\t${r.reason}` : ''}`);
+    const bad = plan.filter((r) => r.action !== 'run');
+    console.log(`${plan.length} planned run(s), ${plan.length - bad.length} allowed, ${bad.length} not started`);
+    if (has('dry-run')) return 0;
+    if (bad.some((r) => r.action === 'refused')) { console.error('no model started: the guard refused at least one run (see above)'); return 3; }
+    // The model executor is not wired yet; the guard has passed and nothing was started.
     console.error('v2 model runs are not implemented yet (guard passed; nothing was started)');
     return 4;
   }
-  console.error('usage with --suite v2: validate | admit | export | regrade | run');
+  console.error('usage with --suite v2: validate | admit | list | inspect | export | regrade | run | ingest | redact | prune');
   return 2;
 }
