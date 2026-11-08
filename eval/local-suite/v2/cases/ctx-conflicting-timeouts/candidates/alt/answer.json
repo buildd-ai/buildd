@@ -1,0 +1,1 @@
+{"answer":"Conflict between REQ-219 (45 s) and REQ-204 (30 s); REQ-188 is superseded by both, so I cannot name one timeout.","conflicts":["req-219","REQ-204"]}

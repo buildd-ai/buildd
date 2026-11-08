@@ -84,3 +84,27 @@ describe('workspace access boundary', () => {
     expect(resolveComparisonWorkspace([], 'a')).toBeNull();
   });
 });
+
+describe('ModelComparisonView evaluation runs', () => {
+  const ev = (o: Record<string, unknown>) => row({ endpointKind: 'local_loopback', durationMs: 4000, ...o, evaluation: { provenance: 'controlled_replay', suiteVersion: 'v2', scoringVersion: 'score-v2', caseId: 'find-a', configId: 'm@8192', result: 'pass', runId: `r${seq}`, v2: { category: 'find-by-behaviour', split: 'dev', graderId: 'find-v1', failureClass: null }, ...(o.evaluation as object) } as ComparisonRow['evaluation'] });
+  it('says nothing has been run when there are no evaluation runs', () => {
+    const html = render([row()]);
+    expect(html).toContain('No evaluation runs.');
+    expect(html).not.toContain('%');
+  });
+  it('shows the per-category profile with unknowns as Not recorded, and keeps v1 visible', () => {
+    const v1 = row({ endpointKind: 'local_loopback', evaluation: { provenance: 'controlled_replay', suiteVersion: 'v1', scoringVersion: 'score-v1', caseId: 'fix-a', configId: 'm@16384', result: 'pass' } });
+    const html = render([ev({}), ev({ evaluation: { result: 'fail' } }), v1]);
+    expect(html).toContain('Find by behaviour');
+    expect(html).toContain('50% (1 of 2');
+    expect(html).toContain('peak VRAM Not recorded');
+    expect(html).toContain('Earlier replay suite (v1)');
+    expect(html).toContain('m@16384: 1 of 1 trials passed');
+    expect(html.toLowerCase()).not.toContain('winner');
+  });
+  it('lists flagged conclusions as needing independent confirmation', () => {
+    const html = render([ev({ evaluation: { result: 'fail', v2: { category: 'find-by-behaviour', split: 'dev', graderId: 'find-v1', failureClass: 'model', flags: ['fabrication'] } } })]);
+    expect(html).toContain('Conclusions to confirm independently');
+    expect(html).toContain('fabrication');
+  });
+});

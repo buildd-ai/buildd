@@ -1,0 +1,3 @@
+{"findings":[
+ {"file":"src/paginate.ts","line":11,"description":"off-by-one: page is 1-based, start must be (page - 1) * pageSize"}
+]}

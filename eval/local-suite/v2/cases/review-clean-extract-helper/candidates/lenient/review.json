@@ -1,0 +1,1 @@
+{"findings":[{"file":"src/invoice.ts","line":9,"description":"Unknown currency codes silently fall back to two decimals instead of failing, which can render wrong amounts"}]}

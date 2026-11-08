@@ -1,0 +1,4 @@
+{"findings":[
+ {"file":"src/handler.ts","line":7,"description":"No bounds check on page or pageSize: Number('abc') is NaN and Number('-5') is negative, and an unbounded pageSize defeats paging"},
+ {"file":"src/paginate.ts","line":11,"description":"The README numbers pages from 1, yet the offset uses page directly, so the first page is skipped (zero-based arithmetic on a 1-based page)"}
+]}

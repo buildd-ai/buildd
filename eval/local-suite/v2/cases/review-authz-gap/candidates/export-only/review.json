@@ -1,0 +1,1 @@
+{"findings":[{"file":"src/projects.ts","line":37,"description":"exportProject lets members export; only the owner should be allowed to export project data"}]}
