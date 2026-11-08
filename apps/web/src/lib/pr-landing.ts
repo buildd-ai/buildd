@@ -74,7 +74,7 @@ import {
 import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
 import { refreshCause } from '@/lib/refresh-cause';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
-import { resolveAllowedMergeMethod, type AllowedMergeMethodsReader } from '@/lib/allowed-merge-methods';
+import { isMergeMethodRefusal, resolveAllowedMergeMethod, type AllowedMergeMethodsReader } from '@/lib/allowed-merge-methods';
 import { isFailingCheckRun } from '@/lib/ci-verdict';
 import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -1173,12 +1173,20 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // conflict-resolution task IS the merge commit that catches a mission's
   // integration branch up with dev, and squashing it would drop that
   // ancestry — the same conflict would reappear on the next refresh.
+  // A release PR (a frozen candidate, or the legacy release PR) lands with a merge commit, as the
+  // release executor merges it: the prod branch refuses a squash, and sync-dev needs the ancestry.
+  const releaseMerge = !!adoption && 'why' in adoption && adoption.why === 'release';
   // No method asked for: one the base accepts (a ruleset on a release target can allow only
   // `merge`), so the default never fails as a GitHub 405 dressed as a person's decision.
   const mergeMethod = await resolveAllowedMergeMethod(
-    { context: mergingTask?.context, requested: input.mergeMethod, installationId, repoFullName, baseRef },
+    { context: mergingTask?.context, requested: input.mergeMethod ?? (releaseMerge ? 'merge' : undefined), installationId, repoFullName, baseRef },
     deps.readAllowedMergeMethods,
   );
+  // A refusal of the method alone is a mismatch in the method we chose, not a decision for a person
+  // (the allowed-methods read can fail and leave the default). An explicit request stays the caller's.
+  const methodWasOurs = !input.mergeMethod && !releaseMerge;
+  const methodMismatch = (message: string, extra?: Record<string, unknown>) =>
+    waiting(`GitHub refused the merge method (${mergeMethod}); the next attempt re-reads the methods the base allows: ${message}`, extra);
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
   // merge_call → T16 → verify_merge → PrMerged), which also owns the
   // post-merge work; any other PR merges here as before.
@@ -1225,6 +1233,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // Branch protection that requires an up-to-date branch: same work as behind base.
   if (/(is|was) (out of date|not up to date)/i.test(message)) return refresh(message, baseRef ?? '');
   if (classifyMergeFailure(message) === 'conflict') return conflictOutcome(message);
+  if (methodWasOurs && isMergeMethodRefusal(message)) return methodMismatch(message);
   return human('merge_failed', message);
 
   // ── helpers that close over the landing state ───────────────────────────────
@@ -1237,7 +1246,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'merged': return landed(k.mergeCommitSha ?? liveHead, null);
       case 'behind': return done({ kind: 'updating_branch', newHeadSha: liveHead }, `the kernel is refreshing the branch: ${k.message}`, extra);
       case 'conflict': return done({ kind: 'needs_fix', fix: 'conflict', reason: k.message }, k.message, { ...extra, fix: 'conflict', fixDispatched: true });
-      case 'refused': return human('merge_failed', k.message, extra);
+      case 'refused': return methodWasOurs && isMergeMethodRefusal(k.message) ? methodMismatch(k.message, extra) : human('merge_failed', k.message, extra);
       // The base moved again between T12's tolerance and the merge: back to T12, which refreshes or escalates.
       case 'rejected':
         if (k.reason === 'behind_not_tolerated' && baseRef) return refresh(k.message, baseRef);

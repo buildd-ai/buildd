@@ -497,6 +497,32 @@ describe('landPr — a PR with no delivery (D2/D3, AC-13)', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('a release PR lands with a merge commit by default (the prod branch refuses a squash); an explicit method is kept', async () => {
+    const outside: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+    };
+    await land({}, d);
+    expect(outside[0].mergeMethod).toBe('merge');
+    await land({ mergeMethod: 'rebase' }, d);
+    expect(outside[1].mergeMethod).toBe('rebase');
+  });
+
+  it('a dependency bot PR through the same gate keeps the default squash', async () => {
+    const outside: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'dependency_bot' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+    };
+    await land({}, d);
+    expect(outside[0].mergeMethod).toBe('squash');
+  });
+
   it('a release candidate the release gate holds (a required check) is a wait, never a failed merge', async () => {
     const d: LandPrDeps = {
       ...deps(),
@@ -1979,6 +2005,13 @@ describe('landPr — merge call failures', () => {
     const out = await land({}, { ...deps(), readAllowedMergeMethods: async () => ['merge'] });
     expect(mockMergePullRequest.mock.calls.at(-1)![3]).toBe('merge');
     expect(out).toMatchObject({ kind: 'needs_human', cause: 'merge_failed', reason: expect.stringContaining('Required status check') });
+  });
+
+  it('a 405 method refusal on a method we chose is a wait, not a human outcome; an explicit method stays human', async () => {
+    mockMergePullRequest.mockImplementation(async () => ({ merged: false, message: 'Squash merges are not allowed on this repository.' }));
+    const out = await land({}, { ...deps(), readAllowedMergeMethods: async () => null });
+    expect(out.kind).not.toBe('needs_human');
+    expect(await land({ mergeMethod: 'squash' }, deps())).toMatchObject({ kind: 'needs_human', cause: 'merge_failed' });
   });
 
   it('any other refusal is a human outcome with the message', async () => {

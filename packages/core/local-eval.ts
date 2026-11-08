@@ -15,6 +15,7 @@
  */
 import { createHash } from 'node:crypto';
 import { buildObservation, type ObservationValues } from './model-observation';
+import { sanitizeToolEfficiency, type ToolEfficiencyAggregate } from './tool-efficiency';
 
 export const SUITE_FORMAT_VERSION = 1;
 /** Bump when scoring, tamper rules or the prompt template change; old results stay comparable only within one value. */
@@ -259,6 +260,65 @@ export interface RunRecord {
   harnessNote: string | null;
   /** v2 runs only (docs/specs/coding-eval-playground.md). Absent on every v1 run. */
   v2?: RunDetailV2;
+  /**
+   * The analysed local tool trace of the agent subprocess, when the evaluator
+   * imported one. Absent or null = no analysed trace (unknown, not clean).
+   */
+  toolEfficiency?: ReplayToolEfficiency | null;
+}
+
+/** Where a replay run's tool trace came from. A label, never a path. */
+export const REPLAY_TOOL_SOURCES = ['claude_stream_json', 'claude_transcript', 'runner_trace'] as const;
+export type ReplayToolSource = (typeof REPLAY_TOOL_SOURCES)[number];
+/**
+ * How far the aggregate's timing can be trusted: `measured` (a runner trace
+ * timed each call), `approximate` (differences between transcript line
+ * timestamps), `unknown` (the source has no timestamps; timing is empty).
+ */
+export const REPLAY_TOOL_TIMINGS = ['measured', 'approximate', 'unknown'] as const;
+export type ReplayToolTiming = (typeof REPLAY_TOOL_TIMINGS)[number];
+
+/**
+ * The bounded tool-efficiency block of a replay run: the tea-v1 aggregate
+ * (counts, failure classes, finding-kind counts, timing, coverage) plus its
+ * provenance. No commands, prompts, source, paths, claims or fingerprints.
+ * Findings are heuristic candidates, not a correctness or wasted-calls score;
+ * correctness stays with the hidden grading and review.
+ */
+export interface ReplayToolEfficiency {
+  aggregate: ToolEfficiencyAggregate;
+  source: ReplayToolSource;
+  timing: ReplayToolTiming;
+}
+
+const REPLAY_TOOL_KEYS = new Set(['aggregate', 'source', 'timing']);
+
+/** Why a replay tool-efficiency block is refused; empty = fine. Null/absent is fine (unknown). */
+export function validateReplayToolEfficiency(v: unknown): string[] {
+  if (v == null) return [];
+  if (typeof v !== 'object' || Array.isArray(v)) return ['toolEfficiency must be an object or null'];
+  const o = v as Record<string, unknown>;
+  const errs: string[] = [];
+  for (const k of Object.keys(o)) if (!REPLAY_TOOL_KEYS.has(k)) errs.push(`toolEfficiency.${k.slice(0, 40)} is not a known field`);
+  if (!(REPLAY_TOOL_SOURCES as readonly string[]).includes(o.source as string)) errs.push(`toolEfficiency.source must be one of ${REPLAY_TOOL_SOURCES.join(', ')}`);
+  if (!(REPLAY_TOOL_TIMINGS as readonly string[]).includes(o.timing as string)) errs.push(`toolEfficiency.timing must be one of ${REPLAY_TOOL_TIMINGS.join(', ')}`);
+  const agg = sanitizeToolEfficiency(o.aggregate);
+  if (!agg) { errs.push('toolEfficiency.aggregate is not a known-version tool-efficiency aggregate'); return errs; }
+  // Timing is never invented: only a runner trace measures it, and a source without timestamps has none.
+  if (o.timing === 'measured' && o.source !== 'runner_trace') errs.push('toolEfficiency.timing measured needs a runner trace; a transcript is approximate at best');
+  if (o.timing === 'unknown' && (agg.timing.observedCalls > 0 || agg.timing.totalMs > 0 || agg.timing.p50Ms !== null || agg.timing.p90Ms !== null || agg.timing.maxMs !== null)) {
+    errs.push('toolEfficiency timing is unknown but the aggregate carries timings');
+  }
+  return errs;
+}
+
+/** The aggregate as it may be stored: whitelisted, with timing emptied when the source could not time calls. */
+export function replayToolAggregate(t: ReplayToolEfficiency | null | undefined): ToolEfficiencyAggregate | null {
+  if (!t) return null;
+  const agg = sanitizeToolEfficiency(t.aggregate);
+  if (!agg) return null;
+  if (t.timing === 'unknown') agg.timing = { observedCalls: 0, totalMs: 0, p50Ms: null, p90Ms: null, maxMs: null };
+  return agg;
 }
 
 /** Optional v2 fields on a run record. Bounded and free of transcripts: ids, labels, counts and rates only. */
@@ -299,9 +359,12 @@ export interface EvaluationAttribution {
   result: RunResult;
   /** v2 runs only. */
   v2?: RunDetailV2;
+  /** Provenance of the stored tool-efficiency aggregate; absent when the run carried none. */
+  toolEfficiency?: { source: ReplayToolSource; timing: ReplayToolTiming; analyserVersion: string };
 }
 
 export function evaluationOf(r: RunRecord): EvaluationAttribution {
+  const agg = replayToolAggregate(r.toolEfficiency);
   return {
     provenance: 'controlled_replay',
     suiteId: r.suiteId,
@@ -315,6 +378,7 @@ export function evaluationOf(r: RunRecord): EvaluationAttribution {
     promptHash: r.promptHash,
     result: r.result,
     ...(r.v2 ? { v2: r.v2 } : {}),
+    ...(agg && r.toolEfficiency ? { toolEfficiency: { source: r.toolEfficiency.source, timing: r.toolEfficiency.timing, analyserVersion: agg.analyserVersion } } : {}),
   };
 }
 
@@ -365,6 +429,7 @@ export function validateRunRecord(r: unknown): string[] {
   if (o.suiteVersion !== 'v2' && o.v2 != null) errs.push('v2 fields are only accepted on a v2 suite run');
   if (o.suiteVersion === 'v2') errs.push(...validateDetailV2(o.v2));
   if (Number.isNaN(Date.parse(o.startedAt ?? '')) || Number.isNaN(Date.parse(o.endedAt ?? ''))) errs.push('startedAt and endedAt must be ISO times');
+  errs.push(...validateReplayToolEfficiency(o.toolEfficiency));
   return errs;
 }
 
@@ -449,6 +514,7 @@ export function runToObservation(
       peakVramMb: r.peakVramMb ?? undefined,
       vramSamples: r.vramSamples ?? undefined,
       attempt: r.trial,
+      toolEfficiency: replayToolAggregate(r.toolEfficiency) ?? undefined,
     },
   });
   const graded = r.result === 'pass' || r.result === 'fail' || r.result === 'invalid';
