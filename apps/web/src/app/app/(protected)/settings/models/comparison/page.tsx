@@ -4,6 +4,7 @@ import { loadSettingsContext } from '../../_lib/settings-context';
 import { loadModelComparison, parseComparisonFilters } from '@/lib/model-comparison-query';
 import { FilterSelect } from './FilterSelect';
 import ModelComparisonView from './ModelComparisonView';
+import { resolveComparisonQaData } from './qa-state';
 import { resolveComparisonWorkspace } from './workspace-pick';
 
 export const dynamic = 'force-dynamic';
@@ -23,9 +24,13 @@ const FIELDS: Array<{ name: string; label: string; placeholder: string }> = [
  * workspace's real work. Read-only: it never changes which model runs. Only
  * workspaces the viewer can reach are offered; anything else falls back to the
  * first one they can.
+ *
+ * `?state=populated` (dev server only) renders sample attempts so the visual
+ * audit can see the populated page — see ./qa-state.ts.
  */
 export default async function ModelComparisonPage({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
+  const qaData = resolveComparisonQaData(sp.state);
   const { currentTeam, workspaces } = await loadSettingsContext();
   const description = 'Model results on your work.';
 
@@ -41,7 +46,7 @@ export default async function ModelComparisonPage({ searchParams }: { searchPara
 
   const parsed = parseComparisonFilters((k) => one(sp[k]));
   const filters = parsed.ok ? parsed.filters : { window: '30d' as const };
-  const data = await loadModelComparison(picked.id, filters);
+  const data = qaData ?? (await loadModelComparison(picked.id, filters));
 
   return (
     <SettingsPage title="Compare models" description={description} wide>
