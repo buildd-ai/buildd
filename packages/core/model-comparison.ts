@@ -29,6 +29,7 @@
  *   their own block and are not an input to any rate or verdict.
  */
 import { correctnessOf, EMPTY_EVIDENCE, type Correctness } from './model-observation';
+import { summarizeToolEfficiency, type ToolEfficiencyAggregate, type ToolEfficiencySummary } from './tool-efficiency';
 import { newcombeInterval, wilsonInterval, type Interval } from './stat-intervals';
 
 /** Resolved attempts needed per configuration before a rate is more than a hint. */
@@ -75,6 +76,8 @@ export interface ComparisonRow {
   specVerdict: string | null;
   prOutcome: string | null;
   reworked: boolean;
+  /** Bounded structural tool-efficiency aggregate; null/absent = no analysed trace (unknown). */
+  toolEfficiency?: ToolEfficiencyAggregate | null;
   /** Set only on controlled replay runs (packages/core/local-eval.ts). */
   evaluation?: { provenance?: string; suiteId?: string; suiteVersion?: string; scoringVersion?: string; caseId?: string; configId?: string; trial?: number; result?: string } | null;
 }
@@ -225,6 +228,12 @@ export interface ConfigSummary {
     harnessUnknown: number;
     taskClassUnknown: number;
   };
+  /**
+   * Heuristic tool-efficiency signals from the runner's local trace, per configuration. Descriptive and
+   * observational: finding counts are not a quality score, feed no rate or verdict, and attempts without
+   * an aggregate are counted as unknown, not clean. Filter by taskType / harness to key by class and harness.
+   */
+  toolEfficiency: ToolEfficiencySummary;
   sampleStatus: SampleStatus;
   /** Newest first, bounded: the rows behind the numbers. */
   links: Array<{ workerId: string; taskId: string | null; correctness: Correctness; prOutcome: string | null }>;
@@ -282,6 +291,7 @@ export function summarizeConfig(key: string, rows: ComparisonRow[]): ConfigSumma
       meanKnownUsd: costKnown ? costSum / costKnown : null,
     },
     coverage: cov,
+    toolEfficiency: summarizeToolEfficiency(rows.map((r) => r.toolEfficiency)),
     sampleStatus: quality.status,
     links: newest.map((r) => ({ workerId: r.workerId, taskId: r.taskId, correctness: correctnessOfRow(r), prOutcome: r.prOutcome })),
   };
