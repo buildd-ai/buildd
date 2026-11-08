@@ -116,6 +116,7 @@ import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } f
 import { archiveSession } from './history-store';
 import { extractTenantContext } from './tenant-context';
 import { applyModelEnv, endpointSessionModels, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { claudeLocalModelSettings } from './local-model-endpoint';
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
 import { applyMachineLoginPolicy, claudeLoginIdentity, claudeModelAuthMissing, detectMachineLogin, machineLoginStamp, decideCodexLogin, describeCodexAuthSource, describeMachineLogin, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, reportIgnoredLoginSetting, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
@@ -5298,6 +5299,10 @@ export class WorkerManager {
             ...primaryCloneMemoryExcludes(cwd, repoPath),
             ...(!useClaudeMd && wroteSessionSkills ? projectMemoryExcludes(cwd) : []),
           ],
+          // A local model's tag (e.g. an Ollama tag) resolves to a model this
+          // Claude Code knows, so the CLI never flags it unrecognized; the tag
+          // itself is still what goes to the local endpoint.
+          ...(localModel ? claudeLocalModelSettings(localModel) : {}),
         },
         permissionMode,
         systemPrompt,
