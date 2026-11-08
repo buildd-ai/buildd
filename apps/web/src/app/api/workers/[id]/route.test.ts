@@ -461,6 +461,9 @@ mock.module('@/lib/system-instruction-queue', () => ({ queueSystemInstruction: m
 const mockEvaluateCompletionHold = mock(async (_input: any): Promise<any> => ({ kind: 'pass', expire: [], stopWaiting: [], blockedByCapability: null, proceededWithout: null, summaryLead: null }));
 mock.module('@/lib/capability-hold-store', () => ({ evaluateCompletionHold: mockEvaluateCompletionHold }));
 
+const mockRecordModelObservation = mock(async (_input: any) => true);
+mock.module('@/lib/model-observation-store', () => ({ recordModelObservation: mockRecordModelObservation }));
+
 mock.module('@buildd/core/routing-analytics', () => ({
   recordTaskOutcome: mockRecordTaskOutcome,
 }));
@@ -523,6 +526,12 @@ mock.module('@/lib/merge-policy', () => ({
     };
   },
 }));
+
+// A terminal worker wakes its mission's next slot waiter. Stubbed so its own
+// task/mission reads do not consume the once-mocks the tests below queue up;
+// its behaviour is covered in lib/capacity-freed-wake-mission.test.ts.
+const mockWakeMissionSlotWaiter = mock((..._args: unknown[]) => Promise.resolve());
+mock.module('@/lib/capacity-freed-wake', () => ({ wakeMissionSlotWaiter: mockWakeMissionSlotWaiter }));
 
 // Every requeue/fix path wakes through the dispatch authority with a cause.
 // The full export surface is mocked: mock.module is process-global.
@@ -1248,6 +1257,7 @@ describe('GET /api/workers/[id] — dashboard session', () => {
 describe('PATCH /api/workers/[id]', () => {
   beforeEach(() => {
     mockWakeTask.mockClear();
+    mockWakeMissionSlotWaiter.mockClear();
     mockAnnounceTaskCreated.mockClear();
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
@@ -9314,6 +9324,28 @@ describe('PATCH /api/workers/[id]', () => {
       expect(arg.exitCause).toBe('infra_failure');
     });
 
+    // One observation per execution attempt: an attempt that fails and is
+    // auto-retried (mission task, first failure) must still leave its row, or
+    // model comparison only sees the survivors of a retry chain.
+    it('records a model observation for a failed attempt that is auto-retried', async () => {
+      setupTerminal();
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', outputRequirement: 'none', missionId: 'mission-1', context: {}, status: 'in_progress',
+      });
+      mockRecordModelObservation.mockClear();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'boom' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Retried, so no task_outcomes row (one per terminal outcome)...
+      expect(mockRecordTaskOutcome).not.toHaveBeenCalled();
+      // ...but the attempt itself is observed, with its failed status.
+      expect(mockRecordModelObservation).toHaveBeenCalledTimes(1);
+      expect(mockRecordModelObservation.mock.calls[0][0]).toMatchObject({ workerId: WORKER_ID, status: 'failed' });
+    });
+
     it('stays null when an older runner reports no model at all', async () => {
       setupTerminal();
       const res = await PATCH(createMockRequest({
@@ -13391,6 +13423,8 @@ describe('PATCH /api/workers/[id]', () => {
         1,
       );
       expect(taskSetCalls.some((updates: any) => updates.status === 'failed')).toBe(true);
+      // The terminal write frees a mission slot: the next waiter is woken on any workspace.
+      expect(mockWakeMissionSlotWaiter).toHaveBeenCalledWith('task-1');
     });
 
     it('does not set exitCause for non-terminal status updates', async () => {
@@ -13421,6 +13455,8 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedSet.exitCause).toBeUndefined();
+      // A live worker still holds its mission slot: nothing to wake.
+      expect(mockWakeMissionSlotWaiter).not.toHaveBeenCalled();
     });
 
     it('re-queues task (not failed) on budget_limited exit and leaves task pending', async () => {

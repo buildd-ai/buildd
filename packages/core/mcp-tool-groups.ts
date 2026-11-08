@@ -58,6 +58,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   dispatch_health: 'workers',
   get_budget_forecast: 'workers',
   get_usage_stats: 'workers',
+  get_model_comparison: 'workers',
   get_manifest_coverage: 'workers',
   get_path_claim_stats: 'workers',
   get_decision_stats: 'workers',
@@ -168,6 +169,7 @@ const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
   read_evidence: 'analytics',
   get_budget_forecast: 'analytics',
   get_usage_stats: 'analytics',
+  get_model_comparison: 'analytics',
   list_runners: 'analytics',
   probe_budget_wall: 'analytics',
   get_manifest_coverage: 'analytics',
@@ -254,6 +256,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   list_runners: 'listed', // default role prompts
   probe_budget_wall: 'more', // runner budget-wall recovery
   get_usage_stats: 'listed', // default role prompts
+  get_model_comparison: 'more',
   get_budget_forecast: 'listed', // default role prompts
   get_manifest_coverage: 'listed', // default role prompts
   deploy: 'listed', // Platform Operator role
@@ -386,7 +389,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'stuck work', actions: ['explain'] },
       { text: 'errors, logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
       { text: 'Voyage spend', actions: ['get_embedding_usage'] },
-      { text: 'budget, usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
+      { text: 'budget, usage, models', actions: ['get_budget_forecast', 'get_usage_stats', 'get_model_comparison'] },
       { text: 'runners', actions: ['list_runners', 'probe_budget_wall'] },
       { text: 'dispatch', actions: ['dispatch_health'] },
     ],
@@ -465,6 +468,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   dispatch_health: 'task delivery: verdict, outbox, latency',
   get_budget_forecast: 'session pressure, budget burn',
   get_usage_stats: 'token, cost and turn stats',
+  get_model_comparison: 'model/config outcome comparison',
   get_manifest_coverage: 'coverage by scope and kind',
   get_path_claim_stats: 'path-claim outcomes',
   get_decision_stats: 'decision-shadow counts',
@@ -557,6 +561,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   request_capability: '{provider, access, …}',
   invoke_model_inference: '{model, state, questions}',
   query_database: '{sql, params?, maxRows?}',
+  get_model_comparison: '{model?, config?, harness?, hardware?, taskType?, window?, …}',
   withdraw_capability_request: '{requestId}',
   register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
   update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
@@ -739,15 +744,20 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   analytics: [
     param('workspaceId', str, [
-      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'dispatch_health', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
+      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_model_comparison', 'get_failure_analytics', 'dispatch_health', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
       { text: 'list_runners: says if a browser runner is online', actions: ['list_runners'] },
     ]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces', 'procedure_digest'] }]),
     param('missionId', str, [{ text: 'Mission UUID', actions: ['explain', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
-    param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Window (7d default)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_embedding_usage', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
+    param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Window (default 7d; model comparison also 90d)', actions: ['get_usage_stats', 'get_model_comparison', 'get_failure_analytics', 'get_embedding_usage', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
     param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger incl. changeIntent warnings', actions: ['get_failure_analytics'] }]),
     param('errorPrefix', str, [{ text: 'Reason/signature prefix', actions: ['get_failure_analytics'] }]),
     param('capability', str, [{ text: 'e.g. question_gate', actions: ['get_decision_stats'] }]),
+    param('model', str, [{ text: 'Model', actions: ['get_model_comparison'] }]),
+    param('config', str, [{ text: 'Config', actions: ['get_model_comparison'] }]),
+    param('harness', str, [{ text: 'Harness', actions: ['get_model_comparison'] }]),
+    param('hardware', str, [{ text: 'Hardware', actions: ['get_model_comparison'] }]),
+    param('taskType', str, [{ text: 'Task class', actions: ['get_model_comparison'] }]),
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),

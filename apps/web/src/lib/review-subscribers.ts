@@ -23,6 +23,7 @@
 import { after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missionNotes, reviewFeedback } from '@buildd/core/db/schema';
+import { recordObservationEvidence } from '@/lib/model-observation-store';
 import { subscriber, type AnySubscriber, type EventOf, type PrOwnerFact } from '@/lib/core-events';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus } from '@/lib/pr-review-request';
@@ -89,6 +90,10 @@ async function captureReviewFeedback(
       repoFullName: pr.repoFullName,
       prNumber: pr.prNumber,
     }).onConflictDoNothing();
+    // An independent review verdict is late evidence for the attempt that opened the PR.
+    if (row.kind === 'review' && (row.state === 'approved' || row.state === 'changes_requested')) {
+      await recordObservationEvidence({ workerId: owner.workerId }, { reviewVerdict: row.state });
+    }
   } catch (err) {
     console.warn('[webhook] review feedback capture failed (non-fatal):', err);
   }
