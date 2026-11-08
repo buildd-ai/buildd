@@ -10,6 +10,27 @@ related: [model-routing-and-tiers, settings-models, mcp-action-contracts]
 keywords: [model observations, model comparison, get_model_comparison, matched pairs, benchmark priors, small sample, minimum n]
 verified_by: [packages/core/__tests__/model-comparison.test.ts, packages/core/__tests__/mcp-tools-model-comparison.test.ts, apps/web/src/app/api/model-comparison/route.test.ts, apps/web/src/app/app/(protected)/settings/models/comparison/ModelComparisonView.test.tsx]
 supersedes: []
+assertions:
+  - id: "compare-quality"
+    type: "symbol"
+    name: "compareQuality"
+    path: "packages/core/model-comparison.ts"
+  - id: "min-resolved"
+    type: "symbol"
+    name: "MIN_RESOLVED"
+    path: "packages/core/model-comparison.ts"
+  - id: "comparison-route"
+    type: "route"
+    method: "GET"
+    path: "/api/model-comparison"
+    file: "apps/web/src/app/api/model-comparison/route.ts"
+  - id: "mcp-action"
+    type: "config_key"
+    key: "get_model_comparison"
+    file: "packages/core/mcp-tools.ts"
+  - id: "comparison-core-test"
+    type: "test_file"
+    path: "packages/core/__tests__/model-comparison.test.ts"
 ---
 
 # Model Comparison
