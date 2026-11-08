@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { computeContentHash, namedPaths, type CaseFiles, type CaseManifestV2 } from '../../packages/core/local-eval-v2';
-import { admitOne, exportToDisk, loadCase, loadSuiteV2, makeVerifier, probeTree, runV2, validateV2 } from './v2';
+import { DEFAULT_ROOT, admitOne, exportToDisk, loadCase, loadSuiteV2, makeVerifier, probeTree, runV2, validateV2 } from './v2';
 import { tempDir } from './lib';
 
 /** A tiny answer-style case: the verifier passes iff the candidate's answer.json cites src/live.ts. */
@@ -136,6 +136,17 @@ describe('cli --suite v2 guard (AC-15)', () => {
     const root = fresh(); build(root, FILES());
     mkdirSync(join(root, 'cases', '_template'), { recursive: true });
     expect(Object.keys(loadSuiteV2(root).cases)).toEqual(['find-total']);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('shipped default suite', () => {
+  it('validates against DEFAULT_ROOT', () => {
+    expect(validateV2(DEFAULT_ROOT)).toEqual([]);
+  });
+  it('reports a clear error when suite.json is absent', () => {
+    const root = tempDir('eval-empty-');
+    expect(() => loadSuiteV2(root)).toThrow(/suite\.json/);
     rmSync(root, { recursive: true, force: true });
   });
 });

@@ -38,7 +38,9 @@ export function loadCase(dir: string): LoadedCase {
 }
 
 export function loadSuiteV2(root: string): { suite: SuiteV2; cases: Record<string, LoadedCase> } {
-  const suite = JSON.parse(readFileSync(join(root, 'suite.json'), 'utf8')) as SuiteV2;
+  const suiteFile = join(root, 'suite.json');
+  if (!existsSync(suiteFile)) throw new Error(`v2 suite not found: ${suiteFile} does not exist (pass --root <dir> containing suite.json)`);
+  const suite = JSON.parse(readFileSync(suiteFile, 'utf8')) as SuiteV2;
   const casesDir = join(root, 'cases');
   const cases: Record<string, LoadedCase> = {};
   if (existsSync(casesDir)) {

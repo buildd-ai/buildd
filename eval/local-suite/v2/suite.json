@@ -1,0 +1,8 @@
+{
+  "suiteId": "local-coding-eval",
+  "suiteVersion": "v2",
+  "formatVersion": 2,
+  "scoringVersion": "score-v2",
+  "skills": ["find", "review", "long-context", "compaction", "fix"],
+  "cases": []
+}
