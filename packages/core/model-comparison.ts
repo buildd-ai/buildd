@@ -75,6 +75,8 @@ export interface ComparisonRow {
   specVerdict: string | null;
   prOutcome: string | null;
   reworked: boolean;
+  /** Set only on controlled replay runs (packages/core/local-eval.ts). */
+  evaluation?: { provenance?: string; suiteId?: string; suiteVersion?: string; scoringVersion?: string; caseId?: string; configId?: string; trial?: number; result?: string } | null;
 }
 
 export interface ComparisonFilters {
@@ -408,6 +410,68 @@ export interface ModelComparison {
   comparisons: PairComparison[];
   matched: { design: 'matched_observational'; note: string; pairs: MatchedComparison[] };
   priors: { note: string; entries: BenchmarkPrior[] };
+  /** Controlled replay runs, kept apart from every production figure above. */
+  replay: ReplayComparison;
+}
+
+export interface ReplayConfig {
+  configId: string;
+  summary: ConfigSummary;
+  /** Per case: trials run and trials that passed. A trial that errored in the harness is not counted as a model failure. */
+  cases: Array<{ caseId: string; trials: number; passes: number; harnessErrors: number }>;
+}
+
+export interface ReplayComparison {
+  design: 'controlled_replay';
+  note: string;
+  /** Suite and scoring versions present; results only compare within one pair. */
+  versions: Array<{ suiteVersion: string; scoringVersion: string; runs: number }>;
+  configs: ReplayConfig[];
+  /** Cases every listed configuration has at least one run on. Empty when nothing has been run. */
+  commonCases: string[];
+  /** Always not_computed: a handful of replayed cases supports no ranking. */
+  verdict: 'not_computed' | 'no_runs';
+}
+
+/** Rows ingested by the replay harness; production figures never include them. */
+export function isReplayRow(r: ComparisonRow): boolean {
+  return r.evaluation?.provenance === 'controlled_replay';
+}
+
+export function buildReplayComparison(rows: readonly ComparisonRow[]): ReplayComparison {
+  const byConfig = new Map<string, ComparisonRow[]>();
+  const versions = new Map<string, number>();
+  for (const r of rows) {
+    const id = r.evaluation?.configId ?? 'config unknown';
+    const g = byConfig.get(id);
+    if (g) g.push(r); else byConfig.set(id, [r]);
+    const vk = `${r.evaluation?.suiteVersion ?? 'unknown'}|${r.evaluation?.scoringVersion ?? 'unknown'}`;
+    versions.set(vk, (versions.get(vk) ?? 0) + 1);
+  }
+  const configs: ReplayConfig[] = [...byConfig.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([configId, g]) => {
+    const perCase = new Map<string, { trials: number; passes: number; harnessErrors: number }>();
+    for (const r of g) {
+      const c = perCase.get(r.evaluation?.caseId ?? 'case unknown') ?? { trials: 0, passes: 0, harnessErrors: 0 };
+      if (r.evaluation?.result === 'error') c.harnessErrors++;
+      else { c.trials++; if (r.evaluation?.result === 'pass') c.passes++; }
+      perCase.set(r.evaluation?.caseId ?? 'case unknown', c);
+    }
+    return {
+      configId,
+      summary: summarizeConfig(configId, g),
+      cases: [...perCase.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([caseId, c]) => ({ caseId, ...c })),
+    };
+  });
+  const caseSets = configs.map((c) => new Set(c.cases.filter((x) => x.trials > 0).map((x) => x.caseId)));
+  const commonCases = caseSets.length ? [...caseSets[0]].filter((id) => caseSets.every((s) => s.has(id))).sort() : [];
+  return {
+    design: 'controlled_replay',
+    note: 'Same cases, prompt, budgets and context for every configuration, replayed from past public fixes. Controlled, but a model may have seen the fix in training: this is replay evidence, not a measure of uncontaminated performance.',
+    versions: [...versions.entries()].map(([k, runs]) => { const [suiteVersion, scoringVersion] = k.split('|'); return { suiteVersion, scoringVersion, runs }; }),
+    configs,
+    commonCases,
+    verdict: rows.length ? 'not_computed' : 'no_runs',
+  };
 }
 
 export function buildModelComparison(
@@ -416,7 +480,9 @@ export function buildModelComparison(
   opts: { now?: Date; priors?: readonly BenchmarkPrior[] } = {},
 ): ModelComparison {
   const now = opts.now ?? new Date();
-  const rows = filterRows(allRows, filters, now);
+  // Replay runs are controlled; mixing them into production rates would relabel both.
+  const replayRows = allRows.filter(isReplayRow);
+  const rows = filterRows(allRows.filter((r) => !isReplayRow(r)), filters, now);
   const groups = new Map<string, ComparisonRow[]>();
   for (const r of rows) {
     const k = configOf(r).key;
@@ -438,12 +504,12 @@ export function buildModelComparison(
     filters,
     evidence: {
       design: 'observational',
-      controlled: { available: false, note: 'Controlled comparisons are experiment readouts (Health → Experiments). Nothing on this page is randomised.' },
+      controlled: { available: false, note: 'Controlled comparisons are experiment readouts (Health → Experiments). Nothing on this page is randomised. Controlled replay runs of past fixes are reported separately under replay.' },
       minResolved: MIN_RESOLVED,
       minDiscordantPairs: MIN_DISCORDANT_PAIRS,
     },
     autoPromote: false,
-    totals: { attempts: rows.length, configs: configs.length, filteredOut: allRows.length - rows.length },
+    totals: { attempts: rows.length, configs: configs.length, filteredOut: allRows.length - replayRows.length - rows.length },
     configs,
     comparisons,
     matched: {
@@ -455,5 +521,6 @@ export function buildModelComparison(
       note: 'External benchmark results are priors about a model in general. They are not outcomes of this team\'s work and feed no rate above.',
       entries: priors,
     },
+    replay: buildReplayComparison(filterRows(replayRows, filters, now)),
   };
 }

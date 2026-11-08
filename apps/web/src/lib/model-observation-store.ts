@@ -18,6 +18,7 @@ import {
   type ObservationEvidence,
 } from '@buildd/core/model-observation';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { runToObservation, validateRunRecord, type RunRecord } from '@buildd/core/local-eval';
 
 export interface RecordObservationInput {
   workerId: string;
@@ -178,4 +179,35 @@ export async function listObservationsForComparison(workspaceId: string, since: 
     .where(and(...conds))
     .orderBy(desc(modelObservations.createdAt))
     .limit(COMPARISON_ROW_LIMIT);
+}
+
+/**
+ * Ingest controlled replay runs (packages/core/local-eval.ts) as observation
+ * rows carrying their case/config attribution. Idempotent: a run id maps to a
+ * fixed worker id, so re-sending a run updates its one row. Returns the ids
+ * ingested and the reasons any record was refused.
+ */
+export async function ingestReplayRuns(workspaceId: string, records: unknown[]): Promise<{ ingested: string[]; rejected: Array<{ index: number; errors: string[] }> }> {
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } });
+  const ingested: string[] = [];
+  const rejected: Array<{ index: number; errors: string[] }> = [];
+  if (!ws?.teamId) return { ingested, rejected: records.map((_, index) => ({ index, errors: ['workspace has no team'] })) };
+  for (const [index, raw] of records.entries()) {
+    const errors = validateRunRecord(raw);
+    if (errors.length) { rejected.push({ index, errors }); continue; }
+    const run = raw as RunRecord;
+    try {
+      const { values, evaluation, evidence } = runToObservation(run, { workspaceId, teamId: ws.teamId });
+      const row = { ...values, costUsd: null, evaluation: evaluation as unknown as Record<string, unknown>, ...evidence, evidenceUpdatedAt: new Date() };
+      const { workerId: _w, attempt: _a, ...update } = row;
+      await db.insert(modelObservations).values(row).onConflictDoUpdate({
+        target: [modelObservations.workerId, modelObservations.attempt],
+        set: { ...update, updatedAt: new Date() },
+      });
+      ingested.push(run.runId);
+    } catch (err) {
+      rejected.push({ index, errors: [`could not be stored: ${err instanceof Error ? err.message.slice(0, 200) : 'unknown error'}`] });
+    }
+  }
+  return { ingested, rejected };
 }

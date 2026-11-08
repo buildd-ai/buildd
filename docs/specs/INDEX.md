@@ -147,7 +147,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Mission Progress Strip — Topological Order and Dependency-on-Selection](./mission-progress-strip-ordering.md) · @builder — verified 2026-10-22
   The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
 - [Model Comparison](./model-comparison.md) · @max — verified 2026-11-08
-  The model comparison MUST label production data as observational, report unknown fields as unknown, decline to compare small samples, and never promote a model or change routing.
+  The model comparison MUST label production data observational, keep controlled replay runs apart, report unknowns as unknown, decline small samples, and never promote a model.
 - [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-22
   Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 - [Settings Audiences](./settings-audiences.md) · @max — verified 2026-10-15

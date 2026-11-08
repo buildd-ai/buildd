@@ -27,7 +27,7 @@ const FIELDS: Array<{ name: string; label: string; placeholder: string }> = [
 export default async function ModelComparisonPage({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
   const { currentTeam, workspaces } = await loadSettingsContext();
-  const description = 'How each model has done on your own work.';
+  const description = 'Model results on your work.';
 
   const teamWorkspaces = currentTeam ? workspaces.filter((w) => w.teamId === currentTeam.id) : [];
   const picked = resolveComparisonWorkspace(teamWorkspaces, one(sp.workspace));
