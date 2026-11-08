@@ -11,6 +11,8 @@ service, and the runner refuses any address that is not loopback.
 | --- | --- |
 | Env parsing, loopback refusal, Claude subprocess env, generated Codex `config.toml` provider block | Unit-tested (`apps/runner/__tests__/unit/local-model-endpoint.test.ts`) |
 | Smoke script pure parts (config, model match, context, request/response shapes) | Unit-tested (`scripts/smoke-local-ollama.test.ts`) |
+| The session a worker hands Claude Code for a local model (model, settings, env), and that a runner without one is unchanged | Unit-tested through the real worker manager (`apps/runner/__tests__/unit/local-model-session-options.test.ts`) |
+| The bundled Claude Code and Codex CLIs starting a session on an Ollama-style tag: no `unrecognized_model`, a session title generated, no fallback-metadata error, tools sent, all traffic on the local endpoint | Tested against a fake local server (`apps/runner/__tests__/unit/local-model-cli.test.ts`); skipped where the CLI binary is not installed, and on Windows |
 | Claude Code and Codex actually completing a task against a real Ollama; tool-call quality on any given model; the end-to-end recipe in section 5 | **Not run.** The worker sandbox that wrote this has no Ollama and no GPU. Treat sections 3 to 5 as the procedure to validate on your hardware, and report what differs. |
 
 ## 1. Prerequisites
@@ -49,7 +51,7 @@ Set these in the environment of the runner process, then restart it:
 | --- | --- |
 | `BUILDD_LOCAL_MODEL_URL` | `http://localhost:11434`. Loopback only (`localhost`, `127.x`, `::1`). |
 | `BUILDD_LOCAL_MODEL` | The model name, required with the URL. |
-| `BUILDD_LOCAL_MODEL_CONTEXT` | Optional window in tokens, written into the Codex config. Keep it at or below what the server runs with. |
+| `BUILDD_LOCAL_MODEL_CONTEXT` | Optional window in tokens. Codex is told it (config and model catalog, 32768 when unset) and Claude Code compacts against it. Keep it at or below what the server runs with. |
 
 When set, and when the claim allows this machine's own model credentials
 (not a personal-keys-only requester), the local model wins over a team model
@@ -62,6 +64,17 @@ model. Real `ANTHROPIC_API_KEY`, OAuth token and custom headers are removed, so
 no real credential reaches the local server. The session's model is your model
 with no fallback.
 
+Claude Code checks every model id against its own list, and an Ollama tag is
+not on it: it then prints `[claude-code:unrecognized_model]` (first during
+session title generation), which the runner reports as the reason the session
+died. So the session also gets the setting
+`modelOverrides: { "claude-sonnet-4-6": "<model>" }`: your tag counts as a
+model Claude Code knows, and the tag itself is still what is sent to Ollama.
+It also gets `ENABLE_TOOL_SEARCH=false` (Claude Code would otherwise defer
+tools behind a search tool a local model cannot use, so it could never call the
+buildd tools) and, when `BUILDD_LOCAL_MODEL_CONTEXT` is set,
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` to that value.
+
 **Codex route (Responses API).** The task's own `CODEX_HOME/config.toml`
 gets, before any table header:
 
@@ -69,6 +82,8 @@ gets, before any table header:
 model_provider = "buildd_local"
 model = "<model>"
 model_context_window = <BUILDD_LOCAL_MODEL_CONTEXT, if set>
+model_catalog_json = "<CODEX_HOME>/buildd-local-models.json"
+web_search = "disabled"
 
 [model_providers.buildd_local]
 name = "Local model"
@@ -76,6 +91,14 @@ base_url = "http://localhost:11434/v1"
 wire_api = "responses"
 requires_openai_auth = false
 ```
+
+Codex has no metadata of its own for an Ollama tag. Without any, it reports
+"Model metadata for `<model>` not found" as an error item before the first
+turn, and the runner ends the session on it. So the runner also writes
+`buildd-local-models.json` next to the config: one catalog entry for your model
+with its context window, a shell tool (`exec_command`, a plain function tool),
+text input only and no reasoning levels. Hosted web search is turned off because
+a local server cannot run it.
 
 `OPENAI_API_KEY` is a placeholder. This machine's Codex login and any
 server-delivered Codex key are not used. Your real `~/.codex` is never read or
@@ -134,6 +157,11 @@ runner for the reviewer.
 - One model per runner process, for all tasks.
 - Prompt features that depend on Anthropic-only behaviour (deferred tool loading,
   fallback models) are off on this route.
+- Claude Code treats your model as Sonnet 4.6 for its own decisions (request
+  options, output token limit). Compaction follows `BUILDD_LOCAL_MODEL_CONTEXT`,
+  so set it.
+- Codex gets a shell tool but not its patch tool, whose only form is one a local
+  server cannot carry; the model edits files through the shell.
 
 ## 7. Restoring normal routing
 
