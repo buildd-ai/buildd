@@ -121,21 +121,42 @@ Contract: `docs/specs/coding-eval-playground.md`. Cases: `eval/local-suite/v2/`.
 Rules: `packages/core/local-eval-v2.ts` and `local-eval-v2-ops.ts`. The v1 text above is unchanged and v1 runs stay in
 the readout, as a separate block.
 
-### Status: no v2 scores exist, and GPU runs are deferred
+### Status: no v2 scores exist
 
-**No model has been run against the v2 suite, so there are no scores.** Everything
-below that touches a model is a procedure, not a result. GPU runs are deferred
-until **09:00 America/New_York on 2026-11-08** (`GPU_WINDOW_OPENS_AT`); before then
-`run` refuses every case and starts nothing. What exists and was verified without a
-model: case admission evidence (the hidden verifier passes the reference, fails the
-negative controls and agrees on an alternative solution), the pure graders, ingest
-validation, the per-category aggregation and redaction.
+**No model has been run against the v2 suite, so there are no scores.** What exists and was verified without a
+model: case admission evidence (the hidden verifier passes the reference, fails the negative controls and agrees on an
+alternative solution), the pure graders, ingest validation, the per-category aggregation, redaction, and the executor:
+every one of the 21 dev cases, in all six categories, runs end to end through `run` with the deterministic `fixture`
+adapter (no model) and is graded by its hidden verifier, and the real Claude Code CLI runs through the executor against
+a mock Anthropic endpoint on loopback (no model). Those are checks of the harness, not results.
 
-**Known gap before the first run.** Every shipped case is `cpuOnly: true`, and the
-guard never lets a `cpuOnly` case start a model (that flag describes the case's own
-tooling). `run` therefore plans the cases and refuses them with that reason. A case
-version with `cpuOnly: false` and an `estimatedVramMb` is needed first (bump `version`,
-re-seal, re-admit); that is a suite decision, not something the CLI works around.
+`cpuOnly` in a case says its verifier needs no inference; it does not decide whether a model may run. A model run is
+admitted by the tag, digest and GPU checks below, for any case.
+
+Sealed-holdout cases are descriptors and hashes here. They are runnable only with `--sealed-root <dir>` pointing at
+content held outside the repository whose recomputed hash matches `splits.json`; otherwise they are listed as
+unavailable and never scored.
+
+### Before a model run
+
+- The tag is listed in `eval/local-suite/v2/models.json` (separate from v1's). `digest: null` means not yet observed:
+  the first run records it in every run record; pin it in `models.json` after that run. A changed digest is refused,
+  and the digest is re-read before every trial.
+- VRAM: the run needs the larger of the model's figure (`estimatedVramMb` in `models.json`, else `--vram-mb`, else
+  `LOCAL_EVAL_MIN_FREE_MB`, default 20000) and the case's own `estimatedVramMb`. The run prints which figure it used.
+- Ollama on loopback with nothing loaded, started with `OLLAMA_CONTEXT_LENGTH` equal to `--context` (the load fails
+  otherwise). The run loads the model once, runs every trial, and unloads it. It does not change Ollama's settings.
+
+### Harness treatment
+
+v2 runs use a fixed treatment, `claude-code-minimal-v1` (`HARNESS_TREATMENT_V2`): a short replacement system prompt,
+exactly the tools Read, Edit, Write, Glob, Grep and Bash, `--strict-mcp-config` with an empty MCP config,
+`--setting-sources ''`, `stream-json` output, an empty per-run config dir and the prompt on stdin. Claude Code's default
+system prompt and tool set do not fit a 16K window; this one leaves room. A prompt whose estimate (including a 6144-token
+allowance for tool schemas and the reply) does not fit `--context` is recorded `overflow` and the agent is not started.
+At `--context 8192` the long-context cases therefore record overflow: their smallest evidence set is 8K. What the
+harness cannot measure (schema tokens, Ollama truncation, the model tokenizer, mid-run tool budget) is listed in each
+run's `execution.json` as unknown.
 
 ### Commands (all `bun run scripts/local-eval/cli.ts <command> --suite v2 ...`)
 
@@ -143,18 +164,24 @@ re-seal, re-admit); that is a suite decision, not something the CLI works around
 |---|---|
 | `list [--skill s] [--difficulty d] [--category c] [--context 8192\|16384\|32768] [--resource cpu-only\|needs-gpu\|vram<=N] [--split dev\|sealed-holdout] [--json]` | Lists cases with labels and split. Sealed-holdout cases show as descriptors only. |
 | `inspect --case id` | Prints the brief an agent is allowed to see: instruction, snapshot paths, budgets. Never the verifier, reference, rubric or candidates. |
-| `run --model tag --harness name --context N (--preset smoke \| --all \| --case id) [--trials n] [--track single-context\|tool-retrieval] [--dry-run]` | Plans runs for one explicit model, harness and context policy and applies the inference guard per case. `--preset smoke` is at most four dev cases (find, debugging, review, long-context; exposing cases first), one trial. Do it first; `--all` is every dev case, three trials by default. `--dry-run` prints the plan and starts nothing. Sealed-holdout is never run from here. A case the adapter cannot serve is recorded `unsupported: <capability>` (`--no-tool-calling`, `--no-system-prompt`, `--no-structured-output` declare the adapter), never altered. |
-| `regrade --dir <artifacts>` | Re-scores stored artifacts with the grader id each was recorded with; an unknown grader id is an error, not a substitution. Prints `CHANGED` when the outcome differs from the recorded one. |
+| `run --model tag --harness claude-code\|fixture --context N (--preset smoke \| --all [--split dev\|sealed-holdout] \| --case id) --out <dir> [--trials n] [--track single-context\|tool-retrieval] [--evidence-size N] [--position p] [--vram-mb N] [--origin url] [--fixture-dir d] [--sealed-root d] [--dry-run]` | Plans, then executes: one agent start per trial in a fresh agent tree, then the hidden verifier on a copy of the result, then `run.json` under `<out>/<runId>/`. Recorded runs are skipped on a rerun. `--preset smoke` is at most four dev cases (find, debugging, review, long-context; exposing cases first), one trial; do it first. `--all` is every dev case, three trials by default. `--dry-run` prints the plan and starts nothing. A case the adapter cannot serve is recorded `unsupported: <capability>` (`--no-tool-calling`, `--no-system-prompt`, `--no-structured-output` declare the adapter), never altered. `--harness fixture` starts no model and copies operator-authored files from `<fixture-dir>/<caseId>/`: a check of the grading path, never a result. |
+| `report --dir <runs>` | Readout per configuration, split, track and category: pass/resolved with a Wilson interval, harness and infra errors and unscored beside it, grader flags. Fixture runs are labelled "NOT a model". |
+| `regrade --dir <artifacts or runs>` | Re-scores stored artifacts with the grader id each was recorded with (for a runs directory, also re-runs the hidden verifier on each stored tree); an unknown grader id is an error, not a substitution. Prints `CHANGED` when the outcome differs from the recorded one. |
 | `redact --dir <runs>` | Rewrites stored artifacts with secret-shaped strings removed and user paths reduced to `~`. |
-| `ingest --dir <runs> --workspace <id>` | Validates and POSTs `run.json` records to `/api/model-observations/replay` (`BUILDD_API_KEY` in the environment). A record containing a secret-shaped string is refused, not sent. A v2 run scored `score-v1` (or the reverse) is rejected (HTTP 422 when every record is refused) and writes nothing. |
+| `ingest --dir <runs> --workspace <id>` | Validates and POSTs `run.json` records to `/api/model-observations/replay` (`BUILDD_API_KEY` in the environment). A record containing a secret-shaped string, or a fixture run, is refused, not sent. A v2 run scored `score-v1` (or the reverse) is rejected (HTTP 422 when every record is refused) and writes nothing. |
 | `prune --dir <runs> [--days 30] [--apply]` | Deletes raw transcripts, diffs, grading output and per-run config older than 30 days; `run.json` is kept. Dry run unless `--apply`. |
 | `validate`, `admit`, `export` | As in the v2 README; CPU only, no model. |
 
 ### Order of work once the window is open
 
-1. `gpu-check`, then `run --preset smoke --dry-run`, then the same without `--dry-run`.
+1. `gpu-check`, then `run --preset smoke --model <tag> --harness claude-code --context 16384 --out <dir> --dry-run`, then the same without `--dry-run`.
 2. Read the smoke runs: harness or infrastructure errors are counted apart from model failures; fix those before spending a full run.
-3. `run --all` for the same policy, then `redact` and `ingest`.
+3. `run --all` for the same policy, `report`, then `redact` and `ingest`.
+
+Checking the harness without a GPU: `bun test scripts/local-eval/v2-claude-mock.test.ts` runs the real Claude Code CLI
+through the executor against a mock Anthropic endpoint on loopback (skipped when `claude` is not installed), and
+`run --harness fixture --fixture-dir <dir> --all --context 16384 --out <dir>` runs every case through grading with
+files you wrote.
 4. Read `/app/settings/models/comparison` (section "Coding evaluation runs"), `GET /api/model-comparison` (`replay.v2`) or the `get_model_comparison` MCP tool. Same data, three doors.
 
 ### Reading the profile

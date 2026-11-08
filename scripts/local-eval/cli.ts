@@ -42,7 +42,10 @@ function pickCases(suite: Suite) {
 
 async function main() {
   if (opt('suite') === 'v2') {
-    process.exit(await runV2(cmd, opt, has, { minFreeMb: MIN_FREE_MB, readGpu: () => readGpu(), loaded: async () => (await loadedModels(opt('origin') ?? 'http://127.0.0.1:11435')).map((m) => m.name) }));
+    process.exit(await runV2(cmd, opt, has, {
+      minFreeMb: MIN_FREE_MB, readGpu: () => readGpu(), loaded: async () => (await loadedModels(opt('origin') ?? 'http://127.0.0.1:11435')).map((m) => m.name),
+      ollama: { tagInfo, loadModel, unloadModel }, harnessVersion: () => sh('claude', ['--version']).out.trim() || null, gpuName,
+    }));
   }
   const suite = loadSuite(SUITE_PATH);
   if (cmd === 'validate') {

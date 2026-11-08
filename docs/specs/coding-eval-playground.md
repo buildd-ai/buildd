@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-11-08
 summary: The playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden verifiers and admission gates, and report capability profiles, never a single winner.
 domain: surfaces
-surfaces: [packages/core/local-eval.ts, scripts/local-eval/cli.ts, eval/local-suite/v1/suite.json, docs/specs/model-comparison.md]
+surfaces: [packages/core/local-eval.ts, packages/core/local-eval-v2.ts, packages/core/local-eval-v2-exec.ts, scripts/local-eval/cli.ts, scripts/local-eval/v2-exec.ts, eval/local-suite/v1/suite.json, docs/specs/model-comparison.md]
 related: [model-comparison, model-inference-agent-capability, model-routing-and-tiers]
 keywords: [coding eval, playground, local-suite v2, score-v2, harbor, terminal-bench, contextbench, repoqa, compaction, abstention, capability profile, cpuOnly]
-verified_by: [packages/core/__tests__/local-eval.test.ts, scripts/local-eval/local-eval.test.ts]
+verified_by: [packages/core/__tests__/local-eval.test.ts, scripts/local-eval/local-eval.test.ts, packages/core/__tests__/local-eval-v2-exec.test.ts, scripts/local-eval/v2-exec.test.ts]
 supersedes: []
 ---
 
@@ -16,7 +16,7 @@ supersedes: []
 
 **Capability statement**: A maintainer can run a fixed, versioned set of coding cases against local or hosted models, through the existing local-eval harness and the existing replay ingestion, and read a per-category capability profile with uncertainty. Nothing in it picks, routes or promotes a model.
 
-Status is `draft`: the v2 suite, its scorer and its CLI commands are not built. Every mention of a v2 file or function below is a plan, not a fact. Build tasks are listed in "Per-task path manifest".
+Status is `draft`. Built and tested without a model: the v2 suite (21 open cases across the six categories, three sealed descriptors), admission, `score-v2`, the CLI, and the executor (section 14), which runs a case end to end: agent tree, one agent start per trial, hidden verifier on a copy of the candidate, run record, readout. **No model has been run against v2, so there are no v2 scores.** The executor has been exercised with a deterministic fixture adapter (no model) and with the real Claude Code CLI against a mock Anthropic endpoint (no model); a real-model smoke run is the next step and belongs to whoever holds the GPU. Sections not yet built are marked as such.
 
 ## 1. Relationship to what shipped (v0.395.2)
 
@@ -82,7 +82,7 @@ A v2 case is a directory `eval/local-suite/v2/cases/<caseId>/` with a `case.json
 | `reference` | A reference solution (patch, or answer, or `abstain`) kept outside the agent tree. |
 | `verifier` | A hidden, independent verifier: hidden tests, or a rubric with graders (section 7). It never reads the reference solution and is never inside the agent tree. |
 | `deps` | Toolchain and packages, pinned. |
-| `resources` | `cpuOnly: boolean`, `estimatedVramMb: number or null`, `estimatedRamMb`, `wallClockSeconds`, `maxTurns`, `toolBudget`. A case that needs no inference to be verified sets `cpuOnly: true`. `cpuOnly` describes the case's own tooling; it never permits a model run. |
+| `resources` | `cpuOnly: boolean`, `estimatedVramMb: number or null`, `estimatedRamMb`, `wallClockSeconds`, `maxTurns`, `toolBudget`. `cpuOnly: true` says the case's own tooling (verifier, admission) needs no inference. It is not a property of a model run and neither permits nor forbids one: a run's admission is decided by the GPU guard (section 12). `estimatedVramMb`, when set, is a floor the case adds to the model's own VRAM figure. |
 | `labels` | `difficulty` (easy, medium, hard) and `skills` (free tags from a closed list in the suite). |
 | `provenance`, `contamination` | Where the code came from, its licence, and whether public history may be in a model's training data. Authored fixtures state "authored for this suite, not published before <date>". |
 | `admission` | The evidence from section 6, with toolchain and date. |
@@ -154,7 +154,7 @@ The agent sees the instruction and the snapshot as one commit with no remote. Hi
 
 ## 12. GPU, workers and shared surfaces
 
-- **No accidental inference.** A worker MUST NOT start a model run unless the case is `cpuOnly: false` and the gate passes. `validate`, `admit` (verifier checks against the reference and controls) and unit tests are `cpuOnly` and need no model. The `gpu-check` gate and the digest check stay mandatory (`gpuGate`, `digestCheck`). Cases carry `estimatedVramMb` so the gate can refuse before loading.
+- **No accidental inference.** `validate`, `admit`, `regrade`, `export`, `list`, `inspect` and unit tests never start a model. A model run starts only when the model tag is listed in `eval/local-suite/v2/models.json`, its digest matches (or is a first observation), the GPU window is open, Ollama has nothing loaded, and the GPU has free memory for the run's VRAM figure: the larger of the model's figure (`models.json`, else `--vram-mb`, else `LOCAL_EVAL_MIN_FREE_MB`, and the run says which) and the case's `estimatedVramMb`. The guard is evaluated when planning and again immediately before the model loads; the digest is re-read before every trial. `cpuOnly` is not an input to this guard (it describes the verifier).
 - **GPU runs are deferred until 09:00 America/New_York on 2026-11-08.** Before that, build tasks ship code, cases and admission evidence only. The runbook (`docs/local-model-evaluation.md`) gains a v2 section; v1 text is unchanged.
 - **Shared surfaces, named so they are not duplicated.**
   - Mission f885b126 (local tool tracking): owns how a local session's tool calls are recorded. This spec consumes tool-call counts as an input to `toolBudget` and does not add a second tool-call recorder.
@@ -169,6 +169,23 @@ The agent sees the instruction and the snapshot as one commit with no remote. Hi
 - Run records and trajectories store paths, commands and model outputs only. Credentials, auth files, environment values and the machine's user paths are redacted before writing (the harness uses an empty per-run config dir). A run that would store a secret-shaped string is `invalid` and not written.
 - Retention: raw trajectories stay on the evaluating machine and are deleted after 30 days; the run record (no transcript) is what is ingested and kept. Sealed-holdout content is never in the repository, only its hash.
 
+## 14. Execution
+
+`run --suite v2` executes; `--dry-run` only plans. Per planned trial (`scripts/local-eval/v2-exec.ts`, rules in `packages/core/local-eval-v2-exec.ts`):
+
+1. **Tree.** The agent tree is exported fresh from the case's snapshot and instruction (one commit, no remote), leak-checked, and is the agent's working directory. For long-context cases on the tool-retrieval track the harness adds `evidence/context-<size>.md`, built from the snapshot by `buildEvidence`, before the baseline commit.
+2. **Prompt.** The case instruction verbatim, plus the evidence (single-context track) and a budget line. Its size (system prompt + prompt + the treatment's declared reserve, counted `approx-chars/4`) is checked against `--context`; a prompt that does not fit is recorded `overflow` (`error`, `infra`) and the agent is not started. Nothing is truncated. Evidence size defaults to the largest size the case is built for below the window (`--evidence-size` to choose), position to `dispersed` (`--position`).
+3. **Agent.** Started exactly once per trial, with the prompt on stdin, a clean environment (no credentials; placeholder auth for Ollama), an empty per-run config dir outside the tree and the case's wall clock. The harness treatment is fixed and versioned (`HARNESS_TREATMENT_V2`, id `claude-code-minimal-v1`): Claude Code's default system prompt is replaced by a short one, the tools are exactly Read, Edit, Write, Glob, Grep, Bash, no MCP servers and no settings sources are loaded, and compaction is Claude Code's own at the loaded window. Its id and hash are in every run's `execution.json`.
+4. **Exit.** Classified before grading: turn or wall-clock exhaustion is a model outcome and the tree is graded as left (`budget_exhausted` flag); a harness that cannot start or crashes is `error`/`harness`; an unreachable or failing server is `error`/`infra`; a server-reported context overflow is `error`/`infra` with an overflow record. Harness and infra errors are never graded.
+5. **Grading.** The agent's changes are recorded (`agent.diff`); editing or deleting a shipped test is tampering (`invalid`). A copy of the final tree, without Git data, is graded in a separate temporary directory holding only that copy and the hidden verifier; the reference and candidates are never read. The snapshot's own tests (pristine copies restored) are the visible check; a case that ships none has no visible check rather than a failed one. Pure graders add flags and drilldown (fabrication on absence cases, review precision and recall, per-stage constraint retention) and their artifacts are stored for `regrade`.
+6. **Record.** `run.json` (a `RunRecord` with the `v2` block, redacted) is what `ingest` sends; raw output, prompt, diff, grading output and the tree stay on the machine and `prune` deletes them after 30 days. `report` prints the readout per configuration, split, track and category, with Wilson intervals and harness and infra errors beside the rate.
+
+Adapters. `claude-code` (Claude Code against a loopback Ollama) and `fixture`, a deterministic stand-in that starts no model and writes operator-authored files from `--fixture-dir <dir>/<caseId>/`. Fixture records carry `harness: fixture`, `report` labels them "NOT a model", and `ingest` refuses them. An adapter declared without tool calling (`--no-tool-calling`) runs only single-context long-context cases, whose answer it takes from the final message; every other case is recorded `unsupported: toolCalling`.
+
+Sealed holdout. A descriptor and hash are not a runnable case. `--sealed-root <dir>` names out-of-repository content in the same layout; a sealed case becomes runnable only when its recomputed hash equals the published one, its run is reported in the `sealed-holdout` split, and its verifier stays out of the agent tree as for any case. Without that content a sealed case is listed and planned as unavailable and never scored.
+
+Known limits, recorded on every run (`execution.json` `unknowns`): tool-schema tokens are not reported by the harness (the reserve is a declared allowance measured once against a mock endpoint); Ollama may truncate beyond `num_ctx` without saying so, so truncation is `unknown` unless an overflow is reported; pre-run token counts are estimates, not the model tokenizer; `toolBudget` is checked after the run (`tool_budget_exceeded`), not enforced mid-run. The compaction cases' stage vector is computed on the final tree; mid-session stage checks (a harness call after each stage) are not built. Network isolation (section 8) is not enforced by the executor: the agent's Bash tool can reach the network unless the machine blocks it.
+
 ## Invariants
 
 - v1 `suite.json` and `score-v1` are unchanged; v2 has its own suite version and scoring version.
@@ -179,7 +196,7 @@ The agent sees the instruction and the snapshot as one commit with no remote. Hi
 - An unsupported capability is reported, never worked around silently.
 - Harness errors and infra errors never count as model failures.
 - No page, API or report names a single winner or promotes a model.
-- No model run starts before the GPU window, or for a `cpuOnly` verification.
+- No model run starts before the GPU window, without a passing GPU gate and digest check, or for any verification command.
 
 ## Acceptance criteria
 
@@ -197,7 +214,7 @@ The agent sees the instruction and the snapshot as one commit with no remote. Hi
 - AC-12: GIVEN a long-context run whose input exceeds the loaded context WHEN recorded THEN it is `error` with `failureClass: infra` and an `overflow` record with actual token counts, and no truncation is applied silently.
 - AC-13: GIVEN a compaction run where a stage-1 constraint fails and the final tests pass THEN the result is marked `constraint_dropped`, not a clean pass.
 - AC-14: GIVEN a model adapter lacking a capability a case needs WHEN run THEN the record is `unsupported: <capability>`, and the case text and tools are unchanged.
-- AC-15: GIVEN a `cpuOnly: false` case and no passing GPU gate WHEN a run is requested THEN no model is loaded and the command exits non-zero.
+- AC-15: GIVEN any case and no passing GPU gate (or an unlisted tag, or a changed digest) WHEN a model run is requested THEN no model is loaded and the command exits non-zero.
 - AC-16: GIVEN dev and sealed-holdout runs of one configuration WHEN reported THEN they appear in separate rows and are never pooled.
 - AC-17: GIVEN fewer resolved runs than `MIN_RESOLVED` WHEN a paired comparison is requested THEN the verdict is `insufficient_n`.
 - AC-18: GIVEN a v2 run ingested with a v1 `scoringVersion` or the reverse THEN the route rejects it with HTTP 400 and writes nothing.
@@ -227,7 +244,8 @@ Each build task owns only its listed paths. Tasks later in the list depend on ea
 - `eval/local-suite/v1/` (shipped, frozen).
 - `packages/core/model-comparison.ts` (shipped): `MIN_RESOLVED`, `MIN_DISCORDANT_PAIRS`, `buildReplayComparison`.
 - `docs/specs/model-comparison.md`, `docs/local-model-evaluation.md`, `docs/local-ollama-runner.md`.
-- Planned, not yet present: the files in the manifest above.
+- v2 (built): `packages/core/local-eval-v2.ts`, `local-eval-v2-ops.ts`, `local-eval-v2-exec.ts`; `scripts/local-eval/v2.ts`, `v2-exec.ts`, `v2-agent.ts`, `fixture-agent.ts`; `eval/local-suite/v2/` (cases, `splits.json`, `models.json`).
+- Not built: the Harbor export (task 8) and spec promotion (task 9).
 
 ## Out of scope
 

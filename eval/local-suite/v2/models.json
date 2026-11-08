@@ -1,0 +1,36 @@
+{
+  "modelsFormatVersion": 2,
+  "note": "Model tags v2 runs may load (v1/models.json is separate and unchanged). digest null = not yet observed: a run records the observed digest in every run record, and it is pinned here after that first run, from /api/tags, never by hand; a run refuses a tag whose digest differs. estimatedVramMb is the VRAM the model needs at the largest context it is run at; null = not measured, and the run then uses --vram-mb or LOCAL_EVAL_MIN_FREE_MB and says which.",
+  "models": [
+    {
+      "tag": "gemma4:26b",
+      "digest": null,
+      "estimatedVramMb": null,
+      "tier": "baseline"
+    },
+    {
+      "tag": "qwen3-coder:30b",
+      "digest": null,
+      "estimatedVramMb": null,
+      "tier": "candidate"
+    },
+    {
+      "tag": "qwen3.5:27b",
+      "digest": null,
+      "estimatedVramMb": null,
+      "tier": "candidate"
+    },
+    {
+      "tag": "devstral-small-2:24b",
+      "digest": null,
+      "estimatedVramMb": null,
+      "tier": "later"
+    },
+    {
+      "tag": "glm-4.7-flash",
+      "digest": null,
+      "estimatedVramMb": null,
+      "tier": "later"
+    }
+  ]
+}
