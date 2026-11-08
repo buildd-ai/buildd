@@ -1,6 +1,6 @@
 {
   "caseId": "find-absent-quota",
-  "version": 1,
+  "version": 2,
   "contentHash": "8db613dbd795621297a9bf352eca1dee82c3fb171b0c41718fa28a7e6217f180",
   "admitted": true,
   "gates": [
@@ -27,7 +27,7 @@
     {
       "gate": "absence-audited",
       "ok": true,
-      "detail": "scope recorded, confirmed by a second person"
+      "detail": "scope recorded, confirmed by an independent reviewer (named in searchScope.confirmer)"
     },
     {
       "gate": "isolation-holds",

@@ -1,7 +1,7 @@
 {
   "formatVersion": 2,
   "id": "ctx-conflicting-timeouts",
-  "version": 1,
+  "version": 2,
   "contentHash": "cd996b8c5c901dd24a693dff86e3ed21f50cd4ebad1afa74b3119d8df7d721b1",
   "category": "long-context-requirements",
   "files": {
@@ -36,8 +36,8 @@
     "bun": "1.x"
   },
   "resources": {
-    "cpuOnly": true,
-    "estimatedVramMb": null,
+    "cpuOnly": false,
+    "estimatedVramMb": 16384,
     "estimatedRamMb": null,
     "wallClockSeconds": 900,
     "maxTurns": 30,

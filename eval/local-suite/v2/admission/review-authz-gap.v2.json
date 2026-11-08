@@ -1,7 +1,7 @@
 {
-  "caseId": "ctx-conflicting-timeouts",
-  "version": 1,
-  "contentHash": "cd996b8c5c901dd24a693dff86e3ed21f50cd4ebad1afa74b3119d8df7d721b1",
+  "caseId": "review-authz-gap",
+  "version": 2,
+  "contentHash": "6f1d0e2d6e810d8545e4434baadccac1bac8f75a63ccb49c5849087b5803de74",
   "admitted": true,
   "gates": [
     {
@@ -44,10 +44,10 @@
     "snapshot": [
       false
     ],
-    "broken:over-reports": [
+    "broken:nothing": [
       false
     ],
-    "broken:picks-one": [
+    "broken:export-only": [
       false
     ],
     "alternative": [
