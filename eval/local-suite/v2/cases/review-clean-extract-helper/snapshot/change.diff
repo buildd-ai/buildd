@@ -1,0 +1,47 @@
+--- a/src/invoice.ts
++++ b/src/invoice.ts
+@@ -8,33 +8,21 @@
+ // the billing export has always rendered unknown codes that way and downstream parsers rely on it.
+ const ZERO_DECIMAL = new Set(['JPY', 'KRW']);
+ 
++function formatAmount(cents: number, currency: string): string {
++  const abs = Math.abs(cents);
++  const sign = cents < 0 ? '-' : '';
++  if (ZERO_DECIMAL.has(currency)) return `${sign}${abs}`;
++  const frac = String(abs % 100).padStart(2, '0');
++  return `${sign}${Math.floor(abs / 100)}.${frac}`;
++}
++
+ export function renderLine(l: Line): string {
+-  let text: string;
+-  if (ZERO_DECIMAL.has(l.currency)) {
+-    text = String(Math.abs(l.cents));
+-  } else {
+-    const whole = Math.floor(Math.abs(l.cents) / 100);
+-    const frac = String(Math.abs(l.cents) % 100).padStart(2, '0');
+-    text = `${whole}.${frac}`;
+-  }
+-  const sign = l.cents < 0 ? '-' : '';
+-  return `${l.label}: ${sign}${text} ${l.currency}`;
++  return `${l.label}: ${formatAmount(l.cents, l.currency)} ${l.currency}`;
+ }
+ 
+ export function renderTotal(lines: Line[]): string {
+   let total = 0;
+-  for (let i = 0; i < lines.length; i++) {
+-    total += lines[i].cents;
+-  }
+-  let text: string;
++  for (const l of lines) total += l.cents;
+   const currency = lines.length ? lines[0].currency : 'USD';
+-  if (ZERO_DECIMAL.has(currency)) {
+-    text = String(Math.abs(total));
+-  } else {
+-    const whole = Math.floor(Math.abs(total) / 100);
+-    const frac = String(Math.abs(total) % 100).padStart(2, '0');
+-    text = `${whole}.${frac}`;
+-  }
+-  const sign = total < 0 ? '-' : '';
+-  return `total: ${sign}${text} ${currency}`;
++  return `total: ${formatAmount(total, currency)} ${currency}`;
+ }

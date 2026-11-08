@@ -1,0 +1,108 @@
+{
+  "formatVersion": 2,
+  "id": "term-recovery-stale-lock",
+  "version": 1,
+  "contentHash": "1a0c1c6fe38a2976e6d2a910ecccd855119ef2476d3aaa0f0a4e47f1cad45057",
+  "category": "terminal-recovery-compaction",
+  "files": {
+    "snapshot": [
+      "snapshot/NOTES.md",
+      "snapshot/out/.lock",
+      "snapshot/out/bundle.js",
+      "snapshot/out/keep/vendor.map",
+      "snapshot/package.json",
+      "snapshot/scripts/build.ts",
+      "snapshot/src/math.ts",
+      "snapshot/src/text.ts",
+      "snapshot/test/build.spec.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/out/bundle.js",
+      "reference/scripts/build.ts"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "ignore-lock",
+        "wipe-keep"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/out/bundle.js",
+        "candidates/alt/scripts/build.ts",
+        "candidates/ignore-lock/out/bundle.js",
+        "candidates/ignore-lock/scripts/build.ts",
+        "candidates/wipe-keep/out/bundle.js",
+        "candidates/wipe-keep/out/keep/vendor.map",
+        "candidates/wipe-keep/scripts/build.ts"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 1200,
+    "maxTurns": 40,
+    "toolBudget": 100
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "compaction"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented project. A build killed partway leaves a stale lock and a truncated bundle. Wiping out/ or ignoring the lock both get a green build, and the visible checks only read the bundle.",
+  "expected": {
+    "kind": "verifier"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

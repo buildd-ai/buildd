@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 3,
+  "accounts": [
+    { "id": "a1", "fullName": "Ana Ruiz", "balance": 12.5 },
+    { "id": "a2", "fullName": "Ben van Dyk", "balance": 0.29 },
+    { "id": "a3", "fullName": "Cleo Marsh", "balance": 1.15 },
+    { "id": "a4", "fullName": "Dev Patel", "balance": 0 }
+  ]
+}

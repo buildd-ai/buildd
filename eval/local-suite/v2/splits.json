@@ -4,12 +4,24 @@
     "change-board-helper-markers",
     "change-money-currency",
     "change-soft-delete",
+    "ctx-conflicting-timeouts",
+    "ctx-dispersed-total",
+    "ctx-retention-superseded",
+    "ctx-unanswerable-limit",
     "debug-date-only-shift",
     "debug-messageless-failures",
     "debug-price-cache-key",
     "find-absent-quota",
     "find-signature-normalizer",
-    "find-two-retry-sites"
+    "find-two-retry-sites",
+    "review-authz-gap",
+    "review-clean-extract-helper",
+    "review-pagination-bounds",
+    "review-retry-wrapper",
+    "term-compaction-constraints",
+    "term-recovery-journal",
+    "term-recovery-stale-lock",
+    "term-session-staged-conventions"
   ],
   "sealedHoldout": [
     {

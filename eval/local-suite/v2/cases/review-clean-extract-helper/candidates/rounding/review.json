@@ -1,0 +1,1 @@
+{"findings":[{"file":"src/invoice.ts","line":16,"description":"Math.floor of the absolute value changes rounding for negative amounts compared with the old code"}]}

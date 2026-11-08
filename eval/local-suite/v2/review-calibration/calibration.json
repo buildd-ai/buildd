@@ -1,0 +1,22 @@
+{
+  "note": "Known-answer probes for the deterministic review grader (review-v1). Each probe is one finding with the label a person assigned from the case's seeded defects. A grader change that moves any probe fails the calibration test. Probes with label clean are findings on code that is correct: they must always be false positives. Model-grader and person agreement on a sample is a separate, later step and is not recorded here.",
+  "probes": [
+    { "case": "review-pagination-bounds", "file": "src/paginate.ts", "line": 11, "description": "Pages are 1-based, so start = page * pageSize skips the whole first page; it should be (page - 1) * pageSize.", "label": "true-positive", "defect": "offset" },
+    { "case": "review-pagination-bounds", "file": "src/paginate.ts", "line": 12, "description": "off by one in the offset arithmetic for the first page", "label": "true-positive", "defect": "offset" },
+    { "case": "review-pagination-bounds", "file": "src/paginate.ts", "line": 11, "description": "this looks inefficient", "label": "false-positive" },
+    { "case": "review-pagination-bounds", "file": "src/handler.ts", "line": 8, "description": "pageSize is never validated; 0, negative or NaN values reach paginate", "label": "true-positive", "defect": "page-size" },
+    { "case": "review-pagination-bounds", "file": "src/handler.ts", "line": 20, "description": "pageSize is never validated", "label": "false-positive" },
+    { "case": "review-pagination-bounds", "file": "src/orders.ts", "line": 9, "description": "shared mutable module-level array is not safe", "label": "false-positive" },
+    { "case": "review-clean-extract-helper", "file": "src/invoice.ts", "line": 9, "description": "unknown currencies fall back to two decimals", "label": "clean" },
+    { "case": "review-clean-extract-helper", "file": "src/invoice.ts", "line": 16, "description": "Math.floor changes rounding for negative amounts", "label": "clean" },
+    { "case": "review-clean-extract-helper", "file": "src/invoice.ts", "line": 22, "description": "the total loop was rewritten and may skip the last line", "label": "clean" },
+    { "case": "review-retry-wrapper", "file": "src/payments.ts", "line": 10, "description": "Retrying POST /charges without an idempotency key can charge the card twice.", "label": "true-positive", "defect": "retried-charge" },
+    { "case": "review-retry-wrapper", "file": "src/payments.ts", "line": 10, "description": "A timed-out charge that actually went through is repeated, creating duplicate payments.", "label": "true-positive", "defect": "retried-charge" },
+    { "case": "review-retry-wrapper", "file": "src/payments.ts", "line": 10, "description": "this function is too long", "label": "false-positive" },
+    { "case": "review-retry-wrapper", "file": "src/payments.ts", "line": 14, "description": "retrying the search can duplicate payments", "label": "false-positive" },
+    { "case": "review-authz-gap", "file": "src/projects.ts", "line": 28, "description": "deleteProject never checks that the caller owns the project, so any signed-in user can delete it", "label": "true-positive", "defect": "delete-without-owner-check" },
+    { "case": "review-authz-gap", "file": "src/projects.ts", "line": 27, "description": "Missing authorization on delete.", "label": "true-positive", "defect": "delete-without-owner-check" },
+    { "case": "review-authz-gap", "file": "src/projects.ts", "line": 37, "description": "members can export, which is an authorization problem", "label": "false-positive" },
+    { "case": "review-authz-gap", "file": "src/projects.ts", "line": 20, "description": "archive has no owner check", "label": "false-positive" }
+  ]
+}
