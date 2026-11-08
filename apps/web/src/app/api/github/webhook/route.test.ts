@@ -772,6 +772,12 @@ const mockMaybeAutoReviewUnownedPr = mock(async (_input: any) => 'skipped_off' a
 mock.module('@/lib/auto-review-unowned', () => ({ maybeAutoReviewUnownedPr: mockMaybeAutoReviewUnownedPr }));
 beforeEach(() => { mockMaybeAutoReviewUnownedPr.mockClear(); });
 
+// A release-candidate PR the release workflow opened (no worker ever held its
+// branch) gets bound to a bookkeeping task/worker, never a review (lib/release-candidate-adopt.ts).
+const mockMaybeAdoptReleaseCandidatePr = mock(async (_input: any) => 'skipped_not_candidate' as string);
+mock.module('@/lib/release-candidate-adopt', () => ({ maybeAdoptReleaseCandidatePr: mockMaybeAdoptReleaseCandidatePr }));
+beforeEach(() => { mockMaybeAdoptReleaseCandidatePr.mockClear(); });
+
 describe('PR comments reach the live worker that owns the PR', () => {
   beforeEach(() => {
     mockRecordNamedReplacement.mockClear();
@@ -2983,6 +2989,30 @@ describe('POST /api/github/webhook', () => {
       mockMaybeAutoReviewUnownedPr.mockClear();
       await POST(createWebhookRequest('pull_request', makePullRequestPayload({ top: { action: 'closed' } })));
       expect(mockMaybeAutoReviewUnownedPr).not.toHaveBeenCalled();
+    });
+
+    it("offers a release-candidate PR for adoption on opened/reopened/ready_for_review/synchronize, never on close", async () => {
+      for (const action of ['opened', 'reopened', 'ready_for_review', 'synchronize']) {
+        mockMaybeAdoptReleaseCandidatePr.mockClear();
+        await POST(createWebhookRequest('pull_request', makePullRequestPayload({
+          top: { action },
+          pull_request: { user: { login: 'buildd-release[bot]', type: 'Bot' }, base: { ref: 'main' } },
+        })));
+        expect(mockMaybeAdoptReleaseCandidatePr).toHaveBeenCalledTimes(1);
+        const input = (mockMaybeAdoptReleaseCandidatePr.mock.calls[0] as any[])[0];
+        expect(input).toMatchObject({ action, installationId: 5000, repoFullName: 'test-org/test-repo' });
+        expect(input.pr.number).toBe(7);
+        expect(input.pr.user.login).toBe('buildd-release[bot]');
+      }
+      mockMaybeAdoptReleaseCandidatePr.mockClear();
+      await POST(createWebhookRequest('pull_request', makePullRequestPayload({ top: { action: 'closed' } })));
+      expect(mockMaybeAdoptReleaseCandidatePr).not.toHaveBeenCalled();
+    });
+
+    it('a failed release-candidate adoption never fails the webhook', async () => {
+      mockMaybeAdoptReleaseCandidatePr.mockImplementationOnce(async () => { throw new Error('boom'); });
+      const res = await POST(createWebhookRequest('pull_request', makePullRequestPayload()));
+      expect(res.status).toBe(200);
     });
 
     it('a PR this event just auto-review-adopted is not also taken by the PR-opened policy or the no-CI auto-merge', async () => {

@@ -27,6 +27,7 @@ import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { handleReleasePrCiSuccess, settleHeldReleasesOnClose } from '@/lib/held-pr-tasks';
 import { PR_OPENED_POLICY, maybeAutoReviewUnownedPr, republishPrHeads } from '@/modules';
+import { maybeAdoptReleaseCandidatePr } from '@/lib/release-candidate-adopt';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
 import { completeTaskOnBranchMatchMerge, legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
@@ -851,6 +852,23 @@ async function handlePullRequestEvent(event: {
       console.error(`[auto-review] ${repository.full_name}#${pr.number} failed:`, err);
     }
     await republishPrHeads(event.installation.id, repository.full_name, [{ number: pr.number, sha: pr.head.sha }]);
+
+    // `maybeAutoReviewUnownedPr` above explicitly refuses a release candidate
+    // (it has its own gate, never an agent reviewer) without adopting it —
+    // nothing else does either, since `registerLocalPr` below only matches an
+    // existing worker's own task branch, and a candidate's `release/vX.Y.Z`
+    // branch was never one. Left unadopted, get_pr/merge_pr/list_prs (all
+    // keyed on workers.prNumber) answer "not found" for a PR that is open and
+    // legitimate. This binds it — adoption only, never a review request and
+    // never a merge — so those surfaces resolve it like any other known PR.
+    try {
+      const candidateOutcome = await maybeAdoptReleaseCandidatePr({
+        action, installationId: event.installation.id, repoFullName: repository.full_name, pr,
+      });
+      if (candidateOutcome === 'adopted') console.log(`[release-candidate-adopt] ${repository.full_name}#${pr.number} (${action}): adopted`);
+    } catch (err) {
+      console.error(`[release-candidate-adopt] ${repository.full_name}#${pr.number} failed:`, err);
+    }
   }
   if ((action === 'opened' || action === 'reopened' || action === 'synchronize') && event.installation?.id) {
     await flagAcceptanceEditsForPr({ installationId: event.installation.id, repoFullName: repository.full_name, prNumber: pr.number, headSha: pr.head.sha });
