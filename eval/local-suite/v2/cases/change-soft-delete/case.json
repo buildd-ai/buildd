@@ -1,0 +1,108 @@
+{
+  "formatVersion": 2,
+  "id": "change-soft-delete",
+  "version": 1,
+  "contentHash": "f2815f06584668001d32738cfdf0b63ad386539ff709803d1d8900aa23d4ebcf",
+  "category": "multi-file-change",
+  "files": {
+    "snapshot": [
+      "snapshot/package.json",
+      "snapshot/src/api.ts",
+      "snapshot/src/service.ts",
+      "snapshot/src/stats.ts",
+      "snapshot/src/store.ts",
+      "snapshot/test/notes.spec.ts"
+    ],
+    "instruction": "instruction.md",
+    "verifier": [
+      "verifier/check.ts"
+    ],
+    "reference": [
+      "reference/src/api.ts",
+      "reference/src/service.ts",
+      "reference/src/store.ts"
+    ],
+    "rubric": null,
+    "candidates": {
+      "broken": [
+        "filter-service-only",
+        "trash-copy"
+      ],
+      "alternative": "alt",
+      "files": [
+        "candidates/alt/src/api.ts",
+        "candidates/alt/src/service.ts",
+        "candidates/alt/src/store.ts",
+        "candidates/filter-service-only/src/api.ts",
+        "candidates/filter-service-only/src/service.ts",
+        "candidates/filter-service-only/src/store.ts",
+        "candidates/trash-copy/src/api.ts",
+        "candidates/trash-copy/src/service.ts",
+        "candidates/trash-copy/src/store.ts"
+      ]
+    }
+  },
+  "deps": {
+    "bun": "1.x"
+  },
+  "resources": {
+    "cpuOnly": true,
+    "estimatedVramMb": null,
+    "estimatedRamMb": null,
+    "wallClockSeconds": 1200,
+    "maxTurns": 50,
+    "toolBudget": 150
+  },
+  "labels": {
+    "difficulty": "medium",
+    "skills": [
+      "fix"
+    ]
+  },
+  "exposing": true,
+  "provenance": {
+    "source": "authored",
+    "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
+    "note": "Small fixture written from scratch for this case."
+  },
+  "contamination": "Authored fixture; invented project.",
+  "expected": {
+    "kind": "verifier"
+  },
+  "admission": {
+    "admittedOn": "2026-11-08",
+    "toolchain": "bun 1.3.11; linux-arm64",
+    "gates": [
+      {
+        "gate": "reference-passes",
+        "ok": true,
+        "detail": "verifier passes the reference"
+      },
+      {
+        "gate": "deterministic",
+        "ok": true,
+        "detail": "3 identical runs"
+      },
+      {
+        "gate": "negative-control-fails",
+        "ok": true,
+        "detail": "fails the snapshot and 2 broken candidate(s)"
+      },
+      {
+        "gate": "independent-of-patch",
+        "ok": true,
+        "detail": "a different correct solution passes"
+      },
+      {
+        "gate": "absence-audited",
+        "ok": true,
+        "detail": "not an answer-absent case"
+      },
+      {
+        "gate": "isolation-holds",
+        "ok": true,
+        "detail": "probe agent tree is clean"
+      }
+    ]
+  }
+}

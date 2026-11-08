@@ -1,0 +1,5 @@
+{
+  "port": 8080,
+  "requestsPerMinute": 60,
+  "timeoutMs": 3000
+}
