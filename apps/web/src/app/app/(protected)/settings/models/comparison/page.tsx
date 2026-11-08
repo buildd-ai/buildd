@@ -51,7 +51,7 @@ export default async function ModelComparisonPage({ searchParams }: { searchPara
   return (
     <SettingsPage title="Compare models" description={description} wide>
       <Link href="/app/settings/models" className="text-sm text-text-secondary underline underline-offset-2 py-2 inline-block">Model settings</Link>
-      <form method="get" className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="comparison-filters">
+      <form method="get" className="grid grid-cols-2 gap-x-2 gap-y-2 sm:gap-3 lg:grid-cols-3" data-testid="comparison-filters">
         {teamWorkspaces.length > 1 && (
           <FilterSelect name="workspace" label="Workspace" initial={picked.id} options={teamWorkspaces.map((w) => ({ value: w.id, label: w.name }))} />
         )}
@@ -65,7 +65,7 @@ export default async function ModelComparisonPage({ searchParams }: { searchPara
           { value: '24h', label: 'Last 24 hours' }, { value: '7d', label: 'Last 7 days' },
           { value: '30d', label: 'Last 30 days' }, { value: '90d', label: 'Last 90 days' },
         ]} />
-        <div className="flex items-end">
+        <div className="col-span-2 flex items-end lg:col-span-1">
           <button type="submit" className="btn min-h-11 w-full sm:w-auto">Apply</button>
         </div>
       </form>
