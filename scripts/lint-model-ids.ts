@@ -64,6 +64,7 @@ const ALLOWLIST: string[] = [
   'apps/web/src/app/app/dev/fixtures/ModelProvidersFixture.tsx', // dev-only Model providers fixture: shows how real tier model IDs map through an endpoint
   'apps/web/src/app/app/(protected)/settings/models/model-tiers-fixtures.ts', // DOM-test-only fixtures for the Model tiers page (imported by its *.dom.test.tsx files): illustrative catalog rows keyed by model ID
   'scripts/local-eval/agent.ts', // names the Claude model ID that Claude Code's modelOverrides remaps onto the local Ollama tag
+  'scripts/local-eval/v2-agent.ts', // v2 executor's Claude Code invocation: same modelOverrides remap of the Claude model ID onto the local Ollama tag (v1 agent.ts is left untouched for its in-flight cohort)
   'scripts/lint-model-ids.ts', // this file: self-test fixtures deliberately contain literal model IDs to exercise the matcher
 ];
 
