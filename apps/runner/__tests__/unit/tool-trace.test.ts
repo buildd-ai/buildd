@@ -223,8 +223,10 @@ describe('persistence, idempotency and bounds', () => {
     sh(r, 'rg a', 'x', false);
     r.onToolResult({ tool_use_id: 'c-dup', content: 'late' }); // unknown id: ignored
     r.close(); r.close();
-    expect(statSync(r.path!).mode & 0o777).toBe(0o600);
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') { // Windows has no POSIX mode bits
+      expect(statSync(r.path!).mode & 0o777).toBe(0o600);
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+    }
     const lines = readFileSync(r.path!, 'utf8').trim().split('\n').map(l => JSON.parse(l));
     expect(lines[0]).toMatchObject({ kind: 'header', v: TRACE_SCHEMA_VERSION, taskId: 'task-1', attempt: 2, harness: 'claude', model: 'm' });
     expect(lines.filter(l => l.kind === 'call')).toHaveLength(1);
