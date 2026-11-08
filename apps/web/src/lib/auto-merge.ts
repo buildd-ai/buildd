@@ -18,7 +18,8 @@ import { agentReviewsDataMigrations, isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { SHARED_SCHEMA_HOLD_PREFIX } from '@/lib/mission-schema-overlap';
 import { predecessorPrNumbers } from '@/lib/pr-predecessors';
-import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
+import { effectiveDeltaFiles, refreshDeltaBase } from '@/lib/integration-refresh';
+import { resolveAllowedMergeMethod } from '@/lib/allowed-merge-methods';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { policyValue } from '@/lib/policy-overrides';
@@ -1013,7 +1014,8 @@ export async function tryAutoMergeWorkerPr(params: {
   // An integration-refresh PR IS the merge commit that catches the mission
   // branch up with dev; squashing it would drop that ancestry and the same
   // conflict would reappear on the very next refresh (integration-refresh.ts).
-  const mergeMethod = resolveMergeMethod(mergingTask?.context);
+  // No method is chosen here, so use one the base accepts (a release target's ruleset may allow only merge).
+  const mergeMethod = await resolveAllowedMergeMethod({ context: mergingTask?.context, installationId, repoFullName, baseRef: observed.baseRef ?? null });
   // Every rail passed. For a kernel-owned PR this door is only an adapter: the
   // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
   // what follows — the post-merge work, and the refresh or conflict repair a

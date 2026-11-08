@@ -74,7 +74,7 @@ import {
 import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
 import { refreshCause } from '@/lib/refresh-cause';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
-import { resolveMergeMethod } from '@/lib/integration-refresh';
+import { resolveAllowedMergeMethod, type AllowedMergeMethodsReader } from '@/lib/allowed-merge-methods';
 import { isFailingCheckRun } from '@/lib/ci-verdict';
 import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -191,7 +191,7 @@ export interface LandPrInput {
   bound?: ModelApproveBound;
   mission?: MissionIntegrationFields | null;
   releaseConfig?: WorkspaceReleaseConfig | null;
-  /** How GitHub combines the PR. Default squash; `merge_pr` lets the caller choose. */
+  /** How GitHub combines the PR. Omitted: squash when the base allows it, else an allowed method (allowed-merge-methods.ts). */
   mergeMethod?: 'merge' | 'squash' | 'rebase';
   /**
    * The workspace gitConfig, for surface merge ordering (lib/surface-ordering.ts).
@@ -279,6 +279,8 @@ export interface LandPrDeps {
   guardMissionPrMerge?: typeof guardMissionPrMerge;
   /** What review a frozen release candidate is owed (composition at its head). Defaults to workflow/candidate-review.ts. */
   candidateReview?: typeof import('@/lib/workflow/candidate-review').candidateReviewScope;
+  /** The merge methods the PR's base accepts (repo settings ∩ branch rulesets). Defaults to a GitHub read. */
+  readAllowedMergeMethods?: AllowedMergeMethodsReader;
 }
 
 // AC-13: the adoption step every worker merge door runs (pr-landing-adoption.ts), re-exported for doors
@@ -1171,7 +1173,12 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // conflict-resolution task IS the merge commit that catches a mission's
   // integration branch up with dev, and squashing it would drop that
   // ancestry — the same conflict would reappear on the next refresh.
-  const mergeMethod = resolveMergeMethod(mergingTask?.context, input.mergeMethod);
+  // No method asked for: one the base accepts (a ruleset on a release target can allow only
+  // `merge`), so the default never fails as a GitHub 405 dressed as a person's decision.
+  const mergeMethod = await resolveAllowedMergeMethod(
+    { context: mergingTask?.context, requested: input.mergeMethod, installationId, repoFullName, baseRef },
+    deps.readAllowedMergeMethods,
+  );
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
   // merge_call → T16 → verify_merge → PrMerged), which also owns the
   // post-merge work; any other PR merges here as before.
