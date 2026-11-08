@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "1c124c41-a9ac-4172-8845-23c405741062",
+  "id": "c5b7757d-b538-43e8-b098-653ea3217bdb",
   "prevIds": [
-    "405c67cd-0181-4ac0-8757-f7f52d9c1cbb"
+    "0d5d158a-60aa-451b-ab66-04c2107d3dd5"
   ],
   "ddl": [
     {
@@ -14026,6 +14026,19 @@
       "generated": null,
       "identity": null,
       "name": "cost_basis",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_observations"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "tool_efficiency",
       "entityType": "columns",
       "schema": "public",
       "table": "model_observations"
