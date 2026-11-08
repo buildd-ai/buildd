@@ -31,7 +31,7 @@ import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
-import { resolveMergeMethod } from '@/lib/integration-refresh';
+import { resolveAllowedMergeMethod } from '@/lib/allowed-merge-methods';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { latestRunPerName, listAllCheckRuns, type CheckRunState } from '@/lib/ci-verdict';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
@@ -630,7 +630,8 @@ export async function POST(
 
   // Perform the merge: the kernel's for a kernel-owned PR, GitHub's directly otherwise.
   // An integration-refresh PR always lands as a merge commit (integration-refresh.ts).
-  const mergeMethod = resolveMergeMethod(worker.task?.context);
+  // The dashboard asks for no method: use one the base accepts (a release target's ruleset may allow only merge).
+  const mergeMethod = await resolveAllowedMergeMethod({ context: worker.task?.context, installationId, repoFullName, baseRef: liveBaseRef });
   // The verdict override reaches T15 only when the review gate actually blocked; a size or
   // freshness override (the spent-treadmill escape hatch) always does, with its kinds.
   const kernelKinds = [
