@@ -29,7 +29,7 @@
  *   their own block and are not an input to any rate or verdict.
  */
 import { correctnessOf, EMPTY_EVIDENCE, type Correctness } from './model-observation';
-import { newcombeInterval, wilsonInterval, type Interval } from './experiment-readout';
+import { newcombeInterval, wilsonInterval, type Interval } from './stat-intervals';
 
 /** Resolved attempts needed per configuration before a rate is more than a hint. */
 export const MIN_RESOLVED = 20;

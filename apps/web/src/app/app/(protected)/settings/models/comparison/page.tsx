@@ -2,6 +2,7 @@ import Link from 'next/link';
 import SettingsPage from '../../_components/SettingsPage';
 import { loadSettingsContext } from '../../_lib/settings-context';
 import { loadModelComparison, parseComparisonFilters } from '@/lib/model-comparison-query';
+import { FilterSelect } from './FilterSelect';
 import ModelComparisonView from './ModelComparisonView';
 import { resolveComparisonWorkspace } from './workspace-pick';
 
@@ -47,12 +48,7 @@ export default async function ModelComparisonPage({ searchParams }: { searchPara
       <Link href="/app/settings/models" className="text-sm text-text-secondary underline underline-offset-2 py-2 inline-block">Model settings</Link>
       <form method="get" className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="comparison-filters">
         {teamWorkspaces.length > 1 && (
-          <label className="text-xs text-text-muted flex flex-col gap-1">
-            Workspace
-            <select name="workspace" defaultValue={picked.id} className="min-h-11 border border-border bg-card px-2 text-sm text-text-primary">
-              {teamWorkspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-            </select>
-          </label>
+          <FilterSelect name="workspace" label="Workspace" initial={picked.id} options={teamWorkspaces.map((w) => ({ value: w.id, label: w.name }))} />
         )}
         {FIELDS.map((f) => (
           <label key={f.name} className="text-xs text-text-muted flex flex-col gap-1">
@@ -60,15 +56,10 @@ export default async function ModelComparisonPage({ searchParams }: { searchPara
             <input name={f.name} defaultValue={one(sp[f.name]) ?? ''} placeholder={f.placeholder} className="min-h-11 border border-border bg-card px-2 text-sm text-text-primary" />
           </label>
         ))}
-        <label className="text-xs text-text-muted flex flex-col gap-1">
-          Period
-          <select name="window" defaultValue={filters.window ?? '30d'} className="min-h-11 border border-border bg-card px-2 text-sm text-text-primary">
-            <option value="24h">Last 24 hours</option>
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-            <option value="90d">Last 90 days</option>
-          </select>
-        </label>
+        <FilterSelect name="window" label="Period" initial={filters.window ?? '30d'} options={[
+          { value: '24h', label: 'Last 24 hours' }, { value: '7d', label: 'Last 7 days' },
+          { value: '30d', label: 'Last 30 days' }, { value: '90d', label: 'Last 90 days' },
+        ]} />
         <div className="flex items-end">
           <button type="submit" className="btn min-h-11 w-full sm:w-auto">Apply</button>
         </div>
