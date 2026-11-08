@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-11-08
 summary: The playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden verifiers and admission gates, and report capability profiles, never a single winner.
 domain: surfaces
-surfaces: [packages/core/local-eval.ts, packages/core/local-eval-v2.ts, packages/core/local-eval-v2-exec.ts, scripts/local-eval/cli.ts, scripts/local-eval/v2-exec.ts, eval/local-suite/v1/suite.json, docs/specs/model-comparison.md]
+surfaces: [packages/core/local-eval.ts, packages/core/local-eval-v2-exec.ts, scripts/local-eval/v2-exec.ts, scripts/local-eval/cli.ts]
 related: [model-comparison, model-inference-agent-capability, model-routing-and-tiers]
 keywords: [coding eval, playground, local-suite v2, score-v2, harbor, terminal-bench, contextbench, repoqa, compaction, abstention, capability profile, cpuOnly]
 verified_by: [packages/core/__tests__/local-eval.test.ts, scripts/local-eval/local-eval.test.ts, packages/core/__tests__/local-eval-v2-exec.test.ts, scripts/local-eval/v2-exec.test.ts]
