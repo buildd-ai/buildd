@@ -41,7 +41,7 @@ function ConfigCard({ c, min }: { c: ConfigSummary; min: number }) {
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 md:grid-cols-4">
         <Fact label="Attempts" value={String(c.attempts)} detail={`${c.terminal.completed} completed, ${c.terminal.failed} failed`} />
         <Fact label="Quality" value={q.value} detail={q.detail} />
-        <Fact label="Delivered" value={d.value} detail={d.detail} />
+        <Fact label="Merged" value={d.value} detail={d.detail} />
         <Fact label="Time to finish" value={lat.value} detail={lat.detail} />
         <Fact label="Input tokens" value={inTok.value} detail={inTok.detail} />
         <Fact label="Output tokens" value={outTok.value} detail={outTok.detail} />

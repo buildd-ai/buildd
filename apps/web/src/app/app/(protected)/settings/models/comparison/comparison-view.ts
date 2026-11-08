@@ -49,7 +49,7 @@ export function costText(c: ConfigSummary['cost']): { value: string; detail: str
 export function sampleLabel(s: SampleStatus, min: number): { tone: 'ok' | 'act' | 'q'; label: string; title: string } {
   if (s === 'established') return { tone: 'ok', label: 'Enough attempts', title: `At least ${min} attempts with a recorded result` };
   if (s === 'small_sample') return { tone: 'act', label: 'Small sample', title: `Fewer than ${min} attempts with a recorded result. Treat as a hint.` };
-  return { tone: 'q', label: 'No results yet', title: 'No attempt has a review, CI or merge result' };
+  return { tone: 'q', label: 'No results', title: 'No attempt has a review, CI or merge result' };
 }
 
 export function verdictLine(v: ComparisonVerdict, a: string, b: string, subject: string): string {
@@ -79,5 +79,5 @@ export function pairLabel(m: MatchedComparison | PairComparison): { a: string; b
 
 export const EVIDENCE_NOTICE = {
   title: 'Observed in production',
-  body: 'Each attempt was routed to its model, not assigned at random, so differences can come from the work as much as the model. Nothing here changes which model runs.',
+  body: 'Production attempts, routed rather than randomised. This page never changes routing.',
 } as const;

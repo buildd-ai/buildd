@@ -23,7 +23,7 @@ describe('ModelComparisonView', () => {
     const html = render([row(), row()]);
     expect(html).toContain('Not recorded');
     expect(html).toContain('Model version not recorded for 2 of 2');
-    expect(html).toContain('No results yet');
+    expect(html).toContain('No results');
     expect(html).not.toContain('$0');
     expect(html).not.toContain('0%');
     expect(html).not.toContain('—');
