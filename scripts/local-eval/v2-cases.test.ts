@@ -29,7 +29,13 @@ describe('shipped v2 cases', () => {
       expect(ev.contentHash).toBe(m.contentHash);
       // Raw verdicts are kept: the snapshot and every named broken candidate failed, the reference and the alternative passed.
       expect(ev.verdicts.snapshot).toEqual([false]);
-      expect(ev.verdicts.alternative).toEqual([true]);
+      // A case may list several alternatives; each is run and recorded as `alternative:<name>`.
+      const alt = m.files.candidates.alternative;
+      if (Array.isArray(alt)) {
+        expect(alt.length, m.id).toBeGreaterThan(0);
+        expect(ev.verdicts.alternative, m.id).toBeUndefined();
+        for (const a of alt) expect(ev.verdicts[`alternative:${a}`], `${m.id} ${a}`).toEqual([true]);
+      } else expect(ev.verdicts.alternative, m.id).toEqual([true]);
       expect(new Set(ev.verdicts.reference).size).toBe(1);
       expect(ev.verdicts.reference[0]).toBe(true);
       for (const b of m.files.candidates.broken) expect(ev.verdicts[`broken:${b}`], `${m.id} ${b}`).toEqual([false]);
@@ -46,9 +52,9 @@ describe('shipped v2 cases', () => {
         expect(m.resources.cpuOnly, m.id).toBe(false);
         expect(m.resources.estimatedVramMb, m.id).toBeGreaterThan(0);
         expect(m.version, m.id).toBeGreaterThan(1);
-        const g = inferenceGuard({ cpuOnly: false, estimatedVramMb: m.resources.estimatedVramMb, gpus: [{ index: 0, name: 'x', totalMb: 24000, usedMb: 0 } as never], loadedModels: [], now: new Date('2999-01-01'), purpose: 'model-run' });
+        const g = inferenceGuard({ requiredVramMb: m.resources.estimatedVramMb, gpus: [{ index: 0, name: 'x', totalMb: 24000, usedMb: 0 } as never], loadedModels: [], now: new Date('2999-01-01'), purpose: 'model-run' });
         expect(g.reason, m.id).not.toContain('cpuOnly');
-        expect(g.reason, m.id).not.toContain('no estimatedVramMb');
+        expect(g.reason, m.id).not.toContain('no VRAM figure');
       } else {
         expect(m.resources.cpuOnly, m.id).toBe(true);
         expect(m.resources.estimatedVramMb, m.id).toBeNull();

@@ -6,7 +6,7 @@ import { SCORING_VERSION, scoreRun } from '../local-eval';
 import {
   SCORING_VERSION_V2, GRADER_IDS, computeContentHash, namedPaths, validateManifestV2, validateSuiteV2, admitCase, exportAgentTree, leakFindingsV2,
   gradeFind, gradeReview, assertGraderAllowed, buildEvidence, checkFit, truncateExplicit, gradeLongContext, gradeCompaction, regrade, scoreRunV2,
-  unsupportedCapabilities, inferenceGuard, scoringVersionForSuite, GPU_WINDOW_OPENS_AT,
+  unsupportedCapabilities, inferenceGuard, requiredVramMb, scoringVersionForSuite, GPU_WINDOW_OPENS_AT,
   type CaseManifestV2, type CaseFiles, type StoredArtifact, type Expected, type OverflowRecord, type EvidenceBuild,
 } from '../local-eval-v2';
 
@@ -130,6 +130,18 @@ describe('admission (AC-3..6)', () => {
     expect(ev.gates.find((g) => g.gate === 'independent-of-patch')!.ok).toBe(false);
     const m = manifest(); m.files.candidates.alternative = null;
     expect((await admitCase(m, verifier(good), { leaks: [] })).admitted).toBe(false);
+  });
+  it('runs every alternative when several are named, and rejects if any one fails', async () => {
+    const m = manifest(); m.files.candidates.alternative = ['alt', 'alt-2'];
+    const ok = await admitCase(m, verifier({ reference: true, 'alternative:alt': true, 'alternative:alt-2': true }), { leaks: [] });
+    expect(ok.admitted).toBe(true);
+    expect(Object.keys(ok.verdicts)).toEqual(expect.arrayContaining(['alternative:alt', 'alternative:alt-2']));
+    expect(ok.gates.find((g) => g.gate === 'independent-of-patch')!.detail).toContain('2 different correct solutions pass');
+    const bad = await admitCase(m, verifier({ reference: true, 'alternative:alt': true }), { leaks: [] });
+    expect(bad.admitted).toBe(false);
+    expect(bad.gates.find((g) => g.gate === 'independent-of-patch')!.detail).toContain('alt-2');
+    m.files.candidates.alternative = [];
+    expect((await admitCase(m, verifier(good), { leaks: [] })).gates.find((g) => g.gate === 'independent-of-patch')!.ok).toBe(false);
   });
   it('rejects a nondeterministic verifier', async () => {
     let n = 0;
@@ -365,20 +377,29 @@ describe('adapters and the CPU-only guard (AC-14, AC-15)', () => {
   });
   const open = new Date(Date.parse(GPU_WINDOW_OPENS_AT) + 1000);
   const gpu = [{ usedMb: 100, totalMb: 24000 }];
-  const g = (o: object) => inferenceGuard({ cpuOnly: false, estimatedVramMb: 18000, gpus: gpu, loadedModels: [], now: open, purpose: 'model-run', ...o });
-  it('never starts a model for verification or a cpuOnly case', () => {
+  const g = (o: object) => inferenceGuard({ requiredVramMb: 18000, gpus: gpu, loadedModels: [], now: open, purpose: 'model-run', ...o });
+  it('never starts a model for verification', () => {
     expect(g({ purpose: 'verify' }).allowed).toBe(false);
-    expect(g({ cpuOnly: true }).allowed).toBe(false);
   });
-  it('refuses before the GPU window, without an estimate, on an unreadable GPU, and without room', () => {
+  it('refuses before the GPU window, without a VRAM figure, on an unreadable GPU, and without room', () => {
     expect(g({ now: new Date('2026-11-08T13:59:00Z') }).reason).toContain('deferred');
-    expect(g({ estimatedVramMb: null }).reason).toContain('estimatedVramMb');
+    expect(g({ requiredVramMb: null }).reason).toContain('no VRAM figure');
     expect(g({ gpus: null }).allowed).toBe(false);
-    expect(g({ estimatedVramMb: 30000 }).allowed).toBe(false);
+    expect(g({ requiredVramMb: 30000 }).allowed).toBe(false);
     expect(g({ loadedModels: ['x'] }).allowed).toBe(false);
   });
-  it('allows a model-running case only when the window is open and the gate passes', () => {
+  it('allows a model run only when the window is open and the gate passes', () => {
     expect(g({}).allowed).toBe(true);
+  });
+  it('takes the larger known VRAM figure; cpuOnly (a verifier property) is not an input', () => {
+    expect(requiredVramMb(null, null)).toBeNull();
+    expect(requiredVramMb(null, 20000)).toBe(20000);
+    expect(requiredVramMb(16384, 12000)).toBe(16384);
+    expect(requiredVramMb(0, null)).toBeNull();
+  });
+  it('scores a case with no visible checks on the verifier alone (visible: null)', () => {
+    expect(scoreRunV2({ graderId: 'verifier-v1', verifier: { ran: true, passed: true }, visible: null, tampering: [], leaks: [] }).result).toBe('pass');
+    expect(scoreRunV2({ graderId: 'verifier-v1', verifier: { ran: true, passed: true }, visible: { ran: false, passed: null }, tampering: [], leaks: [] }).result).toBe('unscored');
   });
 });
 

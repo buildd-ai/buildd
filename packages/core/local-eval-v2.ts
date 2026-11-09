@@ -71,7 +71,12 @@ export interface CaseManifestV2 {
     reference: string[];
     rubric: string | null;
     /** Overlay trees (files under `candidates/<name>/`) used only by admission. */
-    candidates: { broken: string[]; alternative: string | null; files: string[] };
+    /**
+     * `alternative` is one correct solution other than the reference, or a list
+     * of them when the brief admits several genuinely different designs; every
+     * one must pass. A list is run as `alternative:<name>`.
+     */
+    candidates: { broken: string[]; alternative: string | string[] | null; files: string[] };
   };
   deps: Record<string, string>;
   resources: {
@@ -242,7 +247,7 @@ export type AdmissionGate = (typeof ADMISSION_GATES)[number];
 
 export const DETERMINISM_RUNS = 3;
 
-/** Run the hidden verifier on one candidate tree: 'snapshot' | 'reference' | 'broken:<name>' | 'alternative'. */
+/** Run the hidden verifier on one candidate tree: 'snapshot' | 'reference' | 'broken:<name>' | 'alternative' | 'alternative:<name>'. */
 export type VerifyFn = (candidate: string) => boolean | Promise<boolean>;
 
 export interface AdmissionEvidence {
@@ -287,10 +292,16 @@ export async function admitCase(m: CaseManifestV2, verify: VerifyFn, probe: { le
   gate('negative-control-fails', negOk, passedBad.length ? `verifier PASSES: ${passedBad.join(', ')}` : brokenNames.length < needBroken ? `needs ${needBroken} named broken candidates, has ${brokenNames.length}` : `fails the snapshot and ${brokenNames.length} broken candidate(s)`);
 
   const alt = m.files.candidates.alternative;
-  if (!alt) gate('independent-of-patch', false, 'no alternative correct solution recorded');
-  else {
+  if (!alt || (Array.isArray(alt) && !alt.length)) gate('independent-of-patch', false, 'no alternative correct solution recorded');
+  else if (!Array.isArray(alt)) {
     const a = await run('alternative');
     gate('independent-of-patch', a[0] === true, a[0] ? 'a different correct solution passes' : 'the alternative correct solution FAILS: the verifier matches the reference patch, not the behaviour');
+  } else {
+    const failed: string[] = [];
+    for (const name of alt) if (!(await run(`alternative:${name}`))[0]) failed.push(name);
+    gate('independent-of-patch', !failed.length, failed.length
+      ? `alternative correct solution(s) FAIL: ${failed.join(', ')}; the verifier matches the reference patch, not the behaviour`
+      : `${alt.length} different correct solutions pass`);
   }
 
   if (m.expected.kind === 'abstain') {
@@ -638,7 +649,8 @@ export interface ScoreInputV2 {
   /** Capability the adapter lacks for this case. */
   unsupported?: string | null;
   verifier: { ran: boolean; passed: boolean | null };
-  visible: { ran: boolean; passed: boolean | null };
+  /** Null when the case ships no visible checks (answer-only cases): nothing to run, not a check that failed to run. */
+  visible: { ran: boolean; passed: boolean | null } | null;
   tampering: string[];
   leaks: string[];
   /** Notes from the grader: `fabrication`, `constraint_dropped`, ... */
@@ -656,8 +668,8 @@ export function scoreRunV2(i: ScoreInputV2): ScoreV2 {
   if (!i.verifier.ran) return mk('unscored', 'harness', ['verifier did not run']);
   const flags = i.flags ?? [];
   if (i.verifier.passed !== true) return mk('fail', 'model', flags);
-  if (!i.visible.ran) return mk('unscored', 'harness', ['visible checks did not run']);
-  if (i.visible.passed !== true) return mk('fail', 'model', ['visible checks failed', ...flags]);
+  if (i.visible && !i.visible.ran) return mk('unscored', 'harness', ['visible checks did not run']);
+  if (i.visible && i.visible.passed !== true) return mk('fail', 'model', ['visible checks failed', ...flags]);
   if (flags.includes('constraint_dropped') || flags.includes('fabrication')) return mk('fail', 'model', flags);
   return mk('pass', null, flags);
 }
@@ -685,8 +697,12 @@ export function unsupportedCapabilities(a: ModelAdapter, needs: CaseNeeds): stri
 export const GPU_WINDOW_OPENS_AT = '2026-11-08T14:00:00.000Z';
 
 export interface InferenceGuardInput {
-  cpuOnly: boolean;
-  estimatedVramMb: number | null;
+  /**
+   * VRAM the run needs: the larger of the model profile's figure (or the
+   * operator's declared floor) and the case's own estimate. Null = nobody
+   * has said, and the guard refuses rather than guess.
+   */
+  requiredVramMb: number | null;
   gpus: { usedMb: number; totalMb: number }[] | null;
   loadedModels: string[];
   now: Date;
@@ -696,15 +712,24 @@ export interface InferenceGuardInput {
 }
 
 /**
- * No model starts unless the case is `cpuOnly: false`, the GPU window is open
- * and the GPU gate passes with room for the case's estimated VRAM. Verification
+ * The larger of the known VRAM figures; null when none is known. `cpuOnly` is
+ * not an input: it says the case's verifier needs no inference, which is true
+ * of every case, and says nothing about the model a run loads.
+ */
+export function requiredVramMb(caseEstimateMb: number | null, modelEstimateMb: number | null): number | null {
+  const known = [caseEstimateMb, modelEstimateMb].filter((v): v is number => typeof v === 'number' && v > 0);
+  return known.length ? Math.max(...known) : null;
+}
+
+/**
+ * No model starts for verification, before the GPU window, without a VRAM
+ * figure, or unless the GPU gate passes with room for that figure. Verification
  * never needs, and never gets, a model.
  */
 export function inferenceGuard(i: InferenceGuardInput): { allowed: boolean; reason: string } {
   if (i.purpose === 'verify') return { allowed: false, reason: 'verification runs the hidden verifier only; no model is started' };
-  if (i.cpuOnly) return { allowed: false, reason: 'case is cpuOnly: it describes the case tooling and never permits a model run' };
   if (i.now.getTime() < Date.parse(i.windowOpensAt ?? GPU_WINDOW_OPENS_AT)) return { allowed: false, reason: `GPU runs are deferred until ${i.windowOpensAt ?? GPU_WINDOW_OPENS_AT}` };
-  if (i.estimatedVramMb === null) return { allowed: false, reason: 'case has no estimatedVramMb; refusing to load a model before it can be checked' };
-  const g = gpuGate({ gpus: i.gpus, loadedModels: i.loadedModels, minFreeMb: i.estimatedVramMb });
+  if (i.requiredVramMb === null) return { allowed: false, reason: 'no VRAM figure for this model or case (set estimatedVramMb in models.json or pass --vram-mb); refusing to load a model before it can be checked' };
+  const g = gpuGate({ gpus: i.gpus, loadedModels: i.loadedModels, minFreeMb: i.requiredVramMb });
   return { allowed: g.ok, reason: g.reason };
 }

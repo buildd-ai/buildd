@@ -23,8 +23,8 @@
     },
     {
       "id": "change-soft-delete",
-      "version": 1,
-      "contentHash": "f2815f06584668001d32738cfdf0b63ad386539ff709803d1d8900aa23d4ebcf"
+      "version": 2,
+      "contentHash": "e999a16af443d901f168a1ba19987ee83a038786212bc8ae9e49e735caa76346"
     },
     {
       "id": "ctx-conflicting-timeouts",
@@ -108,8 +108,8 @@
     },
     {
       "id": "term-recovery-stale-lock",
-      "version": 1,
-      "contentHash": "1a0c1c6fe38a2976e6d2a910ecccd855119ef2476d3aaa0f0a4e47f1cad45057"
+      "version": 2,
+      "contentHash": "ff7bb6bbc0cf070ee275a081bf4f690b9e4e4373e811cdf53f492d24766a0f5c"
     },
     {
       "id": "term-session-staged-conventions",

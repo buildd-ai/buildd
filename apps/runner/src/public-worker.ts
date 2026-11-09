@@ -36,6 +36,7 @@ export const WITHHELD_WORKER_FIELDS = [
   'skillBundles',
   'roleBundle',
   'observation', // internal counters and a sampler handle, not for clients
+  'toolTrace', // local recorder handle; raw per-call data stays on the machine
 ] as const satisfies ReadonlyArray<keyof LocalWorker>;
 
 export type WithheldWorkerField = (typeof WITHHELD_WORKER_FIELDS)[number];
@@ -74,6 +75,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   sessionEndPushCount: true,
   sessionEndPushes: true,
   observation: false,
+  toolTrace: false,
   lastToolDenial: true,
   lastCompleteTaskAttempt: true, // the agent's own complete_task params, already in toolCalls
   output: true,

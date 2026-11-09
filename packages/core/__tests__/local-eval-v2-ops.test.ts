@@ -28,6 +28,21 @@ describe('filterCases', () => {
   });
 });
 
+describe('planRuns admission guard', () => {
+  const base = { policy: { model: 'm', harness: 'fixture', contextTokens: 8192, trials: 2, track: 'single-context', retrievalPolicy: 'none' } as RunPolicy, adapter: { startsModel: false } as never, gpus: null, loadedModels: [], startsModel: false, modelVramMb: null, now: new Date('2026-11-08T00:00:00Z'), needs: {} };
+  it('refuses every trial of a case whose admission was rejected, with a reason that names admission', () => {
+    const plan = planRuns({ ...base, cases: [row({ id: 'bad', admitted: false }), row({ id: 'good', admitted: true })] });
+    expect(plan.filter((r) => r.caseId === 'bad').map((r) => r.action)).toEqual(['refused', 'refused']);
+    expect(plan.find((r) => r.caseId === 'bad')!.reason).toContain('not admitted');
+    expect(plan.filter((r) => r.caseId === 'good').map((r) => r.action)).toEqual(['run', 'run']);
+  });
+  it('caseRow reads admission from the manifest', () => {
+    const m = (admission: unknown) => ({ id: 'c', version: 1, category: 'x', labels: { difficulty: 'easy', skills: [] }, resources: { cpuOnly: true, estimatedVramMb: null }, exposing: false, admission }) as unknown as CaseManifestV2;
+    expect(caseRow(m(null), 'dev').admitted).toBe(false);
+    expect(caseRow(m({ admittedOn: '2026-11-08', gates: [] }), 'dev').admitted).toBe(true);
+  });
+});
+
 describe('permittedBrief', () => {
   it('shows the instruction and snapshot paths, never verifier, reference or candidates', () => {
     const m = { id: 'c', category: 'find-by-behaviour', resources: { cpuOnly: true }, files: { snapshot: ['snapshot/a.ts'], instruction: 'instruction.md', verifier: ['verifier/check.ts'], reference: ['reference/answer.json'], rubric: null, candidates: { broken: [], alternative: null, files: [] } } } as unknown as CaseManifestV2;
@@ -53,7 +68,7 @@ describe('smoke preset', () => {
 describe('validatePolicy and planRuns', () => {
   const policy: RunPolicy = { model: 'm:1', harness: 'claude-code', contextTokens: 16384, trials: 2, track: 'single-context', retrievalPolicy: 'none' };
   const adapter = { id: 'a', capabilities: { toolCalling: true, systemPrompt: true, structuredOutput: true, contextTokens: 16384 } };
-  const base = { policy, adapter, gpus: [{ usedMb: 0, totalMb: 24000 }], loadedModels: [] as string[] };
+  const base = { policy, adapter, gpus: [{ usedMb: 0, totalMb: 24000 }], loadedModels: [] as string[], startsModel: true, modelVramMb: 16000 as number | null };
   const needs = { 'find-a': { toolCalling: true, systemPrompt: false, structuredOutput: false, contextTokens: 0 } };
 
   it('requires an explicit model, harness and context', () => {
@@ -66,11 +81,23 @@ describe('validatePolicy and planRuns', () => {
     expect(plan).toHaveLength(2);
     expect(plan.every((p) => p.action === 'refused' && /deferred until/.test(p.reason ?? ''))).toBe(true);
   });
-  it('allows a gpu case after the window, but never a cpuOnly case or a sealed one', () => {
+  it('allows a case after the window whether or not its verifier is cpuOnly, but never a sealed one without content', () => {
     const plan = planRuns({ ...base, cases: [ROWS[0], ROWS[1], ROWS[6]], needs, now: new Date('2026-11-08T14:00:01Z') });
     expect(plan.filter((p) => p.caseId === 'find-a').every((p) => p.action === 'run')).toBe(true);
-    expect(plan.find((p) => p.caseId === 'find-b')?.action).toBe('refused');
+    // find-b is cpuOnly with no case VRAM estimate: the model's figure decides, and it fits.
+    expect(plan.find((p) => p.caseId === 'find-b')?.action).toBe('run');
     expect(plan.find((p) => p.caseId === 'sealed-find-a')?.reason).toContain('not in this repository');
+  });
+  it('refuses when neither the model nor the case gives a VRAM figure, and when the larger one does not fit', () => {
+    const none = planRuns({ ...base, modelVramMb: null, cases: [ROWS[1]], needs, now: new Date('2026-11-09T00:00:00Z') });
+    expect(none[0]).toMatchObject({ action: 'refused' });
+    expect(none[0].reason).toContain('no VRAM figure');
+    const big = planRuns({ ...base, modelVramMb: 30000, cases: [ROWS[0]], needs, now: new Date('2026-11-09T00:00:00Z') });
+    expect(big[0].action).toBe('refused');
+  });
+  it('an adapter that starts no model (fixture) is planned without the GPU guard, even before the window and with no GPU', () => {
+    const plan = planRuns({ ...base, startsModel: false, gpus: null, modelVramMb: null, cases: [ROWS[1]], needs, now: new Date('2026-11-01T00:00:00Z') });
+    expect(plan.every((p) => p.action === 'run')).toBe(true);
   });
   it('records unsupported instead of altering the case', () => {
     const plan = planRuns({ ...base, adapter: { ...adapter, capabilities: { ...adapter.capabilities, toolCalling: false } }, cases: [ROWS[0]], needs, now: new Date('2026-11-09T00:00:00Z') });
