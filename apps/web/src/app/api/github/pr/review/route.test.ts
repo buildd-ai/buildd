@@ -327,6 +327,180 @@ describe('POST /api/github/pr/review — a frozen release candidate is reviewed 
   });
 });
 
+describe('a composition-covered release candidate reads as what it is', () => {
+  const CANDIDATE_PR = {
+    ...OPEN_PR,
+    number: 77,
+    head: { ref: 'release/v1.2.3', sha: 'cand-head' },
+    base: { ref: 'main', sha: 'main-sha' },
+  };
+  const RELEASE_WS = { ...WORKSPACE, releaseConfig: { candidate: {} } };
+  const HUMAN_WS = { ...RELEASE_WS, gitConfig: { mergePolicy: { tier: 'human' } } };
+  const APPROVE_ONLY_WS = {
+    ...RELEASE_WS,
+    gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', gateCondition: 'approve-only' } } },
+  };
+  const COMPOSED = { kind: 'composed', headSha: 'cand-head', constituents: 2 };
+  const DELTA = {
+    kind: 'delta', headSha: 'cand-head',
+    commits: [{ sha: 'd'.repeat(40), reason: 'direct_commit', paths: ['apps/web/x.ts'] }],
+    paths: ['apps/web/x.ts'],
+    files: [{ filename: 'apps/web/x.ts', status: 'modified', additions: 1, deletions: 0 }],
+  };
+  const notRequested = (over: Record<string, unknown> = {}) => ({
+    status: {
+      state: 'not_requested', terminal: false, reviewTaskId: null, adoptedTaskId: null, verdict: null, confidence: null,
+      prState: 'unknown', merged: false, mergeBlocked: null, ...over,
+    },
+    timedOut: true,
+  });
+
+  beforeEach(() => {
+    mockResolveWorkspace.mockReturnValue(RELEASE_WS);
+    mockGithubApi.mockImplementation(() => Promise.resolve(CANDIDATE_PR));
+    mockWaitForPrReviewStatus.mockReturnValue(notRequested());
+    mockCandidateReview.mockResolvedValue(COMPOSED);
+  });
+
+  describe('POST', () => {
+    it('a composed head answers with a settled status naming the composition, not a reviewer approval', async () => {
+      const json = await (await POST(post({ prNumber: 77, workspaceId: 'buildd' }))).json();
+      expect(json.status).toMatchObject({
+        state: 'composition_covered', terminal: true, verdict: null, reviewTaskId: null, prState: 'open', mergeBlocked: null,
+        coveredBy: { kind: 'composition', headSha: 'cand-head', constituents: 2 },
+      });
+      expect(json.composition).toEqual({ kind: 'composed', headSha: 'cand-head', constituents: 2 });
+      expect(json.autoMergeExpected).toBe(true);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('an uncovered delta files its reviewer and says the review is scoped to it', async () => {
+      mockCandidateReview.mockResolvedValue(DELTA);
+      const res = await POST(post({ prNumber: 77, workspaceId: 'buildd' }));
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(json.reviewTaskId).toBe('review-task-9');
+      expect(json.status.state).toBe('queued');
+      expect(json.composition).toEqual({ kind: 'delta', headSha: 'cand-head', commits: 1, paths: 1 });
+    });
+
+    it('a person-only (human tier) workspace never reads a composition: the ordinary review stays', async () => {
+      mockResolveWorkspace.mockReturnValue(HUMAN_WS);
+      const res = await POST(post({ prNumber: 77, workspaceId: 'buildd' }));
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(mockCandidateReview).not.toHaveBeenCalled();
+      expect(json.reviewNotOwed).toBeUndefined();
+      expect(json.reviewTaskId).toBe('review-task-9');
+      expect(json.autoMergeExpected).toBe(false);
+    });
+
+    it('a mission set to human tier holds the owner\'s candidate to the ordinary review too', async () => {
+      mockFindPrOwningWorker.mockReturnValue({ id: 'w-1', taskId: 'task-1', branch: 'release/v1.2.3', prNumber: 77 });
+      mockTasksFindFirst.mockReturnValue({ id: 'task-1', title: 't', description: null, missionId: 'mission-1', backend: null, iteration: 0, maxIterations: 3 });
+      mockMissionsFindFirst.mockReturnValue({ mergePolicy: { tier: 'human' } });
+      await POST(post({ prNumber: 77, workspaceId: 'buildd' }));
+      expect(mockCandidateReview).not.toHaveBeenCalled();
+    });
+
+    it('a stale earlier verdict is not repainted as covered when an agent forces past it', async () => {
+      mockFindReviewTaskForPr.mockReturnValue({
+        id: 'older-review', status: 'completed',
+        result: { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 'no' } },
+        context: { prNumber: 77, headSha: 'older-head' },
+      });
+      const json = await (await POST(post({ prNumber: 77, workspaceId: 'buildd', force: true }))).json();
+      expect(json.reviewNotOwed).toBe(true);
+      expect(json.status.state).toBe('changes_requested');
+      expect(json.status.verdict).toBe('request-changes');
+      expect(json.status.coveredBy).toBeUndefined();
+    });
+  });
+
+  describe('GET', () => {
+    it('a composed head settles the poll at once, with no reviewer verdict and no human sign-off', async () => {
+      const res = await GET(get('?prNumber=77&workspaceId=buildd&waitSeconds=45'));
+      const json = await res.json();
+      expect(json.status).toMatchObject({
+        state: 'composition_covered', terminal: true, verdict: null, confidence: null, reviewTaskId: null,
+        prState: 'open', merged: false, mergeBlocked: null,
+        coveredBy: { kind: 'composition', headSha: 'cand-head', constituents: 2 },
+      });
+      expect(json.timedOut).toBe(false);
+      // No long-poll: nothing will change for a verdict-waiter.
+      expect(mockWaitForPrReviewStatus).toHaveBeenCalledTimes(1);
+      expect(mockWaitForPrReviewStatus.mock.calls[0][0].waitSeconds).toBe(0);
+    });
+
+    it('a merge-waiter keeps waiting: the review is settled, the merge is not', async () => {
+      const res = await GET(get('?prNumber=77&workspaceId=buildd&waitFor=merge&waitSeconds=45'));
+      const json = await res.json();
+      expect(json.status).toMatchObject({ state: 'composition_covered', terminal: false, verdict: null });
+      expect(mockWaitForPrReviewStatus).toHaveBeenCalledTimes(2);
+      expect(mockWaitForPrReviewStatus.mock.calls[1][0].waitSeconds).toBe(45);
+    });
+
+    it('the candidate merging ends a merge-waiter\'s poll, even with no worker row', async () => {
+      mockGithubApi.mockImplementation(() => Promise.resolve({ ...CANDIDATE_PR, state: 'closed', merged: true }));
+      const json = await (await GET(get('?prNumber=77&workspaceId=buildd&waitFor=merge'))).json();
+      expect(json.status).toMatchObject({ state: 'composition_covered', terminal: true, prState: 'merged', merged: true });
+    });
+
+    it('a head the attestation does not name loses the coverage', async () => {
+      mockCandidateReview.mockResolvedValue({ ...COMPOSED, headSha: 'old-head' });
+      const json = await (await GET(get('?prNumber=77&workspaceId=buildd'))).json();
+      expect(json.status.state).toBe('not_requested');
+      expect(json.status.terminal).toBe(false);
+      expect(json.status.coveredBy).toBeUndefined();
+      expect(json.composition).toBeNull();
+    });
+
+    it('an uncovered delta stays pending and names what is owed', async () => {
+      mockCandidateReview.mockResolvedValue(DELTA);
+      const json = await (await GET(get('?prNumber=77&workspaceId=buildd'))).json();
+      expect(json.status).toMatchObject({ state: 'not_requested', terminal: false, verdict: null });
+      expect(json.composition).toEqual({ kind: 'delta', headSha: 'cand-head', commits: 1, paths: 1 });
+    });
+
+    it('a composition that cannot be proved, or read, covers nothing', async () => {
+      mockCandidateReview.mockResolvedValue({ kind: 'unverifiable', headSha: 'cand-head', reason: 'commit_list_truncated' });
+      expect((await (await GET(get('?prNumber=77&workspaceId=buildd'))).json()).status.state).toBe('not_requested');
+      mockCandidateReview.mockRejectedValue(new Error('github down'));
+      expect((await (await GET(get('?prNumber=77&workspaceId=buildd'))).json()).status.state).toBe('not_requested');
+      mockCandidateReview.mockResolvedValue(COMPOSED);
+      mockGithubApi.mockImplementation(() => Promise.reject(new Error('github down')));
+      expect((await (await GET(get('?prNumber=77&workspaceId=buildd'))).json()).status.state).toBe('not_requested');
+    });
+
+    it('a real review on file answers for itself and the composition is never read', async () => {
+      mockWaitForPrReviewStatus.mockReturnValue({
+        status: { state: 'approved', terminal: true, verdict: 'approve', confidence: 0.9, reviewTaskId: 'review-1', prState: 'open', merged: false, mergeBlocked: null },
+        timedOut: false,
+      });
+      const json = await (await GET(get('?prNumber=77&workspaceId=buildd'))).json();
+      expect(json.status).toMatchObject({ state: 'approved', verdict: 'approve', reviewTaskId: 'review-1' });
+      expect(json.composition).toBeNull();
+      expect(mockCandidateReview).not.toHaveBeenCalled();
+    });
+
+    it('a person-only (human tier) workspace is not covered: it keeps the ordinary long-poll', async () => {
+      mockResolveWorkspace.mockReturnValue(HUMAN_WS);
+      const json = await (await GET(get('?prNumber=77&workspaceId=buildd&waitSeconds=45'))).json();
+      expect(json.status.state).toBe('not_requested');
+      expect(mockCandidateReview).not.toHaveBeenCalled();
+      expect(mockWaitForPrReviewStatus).toHaveBeenCalledTimes(1);
+      expect(mockWaitForPrReviewStatus.mock.calls[0][0].waitSeconds).toBe(45);
+    });
+
+    it('a merge policy that leaves the merge to a person says so on a covered head, and ends a merge-waiter\'s poll', async () => {
+      mockResolveWorkspace.mockReturnValue(APPROVE_ONLY_WS);
+      const json = await (await GET(get('?prNumber=77&workspaceId=buildd&waitFor=merge&waitSeconds=45'))).json();
+      expect(json.status).toMatchObject({ state: 'composition_covered', terminal: true, verdict: null, mergeBlocked: 'awaiting_human' });
+      expect(json.autoMergeExpected).toBe(false);
+    });
+  });
+});
+
 describe('POST /api/github/pr/review — auth and validation', () => {
   it('rejects a request with no API key', async () => {
     mockAuthenticateApiKey.mockReturnValue(null);

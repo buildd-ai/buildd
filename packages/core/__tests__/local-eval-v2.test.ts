@@ -131,6 +131,18 @@ describe('admission (AC-3..6)', () => {
     const m = manifest(); m.files.candidates.alternative = null;
     expect((await admitCase(m, verifier(good), { leaks: [] })).admitted).toBe(false);
   });
+  it('runs every alternative when several are named, and rejects if any one fails', async () => {
+    const m = manifest(); m.files.candidates.alternative = ['alt', 'alt-2'];
+    const ok = await admitCase(m, verifier({ reference: true, 'alternative:alt': true, 'alternative:alt-2': true }), { leaks: [] });
+    expect(ok.admitted).toBe(true);
+    expect(Object.keys(ok.verdicts)).toEqual(expect.arrayContaining(['alternative:alt', 'alternative:alt-2']));
+    expect(ok.gates.find((g) => g.gate === 'independent-of-patch')!.detail).toContain('2 different correct solutions pass');
+    const bad = await admitCase(m, verifier({ reference: true, 'alternative:alt': true }), { leaks: [] });
+    expect(bad.admitted).toBe(false);
+    expect(bad.gates.find((g) => g.gate === 'independent-of-patch')!.detail).toContain('alt-2');
+    m.files.candidates.alternative = [];
+    expect((await admitCase(m, verifier(good), { leaks: [] })).gates.find((g) => g.gate === 'independent-of-patch')!.ok).toBe(false);
+  });
   it('rejects a nondeterministic verifier', async () => {
     let n = 0;
     const ev = await admitCase(manifest(), (c) => (c === 'reference' ? n++ % 2 === 0 : c === 'alternative'), { leaks: [] });

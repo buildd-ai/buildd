@@ -40,7 +40,14 @@ beforeEach(() => {
 });
 
 // Windows can hold a handle on the temp dir briefly after git exits (EBUSY), so retry.
-afterEach(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+afterEach(() => {
+  try {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (err) {
+    // Windows can hold a just-exited git process's handle (EBUSY); the temp dir is disposable.
+    if (process.platform !== 'win32') throw err;
+  }
+});
 
 function makeWorker(overrides: Record<string, unknown> = {}): any {
   return {
