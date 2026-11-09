@@ -24,8 +24,8 @@ import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { findPrOwningWorker, waitForPrReviewStatus } from '@/lib/pr-review-request';
-import { MAX_REVIEW_WAIT_SECONDS, type PrReviewWaitFor } from '@/lib/pr-review-status';
-import { autoMergeExpectedFor, requestPrReview, resolveEffectivePolicy } from '@/lib/request-pr-review';
+import { applyCandidateCoverage, MAX_REVIEW_WAIT_SECONDS, type CandidateComposition, type PrReviewStatus, type PrReviewWaitFor } from '@/lib/pr-review-status';
+import { autoMergeExpectedFor, candidateScopeAtHead, requestPrReview, resolveEffectivePolicy } from '@/lib/request-pr-review';
 import { requestingPerson } from '@/lib/request-person';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
@@ -71,6 +71,8 @@ interface ResolvedTarget {
     githubInstallationId?: string | null;
     gitConfig?: Record<string, unknown> | null;
     webhookConfig?: unknown;
+    /** The full row carries it: a frozen release candidate is reviewed by its composition. */
+    releaseConfig?: import('@buildd/core/db/schema').WorkspaceReleaseConfig | null;
   };
 }
 
@@ -242,6 +244,36 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(out.body, { status: out.status });
 }
 
+/**
+ * What a frozen release candidate's composition says about its live head, for a PR with no review
+ * on file and no kernel delivery (release-flow.md "no kernel delivery, by design"). Null is the
+ * ordinary answer: not a candidate, a head the attestation does not name, or a proof or PR that
+ * cannot be read. It reports; the landing door reads the attestation for itself.
+ */
+async function readCandidateCoverage(
+  workspace: ResolvedTarget['workspace'],
+  prNumber: number,
+  owningTaskId: string | null | undefined,
+  status: PrReviewStatus,
+): Promise<{ composition: CandidateComposition; prState: 'open' | 'merged' | 'closed' } | null> {
+  if (status.state !== 'not_requested') return null;
+  try {
+    const repo = await resolveRepo(workspace);
+    if (!repo) return null;
+    if (owningTaskId && (await getDeliveryViewsForTasks([owningTaskId])).has(owningTaskId)) return null;
+    const pr = await githubApi(repo.installationId, `/repos/${repo.fullName}/pulls/${prNumber}`);
+    const headSha = typeof pr?.head?.sha === 'string' ? pr.head.sha : '';
+    const scope = await candidateScopeAtHead({ workspace, repo, prNumber }, headSha);
+    const prState = pr.merged ? 'merged' : pr.state === 'closed' ? 'closed' : 'open';
+    if (scope.kind === 'composed') return { composition: { kind: 'composed', headSha: scope.headSha, constituents: scope.constituents }, prState };
+    if (scope.kind === 'delta') return { composition: { kind: 'delta', headSha: scope.headSha, commits: scope.commits.length, paths: scope.paths.length }, prState };
+    return null;
+  } catch (err) {
+    console.warn(`[pr-review] candidate coverage for PR #${prNumber} not read:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 // Auth: API key, or the dashboard session (GET only — POST dispatches a
 // reviewer and stays key-only). A session resolves within the user's teams, or
 // just `teamId` when given; anything outside 404s. A key, when present, is
@@ -285,13 +317,28 @@ export async function GET(req: NextRequest) {
   const policy = await resolveEffectivePolicy(workspace, task?.missionId ?? null);
   const autoMergeExpected = autoMergeExpectedFor(policy);
 
-  const { status, timedOut } = await waitForPrReviewStatus({
+  const readStatus = (seconds: number) => waitForPrReviewStatus({
     workspaceId: workspace.id,
     prNumber,
     autoMergeExpected,
     waitFor,
-    waitSeconds,
+    waitSeconds: seconds,
   });
+  // A candidate is reviewed by its composition only under `agent-review`, as the landing door and
+  // the webhook's first review have it; a `human` tier keeps the ordinary read. No reviewer will
+  // ever move a covered head's status, so ask before long-polling on it.
+  const compositionApplies = policy.tier === 'agent-review' && !!workspace.releaseConfig?.candidate;
+  const covered = async (current: PrReviewStatus) => applyCandidateCoverage(
+    current,
+    compositionApplies ? await readCandidateCoverage(workspace, prNumber, owningWorker?.taskId, current) : null,
+    { autoMergeExpected, waitFor },
+  );
+  let { status: readAt, timedOut } = await readStatus(compositionApplies ? 0 : waitSeconds);
+  let { status, composition } = await covered(readAt);
+  if (compositionApplies && waitSeconds > 0 && !status.terminal) {
+    ({ status: readAt, timedOut } = await readStatus(waitSeconds));
+    ({ status, composition } = await covered(readAt));
+  }
 
   // Living Spec fa62b865 R-50: a kernel-owned PR answers with the one review reading the task page,
   // get_pr and the sticky comment show: the same state line, rounds and open findings.
@@ -310,8 +357,9 @@ export async function GET(req: NextRequest) {
     workspaceId: workspace.id,
     waitFor,
     autoMergeExpected,
-    timedOut,
+    timedOut: status.terminal ? false : timedOut,
     status,
+    composition,
     reading,
   });
 }

@@ -24,6 +24,7 @@ const {
   firePrReviewCallback,
   REVIEW_CALLBACK_TIMEOUT_MS,
   isApprovalSelfMergeable,
+  applyCandidateCoverage,
 } = await import('./pr-review-status');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -506,5 +507,54 @@ describe('derivePrReviewStatus with a delivery', () => {
 
   it('keeps openFindings null on the legacy path', () => {
     expect(derivePrReviewStatus({ reviewTask: null }).openFindings).toBeNull();
+  });
+});
+
+describe('applyCandidateCoverage', () => {
+  const base = () => derivePrReviewStatus({ reviewTask: null, worker: null });
+  const COMPOSED = { kind: 'composed' as const, headSha: 'h', constituents: 3 };
+  const DELTA = { kind: 'delta' as const, headSha: 'h', commits: 2, paths: 5 };
+
+  it('no coverage leaves the status alone', () => {
+    const status = base();
+    expect(applyCandidateCoverage(status, null, { autoMergeExpected: true })).toEqual({ status, composition: null });
+  });
+
+  it('never repaints a status that has a review behind it', () => {
+    const status = derivePrReviewStatus({ reviewTask: reviewTask({ status: 'completed', result: verdictResult('request-changes') }), worker: null });
+    const out = applyCandidateCoverage(status, { composition: COMPOSED, prState: 'open' }, { autoMergeExpected: true });
+    expect(out.status).toBe(status);
+    expect(out.composition).toEqual(COMPOSED);
+  });
+
+  it('a composed head is terminal for a verdict-waiter, with no verdict of any kind', () => {
+    const { status } = applyCandidateCoverage(base(), { composition: COMPOSED, prState: 'open' }, { autoMergeExpected: true });
+    expect(status).toMatchObject({
+      state: 'composition_covered', terminal: true, verdict: null, confidence: null, reviewTaskId: null, mergeBlocked: null,
+      coveredBy: { kind: 'composition', headSha: 'h', constituents: 3 },
+    });
+    // The one definition of "does this verdict authorise a merge" must not see an approval here.
+    expect(isApprovalSelfMergeable({ verdict: status.verdict, confidence: status.confidence })).toBe(false);
+  });
+
+  it('a composed head is not terminal for a merge-waiter until it lands, or a person holds the merge', () => {
+    const open = { composition: COMPOSED, prState: 'open' as const };
+    expect(applyCandidateCoverage(base(), open, { autoMergeExpected: true, waitFor: 'merge' }).status.terminal).toBe(false);
+    expect(applyCandidateCoverage(base(), { ...open, prState: 'merged' }, { autoMergeExpected: true, waitFor: 'merge' }).status).toMatchObject({ terminal: true, merged: true, prState: 'merged' });
+    expect(applyCandidateCoverage(base(), { ...open, prState: 'closed' }, { autoMergeExpected: true, waitFor: 'merge' }).status).toMatchObject({ terminal: true, merged: false, prState: 'closed' });
+    expect(applyCandidateCoverage(base(), open, { autoMergeExpected: false, waitFor: 'merge' }).status).toMatchObject({ terminal: true, mergeBlocked: 'awaiting_human' });
+  });
+
+  it('a merged candidate is never held for a person', () => {
+    const { status } = applyCandidateCoverage(base(), { composition: COMPOSED, prState: 'merged' }, { autoMergeExpected: false });
+    expect(status.mergeBlocked).toBeNull();
+  });
+
+  it('a delta stays not_requested and pending until the PR settles', () => {
+    const open = applyCandidateCoverage(base(), { composition: DELTA, prState: 'open' }, { autoMergeExpected: true });
+    expect(open.status).toMatchObject({ state: 'not_requested', terminal: false, verdict: null, prState: 'open' });
+    expect(open.composition).toEqual(DELTA);
+    const merged = applyCandidateCoverage(base(), { composition: DELTA, prState: 'merged' }, { autoMergeExpected: true });
+    expect(merged.status).toMatchObject({ state: 'not_requested', terminal: true, merged: true });
   });
 });

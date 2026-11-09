@@ -42,6 +42,7 @@ import { observeHead, openKernelDelivery, systemPrincipal } from '@/lib/workflow
 import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
 import { agentReviewsDataMigrations } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { candidateReviewScope, type CandidateReviewScope } from '@/lib/workflow/candidate-review';
 
 /** The webhook payload shape the dispatch functions read. */
 type WebhookPr = { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null };
@@ -121,7 +122,41 @@ async function maybeDispatchReviewer(
     // call and this event race. The payload is authoritative and race-free.
     const basePolicy = resolvePolicy(workspace, mission, null, { baseRef: pr.base?.ref ?? null });
 
-    // Fetch PR files first (needed for policyConfig override AND pre-flight check)
+    // A frozen release candidate is reviewed by its composition, at this exact head
+    // (release-flow.md AC-14, AC-25 to AC-27), before any file is fetched or the preflight
+    // escalation (BT-10) runs: every change here was already an approved PR, re-verified
+    // mechanically, so the reviewer role's hard "release PR → escalate to a human" rule and
+    // the migration/path-class preflight that a destructive schema change would otherwise
+    // trip are both evidence a human already saw on the constituent PR — asking again is
+    // the loop this fixes. Only an `agent-review` workspace trusts the attestation this way;
+    // `human` tier (set on the workspace or mission, never by a path class) means a person
+    // decided every PR here gets a human regardless, composed or not.
+    // Human-tier-only check: the policyConfig override below can only ADD an agent-review
+    // requirement on top of a path class, never raise a tier to 'human' — so basePolicy's
+    // tier alone, read before any file is fetched, answers whether composition may skip a
+    // reviewer at all. A `not_candidate`/`unverifiable` answer, or a head the attestation does
+    // not cover, falls through to the full review unchanged.
+    let candidateScope: CandidateReviewScope | null = null;
+    if (basePolicy.tier === 'agent-review' && workspace.releaseConfig?.candidate) {
+      candidateScope = await candidateReviewScope({
+        workspaceId: openWorker.workspaceId, installationId, repoFullName, prNumber: pr.number,
+        releaseConfig: workspace.releaseConfig,
+      }, {}).catch((err) => {
+        console.warn(`[reviewer] candidate composition for PR #${pr.number} failed; full review:`, err);
+        return { kind: 'not_candidate' } as CandidateReviewScope;
+      });
+      if (candidateScope.kind !== 'composed' && candidateScope.kind !== 'delta') candidateScope = null;
+      else if (candidateScope.headSha !== pr.head.sha) candidateScope = null;
+    }
+    if (candidateScope?.kind === 'composed') {
+      console.log(`[reviewer] PR #${pr.number}: release candidate ${pr.head.sha.slice(0, 7)} is covered by composition (${candidateScope.constituents} reviewed PRs); no reviewer filed`);
+      return true; // handled — composition is the review; nothing to escalate or dispatch
+    }
+
+    // Fetch PR files first (needed for policyConfig override AND pre-flight check), except a
+    // candidate's delta: those are already the exact files `candidateReviewScope` read, and the
+    // only ones no earlier PR covers — reading the PR's whole file list would reintroduce every
+    // already-reviewed constituent path into the preflight and policy-class checks below.
     let prFiles: Array<{
       filename: string;
       status: string;
@@ -129,12 +164,14 @@ async function maybeDispatchReviewer(
       deletions: number;
       patch?: string | null;
       previous_filename?: string | null;
-    }> = [];
-    try {
-      const raw = await githubApi(installationId, `/repos/${repoFullName}/pulls/${pr.number}/files?per_page=300`);
-      if (Array.isArray(raw)) prFiles = raw;
-    } catch (err) {
-      console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
+    }> = candidateScope?.kind === 'delta' ? candidateScope.files : [];
+    if (!candidateScope) {
+      try {
+        const raw = await githubApi(installationId, `/repos/${repoFullName}/pulls/${pr.number}/files?per_page=300`);
+        if (Array.isArray(raw)) prFiles = raw;
+      } catch (err) {
+        console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
+      }
     }
     // An integration-refresh PR is reviewed on what it adds on top of trunk —
     // the mission's own changes and the conflict resolution — not on the
@@ -332,6 +369,12 @@ async function maybeDispatchReviewer(
       prBody: pr.body ?? null,
       // Same for the base branch the reviewer diffs against.
       baseRef: pr.base?.ref ?? null,
+      // A candidate's delta (release-flow.md AC-26): the commits no earlier review covered. The
+      // reviewer's prompt scopes to exactly these paths and drops the release-PR escalation rule
+      // for everything else, already reviewed on its own PR.
+      ...(candidateScope?.kind === 'delta'
+        ? { compositionScope: { novelDeltaPaths: candidateScope.paths, novelCommits: candidateScope.commits } }
+        : {}),
     });
 
     // A deduplicated result is another producer's reviewer: it was dispatched

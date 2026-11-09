@@ -7,7 +7,8 @@ import { isIntegrationPermissionError, missingPermissions as missingRepoPermissi
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { integrationRefreshOf, refreshPrIsEmpty, resolveMergeMethod } from '@/lib/integration-refresh';
+import { integrationRefreshOf, refreshPrIsEmpty, resolveMergeMethod, type MergeMethod } from '@/lib/integration-refresh';
+import { pickMergeMethod, readAllowedMergeMethods } from '@/lib/allowed-merge-methods';
 import { completedWithoutPr } from '@/lib/task-completed-without-pr';
 import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, githubGraphQL, githubAppBotLogin, mergePullRequest } from '@/lib/github';
@@ -2001,7 +2002,13 @@ export async function PUT(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workerId, prNumber, mergeMethod = 'squash', workspaceId } = body;
+    const { workerId, prNumber, workspaceId } = body;
+    // Absent = the caller did not choose: the door picks one the PR's base accepts (below).
+    const requestedMergeMethod: MergeMethod | undefined =
+      body.mergeMethod === 'merge' || body.mergeMethod === 'squash' || body.mergeMethod === 'rebase' ? body.mergeMethod : undefined;
+    if (body.mergeMethod != null && !requestedMergeMethod) {
+      return NextResponse.json({ error: `mergeMethod must be merge, squash or rebase (got ${JSON.stringify(body.mergeMethod)})` }, { status: 400 });
+    }
     // A merge changes its worker's lifecycle; refreshed after the response.
     noteWorkChanged({ workerIds: [typeof workerId === 'string' ? workerId : null] });
     // The workflow-kernel delivery version the caller read (§7.2): stale → 409 with the current view.
@@ -2052,10 +2059,7 @@ export async function PUT(req: NextRequest) {
     const workspace = worker.workspace;
     // An integration-refresh PR lands as a merge commit whatever the caller
     // asked for (integration-refresh.ts); any other PR keeps the request.
-    const effectiveMergeMethod = resolveMergeMethod(
-      integrationRefreshOf(worker.task?.context) ? worker.task.context : await prOwnerTaskContext(worker.workspaceId, prNumber),
-      mergeMethod as 'merge' | 'squash' | 'rebase',
-    );
+    const mergeOwnerContext = integrationRefreshOf(worker.task?.context) ? worker.task.context : await prOwnerTaskContext(worker.workspaceId, prNumber);
 
     // Every merge-policy decision on this handler goes through here, so a new
     // refusal arm cannot be added without a ledger row. `mergePolicyTier` is
@@ -2260,6 +2264,26 @@ export async function PUT(req: NextRequest) {
         hint: 'Retry, or have a human merge from the escalation inbox.',
       }, { status: 403 });
     }
+
+    // The base can restrict the merge method beyond the repo settings (a ruleset
+    // on `main` allowing only `merge`). With no request the door picks an allowed
+    // one; an explicit request the base refuses is the caller's to change, said
+    // here rather than surfacing as GitHub's 405 dressed as a person's decision.
+    const isRefreshPr = !!integrationRefreshOf(mergeOwnerContext);
+    const allowedMergeMethods = isRefreshPr
+      ? null
+      : await readAllowedMergeMethods(repo.installation.installationId, repo.fullName, policyPr?.base?.ref ?? null);
+    if (!isRefreshPr && requestedMergeMethod && allowedMergeMethods?.length && !allowedMergeMethods.includes(requestedMergeMethod)) {
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        error: `${requestedMergeMethod} merges are not allowed into ${policyPr?.base?.ref ?? 'this base'} (allowed: ${allowedMergeMethods.join(', ')})`,
+        reason: 'merge_method_not_allowed',
+        allowedMergeMethods,
+        hint: `Retry with mergeMethod: '${pickMergeMethod(allowedMergeMethods)}', or omit mergeMethod and the door picks an allowed one. Nothing was merged; no person is needed.`,
+      }, { status: 400 });
+    }
+    const effectiveMergeMethod = resolveMergeMethod(mergeOwnerContext, requestedMergeMethod ?? pickMergeMethod(allowedMergeMethods));
 
     if (!force) {
       const task = worker.taskId

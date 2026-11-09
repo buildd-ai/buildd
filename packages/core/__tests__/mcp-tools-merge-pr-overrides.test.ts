@@ -33,6 +33,19 @@ describe('merge_pr overrides', () => {
     expect(calls[0]!.body).not.toHaveProperty('reason');
   });
 
+  // Release #6051: a hard-coded squash default hit a merge-only ruleset on main (GitHub 405).
+  it('without mergeMethod sends none, so the door picks one the base accepts', async () => {
+    const { api, calls } = makeApi();
+    await handleBuilddAction(api, 'merge_pr', { prNumber: 42 }, ctx());
+    expect(calls[0]!.body).not.toHaveProperty('mergeMethod');
+  });
+
+  it('an explicit mergeMethod is forwarded as asked', async () => {
+    const { api, calls } = makeApi();
+    await handleBuilddAction(api, 'merge_pr', { prNumber: 42, mergeMethod: 'merge' }, ctx());
+    expect(calls[0]!.body).toMatchObject({ mergeMethod: 'merge' });
+  });
+
   it('from chat it merges through the dashboard merge route, as the signed-in person', async () => {
     const { api, calls } = makeApi({ ok: true, merged: true, message: 'merged' });
     const out: any = await handleBuilddAction(api, 'merge_pr', { prNumber: 42, workspaceId: 'ws-1', overrides: { freshness: true }, reason: 'r' }, ctx({ surface: 'chat' }));

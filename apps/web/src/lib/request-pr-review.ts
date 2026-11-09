@@ -32,12 +32,15 @@ import {
 } from '@/lib/pr-review-request';
 import {
   derivePrReviewStatus,
+  applyCandidateCoverage,
   isReviewBudgetSpent,
   pickReviewerRole,
   type PrReviewWaitFor,
 } from '@/lib/pr-review-status';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { decisionRefusalReason } from '@buildd/workflow-kernel/decision-refusal';
+import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import type { CandidateReviewScope, candidateReviewScope } from '@/lib/workflow/candidate-review';
 
 /**
  * 2ded4e88: the review rounds are spent and the PR waits on a person. Says where a person acts
@@ -56,6 +59,34 @@ export interface ReviewWorkspace {
   githubInstallationId?: string | null;
   gitConfig?: Record<string, unknown> | null;
   webhookConfig?: unknown;
+  /** Read only to recognise a frozen release candidate (`candidateReviewScope`); absent = never one. */
+  releaseConfig?: WorkspaceReleaseConfig | null;
+}
+
+/**
+ * What a frozen release candidate at the PR's live head is owed (release-flow.md
+ * AC-14, AC-25 to AC-27), the same attestation the landing door reads. Anything but
+ * an answer about exactly this head is `not_candidate`, which keeps the full review.
+ */
+export async function candidateScopeAtHead(
+  input: { workspace: ReviewWorkspace; repo: RequestPrReviewInput['repo']; prNumber: number; deps?: RequestPrReviewInput['deps'] },
+  headSha: string,
+): Promise<CandidateReviewScope> {
+  const releaseConfig = input.workspace.releaseConfig ?? null;
+  if (!releaseConfig?.candidate || !headSha) return { kind: 'not_candidate' };
+  try {
+    const read = input.deps?.candidateReview
+      ?? (await import('@/lib/workflow/candidate-review')).candidateReviewScope;
+    const scope = await read({
+      workspaceId: input.workspace.id, installationId: input.repo.installationId,
+      repoFullName: input.repo.fullName, prNumber: input.prNumber, releaseConfig,
+    });
+    if (scope.kind === 'not_candidate' || scope.headSha !== headSha) return { kind: 'not_candidate' };
+    return scope;
+  } catch (err) {
+    console.warn(`[pr-review] candidate composition for PR #${input.prNumber} failed; full review:`, err);
+    return { kind: 'not_candidate' };
+  }
 }
 
 /** Who asks, as the request path records and authorizes it. */
@@ -89,6 +120,8 @@ export interface RequestPrReviewInput {
   callbackOn?: PrReviewWaitFor;
   /** The worker that owns the PR, when the caller already read it (undefined: read here). */
   existingWorker?: Awaited<ReturnType<typeof findPrOwningWorker>> | null;
+  /** Injected by tests. */
+  deps?: { candidateReview?: typeof candidateReviewScope };
 }
 
 /** The answer, as JSON for a route to return (or a kernel door's own error response). */
@@ -124,6 +157,13 @@ export async function resolveEffectivePolicy(
     ? await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { mergePolicy: true } })
     : null;
   return resolvePolicy(workspace as never, mission as never);
+}
+
+/** The mission of the task that owns this PR, which can set the merge policy's tier. */
+async function ownerMissionId(worker: RequestPrReviewInput['existingWorker']): Promise<string | null> {
+  if (!worker?.taskId) return null;
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, worker.taskId)), columns: { missionId: true } });
+  return task?.missionId ?? null;
 }
 
 /** Request a review of an open PR (see the module doc). */
@@ -311,6 +351,45 @@ export async function requestPrReview(input: RequestPrReviewInput): Promise<Requ
     }
   }
 
+  // A frozen release candidate is reviewed by its composition, as the landing door does
+  // (release-flow.md AC-14, AC-25 to AC-27). Every change approved on its own PR needs no
+  // second reviewer; a full review of the whole candidate would only meet the reviewer
+  // role's release-PR rule and ask a person to sign off work already reviewed. Only a
+  // person forcing a review gets the full one. The attestation is bound to this exact head
+  // and to the release workflow's own provenance, never to anything a description says.
+  const liveHeadSha = typeof pr.head?.sha === 'string' ? pr.head.sha : '';
+  // `human` tier (on the workspace or the mission) means a person decided every PR gets a
+  // human regardless, composed or not: the same rule the webhook's first review keeps.
+  const compositionPolicy = workspace.releaseConfig?.candidate
+    ? await resolveEffectivePolicy(workspace, await ownerMissionId(existingWorker))
+    : null;
+  const candidate: CandidateReviewScope = compositionPolicy?.tier === 'agent-review'
+    ? await candidateScopeAtHead(input, liveHeadSha)
+    : { kind: 'not_candidate' };
+  if (candidate.kind === 'composed' && !(force && person)) {
+    console.log(`[pr-review] PR #${prNumber}: release candidate ${liveHeadSha.slice(0, 7)} is covered by composition (${candidate.constituents} reviewed PRs); no reviewer filed`);
+    const autoMergeExpected = autoMergeExpectedFor(compositionPolicy!);
+    const composition = { kind: 'composed' as const, headSha: liveHeadSha, constituents: candidate.constituents };
+    return reply({
+      ok: true,
+      reviewNotOwed: true,
+      prNumber,
+      headSha: liveHeadSha,
+      composition,
+      reviewTaskId: null,
+      autoMergeExpected,
+      // An agent forcing past a finished review of an earlier head reaches here too: that review
+      // stays on file and answers for itself; only "nothing on file" reads as covered.
+      status: applyCandidateCoverage(
+        derivePrReviewStatus({ reviewTask: existingReview, worker: existingWorker ?? null, autoMergeExpected }),
+        { composition, prState: 'open' },
+        { autoMergeExpected, waitFor: callbackOn },
+      ).status,
+      hint: 'every change in this release candidate was approved on its own PR, checked at this head; that composition is its review, so no reviewer was filed. The release gate (CI, required checks, merge rails) still decides the merge',
+    });
+  }
+  const candidateDelta = candidate.kind === 'delta' ? candidate : null;
+
   // Adopt the PR when buildd has no worker for it: every downstream surface
   // keys off "the worker that owns this PR", so adoption is what lets an
   // externally-authored PR use the existing review rails unchanged.
@@ -375,7 +454,13 @@ export async function requestPrReview(input: RequestPrReviewInput): Promise<Requ
     prBody: typeof pr.body === 'string' ? pr.body : null,
     baseRef: typeof pr.base?.ref === 'string' ? pr.base.ref : null,
     ...(callbackUrl ? { reviewCallback: { url: callbackUrl, on: callbackOn } } : {}),
-    ...(deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
+    // A candidate's delta: only the commits no earlier review covered, judged on their paths alone.
+    ...(candidateDelta
+      ? {
+        compositionScope: { novelDeltaPaths: candidateDelta.paths, novelCommits: candidateDelta.commits },
+        prFiles: candidateDelta.files as Parameters<typeof createReviewerTask>[0]['prFiles'],
+      }
+      : deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
   });
 
   if (!reviewerTask?.id) {
@@ -473,6 +558,9 @@ export async function requestPrReview(input: RequestPrReviewInput): Promise<Requ
       reviewerRoleSource: picked.source,
       autoMergeExpected,
       callback: callbackUrl ? { url: callbackUrl, on: callbackOn } : null,
+      ...(candidateDelta
+        ? { composition: { kind: 'delta', headSha: candidateDelta.headSha, commits: candidateDelta.commits.length, paths: candidateDelta.paths.length } }
+        : {}),
       status: derivePrReviewStatus({
         reviewTask: { id: reviewerTask.id, status: 'pending', result: null, context: { prNumber } },
         worker: ownerWorker ?? null,

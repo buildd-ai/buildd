@@ -1,8 +1,8 @@
 {
   "formatVersion": 2,
   "id": "change-soft-delete",
-  "version": 1,
-  "contentHash": "f2815f06584668001d32738cfdf0b63ad386539ff709803d1d8900aa23d4ebcf",
+  "version": 2,
+  "contentHash": "e999a16af443d901f168a1ba19987ee83a038786212bc8ae9e49e735caa76346",
   "category": "multi-file-change",
   "files": {
     "snapshot": [
@@ -26,19 +26,37 @@
     "candidates": {
       "broken": [
         "filter-service-only",
-        "trash-copy"
+        "repeat-delete",
+        "trash-copy",
+        "unmarked-destroy"
       ],
-      "alternative": "alt",
+      "alternative": [
+        "alt",
+        "clone-on-write",
+        "filtered-find"
+      ],
       "files": [
         "candidates/alt/src/api.ts",
         "candidates/alt/src/service.ts",
         "candidates/alt/src/store.ts",
+        "candidates/clone-on-write/src/api.ts",
+        "candidates/clone-on-write/src/service.ts",
+        "candidates/clone-on-write/src/store.ts",
         "candidates/filter-service-only/src/api.ts",
         "candidates/filter-service-only/src/service.ts",
         "candidates/filter-service-only/src/store.ts",
+        "candidates/filtered-find/src/api.ts",
+        "candidates/filtered-find/src/service.ts",
+        "candidates/filtered-find/src/store.ts",
+        "candidates/repeat-delete/src/api.ts",
+        "candidates/repeat-delete/src/service.ts",
+        "candidates/repeat-delete/src/store.ts",
         "candidates/trash-copy/src/api.ts",
         "candidates/trash-copy/src/service.ts",
-        "candidates/trash-copy/src/store.ts"
+        "candidates/trash-copy/src/store.ts",
+        "candidates/unmarked-destroy/src/api.ts",
+        "candidates/unmarked-destroy/src/service.ts",
+        "candidates/unmarked-destroy/src/store.ts"
       ]
     }
   },
@@ -63,7 +81,7 @@
   "provenance": {
     "source": "authored",
     "licence": "Authored for this suite under the repository licence (FSL-1.1-ALv2); no third-party code",
-    "note": "Small fixture written from scratch for this case."
+    "note": "Small fixture written from scratch for this case. v2 keeps the v1 brief byte-identical and changes only how the hidden verifier observes the deletedAt mark: v1 read it through store.find, which assumes a raw lookup the brief never asks for, so a store that filters deleted notes out of find failed. v2 accepts the mark on the record createNote returned or through find, and adds filtering-store and clone-on-write alternatives and repeated-delete and never-marked negative controls. v1 and v2 runs are different versions and are not scored against each other."
   },
   "contamination": "Authored fixture; invented project.",
   "expected": {
@@ -86,12 +104,12 @@
       {
         "gate": "negative-control-fails",
         "ok": true,
-        "detail": "fails the snapshot and 2 broken candidate(s)"
+        "detail": "fails the snapshot and 4 broken candidate(s)"
       },
       {
         "gate": "independent-of-patch",
         "ok": true,
-        "detail": "a different correct solution passes"
+        "detail": "3 different correct solutions pass"
       },
       {
         "gate": "absence-audited",

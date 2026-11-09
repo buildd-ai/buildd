@@ -18,15 +18,16 @@
  *   cli.ts report   --suite v2 --dir <runs dir>              (per config, split, track and category; splits never pooled)
  *   cli.ts ingest   --suite v2 --dir <runs dir> --workspace <id> [--api url]   (redacts, then POSTs run.json records)
  *   cli.ts redact   --suite v2 --dir <runs dir>              (rewrite stored artifacts with secrets and user paths removed)
+ *   cli.ts enrich-tools --suite v2 --dir <runs dir> [--apply]  (add the bounded tool-efficiency block to runs recorded without one, from their stored stdout; no model; then `ingest` again)
  *   cli.ts prune    --suite v2 --dir <runs dir> [--days 30] [--apply]   (delete raw transcripts older than the retention period; run.json is kept)
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync, appendFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
-  RETENTION_DAYS, caseRow, filterCases, hasSecret, isExpired, permittedBrief, planRuns, redactDeep, resourceLabel, redactText, sealedRow, smokeCases, validatePolicy,
+  RETENTION_DAYS, caseRow, filterCases, isExpired, permittedBrief, planRuns, redactDeep, resourceLabel, redactText, sealedRow, smokeCases, validatePolicy,
   type CaseRow, type RunPolicy, type SealedDescriptor,
 } from '../../packages/core/local-eval-v2-ops';
-import { validateRunRecord } from '../../packages/core/local-eval';
+import { enrichRunDir, ingestRefusal } from './v2-tools';
 import {
   admitCase, exportAgentTree, leakFindingsV2, regrade, validateSuiteV2,
   type CaseFiles, type CaseManifestV2, type StoredArtifact, type SuiteV2, type AdmissionEvidence,
@@ -96,7 +97,7 @@ export function makeVerifier(c: LoadedCase, timeoutMs = 120_000): (candidate: st
       for (const p of m.files.snapshot) snap[p.replace(/^snapshot\//, '')] = c.files[p];
       write(cand, snap);
       const overlay = candidate === 'snapshot' ? null : candidate === 'reference' ? { prefix: null, paths: m.files.reference }
-        : { prefix: `candidates/${candidate === 'alternative' ? m.files.candidates.alternative : candidate.replace(/^broken:/, '')}/`, paths: m.files.candidates.files };
+        : { prefix: `candidates/${candidate === 'alternative' ? m.files.candidates.alternative : candidate.replace(/^(broken|alternative):/, '')}/`, paths: m.files.candidates.files };
       if (overlay) {
         for (const p of overlay.paths) {
           if (overlay.prefix && !p.startsWith(overlay.prefix)) continue;
@@ -344,13 +345,10 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     for (const d of runDirs(resolve(dir))) {
       const p = join(d, 'run.json'); if (!existsSync(p)) continue;
       const raw = readFileSync(p, 'utf8');
-      // A record that would store a secret-shaped string is invalid and is not sent.
-      if (hasSecret(raw)) { console.error(`${p}: contains a secret-shaped string; run \`redact\` first. Not sent.`); return 1; }
-      const rec = JSON.parse(raw);
-      if (rec?.harness?.name === 'fixture') { console.error(`${p}: a fixture run (no model) is not an observation. Not sent.`); return 1; }
-      const errs = validateRunRecord(rec);
-      if (errs.length) { console.error(`${p}: ${errs.join('; ')}`); return 1; }
-      runs.push(rec);
+      // A secret-shaped string, a fixture run (no model) or an invalid record is not sent.
+      const refusal = ingestRefusal(raw);
+      if (refusal) { console.error(`${p}: ${refusal}`); return 1; }
+      runs.push(JSON.parse(raw));
     }
     if (!runs.length) { console.error('no run.json records found'); return 2; }
     for (let i = 0; i < runs.length; i += 100) {
@@ -358,6 +356,17 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
       console.log(res.status, JSON.stringify(await res.json()));
       if (!res.ok) return 1;
     }
+    return 0;
+  }
+  if (cmd === 'enrich-tools') {
+    const dir = opt('dir'); if (!dir) { console.error('--dir is required'); return 2; }
+    const counts = { enriched: 0, unchanged: 0, skipped: 0 };
+    for (const d of runDirs(resolve(dir))) {
+      const r = enrichRunDir(d, has('apply'));
+      counts[r.action]++;
+      console.log(`${r.runId ?? d} ${r.action}: ${r.reason}`);
+    }
+    console.log(`${counts.enriched} enriched${has('apply') ? '' : ' (dry run; pass --apply)'}, ${counts.unchanged} unchanged, ${counts.skipped} skipped. No model was started; re-run \`ingest\` to update the stored rows.`);
     return 0;
   }
   if (cmd === 'regrade') {
@@ -549,6 +558,6 @@ export async function runV2(cmd: string | undefined, opt: (n: string) => string 
     console.log(`${results.length} run(s): ${count((x) => x.outcome === 'pass')} pass, ${count((x) => x.failureClass === 'model' && x.outcome !== 'pass')} model fail/invalid, ${count((x) => x.failureClass === 'harness')} harness error, ${count((x) => x.failureClass === 'infra')} infra error, ${count((x) => x.outcome === 'unscored')} unscored, ${count((x) => x.outcome === 'skipped')} not run${adapter.harness === 'fixture' ? ' (fixture: NOT a model result)' : ''}`);
     return 0;
   }
-  console.error('usage with --suite v2: validate | admit | list | inspect | export | regrade | run | report | ingest | redact | prune');
+  console.error('usage with --suite v2: validate | admit | list | inspect | export | regrade | run | report | ingest | redact | enrich-tools | prune');
   return 2;
 }

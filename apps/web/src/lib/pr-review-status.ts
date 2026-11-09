@@ -308,6 +308,61 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
   };
 }
 
+/**
+ * What a frozen release candidate's composition says about its exact head
+ * (release-flow.md AC-14, AC-25 to AC-27), as the review surfaces report it.
+ */
+export type CandidateComposition =
+  | { kind: 'composed'; headSha: string; constituents: number }
+  /** Commits no earlier review covered: a review of those is owed. */
+  | { kind: 'delta'; headSha: string; commits: number; paths: number };
+
+/**
+ * The read of a composition-covered head. Deliberately not a {@link PrReviewState}: no merge door,
+ * verdict gate or status check takes this, so "covered" cannot be read as an approval anywhere that
+ * decides a merge. Those doors ask the composition themselves, at the head they are landing, behind
+ * the CI, rail and open-finding checks. `verdict` stays null because no reviewer gave one.
+ */
+export interface CompositionCoveredStatus extends Omit<PrReviewStatus, 'state'> {
+  state: 'composition_covered';
+  coveredBy: { kind: 'composition'; headSha: string; constituents: number };
+}
+
+/**
+ * Lay a candidate's composition over its review status for the caller of a review read.
+ * Only a status with no review behind it changes: a reviewer's task, verdict or failure answers for
+ * itself, including one a person forced on a covered head. No reviewer task also means no worker
+ * row may exist to report the PR, so the PR's own state comes from GitHub here.
+ */
+export function applyCandidateCoverage(
+  status: PrReviewStatus,
+  coverage: { composition: CandidateComposition; prState: 'open' | 'merged' | 'closed' } | null,
+  opts: { autoMergeExpected: boolean; waitFor?: PrReviewWaitFor },
+): { status: PrReviewStatus | CompositionCoveredStatus; composition: CandidateComposition | null } {
+  if (!coverage) return { status, composition: null };
+  const { composition, prState } = coverage;
+  if (status.state !== 'not_requested') return { status, composition };
+  const merged = prState === 'merged';
+  const settled = prState !== 'open';
+  if (composition.kind === 'delta') {
+    return { status: { ...status, prState, merged, terminal: status.terminal || settled }, composition };
+  }
+  const mergeBlocked = !settled && !opts.autoMergeExpected ? 'awaiting_human' as const : null;
+  return {
+    status: {
+      ...status,
+      state: 'composition_covered',
+      coveredBy: { kind: 'composition', headSha: composition.headSha, constituents: composition.constituents },
+      // The review is settled either way; a merge-waiter is waiting for the merge, not the review.
+      terminal: (opts.waitFor ?? 'verdict') === 'verdict' || settled || mergeBlocked !== null,
+      prState,
+      merged,
+      mergeBlocked,
+    },
+    composition,
+  };
+}
+
 /** Minimal shape needed to decide whether a stored verdict authorises a self-merge. */
 export interface SelfMergeApprovalInput {
   verdict: PrReviewVerdict | null;
