@@ -84,9 +84,20 @@ export interface ParkDispositionResult {
   admitted: boolean;
 }
 
-function result(waitingFor: Q, hold: HoldResolution | null, nowMs: number): ParkDispositionResult {
-  // A settled hold (a re-send of one already surfaced) is never re-notified.
-  const admitted = hold?.held === 'settled' ? false : admitsToNeedsYou(waitingFor, nowMs);
+/** The same question already stored on the row: a retry/replay, not a new ask. */
+function isRepeatOfStored(waitingFor: Q, stored: Q | null | undefined): boolean {
+  return !!stored && stored.type === 'question' && waitingFor.type === 'question'
+    && typeof waitingFor.prompt === 'string' && waitingFor.prompt.length > 0
+    && stored.prompt === waitingFor.prompt;
+}
+
+function result(waitingFor: Q, hold: HoldResolution | null, nowMs: number, stored?: Q | null): ParkDispositionResult {
+  // A settled hold (a re-send of one already surfaced) is never re-notified,
+  // and neither is an identical question already parked on the row (a retry
+  // or replay). A resumed worker's stored park is cleared, so a question
+  // after resume, or a different one, still notifies.
+  const admitted = hold?.held === 'settled' || isRepeatOfStored(waitingFor, stored)
+    ? false : admitsToNeedsYou(waitingFor, nowMs);
   return { waitingFor, hold, admitted };
 }
 
@@ -95,7 +106,7 @@ export async function disposeParkedWaitingFor(input: ParkDispositionInput): Prom
   const nowMs = input.nowMs;
 
   if (q.type !== 'question') {
-    return result(stamp(q, { disposition: 'ask', dispositionBy: 'permission' }), null, nowMs);
+    return result(stamp(q, { disposition: 'ask', dispositionBy: 'permission' }), null, nowMs, input.stored);
   }
 
   if (q.disposition === 'hold') {
@@ -107,19 +118,19 @@ export async function disposeParkedWaitingFor(input: ParkDispositionInput): Prom
       pathManifest: input.pathManifest ?? null,
       nowMs,
     });
-    if (hold.held) return result({ ...hold.waitingFor, dispositionBy: 'gate' }, hold, nowMs);
+    if (hold.held) return result({ ...hold.waitingFor, dispositionBy: 'gate' }, hold, nowMs, input.stored);
     const rail = typeof hold.rail === 'string' && RAILS.has(hold.rail) ? (hold.rail as HardRailKind) : undefined;
-    return result(stamp(hold.waitingFor, { disposition: 'ask', dispositionBy: 'gate', ...(rail ? { gateOutcome: 'hard_rail', rail } : {}) }), hold, nowMs);
+    return result(stamp(hold.waitingFor, { disposition: 'ask', dispositionBy: 'gate', ...(rail ? { gateOutcome: 'hard_rail', rail } : {}) }), hold, nowMs, input.stored);
   }
 
   if (q.disposition === 'ask') {
-    return result(stamp(q, { disposition: 'ask', dispositionBy: 'gate', ...gateFields(q) }), null, nowMs);
+    return result(stamp(q, { disposition: 'ask', dispositionBy: 'gate', ...gateFields(q) }), null, nowMs, input.stored);
   }
 
   if (q.disposition === 'recovered' && typeof q.repairTaskId === 'string') {
     const exists = await input.repairTaskExists(q.repairTaskId).catch(() => false);
     if (exists) {
-      return result(stamp(q, { disposition: 'recovered', dispositionBy: 'gate', gateOutcome: 'recovered', repairTaskId: q.repairTaskId }), null, nowMs);
+      return result(stamp(q, { disposition: 'recovered', dispositionBy: 'gate', gateOutcome: 'recovered', repairTaskId: q.repairTaskId }), null, nowMs, input.stored);
     }
   }
 
@@ -133,12 +144,12 @@ export async function disposeParkedWaitingFor(input: ParkDispositionInput): Prom
       dispositionBy: 'server_recheck',
       ...gateFields(stored),
       ...(typeof stored.repairTaskId === 'string' ? { repairTaskId: stored.repairTaskId } : {}),
-    }), null, nowMs);
+    }), null, nowMs, input.stored);
   }
   const d = input.scope
     ? await recheckParkedQuestion(input.scope, q as unknown as BriefedQuestion, input.deps ?? {}).catch(
       (): ParkDisposition => ({ disposition: 'ask', dispositionBy: 'server_recheck' }),
     )
     : { disposition: 'ask' as const, dispositionBy: 'server_recheck' as const };
-  return result(stamp(q, d), null, nowMs);
+  return result(stamp(q, d), null, nowMs, input.stored);
 }
