@@ -20,6 +20,14 @@ describe('disposeParkedWaitingFor: repeated question', () => {
     const r = await disposeParkedWaitingFor({ ...base, waitingFor: ask, stored: { ...ask, dispositionBy: 'gate' } });
     expect(r.admitted).toBe(false);
   });
+  it('admits a same-prompt held question when it becomes an ask', async () => {
+    const r = await disposeParkedWaitingFor({ ...base, waitingFor: ask, stored: { ...ask, disposition: 'hold', dispositionBy: 'gate', resurfaceAt: new Date(Date.now() + 60_000).toISOString() } });
+    expect(r.admitted).toBe(true);
+  });
+  it('does not re-admit a same-prompt question that already resurfaced', async () => {
+    const r = await disposeParkedWaitingFor({ ...base, waitingFor: ask, stored: { ...ask, disposition: 'hold', dispositionBy: 'gate', holdOutcome: 'resurfaced' } });
+    expect(r.admitted).toBe(false);
+  });
   it('admits a different question', async () => {
     const r = await disposeParkedWaitingFor({ ...base, waitingFor: { ...ask, prompt: 'Another?' }, stored: ask });
     expect(r.admitted).toBe(true);
