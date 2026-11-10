@@ -88,7 +88,8 @@ export interface ParkDispositionResult {
 function isRepeatOfStored(waitingFor: Q, stored: Q | null | undefined): boolean {
   return !!stored && stored.type === 'question' && waitingFor.type === 'question'
     && typeof waitingFor.prompt === 'string' && waitingFor.prompt.length > 0
-    && stored.prompt === waitingFor.prompt;
+    && stored.prompt === waitingFor.prompt
+    && (stored.disposition === 'ask' || (stored.disposition === 'hold' && stored.holdOutcome === 'resurfaced'));
 }
 
 function result(waitingFor: Q, hold: HoldResolution | null, nowMs: number, stored?: Q | null): ParkDispositionResult {
