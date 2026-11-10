@@ -2684,6 +2684,8 @@ export class WorkerManager {
     if (this.providerLimits.allHeld(Date.now(), this.startableProviders())) {
       this.claimsPaused = true;
       this.claimsPausedUntil = Math.max(this.claimsPausedUntil, this.providerLimits.nextLift() ?? untilMs);
+      // The global pause lifts at nextLift, which can precede this limit's reset.
+      this.scheduleResumeAt(this.claimsPausedUntil, 'provider limit global pause');
       this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
     } else {
       this.emit({ type: 'provider_limit', provider: limit.provider, pausedUntil: untilMs, kind: limit.kind });
@@ -2745,6 +2747,7 @@ export class WorkerManager {
     // would keep claiming cross-context tasks and failing them identically.
     this.claimsPaused = true;
     this.claimsPausedUntil = Math.max(this.claimsPausedUntil, until);
+    this.scheduleResumeAt(this.claimsPausedUntil, 'auth failure backoff');
     console.warn(`[WorkerManager] Circuit breaker: auth failure #${this.consecutiveAuthFailures} (context ${ctx}) — pausing claims ${Math.round(backoff / 1000)}s until ${new Date(until).toISOString()}`);
     this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: until, reason: `Auth failure #${this.consecutiveAuthFailures} (${ctx})` });
   }
@@ -6835,6 +6838,7 @@ export class WorkerManager {
             this.claimsPaused = true;
             this.claimsPausedUntil = untilMs;
             this.consecutiveQuickFailures = 0;
+            this.scheduleResumeAt(this.claimsPausedUntil, 'classified failure pause');
             console.warn(`[WorkerManager] ${pauseReason.label} — pausing all claims ~${Math.round(pauseMs / 60_000)} min`);
             sessionLog(worker.id, 'warn', 'circuit_breaker', `${pauseReason.label}: pausing ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
             this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: pauseReason.label });
@@ -6847,6 +6851,7 @@ export class WorkerManager {
             if (this.consecutiveQuickFailures >= 3 && !this.claimsPaused) {
               this.claimsPaused = true;
               this.claimsPausedUntil = Date.now() + 5 * 60 * 1000;
+              this.scheduleResumeAt(this.claimsPausedUntil, 'rapid failure breaker');
               console.warn(`[WorkerManager] Circuit breaker: ${this.consecutiveQuickFailures} rapid failures. Pausing 5 min. Error: ${worker.error}`);
               sessionLog(worker.id, 'warn', 'circuit_breaker', `${this.consecutiveQuickFailures} rapid failures: ${worker.error}`, worker.taskId);
               this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason: `${this.consecutiveQuickFailures} rapid failures` });
