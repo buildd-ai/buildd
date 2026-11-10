@@ -143,6 +143,47 @@ describe('resurfaceHeldQuestions', () => {
     expect(notified).toHaveLength(0);
   });
 
+  it.each(['completed', 'failed', 'cancelled'])('drops a due hold on a still-parked worker whose task is %s', async taskStatus => {
+    const notified: ParkedQuestion[] = [];
+    const { exec, statements } = fakeDb([row({ taskStatus })], () => true);
+    const { q } = queue();
+    const s = await resurfaceHeldQuestions({ floor: false, notify: p => notified.push(p) }, { exec, now: () => new Date(NOW), queue: q });
+    expect(s).toMatchObject({ dropped: 1, resurfaced: 0 });
+    expect(notified).toHaveLength(0);
+    // Settled as dropped, so no later tick selects it again.
+    const update = statements.find(t => t.trim().startsWith('UPDATE'))!;
+    expect(update).toContain('holdSettledAt');
+  });
+
+  // Regression (task 22f3d0ea): the stale-worker reaper failed two workers and
+  // closed their task, but left their held question in `waitingFor`. A reaped
+  // worker is no longer `waiting_input`, so neither tick may select it, ping
+  // for it, or keep its due-queue member alive.
+  it('a held question left on a reaped (failed) worker whose task closed is never notified, on either tick', async () => {
+    const reaped = [
+      { ...row({ id: 'worker-a', taskStatus: 'failed' }), status: 'failed' },
+      { ...row({ id: 'worker-b', taskStatus: 'failed', resurfaceAt: new Date(NOW + 60_000).toISOString() }), status: 'failed' },
+    ];
+    const statements: string[] = [];
+    // Emulates the SELECT's worker-status filter; the assertion below pins that filter in the SQL itself.
+    const exec = async (sqlQ: SQL) => {
+      const text = render(sqlQ);
+      statements.push(text);
+      if (text.trim().startsWith('UPDATE')) return { rows: [] };
+      return { rows: text.includes("w.status = 'waiting_input'") ? reaped.filter(r => r.status === 'waiting_input') : reaped };
+    };
+    const notified: ParkedQuestion[] = [];
+    for (const floor of [false, true]) {
+      const { q, calls } = queue();
+      const s = await resurfaceHeldQuestions({ floor, notify: p => notified.push(p) }, { exec, now: () => new Date(NOW), queue: q });
+      expect(s).toMatchObject({ held: 0, resurfaced: 0, ahead: 0 });
+      // Gated tick clears the due members; floor tick re-seeds nothing for them.
+      expect(calls).toEqual(floor ? [['reseed', []]] : [['clear', NOW]]);
+    }
+    expect(notified).toHaveLength(0);
+    expect(statements.every(t => t.includes("w.status = 'waiting_input'"))).toBe(true);
+  });
+
   it('the floor tick re-seeds holds still ahead and does not notify them', async () => {
     const notified: ParkedQuestion[] = [];
     const aheadAt = NOW + 5 * 60_000;
