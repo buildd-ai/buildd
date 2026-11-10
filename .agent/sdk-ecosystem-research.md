@@ -1,10 +1,32 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-11-02
-**Previous scan**: 2026-10-26
-**Current SDK version in Buildd**: `^0.3.316` (runner + core, bun.lock resolves 0.3.316 = npm `latest`). The long-open bump recommendation is RESOLVED; pin is at head.
+**Last updated**: 2026-11-09
+**Previous scan**: 2026-11-02
+**Current SDK version in Buildd**: `^0.3.316` (runner + core, bun.lock resolves 0.3.316). npm head is now 0.3.319 (3 behind; caret range picks it up on next lock refresh, no urgent bump).
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## Nov 9 scan (Nov 3 – Nov 9)
+
+TypeScript SDK 0.3.317–0.3.319 (source: SDK CHANGELOG; community repos not re-scanned).
+
+| Version | Change |
+|---------|--------|
+| 0.3.319 | MCP task support in SDK sessions (`CLAUDE_AUTO_BACKGROUND_TASKS=1` + streaming input → `mcp_task` background tasks); prewarm OTel count fix; `session_writes_lost` only sent on exit code 0; `deleteSession()` rejects `ENOTEMPTY` |
+| 0.3.318 | `credential_expires_at` on result messages (when claude.ai sign-in ends); `config_file_invalid` startup failure reason; `agentProgressSummaries` waits up to 5m on cold cache; `PushNotificationInput.status` optional |
+| 0.3.317 | Hook matcher `onFailure: "block"` (fail-closed hooks); `session_writes_lost` system message (disk/quota); `initialize_not_first` startup reason; `readFile()` `lossy` flag; **removed `file_unchanged` variant of `FileReadOutput`** (repeat Read returns content) |
+
+### Verified against code
+`grep` of apps/ and packages/ finds no consumers of `file_unchanged`, `startup_failure_reason`, `session_writes_lost`, or `cacheCreationEphemeral*`: the removal is safe, but none of the new signals are surfaced either.
+
+### Recommendations
+1. **Surface `session_writes_lost`** in worker failure classification: a full disk silently loses the transcript. Medium.
+2. **Classify startup failure reasons** (`sandbox_required_unavailable`, `config_file_invalid`, `initialize_not_first`) as distinct, non-retryable-by-default errors instead of generic failures. Low-medium.
+3. **`credential_expires_at`**: for oauth-authType runners, warn before the local login expires (read-only signal; consistent with no server-side custody). Low.
+4. **Hook `onFailure: "block"`**: candidate for security-relevant hooks (path guards) so a crashing hook fails closed. Medium.
+5. Carried: 5m/1h cache-write cost split (0.3.311); `blockWritesOutsideWorkingDirectories` worktree hardening; `prewarm()` alpha; `mcp_task` background tasks worth watching, not adopting.
 
 ---
 
