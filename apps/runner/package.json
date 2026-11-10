@@ -1,6 +1,6 @@
 {
   "name": "@buildd/runner",
-  "version": "0.397.3",
+  "version": "0.397.4",
   "private": true,
   "type": "module",
   "scripts": {
