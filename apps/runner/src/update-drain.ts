@@ -181,10 +181,12 @@ export class UpdateDrain {
     this.logger.log(`[update-drain] boot hold: no claims for up to ${fmt(ms)} while this start learns whether an update is waiting`);
   }
 
-  releaseBootHold(reason: string): void {
-    if (this.bootHoldUntil === null) return;
+  /** True when a hold was actually lifted (false on a repeat call or after it expired). */
+  releaseBootHold(reason: string): boolean {
+    if (this.bootHoldUntil === null) return false;
     this.bootHoldUntil = null;
     this.logger.log(`[update-drain] boot hold released: ${reason}`);
+    return true;
   }
 
   private bootHoldActive(now: number): boolean {
@@ -308,4 +310,24 @@ export function getUpdateDrain(): UpdateDrain | null { return instance; }
 /** Claim gate for workers.ts — false when no drain has been initialised (tests, CLI tools). */
 export function claimsHaltedForUpdate(): boolean {
   return instance?.claimsHalted() ?? false;
+}
+
+/**
+ * The startup claim poll runs while the boot hold is active and returns [],
+ * and nothing re-polls when the hold lifts: queued work then waits for a later
+ * Pusher assignment. Called after `releaseBootHold`: one claim poll, only when
+ * this call really lifted the hold and no update is waiting. A repeat
+ * `setLatestCommit` finds no hold to lift, so it cannot start a poll storm; an
+ * in-flight poll is also never doubled. `claimPendingTasks` still applies the
+ * human hold, single-task mode, canary and drain gates itself.
+ */
+let bootReleasePollInFlight = false;
+export function pollAfterBootRelease(
+  released: boolean,
+  updateWaiting: boolean,
+  poll: (() => Promise<unknown>) | null | undefined,
+): Promise<void> {
+  if (!released || updateWaiting || !poll || bootReleasePollInFlight) return Promise.resolve();
+  bootReleasePollInFlight = true;
+  return poll().then(() => {}, () => {}).finally(() => { bootReleasePollInFlight = false; });
 }
