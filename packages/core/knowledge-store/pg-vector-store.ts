@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { KnowledgeStore, UpsertChunk, UpsertResult, QueryResult, QueryParams, Embedder, Reranker, Corpus, ReusableEmbeddings } from './types';
 import { applyRerank } from './reranker';
-import { getCodeEmbedder, isCodeCorpus } from './voyage-embedder';
+import { getEmbedderForCorpus, resolveEmbeddingConfig, type EmbeddingConfig } from './embedding-config';
 import type { VoyageCall } from './voyage-guard';
 import { applyRecencyAuthority, CORPUS_AUTHORITY } from './recency-authority';
 import { LIVING_SPEC_DRAFT_SOURCE_TYPE } from './living-spec';
@@ -185,26 +185,35 @@ export const RERANK_CANDIDATE_CAP = 20;
 
 export class PgVectorStore implements KnowledgeStore {
   private readonly caller: string;
+  private readonly embeddingConfig: (ownerId: string) => Promise<EmbeddingConfig>;
 
-  /** `opts.caller` names this store's spend in attribution (see ./voyage-guard.ts). */
+  /**
+   * `opts.caller` names this store's spend in attribution (see ./voyage-guard.ts).
+   * `opts.embeddingConfig` resolves a namespace owner's provider (default: env
+   * plus its `embedding_endpoint` secret, see ./embedding-config.ts).
+   */
   constructor(
     private readonly embedder: Embedder | null,
     private readonly reranker: Reranker | null = null,
-    opts: { caller?: string } = {},
+    opts: { caller?: string; embeddingConfig?: (ownerId: string) => Promise<EmbeddingConfig> } = {},
   ) {
     this.caller = opts.caller ?? 'unattributed';
+    this.embeddingConfig = opts.embeddingConfig ?? (ownerId => resolveEmbeddingConfig(ownerId));
   }
 
-  private _selectEmbedder(corpus: Corpus): Embedder | null {
-    if (isCodeCorpus(corpus)) {
-      return getCodeEmbedder() ?? this.embedder;
-    }
-    return this.embedder;
+  /**
+   * The one embedder a namespace writes and queries with. Under the default
+   * (Voyage) config this is the store's own embedder, or voyage-code-3 for
+   * code/docs/spec, exactly as before.
+   */
+  private async _selectEmbedder(namespace: string): Promise<Embedder | null> {
+    const [owner = '', corpus] = namespace.split(':');
+    return getEmbedderForCorpus(corpus as Corpus, await this.embeddingConfig(owner), this.embedder);
   }
 
   async findReusableEmbeddings(namespace: string, chunks: UpsertChunk[]): Promise<ReusableEmbeddings> {
     const out = new Map<string, string>();
-    const embedder = this._selectEmbedder(namespace.split(':')[1] as Corpus);
+    const embedder = await this._selectEmbedder(namespace);
     if (!embedder || chunks.length === 0) return out;
     const db = await getDb();
     const hashes = [...new Set(chunks.map(c => sha256(stripNulBytes(c.content))))];
@@ -227,7 +236,7 @@ export class PgVectorStore implements KnowledgeStore {
     let lexicalOnly = 0;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
-    const activeEmbedder = this._selectEmbedder(corpus);
+    const activeEmbedder = await this._selectEmbedder(namespace);
 
     // Content-hash dedup: drop a chunk whose identical content already exists in
     // the namespace under a DIFFERENT source_id. This prevents cross-PR
@@ -364,8 +373,10 @@ export class PgVectorStore implements KnowledgeStore {
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
     const { text, mode = 'hybrid', topK = 10, filters, useGraph = true, history = false, trackHits = true, recencyAuthority = true } = params;
     const db = await getDb();
-    const corpus = namespace.split(':')[1] as Corpus;
-    const activeEmbedder = this._selectEmbedder(corpus);
+    const activeEmbedder = await this._selectEmbedder(namespace);
+    // Vectors from another model are not comparable: the vector legs only see
+    // rows embedded by the query's model (others still reach results lexically).
+    const queryModel = activeEmbedder?.model ?? null;
     const limit = Math.min(topK, 50);
     const candidateLimit = this.reranker ? Math.min(limit * 3, RERANK_CANDIDATE_CAP) : limit;
     const call = { namespace, caller: params.caller ?? this.caller };
@@ -397,7 +408,7 @@ export class PgVectorStore implements KnowledgeStore {
     if (mode === 'vector' && !embeddingStr) return [];
     if (embeddingStr) {
       if (mode === 'vector') {
-        const vectorRanked = await this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2);
+        const vectorRanked = await this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2, queryModel);
         const ids = vectorRanked.slice(0, candidateLimit).map(r => r.id);
         if (ids.length === 0) return [];
         const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
@@ -408,7 +419,7 @@ export class PgVectorStore implements KnowledgeStore {
         // Vector ANN and lexical rank are independent reads — issue both
         // concurrently instead of paying their latencies back-to-back.
         const [vectorRanked, lexicalRes] = await Promise.all([
-          this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2),
+          this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2, queryModel),
           db.execute(buildLexicalSearchSql(namespace, text, filterClause, currentClause, limit * 2)),
         ]);
 
@@ -490,6 +501,7 @@ export class PgVectorStore implements KnowledgeStore {
       const res = await db.execute(sql`
         SELECT embedding::text AS embedding FROM knowledge_chunks
         WHERE namespace = ${namespace} AND source_id = ${params.nearChunkId} AND embedding IS NOT NULL
+          AND embedding_model = ${activeEmbedder.model}
         LIMIT 1
       `);
       const row = (res.rows as Array<{ embedding: string | null }>)[0];
@@ -505,7 +517,7 @@ export class PgVectorStore implements KnowledgeStore {
   }
 
   async embedQueries(namespace: string, texts: string[]): Promise<number[][] | null> {
-    const embedder = this._selectEmbedder(namespace.split(':')[1] as Corpus);
+    const embedder = await this._selectEmbedder(namespace);
     if (!embedder || texts.length === 0) return embedder ? [] : null;
     return embedder.embed(texts, 'query', { namespace, caller: this.caller });
   }
@@ -927,13 +939,18 @@ export class PgVectorStore implements KnowledgeStore {
     filterClause: ReturnType<typeof sql>,
     currentClause: ReturnType<typeof sql>,
     limit: number,
+    model: string | null,
   ): Promise<Array<{ id: string; score: number }>> {
+    // Null only for a caller-supplied vector with no embedder configured: the
+    // model is unknown, so there is nothing to filter on.
+    const modelClause = model ? sql`AND embedding_model = ${model}` : sql``;
     const vectorRes = await db.execute(sql`
       SELECT source_id AS id,
              1 - (embedding <=> ${embeddingStr}::vector) AS score
       FROM knowledge_chunks
       WHERE namespace = ${namespace}
         AND embedding IS NOT NULL
+        ${modelClause}
         ${filterClause}
         ${currentClause}
       ORDER BY embedding <=> ${embeddingStr}::vector
@@ -1015,8 +1032,7 @@ export class PgVectorStore implements KnowledgeStore {
     content: string,
     topK = 5,
   ): Promise<Array<{ id: string; similarity: number; content: string; sourceUrl: string | null }>> {
-    const corpus = namespace.split(':')[1] as Corpus;
-    const activeEmbedder = this._selectEmbedder(corpus);
+    const activeEmbedder = await this._selectEmbedder(namespace);
     if (!activeEmbedder) return [];
 
     try {
@@ -1033,6 +1049,7 @@ export class PgVectorStore implements KnowledgeStore {
         FROM knowledge_chunks
         WHERE namespace = ${namespace}
           AND embedding IS NOT NULL
+          AND embedding_model = ${activeEmbedder.model}
           AND is_current = true
         ORDER BY embedding <=> ${embeddingStr}::vector
         LIMIT ${topK}
