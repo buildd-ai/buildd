@@ -66,6 +66,8 @@ export interface ReportOpsInput {
   dedupeKey?: string;
   /** Bypass the OPS_ALERTS_ENABLED opt-in gate. See the file header before using this. */
   force?: boolean;
+  /** Per-call dedup window in ms; defaults to OPS_THROTTLE_MS / 1h. For a detector that re-fires every cron tick on one unresolved condition. */
+  throttleMs?: number;
 }
 
 const DEFAULT_THROTTLE_MS = 60 * 60 * 1000; // 1h
@@ -125,7 +127,7 @@ export async function reportOps(input: ReportOpsInput): Promise<boolean> {
     const key = `ops:${hash}`;
 
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + throttleMs());
+    const expiresAt = new Date(now.getTime() + (input.throttleMs && input.throttleMs > 0 ? input.throttleMs : throttleMs()));
 
     const won = await claimSlot(key, now, expiresAt, {
       source: input.source,
