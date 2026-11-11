@@ -70,6 +70,13 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: { id: 'id', teamId: 'teamId', createdAt: 'createdAt', accessMode: 'accessMode' },
 }));
 
+// Repo-link ingest: the enqueue itself (and its switch check) is covered in
+// lib/knowledge-ingest.test.ts; here, whether the route asks for one.
+const mockEnqueueFullIngestJob = mock(async (_p: any) => 'job-1' as string | null);
+mock.module('@/lib/knowledge-ingest', () => ({ enqueueFullIngestJob: mockEnqueueFullIngestJob }));
+const mockLogIngestSkip = mock((_site: string, _ctx: any) => {});
+mock.module('@/lib/knowledge-ingest-switch', () => ({ logIngestSkip: mockLogIngestSkip }));
+
 // Override NODE_ENV for tests
 const originalNodeEnv = process.env.NODE_ENV;
 
@@ -477,6 +484,44 @@ describe('POST /api/workspaces', () => {
     const res = await POST(createMockPostRequest({ name: 'My Workspace' }));
     expect(res.status).toBe(200);
     expect(mockEmit).toHaveBeenCalledWith({ type: 'workspace.created', workspaceId: 'ws-new', teamId: 'team-1', origin: 'http://localhost:3000' });
+  });
+
+  // ── Knowledge ingest switch ────────────────────────────────────────────────
+
+  describe('knowledgeIngest', () => {
+    beforeEach(() => {
+      mockEnqueueFullIngestJob.mockClear();
+      mockLogIngestSkip.mockClear();
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    });
+
+    it('defaults on: stores true and enqueues a repo-link full ingest', async () => {
+      const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'r', knowledgeIngest: true }]) }));
+      mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+      const res = await POST(createMockPostRequest({ repoUrl: 'https://github.com/user/r' }));
+      expect(res.status).toBe(200);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ knowledgeIngest: true }));
+      expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith({ workspaceId: 'ws-new', repo: 'user/r', trigger: 'repo_link' });
+      expect((await res.json()).knowledgeIngest).toBe(true);
+    });
+
+    it('knowledgeIngest=false stores false and enqueues nothing', async () => {
+      const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'r', knowledgeIngest: false }]) }));
+      mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+      const res = await POST(createMockPostRequest({ repoUrl: 'https://github.com/user/r', knowledgeIngest: false }));
+      expect(res.status).toBe(200);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ knowledgeIngest: false }));
+      expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+      expect(mockLogIngestSkip).toHaveBeenCalledWith('workspace_create', { workspaceId: 'ws-new' });
+      expect((await res.json()).knowledgeIngest).toBe(false);
+    });
+
+    it('refuses a non-boolean knowledgeIngest before creating anything', async () => {
+      mockWorkspacesInsert.mockClear();
+      const res = await POST(createMockPostRequest({ name: 'x', knowledgeIngest: 'false' }));
+      expect(res.status).toBe(400);
+      expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+    });
   });
 
   it('auto-derives name from repoUrl', async () => {

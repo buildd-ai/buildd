@@ -10,6 +10,7 @@ import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
+import { logIngestSkip } from '@/lib/knowledge-ingest-switch';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { emit } from '@/lib/core-emit';
@@ -185,7 +186,14 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, repoUrl, defaultBranch, gitConfig, githubRepo, githubInstallationId, accessMode, teamId: requestedTeamId } = body;
+    const { name, repoUrl, defaultBranch, gitConfig, githubRepo, githubInstallationId, accessMode, knowledgeIngest, teamId: requestedTeamId } = body;
+
+    // The knowledge ingest switch (default on). Strict boolean: a coerced
+    // "false" string must not quietly leave ingest on.
+    if (knowledgeIngest !== undefined && typeof knowledgeIngest !== 'boolean') {
+      return NextResponse.json({ error: 'knowledgeIngest must be a boolean' }, { status: 400 });
+    }
+    const ingestOn = knowledgeIngest !== false;
 
     // Auto-derive name from repoUrl if not provided
     let workspaceName = name;
@@ -299,6 +307,7 @@ export async function POST(req: NextRequest) {
         githubRepoId: githubRepoDbId,
         githubInstallationId: githubInstallationId || null,
         accessMode: accessMode || 'open',
+        knowledgeIngest: ingestOn,
         gitConfig: Object.keys(mergedGitConfig).length > 0 ? (mergedGitConfig as unknown as WorkspaceGitConfig) : null,
         teamId,
       })
@@ -311,8 +320,11 @@ export async function POST(req: NextRequest) {
     // Modules react (e.g. connectors preinstalled from the team's catalog).
     await emit({ type: 'workspace.created', workspaceId: workspace.id, teamId, origin: req.nextUrl.origin });
 
-    // Auto-ingest on repo link: enqueue a full ingest job when a repo URL was provided.
-    if (repoUrl) {
+    // Auto-ingest on repo link: enqueue a full ingest job when a repo URL was
+    // provided, unless the workspace was created with knowledge ingest off.
+    if (repoUrl && !ingestOn) {
+      logIngestSkip('workspace_create', { workspaceId: workspace.id });
+    } else if (repoUrl) {
       const fullName = normalizeRepoFullName(repoUrl);
       if (fullName) {
         enqueueFullIngestJob({ workspaceId: workspace.id, repo: fullName, trigger: 'repo_link' }).catch(err =>

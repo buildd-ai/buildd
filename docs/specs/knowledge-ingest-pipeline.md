@@ -2,13 +2,13 @@
 title: Knowledge Ingest Pipeline
 status: active
 owner: max
-last_verified: 2026-11-05
+last_verified: 2026-11-11
 summary: Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 domain: knowledge
-surfaces: [apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts, packages/core/knowledge-store/full-ingest.ts, apps/web/src/lib/knowledge-ingest.ts, apps/web/src/lib/knowledge-full-ingest-fallback.ts]
+surfaces: [apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts, apps/web/src/lib/knowledge-ingest.ts, apps/web/src/lib/knowledge-full-ingest-fallback.ts, apps/web/src/lib/knowledge-ingest-switch.ts]
 related: [voyage-spend-guard, knowledge-store-retrieval, webhook-dataflow, external-cron-triggers, living-specs]
-keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash]
-verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts, apps/web/src/lib/knowledge-full-ingest-fallback.test.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.test.ts, apps/web/src/lib/knowledge-ingest-stalls.test.ts, packages/core/__tests__/voyage-embedder-batching.test.ts]
+keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash, knowledge_ingest, knowledgeIngest, ingest_disabled, purgeKnowledge]
+verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts, apps/web/src/lib/knowledge-full-ingest-fallback.test.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.test.ts, apps/web/src/lib/knowledge-ingest-stalls.test.ts, apps/web/src/lib/knowledge-ingest-switch.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/route.test.ts, apps/web/src/app/api/workspaces/route.test.ts, apps/web/src/app/api/workspaces/[id]/route.test.ts, packages/core/__tests__/voyage-embedder-batching.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -178,6 +178,48 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   when a claimed job completes with `error`. It needs no `DATABASE_URL` /
   `VOYAGE_API_KEY` because embedding happens server-side. This is the opposite
   of the legacy direct-DB script (see Verification gaps).
+- **A workspace can switch repo ingest off, and then nothing of its repo is
+  embedded.** `workspaces.knowledge_ingest` (boolean, default `true`, so every
+  existing workspace stays on) is read through one module,
+  `apps/web/src/lib/knowledge-ingest-switch.ts` (`isKnowledgeIngestEnabled`,
+  `knowledgeIngestDisabledAmong`). With it off, no `knowledge_ingest_jobs` row
+  is created and no embedder is constructed for that workspace. It is checked
+  at every point a job is made, handed out or run:
+  - enqueue: `enqueueFullIngestJobDetailed` returns `{ status: 'disabled' }`
+    (so `enqueueFullIngestJob` returns `null`); the diff, merged-PR and push
+    paths drop disabled workspaces per row in `workspacesBoundToRepo` (which
+    covers the push path's full-job fallback too); the first-index backfill and
+    diff escalation re-check before inserting their full job; `POST
+    /api/workspaces` stores `knowledgeIngest: false` and enqueues nothing;
+    `PATCH /api/workspaces/[id]` never enqueues on a repo change while off;
+  - hand out: `POST /api/knowledge/ingest-jobs` answers 409
+    `{ error: 'ingest_disabled' }`; `.../claim` never returns a disabled
+    workspace's job; `.../{id}/files` answers 409 `{ error: 'ingest_disabled' }`
+    before embedding; the fallback cron (`runFullIngestFallbackTick`, deps
+    `ingestDisabledAmong` / `skipDisabled`) never reads such a repo, and runs
+    nothing in a tick where it cannot read the switch;
+  - run: `runDiffIngestJob` re-checks after its atomic claim.
+
+  A job that already exists for a disabled workspace is **closed as skipped**,
+  not run: `status = 'error'`, `error = 'ingest_disabled'`,
+  `stats.skipped = 'ingest_disabled'`, lease cleared
+  (`closeIngestJobAsSkipped`). `error` is deliberate: it frees the
+  `(workspace, sha, scope)` idempotency slot, so a redelivery after the switch
+  comes back on can run, and it never counts as a successful ingest for
+  freshness. Every skip logs one line under the stable key
+  `knowledge_ingest.skipped_disabled` with the site; the claim route reports
+  `skippedDisabled` ids, the fallback tick result carries `skippedDisabled`,
+  and `GET /api/workspaces/[id]/knowledge-health` returns
+  `ingest: { enabled, skippedJobs }` (the count of skipped jobs).
+- **Switching ingest off never deletes anything.** Stored `code`, `docs` and
+  `pr` chunks stay until `PATCH /api/workspaces/[id]` with
+  `purgeKnowledge: true` (strictly `true`) deletes exactly those three
+  namespaces (`purgeWorkspaceRepoKnowledge`) and returns `purgedChunks`. Both
+  fields are workspace-admin settings. Switching back on queues a repo-link
+  full ingest of the linked repo.
+- **`data_class` is independent of the switch.** A `sensitive` workspace with
+  ingest on ingests its repo exactly as a `standard` one does; the switch
+  module never reads `data_class`.
 - **Nothing schedules a periodic full ingest.** The fallback cron only runs
   jobs that already exist; no `cron-manifest.json` job, no `vercel.json` cron,
   and no producer of `trigger: 'scheduled'` enqueues one. Freshness
@@ -260,6 +302,26 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   comes back, needs a signal from the ingest completion route, not a workflow
   name.
 
+- AC-24: GIVEN a workspace created with `knowledgeIngest: false` and a repo
+  WHEN `POST /api/workspaces` returns THEN the row stores `false` and no
+  `knowledge_ingest_jobs` row exists for it.
+- AC-25 (failure path): GIVEN a workspace with ingest off WHEN
+  `POST /api/knowledge/ingest-jobs` is called for it THEN it answers HTTP 409
+  `{ error: 'ingest_disabled' }` and inserts nothing.
+- AC-26: GIVEN a repo bound to two workspaces, one with ingest off, WHEN a PR
+  merges or a docs push lands THEN only the other workspace gets a job, and no
+  embedder is constructed for the disabled one.
+- AC-27: GIVEN a queued job whose workspace was switched off after enqueue WHEN
+  the claim route, the fallback cron or `runDiffIngestJob` reaches it THEN the
+  job is closed `error` / `ingest_disabled` / `stats.skipped`, never run; and a
+  running job's next `.../{id}/files` batch gets 409 `ingest_disabled` before
+  any embedding.
+- AC-28: GIVEN ingest is switched off WHEN the PATCH returns THEN no chunk is
+  deleted; GIVEN `purgeKnowledge: true` THEN the workspace's `code`, `docs` and
+  `pr` chunks are deleted and their count returned.
+- AC-29: GIVEN `data_class = 'sensitive'` and ingest on WHEN a diff job runs
+  THEN it ingests and embeds exactly as before.
+
 ## Code surface
 
 - Enqueue + list: `apps/web/src/app/api/knowledge/ingest-jobs/route.ts` — level
@@ -291,6 +353,17 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   `enqueueFullIngestJob` (`:56`), `enqueueMergedPrIngestJobs` (`:116`),
   `runDiffIngestJob` (`:154`), `executeDiffJob` (`:195`), `escalateToFullJob`
   (`:402`), `MAX_DIFF_FILES` / `MAX_DIFF_TOTAL_BYTES` (`:26`).
+- Ingest switch: `apps/web/src/lib/knowledge-ingest-switch.ts` —
+  `isKnowledgeIngestEnabled`, `knowledgeIngestDisabledAmong`,
+  `closeIngestJobAsSkipped`, `purgeWorkspaceRepoKnowledge`,
+  `getIngestSwitchHealth`, `INGEST_SKIP_LOG_KEY`. Column:
+  `workspaces.knowledge_ingest` in `packages/core/db/schema.ts`. Writers:
+  `apps/web/src/app/api/workspaces/route.ts` (POST) and
+  `apps/web/src/app/api/workspaces/[id]/route.ts` (PATCH, with
+  `purgeKnowledge`); MCP `manage_workspaces` create / update pass both fields
+  through to those routes. UI: workspace settings › Repository
+  (`KnowledgeIngestSection`), the new-workspace form, and the off state in
+  `KnowledgeHealthSection`.
 - Access model: `apps/web/src/lib/knowledge-ingest-access.ts` —
   `getIngestAccessibleWorkspaceIds` (`:12`).
 - Client executor: `packages/core/knowledge-store/full-ingest.ts` —
@@ -317,6 +390,25 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   `apps/web/src/app/api/workspaces/[id]/knowledge-health/route.ts`.
 - Legacy direct-DB script: `packages/core/scripts/ingest-knowledge.ts` —
   `DATABASE_URL` soft-skip (`:170`).
+
+## Other indexers (audit)
+
+The switch gates repo ingest only: the `code`, `docs` and `pr`-diff content
+that flows through `knowledge_ingest_jobs`. These indexers embed into the
+knowledge store too, are **not** gated by it, and keep running for a workspace
+with the switch off:
+
+| Indexer | Writes | Embeds | Gate today |
+|---|---|---|---|
+| `mirrorWorkProduct` (`packages/core/mcp-tools.ts`), from task completion, `create_pr`, artifacts, plans, sessions | `{ws}:task`, `{ws}:pr` (a PR card, not the diff), `{ws}:artifact`, `{ws}:plan`, `{ws}:session` | summary cards written by agents and the server | none (best-effort) |
+| `mirrorWorkProduct` for initiatives | `{team}:initiative` | initiative cards | none |
+| memory writes (`packages/core/memory-write.ts`, `learn`) | `{team}:memory` | memory title and content | none |
+| Living Specs (`apps/web/src/lib/specs/knowledge.ts`) | `{ws}:spec` | approved and draft spec text | none |
+| evidence indexer (`apps/web/src/lib/evidence-indexer.ts`) | `{ws}:evidence` | stored evidence object text | `data_class = 'sensitive'` skips and removes |
+| runner local full ingest (`apps/runner/src/knowledge-ingest.ts`, local mode) | `{ws}:code`, `{ws}:docs`, `{ws}:spec` | repo files | the switch, at claim only (see gap 12) |
+
+`purgeKnowledge` deletes the whole `{ws}:pr` namespace, so it removes the
+`create_pr` PR cards along with the PR diff chunks.
 
 ## Out of scope
 
@@ -401,6 +493,12 @@ Unguarded claims and known defects. Nothing below is asserted as holding.
     the knowledge-health route. Nothing enqueues a job in response, so a repo
     with no merges simply decays. `packages/core/__tests__/knowledge-health.test.ts`
     pins the verdict function, not any remediation.
+
+12. **Open: a runner already running a local-mode full job does not see the
+    switch go off.** Local mode writes chunks straight to the database and
+    never calls `/files`, so the switch stops it only at claim. A job claimed
+    before the switch went off runs to completion. HTTP mode and the fallback
+    are stopped at their next batch. No guard on `/complete` either.
 
 ## Renumbered
 

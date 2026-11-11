@@ -59,7 +59,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-10-15
   Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
-- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-11-05
+- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-11-11
   Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 - [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-10-15
   The knowledge store MUST keep every corpus in knowledge_chunks as idempotent (namespace, source_id) rows, team-scoped for memory and initiative and workspace-scoped otherwise, and retrieve them via RRF-fused Voyage vector search plus Postgres full-text search, falling back to full-text only with no embedder.

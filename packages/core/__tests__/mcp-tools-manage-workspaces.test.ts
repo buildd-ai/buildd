@@ -244,6 +244,34 @@ describe('manage_workspaces update — defaultBranch is persisted to gitConfig',
   });
 });
 
+describe('manage_workspaces — knowledge ingest switch passes through to the workspace routes', () => {
+  it('create forwards knowledgeIngest: false to POST /api/workspaces', async () => {
+    const api = mock(async () => ({ id: 'ws-123', name: 'Test', repo: 'owner/repo' }));
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'create', repoUrl: 'owner/repo', knowledgeIngest: false }, createContext());
+    expect((api.mock.calls[0] as any)[0]).toBe('/api/workspaces');
+    expect(JSON.parse((api.mock.calls[0] as any)[1].body).knowledgeIngest).toBe(false);
+  });
+
+  it('create leaves the field out when it is not given (server default on)', async () => {
+    const api = mock(async () => ({ id: 'ws-123', name: 'Test' }));
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'create', name: 'Test' }, createContext());
+    expect(JSON.parse((api.mock.calls[0] as any)[1].body)).not.toHaveProperty('knowledgeIngest');
+  });
+
+  it('update forwards knowledgeIngest and purgeKnowledge to PATCH /api/workspaces/[id]', async () => {
+    const api = mock(async () => ({}));
+    await handleBuilddAction(
+      api as unknown as ApiFn,
+      'manage_workspaces',
+      { action: 'update', workspaceId: WORKSPACE_ID, knowledgeIngest: false, purgeKnowledge: true },
+      createContext(),
+    );
+    expect((api.mock.calls[0] as any)[0]).toBe(`/api/workspaces/${WORKSPACE_ID}`);
+    const body = JSON.parse((api.mock.calls[0] as any)[1].body);
+    expect(body).toMatchObject({ knowledgeIngest: false, purgeKnowledge: true });
+  });
+});
+
 describe('manage_workspaces readiness', () => {
   const report = {
     items: [

@@ -28,6 +28,9 @@ mock.module('@buildd/core/knowledge-store', () => ({
   getWorkspaceVoyageBudget: mockGetWorkspaceVoyageBudget,
 }));
 
+const mockGetIngestSwitchHealth = mock(async () => ({ enabled: true, skippedJobs: 0 }) as any);
+mock.module('@/lib/knowledge-ingest-switch', () => ({ getIngestSwitchHealth: mockGetIngestSwitchHealth }));
+
 const originalNodeEnv = process.env.NODE_ENV;
 
 import { GET } from './route';
@@ -150,5 +153,34 @@ describe('GET /api/workspaces/[id]/knowledge-health', () => {
 
     const res = await GET(createMockRequest(), { params: mockParams });
     expect(res.status).toBe(500);
+  });
+});
+
+describe('GET /api/workspaces/[id]/knowledge-health: ingest switch', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1' });
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockGetKnowledgeHealth.mockReset();
+    mockGetKnowledgeHealth.mockResolvedValue(SAMPLE_HEALTH);
+    mockGetWorkspaceVoyageBudget.mockReset();
+    mockGetWorkspaceVoyageBudget.mockResolvedValue(null);
+    mockGetIngestSwitchHealth.mockReset();
+  });
+
+  it('reports the switch and the count of skipped jobs beside the health', async () => {
+    mockGetIngestSwitchHealth.mockResolvedValue({ enabled: false, skippedJobs: 3 });
+    const res = await GET(createMockRequest({ authorization: 'Bearer bld_x' }), { params: mockParams });
+    const data = await res.json();
+    expect(data.ingest).toEqual({ enabled: false, skippedJobs: 3 });
+    expect(data.health.workspaceId).toBe('ws-1');
+  });
+
+  it('still serves the health when the switch cannot be read', async () => {
+    mockGetIngestSwitchHealth.mockRejectedValue(new Error('db down'));
+    const res = await GET(createMockRequest({ authorization: 'Bearer bld_x' }), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect((await res.json()).ingest).toBeNull();
   });
 });

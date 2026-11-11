@@ -8,8 +8,9 @@
  * is spent; a job larger than one tick resumes from its cursor next tick.
  *
  * `changed` = jobs completed this tick; `errors` = jobs whose slice failed
- * (retried next tick, parked after repeated failures). Nothing stalled -> one
- * cheap query.
+ * (retried next tick, parked after repeated failures); `skippedDisabled` =
+ * jobs closed because their workspace has knowledge ingest off. Nothing
+ * stalled -> one cheap query.
  *
  * Auth: Bearer CRON_SECRET (via withCronRun). Triggered by cron-manifest.json.
  */

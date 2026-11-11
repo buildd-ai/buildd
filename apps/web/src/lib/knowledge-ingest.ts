@@ -36,6 +36,12 @@ import {
   recoverBlockedDiffJob,
   DIFF_LEASE_MS,
 } from '@/lib/knowledge-ingest-lease';
+import {
+  isKnowledgeIngestEnabled,
+  knowledgeIngestDisabledAmong,
+  closeIngestJobAsSkipped,
+  logIngestSkip,
+} from '@/lib/knowledge-ingest-switch';
 
 type IngestJob = typeof knowledgeIngestJobs.$inferSelect;
 
@@ -56,7 +62,9 @@ export type FullEnqueueOutcome =
   /** A job holds the slot and is demonstrably alive (fresh lease, or recently queued). */
   | { status: 'already_queued'; job: BlockingIngestJob }
   /** A job holds the slot and nothing is moving it. Callers must not read this as success. */
-  | { status: 'stalled'; job: BlockingIngestJob };
+  | { status: 'stalled'; job: BlockingIngestJob }
+  /** The workspace's knowledge ingest switch is off: nothing was enqueued. */
+  | { status: 'disabled' };
 
 /**
  * Enqueue a full ingest job for a workspace+repo pair (spec §1.2), reporting
@@ -78,6 +86,11 @@ export async function enqueueFullIngestJobDetailed(params: {
   repo: string;
   trigger?: 'repo_link' | 'backfill' | 'manual' | 'scheduled' | 'push';
 }): Promise<FullEnqueueOutcome> {
+  if (!(await isKnowledgeIngestEnabled(params.workspaceId))) {
+    logIngestSkip('enqueue_full', { workspaceId: params.workspaceId, repo: params.repo });
+    return { status: 'disabled' };
+  }
+
   // Heal anything wedged in this workspace before judging the slot as occupied.
   await reclaimStaleIngestJobs({ workspaceId: params.workspaceId });
 
@@ -163,6 +176,7 @@ export interface EnqueueMergedPrParams {
 
 export type DiffIngestOutcome =
   | { claimed: false }
+  | { claimed: true; status: 'skipped'; reason: 'ingest_disabled' }
   | { claimed: true; status: 'done'; stats: Record<string, unknown> }
   | { claimed: true; status: 'error'; error: string };
 
@@ -186,7 +200,11 @@ export async function enqueueMergedPrIngestJobs(params: EnqueueMergedPrParams): 
   });
 }
 
-/** Workspaces bound to the repo, via github_repos.fullName → workspaces.githubRepoId. */
+/**
+ * Workspaces bound to the repo, via github_repos.fullName → workspaces.githubRepoId,
+ * that have knowledge ingest on. A workspace with the switch off is dropped
+ * here (and logged), so no diff, push or push-fallback job is created for it.
+ */
 async function workspacesBoundToRepo(repoFullName: string): Promise<string[]> {
   const repoRows = await db
     .select({ id: githubRepos.id })
@@ -198,7 +216,10 @@ async function workspacesBoundToRepo(repoFullName: string): Promise<string[]> {
     .select({ id: workspaces.id })
     .from(workspaces)
     .where(inArray(workspaces.githubRepoId, repoRows.map(r => r.id)));
-  return boundWorkspaces.map(w => w.id);
+  const ids = boundWorkspaces.map(w => w.id);
+  const disabled = await knowledgeIngestDisabledAmong(ids);
+  for (const workspaceId of disabled) logIngestSkip('enqueue_diff', { workspaceId, repo: repoFullName });
+  return ids.filter(id => !disabled.has(id));
 }
 
 async function enqueueDiffJobs(params: {
@@ -356,6 +377,13 @@ export async function runDiffIngestJob(jobId: string): Promise<DiffIngestOutcome
     .returning();
   if (claimed.length === 0) return { claimed: false };
   const job = claimed[0] as IngestJob;
+
+  // A job whose workspace was switched off since enqueue is closed as skipped,
+  // never run (and no embedder is constructed for it).
+  if (!(await isKnowledgeIngestEnabled(job.workspaceId))) {
+    await closeIngestJobAsSkipped(job, 'run_diff');
+    return { claimed: true, status: 'skipped', reason: 'ingest_disabled' };
+  }
 
   try {
     const { stats, changedFiles } = await executeDiffJob(job);
@@ -654,7 +682,9 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
   // First-index backfill (spec §3.4): the diff alone isn't a full index —
   // enqueue a full backfill job so the whole repo gets ingested.
   let backfillEnqueued = false;
-  if (!hadCodeIndex) {
+  if (!hadCodeIndex && !(await isKnowledgeIngestEnabled(job.workspaceId))) {
+    logIngestSkip('backfill', { workspaceId: job.workspaceId, repo: job.repo, jobId: job.id });
+  } else if (!hadCodeIndex) {
     // Belt-and-braces: skip insert when a full job is already active for this
     // workspace+repo (the unique partial index catches the same race at the DB
     // layer, but an explicit check avoids a spurious conflict log entry).
@@ -706,6 +736,10 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
  * (executor ships in stream A2).
  */
 async function escalateToFullJob(job: IngestJob, reason: string): Promise<DiffExecution> {
+  if (!(await isKnowledgeIngestEnabled(job.workspaceId))) {
+    logIngestSkip('escalation', { workspaceId: job.workspaceId, repo: job.repo, jobId: job.id });
+    return { stats: { escalated: false, reason, skipped: 'ingest_disabled' }, changedFiles: [] };
+  }
   // Skip insert when a full job is already active — the unique partial index
   // (knowledge_ingest_jobs_active_full_idx) is the hard guard; this check avoids
   // a spurious conflict log on every overlapping escalation.

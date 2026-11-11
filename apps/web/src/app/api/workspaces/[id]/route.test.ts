@@ -70,6 +70,21 @@ mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   workers: { prNumber: 'prNumber', prUrl: 'prUrl' },
 }));
 
+// Knowledge ingest: the enqueue and the switch's own reads are covered in
+// lib/knowledge-ingest.test.ts and lib/knowledge-ingest-switch.test.ts; here,
+// what the route asks of them.
+const mockEnqueueFullIngestJob = mock(async (_p: any) => 'job-1' as string | null);
+mock.module('@/lib/knowledge-ingest', () => ({ enqueueFullIngestJob: mockEnqueueFullIngestJob }));
+let ingestEnabled = true;
+const mockIsKnowledgeIngestEnabled = mock(async (_id: string) => ingestEnabled);
+const mockLogIngestSkip = mock((_site: string, _ctx: any) => {});
+const mockPurge = mock(async (_id: string) => 12);
+mock.module('@/lib/knowledge-ingest-switch', () => ({
+  isKnowledgeIngestEnabled: mockIsKnowledgeIngestEnabled,
+  logIngestSkip: mockLogIngestSkip,
+  purgeWorkspaceRepoKnowledge: mockPurge,
+}));
+
 const originalNodeEnv = process.env.NODE_ENV;
 
 import { GET, PATCH, DELETE } from './route';
@@ -296,6 +311,81 @@ describe('PATCH /api/workspaces/[id]', () => {
 
     expect(res.status).toBe(404);
     expect(capturedUpdates).not.toHaveProperty('connectorAdvisoryMode');
+  });
+
+  // ── Knowledge ingest switch ────────────────────────────────────────────────
+
+  describe('knowledgeIngest / purgeKnowledge', () => {
+    beforeEach(() => {
+      ingestEnabled = true;
+      mockEnqueueFullIngestJob.mockClear();
+      mockIsKnowledgeIngestEnabled.mockClear();
+      mockLogIngestSkip.mockClear();
+      mockPurge.mockClear();
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    });
+
+    it('turns the switch off without purging anything', async () => {
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { knowledgeIngest: false } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates).toHaveProperty('knowledgeIngest', false);
+      expect(mockPurge).not.toHaveBeenCalled();
+      expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+      expect((await res.json()).purgedChunks).toBeUndefined();
+    });
+
+    it('purgeKnowledge: true deletes the indexed content and reports the count', async () => {
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { purgeKnowledge: true } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockPurge).toHaveBeenCalledWith('ws-1');
+      expect((await res.json()).purgedChunks).toBe(12);
+    });
+
+    it('refuses a non-boolean knowledgeIngest and a purgeKnowledge other than true', async () => {
+      for (const body of [{ knowledgeIngest: 'false' }, { knowledgeIngest: 0 }, { purgeKnowledge: 'yes' }, { purgeKnowledge: false }]) {
+        capturedUpdates = {};
+        const res = await PATCH(createMockRequest({ method: 'PATCH', body }), { params: mockParams });
+        expect(res.status).toBe(400);
+        expect(capturedUpdates).not.toHaveProperty('knowledgeIngest');
+      }
+      expect(mockPurge).not.toHaveBeenCalled();
+    });
+
+    it('a repo change enqueues nothing while the switch is off', async () => {
+      ingestEnabled = false;
+      mockWorkspacesFindFirst.mockResolvedValue({ repo: 'org/old', knowledgeIngest: false });
+      const res = await PATCH(
+        createMockRequest({ method: 'PATCH', body: { repoUrl: 'https://github.com/org/new-repo' } }),
+        { params: mockParams },
+      );
+      expect(res.status).toBe(200);
+      expect(mockIsKnowledgeIngestEnabled).toHaveBeenCalledWith('ws-1');
+      expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+      expect(mockLogIngestSkip).toHaveBeenCalledWith('repo_change', { workspaceId: 'ws-1', repo: 'org/new-repo' });
+    });
+
+    it('default on: a repo change still enqueues a repo-link full ingest', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ repo: 'org/old', knowledgeIngest: true });
+      await PATCH(
+        createMockRequest({ method: 'PATCH', body: { repoUrl: 'https://github.com/org/new-repo' } }),
+        { params: mockParams },
+      );
+      expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith({ workspaceId: 'ws-1', repo: 'org/new-repo', trigger: 'repo_link' });
+    });
+
+    it('turning the switch back on queues a full ingest of the linked repo', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ repo: 'org/repo', knowledgeIngest: false });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { knowledgeIngest: true } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates).toHaveProperty('knowledgeIngest', true);
+      expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith({ workspaceId: 'ws-1', repo: 'org/repo', trigger: 'repo_link' });
+    });
+
+    it('re-sending true on an already-on workspace queues nothing', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ repo: 'org/repo', knowledgeIngest: true });
+      await PATCH(createMockRequest({ method: 'PATCH', body: { knowledgeIngest: true } }), { params: mockParams });
+      expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+    });
   });
 
   it('updates workspace repo via repoUrl field', async () => {
@@ -985,6 +1075,8 @@ describe('PATCH /api/workspaces/[id] — privilege gates', () => {
     ['connectorAdvisoryMode', { connectorAdvisoryMode: true }],
     ['webhookConfig', { webhookConfig: { url: 'https://runner.example/dispatch', token: 't', enabled: true } }],
     ['webhookConfig (clear)', { webhookConfig: null }],
+    ['knowledgeIngest', { knowledgeIngest: false }],
+    ['purgeKnowledge', { purgeKnowledge: true }],
   ];
 
   let updateCalled = false;

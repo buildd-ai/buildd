@@ -73,6 +73,17 @@ mock.module('@buildd/core/knowledge-store', () => ({
   },
 }));
 
+let ingestEnabled = true;
+let skippedClosed: string[] = [];
+mock.module('@/lib/knowledge-ingest-switch', () => ({
+  INGEST_DISABLED: 'ingest_disabled',
+  isKnowledgeIngestEnabled: async () => ingestEnabled,
+  closeIngestJobAsSkipped: async (job: { id: string }) => {
+    skippedClosed.push(job.id);
+    return true;
+  },
+}));
+
 import { POST } from './route';
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -100,6 +111,19 @@ describe('POST /api/knowledge/ingest-jobs/[id]/files', () => {
     updateCalls = [];
     redisUp = false;
     redisKeys.clear();
+    ingestEnabled = true;
+    skippedClosed = [];
+  });
+
+  it('returns 409 ingest_disabled and embeds nothing when the workspace switched ingest off', async () => {
+    ingestEnabled = false;
+    const res = await POST(createRequest({ files: [{ path: 'src/a.ts', content: 'x' }] }), params());
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe('ingest_disabled');
+    expect(upsertCalls).toHaveLength(0);
+    expect(skippedClosed).toEqual([JOB_ID]);
+    // No lease renewal for a job being closed.
+    expect(updateCalls.some(c => c.set.leaseExpiresAt)).toBe(false);
   });
 
   it('C12: renews the lease on every accepted batch (heartbeat)', async () => {

@@ -68,6 +68,8 @@ export default function NewWorkspacePage() {
 
   // Access control
   const [accessMode, setAccessMode] = useState<'open' | 'restricted'>('open');
+  // Knowledge ingest switch (workspaces.knowledge_ingest), default on.
+  const [knowledgeIngest, setKnowledgeIngest] = useState(true);
 
   // Team selection
   const [userTeams, setUserTeams] = useState<{ id: string; name: string; slug: string; personalUserId: string | null }[]>([]);
@@ -181,6 +183,7 @@ export default function NewWorkspacePage() {
           const wsData: Record<string, unknown> = {
             name: repoName,
             accessMode,
+            knowledgeIngest,
             githubInstallationId: selectedInstallation,
           };
           if (selectedTeamId) wsData.teamId = selectedTeamId;
@@ -235,6 +238,7 @@ export default function NewWorkspacePage() {
         const data: Record<string, unknown> = {
           name: repo.name,
           accessMode,
+          knowledgeIngest,
           repoUrl: repo.fullName,
           githubRepo: repo,
           githubInstallationId: selectedInstallation,
@@ -291,6 +295,7 @@ export default function NewWorkspacePage() {
     const data: Record<string, unknown> = {
       name: finalName,
       accessMode,
+      knowledgeIngest,
     };
 
     if (selectedTeamId) {
@@ -633,6 +638,20 @@ export default function NewWorkspacePage() {
               </label>
             </div>
           </fieldset>
+
+          <label className={optionClass(knowledgeIngest)} data-testid="new-workspace-knowledge-ingest">
+            <input
+              type="checkbox"
+              name="knowledgeIngest"
+              checked={knowledgeIngest}
+              onChange={(e) => setKnowledgeIngest(e.target.checked)}
+              className="w-4 h-4 mt-0.5"
+            />
+            <div>
+              <span className="text-sm font-medium">Index repository content for search</span>
+              <p className="text-xs text-text-muted mt-0.5">Agents search its code, docs and pull request changes. You can change this later.</p>
+            </div>
+          </label>
 
           <div className="flex flex-wrap items-center gap-3">
             {createBlocker ? (

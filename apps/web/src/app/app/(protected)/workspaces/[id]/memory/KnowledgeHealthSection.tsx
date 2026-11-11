@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import Section from '@/components/ui/Section';
 import { TonePill } from '@/components/ui/StatePill';
 import type { StateTone } from '@/components/ui/states';
@@ -39,8 +40,19 @@ interface VoyageBudget {
   message: string | null;
 }
 
+/** The per-workspace knowledge ingest switch, beside the health. */
+interface IngestSwitch {
+  enabled: boolean;
+  skippedJobs: number;
+}
+
 interface Props {
   workspaceId: string;
+}
+
+/** A job closed because indexing was off reads as skipped, not as a failure. */
+function jobStatusLabel(job: LastIngestJob): string {
+  return job.status === 'error' && job.error === 'ingest_disabled' ? 'skipped' : job.status;
 }
 
 const FRESHNESS_META: Record<
@@ -85,6 +97,7 @@ function shortSha(sha: string | null): string {
 export default function KnowledgeHealthSection({ workspaceId }: Props) {
   const [health, setHealth] = useState<KnowledgeHealth | null>(null);
   const [budget, setBudget] = useState<VoyageBudget | null>(null);
+  const [ingest, setIngest] = useState<IngestSwitch | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,6 +112,7 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
         if (cancelled) return;
         setHealth(data.health);
         setBudget(data.voyageBudget ?? null);
+        setIngest(data.ingest ?? null);
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load. Try again.');
@@ -112,12 +126,17 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
   }, [workspaceId]);
 
   const fresh = health ? FRESHNESS_META[health.freshness] : null;
+  const ingestOff = ingest?.enabled === false;
 
   return (
     <Section
       title="Knowledge health"
       className="mt-8"
-      action={health && fresh ? <TonePill tone={fresh.tone}>{fresh.label}</TonePill> : undefined}
+      action={
+        ingestOff
+          ? <TonePill tone="q">Indexing off</TonePill>
+          : health && fresh ? <TonePill tone={fresh.tone}>{fresh.label}</TonePill> : undefined
+      }
     >
       <div data-testid="knowledge-health-panel">
       <p className="text-sm text-text-secondary mb-4">
@@ -132,7 +151,26 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
 
       {health && !loading && !error && (
         <div className="space-y-5">
-          {fresh && <p className="text-sm text-text-secondary">{fresh.blurb}</p>}
+          {ingestOff ? (
+            <div data-testid="knowledge-ingest-off" className="space-y-1">
+              <p className="text-sm text-text-secondary">
+                Indexing is off. This repository&apos;s code, docs and pull request changes are not indexed. Stored content stays until you delete it.
+              </p>
+              {ingest.skippedJobs > 0 && (
+                <p className="text-sm text-text-muted">
+                  {ingest.skippedJobs.toLocaleString()} {ingest.skippedJobs === 1 ? 'update' : 'updates'} skipped while off.
+                </p>
+              )}
+              <Link
+                href={`/app/settings/workspace/${workspaceId}#knowledge-ingest`}
+                className="inline-flex min-h-11 items-center text-sm text-text-primary underline"
+              >
+                Indexing settings
+              </Link>
+            </div>
+          ) : (
+            fresh && <p className="text-sm text-text-secondary">{fresh.blurb}</p>
+          )}
 
           {budget?.message && (
             <p
@@ -193,12 +231,12 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
                       className={
                         job.status === 'done'
                           ? 'text-status-success'
-                          : job.status === 'error'
+                          : jobStatusLabel(job) === 'error'
                             ? 'text-status-error'
                             : 'text-text-muted'
                       }
                     >
-                      {job.status}
+                      {jobStatusLabel(job)}
                     </span>
                     <span className="text-text-muted">({job.scope})</span>
                     <span className="text-text-muted">
