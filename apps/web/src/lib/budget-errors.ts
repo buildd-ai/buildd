@@ -53,8 +53,18 @@ export { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/b
  * than a usage wall or a failure of the task. Such a backend cannot take work
  * until a person re-authenticates it, so failover must not route there.
  */
+/**
+ * A runner provisioning failure (`Provision failed: ...`, e.g. a private package
+ * registry refusing its token) happens before the model runs, so it can never be
+ * a model-backend credential failure.
+ */
+export function isProvisioningFailure(error: string): boolean {
+  return /^\s*(\[[^\]]*\]\s*)?provision failed:/i.test(error);
+}
+
 export function isCredentialExpiredError(error: string | null | undefined): boolean {
   if (!error) return false;
+  if (isProvisioningFailure(error)) return false;
   return /(token|credential|login|session|auth\w*)[^.\n]{0,40}\b(has |have |is |was )?(expired|revoked|invalid)\b|\b(expired|invalid|revoked)\b[^.\n]{0,30}\b(token|credential|login|api key)|invalid_grant|refresh_token_(expired|reused|invalidated)|\b401\b[^.\n]{0,40}unauthori[sz]ed|please (log ?in|sign in) again/i.test(error);
 }
 
