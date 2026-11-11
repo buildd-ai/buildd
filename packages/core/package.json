@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.397.4",
+  "version": "0.397.6",
   "private": true,
   "type": "module",
   "scripts": {

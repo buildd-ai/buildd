@@ -28,7 +28,7 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
   reapChild, withTimeout, TRACKED_BRANCH, setRunnerUpdateSnapshotProvider, type RunnerUpdateSnapshot } from './updater';
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
-import { initUpdateDrain, getUpdateDrain, planDrain, resumingSnapshot } from './update-drain';
+import { initUpdateDrain, getUpdateDrain, planDrain, pollAfterBootRelease, resumingSnapshot } from './update-drain';
 import { initRunnerHold, currentRunnerHold, holdOriginLine } from './runner-hold';
 import { installRunnerShutdown, NO_LAUNCHER_WARNING, restartLauncherKnown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
@@ -1084,7 +1084,9 @@ async function setLatestCommit(sha: string) {
     // runs before its first await, so an update found here halts claims
     // synchronously), then lift the boot hold.
     void updateTick();
-    updateDrain.releaseBootHold(updateState.updateAvailable ? 'an update is waiting' : 'version known, no update waiting');
+    const released = updateDrain.releaseBootHold(updateState.updateAvailable ? 'an update is waiting' : 'version known, no update waiting');
+    // The startup poll ran while held and returned nothing: poll once now.
+    void pollAfterBootRelease(released, updateState.updateAvailable || updateDrain.claimsHalted(), workerManager ? () => workerManager!.claimPendingTasks() : null);
   }
 }
 
