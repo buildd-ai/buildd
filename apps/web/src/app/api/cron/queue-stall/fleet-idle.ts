@@ -106,6 +106,27 @@ const MAX_PENDING_SCAN = 500;
 /** Bound on the per-account last-start probes a single run will issue. */
 const MAX_ACCOUNTS_PER_RUN = 25;
 
+const HOUR_MS = 60 * 60_000;
+
+/**
+ * Alert cadence for one unresolved freeze. The cron runs hourly and the default
+ * dedupe window is 1h, so the slot expired right as the next tick arrived and
+ * the same condition paged every hour. First alert pages once per 6h; a freeze
+ * past 6h idle escalates under its own key (critical, once per 24h) so a
+ * long-running one is still louder, not silent. Recovery is silent: the alarm
+ * simply stops when a worker starts.
+ */
+export function fleetIdleAlertPolicy(accountId: string, idleMinutes: number | null): {
+  dedupeKey: string;
+  throttleMs: number;
+  severity: 'error' | 'critical';
+} {
+  const escalated = idleMinutes === null || idleMinutes >= 6 * 60;
+  return escalated
+    ? { dedupeKey: `fleet-idle:${accountId}:escalated`, throttleMs: 24 * HOUR_MS, severity: 'critical' }
+    : { dedupeKey: `fleet-idle:${accountId}`, throttleMs: 6 * HOUR_MS, severity: 'error' };
+}
+
 interface FleetIdleFinding {
   accountId: string;
   /** Claimable pending tasks this account could have started and did not. */
@@ -458,9 +479,11 @@ export async function detectFleetIdle(now: Date = new Date()): Promise<FleetIdle
     // so the window has to live in reportOps' atomic per-key slot. The key is
     // stable per account: a freeze that lasts all night pages once per window,
     // and two accounts freezing are two alarms.
+    const policy = fleetIdleAlertPolicy(accountId, idleMinutes);
     await reportOps({
       source: 'fleet-idle',
-      severity: 'error',
+      severity: policy.severity,
+      throttleMs: policy.throttleMs,
       // This detector exists specifically because an outage ran a full night
       // with everything else reading healthy — it must not depend on the
       // OPS_ALERTS_ENABLED opt-in flag being remembered in every environment.
@@ -478,7 +501,7 @@ export async function detectFleetIdle(now: Date = new Date()): Promise<FleetIdle
         `while claimable work waits${workspaceLabel ? ` (${workspaceLabel})` : ''}. ` +
         `The runner is up and refusing to claim — check its claim loop (circuit breaker, paused ` +
         `context, quota-reset parsing), not the task gates. The gate pass reports per-task blocks.`,
-      dedupeKey: `fleet-idle:${accountId}`,
+      dedupeKey: policy.dedupeKey,
     });
   }
 

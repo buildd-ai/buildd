@@ -63,3 +63,17 @@ describe('fleet-idle spare capacity', () => {
     expect(heartbeatHasSpareCapacity({ localUiUrl: 'headless://container/once/t1', activeWorkerCount: 0, maxConcurrentWorkers: 1 })).toBe(false);
   });
 });
+
+describe('fleetIdleAlertPolicy', () => {
+  it('pages at most once per 6h for a fresh freeze, then escalates on its own key', async () => {
+    const { fleetIdleAlertPolicy } = await import('./fleet-idle');
+    const first = fleetIdleAlertPolicy('a1', 50);
+    expect(first.throttleMs).toBeGreaterThan(60 * 60_000);
+    expect(first.severity).toBe('error');
+    const esc = fleetIdleAlertPolicy('a1', 400);
+    expect(esc.dedupeKey).not.toBe(first.dedupeKey);
+    expect(esc.severity).toBe('critical');
+    expect(fleetIdleAlertPolicy('a1', null).dedupeKey).toBe(esc.dedupeKey);
+    expect(fleetIdleAlertPolicy('a2', 50).dedupeKey).not.toBe(first.dedupeKey);
+  });
+});

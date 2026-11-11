@@ -99,3 +99,17 @@ describe('reportOps', () => {
     expect(fetchCalls.length).toBe(0);
   });
 });
+
+describe('reportOps throttleMs option', () => {
+  it('still sends on a won slot with a custom window', async () => {
+    process.env.OPS_ALERTS_ENABLED = '1';
+    process.env.PUSHOVER_USER = 'u';
+    process.env.PUSHOVER_TOKEN_ALERT = 't';
+    installDbMock();
+    dbState.returning = () => Promise.resolve([{ key: 'ops:abc' }]);
+    mockFetch();
+    expect(await reportOps({ source: 's', message: 'm', throttleMs: 6 * 3600_000 })).toBe(true);
+    globalThis.fetch = origFetch;
+    delete process.env.OPS_ALERTS_ENABLED;
+  });
+});
