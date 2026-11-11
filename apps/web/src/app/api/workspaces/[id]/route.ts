@@ -8,8 +8,9 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { roleHas } from '@/lib/permissions';
-import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
-import { isKnowledgeIngestEnabled, logIngestSkip, purgeWorkspaceRepoKnowledge } from '@/lib/knowledge-ingest-switch';
+import {
+  enqueueFullIngestJob, isKnowledgeIngestEnabled, logIngestSkip, purgeWorkspaceRepoKnowledge,
+} from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { applyReviewByRiskWrite } from '@/lib/review-by-risk-config';

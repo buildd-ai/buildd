@@ -74,12 +74,12 @@ mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
 // lib/knowledge-ingest.test.ts and lib/knowledge-ingest-switch.test.ts; here,
 // what the route asks of them.
 const mockEnqueueFullIngestJob = mock(async (_p: any) => 'job-1' as string | null);
-mock.module('@/lib/knowledge-ingest', () => ({ enqueueFullIngestJob: mockEnqueueFullIngestJob }));
 let ingestEnabled = true;
 const mockIsKnowledgeIngestEnabled = mock(async (_id: string) => ingestEnabled);
 const mockLogIngestSkip = mock((_site: string, _ctx: any) => {});
 const mockPurge = mock(async (_id: string) => 12);
-mock.module('@/lib/knowledge-ingest-switch', () => ({
+mock.module('@/lib/knowledge-ingest', () => ({
+  enqueueFullIngestJob: mockEnqueueFullIngestJob,
   isKnowledgeIngestEnabled: mockIsKnowledgeIngestEnabled,
   logIngestSkip: mockLogIngestSkip,
   purgeWorkspaceRepoKnowledge: mockPurge,

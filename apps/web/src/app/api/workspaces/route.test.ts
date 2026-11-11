@@ -73,9 +73,8 @@ mock.module('@buildd/core/db/schema', () => ({
 // Repo-link ingest: the enqueue itself (and its switch check) is covered in
 // lib/knowledge-ingest.test.ts; here, whether the route asks for one.
 const mockEnqueueFullIngestJob = mock(async (_p: any) => 'job-1' as string | null);
-mock.module('@/lib/knowledge-ingest', () => ({ enqueueFullIngestJob: mockEnqueueFullIngestJob }));
 const mockLogIngestSkip = mock((_site: string, _ctx: any) => {});
-mock.module('@/lib/knowledge-ingest-switch', () => ({ logIngestSkip: mockLogIngestSkip }));
+mock.module('@/lib/knowledge-ingest', () => ({ enqueueFullIngestJob: mockEnqueueFullIngestJob, logIngestSkip: mockLogIngestSkip }));
 
 // Override NODE_ENV for tests
 const originalNodeEnv = process.env.NODE_ENV;

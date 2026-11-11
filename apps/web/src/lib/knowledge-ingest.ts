@@ -43,6 +43,11 @@ import {
   logIngestSkip,
 } from '@/lib/knowledge-ingest-switch';
 
+// The switch, as the knowledge module's entry point for workspace routes (core
+// reaches this module only through knowledge-ingest.ts; see
+// scripts/module-boundaries.test.ts).
+export { isKnowledgeIngestEnabled, logIngestSkip, purgeWorkspaceRepoKnowledge } from '@/lib/knowledge-ingest-switch';
+
 type IngestJob = typeof knowledgeIngestJobs.$inferSelect;
 
 export const MAX_DIFF_FILES = 100;

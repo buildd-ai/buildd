@@ -51,8 +51,8 @@ interface Props {
 }
 
 /** A job closed because indexing was off reads as skipped, not as a failure. */
-function jobStatusLabel(job: LastIngestJob): string {
-  return job.status === 'error' && job.error === 'ingest_disabled' ? 'skipped' : job.status;
+function isSkippedJob(job: LastIngestJob): boolean {
+  return job.status === 'error' && job.error === 'ingest_disabled';
 }
 
 const FRESHNESS_META: Record<
@@ -231,12 +231,12 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
                       className={
                         job.status === 'done'
                           ? 'text-status-success'
-                          : jobStatusLabel(job) === 'error'
+                          : job.status === 'error' && !isSkippedJob(job)
                             ? 'text-status-error'
                             : 'text-text-muted'
                       }
                     >
-                      {jobStatusLabel(job)}
+                      {isSkippedJob(job) ? 'skipped' : job.status}
                     </span>
                     <span className="text-text-muted">({job.scope})</span>
                     <span className="text-text-muted">

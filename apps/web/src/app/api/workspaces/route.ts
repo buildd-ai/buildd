@@ -9,8 +9,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/ta
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
-import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
-import { logIngestSkip } from '@/lib/knowledge-ingest-switch';
+import { enqueueFullIngestJob, logIngestSkip } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { emit } from '@/lib/core-emit';
