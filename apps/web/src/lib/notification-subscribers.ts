@@ -18,6 +18,7 @@
 import { subscriber, type AnySubscriber, type SlotFailure } from '@/lib/core-events';
 import { notifyTeam } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
+import { credentialExpiredAlert } from '@/lib/credential-expired-alert';
 import {
   recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent, prMergedEvent, prCiFailedEvent,
 } from '@/lib/subscriptions';
@@ -109,14 +110,8 @@ export const notificationSubscribers: readonly AnySubscriber[] = [
     // A failure caused by an invalid/expired agent-backend credential gets its
     // own actionable alert, so the owner re-sets it before more tasks burn.
     if (isCredentialExpiredError(e.error)) {
-      void notifyTeam(e.teamId, 'credentialExpired', {
-        title: '🔑 Agent credential expired',
-        message: 'Your Claude credential is expired or invalid — set it again under Settings, Runners.'
-          + (e.sensitive ? '' : `\nTask: ${e.title}`),
-        url: `https://buildd.dev/app/settings/runners`,
-        urlTitle: 'Open settings',
-        priority: 1,
-      });
+      const alert = credentialExpiredAlert(e.runner, e.sensitive ? '' : `Task: ${e.title}`);
+      void notifyTeam(e.teamId, 'credentialExpired', { ...alert, priority: 1 });
     }
   }),
 ];
