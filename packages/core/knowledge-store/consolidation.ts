@@ -86,7 +86,7 @@ export async function findNearDuplicates(
 
   const res = await db.execute(sql`
     WITH candidates AS (
-      SELECT id, source_id, namespace, embedding, content, source_ts, hit_count
+      SELECT id, source_id, namespace, embedding, embedding_model, content, source_ts, hit_count
       FROM knowledge_chunks
       WHERE namespace IN (${nsIn})
         AND is_current = true
@@ -108,6 +108,8 @@ export async function findNearDuplicates(
     JOIN candidates b
       ON a.namespace = b.namespace
      AND a.id < b.id
+     -- Two models' vectors are not comparable (spec pluggable-knowledge-store L-7).
+     AND a.embedding_model IS NOT DISTINCT FROM b.embedding_model
     WHERE 1 - (a.embedding <=> b.embedding) > ${threshold}
     ORDER BY similarity DESC
     LIMIT ${limit}

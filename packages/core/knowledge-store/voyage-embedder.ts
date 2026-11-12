@@ -39,9 +39,10 @@ export function estimateEmbedTokens(text: string): number {
  * Group input indexes into requests that each stay under `maxTokens` and the
  * per-request text cap, preserving order. A text that alone exceeds the budget
  * still gets a request of its own (Voyage truncates an over-long input; it is
- * the batch total that gets rejected).
+ * the batch total that gets rejected). `maxTexts` caps inputs per request
+ * (default Voyage's 1000; an OpenAI-compatible server is often far lower).
  */
-export function planEmbedRequests(texts: string[], maxTokens: number): number[][] {
+export function planEmbedRequests(texts: string[], maxTokens: number, maxTexts = VOYAGE_MAX_TEXTS_PER_REQUEST): number[][] {
   const plan: number[][] = [];
   let current: number[] = [];
   let currentTokens = 0;
@@ -49,7 +50,7 @@ export function planEmbedRequests(texts: string[], maxTokens: number): number[][
     const tokens = estimateEmbedTokens(text);
     if (
       current.length > 0 &&
-      (currentTokens + tokens > maxTokens || current.length >= VOYAGE_MAX_TEXTS_PER_REQUEST)
+      (currentTokens + tokens > maxTokens || current.length >= maxTexts)
     ) {
       plan.push(current);
       current = [];
