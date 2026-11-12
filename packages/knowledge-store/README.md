@@ -1,7 +1,7 @@
 # @buildd/knowledge-store
 
 DB-agnostic hybrid retrieval engine, extracted from `@buildd/core` so apps outside
-this monorepo (such as dispatch-family) can share the engine instead of
+this monorepo (such as downstream services) can share the engine instead of
 reinventing embeddings + RRF. **Shared code, not shared data** — each consumer
 injects its own `@neondatabase/serverless` Drizzle handle and runs against its own
 database.

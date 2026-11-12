@@ -1,4 +1,4 @@
--- @buildd-ai/knowledge-store — canonical schema for consumers (buildd, memory service, cue).
+-- @buildd-ai/knowledge-store — canonical schema for consumers (external consumers).
 -- Idempotent. Statements are delimited by the drizzle statement-breakpoint marker
 -- (see drizzle migrations) so HTTP drivers can split multi-command SQL.
 -- NOTE: keep that marker token out of comments — drizzle splits the file on it.

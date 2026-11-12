@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import * as ks from '../src/index';
 
 // The runtime names @buildd-ai/knowledge-store 0.2.0 exported. Consumers
-// (dispatch-family) import these; removing or renaming one is a breaking change.
+// (external consumers) import these; removing or renaming one is a breaking change.
 const V0_2_0_RUNTIME = [
   'buildTaskCard', 'buildPrCard', 'buildArtifactCard', 'buildPlanCard', 'renderPlanText',
   'truncate', 'CARD_CONTENT_CAP', 'PgVectorStore', 'buildNamespace', 'reciprocalRankFusion',
