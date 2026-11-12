@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Knowledge: bulk ingest script for large repos with local embedding (#6080)
+- Knowledge: per-workspace knowledge ingest off switch (#6078)
+- Knowledge store: `@buildd/knowledge-store` is published from the monorepo (#6079)
+- Knowledge store: pluggable OpenAI-compatible embedder with model isolation (#6077)
+
+### Fixed
+
+- Notify: the credential-expired alert names the backend and runner and points at where the login lives (#6076)
+- Provisioning failures are never reported as model credential-expired errors (#6075)
+
 ## [0.392.0] - 2026-11-05
 
 ### Added
