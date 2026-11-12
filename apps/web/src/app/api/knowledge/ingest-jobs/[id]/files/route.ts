@@ -20,6 +20,7 @@ import { isUuid } from '@/lib/uuid';
 import { dbLeaseUntil, liveness } from '@/lib/liveness';
 import { ingestFileBatch } from '@/lib/knowledge-ingest-batch';
 import { sqlWhereFn } from '@buildd/core/db/relational-sql';
+import { isKnowledgeIngestEnabled, closeIngestJobAsSkipped, INGEST_DISABLED } from '@/lib/knowledge-ingest-switch';
 
 // Stay under serverless request-body limits (~4.5 MB) with JSON overhead room.
 export const MAX_BATCH_TOTAL_BYTES = 4 * 1024 * 1024;
@@ -93,6 +94,12 @@ export async function POST(
   }
   if (job.status !== 'running') {
     return NextResponse.json({ error: `Job is ${job.status}, expected running` }, { status: 409 });
+  }
+  // Switched off while the job ran: close it and refuse the batch, before any
+  // embedding. The runner stops on the 409.
+  if (!(await isKnowledgeIngestEnabled(job.workspaceId))) {
+    await closeIngestJobAsSkipped(job, 'files');
+    return NextResponse.json({ error: INGEST_DISABLED }, { status: 409 });
   }
 
   // Heartbeat: an accepted batch is proof of forward progress, so push the lease

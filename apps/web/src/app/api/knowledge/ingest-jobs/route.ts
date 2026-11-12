@@ -13,7 +13,8 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
  *
  * Response shapes: 201 + job (enqueued), 200 + reason=already_queued (a job is
  * genuinely in flight), 409 + reason=stalled (a job holds the per-workspace slot
- * and nothing is moving it), 422 + reason=no_github_repo.
+ * and nothing is moving it), 409 + error=ingest_disabled (the workspace's
+ * knowledge ingest switch is off), 422 + reason=no_github_repo.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -88,6 +89,13 @@ export async function POST(req: NextRequest) {
   // A blocking job that nothing is moving is NOT success: it used to answer 200
   // + already_queued forever, so a caller could never tell "in flight" from
   // "wedged since last Tuesday". 409 + reason=stalled makes the wedge visible.
+  // The workspace's knowledge ingest switch is off: refused, never queued.
+  if (outcome.status === 'disabled') {
+    return NextResponse.json(
+      { error: 'ingest_disabled', job: null, reason: 'ingest_disabled' },
+      { status: 409 },
+    );
+  }
   if (outcome.status === 'already_queued') {
     return NextResponse.json({ job: null, reason: 'already_queued', activeJob: outcome.job });
   }

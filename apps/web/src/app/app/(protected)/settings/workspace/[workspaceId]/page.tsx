@@ -32,6 +32,7 @@ import { ReadinessCard } from './ReadinessCard';
 import { RepoAccessCard } from './RepoAccessCard';
 import { GitConfigForm } from './GitConfigForm';
 import MemberRepoAccessSection from './MemberRepoAccessSection';
+import KnowledgeIngestSection from './KnowledgeIngestSection';
 import MergePolicyEditor from './MergePolicyEditor';
 import BranchStrategySection from './BranchStrategySection';
 import CopyReviewSection from './CopyReviewSection';
@@ -233,6 +234,11 @@ export default async function WorkspaceSettingsPage({
             repoFullName={repoFacts?.repoFullName ?? null}
             canManage={canManageSettings}
             viewer={viewerRepoAccess}
+          />
+          <KnowledgeIngestSection
+            workspaceId={workspace.id}
+            initial={workspace.knowledgeIngest !== false}
+            canEdit={canManageSettings}
           />
         </div>
       </Section>
