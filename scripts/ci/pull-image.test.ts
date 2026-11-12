@@ -110,6 +110,24 @@ describe('workflows use the GHCR mirror', () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
+  // Installing pgvector from PGDG can upgrade postgresql-17 under the running
+  // server; its next plpgsql load then fails with `undefined symbol`.
+  test('DB architecture restarts Postgres after the pgvector install and checks the server matches its binaries', () => {
+    const step = build.jobs['db-architecture-shards'].steps.find((s: any) => s.name === 'Start Postgres (pgvector)');
+    const run: string = step.run;
+    const install = run.indexOf('apt-get install -y -qq postgresql-17-pgvector');
+    const restart = run.indexOf('docker restart postgres');
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(restart).toBeGreaterThan(install);
+    // Readiness is awaited over TCP before the restart, so initdb is never interrupted.
+    expect(run.slice(install, restart)).toContain('pg_isready -h 127.0.0.1');
+    const after = run.slice(restart);
+    expect(after).toContain('SHOW server_version');
+    expect(after).toContain('postgres --version');
+    expect(after).toContain('PERFORM 1');
+    expect(after.indexOf('CREATE EXTENSION IF NOT EXISTS vector')).toBeGreaterThan(after.indexOf('PERFORM 1'));
+  });
+
   test('installer smoke container jobs use the GHCR image with GITHUB_TOKEN credentials', () => {
     for (const id of ['fresh-install', 'fresh-install-client']) {
       const job = smoke.jobs[id];
