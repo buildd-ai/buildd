@@ -1,0 +1,47 @@
+{
+  "name": "@buildd/knowledge-store",
+  "version": "0.2.0",
+  "description": "DB-agnostic hybrid (vector + lexical RRF) retrieval engine with reranking, chunking, recency decay, and an entity knowledge graph. Backed by Postgres + pgvector; inject any @neondatabase/serverless Drizzle handle.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema.sql": "./schema.sql",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "schema.sql",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && bun run scripts/run-unit-tests.ts packages/knowledge-store/",
+    "prepublishOnly": "bun run build"
+  },
+  "peerDependencies": {
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/buildd-ai/buildd.git",
+    "directory": "packages/knowledge-store"
+  },
+  "homepage": "https://github.com/buildd-ai/buildd/tree/dev/packages/knowledge-store#readme"
+}

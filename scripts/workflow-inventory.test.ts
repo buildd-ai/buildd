@@ -41,6 +41,7 @@ const INVENTORY: Record<string, string> = {
   'release-refresh.yml': 'release',
   'release-tag.yml': 'release',
   'publish-ai-kit.yml': 'release',
+  'publish-knowledge-store.yml': 'release',
   'publish-runner-image.yml': 'release',
   'verify-unit-tests.yml': 'manual',
 };
