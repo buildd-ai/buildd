@@ -112,6 +112,13 @@ export interface FallbackDeps {
   ingestBatch: (workspaceId: string, files: IngestBatchFile[]) => Promise<IngestBatchResult>;
   /** Prune chunks not refreshed since the run began; returns the count. */
   sweep: (workspaceId: string, since: Date) => Promise<number>;
+  /**
+   * The knowledge ingest switch: of these workspaces, the ones with it off.
+   * Their jobs are closed with `skipDisabled` instead of run. Absent = all on.
+   */
+  ingestDisabledAmong?: (workspaceIds: string[]) => Promise<Set<string>>;
+  /** Close a disabled workspace's job as skipped; true when this call closed it. */
+  skipDisabled?: (job: FallbackJob) => Promise<boolean>;
   log?: (msg: string) => void;
 }
 
@@ -130,6 +137,8 @@ export interface FallbackTickResult {
   errors: Array<{ id: string; error: string }>;
   filesIngested: number;
   raceLost: number;
+  /** Jobs closed because their workspace has knowledge ingest switched off. */
+  skippedDisabled: string[];
 }
 
 /** An error retrying cannot fix: the job is failed at once. */
@@ -246,6 +255,7 @@ export async function runFullIngestFallbackTick(
     errors: [],
     filesIngested: 0,
     raceLost: 0,
+    skippedDisabled: [],
   };
 
   let candidates: FallbackJob[];
@@ -265,7 +275,27 @@ export async function runFullIngestFallbackTick(
     });
   out.considered = eligible.length;
 
+  // A disabled workspace's job is closed, never read through GitHub or embedded.
+  let disabled = new Set<string>();
+  if (deps.ingestDisabledAmong && eligible.length > 0) {
+    try {
+      disabled = await deps.ingestDisabledAmong(eligible.map(j => j.workspaceId));
+    } catch (err) {
+      // Cannot read the switch: run nothing this tick rather than risk ingesting.
+      console.error('[knowledge-ingest:fallback] reading the ingest switch failed:', err);
+      return out;
+    }
+  }
+
   for (const candidate of eligible) {
+    if (disabled.has(candidate.workspaceId)) {
+      const closed = await (deps.skipDisabled?.(candidate) ?? Promise.resolve(false)).catch(err => {
+        console.error(`[knowledge-ingest:fallback] could not close disabled job ${candidate.id}:`, err);
+        return false;
+      });
+      if (closed) out.skippedDisabled.push(candidate.id);
+      continue;
+    }
     if (outOfTime()) break;
     const claimAt = now();
     const prior = readProgress(candidate);
@@ -478,9 +508,10 @@ async function installationIdForRepo(repo: string, workspaceId: string): Promise
 
 /** Production dependencies. Lazy imports keep this module light to load. */
 export async function defaultFallbackDeps(): Promise<FallbackDeps> {
-  const [{ githubApi }, { ingestFileBatch, sweepUnrefreshedFileChunks }] = await Promise.all([
+  const [{ githubApi }, { ingestFileBatch, sweepUnrefreshedFileChunks }, ingestSwitch] = await Promise.all([
     import('@/lib/github'),
     import('@/lib/knowledge-ingest-batch'),
+    import('@/lib/knowledge-ingest-switch'),
   ]);
   return {
     store: drizzleFallbackStore,
@@ -488,5 +519,7 @@ export async function defaultFallbackDeps(): Promise<FallbackDeps> {
     installationIdForRepo,
     ingestBatch: (workspaceId, files) => ingestFileBatch(workspaceId, files),
     sweep: sweepUnrefreshedFileChunks,
+    ingestDisabledAmong: ingestSwitch.knowledgeIngestDisabledAmong,
+    skipDisabled: job => ingestSwitch.closeIngestJobAsSkipped(job, 'fallback'),
   };
 }

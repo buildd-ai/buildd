@@ -276,6 +276,7 @@
     "./knowledge-store/edge-builder": "./knowledge-store/edge-builder.ts",
     "./knowledge-store/entity-resolver": "./knowledge-store/entity-resolver.ts",
     "./knowledge-store/types": "./knowledge-store/types.ts",
+    "./knowledge-store/embedding-config": "./knowledge-store/embedding-config.ts",
     "./knowledge-store/ingest-filter": "./knowledge-store/ingest-filter.ts",
     "./knowledge-store/entity-catalog": "./knowledge-store/entity-catalog.ts",
     "./knowledge-store/pr-diff-chunker": "./knowledge-store/pr-diff-chunker.ts",

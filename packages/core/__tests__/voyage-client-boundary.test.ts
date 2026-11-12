@@ -219,6 +219,9 @@ describe('one door', () => {
     expect(out.trim().split('\n').sort()).toEqual([
       'packages/core/knowledge-store/reranker.ts',
       'packages/core/knowledge-store/voyage-embedder.ts',
+      // The published package is a frozen 0.2.0 copy with its own clients.
+      'packages/knowledge-store/src/reranker.ts',
+      'packages/knowledge-store/src/voyage-embedder.ts',
     ]);
   });
 });

@@ -1293,6 +1293,11 @@ export const workspaces = pgTable('workspaces', {
   // Data sensitivity class — controls knowledge ingestion, transcript retention, and redaction.
   // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
   dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
+  // Per-workspace knowledge ingest switch. false = this workspace's repo content
+  // (code / docs / PR diffs) is never chunked or embedded: no ingest job is
+  // enqueued, claimed or run for it (apps/web/src/lib/knowledge-ingest-switch.ts).
+  // Turning it off never deletes stored chunks; PATCH purgeKnowledge does that.
+  knowledgeIngest: boolean('knowledge_ingest').default(true).notNull(),
   // Which transport delivers this workspace's dispatch outbox rows.
   // 'dispatch' (default): handed off to the Dispatch Worker; the in-app drain
   // only takes rows the Worker never acked, and nothing is published at all

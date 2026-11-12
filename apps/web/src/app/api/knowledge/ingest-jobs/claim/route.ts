@@ -23,6 +23,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { reclaimStaleIngestJobs, FULL_LEASE_MS } from '@/lib/knowledge-ingest-lease';
+import { knowledgeIngestDisabledAmong, closeIngestJobAsSkipped } from '@/lib/knowledge-ingest-switch';
 
 const MAX_OFFERED_REPOS = 200;
 const MAX_CANDIDATES = 50;
@@ -67,9 +68,19 @@ export async function POST(req: NextRequest) {
     .orderBy(asc(knowledgeIngestJobs.createdAt))
     .limit(MAX_CANDIDATES);
 
-  for (const candidate of candidates) {
-    if (!repoSet.has(candidate.repo.toLowerCase())) continue;
-    if (!accessible.has(candidate.workspaceId)) continue;
+  const offered = candidates.filter(
+    c => repoSet.has(c.repo.toLowerCase()) && accessible.has(c.workspaceId),
+  );
+  // Never hand out a job of a workspace whose knowledge ingest switch is off:
+  // close it as skipped instead, so it stops holding the full-ingest slot.
+  const disabled = await knowledgeIngestDisabledAmong(offered.map(c => c.workspaceId));
+  const skippedDisabled: string[] = [];
+
+  for (const candidate of offered) {
+    if (disabled.has(candidate.workspaceId)) {
+      if (await closeIngestJobAsSkipped(candidate, 'claim')) skippedDisabled.push(candidate.id);
+      continue;
+    }
 
     const now = new Date();
     const claimed = await db
@@ -84,12 +95,17 @@ export async function POST(req: NextRequest) {
       .where(and(eq(knowledgeIngestJobs.id, candidate.id), eq(knowledgeIngestJobs.status, 'queued')))
       .returning();
     if (claimed.length > 0) {
-      return NextResponse.json({ job: claimed[0], ...reclaimReport(reclaim) });
+      return NextResponse.json({ job: claimed[0], ...reclaimReport(reclaim), ...skipReport(skippedDisabled) });
     }
     // Lost the race for this job — try the next candidate.
   }
 
-  return NextResponse.json({ job: null, ...reclaimReport(reclaim) });
+  return NextResponse.json({ job: null, ...reclaimReport(reclaim), ...skipReport(skippedDisabled) });
+}
+
+/** Jobs this poll closed because their workspace has knowledge ingest off. */
+function skipReport(skippedDisabled: string[]) {
+  return skippedDisabled.length > 0 ? { skippedDisabled } : {};
 }
 
 /**

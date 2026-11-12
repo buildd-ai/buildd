@@ -23,11 +23,15 @@ ingest job (runner-claimed) ─────────────────�
 - **`VoyageEmbedder`** — injectable via the `Embedder` interface. Selects the
   model per-corpus (see table below). Returns `null` from factory functions when
   `VOYAGE_API_KEY` is unset.
+- **`OpenAICompatibleEmbedder`** — the alternative: any OpenAI-compatible
+  `/embeddings` endpoint (OpenRouter, a gateway, a local TEI/vLLM/Ollama
+  server). See "Embedding endpoint" below.
 
 ### Per-corpus embedder selection
 
-`PgVectorStore._selectEmbedder(corpus)` picks the model at upsert and query time
-so stored vectors and query vectors always match:
+`getEmbedderForCorpus(corpus, cfg)` (`embedding-config.ts`) picks the embedder
+at upsert and query time so stored vectors and query vectors always match.
+Under the default (Voyage) configuration:
 
 | Corpus | Embedder | Use case |
 |--------|----------|----------|
@@ -35,7 +39,56 @@ so stored vectors and query vectors always match:
 | `memory`, `task`, `pr`, `plan`, `artifact`, `session` | `voyage-4-large` | General semantic similarity |
 
 Both models output **1024-dim** vectors — a single HNSW index serves all corpora;
-namespace filtering (`{workspaceId}:{corpus}`) provides isolation.
+namespace filtering (`{workspaceId}:{corpus}`) provides isolation. Every vector
+read also filters `embedding_model` to the query embedder's model, so rows from
+another model are found only by the lexical leg.
+
+### Embedding endpoint (OpenAI-compatible)
+
+Set `EMBEDDING_PROVIDER=openai_compat` to embed every corpus, for both writes
+and queries, with one OpenAI-compatible endpoint instead of Voyage. Rerank
+stays Voyage (and is skipped without `VOYAGE_API_KEY`). Contract:
+`docs/specs/pluggable-knowledge-store.md` section 7a.
+
+| Env | Meaning |
+|-----|---------|
+| `EMBEDDING_PROVIDER` | `voyage` (default, also when unset) or `openai_compat` |
+| `EMBEDDING_BASE_URL` | e.g. `https://openrouter.ai/api/v1`; `/embeddings` is appended |
+| `EMBEDDING_MODEL` | the model id, stored as `embedding_model` on each row |
+| `EMBEDDING_API_KEY` | optional; sent as `Authorization: Bearer` |
+| `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_DOC_PREFIX` | prepended to queries / documents (Qwen3-Embedding wants an instruction on queries) |
+| `EMBEDDING_MATRYOSHKA` | `true` lets a longer vector be truncated to 1024 and re-normalised; otherwise anything but 1024 is refused |
+| `EMBEDDING_PRICE_PER_1M_TOKENS` | USD per 1M tokens for the usage estimate, or `unmetered` (a free local model) |
+| `EMBEDDING_TIMEOUT_MS`, `EMBEDDING_MAX_BATCH` | optional; defaults 5 s per query / 30 s per document batch, 32 inputs per request |
+
+A team or workspace can override this with a `secrets` row of purpose
+`embedding_endpoint` (`POST /api/secrets`, owner/admin, team- or
+workspace-wide), whose value is JSON: `{"baseUrl","model","apiKey"?,
+"queryPrefix"?,"docPrefix"?,"matryoshka"?,"price"?}`, or `{"provider":"voyage"}`
+to stay on Voyage. The workspace row wins over the team row.
+
+The store column is a fixed `vector(1024)`. The request asks for
+`dimensions: 1024`; a model that cannot return 1024 is refused with a logged
+error and its chunks are stored lexical-only.
+
+If the endpoint is down or slow, `embed` returns null and the write or query
+goes lexical-only, as with a spend-guard denial; ingest and webhooks never fail
+on it. Calls go through the spend guard and show up in `get_embedding_usage`
+with `provider: openai_compat` (see `docs/specs/voyage-spend-guard.md` R-10).
+
+**Switching models means purge and re-embed.** Vectors from two models are not
+comparable. After a switch, old rows still match lexically but not by vector
+until the namespace is re-ingested.
+
+**Where the endpoint must be reachable.** The query embedding runs wherever the
+query runs (Vercel, for the API and MCP), and must use the ingest model.
+- **OpenRouter (recommended default):** works from Vercel with env only. One
+  URL serves write and query.
+- **Local model, runner-side ingest:** point the runner's env at the model over
+  Tailscale. Queries on Vercel still need that same model, so also expose it
+  with Tailscale Funnel or another tunnel and use that public URL as
+  `EMBEDDING_BASE_URL` on Vercel. A model reachable only on the tailnet leaves
+  Vercel queries lexical-only.
 
 ### Namespace scheme
 
@@ -114,6 +167,38 @@ DATABASE_URL=... VOYAGE_API_KEY=... \
 DATABASE_URL=... VOYAGE_API_KEY=... \
   bun packages/core/scripts/ingest-knowledge.ts --corpus spec docs/
 ```
+
+### Bulk ingest (large repos, local embedding)
+
+`scripts/knowledge-bulk-ingest.ts` indexes a big checkout from the owner's PC or a
+runner, embedding through your own OpenAI-compatible endpoint rather than the
+platform Voyage key. It walks the checkout with the same filter and full-ingest
+ceilings as hosted ingest (`shouldIngestFile`, `MAX_FULL_INGEST_*`), chunks with
+`ingestFiles`, and writes chunks tagged with the endpoint's `embedding_model`.
+
+```bash
+# Preview first: file count, estimated tokens, estimated cost. Writes nothing.
+DATABASE_URL=... EMBEDDING_PROVIDER=openai_compat \
+EMBEDDING_BASE_URL=http://gpu-box.tailnet.ts.net:11434/v1 EMBEDDING_MODEL=qwen3-embedding \
+EMBEDDING_PRICE_PER_1M_TOKENS=unmetered \
+  bun scripts/knowledge-bulk-ingest.ts --workspace <workspace-id> --repo ~/src/big-repo --dry-run
+
+# Then run it (drop --dry-run).
+```
+
+The endpoint can also come from the workspace's `embedding_endpoint` secret. For a
+local Ollama/Qwen3 box reached over Tailscale, point `EMBEDDING_BASE_URL` at the
+machine's tailnet name and Ollama port (`ollama pull` the embedding model there first).
+
+- **Refuses** when the workspace would embed with Voyage (no `openai_compat` config),
+  or when its knowledge ingest switch is off. Exit code 3; nothing is written.
+- **Resumable**: progress is saved to a checkpoint file (`--checkpoint`, default
+  `.knowledge-bulk-ingest.<workspace>.json`) after every batch (`--batch`, default 20).
+  Re-run the same command after a kill. A checkpoint made with a different model is ignored.
+- **Hash-skip**: a file whose content hash matches what is stored is never re-embedded.
+- **Dry-run cost** uses the configured price; `$0` when unmetered.
+- **Speed**: a repo near the 20k-file ceiling can take hours on a single GPU. Run it
+  in a persistent session and rely on the checkpoint.
 
 ### Memory backfill
 
@@ -238,7 +323,8 @@ interface lets the memory corpus be delegated out with zero call-site changes.
 ## Operational notes
 
 - Requires the `pgvector` extension and migration `0050` (Phase 1).
-- Set `VOYAGE_API_KEY` in the environment to enable embeddings + reranking.
+- Set `VOYAGE_API_KEY` in the environment to enable embeddings + reranking, or
+  `EMBEDDING_PROVIDER=openai_compat` (above) for embeddings from another endpoint.
 - All ingestion is best-effort/idempotent; re-running is safe.
 - Ingest uses the production `DATABASE_URL` and `VOYAGE_API_KEY` — no separate
   store or Neon branch. The runner-executed path reads them from its own

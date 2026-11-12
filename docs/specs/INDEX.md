@@ -37,7 +37,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every chat turn, task claim and server inference call MUST run at or below the most restrictive applicable team, workspace, admin-member and personal tier maximum, refusing explicit requests above it with policy_denied.
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-10-15
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
-- [Voyage Spend Guard](./voyage-spend-guard.md) · @max — verified 2026-11-05
+- [Voyage Spend Guard](./voyage-spend-guard.md) · @max — verified 2026-11-11
   Every Voyage call MUST pass one guard at the client boundary that picks the team's own key or the plan's platform allowance, records the usage, and degrades to lexical-only retrieval when denied.
 
 ### integrations (6)
@@ -59,7 +59,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-10-15
   Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
-- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-11-05
+- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-11-11
   Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 - [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-10-15
   The knowledge store MUST keep every corpus in knowledge_chunks as idempotent (namespace, source_id) rows, team-scoped for memory and initiative and workspace-scoped otherwise, and retrieve them via RRF-fused Voyage vector search plus Postgres full-text search, falling back to full-text only with no embedder.
@@ -224,7 +224,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 - [Local Tool Call Trace](./local-tool-call-trace.md) · @max — verified 2026-11-08
   The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
-- [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-10-10
+- [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-11-11
   The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-15
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.

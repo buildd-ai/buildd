@@ -26,6 +26,7 @@ const UNIT_TEST_ROOTS = [
   'apps/model-policy/scripts/',
   'packages/core/',
   'packages/ai-kit/',
+  'packages/knowledge-store/',
   'packages/dispatch-contract/',
   'packages/spec-contract/',
   'packages/shared/',

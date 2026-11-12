@@ -12,7 +12,7 @@ import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { deferredReplyWork } from '@/lib/deferred-reply-work';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, workerHeartbeats, teams, tenantBudgets, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { commitShaOf, releaseCandidateFixOf, verifyCandidateFixCommit, RELEASE_CANDIDATE_FIX_COMMIT_KEY, type CandidateFixLanded } from '@/lib/candidate-fix-commit';
@@ -50,6 +50,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { isMachineLoginWallError, parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
+import { credentialExpiredAlert } from '@/lib/credential-expired-alert';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
@@ -538,13 +539,8 @@ async function recordCredentialHealthForOutcome(
       if (secretId) {
         const result = await recordCredentialAuthFailure(secretId, error);
         if (result?.becameRevoked) {
-          void notifyTeam(teamId, 'credentialExpired', {
-            title: '🔑 Credential revoked — action required',
-            message: `Backend credential (${backend ?? 'claude'}) was revoked. Sign in again under Settings, Runners.\nError: ${error.slice(0, 150)}`,
-            url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings/runners`,
-            urlTitle: 'Open settings',
-            priority: 1,
-          });
+          const alert = credentialExpiredAlert({ backend: backend === 'codex' ? 'codex' : 'claude' }, `Error: ${error.slice(0, 150)}`);
+          void notifyTeam(teamId, 'credentialExpired', { ...alert, priority: 1 });
         }
       }
     }
@@ -5034,6 +5030,28 @@ async function patchWorker(
           // A completion-policy slot overrides the report the same way: a
           // loop that ran out of attempts or a failed release is a failure.
           const isDone = status === 'completed' && !contractViolation && !slotFailure;
+          // Which runner and backend ran it, so a credential alert can say where
+          // that login lives. Only looked up for a failure.
+          let runnerInfo: { name?: string | null; backend?: 'claude' | 'codex' | null; authSource?: 'machine_token' | 'machine_login' | 'api_key' | 'none' | null } | undefined;
+          if (!isDone && !shouldAutoRetry) {
+            try {
+              const [taskBackend, runnerAccount, hb] = await Promise.all([
+                db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { backend: true } }),
+                worker.accountId ? db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, worker.accountId)), columns: { name: true } }) : null,
+                worker.accountId ? db.query.workerHeartbeats.findFirst({
+                  where: sqlWhere(eq(workerHeartbeats.accountId, worker.accountId)),
+                  orderBy: sqlOrderBy([desc(workerHeartbeats.lastHeartbeatAt)]),
+                  columns: { modelAuthSource: true, codexAuthSource: true },
+                }) : null,
+              ]);
+              const be = (taskBackend?.backend as 'claude' | 'codex' | undefined) ?? 'claude';
+              runnerInfo = {
+                name: runnerAccount?.name ?? null,
+                backend: be,
+                authSource: (be === 'codex' ? hb?.codexAuthSource : hb?.modelAuthSource) ?? null,
+              };
+            } catch { /* best effort: the alert falls back to generic wording */ }
+          }
           // Who hears about it (the team's channel, the subscriptions ledger,
           // a chat-filed mission's conversation) is the modules' business.
           await emit({
@@ -5049,6 +5067,7 @@ async function patchWorker(
             workspaceName: taskRecord.workspace?.name ?? null,
             error: error ?? null,
             failure: shouldAutoRetry ? null : slotFailure,
+            runner: runnerInfo,
           }, { isolate: (_label, fn) => runStep('notify', fn) });
         }));
       }
