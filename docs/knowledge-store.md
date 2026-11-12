@@ -168,6 +168,38 @@ DATABASE_URL=... VOYAGE_API_KEY=... \
   bun packages/core/scripts/ingest-knowledge.ts --corpus spec docs/
 ```
 
+### Bulk ingest (large repos, local embedding)
+
+`scripts/knowledge-bulk-ingest.ts` indexes a big checkout from the owner's PC or a
+runner, embedding through your own OpenAI-compatible endpoint rather than the
+platform Voyage key. It walks the checkout with the same filter and full-ingest
+ceilings as hosted ingest (`shouldIngestFile`, `MAX_FULL_INGEST_*`), chunks with
+`ingestFiles`, and writes chunks tagged with the endpoint's `embedding_model`.
+
+```bash
+# Preview first: file count, estimated tokens, estimated cost. Writes nothing.
+DATABASE_URL=... EMBEDDING_PROVIDER=openai_compat \
+EMBEDDING_BASE_URL=http://gpu-box.tailnet.ts.net:11434/v1 EMBEDDING_MODEL=qwen3-embedding \
+EMBEDDING_PRICE_PER_1M_TOKENS=unmetered \
+  bun scripts/knowledge-bulk-ingest.ts --workspace <workspace-id> --repo ~/src/big-repo --dry-run
+
+# Then run it (drop --dry-run).
+```
+
+The endpoint can also come from the workspace's `embedding_endpoint` secret. For a
+local Ollama/Qwen3 box reached over Tailscale, point `EMBEDDING_BASE_URL` at the
+machine's tailnet name and Ollama port (`ollama pull` the embedding model there first).
+
+- **Refuses** when the workspace would embed with Voyage (no `openai_compat` config),
+  or when its knowledge ingest switch is off. Exit code 3; nothing is written.
+- **Resumable**: progress is saved to a checkpoint file (`--checkpoint`, default
+  `.knowledge-bulk-ingest.<workspace>.json`) after every batch (`--batch`, default 20).
+  Re-run the same command after a kill. A checkpoint made with a different model is ignored.
+- **Hash-skip**: a file whose content hash matches what is stored is never re-embedded.
+- **Dry-run cost** uses the configured price; `$0` when unmetered.
+- **Speed**: a repo near the 20k-file ceiling can take hours on a single GPU. Run it
+  in a persistent session and rely on the checkpoint.
+
 ### Memory backfill
 
 ```bash
