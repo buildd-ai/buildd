@@ -2,12 +2,12 @@
 title: Pluggable Knowledge Store
 status: draft
 owner: max
-last_verified: 2026-10-10
+last_verified: 2026-11-11
 summary: The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 domain: knowledge
 surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/types.ts, packages/core/mcp-tools.ts, packages/core/eval/retrieval-baseline.json]
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, byo-evidence-storage]
-keywords: [turbopuffer, pgvector, index backend, dual-write, shadow read, outbox, dataClass, iterative_scan, recall@40, KNOWLEDGE_STORE]
+keywords: [turbopuffer, pgvector, embedding endpoint, openai_compat, EMBEDDING_PROVIDER, embedding_model, index backend, dual-write, shadow read, outbox, dataClass, iterative_scan, recall@40, KNOWLEDGE_STORE]
 supersedes: []
 assertions:
   - id: pg-vector-default-store
@@ -98,8 +98,9 @@ inventory" is correct and the retrieval spec is stale (row S1-S4 there).
   cheap. Cost is not the problem being solved.
 - NG3. Moving the entity graph, hit ledger, `memories`, ingest-job leases or
   ACL into a vendor index. They stay in Postgres.
-- NG4. Replacing Voyage models, changing chunking, or changing the MCP
-  `query_knowledge` contract.
+- NG4. Changing chunking, or changing the MCP `query_knowledge` contract.
+  (Replacing Voyage as the embedder is no longer a non-goal: section 7a makes
+  the embedding provider configurable. The reranker stays Voyage.)
 - NG5. Any schema, runtime or infra change in the PR that merges this spec.
 
 ---
@@ -271,6 +272,11 @@ Postgres-specific.
 - L-7 Embedding space: a vector is only comparable inside its model. Rows
   written by an earlier model (June `voyage-4-large` code/docs rows
   **[snapshot]**) MUST be purged and re-embedded, never migrated by copy.
+  Switching models (another Voyage model, or an embedding endpoint per
+  section 7a, or another model behind it) therefore means purge and re-embed.
+  Until a namespace is re-embedded its old rows are reachable only through the
+  lexical leg: every vector read filters `embedding_model` to the query
+  embedder's model (E-5).
 - L-8 Migration: backfill is resumable, namespace by namespace, and verifiable
   by count and content-hash comparison before any read cutover.
 - L-9 Rollback: switching `KNOWLEDGE_STORE` back to `pgvector` MUST restore
@@ -299,9 +305,11 @@ Postgres-specific.
 - Corpora in scope: `memory`, `code`, `docs`, `spec`, `task`, `artifact`, `pr`,
   `plan`, `session`, `initiative`, `evidence` (`Corpus` in `types.ts:34-45`;
   note the schema `$type` omits `evidence`, a type-only drift to fix in Phase 1).
-- Voyage: the pipeline selects the embedder per corpus exactly as
-  `_selectEmbedder` does today; a backend declares the dimension it stores
-  (1024) and rejects other sizes. With no `VOYAGE_API_KEY` the system keeps its
+- Voyage: under the default configuration the pipeline selects the embedder
+  per corpus exactly as before (`getEmbedderForCorpus` in
+  `embedding-config.ts`: voyage-code-3 for code/docs/spec, the store's embedder
+  otherwise); a backend declares the dimension it stores (1024) and rejects
+  other sizes. Section 7a covers a non-Voyage embedder. With no `VOYAGE_API_KEY` the system keeps its
   lexical-only mode; the quality gate (section 10) however MUST NOT run in that
   mode.
 - Graph equality: `useGraph` expansion MUST return the same neighbour set on
@@ -313,6 +321,84 @@ Postgres-specific.
 - `consolidation.ts` self-joins embeddings in SQL; it is Postgres-only until a
   `scan` primitive replaces it. It MUST be declared unsupported on an external
   primary rather than silently skipped.
+
+---
+
+## 7a. Pluggable embedding endpoint (OpenAI-compatible)
+
+The embedder is configurable; the reranker is not (it stays Voyage, and is
+skipped as today when absent). Code: `knowledge-store/embedding-config.ts`,
+`knowledge-store/openai-compatible-embedder.ts`.
+
+**Requirements**
+
+- E-1 Config. `EMBEDDING_PROVIDER` is `voyage` (the default, also when unset)
+  or `openai_compat`. `openai_compat` reads `EMBEDDING_BASE_URL`,
+  `EMBEDDING_MODEL` (both required), `EMBEDDING_API_KEY` (optional Bearer),
+  `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_DOC_PREFIX`, `EMBEDDING_MATRYOSHKA`,
+  `EMBEDDING_PRICE_PER_1M_TOKENS` (a number, or `unmetered`; `0` means
+  unmetered), and optionally `EMBEDDING_TIMEOUT_MS`, `EMBEDDING_MAX_BATCH`.
+  `openai_compat` missing a base URL or model is lexical-only, never Voyage.
+- E-2 Override. A `secrets` row of purpose `embedding_endpoint` (an encrypted
+  JSON blob: `baseUrl`, `model`, `apiKey?`, `queryPrefix?`, `docPrefix?`,
+  `matryoshka?`, `price?`, `timeoutMs?`, `maxBatch?`, or `{"provider":"voyage"}`
+  to opt a scope back onto Voyage) overrides env for a namespace. A workspace's
+  row beats its team's team-wide row; account and personal rows never apply. A
+  blob never inherits env fields, so the platform's `EMBEDDING_API_KEY` is
+  never sent to a team's URL. An invalid row or failed lookup falls back to
+  env. No new credential table (docs/credentials-architecture.md).
+- E-3 One provider for write and query. Every `PgVectorStore` read and write
+  for a namespace uses `getEmbedderForCorpus(corpus, cfg)`; under
+  `openai_compat` that is the one endpoint for every corpus. Default
+  (Voyage) behaviour is unchanged.
+- E-4 Request. `POST {baseUrl}/embeddings` with
+  `{ model, input, dimensions: 1024 }`, the query prefix on queries and the
+  document prefix on documents, batched by `planEmbedRequests` (default 32
+  inputs and about 16k estimated tokens per request).
+- E-5 Model isolation. The vector legs (`_vectorSearch` in vector and hybrid
+  mode, the `nearChunkId` seed, the near-duplicate check, reuse of stored
+  vectors and consolidation's pair join) only compare rows whose
+  `embedding_model` equals the query embedder's model. Other rows reach results
+  only through the lexical leg. A caller-supplied vector with no embedder
+  configured has no known model and is not filtered.
+- E-6 Dimensions. The column is a fixed `vector(1024)`. Fewer than 1024: a
+  clear error and no vector stored. More than 1024: truncated to 1024 and
+  L2-normalised only when `EMBEDDING_MATRYOSHKA` is on, otherwise refused
+  with a clear error. A refusal is the lexical-only path of E-8, not a throw.
+- E-7 Spend. Endpoint calls go through the spend guard's `admit`/`settle` with
+  `provider: 'openai_compat'` (docs/specs/voyage-spend-guard.md R-10). They are
+  never capped by a Voyage allowance; they are always traced and attributed,
+  as key source `endpoint` (priced at the configured price) or `unmetered`.
+- E-8 Failure. An endpoint that is down, times out (5 s for a query, 30 s for
+  a document batch, by default), errors or returns the wrong shape makes
+  `embed` return null: the write stores lexical-only rows without a file hash
+  (so the next ingest retries them) and the query runs lexical-only. It never
+  throws into ingest or a webhook.
+
+**Reachability.** The query embedding runs wherever the query does (Vercel for
+the API and MCP), and must use the same model as ingest (E-3), so the endpoint
+must be reachable from there.
+- OpenRouter (or any hosted OpenAI-compatible API) works from Vercel with env
+  only and is the RECOMMENDED default: one URL for write and query.
+- A local model can serve runner-side ingest over Tailscale (set the env on
+  the runner). Query-time embedding then still needs the same model reachable
+  from Vercel: expose it with Tailscale Funnel or another tunnel and use that
+  URL as `EMBEDDING_BASE_URL` (or the `embedding_endpoint` secret). A local
+  model reachable only on the tailnet leaves queries lexical-only.
+
+**Acceptance criteria**
+- AC-E1: GIVEN `EMBEDDING_PROVIDER` unset WHEN any corpus embeds THEN the
+  embedder chosen is the one chosen before this change.
+- AC-E2: GIVEN `openai_compat` WHEN a namespace writes and queries THEN both
+  use the same endpoint model, and the vector leg filters to that model.
+- AC-E3: GIVEN an endpoint returning 768 or (without Matryoshka) 4096
+  dimensions WHEN a batch embeds THEN no vector is stored and an error naming
+  the dimension is logged; with Matryoshka a 4096-dimension vector is stored as
+  a unit-norm 1024-dimension vector.
+- AC-E4: GIVEN the endpoint times out WHEN a query or ingest embeds THEN
+  `embed` returns null and nothing throws.
+- AC-E5: GIVEN an endpoint call WHEN it settles THEN the guard trace records
+  `provider: openai_compat` and the usage read shows it.
 
 ---
 
@@ -463,7 +549,8 @@ Strength words: MUST is binding; RECOMMENDED marks a non-binding preference
 | L-2 outbox dual write | repo ban on interactive `db.transaction` (CLAUDE.md) | AC-11, M13 |
 | L-3 delete not swallowed | `mcp-tools.ts:8559` | AC-8, M10 |
 | L-4 purge | workspaces route `:556`, teams route `:351` | AC-9, M10 |
-| L-7 embedding space | `_selectEmbedder` `:187` | M3, Phase 2 backfill |
+| L-7 embedding space | `getEmbedderForCorpus`, `_vectorSearch` model filter | M3, Phase 2 backfill, AC-E2 |
+| E-1..E-8 embedding endpoint | `embedding-config.ts`, `openai-compatible-embedder.ts`, `voyage-guard.ts` | AC-E1..AC-E5 |
 | L-9 rollback | factory default | AC-12, M12 |
 | Hybrid baseline gate | `retrieval-baseline.json`, `knowledge-eval.yml` | M1, M2 |
 | Recall settings | `_vectorSearch` `:807`; snapshot recall table | M3 |

@@ -58,3 +58,28 @@ describe('month budgets', () => {
     expect(monthCost([], 'embed', {})).toBeNull();
   });
 });
+
+describe('OpenAI-compatible endpoint rows', () => {
+  it('tags the provider from key_source, prices a metered row and costs an unmetered row 0', () => {
+    const out = groupRows([
+      row({ keySource: 'platform', tokens: 1_000_000 }),
+      row({ model: 'qwen3', keySource: 'endpoint', tokens: 2_000_000 }),
+      row({ model: 'qwen3-local', keySource: 'unmetered', tokens: 9 }),
+    ], { 'm-embed': 1, qwen3: 0.01 });
+    expect(out.find(r => r.model === 'm-embed')).toMatchObject({ provider: 'voyage', unmetered: false, estimatedCostUsd: 1 });
+    expect(out.find(r => r.model === 'qwen3')).toMatchObject({ provider: 'openai_compat', unmetered: false, estimatedCostUsd: 0.02 });
+    expect(out.find(r => r.model === 'qwen3-local')).toMatchObject({ provider: 'openai_compat', unmetered: true, estimatedCostUsd: 0 });
+  });
+
+  it('prices the configured endpoint model from EMBEDDING_PRICE_PER_1M_TOKENS', () => {
+    const env = { EMBEDDING_PROVIDER: 'openai_compat', EMBEDDING_BASE_URL: 'https://e', EMBEDDING_MODEL: 'qwen3', EMBEDDING_PRICE_PER_1M_TOKENS: '0.02' };
+    expect(loadPriceTable(env)).toEqual({ qwen3: 0.02 });
+    // The explicit table wins.
+    expect(loadPriceTable({ ...env, VOYAGE_PRICE_TABLE: '{"qwen3":0.5}' })).toEqual({ qwen3: 0.5 });
+    expect(loadPriceTable({ ...env, EMBEDDING_PRICE_PER_1M_TOKENS: 'unmetered' })).toEqual({});
+  });
+
+  it('an unmetered model does not make the month cost unknown', () => {
+    expect(monthCost([{ kind: 'embed', model: 'local', tokens: 5, keySource: 'unmetered' }, { kind: 'embed', model: 'm', tokens: 1_000_000 }], 'embed', { m: 2 })).toBe(2);
+  });
+});

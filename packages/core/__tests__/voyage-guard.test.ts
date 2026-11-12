@@ -222,3 +222,52 @@ describe('voyage guard: team resolution is cached', () => {
     expect(lookups).toBe(1);
   });
 });
+
+// An OpenAI-compatible endpoint goes through the same admit/settle, with its
+// provider recorded; no Voyage allowance, key or switch applies to it.
+describe('voyage guard: openai_compat embedding endpoint', () => {
+  const ep = (over: Partial<VoyageRequest> = {}) => req({ model: 'qwen3-embedding', provider: 'openai_compat', ...over });
+
+  it('admits without reserving a Voyage allowance, even on Free with enforcement on', async () => {
+    const { guard, calls } = harness({ ...FREE, resolveOwnKey: async () => 'team-voyage-key', platformRerankOn: async () => false });
+    const permit = await guard.admit(ep());
+    expect(permit).not.toBeNull();
+    expect(permit!.apiKey).toBeUndefined();
+    expect(calls.reserve).toEqual([]);
+    expect(calls.denied).toEqual([]);
+  });
+
+  it('settles into the daily attribution as `endpoint`, with the provider traced', async () => {
+    const { guard, calls } = harness();
+    (await guard.admit(ep({ caller: 'recall' })))!.settle(42);
+    await Promise.resolve();
+    expect(calls.settle[0]).toMatchObject({ teamId: 'team-1', delta: 0, tokens: 42, model: 'qwen3-embedding', corpus: 'code', caller: 'recall', keySource: 'endpoint' });
+    expect(calls.traced[0]).toMatchObject({ provider: 'openai_compat', keySource: 'endpoint', tokens: 42, outcome: 'ok' });
+  });
+
+  it('records a free endpoint as `unmetered`', async () => {
+    const { guard, calls } = harness();
+    (await guard.admit(ep({ unmetered: true })))!.settle(5);
+    await Promise.resolve();
+    expect(calls.settle[0]).toMatchObject({ keySource: 'unmetered', tokens: 5 });
+    expect(calls.traced[0]).toMatchObject({ provider: 'openai_compat', keySource: 'unmetered' });
+  });
+
+  it('traces a failed call and one with no team, writing no row', async () => {
+    const { guard, calls } = harness({ resolveTeam: async () => null });
+    (await guard.admit(ep()))!.settle(9);
+    const { guard: g2, calls: c2 } = harness();
+    (await g2.admit(ep()))!.settle(0);
+    await Promise.resolve();
+    expect(calls.settle).toEqual([]);
+    expect(calls.traced[0]).toMatchObject({ teamId: null, provider: 'openai_compat', outcome: 'ok' });
+    expect(c2.settle).toEqual([]);
+    expect(c2.traced[0]).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('a Voyage request with no provider is traced as voyage', async () => {
+    const { guard, calls } = harness();
+    (await guard.admit(req()))!.settle(1);
+    expect(calls.traced[0]).toMatchObject({ provider: 'voyage', keySource: 'platform' });
+  });
+});
