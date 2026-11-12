@@ -843,6 +843,12 @@ jobs:
       # GITHUB_TOKEN, with ECR Public and Docker Hub as fallbacks tried in the
       # same round, five rounds with backoff (scripts/ci/pull-image.sh).
       # pgvector is installed from the PGDG apt repo the image already has.
+      # That install can also upgrade postgresql-17 itself when PGDG has a newer
+      # minor release than the image: the new .so files land on disk under the
+      # old, still-running server, and the first plpgsql call fails with
+      # `undefined symbol` (2026-11-12). So the container is restarted after the
+      # install, and the running server's version is checked against the
+      # installed package.
       - name: Start Postgres (pgvector)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -860,11 +866,26 @@ jobs:
             -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=buildd_test \
             "$IMAGE"
           docker exec postgres bash -c 'apt-get update -qq && apt-get install -y -qq postgresql-17-pgvector >/dev/null'
+          # Wait for the first start (initdb) to finish before restarting, so
+          # the restart never interrupts database initialisation. Over TCP: the
+          # entrypoint's temporary init server listens on the socket only.
+          for i in $(seq 1 60); do
+            docker exec postgres pg_isready -h 127.0.0.1 -U demo -d buildd_test && break
+            sleep 2
+          done
+          docker restart postgres
           for i in $(seq 1 60); do
             docker exec postgres pg_isready -U demo -d buildd_test && break
             sleep 2
           done
           docker exec postgres pg_isready -U demo -d buildd_test || { echo "::error::Postgres did not become ready"; exit 1; }
+          RUNNING=$(docker exec postgres psql -U demo -d buildd_test -tAc 'SHOW server_version' | awk '{print $1}')
+          INSTALLED=$(docker exec postgres postgres --version | awk '{print $3}')
+          echo "Postgres running $RUNNING, installed $INSTALLED"
+          [ "$RUNNING" = "$INSTALLED" ] \
+            || { echo "::error::Postgres server ($RUNNING) does not match its installed binaries ($INSTALLED)"; exit 1; }
+          docker exec postgres psql -U demo -d buildd_test -c 'DO $$ BEGIN PERFORM 1; END $$' \
+            || { echo "::error::plpgsql does not load"; exit 1; }
           docker exec postgres psql -U demo -d buildd_test -c 'CREATE EXTENSION IF NOT EXISTS vector' \
             || { echo "::error::pgvector did not install"; exit 1; }
       # apps/web/tests/db/migration-baseline.test.ts replays the pre-squash
