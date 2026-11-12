@@ -1,0 +1,130 @@
+name: Publish @buildd/knowledge-store
+
+# Publishes packages/knowledge-store to public npm as @buildd/knowledge-store,
+# with provenance, through npm trusted publishing (GitHub OIDC). No npm token is
+# stored anywhere: npm trusts this repo + this workflow file, configured once on
+# the package's npmjs.com settings page (Settings → Trusted publisher).
+#
+# Release: bump `version` in packages/knowledge-store/package.json (exact
+# semver, independent of buildd's release version), add a `## <version>`
+# CHANGELOG entry, merge to dev, then push the tag:
+#
+#   git tag knowledge-store-v0.2.0 origin/dev && git push origin knowledge-store-v0.2.0
+#
+# The tag must equal `knowledge-store-v<version>` and CHANGELOG.md must have a
+# `## <version>` heading, or the job fails before publishing. An already
+# published version is skipped, never republished.
+# `workflow_dispatch` runs the same checks and `npm publish --dry-run` unless
+# `publish` is ticked (then only from a matching tag ref).
+#
+# Tags are named `knowledge-store-v*` so buildd's release tooling, which lists
+# `v*` tags only, never sees them.
+
+on:
+  push:
+    tags: ['knowledge-store-v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Really publish (otherwise npm publish --dry-run). Requires running on a knowledge-store-v* tag.'
+        type: boolean
+        default: false
+
+concurrency:
+  group: publish-knowledge-store
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token for npm trusted publishing + provenance
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      # Trusted publishing needs npm >= 11.5.1 and Node >= 22.14.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # No `${{ }}` in the script (inputs arrive through env).
+      - name: Check the tag matches the package version
+        id: version
+        env:
+          DISPATCH_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./packages/knowledge-store/package.json').version")
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::packages/knowledge-store version '$VERSION' is not exact semver (no ranges, no pre-release tags)."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          elif [ "${DISPATCH_PUBLISH:-}" = "true" ]; then
+            echo "::error::A real publish must run on a knowledge-store-v* tag, not ${GITHUB_REF_NAME:-this ref}."
+            exit 1
+          else
+            TAG=""
+          fi
+          if [ -n "$TAG" ] && [ "$TAG" != "knowledge-store-v${VERSION}" ]; then
+            echo "::error::Tag ${TAG} does not match packages/knowledge-store version ${VERSION} (expected knowledge-store-v${VERSION})."
+            exit 1
+          fi
+
+          if ! grep -Eq "^## ${VERSION//./\\.}([[:space:]]|$)" packages/knowledge-store/CHANGELOG.md; then
+            echo "::error::packages/knowledge-store/CHANGELOG.md has no '## ${VERSION}' heading. Add the entry before releasing."
+            exit 1
+          fi
+
+          if [ -n "$TAG" ]; then echo "real=true" >> "$GITHUB_OUTPUT"; else echo "real=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Type check
+        working-directory: packages/knowledge-store
+        run: bunx tsc --noEmit
+
+      - name: Test
+        working-directory: packages/knowledge-store
+        run: bun run test
+
+      - name: Build
+        working-directory: packages/knowledge-store
+        run: bun run build
+
+      - name: Publish (dry run)
+        if: steps.version.outputs.real != 'true'
+        working-directory: packages/knowledge-store
+        run: npm publish --dry-run --access public
+
+      - name: Publish to npm with provenance
+        if: steps.version.outputs.real == 'true'
+        working-directory: packages/knowledge-store
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$(npm view "@buildd/knowledge-store@${VERSION}" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "::notice::@buildd/knowledge-store@${VERSION} is already on npm; nothing to publish."
+            exit 0
+          fi
+          npm publish --provenance --access public
