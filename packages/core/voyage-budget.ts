@@ -19,8 +19,16 @@ export type VoyageKind = 'embed' | 'rerank';
 /** Secret purpose holding a team's own Voyage key. */
 export const VOYAGE_KEY_PURPOSE = 'voyage_api_key' as const;
 
-/** Whose key paid for a call. */
-export type VoyageKeySource = 'platform' | 'byok';
+/**
+ * Whose key paid for a call. `platform` and `byok` are Voyage. An
+ * OpenAI-compatible embedding endpoint (knowledge-store/openai-compatible-embedder.ts)
+ * records `endpoint` when it is metered at its configured price, and
+ * `unmetered` when it is configured as free (a self-hosted model).
+ */
+export type VoyageKeySource = 'platform' | 'byok' | 'endpoint' | 'unmetered';
+
+/** Which API served an embedding call. Rerank is always Voyage. */
+export type EmbeddingProvider = 'voyage' | 'openai_compat';
 
 /** Paid plans' monthly fair-use allowance in tokens, unless VOYAGE_PAID_*_TOKENS says otherwise. */
 export const PAID_VOYAGE_EMBED_TOKENS = 500_000_000;

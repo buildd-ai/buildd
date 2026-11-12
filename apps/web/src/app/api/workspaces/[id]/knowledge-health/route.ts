@@ -3,6 +3,7 @@ import { getKnowledgeHealth, getWorkspaceVoyageBudget } from '@buildd/core/knowl
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { getIngestSwitchHealth } from '@/lib/knowledge-ingest-switch';
 
 // Read-only. Workspace-scoped auth mirrors the skills route: OAuth/session users
 // must be workspace members; API keys must belong to the workspace's team; dev
@@ -49,12 +50,15 @@ export async function GET(
     }
 
     try {
-        const [health, voyageBudget] = await Promise.all([
+        const [health, voyageBudget, ingest] = await Promise.all([
             getKnowledgeHealth(id),
             // A notice, not the page: failing to read it never hides the health panel.
             getWorkspaceVoyageBudget(id).catch(() => null),
+            // The per-workspace ingest switch and how many jobs it skipped. Same
+            // rule as the budget: unreadable means the panel shows no switch state.
+            getIngestSwitchHealth(id).catch(() => null),
         ]);
-        return NextResponse.json({ health, voyageBudget });
+        return NextResponse.json({ health, voyageBudget, ingest });
     } catch (error) {
         console.error('Knowledge health error:', error);
         return NextResponse.json({ error: 'Failed to load knowledge health' }, { status: 500 });

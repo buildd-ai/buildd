@@ -64,6 +64,17 @@ mock.module('@/lib/knowledge-ingest-lease', () => ({
   FULL_LEASE_MS: 60 * 60 * 1000,
 }));
 
+// The ingest switch: which workspaces have knowledge ingest off.
+let disabledWorkspaces = new Set<string>();
+let skippedClosed: Array<{ id: string; site: string }> = [];
+mock.module('@/lib/knowledge-ingest-switch', () => ({
+  knowledgeIngestDisabledAmong: async (ids: string[]) => new Set(ids.filter(id => disabledWorkspaces.has(id))),
+  closeIngestJobAsSkipped: async (job: { id: string }, site: string) => {
+    skippedClosed.push({ id: job.id, site });
+    return true;
+  },
+}));
+
 import { POST } from './route';
 
 function createRequest(body?: unknown): NextRequest {
@@ -87,6 +98,33 @@ describe('POST /api/knowledge/ingest-jobs/claim', () => {
     callLog = [];
     reclaimSummary = { scanned: 0, requeued: [], parked: [], escalated: [], stalled: [], raceLost: 0 };
     mockReclaim.mockClear();
+    disabledWorkspaces = new Set();
+    skippedClosed = [];
+  });
+
+  it('never hands out a job of a workspace with knowledge ingest off: closes it as skipped', async () => {
+    accessibleWorkspaceIds = new Set(['ws-1', 'ws-off']);
+    disabledWorkspaces = new Set(['ws-off']);
+    queuedJobs = [
+      { id: 'job-off', workspaceId: 'ws-off', repo: 'test-org/test-repo', status: 'queued', scope: 'full' },
+      { id: 'job-on', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'queued', scope: 'full' },
+    ];
+    claimResults = [[{ id: 'job-on', workspaceId: 'ws-1', status: 'running', scope: 'full' }]];
+    const res = await POST(createRequest({ repos: ['test-org/test-repo'] }));
+    const data = await res.json();
+    expect(data.job.id).toBe('job-on');
+    expect(data.skippedDisabled).toEqual(['job-off']);
+    expect(skippedClosed).toEqual([{ id: 'job-off', site: 'claim' }]);
+    // Only the enabled job was claimed.
+    expect(updateCalls).toHaveLength(1);
+  });
+
+  it('returns job: null when the only queued job belongs to a disabled workspace', async () => {
+    disabledWorkspaces = new Set(['ws-1']);
+    queuedJobs = [{ id: 'job-off', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'queued', scope: 'full' }];
+    const data = await (await POST(createRequest({ repos: ['test-org/test-repo'] }))).json();
+    expect(data.job).toBeNull();
+    expect(updateCalls).toHaveLength(0);
   });
 
   it('returns 401 without a valid API key', async () => {

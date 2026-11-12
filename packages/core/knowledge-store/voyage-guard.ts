@@ -15,6 +15,7 @@ import {
   voyageMonth,
   voyageMonthResetsAt,
   VOYAGE_KEY_PURPOSE,
+  type EmbeddingProvider,
   type VoyageBudgetState,
   type VoyageCaps,
   type VoyageKeySource,
@@ -37,6 +38,14 @@ export interface VoyageRequest extends VoyageCall {
   model: string;
   estimatedTokens: number;
   inputType?: 'document' | 'query';
+  /**
+   * Absent or `voyage`: the Voyage rules below. `openai_compat`: an
+   * OpenAI-compatible embedding endpoint, which is never capped by a Voyage
+   * allowance or sent a Voyage key, but is still traced and attributed.
+   */
+  provider?: EmbeddingProvider;
+  /** openai_compat only: the endpoint is configured as free (keySource `unmetered`). */
+  unmetered?: boolean;
 }
 
 export interface VoyagePermit {
@@ -65,6 +74,7 @@ export interface VoyageTrace {
   keySource: VoyageKeySource;
   tokens: number;
   outcome: 'ok' | 'denied' | 'failed';
+  provider: EmbeddingProvider;
 }
 
 export interface VoyageGuardDeps {
@@ -146,8 +156,29 @@ export function createVoyageGuard(deps: VoyageGuardDeps): VoyageGuard {
       const { owner, corpus } = parseNamespace(request.namespace);
       const env = deps.env ?? process.env;
       const enforced = isVoyageBudgetEnforced(env);
+      const provider: EmbeddingProvider = request.provider ?? 'voyage';
       const traced = (teamId: string | null, keySource: VoyageKeySource, tokens: number, outcome: VoyageTrace['outcome']) =>
-        deps.trace({ teamId, kind: request.kind, model: request.model, corpus, caller: request.caller, keySource, tokens, outcome });
+        deps.trace({ teamId, kind: request.kind, model: request.model, corpus, caller: request.caller, keySource, tokens, outcome, provider });
+
+      // An OpenAI-compatible endpoint: not Voyage's money, so no Voyage allowance,
+      // key or switch applies. Every call is still traced, and attributed to the
+      // team in the daily rows (keySource `endpoint`, or `unmetered` when free),
+      // so get_embedding_usage shows it. The monthly Voyage counter is not touched.
+      if (provider === 'openai_compat') {
+        const keySource: VoyageKeySource = request.unmetered ? 'unmetered' : 'endpoint';
+        const team = await teamOf(owner);
+        return {
+          settle(raw) {
+            const tokens = Math.max(0, Math.floor(raw));
+            traced(team?.teamId ?? null, keySource, tokens, tokens > 0 ? 'ok' : 'failed');
+            if (!team || tokens === 0) return;
+            void deps.settle({
+              teamId: team.teamId, month: voyageMonth(nowOf()), day: nowOf().toISOString().slice(0, 10),
+              kind: request.kind, model: request.model, corpus, caller: request.caller, keySource, delta: 0, tokens,
+            }).catch(err => console.warn('[voyage-guard] settle failed:', err));
+          },
+        };
+      }
       const deny = (teamId: string | null): null => {
         traced(teamId, 'platform', 0, 'denied');
         return null;
@@ -278,6 +309,7 @@ function traceToOtel(t: VoyageTrace): void {
     span.setAttribute('voyage.key_source', t.keySource);
     span.setAttribute('voyage.tokens', t.tokens);
     span.setAttribute('voyage.outcome', t.outcome);
+    span.setAttribute('embedding.provider', t.provider);
     if (t.teamId) span.setAttribute('voyage.team_id', t.teamId);
     span.setStatus({ code: SpanStatusCode.OK });
     span.end();

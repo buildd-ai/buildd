@@ -127,7 +127,14 @@ let namespaces: string[] = [];
 let deleteBySourceCalls: Array<{ namespace: string; sourcePath?: string }> = [];
 let upsertCalls: Array<{ namespace: string; chunkCount: number; chunks: any[] }> = [];
 
+// Counts store / embedder construction: a disabled workspace must construct neither.
+let storesConstructed = 0;
+let embeddersConstructed = 0;
+
 class FakePgVectorStore {
+  constructor() {
+    storesConstructed++;
+  }
   async listNamespaces() {
     return namespaces;
   }
@@ -148,7 +155,10 @@ mock.module('@/lib/workspace-installation', () => ({
 }));
 mock.module('@buildd/core/knowledge-store', () => ({
   PgVectorStore: FakePgVectorStore,
-  getVoyageEmbedder: () => null,
+  getVoyageEmbedder: () => {
+    embeddersConstructed++;
+    return null;
+  },
   buildNamespace: (workspaceId: string, corpus: string) => `${workspaceId}:${corpus}`,
   chunkPrDiff,
   // Simplified stand-in for the real ingestFiles: delete-then-upsert one chunk per file.
@@ -215,6 +225,8 @@ function resetAll() {
   upsertCalls = [];
   refuseDocs = new Set();
   jobInstallation = 9001;
+  storesConstructed = 0;
+  embeddersConstructed = 0;
 }
 
 function finalUpdate(): Row | undefined {
@@ -946,5 +958,107 @@ describe('plan knowledge-base cap', () => {
     const stats = finalUpdate()?.stats as any;
     expect(stats.filesRefusedByPlan).toBe(0);
     expect(stats.planLimitMessage).toBeUndefined();
+  });
+});
+
+// ── Per-workspace knowledge ingest switch ────────────────────────────────────
+// workspaces.knowledge_ingest=false: no job row, no embedder, no GitHub reads.
+// The switch is read through the same fake select on `workspaces`, so these
+// rows answer both the bound-workspace lookup and the switch lookup.
+describe('knowledge ingest switch off', () => {
+  beforeEach(resetAll);
+
+  const boundTo = (rows: Row[]) => {
+    selectResults = (table: any) => {
+      if (table === githubRepos) return [{ id: 'repo-uuid-1' }];
+      if (table === workspaces) return rows;
+      return [];
+    };
+  };
+
+  it('enqueueFullIngestJobDetailed returns disabled and inserts nothing', async () => {
+    boundTo([{ id: 'ws-1', knowledgeIngest: false }]);
+    const res = await enqueueFullIngestJobDetailed({ workspaceId: 'ws-1', repo: 'test-org/test-repo' });
+    expect(res).toEqual({ status: 'disabled' });
+    expect(insertCalls).toHaveLength(0);
+    expect(await enqueueFullIngestJob({ workspaceId: 'ws-1', repo: 'test-org/test-repo' })).toBeNull();
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('enqueueMergedPrIngestJobs skips a disabled workspace per row and keeps the enabled one', async () => {
+    boundTo([{ id: 'ws-1', knowledgeIngest: true }, { id: 'ws-2', knowledgeIngest: false }]);
+    const ids = await enqueueMergedPrIngestJobs({ repoFullName: 'test-org/test-repo', prNumber: 42, sha: 'merge-sha-1' });
+    expect(ids).toEqual(['new-job-1']);
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].values.workspaceId).toBe('ws-1');
+  });
+
+  it('enqueuePushIngestJobs creates no diff job and no fallback full job for a disabled workspace', async () => {
+    boundTo([{ id: 'ws-1', knowledgeIngest: false }]);
+    const event = {
+      repoFullName: 'test-org/test-repo',
+      after: 'push-sha-1',
+      commits: [{ added: ['docs/a.md'] }],
+      headCommitMessage: 'docs: x',
+    };
+    expect(await enqueuePushIngestJobs(event)).toEqual({ jobIds: [], fullEnqueued: 0 });
+    expect(await enqueuePushIngestJobs({ ...event, size: 50 })).toEqual({ jobIds: [], fullEnqueued: 0 });
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('runDiffIngestJob closes a queued job of a disabled workspace as skipped, constructing no embedder', async () => {
+    boundTo([{ id: 'ws-1', knowledgeIngest: false }]);
+    prFilePages = [[{ filename: 'src/app.ts', status: 'modified' }]];
+    contentsByPath = { 'src/app.ts': { content: 'export const app = 1;' } };
+
+    const out = await runDiffIngestJob('job-1');
+
+    expect(out).toEqual({ claimed: true, status: 'skipped', reason: 'ingest_disabled' });
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(upsertCalls).toHaveLength(0);
+    expect(storesConstructed).toBe(0);
+    expect(embeddersConstructed).toBe(0);
+    expect(finalUpdate()).toMatchObject({ status: 'error', error: 'ingest_disabled', stats: { skipped: 'ingest_disabled' } });
+  });
+
+  it('the empty-namespace backfill is not enqueued when the switch went off mid-run', async () => {
+    namespaces = [];
+    let reads = 0;
+    selectResults = (table: any) => (table === workspaces ? [{ id: 'ws-1', knowledgeIngest: reads++ === 0 }] : []);
+    prFilePages = [[{ filename: 'src/app.ts', status: 'modified' }]];
+    contentsByPath = { 'src/app.ts': { content: 'export const app = 1;' } };
+
+    const out = await runDiffIngestJob('job-1');
+
+    expect((out as any).status).toBe('done');
+    expect(insertCalls).toHaveLength(0);
+    expect((finalUpdate()?.stats as any).backfillEnqueued).toBe(false);
+  });
+
+  it('escalation enqueues no full job when the switch went off mid-run', async () => {
+    let reads = 0;
+    selectResults = (table: any) => (table === workspaces ? [{ id: 'ws-1', knowledgeIngest: reads++ === 0 }] : []);
+    prFilePages = [
+      Array.from({ length: 100 }, (_, i) => ({ filename: `src/f${i}.ts`, status: 'modified' })),
+      Array.from({ length: 10 }, (_, i) => ({ filename: `src/g${i}.ts`, status: 'modified' })),
+    ];
+    const out = await runDiffIngestJob('job-1');
+    expect((out as any).status).toBe('done');
+    expect(insertCalls).toHaveLength(0);
+    expect((finalUpdate()?.stats as any).skipped).toBe('ingest_disabled');
+  });
+
+  it('default on (and data_class sensitive) keeps current behaviour: the job runs and embeds', async () => {
+    boundTo([{ id: 'ws-1', knowledgeIngest: true, dataClass: 'sensitive' }]);
+    prFilePages = [[{ filename: 'src/app.ts', status: 'modified' }]];
+    contentsByPath = { 'src/app.ts': { content: 'export const app = 1;' } };
+
+    const out = await runDiffIngestJob('job-1');
+
+    expect((out as any).status).toBe('done');
+    expect(upsertCalls.some(c => c.namespace === 'ws-1:code')).toBe(true);
+    expect(embeddersConstructed).toBeGreaterThan(0);
+    const ids = await enqueueMergedPrIngestJobs({ repoFullName: 'test-org/test-repo', prNumber: 42, sha: 'merge-sha-1' });
+    expect(ids).toEqual(['new-job-1']);
   });
 });

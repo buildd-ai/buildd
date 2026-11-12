@@ -12,7 +12,7 @@ const PAGE = readFileSync(join(import.meta.dir, 'page.tsx'), 'utf8');
 
 const GROUPS: Array<[string, string[]]> = [
   ['Readiness', ['<WorkspaceHealthCard', '<ReadinessCard', '<RepoAccessCard']],
-  ['Repository', ['<GitConfigForm\n            part="repository"', '<MemberRepoAccessSection']],
+  ['Repository', ['<GitConfigForm\n            part="repository"', '<MemberRepoAccessSection', '<KnowledgeIngestSection']],
   ['Agents', ['<GitConfigForm\n          part="agents"']],
   ['Delivery', ['<MergePolicyEditor', '<BranchStrategySection', '<CiRetrySection', '<ReleaseSection', '<SubjectPolicySection']],
   ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<FreshContainerSection', '<PauseStartsSection']],

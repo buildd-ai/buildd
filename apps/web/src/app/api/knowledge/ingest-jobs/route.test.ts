@@ -173,6 +173,15 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     expect(data.activeJob.attempts).toBe(2);
   });
 
+  it('returns 409 ingest_disabled when the workspace has knowledge ingest switched off', async () => {
+    mockEnqueueFullIngestJobDetailed.mockResolvedValue({ status: 'disabled' });
+    const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.error).toBe('ingest_disabled');
+    expect(data.job).toBeNull();
+  });
+
   it('returns 201 with job when successfully enqueued', async () => {
     const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
     expect(res.status).toBe(201);

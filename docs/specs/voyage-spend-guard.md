@@ -2,13 +2,13 @@
 title: Voyage Spend Guard
 status: active
 owner: max
-last_verified: 2026-11-05
+last_verified: 2026-11-11
 summary: Every Voyage call MUST pass one guard at the client boundary that picks the team's own key or the plan's platform allowance, records the usage, and degrades to lexical-only retrieval when denied.
 domain: billing
 surfaces: [packages/core/voyage-budget.ts, packages/core/knowledge-store/voyage-guard.ts, packages/core/knowledge-store/voyage-embedder.ts, packages/core/knowledge-store/reranker.ts]
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, pluggable-knowledge-store]
-keywords: [voyage, BYOK, voyage_api_key, fair use, embedding spend, rerank tokens, usage.total_tokens, VOYAGE_BUDGET_ENFORCED, voyage_usage_monthly, voyage_usage_daily, lexical fallback, budgetFallback, MAX_FULL_INGEST_BYTES]
-verified_by: [packages/core/__tests__/voyage-budget.test.ts, packages/core/__tests__/voyage-guard.test.ts, packages/core/__tests__/voyage-client-boundary.test.ts, packages/core/__tests__/voyage-spend-store.test.ts, packages/core/__tests__/knowledge-ingest-filter.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts]
+keywords: [voyage, BYOK, openai_compat, embedding endpoint, unmetered, voyage_api_key, fair use, embedding spend, rerank tokens, usage.total_tokens, VOYAGE_BUDGET_ENFORCED, voyage_usage_monthly, voyage_usage_daily, lexical fallback, budgetFallback, MAX_FULL_INGEST_BYTES]
+verified_by: [packages/core/__tests__/voyage-budget.test.ts, packages/core/__tests__/voyage-guard.test.ts, packages/core/__tests__/voyage-client-boundary.test.ts, packages/core/__tests__/voyage-spend-store.test.ts, packages/core/__tests__/knowledge-ingest-filter.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, packages/core/__tests__/openai-compatible-embedder.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -88,14 +88,31 @@ own key is not counted against any allowance.
   a denied path carry `scoreBreakdown.budgetFallback` and bypass score floors,
   which are calibrated to reranker scores and would otherwise drop every hit.
   `mode: 'vector'` callers get an empty result, as they do with no embedder.
-- **R-7 Recorded.** Each call emits a `voyage.call` span and adds to
-  `voyage_usage_daily`, keyed by day, team, kind, model, corpus, caller and key
-  source (`platform` or `byok`). Metering runs whether or not the guard enforces.
+- **R-7 Recorded.** Each call emits a `voyage.call` span (with an
+  `embedding.provider` attribute) and adds to `voyage_usage_daily`, keyed by
+  day, team, kind, model, corpus, caller and key source (`platform` or `byok`
+  for Voyage; `endpoint` or `unmetered` for R-10). Metering runs whether or not
+  the guard enforces.
 - **R-8 Surfaced.** A refused paid call stamps `exhausted_at` on the monthly row.
   `GET /api/workspaces/[id]/knowledge-health` returns `voyageBudget`, and the
   workspace knowledge panel shows a notice from 80% used, or that the plan is
   keyword-only. Ingest job stats carry `chunksLexicalOnly`. A Free refusal writes
   nothing: it is that team's normal state, on the query path.
+
+- **R-9 Names kept.** The guard, its tables and its span keep their Voyage
+  names; they now also cover the embedding endpoint of R-10. Renaming them is
+  not worth a migration.
+- **R-10 Embedding endpoint.** When the embedder is an OpenAI-compatible
+  endpoint (docs/specs/pluggable-knowledge-store.md section 7a), its calls pass
+  the same `admit`/`settle` with `provider: 'openai_compat'`. It is not
+  Voyage's money, so no Voyage allowance, own key, enforcement switch or
+  platform rerank switch applies, and the monthly Voyage counter is not touched.
+  Every call is traced, and settled into `voyage_usage_daily` with key source
+  `endpoint` (priced at `EMBEDDING_PRICE_PER_1M_TOKENS` or `VOYAGE_PRICE_TABLE`
+  in the usage read) or `unmetered` (a free, self-hosted model: costs 0). A
+  server that reports no usage is settled at the estimate. `GET
+  /api/admin/embedding-usage` (`get_embedding_usage`) returns `provider` and
+  `unmetered` on each row. Rerank stays Voyage.
 
 ## Enforcement switch
 
@@ -144,6 +161,9 @@ file names, alongside the existing dependency, lockfile, binary and size rules.
   request is made.
 - AC-6 GIVEN a file with one changed chunk THEN only that chunk is embedded.
 - AC-7 GIVEN a full job over the ceiling THEN it completes with `sweep: false`.
+- AC-9 GIVEN an `openai_compat` embed on a Free team with enforcement on THEN
+  it is admitted, reserves no allowance, and settles a daily row with key
+  source `endpoint` (or `unmetered`) and a trace with `provider: openai_compat`.
 
 ## Non-goals
 
@@ -155,7 +175,9 @@ keys or allowances. A dashboard form for the team's key: it is set through
 
 `packages/core/voyage-budget.ts`, `packages/core/knowledge-store/voyage-guard.ts`,
 `packages/core/knowledge-store/voyage-embedder.ts`,
+`packages/core/knowledge-store/openai-compatible-embedder.ts`,
 `packages/core/knowledge-store/reranker.ts`,
+`apps/web/src/lib/admin/embedding-usage.ts`,
 `packages/core/knowledge-store/pg-vector-store.ts`,
 `packages/core/knowledge-store/ingest.ts`,
 `packages/core/knowledge-store/ingest-filter.ts`,

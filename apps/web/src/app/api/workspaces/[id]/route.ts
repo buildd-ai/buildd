@@ -8,7 +8,9 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { roleHas } from '@/lib/permissions';
-import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
+import {
+  enqueueFullIngestJob, isKnowledgeIngestEnabled, logIngestSkip, purgeWorkspaceRepoKnowledge,
+} from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { applyReviewByRiskWrite } from '@/lib/review-by-risk-config';
@@ -193,7 +195,7 @@ export async function PATCH(
     const body = await req.json();
     const {
       name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass,
-      gitConfig, connectorAdvisoryMode, webhookConfig,
+      gitConfig, connectorAdvisoryMode, webhookConfig, knowledgeIngest, purgeKnowledge,
     } = body;
 
     // A workspace changes team only through the checked move: POST
@@ -218,7 +220,9 @@ export async function PATCH(
     // mixed body is all-or-nothing.
     // webhookConfig decides where the workspace's tasks are sent (and carries
     // the bearer token for it), so it is an admin setting too.
-    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig]
+    // The knowledge ingest switch and the purge of indexed content decide what
+    // of the repo is stored as embeddings, so they are admin settings too.
+    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig, knowledgeIngest, purgeKnowledge]
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
@@ -227,6 +231,18 @@ export async function PATCH(
       if (!isAdmin) {
         return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
       }
+    }
+
+    // Strict values: a coerced "false" must not leave ingest on, and a purge
+    // happens only when asked for in so many words.
+    if (knowledgeIngest !== undefined && typeof knowledgeIngest !== 'boolean') {
+      return NextResponse.json({ error: 'knowledgeIngest must be a boolean' }, { status: 400 });
+    }
+    if (purgeKnowledge !== undefined && purgeKnowledge !== true) {
+      return NextResponse.json(
+        { error: 'purgeKnowledge must be true (it deletes this workspace\'s indexed code, docs and PR content)' },
+        { status: 400 },
+      );
     }
 
     const updates: Record<string, unknown> = {
@@ -536,14 +552,21 @@ export async function PATCH(
       updates.gitConfig = { ...(current?.gitConfig ?? {}), ...gitConfig };
     }
 
-    // Read current repo before updating — needed to detect a change for auto-ingestion.
+    // Knowledge ingest switch. Turning it off deletes nothing (purgeKnowledge
+    // does); turning it back on queues a full ingest of the linked repo.
+    if (knowledgeIngest !== undefined) updates.knowledgeIngest = knowledgeIngest;
+
+    // Read current repo (and switch) before updating — needed to detect a repo
+    // change, or the switch coming back on, for auto-ingestion.
     let previousRepo: string | null = null;
-    if (repoValue !== undefined) {
+    let previousIngest = true;
+    if (repoValue !== undefined || knowledgeIngest === true) {
       const current = await db.query.workspaces.findFirst({
         where: sqlWhere(eq(workspaces.id, id)),
-        columns: { repo: true },
+        columns: { repo: true, knowledgeIngest: true },
       });
       previousRepo = current?.repo ?? null;
+      previousIngest = current?.knowledgeIngest !== false;
     }
 
     await db.update(workspaces).set(updates).where(eq(workspaces.id, id));
@@ -557,17 +580,30 @@ export async function PATCH(
       await clearCallerCache(callerDep.workspace(id), ...(workspaceTeamId ? [callerDep.teamOpenWorkspaces(workspaceTeamId)] : []));
     }
 
-    // Auto-ingest on repo link: enqueue a full job when repoUrl changes (spec §1.1).
-    if (repoValue !== undefined && repoValue !== null && repoValue !== previousRepo) {
-      const fullName = normalizeRepoFullName(repoValue);
-      if (fullName) {
+    // Explicit purge of repo-ingested chunks (code, docs, pr). Only on request.
+    let purgedChunks: number | undefined;
+    if (purgeKnowledge === true) {
+      purgedChunks = await purgeWorkspaceRepoKnowledge(id);
+    }
+
+    // Auto-ingest on repo link: enqueue a full job when repoUrl changes (spec
+    // §1.1), or when the knowledge ingest switch comes back on. Never while the
+    // switch is off.
+    const repoChanged = repoValue !== undefined && repoValue !== null && repoValue !== previousRepo;
+    const reEnabled = knowledgeIngest === true && !previousIngest;
+    const ingestRepo = repoChanged ? repoValue : reEnabled ? previousRepo : null;
+    const fullName = typeof ingestRepo === 'string' ? normalizeRepoFullName(ingestRepo) : null;
+    if (fullName) {
+      if (await isKnowledgeIngestEnabled(id)) {
         enqueueFullIngestJob({ workspaceId: id, repo: fullName, trigger: 'repo_link' }).catch(err =>
           console.error(`[knowledge-ingest] repo-link enqueue failed for workspace ${id}:`, err)
         );
+      } else {
+        logIngestSkip('repo_change', { workspaceId: id, repo: fullName });
       }
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, ...(purgedChunks !== undefined ? { purgedChunks } : {}) });
   } catch (error) {
     console.error('Update workspace error:', error);
     return NextResponse.json({ error: 'Failed to update workspace' }, { status: 500 });
