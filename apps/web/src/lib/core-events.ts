@@ -76,6 +76,8 @@ export interface WorkerTaskOutcome {
   error: string | null;
   /** Set on `task.failed` when a slot, not the worker, failed the task. */
   failure?: SlotFailure | null;
+  /** The runner and backend that ran the worker, for credential alerts. */
+  runner?: { name?: string | null; backend?: 'claude' | 'codex' | null; authSource?: 'machine_token' | 'machine_login' | 'api_key' | 'none' | null };
   /**
    * `via: 'release'` only: the analytics row the PATCH kept while the release
    * was held. Null for a task held before the PATCH kept one.
