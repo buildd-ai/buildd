@@ -71,6 +71,20 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute(workspaceAdmin, request('/api/workspaces', 'POST'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['workspaces:admin'] }, request('/api/workspaces', 'POST'))).toBe(true);
   });
+  test('a write grant session may ask to create a workspace; the route confines it to its bound team', () => {
+    // An account-level MCP connection bound to one workspace: the route
+    // (api/workspaces POST) holds the create to that workspace's team and
+    // checks the role there. A scoped key stays refused (above).
+    const grant = { scopes: null, workspaceIds: ['ws-a'], oauthGrantId: 'g-1' };
+    expect(canAccessTokenRoute(grant, request('/api/workspaces', 'POST'))).toBe(true);
+    // A read-only grant reads only.
+    const readGrant = { scopes: ['tasks:read', 'analytics:read'], workspaceIds: ['ws-a'], oauthGrantId: 'g-1' };
+    expect(canAccessTokenRoute(readGrant, request('/api/workspaces', 'POST'))).toBe(false);
+    // A grant with no workspace list still reaches nothing.
+    expect(canAccessTokenRoute({ scopes: null, workspaceIds: null, oauthGrantId: 'g-1' }, request('/api/workspaces', 'POST'))).toBe(false);
+    // Only the collection create, never another team-wide write.
+    expect(canAccessTokenRoute(grant, request('/api/workspaces/ws-b', 'PATCH'))).toBe(false);
+  });
   test('evidence reads take analytics:read, matching the read_evidence action', () => {
     const token = { scopes: ['analytics:read'] };
     expect(requiredTokenScope('/api/tasks/t-1/evidence', 'GET')).toBe('analytics:read');

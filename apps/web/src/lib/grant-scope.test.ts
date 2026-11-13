@@ -92,9 +92,14 @@ describe('canAccessTokenRoute: a write grant (no scopes) is still workspace-conf
   });
 
   test('team-wide collections and team administration: refused', () => {
-    for (const [p, m] of [['/api/tasks', 'GET'], ['/api/artifacts', 'GET'], ['/api/secrets', 'GET'], ['/api/accounts', 'POST'], ['/api/model-tiers', 'GET'], [`/api/teams/${TEAM}`, 'GET'], ['/api/workspaces', 'POST']] as const) {
+    for (const [p, m] of [['/api/tasks', 'GET'], ['/api/artifacts', 'GET'], ['/api/secrets', 'GET'], ['/api/accounts', 'POST'], ['/api/model-tiers', 'GET'], [`/api/teams/${TEAM}`, 'GET'], ['/api/workspaces', 'PUT']] as const) {
       expect(canAccessTokenRoute(writeGrant, r(p, m))).toBe(false);
     }
+  });
+
+  test('workspace creation: the one team-level write a write grant reaches (the route holds it to the bound team)', () => {
+    expect(canAccessTokenRoute(writeGrant, r('/api/workspaces', 'POST'))).toBe(true);
+    expect(canAccessTokenRoute(readGrant, r('/api/workspaces', 'POST'))).toBe(false);
   });
 
   test('runner plumbing: refused to a grant, untouched for others', () => {
