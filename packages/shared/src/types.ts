@@ -346,6 +346,12 @@ export interface Workspace {
   webhookConfig?: PublicWebhookConfig | null;
   accessMode?: 'open' | 'restricted';
   dataClass?: 'standard' | 'sensitive';
+  /**
+   * Whether this workspace's repo content (code, docs, PR diffs) is chunked and
+   * embedded for search. Default true. false = no ingest job is enqueued,
+   * claimed or run; stored chunks stay until a PATCH with purgeKnowledge: true.
+   */
+  knowledgeIngest?: boolean;
   createdAt: Date;
   updatedAt: Date;
   taskCount?: number;

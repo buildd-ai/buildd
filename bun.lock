@@ -73,7 +73,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.393.0",
+      "version": "0.397.6",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.316",
         "@buildd/core": "workspace:*",
@@ -93,7 +93,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.393.0",
+      "version": "0.397.6",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.65",
         "@ai-sdk/openai": "^4.0.78",
@@ -181,7 +181,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.393.0",
+      "version": "0.397.6",
       "dependencies": {
         "@ast-grep/napi": "^0.51.0",
         "@buildd/ai-kit": "workspace:*",
@@ -209,9 +209,20 @@
         "typescript": "^6.0.0",
       },
     },
+    "packages/knowledge-store": {
+      "name": "@buildd/knowledge-store",
+      "version": "0.2.0",
+      "devDependencies": {
+        "@types/node": "^26.1.0",
+        "typescript": "^6.0.3",
+      },
+      "peerDependencies": {
+        "drizzle-orm": "^0.45.2",
+      },
+    },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.393.0",
+      "version": "0.397.6",
       "devDependencies": {
         "@types/node": "^26.0.0",
         "typescript": "^6.0.0",
@@ -399,6 +410,8 @@
     "@buildd/dispatch": ["@buildd/dispatch@workspace:apps/dispatch"],
 
     "@buildd/dispatch-contract": ["@buildd/dispatch-contract@workspace:packages/dispatch-contract"],
+
+    "@buildd/knowledge-store": ["@buildd/knowledge-store@workspace:packages/knowledge-store"],
 
     "@buildd/model-policy": ["@buildd/model-policy@workspace:apps/model-policy"],
 
@@ -1742,7 +1755,7 @@
 
     "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "./bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
 
-    "workerd": ["workerd@1.20261101.1", "", { "optionalDependencies": { "@cloudflare/workerd-darwin-64": "1.20261101.1", "@cloudflare/workerd-darwin-arm64": "1.20261101.1", "@cloudflare/workerd-linux-64": "1.20261101.1", "@cloudflare/workerd-linux-arm64": "1.20261101.1", "@cloudflare/workerd-windows-64": "1.20261101.1" }, "hasInstallScript": true, "bin": { "workerd": "bin/workerd" } }, "sha512-qHUIS4cmvhpAE7k2TW0ZktXj9KGDeoUvvLuqi5cSalCM6el5Q6IPuaup9XAC6zQq/xJUPHMG29ML93HuSDY2RQ=="],
+    "workerd": ["workerd@1.20261101.1", "", { "optionalDependencies": { "@cloudflare/workerd-darwin-64": "1.20261101.1", "@cloudflare/workerd-darwin-arm64": "1.20261101.1", "@cloudflare/workerd-linux-64": "1.20261101.1", "@cloudflare/workerd-linux-arm64": "1.20261101.1", "@cloudflare/workerd-windows-64": "1.20261101.1" }, "bin": { "workerd": "bin/workerd" } }, "sha512-qHUIS4cmvhpAE7k2TW0ZktXj9KGDeoUvvLuqi5cSalCM6el5Q6IPuaup9XAC6zQq/xJUPHMG29ML93HuSDY2RQ=="],
 
     "wrangler": ["wrangler@4.156.1", "", { "dependencies": { "@cloudflare/kv-asset-handler": "0.5.0", "@cloudflare/unenv-preset": "2.16.2", "blake3-wasm": "2.1.5", "esbuild": "0.28.2", "miniflare": "5.20261101.0-beta", "path-to-regexp": "6.3.0", "unenv": "2.0.0-rc.24", "workerd": "1.20261101.1" }, "optionalDependencies": { "fsevents": "2.3.3" }, "peerDependencies": { "@cloudflare/workers-types": "^5.20261101.1" }, "optionalPeers": ["@cloudflare/workers-types"], "bin": { "wrangler": "bin/wrangler.js", "wrangler2": "bin/wrangler.js", "cf-wrangler": "bin/cf-wrangler.js" } }, "sha512-aZngeNRosSVly6wgxpaJAtFPtEoyM3hD8mLMMcHNXTnofMq4ZN+RMXOdHETyttNP+//+mfiD1hb5E8YFtiMMRQ=="],
 

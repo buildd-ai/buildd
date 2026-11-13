@@ -51,6 +51,7 @@ export const PUBLIC_WORKSPACE_FIELDS = [
   'githubInstallationId',
   'accessMode',
   'dataClass',
+  'knowledgeIngest',
   'gitConfig',
   'configStatus',
   'releaseConfig',

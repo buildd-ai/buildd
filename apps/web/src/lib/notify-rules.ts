@@ -101,6 +101,7 @@ export function resolveNotifyPlan(
  */
 export function isCredentialExpiredError(error?: string | null): boolean {
   if (!error) return false;
+  if (/^\s*(\[[^\]]*\]\s*)?provision failed:/i.test(error)) return false;
   const lower = error.toLowerCase();
   if (lower.includes('invalid api key') || lower.includes('bld_')) return false;
   return (

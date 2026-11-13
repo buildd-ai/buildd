@@ -140,6 +140,50 @@ const repoFiles = {
 };
 
 describe('runFullIngestFallbackTick', () => {
+  it('closes a stalled job of a workspace with knowledge ingest off instead of reading or embedding it', async () => {
+    const { store, rows } = memoryStore([
+      queuedJob({ id: 'job-off', workspaceId: 'ws-off' }),
+      queuedJob({ id: 'job-on', workspaceId: 'ws-1', createdAt: new Date(T0.getTime() - 2 * HOUR) }),
+    ]);
+    const { github, calls } = fakeGithub({ files: repoFiles });
+    const closed: string[] = [];
+    const { deps: d, ingested } = deps({
+      store,
+      github,
+      ingestDisabledAmong: async ids => new Set(ids.filter(id => id === 'ws-off')),
+      skipDisabled: async job => {
+        closed.push(job.id);
+        rows.get(job.id)!.status = 'error';
+        return true;
+      },
+    });
+
+    const out = await runFullIngestFallbackTick(d, { now: () => T0 });
+
+    expect(out.skippedDisabled).toEqual(['job-off']);
+    expect(closed).toEqual(['job-off']);
+    expect(out.claimed).toEqual(['job-on']);
+    expect(calls.every(c => !c.includes('job-off'))).toBe(true);
+    expect(ingested.flat().length).toBe(3); // only job-on's repo was ingested
+    expect(rows.get('job-off')!.status).toBe('error');
+  });
+
+  it('runs nothing when the ingest switch cannot be read', async () => {
+    const { store, rows } = memoryStore([queuedJob()]);
+    const { github, calls } = fakeGithub({ files: repoFiles });
+    const { deps: d } = deps({
+      store,
+      github,
+      ingestDisabledAmong: async () => {
+        throw new Error('db down');
+      },
+    });
+    const out = await runFullIngestFallbackTick(d, { now: () => T0 });
+    expect(out.claimed).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(rows.get('job-1')!.status).toBe('queued');
+  });
+
   it('leaves a queued job alone while a runner may still take it', async () => {
     const fresh = queuedJob({ createdAt: new Date(T0.getTime() - 5 * 60 * 1000) });
     const { store, rows } = memoryStore([fresh]);

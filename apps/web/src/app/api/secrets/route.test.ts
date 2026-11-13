@@ -230,6 +230,28 @@ describe('POST /api/secrets', () => {
     mockAccountsFindFirst.mockResolvedValue(null);
   });
 
+  it('stores a valid embedding_endpoint blob team-wide, as JSON', async () => {
+    const blob = { baseUrl: 'https://openrouter.ai/api/v1', model: 'qwen/qwen3-embedding-8b', apiKey: 'sk-or-v1-x', price: 0.01 };
+    const res = await POST(createPostRequest({ value: JSON.stringify(blob), purpose: 'embedding_endpoint' }));
+    expect(res.status).toBe(200);
+    const [stored, scope] = mockSecretsReplaceScoped.mock.calls.at(-1) as any[];
+    expect(JSON.parse(stored)).toEqual(blob);
+    expect(scope).toMatchObject({ teamId: 'team-1', accountId: undefined, purpose: 'embedding_endpoint' });
+  });
+
+  it('refuses an invalid embedding_endpoint blob, and an account-scoped one', async () => {
+    const bad = await POST(createPostRequest({ value: '{"model":"m"}', purpose: 'embedding_endpoint' }));
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toContain('baseUrl');
+    const notJson = await POST(createPostRequest({ value: 'https://x', purpose: 'embedding_endpoint' }));
+    expect(notJson.status).toBe(400);
+    const account = await POST(createPostRequest({
+      value: '{"baseUrl":"https://x.test/v1","model":"m"}', purpose: 'embedding_endpoint', accountId: 'account-1',
+    }));
+    expect(account.status).toBe(400);
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
   it('accepts all valid purpose values', async () => {
     const valueFor: Record<string, string> = {
       anthropic_api_key: 'sk-ant-api03-xxx',
