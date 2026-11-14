@@ -5,6 +5,7 @@ import { pauseRefusal, requestWorkerPause } from '@/lib/worker-pause';
 import { parseCancellation } from '@/lib/task-cancellation';
 import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
+import { SUBSCRIPTION_PINNED_KEY } from '@buildd/core/wall-fallback';
 import { isTerminalTaskStatus, canDeleteTask, LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -374,7 +375,7 @@ export async function PATCH(
         }, { status: 403 });
       }
     }
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, reserved, pathManifest, startAt, startIn, abort, cancelReason, supersededBy } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, reserved, pathManifest, startAt, startIn, abort, cancelReason, supersededBy, subscriptionOnly } = body;
 
     // delegation: a person grants (or clears) this task's cross-workspace
     // reach before it is claimed (lib/task-delegation.ts). Its own request:
@@ -576,6 +577,19 @@ export async function PATCH(
       } else if (!nextBackend && baseCtx[BACKEND_PINNED_KEY] !== undefined) {
         const { [BACKEND_PINNED_KEY]: _pin, ...unpinned } = baseCtx;
         updateData.context = unpinned;
+      }
+    }
+    // Pin to (true) or release from (false) the subscription: a pinned task
+    // never runs on the team's subscription-wall fallback.
+    if (subscriptionOnly !== undefined) {
+      if (typeof subscriptionOnly !== 'boolean') {
+        return NextResponse.json({ error: 'subscriptionOnly must be true or false' }, { status: 400 });
+      }
+      const ctx = ((updateData.context ?? task.context) || {}) as Record<string, unknown>;
+      if (subscriptionOnly) updateData.context = { ...ctx, [SUBSCRIPTION_PINNED_KEY]: true };
+      else if (SUBSCRIPTION_PINNED_KEY in ctx) {
+        const { [SUBSCRIPTION_PINNED_KEY]: _pinned, ...rest } = ctx;
+        updateData.context = rest;
       }
     }
     // Model pin for the NEXT claim or retry (never the in-flight session).
