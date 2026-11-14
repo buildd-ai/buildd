@@ -2,13 +2,13 @@
 title: Model Routing and Tiers
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-11-14
 summary: A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 domain: tasks
-surfaces: [packages/core/model-router.ts, packages/core/model-tier-registry.ts, packages/core/model-policy.ts, apps/web/src/app/api/workers/claim/route.ts]
+surfaces: [packages/core/model-router.ts, packages/core/model-tier-registry.ts, packages/core/model-policy.ts, packages/core/model-tier-platform-default.ts, apps/web/src/lib/admin/platform-tier-defaults.ts, apps/web/src/app/api/workers/claim/route.ts]
 related: [model-policy, provider-failover, mcp-connectors-and-roles, usage-and-cost-accounting, external-cron-triggers]
-verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/role-model-routing.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts, apps/web/src/app/api/model-tiers/policy/route.test.ts]
-keywords: [model_tier_registry, predicted_model, model_aliases, system_cache, task_outcomes, downshift, role floor, routing_paused, catalogComplete]
+verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/role-model-routing.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts, apps/web/src/app/api/model-tiers/policy/route.test.ts, packages/core/__tests__/model-tier-platform-default.test.ts, packages/core/__tests__/model-tier-defaults-generation.test.ts, apps/web/src/lib/admin/platform-tier-defaults.test.ts, apps/web/src/app/api/model-tiers/platform/route.test.ts, packages/core/__tests__/mcp-tools-platform-tiers.test.ts]
+keywords: [model_tier_registry, predicted_model, model_aliases, system_cache, task_outcomes, downshift, role floor, routing_paused, catalogComplete, platform default, manage_platform_tiers]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -28,6 +28,22 @@ assertions:
     symbol: "resolveEffectiveModel"
     entry: "apps/web/src/app/api/workers/claim/route.ts"
     as: "read"
+  - id: "platform-default-guard-rails"
+    type: "symbol"
+    name: "checkPlatformTierModel"
+    path: "packages/core/model-tier-platform-default.ts"
+  - id: "platform-default-one-write-path"
+    type: "symbol"
+    name: "applyPlatformTierDefaultChange"
+    path: "apps/web/src/lib/admin/platform-tier-defaults.ts"
+  - id: "platform-default-route"
+    type: "route"
+    method: "PUT"
+    path: "/api/model-tiers/platform"
+    file: "apps/web/src/app/api/model-tiers/platform/route.ts"
+  - id: "bundled-default-drift-test"
+    type: "test_file"
+    path: "packages/core/__tests__/model-tier-defaults-generation.test.ts"
 ---
 # Model Routing and Tiers
 
@@ -180,10 +196,11 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
   `packages/core/model-policy.ts`: team rows → `tiers`, team surface rows →
   `surfaces`, workspace rows → `overrides`) and resolves it with the kit's
   `pickRoute`: workspace+surface → workspace → team+surface → team. A tier the
-  registry leaves unset goes to the policy service when one is configured
-  (`BUILDD_MODEL_POLICY_URL`/`_TOKEN`; `source: 'policy'`), then the catalog
-  pick, then the bundled policy (`TIER_DEFAULTS`, derived from
-  `DEFAULT_MODEL_POLICY`). The entry carries `source` and `policy`
+  registry leaves unset goes to the platform default when a platform admin
+  has set one (`source: 'platform'`, below), then to the policy service when
+  one is configured (`BUILDD_MODEL_POLICY_URL`/`_TOKEN`; `source: 'policy'`),
+  then the catalog pick, then the bundled policy (`TIER_DEFAULTS`, derived
+  from `DEFAULT_MODEL_POLICY`). The entry carries `source` and `policy`
   (`version`, `planId`, decision layer, surface). `agent` resolves as the
   protocol's `coding`, `chat` as `chat`.
 - No call site indexes `TIER_DEFAULTS` or reads registry rows to pick a model
@@ -205,9 +222,14 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
   off for 30s and serves its last good answer (no planId), then the catalog
   and the bundled policy. `resolveTierEntrySync` is the bundled answer with no
   DB dependency, for contexts that cannot await.
-- All three `TIER_DEFAULTS` entries are `provider: 'anthropic'`
+- Every `TIER_DEFAULTS` entry is `provider: 'anthropic'`
   (`packages/core/model-tier-defaults.ts`), so the last-resort fallback
-  never routes a team to a provider it has not configured.
+  never routes a team to a provider it has not configured. Each bundled
+  default MUST be the newest model of its family that `MODEL_MIN_CLI_VERSION`
+  (`packages/core/model-capability-requirements.ts`) certifies;
+  `packages/core/__tests__/model-tier-defaults-generation.test.ts` fails when
+  a floor row is added for a newer release and the default is not moved with
+  it, so the fallback cannot drift far behind what the fleet runs.
 - Single-shot structured inference resolves the *same* registry rather than
   keeping its own model list, and rejects a tier whose provider is an agent
   backend: `provider === 'openai-codex'` returns
@@ -221,7 +243,7 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
 - Who writes it: a team admin (`manage_model_tiers`) picks each tier's
   primary model and the upgrade policy, Automatic (`latest-compatible`) or
   Manual. Everything that routes traffic beyond the primary (tier pools, the
-  dial, the `soak` upgrade mode) is a platform operator control
+  dial, the `soak` upgrade mode, the platform tier default below) is a platform operator control
   (`isPlatformOperatorCaller`, `apps/web/src/lib/admin/platform-operator-caller.ts`): its writes
   refuse a team admin with 403 and Settings › Models renders it only for an
   operator. A stored `soak` policy keeps working.
@@ -261,6 +283,122 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
 
 **Out of scope**: which credential the resolved provider then uses — see
 `credential-isolation` and `docs/credentials-architecture.md`.
+
+---
+
+## Platform tier default
+
+**Capability statement**: A platform admin MUST be able to move a tier for
+every team without a row of its own (premium-plus from one Fable release to
+the next) from Settings › Models or over MCP, with no code change, deploy or
+release, and every such move MUST be guarded, audited and revertible in one
+step.
+
+**Invariants**:
+- One `system_cache` row per tier, key `platform_tier_default:<tier>`
+  (`packages/core/model-tier-platform-default-store.ts`), holds the record
+  (`PlatformTierDefault`: tier, `provider: 'anthropic'`, model, who set it,
+  when, `via` ui | mcp | api, reason, and the snapshot it replaced). No new
+  table: the same home as the other platform runtime records. Reads on the
+  claim path are cached 60s per process and fail open to "no platform
+  default"; a write flushes this process's cache.
+- `resolveTierEntry` consults it after the team's registry and before the
+  policy service and the catalog pick (`packages/core/model-tier-registry.ts`),
+  so a team or workspace row still wins, and a platform default is never
+  overridden by the service or by a newer catalog release. The entry reports
+  `source: 'platform'`; `explainTierAdoption` reports `selectedBy:
+  'platform_default'` and a newer certified model as `withheld.reason:
+  'platform'`.
+- One write path. `applyPlatformTierDefaultChange`
+  (`apps/web/src/lib/admin/platform-tier-defaults.ts`) is the only function
+  that changes a platform default; `PUT /api/model-tiers/platform`, the
+  Settings › Models operator section
+  (`apps/web/src/app/app/(protected)/settings/models/PlatformTierDefaultsSection.tsx`)
+  and the `manage_platform_tiers` MCP action (`packages/core/mcp-platform-tiers.ts`)
+  all call that route, and `readPlatformTierDefaults` is the one read. The
+  admin check, the guard rails and the audit row live there once.
+- Who writes: a platform operator only (`isPlatformOperatorCaller`,
+  `apps/web/src/lib/admin/platform-operator-caller.ts`): a signed-in operator,
+  an OAuth bearer issued to one, or an admin-level platform admin key. A team
+  admin is refused with HTTP 403 (`code: 'operator_only'`); a per-task token
+  is refused whatever account minted it (and never reaches the route, since
+  `authenticateApiKey` rejects it). Reads are open to whoever reads the tier
+  map today: a signed-in member or an admin-level key.
+- Guard rails, not trust (`checkPlatformTierModel`,
+  `packages/core/model-tier-platform-default.ts`): a write is refused when
+  the live catalog cannot be read (HTTP 503), when the model is not in it or
+  is retired (HTTP 422), when nothing has certified a CLI floor for it, the
+  static table or the certification probe (HTTP 422, `code: 'not_certified'`,
+  naming the probe state; the floor is never guessed), and when the model is
+  priced outside the tier's band in either direction unless
+  `confirmBandChange: true` (HTTP 409, `code: 'spend_band_change'`). Every
+  write needs `confirm: true` (HTTP 409, `code: 'confirm_required'`
+  otherwise). The model's own problems are reported before the missing
+  confirm, so one call says what is really wrong.
+- Audit: every write is one `platform_admin_audit_events` row, action
+  `platform_tier_default.<set|apply|clear|revert>`, target type
+  `platform_tier_default`, target id the tier, written as an intent BEFORE
+  the row changes and completed after (`recordPlatformAdminAuditIntent`,
+  `completePlatformAdminAudit`, `apps/web/src/lib/admin/audit.ts`); `before`
+  and `after` carry the model, who (account and user), `via` and the reason.
+  An intent that cannot be written means nothing changes (HTTP 500); a write
+  that lost the race (the row changed under the caller) completes its intent
+  as aborted and answers HTTP 409 (`code: 'conflict'`).
+- Revert is one step: `op: 'revert'` restores the snapshot the last write
+  replaced (or removes the row when there was none), audited like any write;
+  a second revert goes forward again. `op: 'clear'` removes the row so the
+  tier follows the catalog pick and the bundled fallback again.
+- Staleness is shown, never acted on: `platformTierSuggestions` runs
+  `auditTierModels` (`packages/core/model-tier-liveness.ts`) over the live
+  catalog for each tier's effective model and reports a newer same-family
+  release with its price, CLI floor and certification; the section and the
+  MCP `list` show it with an Apply control (`op: 'apply'`), which goes through
+  the same guard rails as `set`. Nothing applies a suggestion on its own, and
+  an empty catalog yields no suggestion.
+- A task pinned to an exact model id (`tasks.context.model`) is untouched by a
+  platform default: pins short-circuit tier resolution (above), and the old
+  id keeps its price and CLI floor rows.
+
+**Acceptance criteria**:
+- AC-25: GIVEN no team row for `premium-plus` and a platform default of
+  `claude-fable-5-2` WHEN `resolveTierEntry('premium-plus', T, W, 'agent')`
+  runs THEN it returns that model with `source: 'platform'`, and a team row
+  for the same tier still wins over it.
+- AC-26 (failure path): GIVEN a team admin who is not a platform operator
+  WHEN they `PUT /api/model-tiers/platform` with `{ op: 'set', tier, model,
+  confirm: true }` THEN the response is HTTP 403 with `code: 'operator_only'`,
+  no row is written and no audit row exists.
+- AC-27 (failure path): GIVEN a platform operator WHEN they set a model that
+  the live catalog lists but no floor certifies THEN the response is HTTP 422
+  with `code: 'not_certified'` naming the probe state, and nothing is written;
+  GIVEN a certified model priced below the tier's band THEN HTTP 409 with
+  `code: 'spend_band_change'` until `confirmBandChange: true` is passed.
+- AC-28: GIVEN a platform operator who sets a tier twice WHEN they `revert`
+  THEN the tier returns to the first model, the audit trail shows three rows
+  (`set`, `set`, `revert`) with before and after, and a second `revert` goes
+  forward again.
+- AC-29: GIVEN a tier whose effective model has a newer certified same-family
+  release in the catalog WHEN an operator reads `GET /api/model-tiers/platform`
+  or `manage_platform_tiers action=list` THEN the suggestion names that
+  release with its price and floor, and nothing has changed until `apply`.
+
+**Code surface**: `packages/core/model-tier-platform-default.ts`
+(`checkPlatformTierModel`, `describeModelFacts`, `platformTierSuggestions`,
+`parsePlatformTierDefault`), `packages/core/model-tier-platform-default-store.ts`,
+`apps/web/src/lib/admin/platform-tier-defaults.ts`
+(`applyPlatformTierDefaultChange`, `readPlatformTierDefaults`,
+`parsePlatformTierChange`), `apps/web/src/lib/admin/platform-tier-defaults-deps.ts`,
+`apps/web/src/app/api/model-tiers/platform/route.ts`,
+`apps/web/src/app/app/(protected)/settings/models/PlatformTierDefaultsSection.tsx`,
+`packages/core/mcp-platform-tiers.ts` (`handlePlatformTiersAction`),
+`packages/core/__tests__/model-tier-platform-default.test.ts`,
+`apps/web/src/lib/admin/platform-tier-defaults.test.ts`,
+`apps/web/src/app/api/model-tiers/platform/route.test.ts`,
+`packages/core/__tests__/mcp-tools-platform-tiers.test.ts`.
+
+**Out of scope**: per-surface (agent vs chat) platform defaults, and
+non-Anthropic platform defaults: the bundled fallback and the catalog pick are
+Anthropic-only, and this layer keeps that invariant.
 
 ---
 

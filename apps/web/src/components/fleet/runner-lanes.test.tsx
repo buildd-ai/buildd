@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { FleetSnapshot } from '@buildd/shared';
 import SlotLanes from './SlotLanes';
-import { RunDetail, RunnerLanes, idleSentences, idleSlotCount, runnerLanes } from './runner-lanes';
+import { RunDetail, RunnerLanes, idleSentences, idleSlotCount, runnerLanes, usageWallSentences } from './runner-lanes';
 
 const T = Date.UTC(2026, 0, 1);
 const m = (n: number) => T + n * 60_000;
@@ -34,6 +34,16 @@ describe('runnerLanes', () => {
   it('a bar labelled with a machine identifier shows its title in words', () => {
     const f = { ...fleet, runners: [{ ...fleet.runners[0], slots: [{ lane: { bars: [{ ...bar('x', 'running', 0, null), label: 'open_pr_outp', title: '[friction] open_pr_outpaced_by_base: pull_request 4191' }] } }] }] } as unknown as FleetSnapshot;
     expect(runnerLanes(f)[0].bars[0].label).toBe('Open PR outpaced by base: PR #4191');
+  });
+});
+
+// Task 775bf607: the runner lane says which runner waits for its usage limit, and until when.
+describe('usageWallSentences', () => {
+  it('names the runner, the provider and the reset', () => {
+    const walled = { ...fleet, runners: [{ ...fleet.runners[0], usageWall: { backend: 'claude', resetsAt: new Date(m(90)).toISOString() } }] } as unknown as FleetSnapshot;
+    const clock = (at: number) => new Date(at).toISOString().slice(11, 16);
+    expect(usageWallSentences(walled, clock)).toEqual(['atlas is waiting for its Claude usage limit, resumes at 01:30.']);
+    expect(usageWallSentences(fleet, clock)).toEqual([]);
   });
 });
 

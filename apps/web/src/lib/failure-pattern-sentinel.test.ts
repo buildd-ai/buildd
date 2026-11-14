@@ -183,6 +183,16 @@ describe('repeated normalized failure across unrelated tasks', () => {
     expect(detectFailurePatterns(facts({ workerFailures: rows })).filter(c => c.rule === 'repeated_failure')).toHaveLength(0);
   });
 
+  // A usage wall (budget_limited) is a wait, not a failure: the task is back in
+  // the queue until the quoted reset. Many tasks hitting the same 5-hour wall
+  // used to open a repeated_failure incident and page for it.
+  it('usage-wall exits (budget_limited) never open an incident', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => failure({
+      workerId: `w${i}`, exitCause: 'budget_limited', signature: "you've hit your 5-hour limit · resets <time>",
+    }));
+    expect(detectFailurePatterns(facts({ workerFailures: rows })).filter(c => c.rule === 'repeated_failure')).toHaveLength(0);
+  });
+
   it('messageless failures are not one failure: split by exit cause, dropped when neither is known', () => {
     const none = Array.from({ length: 8 }, (_, i) => failure({ workerId: `n${i}`, signature: '(no error message)', exitCause: null }));
     expect(detectFailurePatterns(facts({ workerFailures: none })).filter(c => c.rule === 'repeated_failure')).toHaveLength(0);

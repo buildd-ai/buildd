@@ -47,6 +47,23 @@ describe('priceForModel', () => {
     expect(priceForModel('claude-mythos-5-1').input).toBe(10);
   });
 
+  it('prices Fable 5.2 at its own $8/$40 rate, not the $10/$50 of the rest of the family', () => {
+    // From the public catalog (OpenRouter, 2026-11-14) and the Claude Code
+    // 2.1.321 changelog: Fable 5.2 is $8/$40 per MTok with $0.20 cache reads.
+    // The generic fable row would overstate it by 25% on every token, and the
+    // tier default routes premium-plus here, so the static floor must know it.
+    const p = priceForModel('claude-fable-5-2');
+    expect(p.input).toBe(8);
+    expect(p.output).toBe(40);
+    expect(p.cacheRead).toBeCloseTo(0.2, 6);
+    expect(p.cacheWrite).toBeCloseTo(10, 6);
+    // A dated snapshot of it prices the same.
+    expect(priceForModel('claude-fable-5-2-20261109').input).toBe(8);
+    // The old premium-plus model keeps its own price: a task pinned to it is
+    // still billed correctly.
+    expect(priceForModel('claude-fable-5-1').input).toBe(10);
+  });
+
   it('defaults unknown models to sonnet pricing', () => {
     expect(priceForModel('some-future-model').input).toBe(3);
   });

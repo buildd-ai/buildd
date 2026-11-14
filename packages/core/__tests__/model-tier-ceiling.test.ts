@@ -25,6 +25,8 @@ const CATALOG: CatalogEntry[] = [
   entry('claude-sonnet-5', 2),
   entry('claude-opus-5', 5),
   entry('claude-fable-5-1', 10),
+  // Exactly on the premium-plus floor ($8): the band is half-open [8, 20).
+  entry('claude-fable-5-2', 8),
   entry('gpt-5-mini', 0.25, 'openai', 'openai'),
   entry('gpt-5.3', 2.5, 'openai', 'openai'),
   entry('gpt-5.3-pro', 15, 'openai', 'openai'),
@@ -120,6 +122,10 @@ describe('modelSpendBand — provider-independent', () => {
     expect(modelSpendBand('claude-sonnet-5', CATALOG)).toBe('standard');
     expect(modelSpendBand('anthropic/claude-opus-5', CATALOG)).toBe('premium');
     expect(modelSpendBand('claude-fable-5-1[1m]', CATALOG)).toBe('premium-plus');
+    // $8.00 input is the premium ceiling AND the premium-plus floor; it must
+    // band as premium-plus, or a premium cap would let the tier default through.
+    expect(modelSpendBand('claude-fable-5-2', CATALOG)).toBe('premium-plus');
+    expect(modelSpendBand('claude-fable-5-2[1m]', CATALOG)).toBe('premium-plus');
     expect(modelSpendBand('gpt-5-mini', CATALOG)).toBe('budget');
     expect(modelSpendBand('openai/gpt-5.3', CATALOG)).toBe('standard');
     expect(modelSpendBand('gpt-5.3-pro', CATALOG)).toBe('premium-plus');
@@ -142,6 +148,12 @@ describe('enforceModelCeiling — exact pins and re-maps', () => {
       expect(v.denied.code).toBe('model_above_ceiling');
       expect(v.denied.requested.model).toBe('claude-fable-5-1');
     }
+  });
+
+  test('the current premium-plus default at exactly $8 is denied under a premium cap too', () => {
+    const v = enforceModelCeiling({ ceiling, model: 'claude-fable-5-2', origin: 'model_pin', catalog: CATALOG });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.denied.code).toBe('model_above_ceiling');
   });
 
   test('an OpenAI model priced over the cap is denied the same way', () => {

@@ -4604,6 +4604,12 @@ export interface FleetRunner {
   name: string;
   /** Set while a person holds this runner (`buildd hold`): it starts nothing new. */
   hold?: RunnerHold | null;
+  /**
+   * Set while this runner's own model login is at a usage limit (a seat-keyed
+   * `backend_pauses` row this runner's worker reported): it waits for the
+   * reset and starts nothing on that provider until then. `resetsAt` is ISO.
+   */
+  usageWall?: { backend: string; resetsAt: string } | null;
   /** Set while it applies a self-update (spec 47c97f48): updating, with the agents paused for it, or stuck. No free slots. */
   update?: import('./runner-update').RunnerUpdateView | null;
   /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */

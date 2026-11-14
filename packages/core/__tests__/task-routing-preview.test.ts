@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import { inferRouting, computeRoutingPreview } from '../task-routing-preview';
+import { bundledTierEntry } from '../model-tier-defaults';
+
+// The bundled premium model, whatever release it is on today.
+const PREMIUM = bundledTierEntry('premium').model;
+const STANDARD = bundledTierEntry('standard').model;
 
 describe('inferRouting', () => {
   describe('emitsPlan → coordination', () => {
@@ -135,7 +140,7 @@ describe('computeRoutingPreview', () => {
   it('names the default plainly when nothing is given', () => {
     const p = computeRoutingPreview({});
     expect(p.tier).toBe('standard');
-    expect(p.model).toBe('claude-sonnet-5');
+    expect(p.model).toBe(STANDARD);
     expect(p.inferred).toBe(false);
     expect(p.reason).toContain('no kind/complexity given');
     expect(p.reason).toContain('defaulted to engineering/normal');
@@ -163,7 +168,7 @@ describe('computeRoutingPreview', () => {
   it('an explicit tier bypasses kind/complexity routing entirely', () => {
     const p = computeRoutingPreview({ tier: 'premium', kind: 'observation', complexity: 'simple' });
     expect(p.tier).toBe('premium');
-    expect(p.model).toBe('claude-opus-5');
+    expect(p.model).toBe(PREMIUM);
     expect(p.reason).toContain('tier:"premium" pinned');
   });
 
@@ -185,7 +190,7 @@ describe('computeRoutingPreview — stated role', () => {
   it('names a role floor that raises the tier', () => {
     const p = computeRoutingPreview({ roleSlug: 'builder', roleModel: 'opus' });
     expect(p.tier).toBe('premium');
-    expect(p.model).toBe('claude-opus-5');
+    expect(p.model).toBe(PREMIUM);
     expect(p.reason).toContain('role "builder" floor premium raised standard → premium');
     expect(p.reason).not.toContain('Pass complexity');
   });
@@ -212,7 +217,7 @@ describe('computeRoutingPreview — stated role', () => {
   it('an explicit tier beats a role exact-id pin (email-agent case)', () => {
     const p = computeRoutingPreview({ tier: 'premium', roleSlug: 'email-agent', roleModel: 'claude-sonnet-5' });
     expect(p.tier).toBe('premium');
-    expect(p.model).toBe('claude-opus-5');
+    expect(p.model).toBe(PREMIUM);
     expect(p.reason).toContain('tier:"premium" pinned');
   });
 

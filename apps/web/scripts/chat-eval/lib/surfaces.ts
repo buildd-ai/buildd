@@ -115,6 +115,8 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   probe_budget_wall: 'write',
   // get and set: multi-op, so a write whole (fail closed).
   platform_rerank: 'write',
+  // list and set/apply/clear/revert: multi-op, so a write whole (fail closed).
+  manage_platform_tiers: 'write',
   close_pr: 'write',
   approve_pr_override: 'write',
   update_pr: 'write',

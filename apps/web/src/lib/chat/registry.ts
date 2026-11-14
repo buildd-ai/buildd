@@ -340,6 +340,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   withdraw_capability_request: { reason: 'worker-only', note: 'A running agent withdraws its own pending access request; a person in chat decides it on Settings instead.' },
   upload_artifact: { reason: 'worker-only', note: 'Uploads a worker-produced file.' },
   platform_rerank: { reason: 'not-yet', note: 'Platform operator switch for reranking with the platform key; chat has no operator tool yet. Operators use buildd_admin or the admin API.' },
+  manage_platform_tiers: { reason: 'not-yet', note: 'The platform default model per tier is a platform operator control; chat has no operator tool yet. Operators use Settings › Models or buildd_admin.' },
   probe_budget_wall: { reason: 'not-yet', note: 'Asks runners to recheck a provider limit; chat has no runner-control tool yet.' },
   get_page_source: { reason: 'worker-only', note: 'The visual auditor asks where its own pages come from.' },
   dispatch_visual_qa: { reason: 'worker-only', note: 'A worker without an authenticated gh starts the Visual QA capture for its own branch.' },

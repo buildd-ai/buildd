@@ -2,9 +2,10 @@ import { describe, it, expect } from 'bun:test';
 import { buildTierPoolRows, costLabel, suggestWeightFor, winLabel } from './tier-pools-view';
 import { summarizeArm } from '@buildd/core/tier-pool';
 import { ARM_ROUTE_SPECS } from './model-picker';
+import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 
 const tiers = {
-  'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1', source: 'default' },
+  'premium-plus': { provider: 'anthropic', model: TIER_DEFAULTS['premium-plus'].model, source: 'default' },
   premium: { provider: 'anthropic', model: 'claude-opus-5', source: 'team' },
   standard: { provider: 'anthropic', model: 'claude-sonnet-5', source: 'team' },
   budget: { provider: 'anthropic', model: 'claude-haiku-4-5', source: 'catalog' },

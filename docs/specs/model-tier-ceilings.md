@@ -232,7 +232,7 @@ returns `{ kind: 'policy_denied', tier, maxTier }` (only under
 **Acceptance criteria**:
 
 - AC-1: GIVEN team cap `premium` WHEN a task with `tier: premium-plus` is created THEN 403 `policy_denied` with `binding.source = team` and no row is inserted.
-- AC-2: GIVEN team cap `premium` WHEN a queued task pinned to `claude-fable-5-1` is claimed THEN it is not claimed and `diagnostics.deferrals.tier_policy = 1`.
+- AC-2: GIVEN team cap `premium` WHEN a queued task pinned to `claude-fable-5-2` is claimed THEN it is not claimed and `diagnostics.deferrals.tier_policy = 1`.
 - AC-3: GIVEN a member's self cap `standard` WHEN they open a chat pinned `premium` THEN 403. A `budget` pin is accepted.
 - AC-4: GIVEN admin cap `budget` and self cap `premium-plus` for a member THEN their effective maximum is `budget` with `binding.source = member_admin`.
 - AC-5: GIVEN workspace cap `standard` on workspace A WHEN a `premium` task runs in workspace B THEN it is claimed normally.

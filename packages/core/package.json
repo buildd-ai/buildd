@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.399.1",
+  "version": "0.400.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -57,6 +57,8 @@
     "./model-upgrade-policy": "./model-upgrade-policy.ts",
     "./model-upgrade-policy-store": "./model-upgrade-policy-store.ts",
     "./model-tier-adoption-report": "./model-tier-adoption-report.ts",
+    "./model-tier-platform-default": "./model-tier-platform-default.ts",
+    "./model-tier-platform-default-store": "./model-tier-platform-default-store.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./coding-policy": "./coding-policy.ts",
