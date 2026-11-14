@@ -26,8 +26,10 @@ process.env.CRON_SECRET = 'test-secret';
 
 import { GET } from './route';
 
+const WS = '00000000-0000-0000-0000-0000000000bb';
 const skill = (o: Record<string, unknown>) => ({
   id: '00000000-0000-0000-0000-00000000000' + (o.n ?? 1), team_id: '00000000-0000-0000-0000-0000000000aa',
+  workspace_id: WS, git_config: { skillRetirement: { mode: 'acting' } },
   slug: 'old', enabled: true, is_role: false, pinned: false, content: 'c', content_hash: 'h',
   created_at: ago(300), last_claimed_at: null, last_restored_at: null, ...o,
 });
@@ -39,7 +41,7 @@ const inserts = () => executed.filter(q => q.includes('INSERT INTO skill_lifecyc
 beforeEach(() => {
   executed.length = 0;
   mockExecute.mockClear();
-  delete process.env.SKILL_RETIREMENT_MODE;
+  delete process.env.SKILL_RETIREMENT_ACTING_WORKSPACES;
   tables = { skills: [skill({})], started: ago(120), schedules: [], active: [] };
 });
 
@@ -53,23 +55,57 @@ describe('GET /api/cron/skill-lifecycle', () => {
   it('defaults to recording: writes an event and never updates a skill', async () => {
     const res = await GET(req());
     const body = await res.json();
-    expect(body).toMatchObject({ ok: true, mode: 'recording', archivable: 1, archived: 0 });
+    expect(body).toMatchObject({ ok: true, archivable: 1, archived: 0 });
     expect(updates()).toHaveLength(0);
     expect(inserts()).toHaveLength(1);
   });
 
   it('acting mode disables the archivable skill and audits it', async () => {
-    process.env.SKILL_RETIREMENT_MODE = 'acting';
+    process.env.SKILL_RETIREMENT_ACTING_WORKSPACES = WS;
     const body = await (await GET(req())).json();
-    expect(body).toMatchObject({ mode: 'acting', archived: 1 });
+    expect(body).toMatchObject({ archived: 1 });
     expect(updates()).toHaveLength(1);
     expect(updates()[0]).toContain('enabled = false');
     expect(updates()[0]).not.toMatch(/DELETE/i);
     expect(inserts()).toHaveLength(1);
   });
 
+  it('acting configured but workspace not allowlisted: refused, recorded only', async () => {
+    delete process.env.SKILL_RETIREMENT_ACTING_WORKSPACES;
+    const body = await (await GET(req())).json();
+    expect(body.archived).toBe(0);
+    expect(body.refusals[0]).toMatchObject({ refusal: 'not_allowlisted' });
+    expect(updates()).toHaveLength(0);
+    expect(inserts()).toHaveLength(1);
+  });
+
+  it('unrecognised mode resolves to recording', async () => {
+    process.env.SKILL_RETIREMENT_ACTING_WORKSPACES = WS;
+    tables.skills = [skill({ git_config: { skillRetirement: { mode: 'ACT' } } })];
+    const body = await (await GET(req())).json();
+    expect(body.archived).toBe(0);
+    expect(updates()).toHaveLength(0);
+    expect(inserts()).toHaveLength(1);
+  });
+
+  it('off does nothing: no event, no update', async () => {
+    tables.skills = [skill({ git_config: { skillRetirement: { mode: 'off' } } })];
+    const body = await (await GET(req())).json();
+    expect(body.archivable).toBe(0);
+    expect(updates()).toHaveLength(0);
+    expect(inserts()).toHaveLength(0);
+  });
+
+  it('acting is refused before the archive window and says so', async () => {
+    process.env.SKILL_RETIREMENT_ACTING_WORKSPACES = WS;
+    tables.started = ago(20);
+    const body = await (await GET(req())).json();
+    expect(body.refusals[0]).toMatchObject({ refusal: 'archive_window_not_elapsed', telemetryDays: 20, archiveDays: 60 });
+    expect(updates()).toHaveLength(0);
+  });
+
   it('archives nothing while telemetry is younger than the archive window', async () => {
-    process.env.SKILL_RETIREMENT_MODE = 'acting';
+    process.env.SKILL_RETIREMENT_ACTING_WORKSPACES = WS;
     tables.started = ago(20);
     const body = await (await GET(req())).json();
     expect(body.archivable).toBe(0);
@@ -84,7 +120,7 @@ describe('GET /api/cron/skill-lifecycle', () => {
     ['a role row', { skills: [skill({ is_role: true })] }],
     ['a pinned skill', { skills: [skill({ pinned: true })] }],
   ])('exempts a skill protected by %s', async (_n, patch) => {
-    process.env.SKILL_RETIREMENT_MODE = 'acting';
+    process.env.SKILL_RETIREMENT_ACTING_WORKSPACES = WS;
     tables = { ...tables, ...patch } as typeof tables;
     const body = await (await GET(req())).json();
     expect(body.archivable).toBe(0);
@@ -101,7 +137,7 @@ describe('GET /api/cron/skill-lifecycle', () => {
       expect(inserts()).toHaveLength(0);
     });
     it('a confirmed link to a retired spec writes a proposal event and never disables, even in acting mode', async () => {
-      process.env.SKILL_RETIREMENT_MODE = 'acting';
+      process.env.SKILL_RETIREMENT_ACTING_WORKSPACES = WS;
       tables.links = [link('retired')];
       await GET(req());
       expect(inserts()).toHaveLength(1);
