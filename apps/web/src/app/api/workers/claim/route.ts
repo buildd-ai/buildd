@@ -108,7 +108,7 @@ import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { BudgetWalls, accountLimitRefusal, accountWorkerSlotLimit, describeBudgetWalls, isoOrNull } from './claim-limits';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
-import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
+import { attachRoleConfig, attachSkillBundles, recordClaimedSkillUsage } from './skill-and-role-injection';
 import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { checkDelegationGate } from './delegation-gate';
@@ -3278,6 +3278,7 @@ export async function POST(req: NextRequest) {
   // runs under (workspace override > team default). See ./skill-and-role-injection.
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
+  await recordClaimedSkillUsage(claimedWorkers, filteredTasks);
   if (!cloudExecutor) await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
   // Question gate: marks workers whose questions go through
   // /api/workers/[id]/question-check. No-op for a runner that never sent the feature.

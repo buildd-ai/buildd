@@ -14,6 +14,7 @@ import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
 import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
 import { can } from '@/lib/permissions';
+import { isRestoration, recordRestored } from '@buildd/core/skill-lifecycle-events';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function computeContentHash(content: string): string {
@@ -222,6 +223,8 @@ export async function PATCH(
       .set(updates)
       .where(eq(workspaceSkills.id, id))
       .returning();
+
+    if (isRestoration(existing.enabled, updated.enabled)) await recordRestored(updated);
 
     if (updated.isRole && isStorageConfigured()) {
       const wsIdForBundle = updated.workspaceId ?? wsIds[0];

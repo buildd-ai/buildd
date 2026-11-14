@@ -4181,6 +4181,53 @@ export const workspaceSkills = pgTable('workspace_skills', {
   accountIdx: index('workspace_skills_account_idx').on(t.accountId),
 }));
 
+// Record-only claim counter per skill (spec "Skill candidates, usage telemetry
+// and retirement"). One row per skill, raised by one each time a claim delivers
+// it; nothing reads it to act yet.
+export const skillUsage = pgTable('skill_usage', {
+  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).primaryKey(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  claimCount: integer('claim_count').notNull().default(0),
+  firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }).notNull().defaultNow(),
+  lastClaimedAt: timestamp('last_claimed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  teamIdx: index('skill_usage_team_idx').on(t.teamId),
+}));
+
+// Append-only audit of skill lifecycle changes (spec "Skill candidates, usage
+// telemetry and retirement"). 'stale' / 'would_archive' are what the recording
+// mode writes; 'archived' (skill disabled, never deleted) only in acting mode;
+// 'restored' whenever a skill goes enabled false -> true.
+export const skillLifecycleEvents = pgTable('skill_lifecycle_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  action: text('action').notNull().$type<'stale' | 'would_archive' | 'archived' | 'restored' | 'retirement_proposed'>(),
+  mode: text('mode').notNull().$type<'recording' | 'acting' | 'manual'>(),
+  reason: text('reason'),
+  previousEnabled: boolean('previous_enabled'),
+  previousContentHash: text('previous_content_hash'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  skillIdx: index('skill_lifecycle_events_skill_idx').on(t.skillId, t.createdAt),
+  teamIdx: index('skill_lifecycle_events_team_idx').on(t.teamId),
+}));
+
+// A skill-to-spec link a person explicitly confirmed. Suggestions are computed
+// on read and never stored; only a confirmation lands here. A link to a
+// retired/superseded spec lets the retirement sweep record a proposal, never a disable.
+export const skillSpecLinks = pgTable('skill_spec_links', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  confirmedBy: text('confirmed_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pairUnique: uniqueIndex('skill_spec_links_pair_unique').on(t.skillId, t.specId),
+  specIdx: index('skill_spec_links_spec_idx').on(t.specId),
+}));
+
 // Per-task routing outcome — captured on completion/failure so the calibration
 // cron can quantify whether the router's model pick matched reality.
 // See plans/buildd/smart-model-routing.md — feedback loop requires this table.

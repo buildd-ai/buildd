@@ -13,7 +13,16 @@ import { lazyRequester, pickVisibleRoleRowLazy, roleRowsInScope } from '@buildd/
 import { resolveClaudeAiArtifactAccess, type ClaimTasksResponse, type SkillBundle } from '@buildd/shared';
 import { generateDownloadUrl, isStorageConfigured } from '@/lib/storage';
 import { noteBodyReads } from '@/lib/body-read-monitor';
+import { recordSkillUsage } from './skill-usage';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+/** Row ids delivered per claimed worker, kept off the wire shape. */
+const deliveredRowIds = new WeakMap<object, Set<string>>();
+function noteDelivered(cw: object, ids: string[]): void {
+  const set = deliveredRowIds.get(cw) ?? new Set<string>();
+  for (const id of ids) set.add(id);
+  deliveredRowIds.set(cw, set);
+}
 
 /** The claim-candidate rows these blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -99,6 +108,7 @@ export async function attachSkillBundles(
 
     if (bundles.length > 0) {
       (cw as any).skillBundles = bundles;
+      noteDelivered(cw, bodyIds);
       // Counted for the bulk-read alert; a claim is never refused for it.
       await noteBodyReads(accountId, bodyIds, 'claim_skills', { enforce: false });
     }
@@ -237,6 +247,7 @@ export async function attachRoleConfig(
         content: delivered,
       };
       await noteBodyReads(accountId, [role.id], 'claim_role', { enforce: false });
+      noteDelivered(cw, [role.id]);
     }
 
     if (storageConfigured && role?.configStorageKey && role?.configHash) {
@@ -255,5 +266,33 @@ export async function attachRoleConfig(
         maxTurns: role.maxTurns ?? null,
       };
     }
+  }
+}
+
+/**
+ * Record-only usage telemetry: raise the claim count of every skill (and role
+ * row) this claim delivered, one statement per team. Runs after
+ * `attachSkillBundles` and role resolution; never refuses a claim.
+ */
+export async function recordClaimedSkillUsage(
+  claimedWorkers: ClaimTasksResponse['workers'],
+  claimedTasks: readonly ClaimedTask[],
+): Promise<void> {
+  try {
+    const byTeam = new Map<string, Set<string>>();
+    for (const cw of claimedWorkers) {
+      const task = claimedTasks.find(t => t.id === cw.taskId);
+      const teamId = (task as any)?.workspace?.teamId as string | undefined;
+      if (!teamId) continue;
+      const ids = byTeam.get(teamId) ?? new Set<string>();
+      for (const id of deliveredRowIds.get(cw) ?? []) ids.add(id);
+      byTeam.set(teamId, ids);
+    }
+    const now = new Date();
+    for (const [teamId, ids] of byTeam) {
+      await recordSkillUsage({ teamId, skillIds: [...ids], now });
+    }
+  } catch (err) {
+    console.warn('[skill-usage] recording failed (claim unaffected):', err instanceof Error ? err.message : err);
   }
 }
