@@ -243,7 +243,7 @@
       "method": "GET"
     },
     {
-      "$comment": "Skill retirement sweep. Daily at 04:30 EST. Defaults to recording: only writes skill_lifecycle_events and never changes a skill; SKILL_RETIREMENT_MODE=acting disables (never deletes) skills unclaimed past the archive window, and nothing is archivable until skill_usage telemetry has run that long.",
+      "$comment": "Skill retirement sweep. Daily at 04:30 EST. Defaults to recording: only writes skill_lifecycle_events and never changes a skill; a workspace gitConfig.skillRetirement.mode of off|recording|acting sets the mode (acting needs platform-owner approval via SKILL_RETIREMENT_ACTING_WORKSPACES and a recording report that has run the archive window); acting disables (never deletes) skills unclaimed past it, and nothing is archivable until skill_usage telemetry has run that long.",
       "title": "Buildd: Skill Lifecycle",
       "profile": "module:knowledge",
       "path": "/api/cron/skill-lifecycle",
