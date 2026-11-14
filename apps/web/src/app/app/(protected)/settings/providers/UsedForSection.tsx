@@ -9,7 +9,7 @@ import { AUTOMATIC, EMBEDDING_REINDEX_LINE, embeddingView, loneProviderLine, use
 import { EMBEDDING_MODEL_PLACEHOLDER, type EmbeddingCredentialProvider } from '@buildd/core/providers/embedding';
 
 /** Sized and bordered like the Select beside it (triggerClasses 'md'). */
-const INPUT = 'w-full min-h-11 md:min-h-9 px-3 bg-surface-1 border-2 border-border-strong focus:border-primary outline-none font-mono text-base md:text-[13px]';
+const INPUT = 'w-full min-h-11 md:min-h-9 px-3 bg-surface-1 border-2 border-border-strong focus:border-primary outline-none font-mono text-base md:text-xs';
 
 /**
  * Which connected provider serves each surface. With one provider connected
