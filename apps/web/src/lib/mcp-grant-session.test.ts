@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { grantTokenScopes, resolveGrantWorkspaceRef, type GrantWorkspaceChoice } from './mcp-grants';
-import { GRANT_CHOICES_SHOWN, grantWorkspaceRefusal } from './mcp-grant-session';
+import { GRANT_CHOICES_SHOWN, grantCreateTarget, grantWorkspaceRefusal } from './mcp-grant-session';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
@@ -67,5 +67,59 @@ describe('grantTokenScopes', () => {
   it('a read-only grant reads only; a write grant keeps role-level permissions', () => {
     expect(grantTokenScopes(['read'])).toEqual(['tasks:read', 'analytics:read']);
     expect(grantTokenScopes(['read', 'write'])).toBeNull();
+  });
+});
+
+describe('grantCreateTarget (manage_workspaces create on an account-level connection)', () => {
+  const create = (params: Record<string, unknown> = {}) => ({ action: 'manage_workspaces', params: { action: 'create', name: 'n', ...params } });
+  const refusalBody = (r: ReturnType<typeof grantCreateTarget>) => {
+    if (!r || r.kind !== 'refused') throw new Error('expected a refusal');
+    return JSON.parse(r.result.content[0].text);
+  };
+
+  it('is not applicable to any other call', () => {
+    expect(grantCreateTarget({ action: 'manage_workspaces', params: { action: 'list' } }, choices)).toBeNull();
+    expect(grantCreateTarget({ action: 'list_tasks', params: {} }, choices)).toBeNull();
+    expect(grantCreateTarget(undefined, choices)).toBeNull();
+  });
+
+  it('one reachable team: binds to a workspace in it and passes its teamId on', () => {
+    const args = create();
+    const r = grantCreateTarget(args, [choices[0], choices[2]]);
+    expect(r).toMatchObject({ kind: 'ok', workspace: { teamId: 't1' } });
+    expect(args.params.teamId).toBe('t1');
+  });
+
+  it('several teams and none named: refused with the team choices, nothing picked', () => {
+    const body = refusalBody(grantCreateTarget(create(), choices));
+    expect(body.error).toBe('team_required');
+    expect(body.teams.map((t: { teamId: string }) => t.teamId).sort()).toEqual(['t1', 't2']);
+  });
+
+  it('a team named by id or by name resolves among reachable teams only', () => {
+    expect(grantCreateTarget(create({ teamId: 't2' }), choices)).toMatchObject({ kind: 'ok', workspace: { workspaceId: B } });
+    const byName = create({ team: 'T2' });
+    expect(grantCreateTarget(byName, choices)).toMatchObject({ kind: 'ok', workspace: { teamId: 't2' } });
+    expect(byName.params.teamId).toBe('t2');
+    // A team name passed in teamId works too.
+    expect(grantCreateTarget(create({ teamId: 't1' }), choices)).toMatchObject({ kind: 'ok', workspace: { teamId: 't1' } });
+  });
+
+  it("the connection's own default workspace anchors a create that names no team", () => {
+    expect(grantCreateTarget(create(), choices, choices[1])).toMatchObject({ kind: 'ok', workspace: { teamId: 't2' } });
+  });
+
+  it('a team the connection does not reach is refused and never echoed', () => {
+    const r = grantCreateTarget(create({ teamId: UNGRANTED }), choices);
+    const body = refusalBody(r);
+    expect(body.error).toBe('team_not_granted');
+    expect(JSON.stringify(body)).not.toContain(UNGRANTED);
+  });
+
+  it('a workspaceId with no team named anchors the create in that workspace\'s team', () => {
+    const args = create({ workspaceId: B });
+    expect(grantCreateTarget(args, choices)).toMatchObject({ kind: 'ok', workspace: { workspaceId: B } });
+    expect(args.params.teamId).toBe('t2');
+    expect(refusalBody(grantCreateTarget(create({ workspaceId: UNGRANTED }), choices)).error).toBe('workspace_not_granted');
   });
 });

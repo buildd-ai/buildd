@@ -674,6 +674,90 @@ describe('POST /api/workspaces', () => {
     expect(mockEmit).not.toHaveBeenCalledWith(expect.objectContaining({ teamId: 'team-shared' }));
   });
 
+  it('an API key naming a team other than its own is refused, not moved to its own team', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-api', level: 'admin', scopes: null });
+    const res = await POST(new NextRequest('http://localhost:3000/api/workspaces', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer bld_testkey' }),
+      body: JSON.stringify({ name: 'x', teamId: 'team-other' }),
+    }));
+    expect(res.status).toBe(403);
+    expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+  });
+
+  // ── Account-level MCP connection (grant session) ─────────────────────────
+  //
+  // The canonical /api/mcp transport binds every self-call to one granted
+  // workspace (x-buildd-workspace); the session then acts as that
+  // workspace's team account at the user's role there. A create lands in
+  // that team and nowhere else.
+
+  describe('grant session', () => {
+    const grantAccount = (over: Record<string, unknown> = {}) => ({
+      id: 'team-a-session', type: 'user', teamId: 'team-a', level: 'admin', scopes: null,
+      workspaceIds: ['ws-a'], oauthGrantId: 'grant-1', grantScopes: ['read', 'write'],
+      sessionUserId: 'user-1', oauthUserId: 'user-1', actsAs: 'person', ...over,
+    });
+    const grantPost = (body: Record<string, unknown>) => POST(new NextRequest('http://localhost:3000/api/workspaces', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json', authorization: 'Bearer eyJ.grant.jwt', 'x-buildd-workspace': 'ws-a' }),
+      body: JSON.stringify(body),
+    }));
+
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      teamRoles = { 'team-a': 'admin', 'team-b': 'owner' };
+      mockEnqueueFullIngestJob.mockClear();
+      mockCan.mockClear();
+    });
+
+    it('creates in the team it is bound to, with or without that teamId named', async () => {
+      for (const body of [{ name: 'x' }, { name: 'x', teamId: 'team-a' }]) {
+        mockAuthenticateApiKey.mockResolvedValue(grantAccount());
+        const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'x' }]) }));
+        mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+        const res = await grantPost(body);
+        expect(res.status).toBe(200);
+        expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ teamId: 'team-a' }));
+      }
+      // A person grant is held to the person's own role in that team.
+      expect(mockCan).toHaveBeenCalledWith({ kind: 'user', userId: 'user-1' }, 'create_workspace', 'team-a');
+    });
+
+    it('refuses a team the connection does not reach, and writes nothing', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(grantAccount());
+      const res = await grantPost({ name: 'x', teamId: 'team-b' });
+      expect(res.status).toBe(403);
+      expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+    });
+
+    it('refuses a member-level session (the user is not team admin there)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(grantAccount({ level: 'worker' }));
+      const res = await grantPost({ name: 'x' });
+      expect(res.status).toBe(403);
+      expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+    });
+
+    it('refuses a person grant whose own role lacks create_workspace', async () => {
+      teamRoles['team-a'] = 'member';
+      mockAuthenticateApiKey.mockResolvedValue(grantAccount());
+      const res = await grantPost({ name: 'x' });
+      expect(res.status).toBe(403);
+      expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+    });
+
+    it('knowledgeIngest=false: stores false and queues no ingest job', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(grantAccount());
+      const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'r', knowledgeIngest: false }]) }));
+      mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+      const res = await grantPost({ repoUrl: 'https://github.com/user/r', knowledgeIngest: false });
+      expect(res.status).toBe(200);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ knowledgeIngest: false, teamId: 'team-a' }));
+      expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+    });
+  });
+
   it('refuses to link an installation that does not belong to the workspace team', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockGetInstallationOwnerTeamIds.mockImplementation(async () => ['team-other']);
