@@ -3044,7 +3044,7 @@ describe('POST /api/workers/claim', () => {
 
       it('an exact premium-plus model pin is held under a premium cap', async () => {
         ceilingTest.inputs = { team: { team: { agent: 'premium' } } };
-        withTask({ context: { model: 'claude-fable-5-1', modelPinned: true } });
+        withTask({ context: { model: 'claude-fable-5-2', modelPinned: true } });
         const data = await claim();
         expect(data.workers.length).toBe(0);
         expect(data.diagnostics?.deferrals?.tier_policy).toBe(1);

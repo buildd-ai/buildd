@@ -15,6 +15,7 @@ import { auditTierModels, type LiveModel } from '../model-tier-liveness';
 
 // Shape of a real /v1/models page, trimmed to the fields we use.
 const LIVE: LiveModel[] = [
+  { id: 'claude-fable-5-2', display_name: 'Claude Fable 5.2' },
   { id: 'claude-fable-5-1', display_name: 'Claude Fable 5.1' },
   { id: 'claude-fable-5', display_name: 'Claude Fable 5' },
   { id: 'claude-opus-5', display_name: 'Claude Opus 5' },
@@ -33,6 +34,19 @@ describe('auditTierModels', () => {
   test('no tier default is superseded by a newer model in its own family', () => {
     const { superseded } = auditTierModels(TIER_DEFAULTS, LIVE);
     expect(superseded).toEqual([]);
+  });
+
+  test('flags a premium-plus default left on the previous Fable release', () => {
+    // The drift this file exists for, on the tier that actually moved: Fable
+    // 5.2 shipped CHEAPER ($8/$40 against $10/$50) and the audit must say so
+    // if premium-plus is ever left behind on 5.1.
+    const { superseded } = auditTierModels(
+      { 'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1' } },
+      LIVE,
+    );
+    expect(superseded).toEqual([
+      { tier: 'premium-plus', model: 'claude-fable-5-1', newer: 'claude-fable-5-2' },
+    ]);
   });
 
   test('flags an ID the API does not return (retired or typo)', () => {

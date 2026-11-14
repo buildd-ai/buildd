@@ -14,7 +14,7 @@ import type { KitTier, ModelPolicy, PolicyRoute } from './types';
 export const DEFAULT_MODEL_POLICY: ModelPolicy & { tiers: Record<KitTier, PolicyRoute> } = {
   version: 'bundled',
   tiers: {
-    'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1' },
+    'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-2' },
     premium: { provider: 'anthropic', model: 'claude-opus-5' },
     standard: { provider: 'anthropic', model: 'claude-sonnet-5' },
     budget: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },

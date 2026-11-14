@@ -19,7 +19,9 @@
  * router's budget downshift and 95% pause on spend that never happened.
  *
  * Source: platform.claude.com/docs/en/about-claude/pricing
- * Last verified: 2026-09-04 (against the Anthropic pricing page + OpenRouter)
+ * Last verified: 2026-11-14 (Fable 5.2 row, against OpenRouter and the Claude
+ * Code 2.1.321 changelog; the rest 2026-09-04 against the Anthropic pricing
+ * page + OpenRouter)
  */
 import type { ModelUsage } from './db/schema';
 import type { CatalogEntry } from './model-catalog';
@@ -37,8 +39,13 @@ interface TokenPrice {
 }
 
 // Keyed by tier; model IDs are matched to a tier by substring in priceForModel.
-const TIER_PRICES: Record<'fable' | 'opusLegacy' | 'opus' | 'sonnet5' | 'sonnet' | 'haiku', TokenPrice> = {
-  // Fable / Mythos — the frontier tier, ~2x Opus.
+const TIER_PRICES: Record<'fable52' | 'fable' | 'opusLegacy' | 'opus' | 'sonnet5' | 'sonnet' | 'haiku', TokenPrice> = {
+  // Fable 5.2, the premium-plus default: $8/$40 with $0.20 cache reads, from
+  // the public catalog (2026-11-14) and the Claude Code 2.1.321 changelog.
+  // Cheaper than the rest of the family, so it needs its own row: the generic
+  // fable row would overstate it by 25% and trip the budget gates early.
+  fable52: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+  // Fable 5 / 5.1 / Mythos — the frontier tier, ~2x Opus.
   fable: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   // Opus 4 and 4.1 only. Every Opus from 4.5 on is the $5/$25 row below.
   opusLegacy: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
@@ -90,6 +97,8 @@ export function priceForModel(modelId: string): TokenPrice {
   if (fromCatalog) return fromCatalog;
 
   const id = modelId.toLowerCase();
+  // 5.2 before the generic family row; a dated snapshot (`-20261109`) matches too.
+  if (/fable-5-2(?:$|-)/.test(id)) return TIER_PRICES.fable52;
   if (id.includes('fable') || id.includes('mythos')) return TIER_PRICES.fable;
   // Opus 4 / 4.1 are the only $15 models; match them before the generic opus row.
   if (/opus-4(-1)?($|-\d{8})/.test(id)) return TIER_PRICES.opusLegacy;
