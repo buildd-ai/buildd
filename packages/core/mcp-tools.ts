@@ -6145,6 +6145,7 @@ export async function handleBuilddAction(
       }
       if (typeof params.workspaceId !== 'string' || !params.workspaceId) return errorResult('workspaceId is required.');
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) return errorResult(`Workspace "${params.workspaceId}" not found.`);
       const query = new URLSearchParams({ workspaceId: wsId, window: rawWindow });
       if (typeof params.limit === 'number') query.set('limit', String(params.limit));
       const data = await api(`/api/analytics/procedure-digest?${query}`);
