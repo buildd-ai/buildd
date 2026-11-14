@@ -18,7 +18,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261029.1",
-    "wrangler": "4.156.1"
+    "wrangler": "4.162.0"
   },
   "license": "FSL-1.1-ALv2"
 }
