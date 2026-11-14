@@ -2325,6 +2325,31 @@ export interface ClaimTasksResponse {
   diagnostics?: ClaimDiagnostics;
   /** ISO timestamp when the account's OAuth budget resets (present when budget is exhausted but tenant tasks were still served) */
   budgetResetsAt?: string | null;
+  /**
+   * The caller's team falls back when its subscription login hits a usage
+   * wall (packages/core/wall-fallback.ts): a runner whose own login is held
+   * for that provider keeps claiming it, and the claim delivers the team's
+   * fallback credential for the walled run. Absent: hold the login as before.
+   */
+  wallFallback?: { claude?: boolean };
+}
+
+/** Settings › Models: the team's subscription-wall fallback (GET/PUT /api/teams/[id]/wall-fallback). */
+export interface WallFallbackOption {
+  id: 'anthropic' | 'openrouter' | 'litellm' | 'endpoint';
+  /** "the team's Anthropic API key" */
+  label: string;
+  available: boolean;
+  /** Last four characters of the key it would use; never more. */
+  last4: string | null;
+}
+
+export interface WallFallbackSettingsResponse {
+  setting: { fallback: 'wait' | WallFallbackOption['id']; maxCostPerDayUsd: number | null };
+  options: WallFallbackOption[];
+  /** What fallback runs cost since UTC midnight. */
+  spentTodayUsd: number;
+  canManage: boolean;
 }
 
 /** @deprecated Use Memory service types instead. Kept for backward compat. */

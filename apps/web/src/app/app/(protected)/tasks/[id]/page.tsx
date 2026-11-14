@@ -73,6 +73,7 @@ import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import { toTaskArtifactItem, taskVisibleArtifacts } from './task-artifact-items';
 import { observeWorkspaceMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
+import { describeWallFallback } from '@buildd/core/wall-fallback';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 import { readUsageWall, wallHolder } from '@/lib/provider-wall';
 import { deriveTaskModel } from '@/lib/model-presentation';
@@ -1315,6 +1316,13 @@ async function TaskDetailPage({
                             )}
                           </div>
                         );
+                      })()}
+                      {/* A run on the team's subscription-wall fallback says so, with
+                          whose login hit the limit, what served it and what it cost
+                          (provider-failover spec, "Subscription wall fallback"). */}
+                      {(() => {
+                        const line = describeWallFallback((worker as { wallFallback?: unknown }).wallFallback, parseFloat(worker.costUsd?.toString() || '0'));
+                        return line ? <p className="mt-1 text-meta text-text-secondary" data-testid="worker-wall-fallback">{line}</p> : null;
                       })()}
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>

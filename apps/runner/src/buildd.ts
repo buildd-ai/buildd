@@ -336,7 +336,7 @@ export class BuilddClient {
     return out;
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean; claudeLoginId?: string | null; loginUse?: RunnerLoginUse; limitWalls?: ReportedLimitWall[] } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean; claudeLoginId?: string | null; loginUse?: RunnerLoginUse; limitWalls?: ReportedLimitWall[] } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null; wallFallback?: { claude?: boolean } }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
@@ -443,7 +443,7 @@ export class BuilddClient {
         }
       }
     }
-    return { workers, diagnostics: data.diagnostics, budgetResetsAt: data.budgetResetsAt };
+    return { workers, diagnostics: data.diagnostics, budgetResetsAt: data.budgetResetsAt, ...(data.wallFallback ? { wallFallback: data.wallFallback } : {}) };
   }
 
   async updateWorker(workerId: string, update: {

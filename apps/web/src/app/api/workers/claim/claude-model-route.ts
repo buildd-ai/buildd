@@ -49,6 +49,14 @@ export interface ClaudeRouteInput {
   llmProviderOverride: boolean;
   runnerSupportsEndpoint: boolean;
   encryptionKeySet: boolean;
+  /**
+   * A credential the team reserved for subscription walls
+   * (`heldForWall`, @buildd/core/wall-fallback): this run does not get it, so
+   * it is not this run's route. A held endpoint that wins the ranking still
+   * keeps the key it beat from being delivered (./agent-endpoint-injection
+   * attaches no key where the endpoint won), so it reads as the seat.
+   */
+  held?: 'anthropic_api_key' | 'agent_endpoint' | null;
 }
 
 export interface AnthropicKeyRow {
@@ -101,8 +109,9 @@ export async function resolveClaudeModelRoute(
   try {
     if (input.runnerSupportsEndpoint) {
       const decision = await deps.resolveEndpoint({ ...scope, backend: 'claude' });
-      if (decision?.winner === 'endpoint') return 'agent_endpoint';
+      if (decision?.winner === 'endpoint') return input.held === 'agent_endpoint' ? 'oauth_seat' : 'agent_endpoint';
     }
+    if (input.held === 'anthropic_api_key') return 'oauth_seat';
     const keys = await deps.listAnthropicKeys(scope);
     // Re-check the scoping in code so a loose query cannot widen it.
     const live = keys.some(k =>
