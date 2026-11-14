@@ -58,6 +58,12 @@ mock.module('@buildd/core/agent-endpoint', () => ({
 let cloudflareRef: { accountId: string; gatewayId: string | null; keys: Record<string, string> } | null = null;
 
 const { setTeamAgentEndpoint, listTeamAgentEndpoints, verifyAgentEndpointSecret, previewAgentEndpointModels, VERIFY_MODEL } = await import('./agent-endpoint-settings');
+const { bundledTierEntry } = await import('@buildd/core/model-tier-defaults');
+// The bundled premium and standard models, whatever release they are on today.
+const PREMIUM = bundledTierEntry('premium').model;
+const STANDARD = bundledTierEntry('standard').model;
+// The verify (budget) model under a proxy's own name: its dated snapshot, the same model.
+const VERIFY_TWIN = `${VERIFY_MODEL}-20261007`;
 
 const KEY = 'sk-agent-example-1234';
 const ok = async () => new Response('{}', { status: 200 });
@@ -227,17 +233,17 @@ function fakeEndpoint(models: string[] | number | Response, allowed: string[] | 
 }
 
 describe('setTeamAgentEndpoint with model discovery', () => {
-  const UNDATED = ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'];
+  const PROXY_NAMES = ['claude-opus-5', 'claude-sonnet-5', VERIFY_TWIN];
 
-  it('a key restricted to undated names: probes the undated id, saves, and stores the same-model alias', async () => {
-    const ep = fakeEndpoint(UNDATED, UNDATED);
+  it('a key restricted to the proxy\'s own names: probes the same model under its listed name, saves, and stores the alias', async () => {
+    const ep = fakeEndpoint(PROXY_NAMES, PROXY_NAMES);
     const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: custom }, { lookup: publicLookup, fetcher: ep.fetcher });
     expect(r).toMatchObject({ ok: true, endpoint: { health: 'healthy' } });
     expect(ep.calls[0].url).toBe('https://litellm.example.com/v1/models');
     expect(ep.calls[0].headers.get('x-api-key')).toBe(KEY);
-    expect(ep.messages().map((c) => c.model)).toEqual(['claude-haiku-4-5']);
-    expect(JSON.parse(stored[0].value).models).toEqual({ [VERIFY_MODEL]: 'claude-haiku-4-5' });
-    if (r.ok) expect(r.endpoint.models).toEqual({ [VERIFY_MODEL]: 'claude-haiku-4-5' });
+    expect(ep.messages().map((c) => c.model)).toEqual([VERIFY_TWIN]);
+    expect(JSON.parse(stored[0].value).models).toEqual({ [VERIFY_MODEL]: VERIFY_TWIN });
+    if (r.ok) expect(r.endpoint.models).toEqual({ [VERIFY_MODEL]: VERIFY_TWIN });
   });
 
   it('derives aliases for registry models too, never across families', async () => {
@@ -245,11 +251,11 @@ describe('setTeamAgentEndpoint with model discovery', () => {
       { tier: 'standard', provider: 'anthropic', model: 'claude-sonnet-4-5-20250929', surface: 'agent', workspaceId: null },
       { tier: 'premium', provider: 'anthropic', model: 'claude-opus-4-1-20250805', surface: null, workspaceId: null },
     ];
-    const ep = fakeEndpoint(['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5']);
+    const ep = fakeEndpoint(['claude-sonnet-4-5', VERIFY_TWIN, 'claude-sonnet-5', 'claude-opus-5']);
     const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: custom }, { lookup: publicLookup, fetcher: ep.fetcher });
     expect(r.ok).toBe(true);
     expect(JSON.parse(stored[0].value).models).toEqual({
-      [VERIFY_MODEL]: 'claude-haiku-4-5',
+      [VERIFY_MODEL]: VERIFY_TWIN,
       'claude-sonnet-4-5-20250929': 'claude-sonnet-4-5',
     });
   });
@@ -263,7 +269,7 @@ describe('setTeamAgentEndpoint with model discovery', () => {
   });
 
   it('a derived alias never overrides an explicit one', async () => {
-    const ep = fakeEndpoint([...UNDATED, 'team-haiku']);
+    const ep = fakeEndpoint([...PROXY_NAMES, 'team-haiku']);
     const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { ...custom, models: { [VERIFY_MODEL]: 'team-haiku' } } }, { lookup: publicLookup, fetcher: ep.fetcher });
     expect(r.ok).toBe(true);
     expect(ep.messages().map((c) => c.model)).toEqual(['team-haiku']);
@@ -448,16 +454,16 @@ describe('setTeamAgentEndpoint: capabilities.toolSearch', () => {
 
 describe('previewAgentEndpointModels', () => {
   it('lists the endpoint\'s models and one prefilled row per model buildd asks for, without the key', async () => {
-    const ep = fakeEndpoint(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']);
+    const ep = fakeEndpoint([PREMIUM, STANDARD, VERIFY_TWIN]);
     const r = await previewAgentEndpointModels({ teamId: 't', endpoint: custom }, { lookup: publicLookup, fetcher: ep.fetcher });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.available).toBe(true);
-    expect(r.listed).toEqual(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']);
+    expect(r.listed).toEqual([PREMIUM, STANDARD, VERIFY_TWIN]);
     const budget = r.rows.find((x) => x.model === VERIFY_MODEL);
-    expect(budget).toMatchObject({ value: 'claude-haiku-4-5', source: 'equivalent', served: true });
+    expect(budget).toMatchObject({ value: VERIFY_TWIN, source: 'equivalent', served: true });
     expect(budget!.tiers).toContain('budget');
-    expect(r.rows.find((x) => x.model === 'claude-sonnet-5')).toMatchObject({ value: null, source: 'listed', served: true });
+    expect(r.rows.find((x) => x.model === STANDARD)).toMatchObject({ value: null, source: 'listed', served: true });
     expect(ep.calls.map((c) => c.url)).toEqual(['https://litellm.example.com/v1/models']);
     expect(JSON.stringify(r)).not.toContain(KEY);
   });
@@ -531,7 +537,7 @@ describe('listTeamAgentEndpoints', () => {
     }];
     const [e] = await listTeamAgentEndpoints('t');
     expect(e.mapping.find((m) => m.model === VERIFY_MODEL)).toEqual({ model: VERIFY_MODEL, tiers: ['budget'], sent: 'claude-haiku-4-5' });
-    expect(e.mapping.find((m) => m.model === 'claude-sonnet-5')).toEqual({ model: 'claude-sonnet-5', tiers: ['standard'], sent: 'claude-sonnet-5' });
+    expect(e.mapping.find((m) => m.model === STANDARD)).toEqual({ model: STANDARD, tiers: ['standard'], sent: STANDARD });
     expect(e.mapping.find((m) => m.model === 'claude-sonnet-4-5-20250929')?.tiers).toEqual(['standard']);
     expect(e.mapping.find((m) => m.model === 'claude-legacy-1')).toEqual({ model: 'claude-legacy-1', tiers: [], sent: 'team-legacy' });
     expect(JSON.stringify(e)).not.toContain(KEY);

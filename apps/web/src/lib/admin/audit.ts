@@ -7,15 +7,18 @@ export type PlatformAdminAuditAction = 'experiment.update' | 'team.experiment_fl
   | 'decision_measurement.update' | 'decision_measurement.retire'
   /** A platform-wide runtime switch (e.g. rerank on the platform key). */
   | 'platform_setting.update'
+  /** The platform default model of a tier (lib/admin/platform-tier-defaults.ts): set, apply a suggestion, clear, revert. */
+  | `platform_tier_default.${'set' | 'apply' | 'clear' | 'revert'}`
   /** Owner recovery actions (operator-recovery spec §7.2): `recovery.<capability>`. */
   | `recovery.${AdminRecoveryCapability}`
   | `claim_learning.${import('./claim-learning-actions').ClaimLearningCapability}`;
 
 export type PlatformAdminAuditTarget = 'experiment' | 'team' | 'decision_feature' | 'decision_measurement'
-  | 'cause' | 'incident' | 'automation' | 'platform_setting';
+  | 'cause' | 'incident' | 'automation' | 'platform_setting' | 'platform_tier_default';
 
 export interface PlatformAdminAuditInput {
-  actorAccountId: string;
+  /** The API account behind the write. Null for a signed-in operator session, which has no account; the row's `after` names the person. */
+  actorAccountId: string | null;
   action: PlatformAdminAuditAction;
   targetType: PlatformAdminAuditTarget;
   targetId: string;

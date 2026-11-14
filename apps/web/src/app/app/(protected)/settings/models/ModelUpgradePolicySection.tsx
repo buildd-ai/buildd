@@ -40,6 +40,7 @@ export function withheldText(t: TierAdoption): string | null {
   if (!t.newer || !t.withheld) return null;
   switch (t.withheld.reason) {
     case 'pinned': return 'This tier is pinned to a specific model.';
+    case 'platform': return 'buildd’s default for every team holds this tier; pin a model to override it.';
     case 'manual': return 'Your upgrade policy is manual.';
     case 'soak': return `Soaking, moves automatically ${shortDate(t.withheld.eligibleAt)}.`;
   }
