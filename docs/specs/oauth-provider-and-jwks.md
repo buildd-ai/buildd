@@ -2,7 +2,7 @@
 title: OAuth Provider & Signing Keys
 status: active
 owner: max
-last_verified: 2026-10-25
+last_verified: 2026-11-13
 summary: OAuth tokens MUST be PKCE-protected and confined to their grant or legacy workspace, connection changes MUST apply on the next request, and JWKS MUST publish public assertion keys.
 domain: auth
 surfaces: [apps/web/src/app/api/oauth/token/route.ts, apps/web/src/lib/signing-keys.ts, apps/web/src/lib/signing-key-windows.ts, apps/web/src/app/api/.well-known/jwks.json/route.ts]
@@ -1296,11 +1296,25 @@ team's other workspaces would otherwise allow.
   its workspace.
 - Team administration is refused to a grant session whatever the user's role:
   secrets, providers, accounts and keys, team settings and members,
-  connectors, model tiers, experiments, evidence backends and workspace
-  creation. So is runner plumbing: `/api/runner/*` (credential and token
+  connectors, model tiers, experiments and evidence backends. So is runner plumbing: `/api/runner/*` (credential and token
   minting), heartbeats, local-session presence, Quality Scout and knowledge
   ingest job claims, inbound webhooks, and the team-wide stale-worker sweep.
   Reading a Scout run's command log stays open (it is `read_evidence`).
+- Workspace creation is the one team-level write a write grant reaches
+  (`POST /api/workspaces`, MCP `manage_workspaces action=create`). A create
+  names no existing workspace, so the transport resolves a team instead:
+  `teamId` (a team id or name) among the teams the grant reaches now, else
+  the team of a named `workspaceId`, else the connection's own default, else
+  the only reachable team; with several and none named it is refused
+  (`team_required`) with the teams, and a team it does not reach is refused
+  (`team_not_granted`) without echoing it. The self-call is bound to a
+  granted workspace in that team, and the route creates in the bound
+  workspace's team only: naming any other team is 403 and nothing is
+  written. It needs `create_workspace` in that team: the session's level
+  (the user's team role) for every grant, and for a `person` grant the
+  person's own permission too. A read grant is refused. The new workspace
+  joins what the connection reaches only if the grant covers that team as a
+  whole (AC-86, AC-91); the grant itself is never widened.
 - Every handler that picks a workspace for the caller (a PR number, a worker,
   a repo URL, a default when none is named) picks among the granted
   workspaces only: PR-number resolution, PR review, explain, worker
@@ -1351,6 +1365,12 @@ team's other workspaces would otherwise allow.
   runs THEN only the granted workspace comes back.
 - AC-68: GIVEN a team owner's write grant WHEN it calls a team-administration
   or runner-plumbing route THEN there is no session.
+- AC-96: GIVEN a team owner's write grant bound to a workspace of team A WHEN
+  it creates a workspace naming team A, or naming no team, THEN it is created
+  in A; naming a team B the user also belongs to THEN 403 and nothing is
+  written; GIVEN a read grant THEN there is no session. GIVEN
+  `knowledgeIngest: false` THEN the row stores false and no ingest job is
+  queued.
 - AC-69: GIVEN a grant revoked, a membership removed, or the granted
   workspace moved to a team the user is not in WHEN the next call arrives
   THEN it reaches nothing and writes nothing.

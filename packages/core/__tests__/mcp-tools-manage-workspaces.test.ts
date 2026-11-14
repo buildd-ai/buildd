@@ -252,6 +252,27 @@ describe('manage_workspaces — knowledge ingest switch passes through to the wo
     expect(JSON.parse((api.mock.calls[0] as any)[1].body).knowledgeIngest).toBe(false);
   });
 
+  it('create forwards teamId and a gitConfig object to POST /api/workspaces', async () => {
+    const api = mock(async () => ({ id: 'ws-123', name: 'Test', repo: 'owner/repo' }));
+    await handleBuilddAction(
+      api as unknown as ApiFn,
+      'manage_workspaces',
+      { action: 'create', repoUrl: 'owner/repo', teamId: 'team-1', knowledgeIngest: false, gitConfig: { executor: 'host' }, defaultBranch: 'main' },
+      createContext(),
+    );
+    const body = JSON.parse((api.mock.calls[0] as any)[1].body);
+    expect(body.teamId).toBe('team-1');
+    expect(body.knowledgeIngest).toBe(false);
+    expect(body.gitConfig).toEqual({ executor: 'host', defaultBranch: 'main' });
+  });
+
+  it('create without workspaceId is not refused for a missing workspace', async () => {
+    const api = mock(async () => ({ id: 'ws-123', name: 'Test' }));
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'create', name: 'Test' }, createContext({ workspaceId: undefined } as any));
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse((api.mock.calls[0] as any)[1].body)).not.toHaveProperty('teamId');
+  });
+
   it('create leaves the field out when it is not given (server default on)', async () => {
     const api = mock(async () => ({ id: 'ws-123', name: 'Test' }));
     await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'create', name: 'Test' }, createContext());

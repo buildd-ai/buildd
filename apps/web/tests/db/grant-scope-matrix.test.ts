@@ -370,11 +370,34 @@ describe('admin and runner surfaces', () => {
       ['GET', '/api/secrets'], ['POST', '/api/secrets'], ['GET', '/api/accounts'], ['POST', '/api/accounts'],
       ['GET', `/api/teams/${s.teamA}`], ['GET', `/api/teams/${s.teamA}/members`], ['GET', '/api/model-tiers'],
       ['GET', '/api/connectors'], ['GET', '/api/providers'], ['GET', '/api/experiments'], ['GET', '/api/evidence-backends'],
-      ['POST', '/api/workspaces'],
     ];
     for (const [method, path] of paths) {
       expect(await authenticateApiKey(s.jwt, req(s, path, { method, body: method === 'GET' ? undefined : { workspaceId: s.granted } }))).toBeNull();
     }
+  });
+
+  // Workspace creation is the one team-level write a grant session reaches
+  // (task b7da90b7): only in the team of the workspace it is bound to, at the
+  // user's role there. Every other team is refused and nothing is written.
+  test('a write grant creates a workspace in its bound team only; a read grant cannot', async () => {
+    const s = await setup();
+    const { POST } = await import('../../src/app/api/workspaces/route');
+    const name = `created-${rand()}`;
+    const other = await POST(req(s, '/api/workspaces', { method: 'POST', body: { name, teamId: s.teamB } }));
+    expect(other.status).toBe(403);
+    expect(await q(sql`SELECT id FROM workspaces WHERE name = ${name}`)).toHaveLength(0);
+
+    const res = await POST(req(s, '/api/workspaces', {
+      method: 'POST', body: { name, teamId: s.teamA, repoUrl: `https://github.com/org-a/${name}`, knowledgeIngest: false },
+    }));
+    expect(res.status).toBe(200);
+    const created = await res.json() as { id: string };
+    const [row] = await q<{ team_id: string; knowledge_ingest: boolean }>(sql`SELECT team_id, knowledge_ingest FROM workspaces WHERE id = ${created.id}::uuid`);
+    expect(row).toMatchObject({ team_id: s.teamA, knowledge_ingest: false });
+    expect(await q(sql`SELECT id FROM knowledge_ingest_jobs WHERE workspace_id = ${created.id}::uuid`)).toHaveLength(0);
+
+    const r = await setup({ scopes: ['read'] });
+    expect(await authenticateApiKey(r.jwt, req(r, '/api/workspaces', { method: 'POST', body: { name: `ro-${rand()}` } }))).toBeNull();
   });
 
   test('runner plumbing is refused', async () => {

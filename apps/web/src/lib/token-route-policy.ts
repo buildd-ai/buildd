@@ -109,8 +109,13 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     // but only with the workspace named (the check above holds it to them).
     if (url.pathname === '/api/workers/active' && !queryWorkspace) return false;
     // Listing workspaces is filtered to the token's own (listReachableWorkspaceIds),
-    // so name-to-id resolution works; creating one would escape the restriction.
-    if (url.pathname === '/api/workspaces' && request.method !== 'GET' && request.method !== 'HEAD') return false;
+    // so name-to-id resolution works; creating one would escape a scoped key's
+    // restriction. A grant session is the one exception: it is bound to one
+    // granted workspace, and the route holds the create to that workspace's
+    // team at the user's role there (api/workspaces POST). A read-only grant
+    // still fails the scope check below.
+    if (url.pathname === '/api/workspaces' && request.method !== 'GET' && request.method !== 'HEAD'
+      && !(isGrantSession(token) && request.method === 'POST')) return false;
     const filteredCollections = ['/api/tasks', '/api/missions', '/api/initiatives', '/api/prs', '/api/releases', '/api/specs', '/api/specs/approvals'];
     if ((request.method === 'GET' || request.method === 'HEAD') && filteredCollections.includes(url.pathname) && !url.searchParams.get('workspaceId')) return false;
   }
