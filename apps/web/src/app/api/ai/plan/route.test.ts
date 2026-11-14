@@ -6,13 +6,14 @@ import type { Tier, TierEntry } from '@buildd/core/model-tier-defaults';
 import { handlePlanRequest, type PlanDeps, type PlanRow, type AiApiAccount } from '@/lib/ai/handlers';
 import type { PoolArmPick } from '@/lib/ai/plan';
 import { resolveTierCeiling } from '@buildd/shared';
+import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 
 const NOW = new Date('2026-09-27T12:00:00.000Z');
 const ACCOUNT: AiApiAccount = { id: 'acct-app', teamId: 'team-a' };
 const WS = '33333333-3333-4333-8333-333333333333';
 
 const REGISTRY: Record<Tier, TierEntry> = {
-  'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1', source: 'default' },
+  'premium-plus': { provider: 'anthropic', model: TIER_DEFAULTS['premium-plus'].model, source: 'default' },
   premium: { provider: 'anthropic', model: 'claude-opus-5', source: 'team', defaultEffort: 'high' },
   standard: { provider: 'anthropic', model: 'claude-sonnet-5', source: 'workspace', defaultEffort: 'medium', defaultMaxTurns: 8 },
   budget: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'catalog' },
