@@ -134,7 +134,7 @@ import {
 } from './personal-credential-injection';
 import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } from './claude-model-route';
 import { applyWallFallbackCredentials, type WallFallbackPlan } from './wall-fallback-injection';
-import { loadWallFallbackSetting, resolveTeamWallFallback, type TeamWallFallback } from '@/lib/subscription-fallback';
+import { loadWallFallbackSetting, resolveTeamWallFallback, teamWallCover, type TeamWallFallback } from '@/lib/subscription-fallback';
 import { heldForWall, isSubscriptionPinned, wallFallbackRoute, WALL_FALLBACK_CONTEXT_KEY, type WallFallbackSetting } from '@buildd/core/wall-fallback';
 import { USAGE_WALL_CONTEXT_KEY } from '@/lib/provider-wall';
 import { attachGitHubCredentialModes } from './github-credential-injection';
@@ -413,6 +413,15 @@ export async function POST(req: NextRequest) {
    * Non-200 exits (401/403/400/429/422) deliberately do not use it: those are
    * error bodies the runner throws on rather than parses as a claim response.
    */
+  // A subscription runner whose team falls back on a usage wall is told so on
+  // every claim answer, empty ones included: its runner then keeps claiming
+  // Claude work while its own login is held, and the claim delivers the
+  // fallback for the walled run (spec "Subscription wall fallback").
+  const wallCover = async (): Promise<{ wallFallback?: { claude: boolean } }> => {
+    if (account.authType !== 'oauth' || cloudExecutor || runsOnCallersSeat || !account.teamId) return {};
+    return (await teamWallCover(account.teamId)) ? { wallFallback: { claude: true } } : {};
+  };
+
   const emptyClaim = async (payload: {
     diagnostics: ClaimDiagnostics;
     budgetResetsAt?: string | null;
@@ -459,6 +468,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       workers: [],
       ...payload,
+      ...(await wallCover()),
     });
   };
 
@@ -3596,6 +3606,7 @@ export async function POST(req: NextRequest) {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
+    ...(await wallCover()),
   }, undefined, { route: req.nextUrl.pathname });
   } finally { await settleWorkChanges(); }
 }

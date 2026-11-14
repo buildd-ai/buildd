@@ -178,3 +178,18 @@ export async function resolveTeamWallFallback(
   if (fallbackCapReached(setting, spentTodayUsd)) return { use: false, setting, reason: 'cap_reached', spentTodayUsd };
   return { use: true, setting, credential, spentTodayUsd };
 }
+
+/**
+ * Whether a team's fallback would serve a walled run now (credential stored,
+ * daily cap not reached), cached a minute per team: the claim route asks it
+ * on every answer to a subscription runner, empty polls included.
+ */
+const WALL_COVER_TTL_MS = 60_000;
+const wallCoverCache = new Map<string, { at: number; covers: boolean }>();
+export async function teamWallCover(teamId: string, deps: WallFallbackDeps = DEFAULT_DEPS): Promise<boolean> {
+  const hit = wallCoverCache.get(teamId);
+  if (hit && Date.now() - hit.at < WALL_COVER_TTL_MS) return hit.covers;
+  const covers = (await resolveTeamWallFallback({ teamId, workspaceId: null }, deps)).use;
+  wallCoverCache.set(teamId, { at: Date.now(), covers });
+  return covers;
+}

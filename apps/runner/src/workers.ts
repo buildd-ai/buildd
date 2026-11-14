@@ -68,7 +68,7 @@ import {
   ContextBreaker,
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
-import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit, type LimitProvider } from './provider-limit';
+import { ProviderLimitHolds, WallFallbackCover, limitFromEvent, providerOfBackend, type ProviderLimit, type LimitProvider } from './provider-limit';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
@@ -841,6 +841,8 @@ export class WorkerManager {
   private contextBreaker = new ContextBreaker();
   /** Providers this runner's login is at its limit on (provider-limit.ts): new work waits, running work finishes. */
   private providerLimits = new ProviderLimitHolds();
+  // The team falls back when this login is walled (claim answer `wallFallback`): a held provider it covers still claims.
+  private wallCover = new WallFallbackCover();
   private startableProviders(): LimitProvider[] {
     return this.codexAuth === 'none' ? ['claude'] : ['claude', 'codex'];
   }
@@ -2345,6 +2347,7 @@ export class WorkerManager {
       this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
       this.clearClaimDegradedAlertIfRecovered();
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
+      this.wallCover.note((claimPollResult as { wallFallback?: { claude?: boolean } }).wallFallback);
 
       // Server reports account budget exhausted but still served tenant tasks.
       // Emit an informational event for the UI — no circuit breaker needed since
@@ -2416,7 +2419,7 @@ export class WorkerManager {
           // The broad poll is provider-blind, so the server may hand back a row for
           // a provider this runner's login holds. Do not start it: give it back.
           const rowProvider = providerOfBackend(claimedWorker.task?.backend ?? claimedWorker.backend);
-          const heldUntil = this.providerLimits.heldUntil(rowProvider);
+          const heldUntil = this.wallCover.covers(rowProvider) ? null : this.providerLimits.heldUntil(rowProvider);
           if (heldUntil !== null) {
             const until = new Date(heldUntil).toISOString();
             console.log(`[WorkerManager] ${rowProvider} login at its limit until ${until} — releasing claimed worker ${claimedWorker.id}`);
@@ -2681,7 +2684,8 @@ export class WorkerManager {
     // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
     // A runner with no Codex login of its own cannot start Codex work, so a held Claude login holds every claim:
     // pause the poll (running sessions are untouched) until the first hold lifts.
-    if (this.providerLimits.allHeld(Date.now(), this.startableProviders())) {
+    // A provider the team's wall fallback covers is still startable: the claim brings its credential.
+    if (this.providerLimits.allHeld(Date.now(), this.startableProviders().filter(p => !this.wallCover.covers(p)))) {
       this.claimsPaused = true;
       this.claimsPausedUntil = Math.max(this.claimsPausedUntil, this.providerLimits.nextLift() ?? untilMs);
       // The global pause lifts at nextLift, which can precede this limit's reset.
@@ -2783,7 +2787,9 @@ export class WorkerManager {
     // `backend` (a server predating that field), so an unkeyable nudge is
     // attempted rather than silently dropped.
     const pausedCtx = pausedContextFor(this.contextBreaker, task);
-    if (pausedCtx) {
+    const coveredByFallback = (task.backend || 'claude') === 'claude' && this.wallCover.covers('claude')
+      && pausedCtx?.key === 'account:claude';
+    if (pausedCtx && !coveredByFallback) {
       const until = pausedCtx.until;
       console.log(`[WorkerManager] Context ${pausedCtx.key} paused (until ${until ? new Date(until).toISOString() : 'unknown'}) — skipping Pusher assignment for task ${task.id}`);
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, taskId: task.id, diagnosticReason: 'context_paused' });
@@ -2796,7 +2802,7 @@ export class WorkerManager {
 
     // This runner's login is at its limit on the task's provider (provider-limit.ts).
     const taskProvider = providerOfBackend(task.backend);
-    const providerUntil = this.providerLimits.heldUntil(taskProvider);
+    const providerUntil = this.wallCover.covers(taskProvider) ? null : this.providerLimits.heldUntil(taskProvider);
     if (providerUntil !== null) {
       console.log(`[WorkerManager] ${taskProvider} login at its limit until ${new Date(providerUntil).toISOString()} — not claiming task ${task.id}`);
       this.noteClaimOutcome(task.id, { at: Date.now(), reason: 'budget_exhausted', until: new Date(providerUntil).toISOString(), walls: [{ kind: 'runner_seat', backend: taskProvider, resetsAt: new Date(providerUntil).toISOString() }] });
@@ -2827,6 +2833,7 @@ export class WorkerManager {
       throw err;
     }
     const { workers: claimed, diagnostics } = claimResult;
+    this.wallCover.note((claimResult as { wallFallback?: { claude?: boolean } }).wallFallback);
     const outcome: ClaimOutcome = claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now());
     this.noteClaimOutcome(task.id, outcome);
     if (claimed.length > 0) this.refusalBackoff.clear(task.id);

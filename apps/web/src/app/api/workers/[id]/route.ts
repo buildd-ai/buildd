@@ -51,6 +51,8 @@ import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapEr
 import { activeBudgetPauses, recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { isRepeatWallEpisode, usageWallFromReport, usageWallRecord, USAGE_WALL_CONTEXT_KEY, wallHolder, wallResetClock } from '@/lib/provider-wall';
 import { isReviewerTaskContext, publishReviewBudgetWait } from '@/lib/provider-wall-status';
+import { resolveTeamWallFallback } from '@/lib/subscription-fallback';
+import { isSubscriptionPinned } from '@buildd/core/wall-fallback';
 import { isMachineLoginWallError, parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { credentialExpiredAlert } from '@/lib/credential-expired-alert';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
@@ -3543,6 +3545,24 @@ async function patchWorker(
       }
     }
 
+    // The team's subscription-wall fallback (provider-failover spec,
+    // "Subscription wall fallback"): a subscription runner's Claude wall, on a
+    // task not pinned to the subscription, whose team named a stored
+    // credential with room under its daily cap. The task is claimable now, and
+    // the next claim delivers that credential for the run. Never for a run
+    // that was itself the fallback: its wall (the key's own limit) waits.
+    let wallFallbackLabel: string | null = null;
+    if (
+      walledBackend === 'claude' && !failoverBackend && account.authType === 'oauth' && teamId
+      && !tenantCtx?.tenantId && !isSubscriptionPinned(budgetTaskCtx) && !(worker as { wallFallback?: unknown }).wallFallback
+    ) {
+      const fb = await resolveTeamWallFallback({ teamId, workspaceId: taskForBudget?.workspaceId ?? null });
+      if (fb.use) {
+        wallFallbackLabel = fb.credential.label;
+        console.log(`[workers PATCH] Task ${worker.taskId}: Claude login walled, the team falls back to ${fb.credential.served}: claimable now`);
+      }
+    }
+
     // Reset task to pending (not failed) — retried when budget resets, or
     // immediately on Codex when a failover backend was resolved.
     // Guard: don't re-queue a cancelled task even when its worker hit a budget wall.
@@ -3551,7 +3571,7 @@ async function patchWorker(
     // and no "budget paused" flag: another runner can take it at once, and the
     // walled runner's claims are deferred by its own seat-keyed pause, so no
     // claim lands back in the same wall.
-    const budgetStartAt = failoverBackend || runnerSeatWall ? null : (() => {
+    const budgetStartAt = failoverBackend || runnerSeatWall || wallFallbackLabel ? null : (() => {
       const wakeAt = earliestAlternateReset && earliestAlternateReset < budgetResetsAt
         ? earliestAlternateReset
         : budgetResetsAt;
@@ -3568,7 +3588,7 @@ async function patchWorker(
         ...(budgetStartAt && { startAt: budgetStartAt }),
         context: {
           ...existingCtx,
-          ...(!runnerSeatWall && {
+          ...(!runnerSeatWall && !wallFallbackLabel && {
             budgetExhausted: true,
             // Persisted so every UI surface (detail banner, list/sidebar/mobile
             // badges) can show WHEN it retries without an account join.
@@ -3642,6 +3662,9 @@ async function patchWorker(
         title: `⏳ ${walledLabel} usage limit: work waits until ${wallResetClock(budgetResetsAt)}`,
         message: failoverBackend
           ? `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} is at its limit; work moves to ${backendLabel(failoverBackend)}.`
+          : wallFallbackLabel
+          ? `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} is at its limit until ${wallResetClock(budgetResetsAt)}. ` +
+            `Work runs on ${wallFallbackLabel} meanwhile, metered per token.`
           : `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} is at its limit until ${wallResetClock(budgetResetsAt)}. ` +
             'Tasks on it wait and resume by themselves; no attempt is used.',
         url: `https://buildd.dev/app/tasks/${worker.taskId}`,
