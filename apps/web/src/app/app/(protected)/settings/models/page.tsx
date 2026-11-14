@@ -10,6 +10,7 @@ import ModelTiersClient from './ModelTiersClient';
 import TierLimitSection from './TierLimitSection';
 import ChatTierPolicySection from './ChatTierPolicySection';
 import ModelUpgradePolicySection from './ModelUpgradePolicySection';
+import PlatformTierDefaultsSection from './PlatformTierDefaultsSection';
 import { resolveModelsQaDecisions } from './qa-state';
 
 export const dynamic = 'force-dynamic';
@@ -26,9 +27,10 @@ export const dynamic = 'force-dynamic';
  * Every section is a client component that loads its own data, so one failed
  * read blanks that section, not the page. Each control follows the permission
  * its API enforces; this only decides what renders. A team admin picks each
- * tier's primary model; traffic pools and the decision model are platform
- * operator controls (lib/admin/platform-operator-caller.ts) and render for an operator only.
- * Your own maximum is You › Keys.
+ * tier's primary model; traffic pools, the decision model and the platform
+ * defaults (the model each tier runs for every team without its own row) are
+ * platform operator controls (lib/admin/platform-operator-caller.ts) and render
+ * for an operator only. Your own maximum is You › Keys.
  *
  * `?state=decisions` (dev server only) shows sample decision overrides and
  * switch lines in the operator's Decisions row — see ./qa-state.ts.
@@ -71,6 +73,7 @@ export default async function ModelsSettingsPage({
         <TierLimitSection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ChatTierPolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ModelUpgradePolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
+        {operator && <PlatformTierDefaultsSection />}
       </Section>
 
       <Section title="Results" id="results">

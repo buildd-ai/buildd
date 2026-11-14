@@ -2970,7 +2970,7 @@ describe('POST /api/workers/claim', () => {
       expect(mockApplyModelRoutingTreatment).not.toHaveBeenCalled();
       expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
       const claimSet = sets.find(v => v.status === 'assigned');
-      expect(claimSet.predictedModel).toBe('claude-sonnet-5');
+      expect(claimSet.predictedModel).toBe(tierModel('standard'));
     });
 
     it('a treatment draw overrides the tier, and the assignment is recorded after the lock with the served model', async () => {
@@ -2983,7 +2983,7 @@ describe('POST /api/workers/claim', () => {
       expect((await res.json()).workers.length).toBe(1);
 
       const applyArgs = mockApplyModelRoutingTreatment.mock.calls[0][1];
-      expect(applyArgs.controlModel).toBe('claude-sonnet-5');
+      expect(applyArgs.controlModel).toBe(tierModel('standard'));
       // The capability check handed to the experiment is the real one, fed this runner's CLI version.
       expect(applyArgs.clientCanServe('claude-opus-5')).toBe(true);
 
@@ -3098,7 +3098,7 @@ describe('POST /api/workers/claim', () => {
         mockApplyModelRoutingTreatment.mockResolvedValue({ tier: 'premium', model: 'claude-opus-5', provider: 'anthropic', source: 'default' });
         const data = await claim();
         expect(data.workers.length).toBe(1);
-        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe(tierModel('standard'));
         expect(draw.served).toBe(false);
         expect(draw.eligibility.fallback).toBe('tier_ceiling');
       });
@@ -3186,7 +3186,7 @@ describe('POST /api/workers/claim', () => {
           workspaceOverride: false,
         });
         expect(mockRecordAgentPoolAssignment).not.toHaveBeenCalled();
-        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe(tierModel('standard'));
       });
 
       it('a challenger arm overrides the tier model and is recorded after the lock', async () => {
@@ -3196,7 +3196,7 @@ describe('POST /api/workers/claim', () => {
         mockApplyAgentPoolArm.mockReturnValue({ model: 'claude-opus-5', provider: 'anthropic' });
         await POST(claimReq());
         const applyArgs = mockApplyAgentPoolArm.mock.calls[0][1];
-        expect(applyArgs.incumbentModel).toBe('claude-sonnet-5');
+        expect(applyArgs.incumbentModel).toBe(tierModel('standard'));
         expect(applyArgs.clientCanServe('claude-opus-5')).toBe(true);
         const claimSet = sets.find(v => v.status === 'assigned');
         expect(claimSet.predictedModel).toBe('claude-opus-5');

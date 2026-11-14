@@ -116,6 +116,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   delete_skill: 'admin',
   manage_experiments: 'admin',
   manage_model_tiers: 'admin',
+  manage_platform_tiers: 'admin',
   manage_evidence_backends: 'admin',
   platform_rerank: 'admin',
   manage_secrets: 'admin',
@@ -275,6 +276,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   list_releases: 'more',
   release_status: 'more',
   platform_rerank: 'more',
+  manage_platform_tiers: 'more',
   manage_experiments: 'more',
   get_decision: 'more',
   label_decision: 'more',
@@ -418,7 +420,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'model providers', actions: ['manage_providers'] },
       { text: 'experiments', actions: ['manage_experiments'] },
       { text: 'decision audit', actions: ['get_decision', 'label_decision'] },
-      { text: 'model tiers, evidence', actions: ['manage_model_tiers', 'manage_evidence_backends'] },
+      { text: 'model tiers (team, platform), evidence', actions: ['manage_model_tiers', 'manage_platform_tiers', 'manage_evidence_backends'] },
       { text: 'platform rerank switch', actions: ['platform_rerank'] },
       { text: 'watched projects', actions: ['manage_watched_projects'] },
       { text: 'releases', actions: ['trigger_release'] },
@@ -516,6 +518,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_decision: 'one decision and the evidence to judge it',
   label_decision: 'grade a decision right, wrong or unsure',
   manage_model_tiers: 'model per tier',
+  manage_platform_tiers: 'platform default model per tier (platform admin)',
   manage_evidence_backends: 'evidence buckets',
   platform_rerank: 'rerank on the platform Voyage key: on or off',
   manage_secrets: 'encrypted MCP credential secrets',
@@ -564,6 +567,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, outcomeSpec?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   platform_rerank: '{action: "get" | "set", enabled?}',
+  manage_platform_tiers: `{action: ${alt('manage_platform_tiers')}, tier?, model?, confirm?, …}`,
   read_evidence: '{taskId?|prNumber?, grep?, …}',
   get_artifact: '{artifactId, view?, section?, grep?, full?, …}',
   manage_specs: `{action: ${alt('manage_specs')}, specId?, title?, body?, expectedVersion?, …}`,
@@ -689,7 +693,7 @@ const bool = { type: 'boolean' };
 
 const WS = 'UUID, repo name or owner/repo';
 const MISSION_WRITES: BuilddAction[] = ['manage_missions'];
-const ADMIN_SUB_ACTION_OWNERS = ['manage_experiments', 'manage_providers', 'manage_secrets', 'manage_workspaces', 'manage_watched_projects', 'manage_model_tiers', 'manage_evidence_backends'] as const;
+const ADMIN_SUB_ACTION_OWNERS = ['manage_experiments', 'manage_providers', 'manage_secrets', 'manage_workspaces', 'manage_watched_projects', 'manage_model_tiers', 'manage_platform_tiers', 'manage_evidence_backends'] as const;
 
 export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   missions: [

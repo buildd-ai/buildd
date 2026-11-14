@@ -168,8 +168,8 @@ export interface RoutedModel {
 }
 
 function entrySource(source: TierEntry['source']): PlanSource {
-  // A policy-service answer is configured policy, like a registry row.
-  if (source === 'workspace' || source === 'team' || source === 'policy') return 'registry';
+  // A platform default or a policy-service answer is configured policy, like a registry row.
+  if (source === 'workspace' || source === 'team' || source === 'platform' || source === 'policy') return 'registry';
   if (source === 'catalog') return 'catalog';
   return 'default';
 }
