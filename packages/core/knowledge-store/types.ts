@@ -46,7 +46,8 @@ export type Corpus =
   | 'plan'
   | 'session'
   | 'initiative'
-  | 'evidence';
+  | 'evidence'
+  | 'skill';
 export type QueryMode = 'hybrid' | 'vector' | 'lexical';
 
 export interface UpsertChunk {
