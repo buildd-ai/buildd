@@ -22,10 +22,24 @@ const DRIZZLE = join(import.meta.dir, '../../../../packages/core/drizzle');
 /** drizzle v1 snapshots are v8: a flat `ddl[]` of entities, columns among them. */
 type SnapshotColumn = { entityType: string; name: string; table: string; schema?: string; notNull?: boolean };
 
+/**
+ * Parallel branches leave several snapshot leaves (two migrations naming one
+ * parent); the schema is the union of every leaf, not the newest folder alone.
+ */
 function latestSnapshotColumns(): SnapshotColumn[] {
-  const tip = readdirSync(DRIZZLE).filter((f) => /^\d{14}_/.test(f)).sort().at(-1)!;
-  const snapshot = JSON.parse(readFileSync(join(DRIZZLE, tip, 'snapshot.json'), 'utf8')) as { ddl: SnapshotColumn[] };
-  return snapshot.ddl.filter((e) => e.entityType === 'columns');
+  const snaps = readdirSync(DRIZZLE)
+    .filter((f) => /^\d{14}_/.test(f))
+    .sort()
+    .map((f) => JSON.parse(readFileSync(join(DRIZZLE, f, 'snapshot.json'), 'utf8')) as { id: string; prevIds?: string[]; ddl: SnapshotColumn[] });
+  const parents = new Set(snaps.flatMap((s) => s.prevIds ?? []));
+  const leaves = snaps.filter((s) => !parents.has(s.id));
+  const byKey = new Map<string, SnapshotColumn>();
+  for (const leaf of leaves) {
+    for (const e of leaf.ddl) {
+      if (e.entityType === 'columns') byKey.set(`${e.schema ?? 'public'}.${e.table}.${e.name}`, e);
+    }
+  }
+  return [...byKey.values()];
 }
 
 let live: Map<string, boolean>;
