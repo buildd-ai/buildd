@@ -111,7 +111,7 @@ export async function recordBackendPause(opts: {
  * The pauses still in force for one backend of a team, every seat key
  * included: what the worker report compares a new wall against to tell a new
  * wall episode from one more task reporting the same wall
- * (`isRepeatWallEpisode`, ./usage-wall). Never throws; an unreadable log
+ * (`isRepeatWallEpisode`, ./provider-wall). Never throws; an unreadable log
  * answers "none", which at worst sends one extra notice.
  */
 export async function activeBudgetPauses(

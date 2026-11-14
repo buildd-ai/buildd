@@ -354,7 +354,7 @@ when it resumes.
 - A wall is recognised whatever status it arrives with: `failed`, `error`, or
   a `completed` session that delivered nothing (no PR, no structured output)
   but the wall message, in `error` or as its fallback summary
-  (`usageWallFromReport`, `apps/web/src/lib/usage-wall.ts`). The worker PATCH
+  (`usageWallFromReport`, `apps/web/src/lib/provider-wall.ts`). The worker PATCH
   route reads the latter two as the `failed` wall before anything else runs.
 - A wall MUST NOT consume one of a task's attempts (`exitCause
   budget_limited`, excluded by `consumesRetryAttempt`), mark the task failed,
@@ -383,7 +383,7 @@ when it resumes.
   runner whose login still has budget, for a runner-scoped wall). Its PR's
   `Buildd / Review approval` status is written `pending` with "Review waiting
   for model budget: resumes <time>" (`publishReviewBudgetWait`,
-  `apps/web/src/lib/review-budget-wait.ts`), never "review unavailable" or a
+  `apps/web/src/lib/provider-wall-status.ts`), never "review unavailable" or a
   person's decision.
 - The task's own per-session dollar cap is not a wall and still fails that
   task (see Per-provider pause accounting).
@@ -405,8 +405,8 @@ when it resumes.
 - AC-34: GIVEN a session-cost-cap report THEN the task fails with
   `session_budget_capped` and no `context.usageWall` is written.
 
-**Code surface**: `apps/web/src/lib/usage-wall.ts`,
-`apps/web/src/lib/review-budget-wait.ts`,
+**Code surface**: `apps/web/src/lib/provider-wall.ts`,
+`apps/web/src/lib/provider-wall-status.ts`,
 `apps/web/src/app/api/workers/[id]/route.ts` (wall normalisation, budget
 branch), `apps/web/src/lib/failure-pattern-sentinel.ts`,
 `apps/runner/src/claim-breaker.ts`, `apps/web/src/lib/home-fleet.ts`

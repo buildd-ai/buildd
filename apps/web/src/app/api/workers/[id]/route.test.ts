@@ -782,9 +782,9 @@ mock.module('@/lib/workflow/kernel-client', () => ({
 }));
 const realHandOff = await import('@/lib/workflow/hand-off');
 // A review held by a usage wall writes its pending Review approval status
-// (unit-tested in lib/review-budget-wait.test.ts); pinned here for the wiring.
+// (unit-tested in lib/provider-wall-status.test.ts); pinned here for the wiring.
 const mockPublishReviewBudgetWait = mock(async (_o: any) => true);
-mock.module('@/lib/review-budget-wait', () => ({
+mock.module('@/lib/provider-wall-status', () => ({
   isReviewerTaskContext: (ctx: any) => !!ctx && typeof ctx.reviewerFor === 'string' && ctx.reviewerFor.length > 0,
   publishReviewBudgetWait: mockPublishReviewBudgetWait,
 }));

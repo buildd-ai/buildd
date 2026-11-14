@@ -11,7 +11,7 @@
  */
 import { githubApi } from '@/lib/github';
 import { LANDING_STATUS_CONTEXT } from '@buildd/workflow-kernel/landing-gate';
-import { reviewBudgetWaitDescription } from './usage-wall';
+import { reviewBudgetWaitDescription } from './provider-wall';
 
 /** A reviewer task's context: what the review is for and where its status goes. */
 export function isReviewerTaskContext(ctx: Record<string, unknown> | null | undefined): boolean {

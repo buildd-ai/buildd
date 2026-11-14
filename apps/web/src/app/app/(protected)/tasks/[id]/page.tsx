@@ -74,7 +74,7 @@ import { toTaskArtifactItem, taskVisibleArtifacts } from './task-artifact-items'
 import { observeWorkspaceMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
-import { readUsageWall, wallHolder } from '@/lib/usage-wall';
+import { readUsageWall, wallHolder } from '@/lib/provider-wall';
 import { deriveTaskModel } from '@/lib/model-presentation';
 import { resolveShippedRelease } from '@/lib/task-ship-state';
 import { deriveTaskOrigin } from '@/lib/task-origin';
@@ -731,7 +731,7 @@ async function TaskDetailPage({
     && !hasBypassFlag(task.context as Record<string, unknown> | null, BYPASS_MISSION_BUDGET_KEY);
   const budgetBackendLabel = backendLabel(task.backend);
   const budgetResetsAtIso = (task.context as any)?.budgetResetsAt as string | undefined;
-  // The usage wall the task waits out (lib/usage-wall.ts), written for a wall
+  // The usage wall the task waits out (lib/provider-wall.ts), written for a wall
   // on one runner's own login too, which carries no budgetExhausted flag.
   const usageWall = task.status === 'pending' ? readUsageWall(task.context) : null;
 

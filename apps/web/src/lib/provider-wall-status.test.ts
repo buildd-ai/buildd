@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from 'bun:test';
 
 mock.module('@/lib/github', () => ({ githubApi: mock(async () => { throw new Error('live GitHub not used in tests'); }) }));
 
-const { isReviewerTaskContext, publishReviewBudgetWait } = await import('./review-budget-wait');
+const { isReviewerTaskContext, publishReviewBudgetWait } = await import('./provider-wall-status');
 
 describe('a review held by a usage wall', () => {
   const ctx = { reviewerFor: 'orig-task', repoFullName: 'acme/app', headSha: 'abc1234def', installationId: 42, prNumber: 7 };

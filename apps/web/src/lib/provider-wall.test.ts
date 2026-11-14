@@ -8,7 +8,7 @@ import {
   usageWallLine,
   usageWallRecord,
   USAGE_WALL_CONTEXT_KEY,
-} from './usage-wall';
+} from './provider-wall';
 
 const base = { hasStructuredOutput: false, hasPr: false };
 
