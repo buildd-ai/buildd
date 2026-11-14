@@ -257,6 +257,11 @@ path escalation or the migration inspector.
   commit whose `build` check is green, and refuses when none since
   `prodBranch` is. Newer commits are listed as not in the candidate. An
   amendment moves to the captured SHA unchanged: the fix PR's own CI ran.
+  Nothing to release is answered before any check is read and ends green
+  (`status=nothing`): a captured SHA `prodBranch` already contains, or one with
+  no feat/fix since the last tag (a docs-only commit may never get a `build`
+  check). A check still running is waited for (`--wait-pending`, 20 min in
+  `release.yml`) before the cut refuses; a red one is refused at once.
 - A release candidate has **no kernel delivery, by design**. The kernel's
   deliveries exist to drive a PR's own head forward: repair pushes, CI retries
   on its branch, review-fix rounds. A candidate's head is frozen to the SHA its
@@ -325,6 +330,11 @@ path escalation or the migration inspector.
   captured `sourceBranch` head's `build` is pending or red THEN the candidate
   is cut from the newest first-parent commit whose `build` is green, and when
   none since `prodBranch` is green nothing is pushed or opened.
+- AC-31: GIVEN `release.yml` cutting with `--require-check build` WHEN the
+  captured SHA is already in `prodBranch`, or has no feat/fix since the last
+  tag and `force` is off THEN the job ends green with `status=nothing` and no
+  check is required; WHEN the only unreleased commits' `build` is pending THEN
+  the cut waits for it up to `--wait-pending` and cuts once it is green.
 - AC-22: GIVEN a candidate workspace with no `candidate.amend` (or a strategy
   other than `workflow_dispatch`) WHEN the fix PR for its red candidate merges
   THEN nothing is dispatched, and the candidate PR, the fix task and the team

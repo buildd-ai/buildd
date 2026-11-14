@@ -784,6 +784,12 @@ const realHandOff = await import('@/lib/workflow/hand-off');
 // A review held by a usage wall writes its pending Review approval status
 // (unit-tested in lib/provider-wall-status.test.ts); pinned here for the wiring.
 const mockPublishReviewBudgetWait = mock(async (_o: any) => true);
+// The team's subscription-wall fallback: wait unless a test says otherwise.
+const mockResolveTeamWallFallback = mock(async (_opts: any) => ({ use: false, setting: { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
+mock.module('@/lib/provider-wall-fallback', () => ({
+  resolveTeamWallFallback: (...a: any[]) => (mockResolveTeamWallFallback as any)(...a),
+}));
+
 mock.module('@/lib/provider-wall-status', () => ({
   isReviewerTaskContext: (ctx: any) => !!ctx && typeof ctx.reviewerFor === 'string' && ctx.reviewerFor.length > 0,
   publishReviewBudgetWait: mockPublishReviewBudgetWait,
@@ -8739,6 +8745,46 @@ describe('PATCH /api/workers/[id]', () => {
         expect(requeue.context?.recoveryRef).toBe('origin/buildd/task-1-thing@feedc0de');
       });
     }
+
+    describe('the team falls back instead of waiting', () => {
+      const fallback = { use: true, setting: { fallback: 'anthropic', maxCostPerDayUsd: 20 }, credential: { served: 'anthropic', label: "the team's Anthropic API key", last4: null, apiKey: 'k' }, spentTodayUsd: 0 };
+      afterEach(() => {
+        mockResolveTeamWallFallback.mockImplementation(async () => ({ use: false, setting: { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
+      });
+
+      it('requeues a subscription runner\'s Claude wall claimable now, with no reset floor', async () => {
+        const { taskSets } = setupWall({ taskContext: { backendPinned: true } });
+        mockResolveTeamWallFallback.mockImplementation(async () => fallback as any);
+        await report({ status: 'failed', error: "You've hit your 5-hour limit · resets 4pm (UTC)", budgetExhausted: true });
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue).toBeTruthy();
+        expect(requeue.startAt ?? null).toBeNull();
+        expect(requeue.context?.budgetExhausted).toBeUndefined();
+        const notice = mockNotify.mock.calls.map((c: any[]) => c[0])[0];
+        expect(notice.message).toContain("the team's Anthropic API key");
+      });
+
+      it('still waits for a task pinned to the subscription', async () => {
+        const { taskSets } = setupWall({ taskContext: { subscriptionPinned: true } });
+        mockResolveTeamWallFallback.mockClear();
+        mockResolveTeamWallFallback.mockImplementation(async () => fallback as any);
+        await report({ status: 'failed', error: "You've hit your 5-hour limit · resets 4pm (UTC)", budgetExhausted: true });
+        expect(mockResolveTeamWallFallback).not.toHaveBeenCalled();
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue.startAt).toBeInstanceOf(Date);
+      });
+
+      it('waits when the walled run was itself the fallback', async () => {
+        const { taskSets } = setupWall({ taskContext: {} });
+        const w = await mockWorkersFindFirst();
+        mockWorkersFindFirst.mockResolvedValue({ ...w, wallFallback: { served: 'anthropic', label: 'x', wall: { scope: 'pool', runner: null }, at: '' } });
+        mockResolveTeamWallFallback.mockClear();
+        mockResolveTeamWallFallback.mockImplementation(async () => fallback as any);
+        await report({ status: 'failed', error: "You've hit your 5-hour limit · resets 4pm (UTC)", budgetExhausted: true });
+        expect(mockResolveTeamWallFallback).not.toHaveBeenCalled();
+        expect(taskSets.find((s: any) => s?.status === 'pending')?.startAt).toBeInstanceOf(Date);
+      });
+    });
 
     it('a wall reported as `error` is the same wait', async () => {
       const { taskSets, workerSets } = setupWall({ taskContext: { backendPinned: true } });

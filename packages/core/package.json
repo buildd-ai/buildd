@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.400.0",
+  "version": "0.401.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -61,6 +61,7 @@
     "./model-tier-platform-default-store": "./model-tier-platform-default-store.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
+    "./wall-fallback": "./wall-fallback.ts",
     "./coding-policy": "./coding-policy.ts",
     "./coding-policy-store": "./coding-policy-store.ts",
     "./providers": "./providers/index.ts",

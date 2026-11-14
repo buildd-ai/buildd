@@ -111,6 +111,16 @@ mock.module('@/lib/mcp-connector-refresh', () => ({
   refreshMcpConnectorCredential: mockRefreshMcpConnectorCredential,
 }));
 
+// The team's subscription-wall fallback (lib/provider-wall-fallback.ts). Wait by
+// default, so every other test sees the behaviour from before the setting.
+const mockLoadWallFallbackSetting = mock(async (_teamId: any) => ({ fallback: 'wait', maxCostPerDayUsd: null }) as any);
+const mockResolveTeamWallFallback = mock(async (opts: any) => ({ use: false, setting: opts?.setting ?? { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
+mock.module('@/lib/provider-wall-fallback', () => ({
+  loadWallFallbackSetting: (...a: any[]) => (mockLoadWallFallbackSetting as any)(...a),
+  resolveTeamWallFallback: (...a: any[]) => (mockResolveTeamWallFallback as any)(...a),
+  teamWallCover: async (teamId: string) => (await (mockResolveTeamWallFallback as any)({ teamId, workspaceId: null })).use,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -2165,6 +2175,89 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers).toHaveLength(1);
       expect(data.workers[0].task.backend).toBe('claude');
       expect(data.diagnostics?.deferrals?.budget_paused).toBeUndefined();
+    });
+
+    describe('subscription wall fallback (team setting)', () => {
+      const anthropicSetting = { fallback: 'anthropic', maxCostPerDayUsd: 20 };
+      const credential = { served: 'anthropic', label: "the team's Anthropic API key", last4: 'wxyz', apiKey: 'sk-ant-fallback' };
+      let workerSets: any[] = [];
+      beforeEach(() => {
+        workerSets = [];
+        mockLoadWallFallbackSetting.mockClear();
+        mockWorkersUpdate.mockImplementation(() => ({ set: mock((v: any) => { workerSets.push(v); return { where: mock(() => ({ returning: mock(() => []) })) }; }) }) as any);
+        mockLoadWallFallbackSetting.mockImplementation(async () => anthropicSetting as any);
+        mockResolveTeamWallFallback.mockImplementation(async () => ({ use: true, setting: anthropicSetting, credential, spentTodayUsd: 3 }) as any);
+      });
+      afterEach(() => {
+        mockLoadWallFallbackSetting.mockImplementation(async () => ({ fallback: 'wait', maxCostPerDayUsd: null }) as any);
+        mockResolveTeamWallFallback.mockImplementation(async (opts: any) => ({ use: false, setting: opts?.setting ?? { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
+        mockWorkersUpdate.mockImplementation(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }) as any);
+      });
+
+      it('claims a walled Claude task on the team API key, labelled, before any Codex flip', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask({ usageWall: { backend: 'claude' } })]);
+
+        const data = await (await claim()).json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].task.backend).toBe('claude');
+        expect(data.workers[0].serverApiKey).toBe('sk-ant-fallback');
+        // Labelled on the task, and it no longer reads as waiting.
+        expect(claimSet()?.context?.wallFallback).toEqual(expect.objectContaining({
+          served: 'anthropic', label: "the team's Anthropic API key", wall: expect.objectContaining({ scope: 'pool', runner: 'test-runner' }),
+        }));
+        expect('usageWall' in (claimSet()?.context ?? {})).toBe(false);
+        // And on the worker, whose cost the daily cap meters.
+        expect(workerSets).toContainEqual(expect.objectContaining({ modelRoute: 'anthropic_api_key', wallFallback: expect.objectContaining({ served: 'anthropic' }) }));
+        // The runner is told its walled login may keep claiming.
+        expect(data.wallFallback).toEqual({ claude: true });
+      });
+
+      it('never falls back a task pinned to the subscription', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask({ subscriptionPinned: true })]);
+
+        const data = await (await claim({ capabilities: [] })).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.reason).toBe('budget_exhausted');
+        expect(claimSet()).toBeNull();
+      });
+
+      it('waits once the daily cap is reached, and says why', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        mockResolveTeamWallFallback.mockImplementation(async () => ({ use: false, setting: anthropicSetting, reason: 'cap_reached', spentTodayUsd: 20 }) as any);
+
+        const data = await (await claim({ capabilities: [] })).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.reason).toBe('budget_exhausted');
+        expect(data.wallFallback).toBeUndefined();
+      });
+
+      it('withholds the reserved key from an ordinary run of a subscription runner', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), budgetExhaustedAt: null, budgetResetsAt: null, teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        mockSecretsFindMany.mockResolvedValue([
+          { id: 'sec-1', purpose: 'anthropic_api_key', accountId: null, workspaceId: null, healthStatus: 'healthy' },
+        ]);
+
+        const data = await (await claim()).json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].serverApiKey).toBeUndefined();
+        expect(claimSet()?.context?.wallFallback).toBeUndefined();
+        expect(workerSets).toContainEqual({ modelRoute: 'oauth_seat' });
+        mockSecretsFindMany.mockResolvedValue([]);
+      });
+
+      it('leaves an api runner exactly as before: no hold, no fallback', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), authType: 'api', budgetExhaustedAt: null, budgetResetsAt: null, teamId: 'team-1', maxCostPerDay: null, totalCost: '0' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+
+        const data = await (await claim()).json();
+        expect(data.workers).toHaveLength(1);
+        expect(mockLoadWallFallbackSetting).not.toHaveBeenCalled();
+        expect(data.wallFallback).toBeUndefined();
+      });
     });
 
     it('defers, never flips, a task whose creator pinned backend claude', async () => {

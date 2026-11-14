@@ -1,5 +1,6 @@
 import { isLivingSpecRevisionTask, LIVING_SPEC_REVISION_ROLE_REFUSAL } from '@/lib/revision-task-guard';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
+import { SUBSCRIPTION_PINNED_KEY } from '@buildd/core/wall-fallback';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
@@ -563,6 +564,8 @@ export async function POST(req: NextRequest) {
       release: rawRelease,
       // Agent backend that executes this task: 'claude' | 'codex'
       backend: rawBackend,
+      // true: this task never runs on the team's subscription-wall fallback; it waits for its login.
+      subscriptionOnly: rawSubscriptionOnly,
       // Whether this task requires human review before auto-merge
       requiresReview: rawRequiresReview,
       // Declared file paths/globs this task expects to create or modify.
@@ -1426,6 +1429,12 @@ export async function POST(req: NextRequest) {
     // The caller named the backend itself (not inherited): budget failover must
     // not override it. tasks.backend alone can't say so — it defaults to 'claude'.
     const backendPinnedCtx = resolvedBackend ? { [BACKEND_PINNED_KEY]: true } : {};
+    // Pinned to the subscription: never falls back when its login hits a usage
+    // wall (provider-failover spec, "Subscription wall fallback").
+    if (rawSubscriptionOnly !== undefined && typeof rawSubscriptionOnly !== 'boolean') {
+      return NextResponse.json({ error: 'subscriptionOnly must be true or false' }, { status: 400 });
+    }
+    if (rawSubscriptionOnly === true) Object.assign(backendPinnedCtx, { [SUBSCRIPTION_PINNED_KEY]: true });
 
     // Fields a mission task can inherit from its mission. Fetch once and reuse
     // for both outputRequirement and backend resolution.

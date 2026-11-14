@@ -5,6 +5,7 @@ import { loadSettingsContext } from '../_lib/settings-context';
 import { settingsReadOnly } from '@/lib/settings-nav';
 import { isPlatformOperatorCaller } from '@/lib/admin/platform-operator-caller';
 import ModelProvidersClient from '../providers/ModelProvidersClient';
+import WallFallbackSection from '../providers/WallFallbackSection';
 import { PROVIDERS_DESCRIPTION } from '../providers/provider-copy';
 import ModelTiersClient from './ModelTiersClient';
 import TierLimitSection from './TierLimitSection';
@@ -19,7 +20,8 @@ export const dynamic = 'force-dynamic';
  * Settings › Team › Models: every team model concern on one page, in the order
  * you set it up. Keys (the team's API keys, gateway and agent endpoint, one row
  * per provider), Used for (which provider serves each surface, the decision
- * model, provider routing) and Tiers (which model each tier runs, limits, upgrades).
+ * model, provider routing), When the subscription limit is reached (wait, or a
+ * team credential with a daily cap: ../providers/WallFallbackSection) and Tiers (which model each tier runs, limits, upgrades).
  * Goal grading has no control: Auto is the behaviour. Was /app/settings/providers and
  * /app/settings/ai; next.config redirects both here. Your own keys are
  * You › Keys (the old `?scope=mine` redirects there).
@@ -67,6 +69,9 @@ export default async function ModelsSettingsPage({
         qaDecisions={qaDecisions}
         workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
       />
+
+      {/* What a subscription runner does at its usage limit: wait (default) or a team credential, capped per day. */}
+      <WallFallbackSection teamId={teamId} />
 
       <Section title="Tiers" id="tiers" className="scroll-mt-20">
         <ModelTiersClient teamId={teamId} teamName={currentTeam.name ?? null} isAdmin={perms.manage_model_tiers} operator={operator} />

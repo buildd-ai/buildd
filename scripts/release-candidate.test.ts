@@ -91,7 +91,11 @@ if (a === 'api') {
     const r = find(m[1]).reviews.find((x) => x.id === Number(m[2])); r.state = 'DISMISSED'; save(); process.exit(0);
   }
   if (method === 'GET' && (m = /commits\\/([0-9a-f]{40})\\/check-runs\\?check_name=([^&]+)/.exec(path))) {
-    const runs = ((st.checks || {})[m[1]] || []).filter((r) => r.name === decodeURIComponent(m[2]));
+    // checksLater[sha] = { after: n, runs }: the n+1th read onwards sees runs (CI finishing mid-wait).
+    const reads = ((st.checkReads ||= {})[m[1]] = ((st.checkReads || {})[m[1]] || 0) + 1); save();
+    const later = (st.checksLater || {})[m[1]];
+    const source = later && reads > later.after ? later.runs : (st.checks || {})[m[1]] || [];
+    const runs = source.filter((r) => r.name === decodeURIComponent(m[2]));
     console.log(JSON.stringify({ total_count: runs.length, check_runs: runs })); process.exit(0);
   }
 }
@@ -800,6 +804,114 @@ describe('cut --require-check: only a commit CI verified is cut', () => {
     expect(r.status, r.log).toBe(0);
     expect(r.outputs.status).toBe('existing');
     expect(ghCalls(f).some((c) => c.some((x) => x.includes('check-runs')))).toBe(false);
+  });
+});
+
+describe('cut --require-check: nothing to cut is green, not a refusal', () => {
+  const gated = (f: Fixture, source: string, extra: string[] = []) => cut(f, source, ['--require-check', 'build', ...extra]);
+  const readChecks = (f: Fixture) => ghCalls(f).some((c) => c.some((x) => x.includes('check-runs')));
+  /** What a shipped release + sync-dev leaves: main fast-forwarded to dev, tagged. */
+  const shipDev = (f: Fixture, tag: string) => {
+    git(f.work, 'checkout', '-q', 'dev');
+    git(f.work, 'push', '-q', 'origin', 'dev:main');
+    git(f.work, 'tag', tag);
+    git(f.work, 'push', '-q', 'origin', tag);
+  };
+
+  // Scheduled runs of Nov 10, 11 and 13: dev's head was the release merge itself.
+  test('dev already in main: status nothing, exit 0, no check read', () => {
+    const f = fixture();
+    shipDev(f, 'v1.2.4');
+    const head = devHead(f);
+    writeFileSync(f.log, '');
+    const r = gated(f, head);
+    expect(r.status, r.log).toBe(0);
+    expect(r.outputs.status).toBe('nothing');
+    expect(r.log).toContain('already in main; nothing to release');
+    expect(r.log).not.toContain('refused');
+    expect(readChecks(f)).toBe(false);
+    expect(prs(f)).toHaveLength(0);
+  });
+
+  // Scheduled run of Nov 9: the only unreleased commit was docs-only and never got a build check.
+  test('only docs/chore since the last release, with no build check at all: status nothing, exit 0', () => {
+    const f = fixture();
+    shipDev(f, 'v1.2.4');
+    const docs = devCommit(f, 'docs: weekly research (#13)');
+    const r = gated(f, docs);
+    expect(r.status, r.log).toBe(0);
+    expect(r.outputs.status).toBe('nothing');
+    expect(r.log).toContain('No feat/fix commits since v1.2.4');
+    expect(prs(f)).toHaveLength(0);
+  });
+
+  test('--force still cuts a docs-only dev (and so still needs it green)', () => {
+    const f = fixture();
+    shipDev(f, 'v1.2.4');
+    const docs = devCommit(f, 'docs: weekly research (#13)');
+    setCheck(f, docs, 'pending');
+    const r = gated(f, docs, ['--force']);
+    expect(r.status).toBe(1);
+    expect(r.outputs.status).toBe('refused');
+  });
+});
+
+describe('cut --require-check --wait-pending: a build still running is waited for', () => {
+  const gated = (f: Fixture, source: string, extra: string[] = []) => cut(f, source, ['--require-check', 'build', '--poll-interval', '1', ...extra]);
+  const finishLater = (f: Fixture, sha: string, after: number, conclusion: 'success' | 'failure') => {
+    const st = JSON.parse(readFileSync(f.state, 'utf8'));
+    (st.checksLater ||= {})[sha] = { after, runs: [{ name: 'build', status: 'completed', conclusion }] };
+    writeFileSync(f.state, JSON.stringify(st));
+  };
+
+  // Dispatches of Nov 8, Nov 10 and Nov 14 (x2): dispatched while the merged commit's build was still running.
+  test('the head turns green while waiting: the cut is made from it', () => {
+    const f = fixture();
+    const head = devCommit(f, 'fix: landed 9s ago (#12)');
+    setCheck(f, head, 'pending');
+    finishLater(f, head, 1, 'success');
+    const r = gated(f, head, ['--wait-pending', '30']);
+    expect(r.status, r.log).toBe(0);
+    expect(r.outputs.status).toBe('created');
+    expect(r.outputs.source_sha).toBe(head);
+    expect(r.log).toContain('waiting 1s for CI');
+  });
+
+  test('still pending when the wait runs out: refused, and says it waited', () => {
+    const f = fixture();
+    const head = devCommit(f, 'fix: slow CI (#12)');
+    setCheck(f, head, 'pending');
+    const r = gated(f, head, ['--wait-pending', '1']);
+    expect(r.status).toBe(1);
+    expect(r.outputs.status).toBe('refused');
+    expect(r.log).toContain('still pending after waiting 1s');
+    expect(prs(f)).toHaveLength(0);
+  });
+
+  test('a red build is refused at once, never waited on', () => {
+    const f = fixture();
+    const earlier = devHead(f); // the fixture's own fix (#10): red too, so nothing is left to wait for
+    const head = devCommit(f, 'fix: broke the build (#12)');
+    setCheck(f, earlier, 'failure');
+    setCheck(f, head, 'failure');
+    const started = Date.now();
+    const r = gated(f, head, ['--wait-pending', '30']);
+    expect(r.status).toBe(1);
+    expect(r.outputs.status).toBe('refused');
+    expect(r.log).not.toContain('waiting');
+    expect(Date.now() - started).toBeLessThan(20_000);
+  });
+
+  test('the head finishes red while waiting: refused', () => {
+    const f = fixture();
+    const earlier = devHead(f); // the fixture's own fix (#10): red too, so nothing is left to wait for
+    const head = devCommit(f, 'fix: broke the build (#12)');
+    setCheck(f, earlier, 'failure');
+    setCheck(f, head, 'pending');
+    finishLater(f, head, 1, 'failure');
+    const r = gated(f, head, ['--wait-pending', '30']);
+    expect(r.status).toBe(1);
+    expect(r.outputs.status).toBe('refused');
   });
 });
 

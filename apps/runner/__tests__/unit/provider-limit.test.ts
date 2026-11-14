@@ -3,7 +3,7 @@
  * that provider until its reset time; nothing is learned or stored beyond that time.
  */
 import { describe, test, expect } from 'bun:test';
-import { ProviderLimitHolds, limitFromEvent, providerOfBackend } from '../../src/provider-limit';
+import { ProviderLimitHolds, WallFallbackCover, limitFromEvent, providerOfBackend } from '../../src/provider-limit';
 
 const NOW = Date.parse('2026-10-23T10:00:00Z');
 const ev = (info: Record<string, unknown>) => ({ type: 'system', subtype: 'rate_limit', rate_limit_info: info });
@@ -74,3 +74,26 @@ describe('ProviderLimitHolds', () => {
     expect(providerOfBackend('codex')).toBe('codex');
   });
 });
+
+describe('WallFallbackCover', () => {
+  test('covers Claude while the latest claim answer advertised it, for a bounded time', () => {
+    const c = new WallFallbackCover();
+    const t = 1_000_000;
+    expect(c.covers('claude', t)).toBe(false);
+    c.note({ claude: true }, t);
+    expect(c.covers('claude', t + 1)).toBe(true);
+    expect(c.covers('codex', t + 1)).toBe(false);
+    expect(c.covers('claude', t + WallFallbackCover.TTL_MS + 1)).toBe(false);
+  });
+
+  test('an answer without the advert, or with claude false, ends it', () => {
+    const c = new WallFallbackCover();
+    c.note({ claude: true }, 0);
+    c.note(undefined, 1);
+    expect(c.covers('claude', 2)).toBe(false);
+    c.note({ claude: true }, 3);
+    c.note({ claude: false }, 4);
+    expect(c.covers('claude', 5)).toBe(false);
+  });
+});
+
