@@ -3,7 +3,7 @@ title: Harness Adoption Outcome Criteria (DRAFT)
 status: draft
 owner: max
 last_verified: 2026-11-14
-summary: Each harness change (stuck detection, loop retries, self-review, skill candidates and retirement, review by risk) MUST name its success as a relative change on a baseline delivery metric, and no change is called adopted until its owner has agreed the measure.
+summary: Each harness change MUST name its success as a relative change on a baseline delivery metric, and none is called adopted until its owner agrees the measure.
 domain: tasks
 surfaces: [apps/runner/src/stuck-detection.ts, apps/runner/src/verify-guard.ts, apps/web/src/lib/loop-dispatcher.ts, apps/web/src/lib/review-verdict-gate.ts]
 related: [mission-task-lifecycle, living-specs]
