@@ -9217,13 +9217,45 @@ export async function handleRecallAction(
  * discovery, or architecture fact. Write what the next agent would have wanted
  * to know. Near-duplicates are merged automatically.
  */
+const LEARN_REQUIRED_FIELDS = ['type', 'title', 'content'] as const;
+
+function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `learn` takes its fields top-level, but clients mangle the arguments in two
+ * recurring ways: the whole object arrives JSON-encoded as a string, or the
+ * agent wraps it `{action, params}` like the `buildd_<group>` tools it just
+ * used. Unwrap either when the top level lacks the required fields.
+ */
+export function normalizeLearnArgs(raw: unknown): Record<string, unknown> {
+  const top = parseJsonObject(raw) ?? {};
+  const hasAll = (o: Record<string, unknown>) => LEARN_REQUIRED_FIELDS.every(f => o[f] !== undefined);
+  if (hasAll(top)) return top;
+  const nested = parseJsonObject(top.params);
+  if (nested && hasAll(nested)) return nested;
+  return top;
+}
+
 export async function handleLearnAction(
   memoryClient: MemoryStore,
-  params: Record<string, unknown>,
+  rawParams: Record<string, unknown>,
   ctx: MemoryActionCtx,
 ): Promise<ToolResult> {
-  if (!params.type || !params.title || !params.content) {
-    return errorResult('type, title, and content are required');
+  const params = normalizeLearnArgs(rawParams);
+  const missing = LEARN_REQUIRED_FIELDS.filter(f => typeof params[f] !== 'string' || !(params[f] as string).trim());
+  if (missing.length > 0) {
+    const keys = Object.keys(params);
+    const received = keys.length > 0 ? `received keys: ${keys.join(', ')}` : 'received no arguments — the client sent an empty argument object';
+    return errorResult(`type, title, and content are required (missing: ${missing.join(', ')}; ${received})`);
   }
 
   const validTypes = ['gotcha', 'pattern', 'decision', 'discovery', 'architecture'];
