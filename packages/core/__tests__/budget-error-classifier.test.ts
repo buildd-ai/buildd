@@ -123,3 +123,32 @@ describe("runner's session cost cap wording", () => {
     expect(isBudgetExhaustionError('Session cost cap reached')).toBe(false);
   });
 });
+
+// Regression: Claude now words the OAuth seat's rolling window as
+// "hit your 5-hour limit", with neither "session" nor "weekly" in it. It
+// matched no pattern, so the wall was a hard code_failure instead of a pause
+// and failover: every task claimed after it burned an attempt and the failure
+// alert carried no cause. The window noun changes with the plan, so the
+// detector anchors on "hit your <window> limit", not on one noun.
+describe('isBudgetExhaustionError: N-hour and other windowed limits', () => {
+  it('detects the 5-hour seat window wording', () => {
+    expect(
+      isBudgetExhaustionError(
+        "Claude Code returned an error result: You've hit your 5-hour limit · resets 3:50pm (UTC)",
+      ),
+    ).toBe(true);
+    expect(isBudgetExhaustionError("You've hit your 5-hour limit")).toBe(true);
+  });
+
+  it('detects other windowed seat limits', () => {
+    expect(isBudgetExhaustionError("You've hit your 7-day limit · resets Mon 9am (UTC)")).toBe(true);
+    expect(isBudgetExhaustionError("You've hit your Opus limit · resets 4am (UTC)")).toBe(true);
+    expect(isBudgetExhaustionError("You've hit your monthly limit")).toBe(true);
+  });
+
+  it('does not match prose that merely mentions limits', () => {
+    expect(isBudgetExhaustionError('the 5-hour limit is documented in the plan page')).toBe(false);
+    expect(isBudgetExhaustionError('hit your target in the unit test')).toBe(false);
+    expect(isBudgetExhaustionError('Budget limit exceeded (maxBudgetUsd)')).toBe(false);
+  });
+});
