@@ -107,6 +107,34 @@ export async function recordBackendPause(opts: {
   }
 }
 
+/**
+ * The pauses still in force for one backend of a team, every seat key
+ * included: what the worker report compares a new wall against to tell a new
+ * wall episode from one more task reporting the same wall
+ * (`isRepeatWallEpisode`, ./provider-wall). Never throws; an unreadable log
+ * answers "none", which at worst sends one extra notice.
+ */
+export async function activeBudgetPauses(
+  teamId: string | null | undefined,
+  backend: string,
+): Promise<Array<{ backend: string; seatKey: string | null; resetsAt: Date }>> {
+  if (!teamId) return [];
+  try {
+    const rows = await db.query.backendPauses.findMany({
+      where: sqlWhere(and(
+        eq(backendPauses.teamId, teamId),
+        eq(backendPauses.backend, backend as AgentBackend),
+        gt(backendPauses.resetsAt, new Date()),
+      )),
+      columns: { backend: true, seatKey: true, resetsAt: true },
+    });
+    return (rows ?? []).map(r => ({ backend: String(r.backend), seatKey: r.seatKey ?? null, resetsAt: new Date(r.resetsAt) }));
+  } catch (err) {
+    console.warn(`[backend-failover] Failed to read ${backend} pauses for team ${teamId}:`, err);
+    return [];
+  }
+}
+
 export interface ActivePause {
   backend: AgentBackend;
   resetsAt: Date;

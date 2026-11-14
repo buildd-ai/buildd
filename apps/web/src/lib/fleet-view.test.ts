@@ -209,6 +209,16 @@ describe('buildFleetSnapshot', () => {
     expect(buildFleetSnapshot(beats, [], { now: NOW }).capacity).toBe(fleetCapacity(beats, { now: NOW }));
   });
 
+  // Task 775bf607: the runner whose own login hit a usage limit carries it.
+  it("puts a runner's usage wall on that runner only", () => {
+    const walls = new Map([['http://a:1', { backend: 'claude', resetsAt: '2026-03-10T16:00:00.000Z' }]]);
+    const s = buildFleetSnapshot([hb('h1', 'http://a:1', 2), hb('h2', 'http://b:1', 2)], [], { now: NOW, usageWalls: walls });
+    const a = s.runners.find(r => r.id === 'h1')!;
+    const b = s.runners.find(r => r.id === 'h2')!;
+    expect(a.usageWall).toEqual({ backend: 'claude', resetsAt: '2026-03-10T16:00:00.000Z' });
+    expect(b.usageWall).toBeUndefined();
+  });
+
   it('drops a runner with no heartbeat unless it holds live work', () => {
     expect(snap.runners.some(r => r.name === 'gone')).toBe(false);
   });

@@ -155,4 +155,16 @@ describe('Settings → Runners page order', () => {
     expect(t).not.toMatch(/on hold/i);
     expect(html).toContain('data-held="true"');
   });
+
+  // Task 775bf607: a runner whose own login hit a usage limit says so, with the reset.
+  it('a runner on a usage wall says it waits for the usage limit and when it resumes', () => {
+    const walled = { ...runner('a', 'runner-1', 0, 4), usageWall: { backend: 'claude', resetsAt: '2026-03-10T16:00:00.000Z' } };
+    const html = renderToStaticMarkup(
+      <DisplayTimezoneProvider teamTimezone="UTC"><FleetOverview fleet={fleet([walled, runner('b', 'runner-2', 0, 4)])} /></DisplayTimezoneProvider>,
+    );
+    const t = text(html);
+    expect(html).toContain('data-testid="fleet-runner-usage-wall"');
+    expect(t).toContain('Waiting for the usage limit: its Claude login resumes at 4:00 PM');
+    expect(t).not.toMatch(/fail/i);
+  });
 });
