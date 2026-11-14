@@ -5,7 +5,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const DAY = 86_400_000;
 const ago = (d: number) => new Date(Date.now() - d * DAY).toISOString();
 
-let tables: { links?: any[]; skills: any[]; started: string | null; schedules: any[]; active: string[] };
+let tables: { links?: any[]; skills: any[]; started: string | null; startedByTeam?: Record<string, string>; schedules: any[]; active: string[] };
 const executed: string[] = [];
 const dialect = new PgDialect();
 
@@ -15,7 +15,10 @@ const mockExecute = mock(async (q: any) => {
   if (text.includes('FROM skill_spec_links')) return { rows: tables.links ?? [] };
   if (text.includes('FROM workspace_skills WHERE enabled')) return { rows: tables.skills };
   if (text.includes('FROM workspace_skills s')) return { rows: tables.skills };
-  if (text.includes('min(first_claimed_at)')) return { rows: [{ started: tables.started }] };
+  if (text.includes('min(telemetry_started_at)')) {
+    if (tables.startedByTeam) return { rows: Object.entries(tables.startedByTeam).map(([team_id, started]) => ({ team_id, started })) };
+    return { rows: tables.started ? [{ team_id: '00000000-0000-0000-0000-0000000000aa', started: tables.started }] : [] };
+  }
   if (text.includes('FROM task_schedules')) return { rows: tables.schedules };
   if (text.includes('jsonb_array_elements_text')) return { rows: tables.active.map(slug => ({ slug })) };
   if (text.includes('UPDATE workspace_skills')) return { rows: [{ id: 'x' }] };
@@ -66,6 +69,16 @@ describe('GET /api/cron/skill-lifecycle', () => {
     expect(updates()[0]).toContain('enabled = false');
     expect(updates()[0]).not.toMatch(/DELETE/i);
     expect(inserts()).toHaveLength(1);
+  });
+
+  it('R-14: telemetry start is per team; a later-starting team is not archived on another team\'s history', async () => {
+    process.env.SKILL_RETIREMENT_MODE = 'acting';
+    const A = '00000000-0000-0000-0000-0000000000aa', B = '00000000-0000-0000-0000-0000000000bb';
+    tables.skills = [skill({ n: 1, team_id: A }), skill({ n: 2, team_id: B })];
+    tables.startedByTeam = { [A]: ago(120), [B]: ago(5) };
+    const body = await (await GET(req())).json();
+    expect(body.archivable).toBe(1);
+    expect(updates()).toHaveLength(1);
   });
 
   it('archives nothing while telemetry is younger than the archive window', async () => {

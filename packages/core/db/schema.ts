@@ -4196,8 +4196,11 @@ export const workspaceSkills = pgTable('workspace_skills', {
 // and retirement"). One row per skill, raised by one each time a claim delivers
 // it; nothing reads it to act yet.
 export const skillUsage = pgTable('skill_usage', {
-  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).primaryKey(),
+  // Ledger, no foreign key (like memory_uses): counts outlive a deleted skill.
+  skillId: uuid('skill_id').primaryKey(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // The team's first telemetry write; every row of a team carries the same value.
+  telemetryStartedAt: timestamp('telemetry_started_at', { withTimezone: true }).notNull().defaultNow(),
   claimCount: integer('claim_count').notNull().default(0),
   firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }).notNull().defaultNow(),
   lastClaimedAt: timestamp('last_claimed_at', { withTimezone: true }).notNull().defaultNow(),

@@ -55,7 +55,7 @@ async function run(report: CronReport): Promise<NextResponse> {
       FROM workspace_skills s
       LEFT JOIN skill_usage u ON u.skill_id = s.id
       WHERE s.enabled = true`),
-    db.execute(sql`SELECT min(first_claimed_at) AS started FROM skill_usage`),
+    db.execute(sql`SELECT team_id, min(telemetry_started_at) AS started FROM skill_usage GROUP BY team_id`),
     // Every schedule template counts, enabled or not: a paused schedule resumes.
     db.execute(sql`SELECT task_template FROM task_schedules`),
     db.execute(sql`
@@ -76,16 +76,30 @@ async function run(report: CronReport): Promise<NextResponse> {
     };
   });
 
-  // No claim has ever been counted: telemetry has not started, so it starts now.
-  const started = rowsOf(telemetryRes)[0]?.started;
-  const telemetryStartedAt = started ? new Date(started) : now;
-
-  const verdict = evaluateRetirement({
-    skills, now, telemetryStartedAt, mode,
-    defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug),
-    scheduleSkillSlugs: rowsOf(scheduleRes).flatMap(r => templateSlugs(r.task_template)),
-    activeTaskSkillSlugs: rowsOf(activeRes).map(r => String(r.slug)),
-  });
+  // Telemetry start is per team (first write for that team). A team with no
+  // writes yet starts now, so it cannot be archived on another team's history.
+  const startedByTeam = new Map<string, Date>(
+    rowsOf(telemetryRes).map(r => [String(r.team_id), new Date(r.started)] as [string, Date]));
+  const skillsByTeam = new Map<string, RetirementSkill[]>();
+  for (const s of skills) {
+    const t = String(byId.get(s.id)!.team_id);
+    (skillsByTeam.get(t) ?? skillsByTeam.set(t, []).get(t)!).push(s);
+  }
+  const verdict: { stale: RetirementSkill[]; archivable: RetirementSkill[]; report: string } = { stale: [], archivable: [], report: '' };
+  const reports: string[] = [];
+  for (const [teamId, teamSkills] of skillsByTeam) {
+    const v = evaluateRetirement({
+      skills: teamSkills, now, telemetryStartedAt: startedByTeam.get(teamId) ?? now, mode,
+      defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug),
+      scheduleSkillSlugs: rowsOf(scheduleRes).flatMap(r => templateSlugs(r.task_template)),
+      activeTaskSkillSlugs: rowsOf(activeRes).map(r => String(r.slug)),
+    });
+    verdict.stale.push(...v.stale);
+    verdict.archivable.push(...v.archivable);
+    reports.push(v.report);
+  }
+  verdict.report = reports.length === 1 ? reports[0]
+    : `${verdict.stale.length} stale, ${verdict.archivable.length} archivable across ${reports.length} teams (${mode})`;
 
   const archivableIds = new Set(verdict.archivable.map(s => s.id));
   const events: LifecycleEvent[] = [];

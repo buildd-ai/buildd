@@ -37,6 +37,14 @@ describe('buildSkillUsageUpsert rendering', () => {
     expect(q.sql).toContain('ON CONFLICT (skill_id) DO UPDATE');
     expect(q.params.filter(p => ids.includes(p as string))).toHaveLength(3);
   });
+  it('sets telemetry_started_at per team from its first write, with no FK on skill_id', () => {
+    const q = new PgDialect().sqlToQuery(buildSkillUsageUpsert({ teamId: T, skillIds: ids, now: new Date() })!);
+    expect(q.sql).toContain('telemetry_started_at');
+    expect(q.sql).toMatch(/min\(u\.telemetry_started_at\) FROM skill_usage u WHERE u\.team_id = v\.team_id/);
+    expect(q.sql).not.toContain('telemetry_started_at = ');
+    const schema = readFileSync(join(import.meta.dir, '../db/schema.ts'), 'utf8');
+    expect(schema).toMatch(/skillId: uuid\('skill_id'\)\.primaryKey\(\)/);
+  });
   it('returns null for no skills', () => {
     expect(buildSkillUsageUpsert({ teamId: T, skillIds: [], now: new Date() })).toBeNull();
   });

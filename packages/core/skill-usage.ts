@@ -24,8 +24,11 @@ export function buildSkillUsageUpsert(input: Pick<SkillUsageInput, 'teamId' | 's
     ids.map(id => sql`(${id}::uuid, ${input.teamId}::uuid, 1, ${at}::timestamptz, ${at}::timestamptz)`),
     sql`, `,
   );
-  return sql`INSERT INTO skill_usage (skill_id, team_id, claim_count, first_claimed_at, last_claimed_at)
-VALUES ${rows}
+  // telemetry_started_at: the team's existing start, else this write (per team, from its first write).
+  return sql`INSERT INTO skill_usage (skill_id, team_id, claim_count, first_claimed_at, last_claimed_at, telemetry_started_at)
+SELECT v.skill_id, v.team_id, v.claim_count, v.first_claimed_at, v.last_claimed_at,
+  COALESCE((SELECT min(u.telemetry_started_at) FROM skill_usage u WHERE u.team_id = v.team_id), v.first_claimed_at)
+FROM (VALUES ${rows}) AS v(skill_id, team_id, claim_count, first_claimed_at, last_claimed_at)
 ON CONFLICT (skill_id) DO UPDATE SET claim_count = skill_usage.claim_count + 1, last_claimed_at = EXCLUDED.last_claimed_at`;
 }
 
