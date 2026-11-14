@@ -75,3 +75,30 @@ describe('vector search is filtered to the query embedder model', () => {
     expect(vectorQueries()[0]).not.toContain('embedding_model');
   });
 });
+
+describe('switching a team to another model re-embeds on the next ingest', () => {
+  const hashQuery = () => executed.find(t => t.includes('MIN(file_hash)')) ?? '';
+
+  it("a team's pick: the unchanged-file skip only counts rows from the picked model", async () => {
+    const cfg = { ...embeddingConfigFromEnv({ EMBEDDING_PROVIDER: 'openai_compat', EMBEDDING_BASE_URL: 'https://e.test', EMBEDDING_MODEL: 'qwen3' }), source: 'team' as const };
+    await new PgVectorStore(embedder('voyage-4-large') as any, null, { embeddingConfig: async () => cfg }).getFileHashes('ws-1:code', ['a.ts']);
+    expect(hashQuery()).toContain('AND embedding_model = "qwen3"');
+  });
+
+  it('the default (no pick): the plain skip, so nothing re-embeds for a team that touched nothing', async () => {
+    await new PgVectorStore(embedder('voyage-4-large') as any, null, { embeddingConfig: async () => embeddingConfigFromEnv({}) }).getFileHashes('ws-1:memory', ['a.ts']);
+    expect(hashQuery()).not.toContain('embedding_model');
+  });
+
+  it('a pick with no usable key: the plain skip (nothing could embed anyway)', async () => {
+    const cfg = { ...embeddingConfigFromEnv({}), provider: 'openai_compat' as const, source: 'team' as const, unavailable: 'no key' };
+    const orig = console.warn;
+    console.warn = () => {};
+    try {
+      await new PgVectorStore(embedder('voyage-4-large') as any, null, { embeddingConfig: async () => cfg }).getFileHashes('ws-1:memory', ['a.ts']);
+    } finally {
+      console.warn = orig;
+    }
+    expect(hashQuery()).not.toContain('embedding_model');
+  });
+});

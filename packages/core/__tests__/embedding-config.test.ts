@@ -1,16 +1,16 @@
-// Which embedder a namespace gets, from env and from an `embedding_endpoint`
-// secret. Spec: docs/specs/pluggable-knowledge-store.md.
+// Which embedder a namespace gets: env (the operator default) or the provider
+// the team picked for embeddings on Settings › Providers. Spec: docs/specs/pluggable-knowledge-store.md.
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
   embeddingConfigFromEnv,
   getEmbedderForCorpus,
-  parseEmbeddingEndpoint,
   resolveEmbeddingConfig,
 } from '../knowledge-store/embedding-config';
 import { OpenAICompatibleEmbedder } from '../knowledge-store/openai-compatible-embedder';
 import { VoyageEmbedder } from '../knowledge-store/voyage-embedder';
 
 const WS = '00000000-0000-4000-8000-000000000001';
+const TEAM = '00000000-0000-4000-8000-0000000000aa';
 const fallback = { model: 'fallback-model', dimensions: 1024, embed: async () => [] };
 const savedKey = process.env.VOYAGE_API_KEY;
 
@@ -46,7 +46,7 @@ describe('provider unset: Voyage exactly as before', () => {
 
   it('a non-UUID owner costs no lookup', async () => {
     let looked = false;
-    const cfg = await resolveEmbeddingConfig('ws-1', { env: {}, loadSecret: async () => { looked = true; return null; } });
+    const cfg = await resolveEmbeddingConfig('ws-1', { env: {}, loadSetting: async () => { looked = true; return null; } });
     expect(looked).toBe(false);
     expect(cfg.provider).toBe('voyage');
   });
@@ -92,35 +92,135 @@ describe('openai_compat from env', () => {
   });
 });
 
-describe('embedding_endpoint secret', () => {
-  it('validates the blob', () => {
-    expect(parseEmbeddingEndpoint('nope').ok).toBe(false);
-    expect(parseEmbeddingEndpoint('{"model":"m"}').ok).toBe(false);
-    expect(parseEmbeddingEndpoint('{"baseUrl":"ftp://x","model":"m"}').ok).toBe(false);
-    expect(parseEmbeddingEndpoint('{"baseUrl":"https://x","model":"m","provider":"other"}').ok).toBe(false);
-    const ok = parseEmbeddingEndpoint('{"baseUrl":"https://x.test/v1","model":"m","price":"unmetered","matryoshka":true}');
-    expect(ok).toMatchObject({ ok: true, value: { provider: 'openai_compat', baseUrl: 'https://x.test/v1', model: 'm', unmetered: true, matryoshka: true, source: 'secret' } });
-    expect(parseEmbeddingEndpoint('{"provider":"voyage"}')).toMatchObject({ ok: true, value: { provider: 'voyage' } });
+describe('a team picks one of its providers', () => {
+  const quiet = async <T>(fn: () => Promise<T>) => {
+    const orig = console.warn;
+    const warned: string[] = [];
+    console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(' ')); };
+    try { return { value: await fn(), warned }; } finally { console.warn = orig; }
+  };
+  const setting = (provider: string | null, model: string | null, workspaceId: string | null = WS) =>
+    async () => ({ teamId: TEAM, workspaceId, provider, model });
+
+  it('no pick: the deployment default, Voyage, with no credential lookup', async () => {
+    let looked = false;
+    const cfg = await resolveEmbeddingConfig(WS, {
+      env: {}, loadSetting: setting(null, null), resolveCredential: async () => { looked = true; return null; }, loadLegacySecret: async () => null,
+    });
+    expect(cfg.provider).toBe('voyage');
+    expect(cfg.source).toBe('env');
+    expect(looked).toBe(false);
   });
 
-  it('overrides env, without inheriting the platform key', async () => {
-    const env = { EMBEDDING_PROVIDER: 'openai_compat', EMBEDDING_BASE_URL: 'https://platform', EMBEDDING_MODEL: 'pm', EMBEDDING_API_KEY: 'platform-key' };
-    const cfg = await resolveEmbeddingConfig(WS, { env, loadSecret: async () => '{"baseUrl":"https://team.test/v1","model":"tm"}' });
-    expect(cfg).toMatchObject({ baseUrl: 'https://team.test/v1', model: 'tm', apiKey: null, source: 'secret' });
+  it('no pick under an operator openai_compat default: env, as before', async () => {
+    const env = { EMBEDDING_PROVIDER: 'openai_compat', EMBEDDING_BASE_URL: 'https://platform.test/v1', EMBEDDING_MODEL: 'pm' };
+    const cfg = await resolveEmbeddingConfig(WS, { env, loadSetting: async () => null, loadLegacySecret: async () => null });
+    expect(cfg).toMatchObject({ provider: 'openai_compat', baseUrl: 'https://platform.test/v1', model: 'pm', source: 'env' });
   });
 
-  it('can put one scope back on Voyage', async () => {
-    const env = { EMBEDDING_PROVIDER: 'openai_compat', EMBEDDING_BASE_URL: 'https://platform', EMBEDDING_MODEL: 'pm' };
-    expect((await resolveEmbeddingConfig(WS, { env, loadSecret: async () => '{"provider":"voyage"}' })).provider).toBe('voyage');
+  it("OpenRouter: the team's stored OpenRouter key and OpenRouter's root, never the platform key", async () => {
+    const env = { EMBEDDING_PROVIDER: 'openai_compat', EMBEDDING_BASE_URL: 'https://platform.test/v1', EMBEDDING_MODEL: 'pm', EMBEDDING_API_KEY: 'platform-key' };
+    const asked: unknown[] = [];
+    const cfg = await resolveEmbeddingConfig(WS, {
+      env,
+      loadSetting: setting('openrouter', 'openai/text-embedding-3-large'),
+      resolveCredential: async (provider, scope) => { asked.push({ provider, ...scope }); return { apiKey: 'sk-or-team', baseUrl: null }; },
+    });
+    expect(asked).toEqual([{ provider: 'openrouter', teamId: TEAM, workspaceId: WS }]);
+    expect(cfg).toMatchObject({
+      provider: 'openai_compat', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/text-embedding-3-large',
+      apiKey: 'sk-or-team', source: 'team', unavailable: null,
+    });
+    const e = getEmbedderForCorpus('memory', cfg, fallback);
+    expect(e).toBeInstanceOf(OpenAICompatibleEmbedder);
+    expect(e!.model).toBe('openai/text-embedding-3-large');
   });
 
-  it('falls back to env on no row, an invalid row, or a failed lookup', async () => {
+  it("a gateway: the gateway credential's base URL and key", async () => {
+    const cfg = await resolveEmbeddingConfig(WS, {
+      env: {},
+      loadSetting: setting('litellm', 'qwen3-embedding'),
+      resolveCredential: async () => ({ apiKey: 'gw-key', baseUrl: 'https://gw.example.test/v1' }),
+    });
+    expect(cfg).toMatchObject({ provider: 'openai_compat', baseUrl: 'https://gw.example.test/v1', model: 'qwen3-embedding', apiKey: 'gw-key', source: 'team' });
+  });
+
+  it('a team-wide namespace (team id as owner) resolves with no workspace', async () => {
+    const asked: unknown[] = [];
+    await resolveEmbeddingConfig(TEAM, {
+      env: {},
+      loadSetting: setting('openai', 'text-embedding-3-large', null),
+      resolveCredential: async (provider, scope) => { asked.push(scope); return { apiKey: 'sk-team', baseUrl: null }; },
+    });
+    expect(asked).toEqual([{ teamId: TEAM, workspaceId: null }]);
+  });
+
+  it('Voyage picked explicitly: Voyage, as the default is', async () => {
+    const cfg = await resolveEmbeddingConfig(WS, {
+      env: { EMBEDDING_PROVIDER: 'openai_compat', EMBEDDING_BASE_URL: 'https://p', EMBEDDING_MODEL: 'pm' },
+      loadSetting: setting('voyage', null),
+    });
+    expect(cfg).toMatchObject({ provider: 'voyage', source: 'team' });
+  });
+
+  it('a picked provider with no stored key: a clear reason, and lexical-only rather than a failed ingest', async () => {
+    const { value: cfg } = await quiet(() => resolveEmbeddingConfig(WS, {
+      env: {}, loadSetting: setting('openrouter', 'openai/text-embedding-3-large'), resolveCredential: async () => null,
+    }));
+    expect(cfg.source).toBe('team');
+    expect(cfg.unavailable).toBe('OpenRouter is chosen for embeddings but has no usable key for this team or workspace; knowledge runs lexical-only.');
+    const { value: embedder, warned } = await quiet(async () => getEmbedderForCorpus('code', cfg, fallback));
+    expect(embedder).toBeNull();
+    expect(warned.join('\n')).toContain('has no usable key');
+  });
+
+  it('a failed credential lookup is the same: lexical-only, never a throw', async () => {
+    const { value: cfg } = await quiet(() => resolveEmbeddingConfig(WS, {
+      env: {}, loadSetting: setting('openai', 'text-embedding-3-large'), resolveCredential: async () => { throw new Error('db down'); },
+    }));
+    expect(cfg.unavailable).toContain('OpenAI');
+    expect(getEmbedderForCorpus('memory', cfg, fallback)).toBeNull();
+  });
+
+  it('a failed setting lookup falls back to env', async () => {
+    const { value: cfg } = await quiet(() => resolveEmbeddingConfig(WS, { env: {}, loadSetting: async () => { throw new Error('db down'); } }));
+    expect(cfg.source).toBe('env');
+  });
+});
+
+describe('legacy embedding_endpoint rows: read-only, deprecated', () => {
+  it('a team with no pick and an old row keeps it, with a deprecation warning', async () => {
+    const orig = console.warn;
+    const warned: string[] = [];
+    console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(' ')); };
+    try {
+      const cfg = await resolveEmbeddingConfig(WS, {
+        env: {}, loadSetting: async () => null, loadLegacySecret: async () => '{"baseUrl":"https://old.test/v1","model":"om"}',
+      });
+      expect(cfg).toMatchObject({ provider: 'openai_compat', baseUrl: 'https://old.test/v1', model: 'om', source: 'secret' });
+      expect(warned.join('\n')).toContain('deprecated');
+    } finally {
+      console.warn = orig;
+    }
+  });
+
+  it("a team's pick wins over an old row", async () => {
+    let read = false;
+    const cfg = await resolveEmbeddingConfig(WS, {
+      env: {},
+      loadSetting: async () => ({ teamId: TEAM, workspaceId: WS, provider: 'voyage', model: null }),
+      loadLegacySecret: async () => { read = true; return '{"baseUrl":"https://old.test/v1","model":"om"}'; },
+    });
+    expect(cfg.provider).toBe('voyage');
+    expect(read).toBe(false);
+  });
+
+  it('an invalid old row is ignored', async () => {
     const orig = console.warn;
     console.warn = () => {};
     try {
-      expect((await resolveEmbeddingConfig(WS, { env: {}, loadSecret: async () => null })).source).toBe('env');
-      expect((await resolveEmbeddingConfig(WS, { env: {}, loadSecret: async () => '{"model":"m"}' })).source).toBe('env');
-      expect((await resolveEmbeddingConfig(WS, { env: {}, loadSecret: async () => { throw new Error('db down'); } })).source).toBe('env');
+      const cfg = await resolveEmbeddingConfig(WS, { env: {}, loadSetting: async () => null, loadLegacySecret: async () => '{"model":"m"}' });
+      expect(cfg.source).toBe('env');
     } finally {
       console.warn = orig;
     }

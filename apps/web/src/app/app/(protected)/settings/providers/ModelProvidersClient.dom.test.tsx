@@ -30,6 +30,7 @@ const WORKSPACES = [{ id: 'ws-a', name: 'Workspace A' }, { id: 'ws-b', name: 'Wo
 
 let opts: FixtureOpts = {};
 let assigned: Record<string, unknown> = {};
+let embedding: { provider: string | null; model: string | null } = { provider: null, model: null };
 let withKeys: string[] = [];
 let team: { teamName?: string | null; teamCount?: number } = {};
 const calls: { url: string; method: string; body: Record<string, unknown> | null }[] = [];
@@ -39,6 +40,7 @@ beforeEach(() => {
   opts = {};
   calls.length = 0;
   assigned = {};
+  embedding = { provider: null, model: null };
   withKeys = [];
   team = {};
   globalThis.fetch = mock(async (input: string, init?: RequestInit) => {
@@ -52,6 +54,10 @@ beforeEach(() => {
         result: { resolved: true, provider: 'anthropic', shape: 'api_key', scope: 'team', source: { scope: 'team', secretId: 's', purpose: 'anthropic_api_key', label: null, legacy: true } },
         why: ['team anthropic: used'],
       });
+    }
+    if (url.pathname === '/api/providers/embedding') {
+      if (method === 'PATCH') embedding = { provider: (body!.provider as string | null) ?? null, model: body!.provider === 'voyage' ? null : (body!.model as string) ?? null };
+      return Response.json(embedding);
     }
     if (url.pathname === '/api/providers/assignments') {
       if (method === 'PATCH') assigned = { ...assigned, [String(body!.surface)]: body!.provider };
@@ -416,3 +422,40 @@ for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
     });
   });
 }
+
+describe('Embeddings: one row, provider + model, using the stored key', () => {
+  it('nothing that can embed is connected: no row; Voyage stays the default', async () => {
+    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] });
+    expect($('[data-testid="used-for-embedding"]')).toBeNull();
+  });
+
+  it('one connected OpenRouter key: the row shows Voyage as chosen, beside the one line', async () => {
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }] });
+    const row = $('[data-testid="used-for-embedding"]')!;
+    expect(row).toBeTruthy();
+    expect($('[data-testid="used-for-pick-embedding"]', row)!.textContent).toContain('Voyage');
+    expect($('[data-testid="used-for-embedding-model"]', row)).toBeNull();
+    expect($('[data-testid="provider-lone"]')).toBeTruthy();
+  });
+
+  it('a stored pick shows its model; changing the model saves provider + model and says what it means for stored vectors', async () => {
+    embedding = { provider: 'openrouter', model: 'openai/text-embedding-3-large' };
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] });
+    const input = $('[data-testid="used-for-embedding-model"]') as HTMLInputElement;
+    expect(input.value).toBe('openai/text-embedding-3-large');
+    expect($('[data-testid="used-for-embedding-save"]')).toBeNull();
+    await type(input, 'qwen/qwen3-embedding-8b');
+    await click($('[data-testid="used-for-embedding-save"]'));
+    const patch = calls.find((c) => c.url === '/api/providers/embedding' && c.method === 'PATCH')!;
+    expect(patch.body).toEqual({ teamId: 't', provider: 'openrouter', model: 'qwen/qwen3-embedding-8b' });
+    expect($('[data-testid="used-for-embedding-reindex"]')!.textContent).toContain('indexed again');
+    // No key field anywhere in the row: the provider's stored key is used.
+    expect($('[data-testid="used-for-embedding"] input[type="password"]')).toBeNull();
+  });
+
+  it('a member sees the row read-only', async () => {
+    embedding = { provider: 'openrouter', model: 'm' };
+    await mount({ admin: false, rows: [{ provider: 'openrouter', scope: 'team' }] });
+    expect(($('[data-testid="used-for-embedding-model"]') as HTMLInputElement).disabled).toBe(true);
+  });
+});

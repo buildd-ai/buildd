@@ -61,11 +61,22 @@ stays Voyage (and is skipped without `VOYAGE_API_KEY`). Contract:
 | `EMBEDDING_PRICE_PER_1M_TOKENS` | USD per 1M tokens for the usage estimate, or `unmetered` (a free local model) |
 | `EMBEDDING_TIMEOUT_MS`, `EMBEDDING_MAX_BATCH` | optional; defaults 5 s per query / 30 s per document batch, 32 inputs per request |
 
-A team or workspace can override this with a `secrets` row of purpose
-`embedding_endpoint` (`POST /api/secrets`, owner/admin, team- or
-workspace-wide), whose value is JSON: `{"baseUrl","model","apiKey"?,
-"queryPrefix"?,"docPrefix"?,"matryoshka"?,"price"?}`, or `{"provider":"voyage"}`
-to stay on Voyage. The workspace row wins over the team row.
+These env vars are the **operator-level default** (for self-hosters and the
+hosted deployment). A team overrides it on **Settings › Providers › Used for ›
+Embeddings**: one row, a provider the team already connected (Voyage, the
+default; OpenRouter; OpenAI; or the LiteLLM gateway, which is also how a
+self-hosted or local OpenAI-compatible server is added) and a model id.
+Embeddings have no key of their own: the embedder uses that provider's stored
+credential, resolved like chat's for team work, so a workspace's own key or
+gateway beats the team's. A team that picks nothing stays on the default. A
+picked provider with no usable key is logged and runs lexical-only; ingest
+never fails on it. API: `GET|PATCH /api/providers/embedding`
+(`{ provider, model }`, owner/admin to change; stored on `teams.embedding_provider`
+and `teams.embedding_model`).
+
+The old `embedding_endpoint` secret is no longer accepted by `POST /api/secrets`.
+A row stored before still applies, read-only and with a deprecation warning,
+to a team that has not picked a provider; delete it once the team has.
 
 The store column is a fixed `vector(1024)`. The request asks for
 `dimensions: 1024`; a model that cannot return 1024 is refused with a logged
@@ -76,9 +87,12 @@ goes lexical-only, as with a spend-guard denial; ingest and webhooks never fail
 on it. Calls go through the spend guard and show up in `get_embedding_usage`
 with `provider: openai_compat` (see `docs/specs/voyage-spend-guard.md` R-10).
 
-**Switching models means purge and re-embed.** Vectors from two models are not
+**Switching models means re-embed.** Vectors from two models are not
 comparable. After a switch, old rows still match lexically but not by vector
-until the namespace is re-ingested.
+until they are embedded again. For a team that picked a provider, file-based
+corpora (code, docs) do this on their next ingest: a file whose stored rows came
+from another model is not skipped as unchanged. Other corpora are re-embedded
+when their rows are rewritten.
 
 **Where the endpoint must be reachable.** The query embedding runs wherever the
 query runs (Vercel, for the API and MCP), and must use the ingest model.
@@ -186,7 +200,7 @@ EMBEDDING_PRICE_PER_1M_TOKENS=unmetered \
 # Then run it (drop --dry-run).
 ```
 
-The endpoint can also come from the workspace's `embedding_endpoint` secret. For a
+The endpoint can also come from the team's Embeddings pick on Settings › Providers. For a
 local Ollama/Qwen3 box reached over Tailscale, point `EMBEDDING_BASE_URL` at the
 machine's tailnet name and Ollama port (`ollama pull` the embedding model there first).
 

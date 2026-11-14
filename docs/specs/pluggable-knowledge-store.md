@@ -7,7 +7,7 @@ summary: The knowledge store MUST split a buildd-owned ranking pipeline from a s
 domain: knowledge
 surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/types.ts, packages/core/mcp-tools.ts, packages/core/eval/retrieval-baseline.json]
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, byo-evidence-storage]
-keywords: [turbopuffer, pgvector, embedding endpoint, openai_compat, EMBEDDING_PROVIDER, embedding_model, index backend, dual-write, shadow read, outbox, dataClass, iterative_scan, recall@40, KNOWLEDGE_STORE]
+keywords: [turbopuffer, pgvector, embedding endpoint, embedding provider, openai_compat, EMBEDDING_PROVIDER, embedding_model, index backend, dual-write, shadow read, outbox, dataClass, iterative_scan, recall@40, KNOWLEDGE_STORE]
 supersedes: []
 assertions:
   - id: pg-vector-default-store
@@ -339,14 +339,21 @@ skipped as today when absent). Code: `knowledge-store/embedding-config.ts`,
   `EMBEDDING_PRICE_PER_1M_TOKENS` (a number, or `unmetered`; `0` means
   unmetered), and optionally `EMBEDDING_TIMEOUT_MS`, `EMBEDDING_MAX_BATCH`.
   `openai_compat` missing a base URL or model is lexical-only, never Voyage.
-- E-2 Override. A `secrets` row of purpose `embedding_endpoint` (an encrypted
-  JSON blob: `baseUrl`, `model`, `apiKey?`, `queryPrefix?`, `docPrefix?`,
-  `matryoshka?`, `price?`, `timeoutMs?`, `maxBatch?`, or `{"provider":"voyage"}`
-  to opt a scope back onto Voyage) overrides env for a namespace. A workspace's
-  row beats its team's team-wide row; account and personal rows never apply. A
-  blob never inherits env fields, so the platform's `EMBEDDING_API_KEY` is
-  never sent to a team's URL. An invalid row or failed lookup falls back to
-  env. No new credential table (docs/credentials-architecture.md).
+- E-2 Team pick. A team may choose, as one more use of a provider it already
+  connected, the provider and model its knowledge embeds with
+  (`teams.embedding_provider`, `teams.embedding_model`;
+  `GET|PATCH /api/providers/embedding`; Settings › Providers › Used for ›
+  Embeddings). Providers: `voyage` (the default), `openrouter`, `openai`,
+  `litellm` (the team's gateway, also how a self-hosted endpoint is offered).
+  The key, and a gateway's base URL, come from that provider's stored
+  credential through the chat resolver for team work, so a workspace's own
+  credential beats the team's; there is no embedding credential. Env is never
+  inherited, so the platform's `EMBEDDING_API_KEY` is never sent to a team's
+  URL. A team with no pick uses env. A pick whose provider has no usable key
+  runs lexical-only with the reason logged, never a throw. The env variables of
+  E-1 stay the operator-level default. A `secrets` row of the removed purpose
+  `embedding_endpoint` is refused on write and, until deleted, still read for a
+  team with no pick (deprecated, read-only).
 - E-3 One provider for write and query. Every `PgVectorStore` read and write
   for a namespace uses `getEmbedderForCorpus(corpus, cfg)`; under
   `openai_compat` that is the one endpoint for every corpus. Default
@@ -383,7 +390,7 @@ must be reachable from there.
 - A local model can serve runner-side ingest over Tailscale (set the env on
   the runner). Query-time embedding then still needs the same model reachable
   from Vercel: expose it with Tailscale Funnel or another tunnel and use that
-  URL as `EMBEDDING_BASE_URL` (or the `embedding_endpoint` secret). A local
+  URL as `EMBEDDING_BASE_URL` (or as the base URL of the team's gateway). A local
   model reachable only on the tailnet leaves queries lexical-only.
 
 **Acceptance criteria**
@@ -399,6 +406,11 @@ must be reachable from there.
   `embed` returns null and nothing throws.
 - AC-E5: GIVEN an endpoint call WHEN it settles THEN the guard trace records
   `provider: openai_compat` and the usage read shows it.
+- AC-E6: GIVEN a team that picked OpenRouter and a model WHEN a namespace of
+  the team embeds THEN it uses the team's stored OpenRouter key and
+  OpenRouter's root; GIVEN no stored key THEN it is lexical-only and logged.
+- AC-E7: GIVEN a team that picked a provider WHEN a file whose rows came from
+  another model is ingested THEN it is re-embedded, not skipped as unchanged.
 
 ---
 
