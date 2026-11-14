@@ -1,6 +1,6 @@
 /** Spec "Skill candidates, usage telemetry and retirement" r1: AC-1, AC-2 (R-14..R-16). */
 import { describe, expect, it } from 'bun:test';
-import { evaluateRetirement, RetirementWindowError } from '../skill-retirement-rule';
+import { evaluateRetirement, gateRetirementMode, resolveRetirementMode, RetirementWindowError } from '../skill-retirement-rule';
 
 const DAY = 86_400_000;
 const NOW = new Date('2026-11-05T00:00:00Z');
@@ -41,5 +41,44 @@ describe('skill retirement rule', () => {
     const rec = evaluateRetirement({ ...base, mode: 'recording' });
     expect(rec.archivable).toEqual([]);
     expect(rec.report).toMatch(/telemetry/i);
+  });
+});
+
+describe('resolveRetirementMode (R-16)', () => {
+  const cfg = (mode: unknown) => ({ skillRetirement: { mode } } as any);
+  it.each([['off', 'off'], ['recording', 'recording'], ['acting', 'acting']])('reads %s', (m, want) => {
+    expect(resolveRetirementMode(cfg(m))).toBe(want);
+  });
+  it.each([[undefined], ['ACTING'], ['act'], [''], [1]])('unrecognised %p resolves to recording', m => {
+    expect(resolveRetirementMode(cfg(m))).toBe('recording');
+  });
+  it('absent config resolves to recording', () => {
+    expect(resolveRetirementMode(null)).toBe('recording');
+    expect(resolveRetirementMode({})).toBe('recording');
+  });
+});
+
+describe('gateRetirementMode (R-16)', () => {
+  const base = { requested: 'acting' as const, platformApproved: true, recordingSince: ago(61), covered: 3, total: 4, now: NOW };
+  it('grants acting when approved and the report has run the archive window', () => {
+    expect(gateRetirementMode(base)).toEqual({ mode: 'acting', refused: null, coverage: '3/4 skills' });
+  });
+  it('refuses without platform approval', () => {
+    expect(gateRetirementMode({ ...base, platformApproved: false }).mode).toBe('recording');
+  });
+  it('refuses when the report never ran', () => {
+    expect(gateRetirementMode({ ...base, recordingSince: null }).refused).toContain('has not run');
+  });
+  it('refuses a short report and states coverage', () => {
+    const r = gateRetirementMode({ ...base, recordingSince: ago(30) });
+    expect(r.mode).toBe('recording');
+    expect(r.refused).toContain('coverage 3/4 skills');
+  });
+  it('refuses when no skill was covered', () => {
+    expect(gateRetirementMode({ ...base, covered: 0 }).mode).toBe('recording');
+  });
+  it('passes off and recording through', () => {
+    expect(gateRetirementMode({ ...base, requested: 'off', platformApproved: false }).mode).toBe('off');
+    expect(gateRetirementMode({ ...base, requested: 'recording' }).mode).toBe('recording');
   });
 });

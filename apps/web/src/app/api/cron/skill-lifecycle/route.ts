@@ -4,10 +4,14 @@
 // retirement"). Reads claim telemetry (skill_usage), applies the pure rule in
 // @buildd/core/skill-retirement-rule and writes skill_lifecycle_events.
 //
-// Recording mode (the default; SKILL_RETIREMENT_MODE unset or anything but
-// "acting") only writes events: it never changes a skill. Acting mode disables
-// an archivable skill (enabled=false, never a delete) and writes an audit row.
-// Nothing is archivable until telemetry has run the full archive window.
+// Mode is per workspace (gitConfig.skillRetirement.mode, read only through
+// resolveRetirementMode): off skips the workspace, recording (the default, also
+// for anything unrecognised) only writes events, acting disables an archivable
+// skill (enabled=false, never a delete) and writes an audit row. Acting is a
+// request: gateRetirementMode refuses it unless the platform owner approved the
+// workspace (SKILL_RETIREMENT_ACTING_WORKSPACES, comma-separated ids) and the
+// recording report has run for the archive window. Nothing is archivable until
+// telemetry has run the full archive window.
 //
 // Auth: Bearer token matching CRON_SECRET. Recommended schedule: daily.
 
@@ -17,7 +21,8 @@ import { sql } from 'drizzle-orm';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { DEFAULT_ROLES } from '@/lib/default-roles';
 import {
-  evaluateRetirement, resolveRetirementMode, type RetirementSkill,
+  evaluateRetirement, gateRetirementMode, resolveRetirementMode,
+  type RetirementMode, type RetirementSkill,
 } from '@buildd/core/skill-retirement-rule';
 import { archiveSkill, type LifecycleEvent } from '@buildd/core/skill-lifecycle-events';
 import { proposeLinkRetirements } from '@buildd/core/skill-spec-links';
@@ -43,17 +48,20 @@ function templateSlugs(template: unknown): string[] {
 
 async function run(report: CronReport): Promise<NextResponse> {
   const now = new Date();
-  const mode = resolveRetirementMode(process.env.SKILL_RETIREMENT_MODE);
+  const approved = new Set(
+    (process.env.SKILL_RETIREMENT_ACTING_WORKSPACES ?? '').split(',').map(v => v.trim()).filter(Boolean),
+  );
 
-  const [skillRes, telemetryRes, scheduleRes, activeRes] = await Promise.all([
+  const [skillRes, telemetryRes, scheduleRes, activeRes, recordingRes] = await Promise.all([
     db.execute(sql`
-      SELECT s.id, s.team_id, s.slug, s.enabled, s.is_role, s.content, s.content_hash, s.created_at,
+      SELECT s.id, s.team_id, s.workspace_id, w.git_config, s.slug, s.enabled, s.is_role, s.content, s.content_hash, s.created_at,
              COALESCE((s.metadata->>'pinned') = 'true', false) AS pinned,
              u.last_claimed_at,
              (SELECT max(e.created_at) FROM skill_lifecycle_events e
                WHERE e.skill_id = s.id AND e.action = 'restored') AS last_restored_at
       FROM workspace_skills s
       LEFT JOIN skill_usage u ON u.skill_id = s.id
+      LEFT JOIN workspaces w ON w.id = s.workspace_id
       WHERE s.enabled = true`),
     db.execute(sql`SELECT min(first_claimed_at) AS started FROM skill_usage`),
     // Every schedule template counts, enabled or not: a paused schedule resumes.
@@ -63,6 +71,12 @@ async function run(report: CronReport): Promise<NextResponse> {
       FROM tasks
       WHERE status IN ('pending', 'assigned', 'in_progress')
         AND jsonb_typeof(context->'skillSlugs') = 'array'`),
+    // When the recording report first ran, and which skills it covered, per workspace.
+    db.execute(sql`
+      SELECT s.workspace_id, min(e.created_at) AS since, count(DISTINCT e.skill_id) AS covered
+      FROM skill_lifecycle_events e JOIN workspace_skills s ON s.id = e.skill_id
+      WHERE e.mode = 'recording'
+      GROUP BY s.workspace_id`),
   ]);
 
   const byId = new Map<string, Row>();
@@ -80,38 +94,78 @@ async function run(report: CronReport): Promise<NextResponse> {
   const started = rowsOf(telemetryRes)[0]?.started;
   const telemetryStartedAt = started ? new Date(started) : now;
 
-  const verdict = evaluateRetirement({
-    skills, now, telemetryStartedAt, mode,
-    defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug),
-    scheduleSkillSlugs: rowsOf(scheduleRes).flatMap(r => templateSlugs(r.task_template)),
-    activeTaskSkillSlugs: rowsOf(activeRes).map(r => String(r.slug)),
-  });
+  const ws = (r: Row) => (r.workspace_id ? String(r.workspace_id) : '');
+  const recording = new Map(rowsOf(recordingRes).map(r => [ws(r), r]));
+  const scheduleSkillSlugs = rowsOf(scheduleRes).flatMap(r => templateSlugs(r.task_template));
+  const activeTaskSkillSlugs = rowsOf(activeRes).map(r => String(r.slug));
 
-  const archivableIds = new Set(verdict.archivable.map(s => s.id));
+  const groups = new Map<string, RetirementSkill[]>();
+  for (const sk of skills) {
+    const key = ws(byId.get(sk.id)!);
+    groups.set(key, [...(groups.get(key) ?? []), sk]);
+  }
+
   const events: LifecycleEvent[] = [];
   let archived = 0;
+  let staleCount = 0;
+  let archivableCount = 0;
+  const modes: Record<string, RetirementMode> = {};
+  const refusals: string[] = [];
+  const reports: string[] = [];
 
-  for (const s of verdict.stale) {
-    if (archivableIds.has(s.id)) continue;
-    const r = byId.get(s.id)!;
-    events.push({
-      skillId: s.id, teamId: r.team_id, action: 'stale', mode, reason: 'unclaimed past the stale window',
-      previousEnabled: true, previousContentHash: r.content_hash, createdAt: now,
+  for (const [key, group] of groups) {
+    const first = byId.get(group[0].id)!;
+    const requested = resolveRetirementMode(first.git_config);
+    const rec = recording.get(key);
+    const gate = gateRetirementMode({
+      requested,
+      platformApproved: key !== '' && approved.has(key),
+      recordingSince: rec?.since ? new Date(rec.since) : null,
+      covered: Number(rec?.covered ?? 0),
+      total: group.length,
+      now,
     });
-  }
-  for (const s of verdict.archivable) {
-    const r = byId.get(s.id)!;
-    const row = { id: s.id, teamId: r.team_id, enabled: true, content: r.content, contentHash: r.content_hash };
-    const out = archiveSkill(row, { mode, reason: 'unclaimed past the archive window', now });
-    if (mode === 'acting') {
-      const res = await db.execute(sql`
-        UPDATE workspace_skills SET enabled = false, updated_at = now()
-        WHERE id = ${s.id}::uuid AND enabled = true RETURNING id`);
-      if (rowsOf(res).length === 0) continue;
-      archived++;
+    const mode = gate.mode;
+    modes[key || 'team'] = mode;
+    if (gate.refused) refusals.push(`${key || 'team'}: ${gate.refused}`);
+    if (mode === 'off') continue;
+
+    const verdict = evaluateRetirement({
+      skills: group, now, telemetryStartedAt, mode,
+      defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug),
+      scheduleSkillSlugs, activeTaskSkillSlugs,
+    });
+    staleCount += verdict.stale.length;
+    archivableCount += verdict.archivable.length;
+    reports.push(verdict.report);
+
+    const archivableIds = new Set(verdict.archivable.map(s => s.id));
+    for (const s of verdict.stale) {
+      if (archivableIds.has(s.id)) continue;
+      const r = byId.get(s.id)!;
+      events.push({
+        skillId: s.id, teamId: r.team_id, action: 'stale', mode, reason: 'unclaimed past the stale window',
+        previousEnabled: true, previousContentHash: r.content_hash, createdAt: now,
+      });
     }
-    events.push(out.event);
+    for (const s of verdict.archivable) {
+      const r = byId.get(s.id)!;
+      const row = { id: s.id, teamId: r.team_id, enabled: true, content: r.content, contentHash: r.content_hash };
+      const out = archiveSkill(row, { mode, reason: 'unclaimed past the archive window', now });
+      if (mode === 'acting') {
+        const res = await db.execute(sql`
+          UPDATE workspace_skills SET enabled = false, updated_at = now()
+          WHERE id = ${s.id}::uuid AND enabled = true RETURNING id`);
+        if (rowsOf(res).length === 0) continue;
+        archived++;
+      }
+      events.push(out.event);
+    }
   }
+  const mode: RetirementMode | 'mixed' = (() => {
+    const v = new Set(Object.values(modes));
+    return v.size === 1 ? [...v][0] : v.size === 0 ? 'recording' : 'mixed';
+  })();
 
   // Confirmed links to a retired/superseded spec: a proposal for a person, in either
   // mode. It never disables; a similarity or path score is not an input here.
@@ -145,9 +199,9 @@ async function run(report: CronReport): Promise<NextResponse> {
           AND e.created_at > now() - make_interval(days => ${REFLAG_AFTER_DAYS}))`);
   }
 
-  report({ processed: skills.length, changed: archived, result: { mode, stale: verdict.stale.length, archivable: verdict.archivable.length, archived } });
+  report({ processed: skills.length, changed: archived, result: { mode, modes, refusals, stale: staleCount, archivable: archivableCount, archived } });
   return NextResponse.json({
-    ok: true, mode, archived,
-    stale: verdict.stale.length, archivable: verdict.archivable.length, report: verdict.report,
+    ok: true, mode, modes, refusals, archived,
+    stale: staleCount, archivable: archivableCount, report: reports.join('; '),
   });
 }

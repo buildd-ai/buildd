@@ -898,6 +898,12 @@ export interface WorkspaceGitConfig {
   // the follow-up action policy.
   postSessionQuality?: import('../post-session-quality').PostSessionQualityConfig;
 
+  // Skill retirement (spec R-16). Read only through `resolveRetirementMode`:
+  // absent or unrecognised ⇒ 'recording'. 'acting' is a request; the cron
+  // refuses it until the platform owner approves and the recording report has
+  // run for the archive window (`gateRetirementMode`).
+  skillRetirement?: import('../skill-retirement-rule').SkillRetirementConfig;
+
   // Quality Scout probe declarations: verification command, test environment,
   // CLI/API journeys, UI routes, fixture setup, write constraints. Read only
   // through resolveScoutExtension() in scout-capabilities.ts. Absent ⇒ Scout

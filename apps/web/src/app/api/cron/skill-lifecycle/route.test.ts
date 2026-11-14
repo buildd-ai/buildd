@@ -5,13 +5,14 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const DAY = 86_400_000;
 const ago = (d: number) => new Date(Date.now() - d * DAY).toISOString();
 
-let tables: { links?: any[]; skills: any[]; started: string | null; schedules: any[]; active: string[] };
+let tables: { links?: any[]; skills: any[]; started: string | null; schedules: any[]; active: string[]; recording?: any[] };
 const executed: string[] = [];
 const dialect = new PgDialect();
 
 const mockExecute = mock(async (q: any) => {
   const text = dialect.sqlToQuery(q).sql;
   executed.push(text);
+  if (text.includes('min(e.created_at) AS since')) return { rows: tables.recording ?? [] };
   if (text.includes('FROM skill_spec_links')) return { rows: tables.links ?? [] };
   if (text.includes('FROM workspace_skills WHERE enabled')) return { rows: tables.skills };
   if (text.includes('FROM workspace_skills s')) return { rows: tables.skills };
@@ -26,10 +27,18 @@ process.env.CRON_SECRET = 'test-secret';
 
 import { GET } from './route';
 
+const WS = '00000000-0000-0000-0000-0000000000bb';
+/** Workspace asks for acting; platform approved; recording report ran a full window. */
+const actingReady = () => {
+  process.env.SKILL_RETIREMENT_ACTING_WORKSPACES = WS;
+  tables.skills = tables.skills.map(r => ({ ...r, git_config: { skillRetirement: { mode: 'acting' } } }));
+  tables.recording = [{ workspace_id: WS, since: ago(61), covered: 1 }];
+};
+
 const skill = (o: Record<string, unknown>) => ({
   id: '00000000-0000-0000-0000-00000000000' + (o.n ?? 1), team_id: '00000000-0000-0000-0000-0000000000aa',
   slug: 'old', enabled: true, is_role: false, pinned: false, content: 'c', content_hash: 'h',
-  created_at: ago(300), last_claimed_at: null, last_restored_at: null, ...o,
+  created_at: ago(300), workspace_id: WS, git_config: null, last_claimed_at: null, last_restored_at: null, ...o,
 });
 const req = (token = 'test-secret') =>
   new NextRequest('http://localhost/api/cron/skill-lifecycle', { headers: { authorization: `Bearer ${token}` } });
@@ -39,7 +48,7 @@ const inserts = () => executed.filter(q => q.includes('INSERT INTO skill_lifecyc
 beforeEach(() => {
   executed.length = 0;
   mockExecute.mockClear();
-  delete process.env.SKILL_RETIREMENT_MODE;
+  delete process.env.SKILL_RETIREMENT_ACTING_WORKSPACES;
   tables = { skills: [skill({})], started: ago(120), schedules: [], active: [] };
 });
 
@@ -59,7 +68,7 @@ describe('GET /api/cron/skill-lifecycle', () => {
   });
 
   it('acting mode disables the archivable skill and audits it', async () => {
-    process.env.SKILL_RETIREMENT_MODE = 'acting';
+    actingReady();
     const body = await (await GET(req())).json();
     expect(body).toMatchObject({ mode: 'acting', archived: 1 });
     expect(updates()).toHaveLength(1);
@@ -68,8 +77,47 @@ describe('GET /api/cron/skill-lifecycle', () => {
     expect(inserts()).toHaveLength(1);
   });
 
+  it('refuses acting until the platform owner approves the workspace', async () => {
+    actingReady();
+    delete process.env.SKILL_RETIREMENT_ACTING_WORKSPACES;
+    const body = await (await GET(req())).json();
+    expect(body).toMatchObject({ mode: 'recording', archived: 0 });
+    expect(body.refusals.join()).toContain('platform owner');
+    expect(updates()).toHaveLength(0);
+  });
+
+  it('refuses acting until the recording report has run for the archive window', async () => {
+    actingReady();
+    tables.recording = [{ workspace_id: WS, since: ago(10), covered: 1 }];
+    const body = await (await GET(req())).json();
+    expect(body).toMatchObject({ mode: 'recording', archived: 0 });
+    expect(body.refusals.join()).toContain('coverage 1/1 skills');
+    expect(updates()).toHaveLength(0);
+  });
+
+  it('refuses acting when the recording report never ran', async () => {
+    actingReady();
+    tables.recording = [];
+    const body = await (await GET(req())).json();
+    expect(body.mode).toBe('recording');
+    expect(updates()).toHaveLength(0);
+  });
+
+  it('off skips the workspace entirely', async () => {
+    tables.skills = tables.skills.map(r => ({ ...r, git_config: { skillRetirement: { mode: 'off' } } }));
+    const body = await (await GET(req())).json();
+    expect(body).toMatchObject({ mode: 'off', archivable: 0, stale: 0 });
+    expect(inserts()).toHaveLength(0);
+  });
+
+  it('an unrecognised mode records', async () => {
+    tables.skills = tables.skills.map(r => ({ ...r, git_config: { skillRetirement: { mode: 'ACT' } } }));
+    const body = await (await GET(req())).json();
+    expect(body).toMatchObject({ mode: 'recording', archived: 0 });
+  });
+
   it('archives nothing while telemetry is younger than the archive window', async () => {
-    process.env.SKILL_RETIREMENT_MODE = 'acting';
+    actingReady();
     tables.started = ago(20);
     const body = await (await GET(req())).json();
     expect(body.archivable).toBe(0);
@@ -84,8 +132,9 @@ describe('GET /api/cron/skill-lifecycle', () => {
     ['a role row', { skills: [skill({ is_role: true })] }],
     ['a pinned skill', { skills: [skill({ pinned: true })] }],
   ])('exempts a skill protected by %s', async (_n, patch) => {
-    process.env.SKILL_RETIREMENT_MODE = 'acting';
+    actingReady();
     tables = { ...tables, ...patch } as typeof tables;
+    tables.skills = tables.skills.map(r => ({ ...r, git_config: { skillRetirement: { mode: 'acting' } } }));
     const body = await (await GET(req())).json();
     expect(body.archivable).toBe(0);
     expect(updates()).toHaveLength(0);
@@ -101,7 +150,7 @@ describe('GET /api/cron/skill-lifecycle', () => {
       expect(inserts()).toHaveLength(0);
     });
     it('a confirmed link to a retired spec writes a proposal event and never disables, even in acting mode', async () => {
-      process.env.SKILL_RETIREMENT_MODE = 'acting';
+      actingReady();
       tables.links = [link('retired')];
       await GET(req());
       expect(inserts()).toHaveLength(1);

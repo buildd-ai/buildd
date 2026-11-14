@@ -10,7 +10,13 @@ export const MIN_RETIREMENT_WINDOW_DAYS = 7;
 export const DEFAULT_STALE_DAYS = 30;
 export const DEFAULT_ARCHIVE_DAYS = 60;
 
-export type RetirementMode = 'recording' | 'acting';
+export const RETIREMENT_MODES = ['off', 'recording', 'acting'] as const;
+export type RetirementMode = (typeof RETIREMENT_MODES)[number];
+
+/** `WorkspaceGitConfig.skillRetirement`: the owner's request. `acting` is only a request; see `gateRetirementMode`. */
+export interface SkillRetirementConfig {
+  mode?: RetirementMode;
+}
 
 export class RetirementWindowError extends Error {
   constructor(message: string) {
@@ -19,9 +25,58 @@ export class RetirementWindowError extends Error {
   }
 }
 
-/** Anything but the literal 'acting' records only. */
-export function resolveRetirementMode(raw: string | null | undefined): RetirementMode {
-  return raw?.trim().toLowerCase() === 'acting' ? 'acting' : 'recording';
+/**
+ * The one place a workspace's requested retirement mode is read (spec R-16, like
+ * resolvePostSessionQualityMode). Absent or unrecognised resolves to `recording`:
+ * a typo must neither switch retirement off nor start archiving.
+ */
+export function resolveRetirementMode(
+  gitConfig: { skillRetirement?: SkillRetirementConfig | null } | null | undefined,
+): RetirementMode {
+  const cfg = gitConfig?.skillRetirement;
+  const mode = cfg && typeof cfg === 'object' ? cfg.mode : undefined;
+  return mode === 'off' || mode === 'acting' ? mode : 'recording';
+}
+
+export interface ActingGateInput {
+  requested: RetirementMode;
+  /** The platform owner has allowed this workspace to act (never workspace-writable config). */
+  platformApproved: boolean;
+  /** Earliest recording-mode lifecycle event for the workspace, or null if the report never ran. */
+  recordingSince: Date | null;
+  /** Enabled skills the recording report covered / enabled skills in the workspace. */
+  covered: number;
+  total: number;
+  now: Date;
+  archiveDays?: number;
+}
+
+export interface ActingGateResult {
+  mode: RetirementMode;
+  /** Set when `acting` was requested and refused. */
+  refused: string | null;
+  /** Coverage stated for the report, e.g. "3/4 skills". */
+  coverage: string;
+}
+
+/**
+ * `acting` is granted only when the platform owner approved it and the recording
+ * report has run for the full archive window. Otherwise the effective mode is
+ * `recording` and the refusal says why. `off` and `recording` pass through.
+ */
+export function gateRetirementMode(i: ActingGateInput): ActingGateResult {
+  const coverage = `${i.covered}/${i.total} skills`;
+  if (i.requested !== 'acting') return { mode: i.requested, refused: null, coverage };
+  const archiveDays = i.archiveDays ?? DEFAULT_ARCHIVE_DAYS;
+  const refuse = (why: string): ActingGateResult => ({ mode: 'recording', refused: why, coverage });
+  if (!i.platformApproved) return refuse('acting is not approved by the platform owner');
+  if (!i.recordingSince) return refuse('the recording report has not run');
+  const days = (i.now.getTime() - i.recordingSince.getTime()) / DAY_MS;
+  if (days < archiveDays) {
+    return refuse(`the recording report has run ${Math.floor(days)}d of the ${archiveDays}d archive window (coverage ${coverage})`);
+  }
+  if (i.total > 0 && i.covered === 0) return refuse('the recording report covered no skills');
+  return { mode: 'acting', refused: null, coverage };
 }
 
 export interface RetirementSkill {
