@@ -128,11 +128,11 @@ export async function runBulkIngest(opts: BulkIngestOptions, deps: BulkIngestDep
   if (cfg.provider !== 'openai_compat') {
     throw new BulkIngestRefusal(
       'Refusing to run: this workspace would embed with the platform Voyage key. Set EMBEDDING_PROVIDER=openai_compat ' +
-        '(with EMBEDDING_BASE_URL and EMBEDDING_MODEL), or an embedding_endpoint secret for the workspace.',
+        '(with EMBEDDING_BASE_URL and EMBEDDING_MODEL), or pick an embedding provider for the team on Settings › Providers.',
     );
   }
   const embedder = getEmbedderForCorpus('code', cfg);
-  if (!embedder) throw new BulkIngestRefusal('Refusing to run: the embedding endpoint needs both a base URL and a model.');
+  if (!embedder) throw new BulkIngestRefusal(`Refusing to run: ${cfg.unavailable ?? 'the embedding endpoint needs both a base URL and a model.'}`);
   if (!(await deps.isIngestEnabled(workspaceId))) {
     throw new BulkIngestRefusal(`Refusing to run: knowledge ingest is switched off for workspace ${workspaceId}.`);
   }

@@ -83,6 +83,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/providers/explain/route.ts',
   // Refuses a task token on both handlers (.taskScope); only the settings page reads or picks.
   'apps/web/src/app/api/providers/assignments/route.ts',
+  'apps/web/src/app/api/providers/embedding/route.ts',
   'apps/web/src/app/api/providers/route.ts',
   'apps/web/src/app/api/releases/[id]/route.ts',
   'apps/web/src/app/api/releases/route.ts',

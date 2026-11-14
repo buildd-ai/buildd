@@ -10,6 +10,7 @@ import {
   connectedProviders,
   loneProviderLine,
   usedForView,
+  embeddingView,
   providerRows,
   keyRuleLine,
   maskedValue,
@@ -263,5 +264,32 @@ describe('Used for: a choice only once there is one', () => {
     const rows = usedForView(res, { chat: 'openrouter', 'agent-codex': 'anthropic' })!;
     expect(rows.find((r) => r.surface === 'chat')!.value).toBe('openrouter');
     expect(rows.find((r) => r.surface === 'agent-codex')!.value).toBeNull();
+  });
+});
+
+describe('embeddings row', () => {
+  it('nothing connected that can embed: no row, Voyage stays the default', () => {
+    expect(embeddingView(fixtureResponse({}), { provider: null, model: null })).toBeNull();
+    expect(embeddingView(fixtureResponse({ rows: [{ provider: 'anthropic', scope: 'team' }] }), { provider: null, model: null })).toBeNull();
+  });
+
+  it('a connected OpenRouter key or gateway is offered; Voyage reads as chosen until a pick', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'litellm', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] });
+    const row = embeddingView(res, { provider: null, model: null })!;
+    expect(row.value).toBe('voyage');
+    expect(row.options.map((o) => o.value)).toEqual(['voyage', 'openrouter', 'litellm']);
+    expect(row.needsModel).toBe(false);
+  });
+
+  it('a stored pick shows its provider and model, and needs a model', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'openai', scope: 'team' }] });
+    const row = embeddingView(res, { provider: 'openai', model: 'text-embedding-3-large' })!;
+    expect(row).toMatchObject({ value: 'openai', model: 'text-embedding-3-large', needsModel: true });
+  });
+
+  it('a pick whose key was removed stays visible, disabled, so the team sees why search went lexical', () => {
+    const row = embeddingView(fixtureResponse({}), { provider: 'openrouter', model: 'm' })!;
+    expect(row.value).toBe('openrouter');
+    expect(row.options.find((o) => o.value === 'openrouter')).toMatchObject({ disabled: true, description: 'Needs a key' });
   });
 });

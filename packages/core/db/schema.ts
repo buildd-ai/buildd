@@ -143,6 +143,12 @@ export const teams = pgTable('teams', {
   // NULL or a missing surface = the resolver's own ranking. A set surface puts
   // that provider first within a scope; it never widens what the resolver may pick.
   providerAssignments: jsonb('provider_assignments').$type<import('../providers/assignments').ProviderAssignments | null>(),
+  // Which connected provider embeds the team's knowledge, and with which model
+  // (packages/core/providers/embedding.ts). NULL provider = the deployment
+  // default (Voyage unless EMBEDDING_PROVIDER says otherwise). The key comes from
+  // that provider's stored credential; embeddings have none of their own.
+  embeddingProvider: text('embedding_provider').$type<import('../providers/embedding').EmbeddingProviderId>(),
+  embeddingModel: text('embedding_model'),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.

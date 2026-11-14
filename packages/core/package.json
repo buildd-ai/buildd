@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.398.1",
+  "version": "0.399.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -64,6 +64,7 @@
     "./providers": "./providers/index.ts",
     "./providers/resolve": "./providers/resolve.ts",
     "./providers/assignments": "./providers/assignments.ts",
+    "./providers/embedding": "./providers/embedding.ts",
     "./providers/manage": "./providers/manage.ts",
     "./providers/agent-keys": "./providers/agent-keys.ts",
     "./entitlements": "./entitlements.ts",
