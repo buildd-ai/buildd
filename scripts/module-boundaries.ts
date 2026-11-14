@@ -83,6 +83,11 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   // path (apps/web/src/lib/providers/write-path.ts) is core and writes them.
   'packages/core/inference-keys.ts',
   'packages/core/litellm-gateway.ts',
+  // Which connected provider a team embeds with (teams.embedding_provider): a
+  // use of a provider like chat's, read by the Providers page and the schema.
+  // `embed` misfiles it as the knowledge module; the embedder that reads it
+  // (knowledge-store/embedding-config.ts) stays knowledge.
+  'packages/core/providers/embedding.ts',
   'apps/web/src/lib/litellm-gateway-settings.ts',
   // Model-tier ceilings (docs/specs/model-tier-ceilings.md): an authorization
   // and spend control the claim route, task routes, chat turn and inference

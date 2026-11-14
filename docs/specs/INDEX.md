@@ -22,7 +22,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 - [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-23
   A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
-- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-25
+- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-11-13
   OAuth tokens MUST be PKCE-protected and confined to their grant or legacy workspace, connection changes MUST apply on the next request, and JWKS MUST publish public assertion keys.
 - [Team Permissions](./team-permissions.md) · @max — verified 2026-10-15
   Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
@@ -111,7 +111,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
 - [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-21
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
-- [Provider Failover](./provider-failover.md) · @max — verified 2026-10-14
+- [Provider Failover](./provider-failover.md) · @max — verified 2026-11-14
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Failure Alerts](./runner-failure-alerts.md) · @max — verified 2026-10-15
   Systemic runner failures MUST alert operations only when enabled and MUST never block claiming work.
@@ -195,7 +195,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours. Start anyway is the same intent over a declared dependency: it admits the task's agent for assessment and keeps the edge (Living Spec 36df686b).
 - [Human Answer Delivery](./human-answer-delivery.md) · @max — verified 2026-10-20
   An authorised human answer MUST reach a live session or a new attempt of the same task, and MUST never be applied twice or silently dropped.
-- [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-15
+- [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-11-14
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 - [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-23
   Creation-manifest decisions MUST stay record-only without a committed promotion and fall back to the rule; the claim hold/start question is retired and its ledger stays readable.

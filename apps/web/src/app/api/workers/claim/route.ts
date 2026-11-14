@@ -133,6 +133,10 @@ import {
   type PersonalCredentialDecision,
 } from './personal-credential-injection';
 import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } from './claude-model-route';
+import { applyWallFallbackCredentials, type WallFallbackPlan } from './wall-fallback-injection';
+import { loadWallFallbackSetting, resolveTeamWallFallback, teamWallCover, type TeamWallFallback } from '@/lib/provider-wall-fallback';
+import { heldForWall, isSubscriptionPinned, wallFallbackRoute, WALL_FALLBACK_CONTEXT_KEY, type WallFallbackSetting } from '@buildd/core/wall-fallback';
+import { USAGE_WALL_CONTEXT_KEY } from '@/lib/provider-wall';
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
@@ -409,6 +413,15 @@ export async function POST(req: NextRequest) {
    * Non-200 exits (401/403/400/429/422) deliberately do not use it: those are
    * error bodies the runner throws on rather than parses as a claim response.
    */
+  // A subscription runner whose team falls back on a usage wall is told so on
+  // every claim answer, empty ones included: its runner then keeps claiming
+  // Claude work while its own login is held, and the claim delivers the
+  // fallback for the walled run (spec "Subscription wall fallback").
+  const wallCover = async (): Promise<{ wallFallback?: { claude: boolean } }> => {
+    if (account.authType !== 'oauth' || cloudExecutor || runsOnCallersSeat || !account.teamId) return {};
+    return (await teamWallCover(account.teamId)) ? { wallFallback: { claude: true } } : {};
+  };
+
   const emptyClaim = async (payload: {
     diagnostics: ClaimDiagnostics;
     budgetResetsAt?: string | null;
@@ -455,6 +468,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       workers: [],
       ...payload,
+      ...(await wallCover()),
     });
   };
 
@@ -1322,6 +1336,33 @@ export async function POST(req: NextRequest) {
     return false;
   };
 
+  // The team's subscription-wall fallback (lib/provider-wall-fallback.ts,
+  // provider-failover spec "Subscription wall fallback"). Only a runner on its
+  // own subscription login (`authType: 'oauth'`) falls back, and never a cloud
+  // run or an interactive session: neither spends a runner's login. Memoized
+  // per team; read only for such a caller, so no other claim pays for it.
+  const wallFallbackApplies = account.authType === 'oauth' && !cloudExecutor && !runsOnCallersSeat;
+  const wallSettingCache = new Map<string, Promise<WallFallbackSetting | null>>();
+  const wallSettingFor = (teamId: string | undefined): Promise<WallFallbackSetting | null> => {
+    if (!wallFallbackApplies || !teamId) return Promise.resolve(null);
+    let p = wallSettingCache.get(teamId);
+    if (!p) { p = loadWallFallbackSetting(teamId); wallSettingCache.set(teamId, p); }
+    return p;
+  };
+  // The credential this team reserved for walls: a subscription runner's
+  // ordinary run does not get it (./wall-fallback-injection).
+  const wallHoldFor = async (teamId: string | undefined) => {
+    const setting = await wallSettingFor(teamId);
+    return setting ? heldForWall(setting, account.authType) : null;
+  };
+  // By task id: the walled runs this claim lets through on the fallback.
+  const wallFallbackPlans = new Map<string, WallFallbackPlan>();
+  const wallFallbackFor = async (teamId: string | undefined, workspaceId: string): Promise<TeamWallFallback | null> => {
+    const setting = await wallSettingFor(teamId);
+    if (!setting || setting.fallback === 'wait') return null;
+    return resolveTeamWallFallback({ teamId, workspaceId, setting });
+  };
+
   // The Claude model route per workspace (./claude-model-route), memoized: the
   // seat predicate the budget failover and OAuth pacing both read.
   const claudeRouteCache = new Map<string, Promise<ClaudeModelRoute>>();
@@ -1329,7 +1370,7 @@ export async function POST(req: NextRequest) {
     const key = `${teamId ?? ''}:${workspaceId}`;
     let route = claudeRouteCache.get(key);
     if (!route) {
-      route = resolveClaudeModelRoute({
+      route = (async () => resolveClaudeModelRoute({
         teamId,
         workspaceId,
         accountId: account.id,
@@ -1337,7 +1378,8 @@ export async function POST(req: NextRequest) {
         llmProviderOverride: body.llmProviderOverride === true,
         runnerSupportsEndpoint: runnerSupportsEndpointForCapabilityCheck,
         encryptionKeySet: !!process.env.ENCRYPTION_KEY,
-      });
+        held: await wallHoldFor(teamId),
+      }))();
       claudeRouteCache.set(key, route);
     }
     return route;
@@ -2072,7 +2114,37 @@ export async function POST(req: NextRequest) {
     // auth and (b) no Codex worker is already active there (≤1 per workspace).
     // The flip is in-memory only — scoped to this run, not a permanent backend change.
     // Tasks we can't fail over are left pending and retried on reset / when Codex frees.
-    if (claudeBudgetBlocked) {
+    // The team's subscription-wall fallback goes first: an admin chose it for
+    // exactly this wall. Never for tenant work (its own seat), never for a task
+    // pinned to the subscription; an endpoint fallback only for a runner that
+    // applies endpoints. The daily cap reached, or no credential, and the task
+    // takes the paths below: Codex failover or the wait.
+    let wallFallbackWait: 'cap_reached' | 'no_credential' | 'runner_unsupported' | null = null;
+    if (claudeBudgetBlocked && wallFallbackApplies && !isTenantTask && !isSubscriptionPinned(taskContext)) {
+      const fb = await wallFallbackFor(taskTeamId, task.workspaceId);
+      if (fb?.use && fb.credential.endpoint && !runnerSupportsEndpointForCapabilityCheck) {
+        wallFallbackWait = 'runner_unsupported';
+      } else if (fb?.use) {
+        wallFallbackPlans.set(task.id, {
+          credential: fb.credential,
+          record: {
+            served: fb.credential.served,
+            label: fb.credential.label,
+            wall: {
+              scope: claudeWall?.kind === 'runner_seat' ? 'login' : 'pool',
+              runner: runner ?? null,
+              resetsAt: claudeWall ? isoOrNull(claudeWall.resetsAt) : null,
+            },
+            at: now.toISOString(),
+          },
+        });
+        console.log(`[claim] Subscription wall fallback: task ${task.id} runs on ${fb.credential.served} (Claude login walled${claudeWall ? ` until ${isoOrNull(claudeWall.resetsAt)}` : ''})`);
+      } else if (fb) {
+        wallFallbackWait = fb.reason === 'wait' ? null : fb.reason;
+      }
+    }
+
+    if (claudeBudgetBlocked && !wallFallbackPlans.has(task.id)) {
       // Only fail over to Codex if the task did not ask for Claude explicitly and
       // the team toggle allows it; otherwise leave it pending until the reset.
       if (!backendPinned && codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_seat_exhausted')) {
@@ -2083,6 +2155,8 @@ export async function POST(req: NextRequest) {
           backend: 'claude',
           ...(claudeWall ? { wall: claudeWall.kind, resetsAt: isoOrNull(claudeWall.resetsAt) } : {}),
           ...(backendPinned ? { pinned: true } : {}),
+          // Why the team's fallback did not take it: the daily cap, no credential, or a runner that cannot apply it.
+          ...(wallFallbackWait ? { wallFallback: wallFallbackWait } : {}),
         });
         continue;
       }
@@ -2590,6 +2664,14 @@ export async function POST(req: NextRequest) {
     const routing = backendRouting.get(task.id);
     if (routing && routing.backend === (task as any).backend) {
       (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY] = routing;
+    }
+    // A run on the team's subscription-wall fallback is labelled on the task:
+    // which login hit the wall and what serves it (the cost is the worker's).
+    // It no longer waits, so the wall's "waiting for the reset" goes.
+    const wallPlan = wallFallbackPlans.get(task.id);
+    if (wallPlan) {
+      (patchedContext as Record<string, unknown>)[WALL_FALLBACK_CONTEXT_KEY] = wallPlan.record;
+      delete (patchedContext as Record<string, unknown>)[USAGE_WALL_CONTEXT_KEY];
     }
     // Who holds an interactive claim: the MCP liveness touch is scoped to the
     // session user that made it (lib/interactive-worker-liveness.ts). Rewritten
@@ -3417,6 +3499,24 @@ export async function POST(req: NextRequest) {
     : new Set([...endpointWorkers, ...personalWorkers, ...nativeWorkers]);
   if (cloudExecutor) await attachCloudToolSearchHint(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, modelCredentialDecided);
+  // Last word on the model credential for a subscription runner of a team with
+  // a wall fallback: the walled runs get the fallback, the rest lose the
+  // credential reserved for walls (./wall-fallback-injection).
+  let wallFallbackApplied = new Map<string, WallFallbackPlan>();
+  if (wallFallbackApplies && claimedWorkers.length > 0) {
+    const heldByTeam = new Map<string, 'anthropic_api_key' | 'agent_endpoint' | null>();
+    for (const cw of claimedWorkers) {
+      const tid = (cw.task as any)?.workspace?.teamId as string | undefined;
+      if (tid && !heldByTeam.has(tid)) heldByTeam.set(tid, await wallHoldFor(tid));
+    }
+    wallFallbackApplied = applyWallFallbackCredentials(claimedWorkers, {
+      plans: wallFallbackPlans,
+      heldByTeam,
+      skip: new Set([...personalWorkers, ...nativeWorkers]),
+      runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+      runnerSupportsHeaders: runnerSupportsEndpointHeaders(body.runnerFeatures),
+    });
+  }
 
   // Which GitHub credentials the agent gets: a mode marker only, gated on the
   // rollout stage and the runner declaring the feature. See ./github-credential-injection.
@@ -3472,6 +3572,13 @@ export async function POST(req: NextRequest) {
     // A tenant task runs on its tenant's own seat; that is not a route of this team's.
     if (!t || t.backend === 'codex' || (t.context as { tenantContext?: { tenantId?: unknown } } | null)?.tenantContext?.tenantId) continue;
     try {
+      // A fallback run: the route it was set up with, and the label whose
+      // cost the team's daily fallback cap meters.
+      const fallback = wallFallbackApplied.get(cw.id);
+      if (fallback) {
+        await db.update(workers).set({ modelRoute: wallFallbackRoute(fallback.credential.served), wallFallback: fallback.record }).where(eq(workers.id, cw.id));
+        continue;
+      }
       const modelRoute = await claudeRouteFor(t.workspace?.teamId as string | undefined, t.workspaceId);
       await db.update(workers).set({ modelRoute }).where(eq(workers.id, cw.id));
     } catch (err) {
@@ -3499,6 +3606,7 @@ export async function POST(req: NextRequest) {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
+    ...(await wallCover()),
   }, undefined, { route: req.nextUrl.pathname });
   } finally { await settleWorkChanges(); }
 }

@@ -2,12 +2,12 @@
 title: Provider Failover
 status: active
 owner: max
-last_verified: 2026-10-14
+last_verified: 2026-11-14
 summary: When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 domain: runners
 surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
 related: [codex-backend-spec, credential-isolation, runner-liveness]
-keywords: [backend_pauses, budget_exhausted_at, failoverpriority, rate limit, openrouter, runner seat wall]
+keywords: [backend_pauses, budget_exhausted_at, failoverpriority, rate limit, openrouter, runner seat wall, subscription wall fallback, maxCostPerDay]
 assertions:
   - id: backend-registry
     type: symbol
@@ -53,6 +53,25 @@ assertions:
   - id: claude-login-used-test
     type: test_file
     path: apps/runner/__tests__/unit/claude-login-used.test.ts
+  - id: held-for-wall
+    type: symbol
+    name: heldForWall
+    path: packages/core/wall-fallback.ts
+  - id: wall-fallback-test
+    type: test_file
+    path: packages/core/__tests__/wall-fallback.test.ts
+  - id: resolve-team-wall-fallback
+    type: symbol
+    name: resolveTeamWallFallback
+    path: apps/web/src/lib/provider-wall-fallback.ts
+  - id: apply-wall-fallback-credentials
+    type: symbol
+    name: applyWallFallbackCredentials
+    path: apps/web/src/app/api/workers/claim/wall-fallback-injection.ts
+  - id: wall-fallback-cover
+    type: symbol
+    name: WallFallbackCover
+    path: apps/runner/src/provider-limit.ts
 supersedes: []
 ---
 # Provider Failover
@@ -339,6 +358,184 @@ dispatched onto a provider that is itself walled.
 the worker-report route still records a Claude wall from any Claude run, so a
 wall hit on a non-seat route (an endpoint's own budget) is recorded against
 the Claude pool.
+
+---
+
+## A usage wall is a wait
+
+**Capability statement**: When a runner's model login hits a usage wall
+(Claude's 5-hour, session, weekly or extra-usage cap; Codex's usage limit), the
+work MUST wait for the quoted reset and continue by itself: no attempt spent,
+nobody paged, no review failed, and every surface says what it waits for and
+when it resumes.
+
+**Invariants**:
+- A wall is recognised whatever status it arrives with: `failed`, `error`, or
+  a `completed` session that delivered nothing (no PR, no structured output)
+  but the wall message, in `error` or as its fallback summary
+  (`usageWallFromReport`, `apps/web/src/lib/provider-wall.ts`). The worker PATCH
+  route reads the latter two as the `failed` wall before anything else runs.
+- A wall MUST NOT consume one of a task's attempts (`exitCause
+  budget_limited`, excluded by `consumesRetryAttempt`), mark the task failed,
+  advance `context.retryCount`, end a kernel attempt or review round, open a
+  failure incident (`budget_limited` is in the sentinel's `NON_FAILURE_EXITS`),
+  or send a priority push.
+- The requeue keeps the work: `context.resumeBranch`, `lastCommitSha` and the
+  runner's checkpoint `recoveryRef` are written on the requeue, so the next
+  attempt continues on the same branch and is told it is resuming.
+- The requeue records `context.usageWall` (`USAGE_WALL_CONTEXT_KEY`:
+  backend, quoted reset, `login` or `pool` scope, runner), for a runner-scoped
+  wall too. The task page renders it as "Waiting for the usage limit to reset
+  at <time> (<login>)"; the fleet view's runner row (`FleetRunner.usageWall`,
+  from seat-keyed `backend_pauses` rows by their reporting worker's runner,
+  `loadRunnerUsageWalls`) and the runner lane (`usageWallSentences`) say which
+  runner waits and until when. A deferral with wall kind `runner_seat` reads
+  "waiting for the runner's usage limit".
+- One wall episode is one notice: a quiet (priority -1) line on the first
+  report of a wall; a later report on the same backend and seat key whose
+  reset is within 30 minutes of a pause already in force sends nothing
+  (`isRepeatWallEpisode`). Genuine task failures still alert as before.
+- The runner's claim breaker holds that login's claims until the quoted reset
+  for every wall the shared detector knows, the 5-hour and weekly caps
+  included (`classifyClaimError`, `apps/runner/src/claim-breaker.ts`).
+- A reviewer task on a wall is requeued like any other (and taken sooner by a
+  runner whose login still has budget, for a runner-scoped wall). Its PR's
+  `Buildd / Review approval` status is written `pending` with "Review waiting
+  for model budget: resumes <time>" (`publishReviewBudgetWait`,
+  `apps/web/src/lib/provider-wall-status.ts`), never "review unavailable" or a
+  person's decision.
+- The task's own per-session dollar cap is not a wall and still fails that
+  task (see Per-provider pause accounting).
+
+**Acceptance criteria**:
+- AC-29: GIVEN a worker report of each wall (Claude 5-hour, session, weekly,
+  extra usage; Codex usage) WHEN it is processed THEN the task is pending with
+  `context.usageWall`, the worker's `exitCause` is `budget_limited`,
+  `context.retryCount` is unchanged and no notice above priority -1 is sent.
+- AC-30: GIVEN the same wall reported as `error`, or as `completed` with only
+  the wall text as its fallback summary THEN the outcome is the same as AC-29.
+- AC-31: GIVEN a pause already in force for the same backend, seat key and
+  reset WHEN another task reports that wall THEN no notice is sent.
+- AC-32: GIVEN a reviewer task whose session ends on a wall THEN it is
+  requeued, no review round fails, no escalation is filed, and the PR's
+  Review approval status is pending with the cause and the resume time.
+- AC-33: GIVEN twelve tasks failing with `budget_limited` in the sentinel's
+  window THEN no `repeated_failure` incident is opened.
+- AC-34: GIVEN a session-cost-cap report THEN the task fails with
+  `session_budget_capped` and no `context.usageWall` is written.
+
+**Code surface**: `apps/web/src/lib/provider-wall.ts`,
+`apps/web/src/lib/provider-wall-status.ts`,
+`apps/web/src/app/api/workers/[id]/route.ts` (wall normalisation, budget
+branch), `apps/web/src/lib/failure-pattern-sentinel.ts`,
+`apps/runner/src/claim-breaker.ts`, `apps/web/src/lib/home-fleet.ts`
+(`loadRunnerUsageWalls`), `apps/web/src/lib/fleet-view.ts`,
+`apps/web/src/components/fleet/runner-lanes.tsx`,
+`apps/web/src/app/app/(protected)/settings/runners/FleetOverview.tsx`,
+`apps/web/src/app/app/(protected)/tasks/[id]/page.tsx`.
+
+**Out of scope**: resuming the provider's own SDK session in place (a requeued
+task is a fresh claim that continues from the branch and checkpoint); a worker
+reaped or lost before it reports its wall still ends as a lost session.
+
+---
+
+## Subscription wall fallback
+
+**Capability statement**: A team admin MUST be able to choose what a runner
+on its own subscription login does when that login hits a usage wall: wait
+for the reset (the default, "A usage wall is a wait"), or run the work on a
+credential the team stored for it (its Anthropic API key, its OpenRouter key,
+its LiteLLM gateway or its agent model endpoint), bounded by an optional daily
+spend cap, after which the work waits again.
+
+**Invariants**:
+- The setting is `teams.subscription_wall_fallback`
+  (`{ fallback, maxCostPerDayUsd }`, packages/core/wall-fallback.ts). NULL is
+  `wait`. It is edited on Settings › Models, "When the subscription limit is
+  reached" (`WallFallbackSection`, `GET`/`PUT /api/teams/[id]/wall-fallback`,
+  `manage_team_settings`), which names the credential each choice would use
+  (last four characters only) and refuses (400) to save a fallback the team
+  has no usable credential for.
+- Only an `authType: 'oauth'` runner falls back, never a cloud run, an
+  interactive session, tenant work or a run on a person's own key or a Coding
+  policy's native login. An `api` runner is unaffected: nothing is held from
+  it and nothing is read for it.
+- The fallback is only ever a credential in `secrets`. A subscription login is
+  never stored, read or handed out. Naming the Anthropic key or the agent
+  endpoint reserves it (`heldForWall`): a subscription runner's ordinary runs
+  no longer receive it (`resolveClaudeModelRoute` `held`, and the claim strips
+  it in `applyWallFallbackCredentials`), so they spend the login first.
+  OpenRouter and LiteLLM reach an agent run only through the fallback (a
+  synthesized reference resolved against the stored key or gateway), so
+  naming them reserves nothing.
+- At claim, a seat-bound Claude task on a walled login (`claudeBudgetBlocked`)
+  takes the fallback before Codex failover when the team's setting resolves a
+  credential for its workspace and the day's fallback spend is under the cap
+  (`resolveTeamWallFallback`). An endpoint fallback needs a runner that applies
+  endpoints (and their headers, when the route has them). Otherwise the task
+  takes the existing paths; a deferral says why in `detail.wallFallback`
+  (`cap_reached`, `no_credential`, `runner_unsupported`).
+- A fallback run is labelled: `context.wallFallback` on the task (what served
+  it, whose login hit the wall: `login` + runner or the account `pool`, the
+  reset) and `workers.wall_fallback` plus `workers.model_route` on the worker.
+  The task page renders `describeWallFallback` on that worker with its cost;
+  `get_task` prints it. `context.usageWall` is dropped: the task no longer waits.
+- The cap meters `workers.cost_usd` of the team's `wall_fallback` rows since
+  UTC midnight (`wallFallbackSpentToday`). It is checked at claim and at the
+  worker report; a run already started may finish past it. An unreadable sum
+  reads as the cap reached.
+- The worker report applies the setting to the requeue: a subscription
+  runner's Claude wall on an unpinned task whose team would fall back now is
+  requeued with no `start_at` floor and no `budgetExhausted` flag, so the next
+  claim falls back. A wall on a run that was itself the fallback waits.
+- A task created or updated with `subscriptionOnly: true`
+  (`context.subscriptionPinned`, `SUBSCRIPTION_PINNED_KEY`; API, `create_task`,
+  `update_task`) never falls back.
+- Every claim answer to a subscription runner carries `wallFallback: { claude:
+  true }` while its team's fallback would serve a walled run (cached one minute
+  per team). The runner (`WallFallbackCover`) then keeps claiming Claude work
+  while its own login is held, still reporting the hold in `limitWalls`; an
+  answer without it ends the cover, and it lapses by itself after 15 minutes.
+
+**Acceptance criteria**:
+- AC-35: GIVEN a team whose fallback is its Anthropic key AND a subscription
+  runner whose login is walled WHEN it claims an unpinned Claude task THEN the
+  task is claimed on Claude with that key as the run's only model credential,
+  `context.wallFallback` names the key and the wall, the worker row carries
+  `wall_fallback`, and no Codex flip happens.
+- AC-36: GIVEN the same team WHEN the task carries `subscriptionPinned` THEN it
+  is deferred `budget_paused`, as with no fallback.
+- AC-37: GIVEN the day's fallback spend at the cap WHEN the walled runner claims
+  THEN the task is deferred and the claim answer carries no `wallFallback`.
+- AC-38: GIVEN a fallback that reserves the team's key WHEN a subscription
+  runner with an open login claims THEN its run gets no `serverApiKey` and its
+  route is `oauth_seat`.
+- AC-39: GIVEN an `api` runner THEN the setting is not read and nothing changes.
+- AC-40: GIVEN a pool wall reported by a subscription runner's worker AND a team
+  that would fall back THEN the task is pending with no `start_at`; GIVEN the
+  walled run was itself a fallback THEN it waits for the reset.
+- AC-41: GIVEN `PUT` with a fallback the team has no credential for THEN 400 and
+  nothing is saved.
+- AC-42: GIVEN a Claude-only runner whose login is held AND a claim answer with
+  `wallFallback.claude` THEN it keeps claiming; GIVEN an answer without it THEN
+  the hold pauses its claims as before.
+
+**Code surface**: `packages/core/wall-fallback.ts`,
+`apps/web/src/lib/provider-wall-fallback.ts`,
+`apps/web/src/app/api/workers/claim/wall-fallback-injection.ts`,
+`apps/web/src/app/api/workers/claim/claude-model-route.ts` (`held`),
+`apps/web/src/app/api/workers/claim/route.ts`,
+`apps/web/src/app/api/workers/[id]/route.ts` (budget branch),
+`apps/web/src/app/api/teams/[id]/wall-fallback/route.ts`,
+`apps/web/src/app/app/(protected)/settings/providers/WallFallbackSection.tsx`,
+`apps/runner/src/provider-limit.ts` (`WallFallbackCover`),
+`apps/runner/src/workers.ts`.
+
+**Out of scope**: a fallback to Codex (that is the existing failover); a
+per-workspace fallback setting (the team-wide setting resolves a workspace's
+own stored credential first, then the team's); capping a single fallback run's
+own spend mid-run; a fallback for a Codex login's wall.
 
 ---
 

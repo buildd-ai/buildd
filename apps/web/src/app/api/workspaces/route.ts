@@ -15,6 +15,7 @@ import { toPublicWorkspace } from '@/lib/workspace-public';
 import { emit } from '@/lib/core-emit';
 import { can } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { isGrantSession } from '@/lib/grant-scope';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateAppChrome } from '@/lib/app-chrome';
 
@@ -204,9 +205,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name is required (or provide repoUrl to auto-derive)' }, { status: 400 });
     }
 
-    // Resolve team: API key uses its team, session user uses requested or default team
+    // Resolve team: a credential creates in its own team, a session user in the
+    // requested or default team.
+    //  - An API key: its account's team.
+    //  - An account-level MCP connection (grant session): the team of the one
+    //    granted workspace the request is bound to (x-buildd-workspace, see
+    //    lib/api-auth.ts), which the grant reaches now. The MCP transport binds
+    //    a create to a workspace in the team it names (lib/mcp-grant-session.ts
+    //    grantCreateTarget).
+    // Naming any other team is refused, never quietly moved.
     let teamId: string | null = null;
     if (apiAccount) {
+      if (requestedTeamId && requestedTeamId !== apiAccount.teamId) {
+        return NextResponse.json({ error: 'This connection cannot create a workspace in that team' }, { status: 403 });
+      }
       teamId = apiAccount.teamId;
     } else {
       if (requestedTeamId) {
@@ -226,8 +238,15 @@ export async function POST(req: NextRequest) {
     // create_workspace: owner/admin of the target team for a session (the
     // registry counts a personal team as owned), an admin-level key of its
     // own team. A member is refused, not quietly moved to their personal team.
+    // A grant session acts at the user's role in that team (level), and a
+    // person grant is also held to the person's own permission there; an
+    // agent grant has no person and is gated by level alone, as a key is.
+    const grantPerson = apiAccount && isGrantSession(apiAccount)
+      ? (apiAccount as { sessionUserId?: string }).sessionUserId ?? null
+      : null;
     const mayCreate = apiAccount
       ? hasTokenRouteAdminAccess(apiAccount, req)
+        && (!grantPerson || await can({ kind: 'user', userId: grantPerson }, 'create_workspace', teamId))
       : await can({ kind: 'user', userId: user!.id }, 'create_workspace', teamId);
     if (!mayCreate) {
       return NextResponse.json({ error: 'Creating a workspace in this team requires team admin' }, { status: 403 });

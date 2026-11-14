@@ -12,7 +12,7 @@ import { isOpenAsk } from './open-ask';
  * reads, scoped here to the team's accounts and workspaces in one query.
  */
 import { db } from '@buildd/core/db';
-import { tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
+import { backendPauses, tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { RUNNER_STALE_CUTOFF_MS, questionSessionEnded, type FleetSnapshot } from '@buildd/shared';
 import { fleetHeartbeatScope } from './fleet-heartbeat-scope';
@@ -96,6 +96,39 @@ export function fleetHeartbeatsQuery(input: { teamId: string | null; wsIds: stri
 }
 
 /** `fleetCapacity` over `loadFleetHeartbeats`, with Home's online threshold. */
+/**
+ * Runner id → the usage wall its own login is waiting out: each seat-keyed
+ * `backend_pauses` row still in force, attributed to the runner of the worker
+ * that reported it. A login shared by two runners shows on each that hit it.
+ * Never throws: an unreadable log shows no wall, it does not break the page.
+ */
+export async function loadRunnerUsageWalls(input: { teamId: string | null; now: number }): Promise<Map<string, { backend: string; resetsAt: string }>> {
+  const out = new Map<string, { backend: string; resetsAt: string }>();
+  if (!input.teamId) return out;
+  try {
+    const rows = await db
+      .select({ backend: backendPauses.backend, resetsAt: backendPauses.resetsAt, runner: workers.runner })
+      .from(backendPauses)
+      .innerJoin(workers, eq(backendPauses.sourceWorkerId, workers.id))
+      .where(and(
+        eq(backendPauses.teamId, input.teamId),
+        isNotNull(backendPauses.seatKey),
+        gt(backendPauses.resetsAt, new Date(input.now)),
+      ))
+      .limit(200);
+    for (const r of rows) {
+      if (!r.runner) continue;
+      const resetsAt = new Date(r.resetsAt).toISOString();
+      const prior = out.get(r.runner);
+      // The latest reset is when the runner can start again.
+      if (!prior || prior.resetsAt < resetsAt) out.set(r.runner, { backend: String(r.backend), resetsAt });
+    }
+  } catch (err) {
+    console.warn('[home-fleet] usage walls read failed:', err);
+  }
+  return out;
+}
+
 export async function loadFleetCapacity(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<number> {
   return fleetCapacity(await loadFleetHeartbeats(input), { now: input.now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS });
 }
@@ -108,7 +141,7 @@ export async function loadFleetCapacity(input: { teamId: string | null; wsIds: s
 export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<FleetSnapshot> {
   const { wsIds, now } = input;
   if (wsIds.length === 0) return EMPTY.fleet;
-  const [heartbeatRows, liveRows] = await Promise.all([
+  const [heartbeatRows, liveRows, usageWalls] = await Promise.all([
     loadFleetHeartbeats(input),
     db
       .select({
@@ -124,6 +157,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
       .where(and(inArray(workers.workspaceId, wsIds), inArray(workers.status, [...LIVE_WORKER_STATUSES])))
       .orderBy(desc(workers.startedAt))
       .limit(FLEET_WORKER_ROW_CAP),
+    loadRunnerUsageWalls(input),
   ]);
   const rows: FleetWorkerRow[] = liveRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
@@ -133,7 +167,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass, helper: r.helper, hostTaskId: r.hostTaskId,
     } : null,
   }));
-  return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS });
+  return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, usageWalls });
 }
 
 /** Interactive sessions online now in these workspaces, or null when the read fails. */
@@ -349,7 +383,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
   const { teamId, wsIds, now, viewerId } = input;
   if (wsIds.length === 0) return { fleet: EMPTY.fleet, idle: [] };
   const windowStart = now - FLEET_WINDOW_MS;
-  const [heartbeatRows, workerRows, history] = await Promise.all([
+  const [heartbeatRows, workerRows, history, usageWalls] = await Promise.all([
     loadFleetHeartbeats({ teamId, wsIds, now }).then(rows => rows.filter(r => r.lastHeartbeatAt != null && isRunnerRecentlySeen(r.lastHeartbeatAt, now))),
     db
       .select({
@@ -368,6 +402,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
       .orderBy(desc(workers.startedAt))
       .limit(FLEET_WORKER_ROW_CAP),
     loadQueueHistory({ wsIds, from: windowStart, now }),
+    loadRunnerUsageWalls({ teamId, now }),
   ]);
   // A run that stopped (a session limit, say) whose task merged later, from
   // this run or another: the merged PR, so the run reads "merged as #N".
@@ -388,7 +423,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     } : null,
   }));
   const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], rows, {
-    now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, viewerId,
+    now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, viewerId, usageWalls,
   });
   const from = Math.max(fleet.window.from, windowStart);
   return { fleet, idle: idleWhileQueued({ ...history, from, to: now }) };

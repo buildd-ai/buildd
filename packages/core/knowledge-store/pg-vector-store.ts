@@ -190,7 +190,7 @@ export class PgVectorStore implements KnowledgeStore {
   /**
    * `opts.caller` names this store's spend in attribution (see ./voyage-guard.ts).
    * `opts.embeddingConfig` resolves a namespace owner's provider (default: env
-   * plus its `embedding_endpoint` secret, see ./embedding-config.ts).
+   * or the provider its team picked for embeddings, see ./embedding-config.ts).
    */
   constructor(
     private readonly embedder: Embedder | null,
@@ -209,6 +209,14 @@ export class PgVectorStore implements KnowledgeStore {
   private async _selectEmbedder(namespace: string): Promise<Embedder | null> {
     const [owner = '', corpus] = namespace.split(':');
     return getEmbedderForCorpus(corpus as Corpus, await this.embeddingConfig(owner), this.embedder);
+  }
+
+  /** The model a namespace embeds with when its team picked a provider; null on the default. */
+  private async _pickedModel(namespace: string): Promise<string | null> {
+    const [owner = '', corpus] = namespace.split(':');
+    const cfg = await this.embeddingConfig(owner);
+    if (cfg.source !== 'team') return null;
+    return getEmbedderForCorpus(corpus as Corpus, cfg, this.embedder)?.model ?? null;
   }
 
   async findReusableEmbeddings(namespace: string, chunks: UpsertChunk[]): Promise<ReusableEmbeddings> {
@@ -883,6 +891,12 @@ export class PgVectorStore implements KnowledgeStore {
     if (sourcePaths.length === 0) return out;
     const db = await getDb();
     const inList = sql.join(sourcePaths.map(p => sql`${p}`), sql`, `);
+    // A team that picked its embedding provider: a file embedded by another
+    // model is not "unchanged", so the next ingest re-embeds it rather than
+    // leaving it vector-invisible (the vector legs filter on embedding_model).
+    // Teams on the default keep the plain skip, so nothing re-embeds for them.
+    const model = await this._pickedModel(namespace);
+    const modelClause = model ? sql`AND embedding_model = ${model}` : sql``;
     const res = await db.execute(sql`
       SELECT source_path, MIN(file_hash) AS file_hash
       FROM knowledge_chunks
@@ -890,6 +904,7 @@ export class PgVectorStore implements KnowledgeStore {
         AND source_path IN (${inList})
         AND file_hash IS NOT NULL
         AND is_current = true
+        ${modelClause}
       GROUP BY source_path
       HAVING COUNT(DISTINCT file_hash) = 1
     `);

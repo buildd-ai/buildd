@@ -108,6 +108,17 @@ export interface ListProvidersResponse {
   providers: ProviderListing[];
 }
 
+/**
+ * `GET|PATCH /api/providers/embedding`: which connected provider embeds the
+ * team's knowledge, and with which model. `provider: null` = the deployment
+ * default (Voyage). The key is that provider's stored credential.
+ * PATCH body: `{ teamId?, provider: 'voyage'|'openrouter'|'openai'|'litellm'|null, model? }`.
+ */
+export interface ProviderEmbeddingResponse {
+  provider: 'voyage' | 'openrouter' | 'openai' | 'litellm' | null;
+  model: string | null;
+}
+
 /** `GET|PATCH /api/providers/assignments`: the team's pick per surface; a missing surface = the resolver's own ranking. */
 export interface ProviderAssignmentsResponse {
   assignments: Partial<Record<'chat' | 'agent-claude' | 'agent-codex' | 'cloud-egress', string>>;

@@ -781,6 +781,20 @@ mock.module('@/lib/workflow/kernel-client', () => ({
   observeHead: mock(async () => false), observePrState: mock(async () => false),
 }));
 const realHandOff = await import('@/lib/workflow/hand-off');
+// A review held by a usage wall writes its pending Review approval status
+// (unit-tested in lib/provider-wall-status.test.ts); pinned here for the wiring.
+const mockPublishReviewBudgetWait = mock(async (_o: any) => true);
+// The team's subscription-wall fallback: wait unless a test says otherwise.
+const mockResolveTeamWallFallback = mock(async (_opts: any) => ({ use: false, setting: { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
+mock.module('@/lib/provider-wall-fallback', () => ({
+  resolveTeamWallFallback: (...a: any[]) => (mockResolveTeamWallFallback as any)(...a),
+}));
+
+mock.module('@/lib/provider-wall-status', () => ({
+  isReviewerTaskContext: (ctx: any) => !!ctx && typeof ctx.reviewerFor === 'string' && ctx.reviewerFor.length > 0,
+  publishReviewBudgetWait: mockPublishReviewBudgetWait,
+}));
+
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
   projectOwnerEnd: mockProjectOwnerEnd,
@@ -8429,11 +8443,13 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
       expect(res.status).toBe(200);
 
+      // One quiet line for the wall episode (task 775bf607): a wait, not a failure.
       const budgetAlert = mockNotify.mock.calls.find(
-        (c: any) => typeof c[0]?.title === 'string' && c[0].title.includes('budget/rate-limit hit'),
+        (c: any) => typeof c[0]?.title === 'string' && c[0].title.includes('usage limit: work waits until'),
       );
       expect(budgetAlert).toBeTruthy();
       expect(budgetAlert![0].title).toContain('Codex');
+      expect(budgetAlert![0].priority).toBe(-1);
       // Must NOT also fire the misleading generic failure alert.
       expect(mockNotify.mock.calls.some((c: any) => c[0]?.title === 'Task failed')).toBe(false);
     });
@@ -8636,6 +8652,204 @@ describe('PATCH /api/workers/[id]', () => {
       expect(isNaN(startAt.getTime())).toBe(false);
       expect(startAt.getUTCHours()).toBe(11);
       expect(startAt.getUTCMinutes()).toBe(10);
+    });
+  });
+
+  // Task 775bf607: a usage wall is a wait, not a failure. On the day the
+  // 5-hour wall hit, tasks failed and retried into the same wall, each failure
+  // pushed with no cause, and reviews turned into "a person has to decide".
+  describe('a usage wall is a wait, not a failure', () => {
+    function setupWall(opts: { taskContext?: Record<string, unknown>; backend?: string; missionId?: string | null; category?: string } = {}) {
+      mockAuthenticateApiKey.mockReset();
+      mockWorkersFindFirst.mockReset();
+      mockTasksFindFirst.mockReset();
+      mockBackendPausesInsert.mockClear();
+      mockBackendPausesFindMany.mockReset();
+      mockBackendPausesFindMany.mockResolvedValue([]);
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockWakeTask.mockClear();
+      mockNotify.mockReset();
+      mockPublishReviewBudgetWait.mockClear();
+      mockEscalateReviewContractFailure.mockClear();
+      mockWorkflowAttemptEnded.mockClear();
+      accountsUpdateSets = [];
+      accountsUpdateReturning = [{ id: 'account-1' }];
+      lastBackendPauseValues = null;
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1',
+        status: 'running', milestones: [], runner: 'headless://box-a', claimedByCloud: false,
+        branch: 'buildd/task-1-thing', lastCommitSha: 'feedc0de',
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: opts.taskContext ?? {}, workspaceId: 'ws-1', backend: opts.backend ?? 'claude',
+        missionId: opts.missionId ?? null, status: 'in_progress', outputRequirement: 'none',
+        ...(opts.category ? { category: opts.category } : {}),
+        title: 'Some task', workspace: { teamId: 'team-1', name: 'acme' },
+      });
+      const taskSets: any[] = [];
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => { taskSets.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      }));
+      const workerSets: any[] = [];
+      mockWorkersUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => {
+          workerSets.push(vals);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1', status: 'failed' }]) })) };
+        }),
+      }));
+      return { taskSets, workerSets };
+    }
+    const report = (body: Record<string, unknown>) => PATCH(createMockRequest({
+      method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body,
+    }), { params: mockParams });
+
+    /** Waited, not failed: pending, no attempt spent, no failure, at most one quiet notice. */
+    function expectWait(taskSets: any[], workerSets: any[], opts: { notices?: number } = {}) {
+      const requeue = taskSets.find((s: any) => s?.status === 'pending');
+      expect(requeue).toBeTruthy();
+      expect(taskSets.some((s: any) => s?.status === 'failed')).toBe(false);
+      // Not one of the task's attempts: the mission retry counter never moves.
+      expect(requeue.context?.retryCount).toBeUndefined();
+      expect(workerSets.find((u: any) => u.exitCause)?.exitCause).toBe('budget_limited');
+      expect(consumesRetryAttempt('budget_limited')).toBe(false);
+      // Visible: what it waits for, until when, whose login.
+      expect(requeue.context?.usageWall?.resetsAt).toEqual(expect.any(String));
+      expect(requeue.context?.usageWall?.runner).toBe('headless://box-a');
+      // Continues the same work: same branch, from the last commit.
+      expect(requeue.context?.resumeBranch).toBe('buildd/task-1-thing');
+      expect(requeue.context?.lastCommitSha).toBe('feedc0de');
+      // No per-task push and nothing with priority: one quiet line per episode.
+      const notices = mockNotify.mock.calls.map((c: any[]) => c[0]);
+      expect(notices.length).toBe(opts.notices ?? 1);
+      for (const n of notices) {
+        expect(n.priority ?? -1).toBeLessThan(0);
+        expect(n.title).toContain('usage limit');
+      }
+      return requeue;
+    }
+
+    const WALLS: Array<[string, string, string]> = [
+      ['Claude 5-hour', "You've hit your 5-hour limit · resets 4pm (UTC)", 'claude'],
+      ['Claude session', "You've hit your session limit · resets 4pm (UTC)", 'claude'],
+      ['Claude weekly', "You've hit your weekly limit · resets Oct 16, 4am (UTC)", 'claude'],
+      ['Claude extra usage', "You're out of extra usage · resets 5pm (UTC)", 'claude'],
+      ['Codex usage', "You've hit your usage limit. Upgrade to Pro or try again at 5pm.", 'codex'],
+    ];
+    for (const [name, text, backend] of WALLS) {
+      it(`${name}: waits for the reset, uses no attempt, sends no alert`, async () => {
+        const { taskSets, workerSets } = setupWall({ backend, missionId: 'mission-1', taskContext: { pinnedBackend: true, backendPinned: true } });
+        const res = await report({ status: 'failed', error: text, budgetExhausted: true, resultMeta: { recoveryRef: 'origin/buildd/task-1-thing@feedc0de' } });
+        expect(res.status).toBe(200);
+        const requeue = expectWait(taskSets, workerSets);
+        expect(requeue.context?.recoveryRef).toBe('origin/buildd/task-1-thing@feedc0de');
+      });
+    }
+
+    describe('the team falls back instead of waiting', () => {
+      const fallback = { use: true, setting: { fallback: 'anthropic', maxCostPerDayUsd: 20 }, credential: { served: 'anthropic', label: "the team's Anthropic API key", last4: null, apiKey: 'k' }, spentTodayUsd: 0 };
+      afterEach(() => {
+        mockResolveTeamWallFallback.mockImplementation(async () => ({ use: false, setting: { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
+      });
+
+      it('requeues a subscription runner\'s Claude wall claimable now, with no reset floor', async () => {
+        const { taskSets } = setupWall({ taskContext: { backendPinned: true } });
+        mockResolveTeamWallFallback.mockImplementation(async () => fallback as any);
+        await report({ status: 'failed', error: "You've hit your 5-hour limit · resets 4pm (UTC)", budgetExhausted: true });
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue).toBeTruthy();
+        expect(requeue.startAt ?? null).toBeNull();
+        expect(requeue.context?.budgetExhausted).toBeUndefined();
+        const notice = mockNotify.mock.calls.map((c: any[]) => c[0])[0];
+        expect(notice.message).toContain("the team's Anthropic API key");
+      });
+
+      it('still waits for a task pinned to the subscription', async () => {
+        const { taskSets } = setupWall({ taskContext: { subscriptionPinned: true } });
+        mockResolveTeamWallFallback.mockClear();
+        mockResolveTeamWallFallback.mockImplementation(async () => fallback as any);
+        await report({ status: 'failed', error: "You've hit your 5-hour limit · resets 4pm (UTC)", budgetExhausted: true });
+        expect(mockResolveTeamWallFallback).not.toHaveBeenCalled();
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue.startAt).toBeInstanceOf(Date);
+      });
+
+      it('waits when the walled run was itself the fallback', async () => {
+        const { taskSets } = setupWall({ taskContext: {} });
+        const w = await mockWorkersFindFirst();
+        mockWorkersFindFirst.mockResolvedValue({ ...w, wallFallback: { served: 'anthropic', label: 'x', wall: { scope: 'pool', runner: null }, at: '' } });
+        mockResolveTeamWallFallback.mockClear();
+        mockResolveTeamWallFallback.mockImplementation(async () => fallback as any);
+        await report({ status: 'failed', error: "You've hit your 5-hour limit · resets 4pm (UTC)", budgetExhausted: true });
+        expect(mockResolveTeamWallFallback).not.toHaveBeenCalled();
+        expect(taskSets.find((s: any) => s?.status === 'pending')?.startAt).toBeInstanceOf(Date);
+      });
+    });
+
+    it('a wall reported as `error` is the same wait', async () => {
+      const { taskSets, workerSets } = setupWall({ taskContext: { backendPinned: true } });
+      await report({ status: 'error', error: "You've hit your 5-hour limit · resets 4pm (UTC)" });
+      expectWait(taskSets, workerSets);
+    });
+
+    it('a session that "completed" with only the wall message is the same wait', async () => {
+      const { taskSets, workerSets } = setupWall({ taskContext: { backendPinned: true } });
+      await report({ status: 'completed', summary: "You've hit your 5-hour limit · resets 4pm (UTC)", summarySource: 'fallback' });
+      expectWait(taskSets, workerSets);
+    });
+
+    it('a second task on the same wall episode sends no notice at all', async () => {
+      const { taskSets, workerSets } = setupWall({ taskContext: { backendPinned: true } });
+      mockResolveRunnerSeatWallKey.mockImplementation(() => ({ seatKey: 'login:abc', reason: 'machine login' }));
+      try {
+        const text = "You've hit your 5-hour limit · resets 4pm (UTC)";
+        // The first report's pause (same login, same quoted reset) is already in force.
+        const { extractResetTime } = await import('@/lib/budget-errors');
+        mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', seatKey: 'login:abc', resetsAt: extractResetTime(text) }]);
+        await report({ status: 'failed', error: text, budgetExhausted: true });
+        expectWait(taskSets, workerSets, { notices: 0 });
+      } finally {
+        mockResolveRunnerSeatWallKey.mockReset();
+        mockResolveRunnerSeatWallKey.mockImplementation(() => ({ seatKey: null, reason: 'test default' }));
+      }
+    });
+
+    it('never advances the retry counter, however many times the wall is hit', async () => {
+      for (let i = 0; i < 4; i++) {
+        const { taskSets } = setupWall({ missionId: 'mission-1', taskContext: { backendPinned: true, retryCount: 0 } });
+        await report({ status: 'failed', error: "You've hit your 5-hour limit · resets 4pm (UTC)", budgetExhausted: true });
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue?.context?.retryCount).toBe(0);
+        expect(taskSets.some((s: any) => s?.status === 'failed')).toBe(false);
+      }
+    });
+
+    it('a reviewer on a wall is held; Review approval reads pending with the cause, never a person to decide', async () => {
+      const reviewerCtx = {
+        reviewerFor: 'original-task-1', prNumber: 42, headSha: 'abc123', repoFullName: 'org/repo', installationId: 5000,
+      };
+      const { taskSets, workerSets } = setupWall({ category: 'review', missionId: 'mission-1', taskContext: { ...reviewerCtx, backendPinned: true } });
+      // The SDK ended the walled review as an ordinary result: no verdict, only the wall text.
+      await report({ status: 'completed', summary: "You've hit your 5-hour limit · resets 4pm (UTC)", summarySource: 'fallback' });
+      expectWait(taskSets, workerSets);
+      expect(mockPublishReviewBudgetWait).toHaveBeenCalledTimes(1);
+      const arg = (mockPublishReviewBudgetWait.mock.calls[0] as any[])[0];
+      expect(arg.context.reviewerFor).toBe('original-task-1');
+      expect(arg.resetsAt).toBeInstanceOf(Date);
+      // Not a dropped verdict, not an escalation, not a failed review round.
+      expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
+      expect(mockWorkflowAttemptEnded).not.toHaveBeenCalled();
+    });
+
+    it("the task's own per-session dollar cap still fails that task", async () => {
+      const { taskSets, workerSets } = setupWall({ missionId: 'mission-1' });
+      await report({ status: 'failed', error: 'Session cost cap reached', sessionBudgetCapped: true });
+      expect(taskSets.some((s: any) => s?.status === 'pending')).toBe(false);
+      const failed = taskSets.find((s: any) => s?.status === 'failed');
+      expect(failed?.result?.errorType).toBe('session_budget_capped');
+      expect(workerSets.find((u: any) => u.exitCause)?.exitCause).toBe('code_failure');
+      expect(mockBackendPausesInsert).not.toHaveBeenCalled();
+      expect(taskSets.some((s: any) => s?.context?.usageWall)).toBe(false);
     });
   });
 
@@ -16523,7 +16737,9 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
   // as `status: 'completed'` with no structuredOutput, which used to look
   // identical to an organizer that ran and produced nothing (planning_contract_violation).
   // The error result must win: this is budget_limited, not a contract violation.
-  it('overrides completed→failed as budget_limited (not planning_contract_violation) when the result is a provider budget error', async () => {
+  // Task 775bf607: and a wall is a wait, so the cycle is requeued to the reset
+  // rather than failed.
+  it('requeues a planning cycle that "completed" on a provider wall as budget_limited (not failed, not planning_contract_violation)', async () => {
     const taskSetCalls: any[] = [];
     mockTasksUpdate.mockReturnValue({
       set: mock((u: any) => {
@@ -16579,20 +16795,15 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     const res = await PATCH(req, { params: mockParams });
 
     expect(res.status).toBe(200);
-    const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
-    expect(failedUpdate).toBeDefined();
+    expect(taskSetCalls.some((u) => u.status === 'pending')).toBe(true);
+    expect(taskSetCalls.some((u) => u.status === 'failed')).toBe(false);
     expect(taskSetCalls.some((u) => u.status === 'completed')).toBe(false);
-    expect(failedUpdate.result.errorType).toBe('budget_limited');
-    expect(failedUpdate.result.errorType).not.toBe('planning_contract_violation');
+    expect(taskSetCalls.some((u) => u.result?.errorType === 'planning_contract_violation')).toBe(false);
 
-    const overriddenWorker = workerSetCalls.find((u: any) => u.status === 'failed');
+    const overriddenWorker = workerSetCalls.find((u: any) => u.status === 'failed' && u.exitCause);
     expect(overriddenWorker).toBeDefined();
     expect(overriddenWorker.exitCause).toBe('budget_limited');
-
-    // Feed note names the budget rather than a generic contract-violation message.
-    const note = missionNoteInserts.find((n) => n.missionId === 'mission-1');
-    expect(note).toBeDefined();
-    expect(note.body).toContain('weekly limit');
+    expect(overriddenWorker.error).toContain('weekly limit');
   });
 
   // #2045/#2076 case must not regress: a planning task that genuinely ran and

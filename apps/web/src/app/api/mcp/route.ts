@@ -71,7 +71,7 @@ import {
   type GrantWorkspaceResolution,
 } from "@/lib/mcp-grants";
 import type { ToolResult, WorkspaceListing } from "@buildd/core/mcp-tools";
-import { callSubjectWorkspace, callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
+import { callSubjectWorkspace, callWorkspaceRef, grantCreateTarget, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { isUuid } from '@/lib/uuid';
@@ -1214,6 +1214,16 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   for (const call of calls) {
     const args = call.params?.arguments;
     if (args?.action === 'list_workspaces') continue;
+    // A create has no workspace yet: it names a team the grant reaches, and
+    // acts through a granted workspace in that team (the route creates in
+    // that workspace's team only).
+    const create = grantCreateTarget(args, choices, connectionDefault);
+    if (create) {
+      if (create.kind === 'refused') { refusal = create.result; break; }
+      targets.add(create.workspace.workspaceId);
+      target = create.workspace;
+      continue;
+    }
     const { ref, holder } = callWorkspaceRef(args);
     let r: GrantWorkspaceResolution = ref
       ? resolveGrantWorkspaceRef(choices, ref)

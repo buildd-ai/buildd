@@ -418,7 +418,7 @@ export async function runDialStep(args: { now: Date; teamId?: string; chatQualit
 // ── Read model ──────────────────────────────────────────────────────────────
 
 function cellSource(entry: TierEntry): ModelPolicyCellSource {
-  if (entry.source === 'team' || entry.source === 'workspace') return entry.source;
+  if (entry.source === 'team' || entry.source === 'workspace' || entry.source === 'platform') return entry.source;
   if (entry.source === 'policy') return 'service';
   return 'default';
 }

@@ -17,8 +17,10 @@ import type {
   ProviderPolicySummary,
   ProviderShapeId,
   ProviderSurfaceId,
+  ProviderEmbeddingResponse,
   ProviderWritePermission,
 } from '@buildd/shared';
+import { EMBEDDING_PROVIDERS, type EmbeddingProviderId } from '@buildd/core/providers/embedding';
 
 export const SURFACE_ORDER: readonly ProviderSurfaceId[] = ['chat', 'agent-claude', 'agent-codex', 'cloud-egress'];
 
@@ -276,3 +278,40 @@ export function loneProviderLine(res: Pick<ListProvidersResponse, 'providers'>):
 function orList(names: readonly string[]): string {
   return names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0] ?? '';
 }
+
+// ── Embeddings ───────────────────────────────────────────────────────────────
+
+export interface EmbeddingRow {
+  /** The provider shown as chosen: the stored pick, else Voyage (the default). */
+  value: EmbeddingProviderId;
+  model: string | null;
+  options: UsedForOption[];
+  /** Every provider but Voyage takes a model id. */
+  needsModel: boolean;
+}
+
+/**
+ * The one Embeddings row: Voyage (the default) and every connected provider
+ * with an embeddings endpoint. Null when there is nothing to choose and
+ * nothing chosen. A stored pick whose key is gone stays shown, disabled.
+ */
+export function embeddingView(res: Pick<ListProvidersResponse, 'providers'>, current: ProviderEmbeddingResponse): EmbeddingRow | null {
+  const connected = new Set(connectedProviders(res).map((p) => p.id));
+  const options: UsedForOption[] = [];
+  for (const id of EMBEDDING_PROVIDERS) {
+    const label = id === 'voyage' ? 'Voyage' : rowLabel(res.providers.find((p) => p.id === id) ?? { id, label: id });
+    if (id === 'voyage' || connected.has(id)) options.push({ value: id, label, disabled: false });
+    else if (current.provider === id) options.push({ value: id, label, disabled: true, description: 'Needs a key' });
+  }
+  if (options.length < 2) return null;
+  const value = current.provider ?? 'voyage';
+  return {
+    value,
+    model: value === 'voyage' ? null : current.model,
+    options,
+    needsModel: value !== 'voyage',
+  };
+}
+
+/** Under the row once the model changes: the vectors already stored came from the old one. */
+export const EMBEDDING_REINDEX_LINE = 'Knowledge embedded with the old model is found by keyword until it is indexed again.';

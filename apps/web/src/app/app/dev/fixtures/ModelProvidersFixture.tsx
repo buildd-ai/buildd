@@ -32,7 +32,7 @@ const WORKSPACES = [
 ];
 const FLASH = 'fireworks_ai/deepseek-v4p1-flash';
 const TIERS: Array<[string, string]> = [
-  ['claude-fable-5-1', 'premium-plus'],
+  ['claude-fable-5-2', 'premium-plus'],
   ['claude-opus-5-5', 'premium'],
   ['claude-opus-5', 'premium'],
   ['claude-sonnet-5', 'standard'],
@@ -113,6 +113,9 @@ function installStub(variant: ModelProvidersFixtureVariant) {
   const rows = lone ? LONE_ROWS : ROWS;
   let credentialPolicy: CredentialPolicyValue | null = variant === 'stored-policy' ? 'team' : null;
   let assignments: Record<string, string> = {};
+  let embedding: { provider: string | null; model: string | null } = lone
+    ? { provider: null, model: null }
+    : { provider: 'litellm', model: 'qwen3-embedding' };
   window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url;
     const parsed = new URL(url, window.location.origin);
@@ -124,6 +127,14 @@ function installStub(variant: ModelProvidersFixtureVariant) {
         else delete assignments[surface];
       }
       return Promise.resolve(json({ assignments }));
+    }
+    if (parsed.pathname === '/api/providers/embedding') {
+      // Full page: embeddings on the team's gateway with a model; lone: the Voyage default.
+      if (init?.method === 'PATCH') {
+        const { provider, model } = JSON.parse(String(init.body)) as { provider: string | null; model?: string };
+        embedding = { provider, model: provider && provider !== 'voyage' ? model ?? null : null };
+      }
+      return Promise.resolve(json(embedding));
     }
     if (parsed.pathname === '/api/providers/explain') return Promise.resolve(json(explain(parsed, rows)));
     if (parsed.pathname === '/api/providers') {

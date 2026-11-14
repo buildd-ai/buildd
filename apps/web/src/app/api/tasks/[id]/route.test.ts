@@ -1520,6 +1520,26 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(sets[0]?.context).toBeUndefined();
     });
 
+    // Per-task override of the team's subscription-wall fallback.
+    it('pins a task to the subscription and releases it, keeping other context', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue({ ...pausedCodexTask(), context: { note: 'kept' } });
+      let sets = captureUpdate();
+      let res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { subscriptionOnly: true } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.context).toEqual({ note: 'kept', subscriptionPinned: true });
+
+      mockTasksFindFirst.mockResolvedValue({ ...pausedCodexTask(), context: { note: 'kept', subscriptionPinned: true } });
+      sets = captureUpdate();
+      res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { subscriptionOnly: false } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.context).toEqual({ note: 'kept' });
+
+      res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { subscriptionOnly: 'yes' } }), TASK_ID);
+      expect(res.status).toBe(400);
+    });
+
     // An operator's switch is an explicit choice: budget failover must not undo it.
     it('pins the backend an operator switches to, and unpins on clear', async () => {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });

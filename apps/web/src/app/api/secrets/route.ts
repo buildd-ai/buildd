@@ -17,12 +17,13 @@ import { CLOUDFLARE_PURPOSE, parseCloudflareCredential } from '@/lib/cloudflare-
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
- * A team's or workspace's embedding endpoint: a JSON blob read by
- * packages/core/knowledge-store/embedding-config.ts, which validates its fields
- * (an invalid one is ignored there, with a warning, in favour of env). Named
- * here, not imported: core does not import the knowledge module.
+ * Removed: embeddings are a use of a provider the team already connected
+ * (Settings › Providers, PATCH /api/providers/embedding), not a credential of
+ * their own. A row stored before still applies read-only
+ * (packages/core/knowledge-store/embedding-config.ts) and can be deleted here.
  */
-const EMBEDDING_ENDPOINT_PURPOSE = 'embedding_endpoint';
+const REMOVED_EMBEDDING_ENDPOINT_PURPOSE = 'embedding_endpoint';
+const EMBEDDING_ENDPOINT_REMOVED = 'embedding_endpoint is no longer accepted. Pick a provider and model for embeddings on Settings › Providers (PATCH /api/providers/embedding); its stored key is used.';
 
 /**
  * Model-credential purposes (the provider registry's storages). Their writes go
@@ -65,7 +66,7 @@ const RAW_STRING_PURPOSES = new Set([
  * would silently make a team credential work only for tasks that one account
  * files.
  */
-const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key', 'role_env_secret', 'voyage_api_key', EMBEDDING_ENDPOINT_PURPOSE]);
+const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key', 'role_env_secret', 'voyage_api_key']);
 
 /**
  * Sanitize a raw secret value before encryption: trim whitespace, and for raw-string
@@ -92,7 +93,7 @@ function sanitizeSecretValue(raw: string, purpose: string): string {
  * team's Cloudflare account (apps/cloud-runner), so it takes the same bar; it
  * is always team-wide: one Worker serves the team.
  */
-const TEAM_MODEL_KEY_PURPOSES = new Set(['inference_key', 'decision_key', 'voyage_api_key', EMBEDDING_ENDPOINT_PURPOSE, CLOUDFLARE_PURPOSE]);
+const TEAM_MODEL_KEY_PURPOSES = new Set(['inference_key', 'decision_key', 'voyage_api_key', CLOUDFLARE_PURPOSE]);
 
 type SecretsCaller = {
   teamIds: string[];
@@ -216,7 +217,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
-  const validPurposes = ['anthropic_api_key', 'openai_api_key', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'voyage_api_key', EMBEDDING_ENDPOINT_PURPOSE, 'role_env_secret', CLOUDFLARE_PURPOSE];
+  if (purpose === REMOVED_EMBEDDING_ENDPOINT_PURPOSE) {
+    return NextResponse.json({ error: EMBEDDING_ENDPOINT_REMOVED }, { status: 400 });
+  }
+  const validPurposes = ['anthropic_api_key', 'openai_api_key', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'voyage_api_key', 'role_env_secret', CLOUDFLARE_PURPOSE];
   if (!validPurposes.includes(purpose)) {
     return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
   }
@@ -236,24 +240,6 @@ export async function POST(req: NextRequest) {
     const parsed = parseCloudflareCredential(typeof value === 'string' ? value : JSON.stringify(value));
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
     blobValue = JSON.stringify(parsed.value);
-  }
-
-  // Embedding endpoint: a JSON object. Team- or workspace-wide only: a namespace
-  // is shared by every account in it, so an account-scoped row would never apply.
-  if (purpose === EMBEDDING_ENDPOINT_PURPOSE) {
-    if (accountId) {
-      return NextResponse.json({ error: 'The embedding endpoint is team- or workspace-wide; omit accountId' }, { status: 400 });
-    }
-    let blob: unknown = value;
-    if (typeof value === 'string') {
-      try { blob = JSON.parse(value); } catch { blob = null; }
-    }
-    const fields = blob && typeof blob === 'object' && !Array.isArray(blob) ? blob as Record<string, unknown> : null;
-    const onVoyage = fields?.provider === 'voyage';
-    if (!fields || (!onVoyage && (typeof fields.baseUrl !== 'string' || typeof fields.model !== 'string'))) {
-      return NextResponse.json({ error: 'embedding_endpoint must be a JSON object with baseUrl and model, or {"provider":"voyage"}' }, { status: 400 });
-    }
-    blobValue = JSON.stringify(fields);
   }
 
   // Sanitize the raw value: trim, and strip wrapping quotes for raw-string purposes.

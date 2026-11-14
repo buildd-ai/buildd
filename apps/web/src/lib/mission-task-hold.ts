@@ -358,7 +358,13 @@ function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHol
     if (reason === 'budget_paused') {
       const resets = epoch(str(detail.resetsAt)) ?? (startAt != null && startAt > now ? startAt : null);
       // A provider's rate limit is a wall too, but not the team's budget.
-      const what = detail.wall === 'provider_pause' ? 'model provider rate limit reached' : 'team daily budget reached';
+      // One runner's own login at its usage limit is neither (provider-failover
+      // spec, "A usage wall is a wait"): it waits for that login's reset.
+      const what = detail.wall === 'provider_pause'
+        ? 'model provider rate limit reached'
+        : detail.wall === 'runner_seat'
+          ? "waiting for the runner's usage limit"
+          : 'team daily budget reached';
       return queued('budget', resets != null ? `${what}, resumes ${whenLabel(resets, now)}` : what, reason);
     }
     return queued('budget', claimHoldPhrase(reason), reason);

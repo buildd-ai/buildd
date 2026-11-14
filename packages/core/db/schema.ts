@@ -143,6 +143,17 @@ export const teams = pgTable('teams', {
   // NULL or a missing surface = the resolver's own ranking. A set surface puts
   // that provider first within a scope; it never widens what the resolver may pick.
   providerAssignments: jsonb('provider_assignments').$type<import('../providers/assignments').ProviderAssignments | null>(),
+  // Which connected provider embeds the team's knowledge, and with which model
+  // (packages/core/providers/embedding.ts). NULL provider = the deployment
+  // default (Voyage unless EMBEDDING_PROVIDER says otherwise). The key comes from
+  // that provider's stored credential; embeddings have none of their own.
+  embeddingProvider: text('embedding_provider').$type<import('../providers/embedding').EmbeddingProviderId>(),
+  // What happens when a runner's subscription login hits a usage wall
+  // (packages/core/wall-fallback.ts): { fallback, maxCostPerDayUsd }. NULL =
+  // wait for the reset, the default. A fallback names a credential the team
+  // stored in `secrets`; only `authType: 'oauth'` runners fall back.
+  subscriptionWallFallback: jsonb('subscription_wall_fallback').$type<import('../wall-fallback').WallFallbackSetting | null>(),
+  embeddingModel: text('embedding_model'),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -2222,6 +2233,10 @@ export const workers = pgTable('workers', {
   // team API key, team endpoint, plan login, runner provider or cloud egress.
   // NULL = not recorded (older run, codex, tenant seat).
   modelRoute: text('model_route').$type<'oauth_seat' | 'agent_endpoint' | 'anthropic_api_key' | 'runner_provider' | 'cloud_egress' | null>(),
+  // Set when this run is a subscription-wall fallback (packages/core/wall-fallback.ts):
+  // which stored credential served it and whose login hit the wall. Its cost_usd is
+  // what the team's daily fallback cap meters. NULL = an ordinary run.
+  wallFallback: jsonb('wall_fallback').$type<import('../wall-fallback').WallFallbackRecord | null>(),
   // Token usage (for seat-based accounts where cost isn't meaningful)
   inputTokens: integer('input_tokens').default(0).notNull(),
   outputTokens: integer('output_tokens').default(0).notNull(),
@@ -2527,6 +2542,8 @@ export const workers = pgTable('workers', {
   // and knowledge ingest's by-URL lookup. Partial: most workers never open a PR.
   prNumberIdx: index('workers_pr_number_idx').on(t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),
   prUrlIdx: index('workers_pr_url_idx').on(t.prUrl).where(sql`${t.prUrl} IS NOT NULL`),
+  // The daily fallback cap's spend sum (lib/provider-wall-fallback.ts). Partial: almost no run is a fallback.
+  wallFallbackIdx: index('workers_wall_fallback_created_idx').on(t.createdAt).where(sql`${t.wallFallback} IS NOT NULL`),
 }));
 
 /**

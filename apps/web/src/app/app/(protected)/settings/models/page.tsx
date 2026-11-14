@@ -5,11 +5,13 @@ import { loadSettingsContext } from '../_lib/settings-context';
 import { settingsReadOnly } from '@/lib/settings-nav';
 import { isPlatformOperatorCaller } from '@/lib/admin/platform-operator-caller';
 import ModelProvidersClient from '../providers/ModelProvidersClient';
+import WallFallbackSection from '../providers/WallFallbackSection';
 import { PROVIDERS_DESCRIPTION } from '../providers/provider-copy';
 import ModelTiersClient from './ModelTiersClient';
 import TierLimitSection from './TierLimitSection';
 import ChatTierPolicySection from './ChatTierPolicySection';
 import ModelUpgradePolicySection from './ModelUpgradePolicySection';
+import PlatformTierDefaultsSection from './PlatformTierDefaultsSection';
 import { resolveModelsQaDecisions } from './qa-state';
 
 export const dynamic = 'force-dynamic';
@@ -18,7 +20,8 @@ export const dynamic = 'force-dynamic';
  * Settings › Team › Models: every team model concern on one page, in the order
  * you set it up. Keys (the team's API keys, gateway and agent endpoint, one row
  * per provider), Used for (which provider serves each surface, the decision
- * model, provider routing) and Tiers (which model each tier runs, limits, upgrades).
+ * model, provider routing), When the subscription limit is reached (wait, or a
+ * team credential with a daily cap: ../providers/WallFallbackSection) and Tiers (which model each tier runs, limits, upgrades).
  * Goal grading has no control: Auto is the behaviour. Was /app/settings/providers and
  * /app/settings/ai; next.config redirects both here. Your own keys are
  * You › Keys (the old `?scope=mine` redirects there).
@@ -26,9 +29,10 @@ export const dynamic = 'force-dynamic';
  * Every section is a client component that loads its own data, so one failed
  * read blanks that section, not the page. Each control follows the permission
  * its API enforces; this only decides what renders. A team admin picks each
- * tier's primary model; traffic pools and the decision model are platform
- * operator controls (lib/admin/platform-operator-caller.ts) and render for an operator only.
- * Your own maximum is You › Keys.
+ * tier's primary model; traffic pools, the decision model and the platform
+ * defaults (the model each tier runs for every team without its own row) are
+ * platform operator controls (lib/admin/platform-operator-caller.ts) and render
+ * for an operator only. Your own maximum is You › Keys.
  *
  * `?state=decisions` (dev server only) shows sample decision overrides and
  * switch lines in the operator's Decisions row — see ./qa-state.ts.
@@ -66,11 +70,15 @@ export default async function ModelsSettingsPage({
         workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
       />
 
+      {/* What a subscription runner does at its usage limit: wait (default) or a team credential, capped per day. */}
+      <WallFallbackSection teamId={teamId} />
+
       <Section title="Tiers" id="tiers" className="scroll-mt-20">
         <ModelTiersClient teamId={teamId} teamName={currentTeam.name ?? null} isAdmin={perms.manage_model_tiers} operator={operator} />
         <TierLimitSection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ChatTierPolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ModelUpgradePolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
+        {operator && <PlatformTierDefaultsSection />}
       </Section>
 
       <Section title="Results" id="results">

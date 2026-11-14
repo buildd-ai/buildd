@@ -73,7 +73,9 @@ import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import { toTaskArtifactItem, taskVisibleArtifacts } from './task-artifact-items';
 import { observeWorkspaceMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
+import { describeWallFallback } from '@buildd/core/wall-fallback';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
+import { readUsageWall, wallHolder } from '@/lib/provider-wall';
 import { deriveTaskModel } from '@/lib/model-presentation';
 import { resolveShippedRelease } from '@/lib/task-ship-state';
 import { deriveTaskOrigin } from '@/lib/task-origin';
@@ -730,6 +732,9 @@ async function TaskDetailPage({
     && !hasBypassFlag(task.context as Record<string, unknown> | null, BYPASS_MISSION_BUDGET_KEY);
   const budgetBackendLabel = backendLabel(task.backend);
   const budgetResetsAtIso = (task.context as any)?.budgetResetsAt as string | undefined;
+  // The usage wall the task waits out (lib/provider-wall.ts), written for a wall
+  // on one runner's own login too, which carries no budgetExhausted flag.
+  const usageWall = task.status === 'pending' ? readUsageWall(task.context) : null;
 
   // Provider switch offered on the pause banner: which OTHER backend could take
   // this task right now. Same availability data the automatic failover uses, so
@@ -1312,6 +1317,13 @@ async function TaskDetailPage({
                           </div>
                         );
                       })()}
+                      {/* A run on the team's subscription-wall fallback says so, with
+                          whose login hit the limit, what served it and what it cost
+                          (provider-failover spec, "Subscription wall fallback"). */}
+                      {(() => {
+                        const line = describeWallFallback((worker as { wallFallback?: unknown }).wallFallback, parseFloat(worker.costUsd?.toString() || '0'));
+                        return line ? <p className="mt-1 text-meta text-text-secondary" data-testid="worker-wall-fallback">{line}</p> : null;
+                      })()}
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
                         <span>{worker.turns} turns</span>
@@ -1866,16 +1878,28 @@ async function TaskDetailPage({
         )}
 
         {/* Budget Exhausted Banner — shown when task was reset to pending due to budget exhaustion */}
-        {isBudgetPaused && !isBlocked && (
-          <div className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6">
+        {(isBudgetPaused || usageWall) && !isBlocked && (
+          <div className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6" data-testid="task-usage-wall-banner">
             <div className="flex items-center gap-2 text-status-warning font-medium text-sm">
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              Recorded {budgetBackendLabel} budget/rate-limit.{' '}
-              {budgetResetsAtIso
-                ? <>Recorded reset: <LocalTime iso={budgetResetsAtIso} suffix="." /></>
-                : 'No reset time recorded.'}
+              {usageWall ? (
+                <span>
+                  Waiting for the usage limit to reset at <LocalTime iso={usageWall.resetsAt} /> ({wallHolder(usageWall)}).{' '}
+                  {usageWall.scope === 'login'
+                    ? 'Resumes by itself, sooner if another runner with budget takes it.'
+                    : 'Resumes by itself.'}{' '}
+                  No attempt is used.
+                </span>
+              ) : (
+                <>
+                  Recorded {budgetBackendLabel} budget/rate-limit.{' '}
+                  {budgetResetsAtIso
+                    ? <>Recorded reset: <LocalTime iso={budgetResetsAtIso} suffix="." /></>
+                    : 'No reset time recorded.'}
+                </>
+              )}
             </div>
             {switchOptions.length > 0 && (
               <SwitchBackendButton taskId={id} options={switchOptions} />
