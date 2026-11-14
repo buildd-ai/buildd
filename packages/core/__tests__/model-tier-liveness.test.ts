@@ -18,10 +18,13 @@ const LIVE: LiveModel[] = [
   { id: 'claude-fable-5-2', display_name: 'Claude Fable 5.2' },
   { id: 'claude-fable-5-1', display_name: 'Claude Fable 5.1' },
   { id: 'claude-fable-5', display_name: 'Claude Fable 5' },
+  { id: 'claude-opus-5-5', display_name: 'Claude Opus 5.5' },
   { id: 'claude-opus-5', display_name: 'Claude Opus 5' },
   { id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8' },
+  { id: 'claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5' },
   { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' },
   { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
+  { id: 'claude-haiku-5-5', display_name: 'Claude Haiku 5.5' },
   { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5' },
 ];
 
@@ -63,7 +66,7 @@ describe('auditTierModels', () => {
       LIVE,
     );
     expect(superseded).toEqual([
-      { tier: 'standard', model: 'claude-sonnet-4-6', newer: 'claude-sonnet-5' },
+      { tier: 'standard', model: 'claude-sonnet-4-6', newer: 'claude-sonnet-5-5' },
     ]);
   });
 

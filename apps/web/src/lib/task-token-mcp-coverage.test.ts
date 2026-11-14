@@ -182,6 +182,7 @@ const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
   manage_workspaces: 'creates and configures workspaces and repos; a coordination-workspace organizer, which needs it, is never minted an admin token and keeps the runner key',
   manage_watched_projects: 'team configuration of watched external projects',
   manage_model_tiers: 'team model routing and spend',
+  manage_platform_tiers: 'the platform default model per tier for every team; the route takes a platform operator only, so a task token is never one',
   manage_evidence_backends: 'team storage backends and their credentials',
   trigger_release: 'a release ships the whole workspace, not one mission',
   release_status: 'reads the release gate through the admin release routes; not one mission',

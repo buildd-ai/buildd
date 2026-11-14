@@ -2,7 +2,7 @@
 // handler is driven here with injected fakes, so no module is replaced and
 // nothing asserts on rendered SQL (CI can run test files in one process).
 import { describe, it, expect } from 'bun:test';
-import type { Tier, TierEntry } from '@buildd/core/model-tier-defaults';
+import { bundledTierEntry, type Tier, type TierEntry } from '@buildd/core/model-tier-defaults';
 import { handlePlanRequest, type PlanDeps, type PlanRow, type AiApiAccount } from '@/lib/ai/handlers';
 import type { PoolArmPick } from '@/lib/ai/plan';
 import { resolveTierCeiling } from '@buildd/shared';
@@ -179,12 +179,14 @@ describe('POST /api/ai/plan — the plan', () => {
   });
 
   it('a chat plan replaces a registry pick missing from the tool-capable catalog with the tier default', async () => {
+    // The bundled standard model's OpenRouter id, whatever release it is on today.
+    const defaultOr = `anthropic/${bundledTierEntry('standard').model.replace(/-(\d+)-(\d+)$/, '-$1.$2')}`;
     const { deps } = makeDeps({
       resolveEntry: async (tier) => (tier === 'standard' ? { provider: 'openrouter', model: 'vendor/no-tools', source: 'team' } : REGISTRY[tier]),
-      chatCatalog: async () => [{ openRouterId: 'anthropic/claude-sonnet-5', permaslug: 'anthropic/claude-sonnet-5' }] as never,
+      chatCatalog: async () => [{ openRouterId: defaultOr, permaslug: defaultOr }] as never,
     });
     const body = await (await handlePlanRequest(req(BODY), deps)).json();
-    expect(body).toMatchObject({ provider: 'openrouter', model: 'anthropic/claude-sonnet-5', source: 'default' });
+    expect(body).toMatchObject({ provider: 'openrouter', model: defaultOr, source: 'default' });
   });
 
   it('an inference plan skips the chat check', async () => {

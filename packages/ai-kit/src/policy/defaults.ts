@@ -14,9 +14,12 @@ import type { KitTier, ModelPolicy, PolicyRoute } from './types';
 export const DEFAULT_MODEL_POLICY: ModelPolicy & { tiers: Record<KitTier, PolicyRoute> } = {
   version: 'bundled',
   tiers: {
+    // Each tier sits on the newest model buildd has certified in its family
+    // (packages/core/model-capability-requirements.ts); a floor row for a newer
+    // release fails model-tier-defaults-generation.test.ts until this moves too.
     'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-2' },
-    premium: { provider: 'anthropic', model: 'claude-opus-5' },
-    standard: { provider: 'anthropic', model: 'claude-sonnet-5' },
-    budget: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    premium: { provider: 'anthropic', model: 'claude-opus-5-5' },
+    standard: { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+    budget: { provider: 'anthropic', model: 'claude-haiku-5-5' },
   },
 };

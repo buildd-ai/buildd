@@ -210,6 +210,7 @@ export function latestCertifiedTierModel(
 export type TierSelectionSource =
   | 'pinned_workspace'
   | 'pinned_team'
+  | 'platform_default'
   | 'policy_service'
   | 'catalog'
   | 'default';
@@ -222,8 +223,8 @@ export interface TierAdoption {
   why: string;
   /** The newest certified in-band model, when it differs from `model`. */
   newer: { model: string; certifiedAt: string | null } | null;
-  /** Why `newer` is not in use, when it is not. */
-  withheld: { reason: 'pinned' | 'manual' | 'soak'; eligibleAt: string | null } | null;
+  /** Why `newer` is not in use, when it is not. `platform`: buildd's default for every team holds it. */
+  withheld: { reason: 'pinned' | 'platform' | 'manual' | 'soak'; eligibleAt: string | null } | null;
   deprecated: (ModelDeprecation & { retired: boolean }) | null;
 }
 
@@ -232,6 +233,7 @@ export function selectionSourceOf(source: string | undefined): TierSelectionSour
   switch (source) {
     case 'workspace': return 'pinned_workspace';
     case 'team': return 'pinned_team';
+    case 'platform': return 'platform_default';
     case 'policy': return 'policy_service';
     case 'catalog': return 'catalog';
     default: return 'default';
@@ -270,6 +272,8 @@ export function explainTierAdoption(args: {
   if (newer && latest) {
     if (selectedBy === 'pinned_team' || selectedBy === 'pinned_workspace') {
       withheld = { reason: 'pinned', eligibleAt: null };
+    } else if (selectedBy === 'platform_default') {
+      withheld = { reason: 'platform', eligibleAt: null };
     } else {
       const v = checkAdoption(latest, policy.policy, certifications, now);
       if (!v.ok) withheld = { reason: v.reason, eligibleAt: v.eligibleAt };
@@ -284,6 +288,7 @@ export function explainTierAdoption(args: {
   switch (selectedBy) {
     case 'pinned_workspace': why = 'Pinned for this workspace.'; break;
     case 'pinned_team': why = 'Pinned for the team.'; break;
+    case 'platform_default': why = 'Buildd’s default for every team; pin a model to override it.'; break;
     case 'policy_service': why = 'Chosen by the model policy service.'; break;
     case 'default': why = 'Built-in default (the live catalog had no eligible model).'; break;
     case 'catalog':
@@ -314,6 +319,7 @@ export function describeAdoption(t: TierAdoption): string {
   if (t.newer) {
     const why =
       t.withheld?.reason === 'pinned' ? 'withheld: the tier is pinned'
+      : t.withheld?.reason === 'platform' ? 'withheld: buildd’s platform default holds this tier (pin a model to override it)'
       : t.withheld?.reason === 'manual' ? 'withheld: manual upgrade policy (adopt to move)'
       : t.withheld?.reason === 'soak' ? `withheld: soaking until ${t.withheld.eligibleAt?.slice(0, 16).replace('T', ' ')} UTC`
       : 'available to newer runners';

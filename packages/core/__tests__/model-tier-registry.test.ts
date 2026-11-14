@@ -43,6 +43,13 @@ mock.module('../model-upgrade-policy-store', () => ({
   loadUpgradePolicy: () => Promise.resolve(mockUpgradePolicy),
 }));
 
+// The platform default (model-tier-platform-default-store.ts): a platform
+// admin's row for every team without one. Tests set it directly.
+let mockPlatformDefaults = new Map<string, any>();
+mock.module('../model-tier-platform-default-store', () => ({
+  loadPlatformTierDefaults: () => Promise.resolve(mockPlatformDefaults),
+}));
+
 // ── import after mocks are in place ───────────────────────────────────────
 const {
   pickRegistryRow,
@@ -80,6 +87,7 @@ beforeEach(() => {
   mockFindMany.mockReset();
   mockGetCachedOpenRouterCatalog.mockReset();
   mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([]));
+  mockPlatformDefaults = new Map();
   // Invalidate cache between tests so they don't bleed into each other
   invalidateTierCache(TEAM_A, WS_A);
   invalidateTierCache(TEAM_A, null);
@@ -201,6 +209,64 @@ describe('resolveTierEntry', () => {
     const entry = await resolveTierEntry('premium', TEAM_A, WS_A, 'agent');
     expect(entry.model).toBe(TIER_DEFAULTS.premium.model);
     expect(entry.source).toBe('default');
+  });
+});
+
+// ── resolveTierEntry — platform default ────────────────────────────────────
+//
+// A platform admin's row for every team without one. It sits between the
+// team's registry and the catalog pick: a team row still wins, and a platform
+// row beats a newer catalog release (it is a deliberate choice, like a pin).
+
+describe('resolveTierEntry — platform default', () => {
+  const platformRow = (tier: string, model: string) => ({
+    tier, provider: 'anthropic', model,
+    setAt: '2026-11-14T00:00:00.000Z', setBy: { accountId: 'acct', userId: null, via: 'mcp' }, reason: null, previous: null,
+  });
+
+  it('serves the platform default when the team has no row, with source platform', async () => {
+    mockFindMany.mockResolvedValue([]);
+    mockPlatformDefaults = new Map([['premium-plus', platformRow('premium-plus', 'claude-fable-5-2')]]);
+
+    const entry = await resolveTierEntry('premium-plus', TEAM_A, WS_A, 'agent');
+    expect(entry).toMatchObject({ provider: 'anthropic', model: 'claude-fable-5-2', source: 'platform' });
+    expect(entry.policy?.version).toBe('buildd-platform');
+  });
+
+  it('a team row still wins over the platform default', async () => {
+    mockFindMany.mockResolvedValue([
+      { teamId: TEAM_A, workspaceId: null, tier: 'premium-plus', provider: 'anthropic', model: 'team-fable', defaultEffort: null, defaultMaxTurns: null },
+    ]);
+    mockPlatformDefaults = new Map([['premium-plus', platformRow('premium-plus', 'claude-fable-5-2')]]);
+
+    const entry = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent');
+    expect(entry).toMatchObject({ model: 'team-fable', source: 'team' });
+  });
+
+  it('the platform default beats a newer catalog release: a person chose it', async () => {
+    mockFindMany.mockResolvedValue([]);
+    mockPlatformDefaults = new Map([['premium', platformRow('premium', 'claude-opus-5')]]);
+    mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([
+      catalogEntry({ id: 'claude-opus-5-5', created: 1_790_000_000, input: 4 }),
+    ]));
+
+    const entry = await resolveTierEntry('premium', TEAM_A, null, 'agent');
+    expect(entry).toMatchObject({ model: 'claude-opus-5', source: 'platform' });
+  });
+
+  it('answers with no team at all (the platform-level read the admin page uses)', async () => {
+    mockPlatformDefaults = new Map([['standard', platformRow('standard', 'claude-sonnet-5')]]);
+    const entry = await resolveTierEntry('standard', null, null, 'agent');
+    expect(entry).toMatchObject({ model: 'claude-sonnet-5', source: 'platform' });
+    expect(mockFindMany).not.toHaveBeenCalled();
+  });
+
+  it('a tier without a platform row falls through to the catalog and the bundled default', async () => {
+    mockFindMany.mockResolvedValue([]);
+    mockPlatformDefaults = new Map([['premium', platformRow('premium', 'claude-opus-5')]]);
+    const entry = await resolveTierEntry('budget', TEAM_A, null, 'agent');
+    expect(entry.source).toBe('default');
+    expect(entry.model).toBe(TIER_DEFAULTS.budget.model);
   });
 });
 

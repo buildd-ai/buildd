@@ -19,9 +19,9 @@
  * router's budget downshift and 95% pause on spend that never happened.
  *
  * Source: platform.claude.com/docs/en/about-claude/pricing
- * Last verified: 2026-11-14 (Fable 5.2 row, against OpenRouter and the Claude
- * Code 2.1.321 changelog; the rest 2026-09-04 against the Anthropic pricing
- * page + OpenRouter)
+ * Last verified: 2026-11-14 (Fable 5.2, Opus 5.5 and Haiku 5.5 rows against the
+ * OpenRouter public catalog, Fable 5.2 also against the Claude Code 2.1.321
+ * changelog; the rest 2026-09-04 against the Anthropic pricing page + OpenRouter)
  */
 import type { ModelUsage } from './db/schema';
 import type { CatalogEntry } from './model-catalog';
@@ -39,7 +39,7 @@ interface TokenPrice {
 }
 
 // Keyed by tier; model IDs are matched to a tier by substring in priceForModel.
-const TIER_PRICES: Record<'fable52' | 'fable' | 'opusLegacy' | 'opus' | 'sonnet5' | 'sonnet' | 'haiku', TokenPrice> = {
+const TIER_PRICES: Record<'fable52' | 'fable' | 'opusLegacy' | 'opus55' | 'opus' | 'sonnet5' | 'sonnet' | 'haiku55' | 'haiku', TokenPrice> = {
   // Fable 5.2, the premium-plus default: $8/$40 with $0.20 cache reads, from
   // the public catalog (2026-11-14) and the Claude Code 2.1.321 changelog.
   // Cheaper than the rest of the family, so it needs its own row: the generic
@@ -49,12 +49,16 @@ const TIER_PRICES: Record<'fable52' | 'fable' | 'opusLegacy' | 'opus' | 'sonnet5
   fable: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   // Opus 4 and 4.1 only. Every Opus from 4.5 on is the $5/$25 row below.
   opusLegacy: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  // Opus 5.5 shipped CHEAPER than Opus 5 ($4/$20 against $5/$25); matched before the generic row.
+  opus55: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
   opus: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   // Sonnet 5 is flat at $2/$10. The previously scheduled Sep 1 2026 increase to $3/$15 was
   // cancelled on Aug 10–11 2026. Official confirmation:
   // platform.claude.com/docs/en/about-claude/pricing — Note id="claude-sonnet-5-introductory-pricing"
   sonnet5: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   sonnet: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  // Haiku 5.5 is a tenth of Haiku 4.5 ($0.10/$0.50); pricing it at the 4.5 row overstates spend 10x.
+  haiku55: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
   haiku: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
 };
 
@@ -102,9 +106,11 @@ export function priceForModel(modelId: string): TokenPrice {
   if (id.includes('fable') || id.includes('mythos')) return TIER_PRICES.fable;
   // Opus 4 / 4.1 are the only $15 models; match them before the generic opus row.
   if (/opus-4(-1)?($|-\d{8})/.test(id)) return TIER_PRICES.opusLegacy;
+  if (id.includes('opus-5-5')) return TIER_PRICES.opus55;
   if (id.includes('opus')) return TIER_PRICES.opus;
   // sonnet-5 is checked before generic 'sonnet' to avoid shadowing by the Sonnet 4.x tier.
   if (id.includes('sonnet-5')) return TIER_PRICES.sonnet5;
+  if (id.includes('haiku-5-5')) return TIER_PRICES.haiku55;
   if (id.includes('haiku')) return TIER_PRICES.haiku;
   return TIER_PRICES.sonnet;
 }

@@ -98,6 +98,8 @@ export interface BuildFleetOptions {
   sessionsOnline?: number | null;
   /** The person looking: slot runs get `mine` against their claiming user. */
   viewerId?: string | null;
+  /** Runner id (its URL, `workers.runner`) → the usage wall its own login is waiting out (loadRunnerUsageWalls). */
+  usageWalls?: ReadonlyMap<string, { backend: string; resetsAt: string }>;
 }
 
 /** The sessions lane's name on the board. */
@@ -353,7 +355,9 @@ export function buildFleetSnapshot(
     const routes = [...routeCounts].map(([route, count]) => ({ route, count })).sort((a, b) => b.count - a.count || a.route.localeCompare(b.route));
     // A self-update in progress (spec 47c97f48 R-5..R-7): updating, or stuck.
     const update = g.hb ? runnerUpdateState({ updateDrain: g.hb.updateDrain, lastHeartbeatAt: g.hb.lastHeartbeatAt }, now) : null;
-    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(routes.length ? { routes } : {}), ...(hold ? { hold } : {}), ...(update ? { update } : {}) });
+    // Its own login at a usage limit (provider-failover spec, "A usage wall is a wait").
+    const usageWall = opts.usageWalls?.get(g.key) ?? null;
+    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(routes.length ? { routes } : {}), ...(hold ? { hold } : {}), ...(update ? { update } : {}), ...(usageWall ? { usageWall } : {}) });
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
