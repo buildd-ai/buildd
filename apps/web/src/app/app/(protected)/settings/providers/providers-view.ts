@@ -214,8 +214,15 @@ const ROW_NAME: Record<string, { id: string; label: string }> = {
 export interface ProviderRowItem { id: string; label: string; provider: ProviderListing }
 
 /** One row per listed provider, in registry order. */
+/**
+ * One credential card per provider that has something to connect. A provider
+ * with no credential shape (`local_runner`: picked from a runner's advert, see
+ * docs/specs/local-runner-provider.md §7.3) gets its own card, not a key row.
+ */
 export function providerRows(providers: readonly ProviderListing[]): ProviderRowItem[] {
-  return providers.map((p) => ({ id: ROW_NAME[p.id]?.id ?? p.id, label: rowLabel(p), provider: p }));
+  return providers
+    .filter((p) => p.shapes.length > 0)
+    .map((p) => ({ id: ROW_NAME[p.id]?.id ?? p.id, label: rowLabel(p), provider: p }));
 }
 
 function rowLabel(p: Pick<ProviderListing, 'id' | 'label'>): string {
@@ -300,6 +307,12 @@ export function embeddingView(res: Pick<ListProvidersResponse, 'providers'>, cur
   const options: UsedForOption[] = [];
   for (const id of EMBEDDING_PROVIDERS) {
     const label = id === 'voyage' ? 'Voyage' : rowLabel(res.providers.find((p) => p.id === id) ?? { id, label: id });
+    if (id === 'local_runner') {
+      // Offered from a runner's advert (local-runner-provider §7.3), not from a
+      // stored key; until that picker ships a stored pick stays shown, disabled.
+      if (current.provider === id) options.push({ value: id, label, disabled: true, description: 'Needs a runner' });
+      continue;
+    }
     if (id === 'voyage' || connected.has(id)) options.push({ value: id, label, disabled: false });
     else if (current.provider === id) options.push({ value: id, label, disabled: true, description: 'Needs a key' });
   }

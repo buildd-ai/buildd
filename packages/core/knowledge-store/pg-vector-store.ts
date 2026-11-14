@@ -2,6 +2,8 @@ import { sql } from 'drizzle-orm';
 import type { KnowledgeStore, UpsertChunk, UpsertResult, QueryResult, QueryParams, Embedder, Reranker, Corpus, ReusableEmbeddings } from './types';
 import { applyRerank } from './reranker';
 import { getEmbedderForCorpus, resolveEmbeddingConfig, type EmbeddingConfig } from './embedding-config';
+import { markReembed, resolveNamespaceSpace, type NamespaceSpace } from './namespace-space';
+import { vectorColumnForDimensions, type VectorColumn } from '@buildd/shared';
 import type { VoyageCall } from './voyage-guard';
 import { applyRecencyAuthority, CORPUS_AUTHORITY } from './recency-authority';
 import { LIVING_SPEC_DRAFT_SOURCE_TYPE } from './living-spec';
@@ -25,6 +27,40 @@ function sha256(text: string): string {
 
 function vectorToString(v: number[]): string {
   return `[${v.join(',')}]`;
+}
+
+// The vector column per supported size (docs/specs/local-runner-provider.md
+// §5.2): fixed identifiers, never interpolated from input. `embedding` is the
+// 1024 column every Voyage query always used, so that SQL is unchanged (AC-18).
+const COLUMN_SQL: Readonly<Record<VectorColumn, ReturnType<typeof sql>>> = {
+  embedding: sql`embedding`,
+  embedding_768: sql`embedding_768`,
+  embedding_1536: sql`embedding_1536`,
+};
+const ALL_VECTOR_COLUMNS: readonly VectorColumn[] = ['embedding', 'embedding_768', 'embedding_1536'];
+
+/** `other = NULL, …` for every vector column but `keep`: a row holds one vector (the CHECK). */
+function nullOtherColumns(keep: VectorColumn): ReturnType<typeof sql> {
+  return sql.join(ALL_VECTOR_COLUMNS.filter(c => c !== keep).map(c => sql`${COLUMN_SQL[c]} = NULL`), sql`, `);
+}
+
+/** The space a namespace touch resolved to: which embedder may run its vector leg, and on which column. */
+interface ResolvedSpace {
+  /** The embedder for the vector legs; null when there is nothing comparable to search or store (lexical-only). */
+  embedder: Embedder | null;
+  column: VectorColumn;
+  space: NamespaceSpace | null;
+  /** Set when an embedder was configured but may not write vectors here: the reason, for the caller's warning. */
+  refused: 'unsupported_dimensions' | 'dimension_mismatch' | null;
+}
+
+const warnedNamespaces = new Set<string>();
+const WARNED_MAX = 2_000;
+function warnOnce(key: string, message: string): void {
+  if (warnedNamespaces.has(key)) return;
+  if (warnedNamespaces.size >= WARNED_MAX) warnedNamespaces.clear();
+  warnedNamespaces.add(key);
+  console.warn(message);
 }
 
 // ── NUL-byte sanitization ────────────────────────────────────────────────────
@@ -219,19 +255,44 @@ export class PgVectorStore implements KnowledgeStore {
     return getEmbedderForCorpus(corpus as Corpus, cfg, this.embedder)?.model ?? null;
   }
 
+  /**
+   * The namespace's embedding space for this touch (spec §5.3, D-1..D-5): the
+   * embedder's column, with the namespace row created or moved as needed. An
+   * embedder whose size has no column, or whose space the row could not be
+   * brought to, gets no vector leg: the touch runs lexical-only and nothing of
+   * another size is ever stored or compared (D-4).
+   */
+  private async _space(db: Awaited<ReturnType<typeof getDb>>, namespace: string, embedder: Embedder | null): Promise<ResolvedSpace> {
+    if (!embedder) return { embedder: null, column: 'embedding', space: null, refused: null };
+    const [owner = ''] = namespace.split(':');
+    const cfg = await this.embeddingConfig(owner);
+    const provider = cfg.source === 'team' ? (cfg.provider === 'openai_compat' ? 'endpoint' : cfg.provider) : cfg.provider;
+    const res = await resolveNamespaceSpace(namespace, { model: embedder.model, dimensions: embedder.dimensions, provider }, q => db.execute(q));
+    if (res.kind === 'ok') return { embedder, column: res.space.vectorColumn, space: res.space, refused: null };
+    if (res.kind === 'unsupported') {
+      warnOnce(`${namespace}:unsupported`, `[knowledge-store] ${embedder.model} returns ${res.dimensions} dimensions; knowledge_chunks has no column for that size, so ${namespace} runs lexical-only`);
+      return { embedder: null, column: res.space?.vectorColumn ?? 'embedding', space: res.space, refused: 'unsupported_dimensions' };
+    }
+    warnOnce(`${namespace}:mismatch`, `[knowledge-store] dimension_mismatch: ${namespace} is stored at (${res.space.model}, ${res.space.dimensions}) but ${embedder.model} embeds at ${embedder.dimensions}; the vector leg is skipped`);
+    return { embedder: null, column: res.space.vectorColumn, space: res.space, refused: 'dimension_mismatch' };
+  }
+
   async findReusableEmbeddings(namespace: string, chunks: UpsertChunk[]): Promise<ReusableEmbeddings> {
     const out = new Map<string, string>();
-    const embedder = await this._selectEmbedder(namespace);
-    if (!embedder || chunks.length === 0) return out;
+    const selected = await this._selectEmbedder(namespace);
+    if (!selected || chunks.length === 0) return out;
     const db = await getDb();
+    const { embedder, column } = await this._space(db, namespace, selected);
+    if (!embedder) return out;
+    const col = COLUMN_SQL[column];
     const hashes = [...new Set(chunks.map(c => sha256(stripNulBytes(c.content))))];
     const res = await db.execute(sql`
-      SELECT coalesce(lexical_text, content) AS text, embedding::text AS embedding
+      SELECT coalesce(lexical_text, content) AS text, ${col}::text AS embedding
       FROM knowledge_chunks
       WHERE namespace = ${namespace}
         AND content_hash IN (${sql.join(hashes.map(h => sql`${h}`), sql`, `)})
         AND embedding_model = ${embedder.model}
-        AND embedding IS NOT NULL
+        AND ${col} IS NOT NULL
     `);
     for (const row of (res?.rows ?? []) as Array<{ text: string; embedding: string }>) out.set(row.text, row.embedding);
     return out;
@@ -244,7 +305,13 @@ export class PgVectorStore implements KnowledgeStore {
     let lexicalOnly = 0;
     const db = await getDb();
     const corpus = namespace.split(':')[1] as Corpus;
-    const activeEmbedder = await this._selectEmbedder(namespace);
+    // A refused space (no column for the size, or a concurrent move) stores
+    // rows without a vector AND without a file hash, like a guard refusal, so
+    // the next ingest tries them again (AC-14, AC-24).
+    const resolved = await this._space(db, namespace, await this._selectEmbedder(namespace));
+    const activeEmbedder = resolved.embedder;
+    const col = COLUMN_SQL[resolved.column];
+    const refused = resolved.refused !== null;
 
     // Content-hash dedup: drop a chunk whose identical content already exists in
     // the namespace under a DIFFERENT source_id. This prevents cross-PR
@@ -275,7 +342,7 @@ export class PgVectorStore implements KnowledgeStore {
     const fresh = toEmbed.length > 0
       ? await activeEmbedder!.embed(toEmbed, 'document', { namespace, caller: this.caller })
       : [];
-    const denied = fresh === null;
+    const denied = fresh === null || refused;
     const vectors = new Map<string, string>(reuse);
     toEmbed.forEach((t, i) => { if (fresh?.[i]) vectors.set(t, vectorToString(fresh[i])); });
 
@@ -300,10 +367,13 @@ export class PgVectorStore implements KnowledgeStore {
       };
 
       if (embedding) {
+        // The vector goes into the namespace's column; the other size columns
+        // are cleared so a row re-embedded at a new size never keeps the old
+        // vector beside it (D-3, the CHECK).
         await db.execute(sql`
           INSERT INTO knowledge_chunks
             (source_id, namespace, corpus, source_type, source_path, source_url,
-             content, lexical_text, embedding, embedding_model, metadata, content_hash,
+             content, lexical_text, ${col}, embedding_model, metadata, content_hash,
              file_hash, source_ts, updated_at)
           VALUES
             (${clean.sourceId}, ${namespace}, ${corpus}, ${clean.sourceType},
@@ -319,7 +389,8 @@ export class PgVectorStore implements KnowledgeStore {
           ON CONFLICT (namespace, source_id) DO UPDATE SET
             content         = EXCLUDED.content,
             lexical_text    = EXCLUDED.lexical_text,
-            embedding       = EXCLUDED.embedding,
+            ${col}       = EXCLUDED.${col},
+            ${nullOtherColumns(resolved.column)},
             embedding_model = EXCLUDED.embedding_model,
             metadata        = EXCLUDED.metadata,
             content_hash    = EXCLUDED.content_hash,
@@ -347,6 +418,10 @@ export class PgVectorStore implements KnowledgeStore {
             -- New text with no new vector: the old vector describes text that is gone.
             embedding = CASE WHEN knowledge_chunks.content_hash = EXCLUDED.content_hash
                              THEN knowledge_chunks.embedding END,
+            embedding_768 = CASE WHEN knowledge_chunks.content_hash = EXCLUDED.content_hash
+                             THEN knowledge_chunks.embedding_768 END,
+            embedding_1536 = CASE WHEN knowledge_chunks.content_hash = EXCLUDED.content_hash
+                             THEN knowledge_chunks.embedding_1536 END,
             embedding_model = CASE WHEN knowledge_chunks.content_hash = EXCLUDED.content_hash
                                    THEN knowledge_chunks.embedding_model END,
             content      = EXCLUDED.content,
@@ -381,10 +456,17 @@ export class PgVectorStore implements KnowledgeStore {
   async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
     const { text, mode = 'hybrid', topK = 10, filters, useGraph = true, history = false, trackHits = true, recencyAuthority = true } = params;
     const db = await getDb();
-    const activeEmbedder = await this._selectEmbedder(namespace);
     // Vectors from another model are not comparable: the vector legs only see
     // rows embedded by the query's model (others still reach results lexically).
+    // Nor is another size (D-2): a query embedder whose size is not the
+    // namespace's never runs against the index; the query is lexical-only.
+    const resolved = await this._space(db, namespace, await this._selectEmbedder(namespace));
+    const activeEmbedder = resolved.embedder;
     const queryModel = activeEmbedder?.model ?? null;
+    // A caller-supplied vector with no embedder: the column its size names.
+    const column: VectorColumn = activeEmbedder
+      ? resolved.column
+      : (params.embedding?.length ? vectorColumnForDimensions(params.embedding.length) : null) ?? resolved.column;
     const limit = Math.min(topK, 50);
     const candidateLimit = this.reranker ? Math.min(limit * 3, RERANK_CANDIDATE_CAP) : limit;
     const call = { namespace, caller: params.caller ?? this.caller };
@@ -410,13 +492,13 @@ export class PgVectorStore implements KnowledgeStore {
     let results: QueryResult[];
 
     const embeddingStr = mode === 'vector' || mode === 'hybrid'
-      ? await this._queryEmbedding(db, namespace, params, activeEmbedder, call, budget)
+      ? await this._queryEmbedding(db, namespace, params, activeEmbedder, column, call, budget)
       : null;
 
     if (mode === 'vector' && !embeddingStr) return [];
     if (embeddingStr) {
       if (mode === 'vector') {
-        const vectorRanked = await this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2, queryModel);
+        const vectorRanked = await this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2, queryModel, column);
         const ids = vectorRanked.slice(0, candidateLimit).map(r => r.id);
         if (ids.length === 0) return [];
         const rows = await this._fetchBySourceIds(db, namespace, ids, filterClause, currentClause);
@@ -427,7 +509,7 @@ export class PgVectorStore implements KnowledgeStore {
         // Vector ANN and lexical rank are independent reads — issue both
         // concurrently instead of paying their latencies back-to-back.
         const [vectorRanked, lexicalRes] = await Promise.all([
-          this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2, queryModel),
+          this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2, queryModel, column),
           db.execute(buildLexicalSearchSql(namespace, text, filterClause, currentClause, limit * 2)),
         ]);
 
@@ -500,15 +582,17 @@ export class PgVectorStore implements KnowledgeStore {
     namespace: string,
     params: QueryParams,
     activeEmbedder: Embedder | null,
+    column: VectorColumn,
     call: VoyageCall,
     budget: { denied: boolean },
   ): Promise<string | null> {
     if (params.embedding?.length) return vectorToString(params.embedding);
     if (params.nearChunkId) {
       if (!activeEmbedder) return null;
+      const col = COLUMN_SQL[column];
       const res = await db.execute(sql`
-        SELECT embedding::text AS embedding FROM knowledge_chunks
-        WHERE namespace = ${namespace} AND source_id = ${params.nearChunkId} AND embedding IS NOT NULL
+        SELECT ${col}::text AS embedding FROM knowledge_chunks
+        WHERE namespace = ${namespace} AND source_id = ${params.nearChunkId} AND ${col} IS NOT NULL
           AND embedding_model = ${activeEmbedder.model}
         LIMIT 1
       `);
@@ -955,20 +1039,22 @@ export class PgVectorStore implements KnowledgeStore {
     currentClause: ReturnType<typeof sql>,
     limit: number,
     model: string | null,
+    column: VectorColumn = 'embedding',
   ): Promise<Array<{ id: string; score: number }>> {
     // Null only for a caller-supplied vector with no embedder configured: the
     // model is unknown, so there is nothing to filter on.
     const modelClause = model ? sql`AND embedding_model = ${model}` : sql``;
+    const col = COLUMN_SQL[column];
     const vectorRes = await db.execute(sql`
       SELECT source_id AS id,
-             1 - (embedding <=> ${embeddingStr}::vector) AS score
+             1 - (${col} <=> ${embeddingStr}::vector) AS score
       FROM knowledge_chunks
       WHERE namespace = ${namespace}
-        AND embedding IS NOT NULL
+        AND ${col} IS NOT NULL
         ${modelClause}
         ${filterClause}
         ${currentClause}
-      ORDER BY embedding <=> ${embeddingStr}::vector
+      ORDER BY ${col} <=> ${embeddingStr}::vector
       LIMIT ${limit}
     `);
 
@@ -1047,26 +1133,29 @@ export class PgVectorStore implements KnowledgeStore {
     content: string,
     topK = 5,
   ): Promise<Array<{ id: string; similarity: number; content: string; sourceUrl: string | null }>> {
-    const activeEmbedder = await this._selectEmbedder(namespace);
-    if (!activeEmbedder) return [];
+    const selected = await this._selectEmbedder(namespace);
+    if (!selected) return [];
 
     try {
+      const db = await getDb();
+      const { embedder: activeEmbedder, column } = await this._space(db, namespace, selected);
+      if (!activeEmbedder) return [];
       const vectors = await activeEmbedder.embed([content], 'document', { namespace, caller: this.caller });
       if (!vectors) return [];
       const embeddingStr = vectorToString(vectors[0]);
-      const db = await getDb();
+      const col = COLUMN_SQL[column];
 
       const res = await db.execute(sql`
         SELECT source_id AS id,
-               1 - (embedding <=> ${embeddingStr}::vector) AS similarity,
+               1 - (${col} <=> ${embeddingStr}::vector) AS similarity,
                content,
                source_url
         FROM knowledge_chunks
         WHERE namespace = ${namespace}
-          AND embedding IS NOT NULL
+          AND ${col} IS NOT NULL
           AND embedding_model = ${activeEmbedder.model}
           AND is_current = true
-        ORDER BY embedding <=> ${embeddingStr}::vector
+        ORDER BY ${col} <=> ${embeddingStr}::vector
         LIMIT ${topK}
       `);
 
@@ -1084,5 +1173,69 @@ export class PgVectorStore implements KnowledgeStore {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * One bounded step of a namespace's re-embed (spec §5.3 D-3, D-6): the next
+   * `batchSize` current rows not yet in the namespace's space, oldest id first,
+   * get their vector written into the namespace's column with the other size
+   * columns cleared and `embedding_model` set. Resumable by its predicate
+   * (rows already in the space are never re-read), bounded per call so it
+   * never starves live work; the caller ticks it until `remaining` is 0. A
+   * guard refusal leaves the rows for the next tick (`denied`). Nothing here
+   * casts or copies a vector between columns.
+   */
+  async reembedNamespace(namespace: string, opts: { batchSize?: number } = {}): Promise<{
+    status: 'done' | 'running' | 'denied' | 'skipped';
+    processed: number;
+    remaining: number;
+  }> {
+    const batchSize = Math.max(1, Math.min(256, opts.batchSize ?? 32));
+    const db = await getDb();
+    const { embedder, column } = await this._space(db, namespace, await this._selectEmbedder(namespace));
+    if (!embedder) return { status: 'skipped', processed: 0, remaining: 0 };
+    const col = COLUMN_SQL[column];
+    const exec = (q: ReturnType<typeof sql>) => db.execute(q);
+    const due = sql`namespace = ${namespace} AND is_current = true AND (embedding_model IS DISTINCT FROM ${embedder.model} OR ${col} IS NULL)`;
+
+    const batch = await db.execute(sql`
+      SELECT id, coalesce(lexical_text, content) AS text
+      FROM knowledge_chunks
+      WHERE ${due}
+      ORDER BY id
+      LIMIT ${batchSize}
+    `);
+    const rows = (batch.rows ?? []) as Array<{ id: string; text: string }>;
+    if (rows.length === 0) {
+      await markReembed(namespace, 'done', exec);
+      return { status: 'done', processed: 0, remaining: 0 };
+    }
+    await markReembed(namespace, 'running', exec);
+
+    const texts = [...new Set(rows.map(r => stripNulBytes(r.text)))];
+    const vectors = await embedder.embed(texts, 'document', { namespace, caller: this.caller });
+    if (!vectors) return { status: 'denied', processed: 0, remaining: rows.length };
+    const byText = new Map(texts.map((t, i) => [t, vectors[i]]));
+
+    let processed = 0;
+    for (const row of rows) {
+      const v = byText.get(stripNulBytes(row.text));
+      if (!v || v.length !== embedder.dimensions) continue;
+      await db.execute(sql`
+        UPDATE knowledge_chunks
+        SET ${col} = ${vectorToString(v)}::vector, ${nullOtherColumns(column)}, embedding_model = ${embedder.model}
+        WHERE id = ${row.id}::uuid
+      `);
+      processed++;
+    }
+    await markReembed(namespace, 'running', exec, processed);
+
+    const left = await db.execute(sql`SELECT count(*) AS cnt FROM knowledge_chunks WHERE ${due}`);
+    const remaining = Number((left.rows?.[0] as Record<string, unknown> | undefined)?.cnt ?? 0);
+    if (remaining === 0) {
+      await markReembed(namespace, 'done', exec);
+      return { status: 'done', processed, remaining: 0 };
+    }
+    return { status: 'running', processed, remaining };
   }
 }

@@ -29,7 +29,9 @@ mock.module('../db/index', () => ({
 const { PgVectorStore } = await import('../knowledge-store/pg-vector-store');
 const { embeddingConfigFromEnv } = await import('../knowledge-store/embedding-config');
 
-const embedder = (model: string) => ({ model, dimensions: 2, embed: async (t: string[]) => t.map(() => [0.1, 0.2]) });
+// Declared at the store's size (1024, the `embedding` column): a size with no
+// column gets no vector leg at all (knowledge-namespace-space.test.ts).
+const embedder = (model: string) => ({ model, dimensions: 1024, embed: async (t: string[]) => t.map(() => [0.1, 0.2]) });
 const vectorQueries = () => executed.filter(t => t.includes('<=>'));
 const lexicalQueries = () => executed.filter(t => t.includes('websearch_to_tsquery') && !t.includes('<=>'));
 
@@ -51,7 +53,7 @@ describe('vector search is filtered to the query embedder model', () => {
 
   it('nearChunkId only takes a seed vector from the same model', async () => {
     await new PgVectorStore(embedder('m-a') as any).query('ws-1:task', { text: 'x', nearChunkId: 'c1', mode: 'vector', useGraph: false });
-    expect(executed[0]).toContain('embedding_model = "m-a"');
+    expect(executed.find(t => t.includes('source_id = "c1"'))).toContain('embedding_model = "m-a"');
   });
 
   it('near-duplicate check filters by model', async () => {
@@ -67,7 +69,7 @@ describe('vector search is filtered to the query embedder model', () => {
     expect(vectorQueries()[0]).toContain('AND embedding_model = "qwen3"');
     executed = [];
     await store.findReusableEmbeddings('ws-1:memory', [{ id: 'a', content: 'x', sourceType: 'memory' }]);
-    expect(executed[0]).toContain('embedding_model = "qwen3"');
+    expect(executed.find(t => t.includes('content_hash IN'))).toContain('embedding_model = "qwen3"');
   });
 
   it('a caller-supplied vector with no embedder configured is not filtered (model unknown)', async () => {

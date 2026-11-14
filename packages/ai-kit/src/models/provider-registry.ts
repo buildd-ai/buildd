@@ -38,6 +38,7 @@ export const PROVIDER_IDS = [
   'openrouter',
   'litellm',
   'custom-endpoint',
+  'local_runner',
 ] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
@@ -121,6 +122,8 @@ const R = {
   openAiCloud: 'Cloud runs reach models through an Anthropic-compatible route only, and OpenAI has none.',
   endpointChat: 'An endpoint is a route for agents, not a chat provider.',
   endpointCodex: 'The endpoint speaks only the Anthropic Messages API (no OpenAI root).',
+  localRunnerAgents: 'Agent runs reach a local model directly: set BUILDD_LOCAL_MODEL_URL on the runner instead.',
+  localRunnerCloud: 'Cloud runs cannot reach a model on a runner machine: set BUILDD_LOCAL_MODEL_URL on the runner instead.',
 } as const;
 
 const no = (reason: string, instead?: readonly ProviderId[]): SurfaceSupport =>
@@ -264,6 +267,27 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
     tierProviders: [],
     settingsCard: { id: 'custom-endpoint', order: 7, connectFlow: 'form' },
     mcp: { action: 'manage_providers', provider: 'custom-endpoint' },
+  },
+  {
+    // The team's own runner's Ollama, reached through the server-side relay
+    // queue the runner polls (docs/specs/local-runner-provider.md). No
+    // credential shape: nothing is stored in `secrets`, and no route, since
+    // the server never opens a connection to the model. Its pick lives in
+    // `teams.local_runner` plus the embedding columns. Never a tier provider
+    // and never a failover target.
+    id: 'local_runner',
+    label: 'Local runner',
+    shapes: [],
+    surfaces: {
+      chat: via('the relay queue to the pinned runner’s Ollama'),
+      'agent-claude': no(R.localRunnerAgents),
+      'agent-codex': no(R.localRunnerAgents),
+      'cloud-egress': no(R.localRunnerCloud),
+    },
+    scopes: [],
+    tierProviders: [],
+    settingsCard: { id: 'local-runner', order: 8, connectFlow: 'form' },
+    mcp: { action: 'manage_providers', provider: 'local_runner' },
   },
 ];
 

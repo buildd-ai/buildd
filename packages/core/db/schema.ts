@@ -29,7 +29,7 @@ import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
 import type { MissionRequesterSource, TaskRequesterSource } from '../task-requester-source';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery, StoredUpdateDrain } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery, StoredUpdateDrain, LocalRunnerConfig, LocalModelsAdvert, ReembedStatus, VectorColumn, RelayJobKind, RelayJobSurface, RelayJobStatus, RelayJobPayload, RelayJobResult, RelayJobError } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -149,6 +149,13 @@ export const teams = pgTable('teams', {
   // that provider's stored credential; embeddings have none of their own.
   embeddingProvider: text('embedding_provider').$type<import('../providers/embedding').EmbeddingProviderId>(),
   embeddingModel: text('embedding_model'),
+  // The `local_runner` provider's pick (docs/specs/local-runner-provider.md §2.2):
+  // which of the team's own runners (a worker_heartbeats.id) serves the relay and
+  // which Ollama tag answers chat. Embeddings keep using embedding_provider /
+  // embedding_model above with provider 'local_runner'. Never a URL or a key:
+  // the runner is reached by its own outbound poll. Dimensions are not here;
+  // they are recorded per namespace (knowledge_namespaces). NULL = no pick.
+  localRunner: jsonb('local_runner').$type<LocalRunnerConfig | null>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -3912,6 +3919,14 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // Which Codex login this runner's Codex agents use (same spec, R-10..R-13).
   // A label from a fixed list, never a credential; null = not reported.
   codexAuthSource: text('codex_auth_source').$type<'machine_login' | 'api_key' | 'none'>(),
+  // What the runner's loopback Ollama serves, as the runner advertises it
+  // (docs/specs/local-runner-provider.md §6.2; parsed strictly by
+  // @buildd/shared parseLocalModelsAdvert): model tags, capabilities and sizes,
+  // plus the runner's rolling relay figures. Says what is served, never where:
+  // no URL, no token, and the server gains no inbound path through it. Null =
+  // never advertised (older runner, no Ollama, or BUILDD_LOCAL_MODEL_RELAY=0).
+  localModels: jsonb('local_models').$type<LocalModelsAdvert | null>(),
+  localModelsAt: timestamp('local_models_at', { withTimezone: true }),
   // Pusher presence (docs/specs/runner-heartbeat.md): written only by the
   // webhook, only on a state change. Null = never connected (an older runner
   // build: judged by its beat alone); false = was connected, is not now.
@@ -4755,6 +4770,79 @@ export const voyageUsageDaily = pgTable('voyage_usage_daily', {
   pk: primaryKey({ columns: [t.day, t.teamId, t.kind, t.model, t.corpus, t.caller, t.keySource] }),
 }));
 
+// Relay queue (docs/specs/local-runner-provider.md §3): embed and chat jobs
+// the server enqueues for a team's pinned runner, which claims them by
+// outbound poll, computes against its loopback Ollama and posts the result.
+// Modelled on knowledgeIngestJobs (lease) and workflowCommandOutbox
+// (attempts, not_before, terminal states). Claim, complete, progress and the
+// sweep are single atomic statements in packages/core/model-relay/jobs.ts
+// (no db.transaction: neon-http). The payload is team-internal data, like
+// knowledge_chunks content, and terminal rows are deleted after 24 h.
+export const modelRelayJobs = pgTable('model_relay_jobs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  /** Attribution and the sensitive-workspace check; null for a team-wide namespace. */
+  workspaceId: uuid('workspace_id'),
+  /**
+   * The pinned runner at enqueue time (a worker_heartbeats.id). Every claim is
+   * scoped to it. Nulled when that heartbeat row goes: the job then matches no
+   * claim and expires at its deadline.
+   */
+  runnerId: uuid('runner_id').references(() => workerHeartbeats.id, { onDelete: 'set null' }),
+  kind: text('kind').notNull().$type<RelayJobKind>(),
+  surface: text('surface').notNull().$type<RelayJobSurface>(),
+  /** `embed` only: the knowledge_chunks.namespace the vectors are for. */
+  namespace: text('namespace'),
+  /** The Ollama tag the runner MUST use; it never substitutes. */
+  model: text('model').notNull(),
+  status: text('status').notNull().default('queued').$type<RelayJobStatus>(),
+  payload: jsonb('payload').$type<RelayJobPayload>().notNull(),
+  result: jsonb('result').$type<RelayJobResult | null>(),
+  error: jsonb('error').$type<RelayJobError | null>(),
+  /** Incremented on every lease. */
+  attempts: integer('attempts').notNull().default(0),
+  /** 2 for embed, 1 for chat (defaults in @buildd/shared RELAY_DEFAULTS). */
+  maxAttempts: integer('max_attempts').notNull(),
+  /** `runnerId:leaseId`; the result and progress routes check it. */
+  leaseOwner: text('lease_owner'),
+  /** Liveness; renewed by progress posts. Lapsed with attempts left = queued again. */
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+  /** Retry backoff. */
+  notBefore: timestamp('not_before', { withTimezone: true }).notNull().defaultNow(),
+  /** The waiter's deadline; past it the job is `expired`. */
+  deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  leasedAt: timestamp('leased_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+}, (t) => ({
+  // The claim scan.
+  claimIdx: index('model_relay_jobs_claim_idx').on(t.teamId, t.runnerId, t.status, t.notBefore),
+  // The expiry sweep.
+  deadlineIdx: index('model_relay_jobs_deadline_idx').on(t.deadlineAt).where(sql`${t.status} IN ('queued', 'leased')`),
+  // Retention.
+  finishedIdx: index('model_relay_jobs_finished_idx').on(t.finishedAt),
+}));
+
+export type ModelRelayJobRow = typeof modelRelayJobs.$inferSelect;
+
+// Relay usage by day, team, runner, kind and model (spec §3.4), mirroring
+// voyageUsageDaily: bounded by its keys, no content. Written on every terminal
+// transition; what the runner page's throughput and error figures read.
+export const modelRelayUsageDaily = pgTable('model_relay_usage_daily', {
+  day: date('day').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  runnerId: uuid('runner_id').notNull(),
+  kind: text('kind').notNull().$type<RelayJobKind>(),
+  model: text('model').notNull(),
+  jobs: bigint('jobs', { mode: 'number' }).notNull().default(0),
+  errors: bigint('errors', { mode: 'number' }).notNull().default(0),
+  promptTokens: bigint('prompt_tokens', { mode: 'number' }).notNull().default(0),
+  completionTokens: bigint('completion_tokens', { mode: 'number' }).notNull().default(0),
+  durationMs: bigint('duration_ms', { mode: 'number' }).notNull().default(0),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.day, t.teamId, t.runnerId, t.kind, t.model] }),
+}));
+
 // Knowledge chunks — unified semantic + lexical retrieval store.
 // namespace = "{workspaceId}:{corpus}" (e.g. "ws-abc:memory").
 // HNSW index on embedding is added in the migration SQL.
@@ -4775,6 +4863,15 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
     sql`to_tsvector('english', coalesce(lexical_text, content))`,
   ),
   embedding: vectorType('embedding', { dimensions: 1024 }),
+  // One column per supported vector size (docs/specs/local-runner-provider.md
+  // §5.2, decision A): `embedding` stays vector(1024) under its original name
+  // so the Voyage path is untouched; 768 and 1536 get their own nullable column
+  // and HNSW index. A row holds at most one vector (the CHECK below) and the
+  // namespace's row in knowledge_namespaces says which column its vectors are
+  // in. Vectors are never cast or copied between columns: a size change
+  // re-embeds (D-3).
+  embedding768: vectorType('embedding_768', { dimensions: 768 }),
+  embedding1536: vectorType('embedding_1536', { dimensions: 1536 }),
   embeddingModel: text('embedding_model'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>().notNull(),
   contentHash: text('content_hash'),
@@ -4794,7 +4891,47 @@ export const knowledgeChunks = pgTable('knowledge_chunks', {
   contentHashIdx: index('knowledge_chunks_content_hash_idx').on(t.namespace, t.contentHash),
   entityRecencyIdx: index('knowledge_chunks_entity_recency_idx').on(t.namespace, t.isCurrent, t.sourceTs),
   lexicalTsvGinIdx: index('knowledge_chunks_lexical_tsv_gin_idx').using('gin', t.lexicalTsv),
+  // HNSW ignores NULLs, so a per-size index needs no partial predicate. The
+  // 1024 index (knowledge_chunks_embedding_hnsw_idx) predates Drizzle's
+  // knowledge of it and lives in the baseline migration only.
+  embedding768HnswIdx: index('knowledge_chunks_embedding_768_hnsw_idx').using('hnsw', t.embedding768.op('vector_cosine_ops')),
+  embedding1536HnswIdx: index('knowledge_chunks_embedding_1536_hnsw_idx').using('hnsw', t.embedding1536.op('vector_cosine_ops')),
+  // Vectors of two sizes never share a row (D-4): the storage refuses a mix.
+  oneVector: check('knowledge_chunks_one_vector', sql`num_nonnulls(${t.embedding}, ${t.embedding768}, ${t.embedding1536}) <= 1`),
 }));
+
+// The embedding space each knowledge namespace is stored in
+// (docs/specs/local-runner-provider.md §5.3). One row per
+// knowledge_chunks.namespace, written on the first vector write and read by
+// every vector leg to pick the column (D-2). When the team's pick differs from
+// the row, the row moves to the new space and reembed_status goes `pending`;
+// until a row is re-embedded it is reachable through the lexical leg only
+// (D-3). Namespaces written before this table existed get a row on first touch,
+// as the Voyage default at 1024 (D-5): no backfill over knowledge_chunks.
+// team_id is informational (the owner is the namespace's first segment: a
+// workspace or a team id) and nullable so fixtures and non-UUID owners work.
+export const knowledgeNamespaces = pgTable('knowledge_namespaces', {
+  namespace: text('namespace').primaryKey(),
+  teamId: uuid('team_id'),
+  corpus: text('corpus').notNull(),
+  embeddingProvider: text('embedding_provider'),
+  embeddingModel: text('embedding_model').notNull(),
+  dimensions: integer('dimensions').notNull(),
+  /** Derived from dimensions, stored for the query builder: `embedding` | `embedding_768` | `embedding_1536`. */
+  vectorColumn: text('vector_column').notNull().$type<VectorColumn>(),
+  reembedStatus: text('reembed_status').notNull().default('none').$type<ReembedStatus>(),
+  reembedTotal: integer('reembed_total').notNull().default(0),
+  reembedDone: integer('reembed_done').notNull().default(0),
+  reembedStartedAt: timestamp('reembed_started_at', { withTimezone: true }),
+  reembedFinishedAt: timestamp('reembed_finished_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamIdx: index('knowledge_namespaces_team_idx').on(t.teamId),
+  // The re-embed driver's scan: namespaces with work left.
+  reembedIdx: index('knowledge_namespaces_reembed_idx').on(t.reembedStatus).where(sql`${t.reembedStatus} IN ('pending', 'running')`),
+}));
+
+export type KnowledgeNamespaceRow = typeof knowledgeNamespaces.$inferSelect;
 
 // Memory use ledger: one row per memory a retrieval returned, and how it
 // reached the agent. Written fire-and-forget by retrieveMemory

@@ -42,7 +42,7 @@ function embedder(result: 'ok' | 'denied' = 'ok') {
   return {
     calls,
     model: 'voyage-4-large',
-    dimensions: 2,
+    dimensions: 1024, // the store's own size; a size with no column gets no vector leg
     async embed(texts: string[], inputType: string, call: { namespace: string; caller: string }) {
       calls.push({ texts, inputType, call });
       return result === 'denied' ? null : texts.map(() => [0.1, 0.2]);
@@ -108,7 +108,7 @@ describe('vector reuse', () => {
 
   it('only reuses a vector from the same model', async () => {
     await new PgVectorStore(embedder() as any).findReusableEmbeddings('ws:memory', [chunk('a', 'x')]);
-    expect(executed[0]).toContain('embedding_model = "voyage-4-large"');
+    expect(executed.find(t => t.includes('content_hash IN'))).toContain('embedding_model = "voyage-4-large"');
   });
 
   it('embeds identical text in one batch once', async () => {

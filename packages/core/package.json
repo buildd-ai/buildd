@@ -67,6 +67,7 @@
     "./providers/embedding": "./providers/embedding.ts",
     "./providers/manage": "./providers/manage.ts",
     "./providers/agent-keys": "./providers/agent-keys.ts",
+    "./model-relay": "./model-relay/index.ts",
     "./entitlements": "./entitlements.ts",
     "./voyage-budget": "./voyage-budget.ts",
     "./license": "./license/index.ts",
