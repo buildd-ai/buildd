@@ -2,7 +2,7 @@
 title: Provider Failover
 status: active
 owner: max
-last_verified: 2026-10-14
+last_verified: 2026-11-14
 summary: When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 domain: runners
 surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
@@ -339,6 +339,85 @@ dispatched onto a provider that is itself walled.
 the worker-report route still records a Claude wall from any Claude run, so a
 wall hit on a non-seat route (an endpoint's own budget) is recorded against
 the Claude pool.
+
+---
+
+## A usage wall is a wait
+
+**Capability statement**: When a runner's model login hits a usage wall
+(Claude's 5-hour, session, weekly or extra-usage cap; Codex's usage limit), the
+work MUST wait for the quoted reset and continue by itself: no attempt spent,
+nobody paged, no review failed, and every surface says what it waits for and
+when it resumes.
+
+**Invariants**:
+- A wall is recognised whatever status it arrives with: `failed`, `error`, or
+  a `completed` session that delivered nothing (no PR, no structured output)
+  but the wall message, in `error` or as its fallback summary
+  (`usageWallFromReport`, `apps/web/src/lib/usage-wall.ts`). The worker PATCH
+  route reads the latter two as the `failed` wall before anything else runs.
+- A wall MUST NOT consume one of a task's attempts (`exitCause
+  budget_limited`, excluded by `consumesRetryAttempt`), mark the task failed,
+  advance `context.retryCount`, end a kernel attempt or review round, open a
+  failure incident (`budget_limited` is in the sentinel's `NON_FAILURE_EXITS`),
+  or send a priority push.
+- The requeue keeps the work: `context.resumeBranch`, `lastCommitSha` and the
+  runner's checkpoint `recoveryRef` are written on the requeue, so the next
+  attempt continues on the same branch and is told it is resuming.
+- The requeue records `context.usageWall` (`USAGE_WALL_CONTEXT_KEY`:
+  backend, quoted reset, `login` or `pool` scope, runner), for a runner-scoped
+  wall too. The task page renders it as "Waiting for the usage limit to reset
+  at <time> (<login>)"; the fleet view's runner row (`FleetRunner.usageWall`,
+  from seat-keyed `backend_pauses` rows by their reporting worker's runner,
+  `loadRunnerUsageWalls`) and the runner lane (`usageWallSentences`) say which
+  runner waits and until when. A deferral with wall kind `runner_seat` reads
+  "waiting for the runner's usage limit".
+- One wall episode is one notice: a quiet (priority -1) line on the first
+  report of a wall; a later report on the same backend and seat key whose
+  reset is within 30 minutes of a pause already in force sends nothing
+  (`isRepeatWallEpisode`). Genuine task failures still alert as before.
+- The runner's claim breaker holds that login's claims until the quoted reset
+  for every wall the shared detector knows, the 5-hour and weekly caps
+  included (`classifyClaimError`, `apps/runner/src/claim-breaker.ts`).
+- A reviewer task on a wall is requeued like any other (and taken sooner by a
+  runner whose login still has budget, for a runner-scoped wall). Its PR's
+  `Buildd / Review approval` status is written `pending` with "Review waiting
+  for model budget: resumes <time>" (`publishReviewBudgetWait`,
+  `apps/web/src/lib/review-budget-wait.ts`), never "review unavailable" or a
+  person's decision.
+- The task's own per-session dollar cap is not a wall and still fails that
+  task (see Per-provider pause accounting).
+
+**Acceptance criteria**:
+- AC-29: GIVEN a worker report of each wall (Claude 5-hour, session, weekly,
+  extra usage; Codex usage) WHEN it is processed THEN the task is pending with
+  `context.usageWall`, the worker's `exitCause` is `budget_limited`,
+  `context.retryCount` is unchanged and no notice above priority -1 is sent.
+- AC-30: GIVEN the same wall reported as `error`, or as `completed` with only
+  the wall text as its fallback summary THEN the outcome is the same as AC-29.
+- AC-31: GIVEN a pause already in force for the same backend, seat key and
+  reset WHEN another task reports that wall THEN no notice is sent.
+- AC-32: GIVEN a reviewer task whose session ends on a wall THEN it is
+  requeued, no review round fails, no escalation is filed, and the PR's
+  Review approval status is pending with the cause and the resume time.
+- AC-33: GIVEN twelve tasks failing with `budget_limited` in the sentinel's
+  window THEN no `repeated_failure` incident is opened.
+- AC-34: GIVEN a session-cost-cap report THEN the task fails with
+  `session_budget_capped` and no `context.usageWall` is written.
+
+**Code surface**: `apps/web/src/lib/usage-wall.ts`,
+`apps/web/src/lib/review-budget-wait.ts`,
+`apps/web/src/app/api/workers/[id]/route.ts` (wall normalisation, budget
+branch), `apps/web/src/lib/failure-pattern-sentinel.ts`,
+`apps/runner/src/claim-breaker.ts`, `apps/web/src/lib/home-fleet.ts`
+(`loadRunnerUsageWalls`), `apps/web/src/lib/fleet-view.ts`,
+`apps/web/src/components/fleet/runner-lanes.tsx`,
+`apps/web/src/app/app/(protected)/settings/runners/FleetOverview.tsx`,
+`apps/web/src/app/app/(protected)/tasks/[id]/page.tsx`.
+
+**Out of scope**: resuming the provider's own SDK session in place (a requeued
+task is a fresh claim that continues from the branch and checkpoint); a worker
+reaped or lost before it reports its wall still ends as a lost session.
 
 ---
 

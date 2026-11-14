@@ -71,6 +71,13 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
             {hold.until ? <>, resumes at <ZonedTime value={hold.until} format="time" />.</> : <>, until someone runs buildd resume.</>}
           </div>
         )}
+        {runner.usageWall && (
+          // Its own model login at a usage limit: a wait, not a failure (provider-failover spec).
+          <div data-testid="fleet-runner-usage-wall" className="mt-0.5 text-xs text-status-warning">
+            Waiting for the usage limit: its {runner.usageWall.backend === 'codex' ? 'Codex' : 'Claude'} login resumes at{' '}
+            <ZonedTime value={runner.usageWall.resetsAt} format="time" />{'.'}
+          </div>
+        )}
       </div>
       {runner.elastic ? (
         // Elastic: as many slots as runs, so there is no meter to fill.
