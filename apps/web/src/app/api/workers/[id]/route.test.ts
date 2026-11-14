@@ -786,7 +786,7 @@ const realHandOff = await import('@/lib/workflow/hand-off');
 const mockPublishReviewBudgetWait = mock(async (_o: any) => true);
 // The team's subscription-wall fallback: wait unless a test says otherwise.
 const mockResolveTeamWallFallback = mock(async (_opts: any) => ({ use: false, setting: { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
-mock.module('@/lib/subscription-fallback', () => ({
+mock.module('@/lib/provider-wall-fallback', () => ({
   resolveTeamWallFallback: (...a: any[]) => (mockResolveTeamWallFallback as any)(...a),
 }));
 

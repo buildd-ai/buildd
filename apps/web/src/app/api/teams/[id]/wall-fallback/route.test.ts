@@ -17,7 +17,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@/lib/auth-helpers', () => ({ requireSessionUser: mockRequireSessionUser }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
 mock.module('@/lib/permissions', () => ({ can: async () => canManage }));
-mock.module('@/lib/subscription-fallback', () => ({
+mock.module('@/lib/provider-wall-fallback', () => ({
   WALL_FALLBACK_LABELS: { anthropic: "the team's Anthropic API key", openrouter: "the team's OpenRouter key", litellm: "the team's LiteLLM gateway", endpoint: "the team's agent model endpoint" },
   loadWallFallbackSetting: async () => {
     const s = stored as any;

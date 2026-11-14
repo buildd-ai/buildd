@@ -105,7 +105,7 @@ export default function WallFallbackSection({ teamId }: { teamId: string }) {
     <Section title="When the subscription limit is reached" id="subscription-limit" className="scroll-mt-20">
       <div className="space-y-3" data-testid="wall-fallback">
         <p className="text-body text-text-secondary" data-testid="wall-fallback-summary">{summaryLine(data)}</p>
-        <fieldset className="space-y-1" aria-label="When the subscription limit is reached">
+        <fieldset className="space-y-1" aria-label="Fallback choice">
           {radio('wait', 'Wait and resume', false, 'wall-fallback-wait')}
           {radio('api_key', apiKey?.available ? "Use the team's API key" : "Use the team's API key (add an Anthropic key under Providers)", !apiKey?.available, 'wall-fallback-anthropic')}
           {radio('provider', anyProvider ? 'Use another provider' : 'Use another provider (connect OpenRouter, LiteLLM or an endpoint first)', !anyProvider, 'wall-fallback-provider')}

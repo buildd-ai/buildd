@@ -51,7 +51,7 @@ import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapEr
 import { activeBudgetPauses, recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { isRepeatWallEpisode, usageWallFromReport, usageWallRecord, USAGE_WALL_CONTEXT_KEY, wallHolder, wallResetClock } from '@/lib/provider-wall';
 import { isReviewerTaskContext, publishReviewBudgetWait } from '@/lib/provider-wall-status';
-import { resolveTeamWallFallback } from '@/lib/subscription-fallback';
+import { resolveTeamWallFallback } from '@/lib/provider-wall-fallback';
 import { isSubscriptionPinned } from '@buildd/core/wall-fallback';
 import { isMachineLoginWallError, parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { credentialExpiredAlert } from '@/lib/credential-expired-alert';
@@ -3663,7 +3663,7 @@ async function patchWorker(
         message: failoverBackend
           ? `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} is at its limit; work moves to ${backendLabel(failoverBackend)}.`
           : wallFallbackLabel
-          ? `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} is at its limit until ${wallResetClock(budgetResetsAt)}. ` +
+          ? `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} hit its limit (resets ${wallResetClock(budgetResetsAt)}). ` +
             `Work runs on ${wallFallbackLabel} meanwhile, metered per token.`
           : `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} is at its limit until ${wallResetClock(budgetResetsAt)}. ` +
             'Tasks on it wait and resume by themselves; no attempt is used.',

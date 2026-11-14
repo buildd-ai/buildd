@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { resolveTeamWallFallback, resolveWallFallbackCredential, wallFallbackSpentToday, type WallFallbackDeps } from './subscription-fallback';
+import { resolveTeamWallFallback, resolveWallFallbackCredential, wallFallbackSpentToday, type WallFallbackDeps } from './provider-wall-fallback';
 
 const route = (over: Record<string, unknown> = {}) => ({
   kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', apiKey: 'sk-or-abcdefgh1234', authHeader: 'authorization', models: {}, toolSearch: false, ...over,

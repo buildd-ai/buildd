@@ -13,7 +13,7 @@ import {
   loadWallFallbackSetting,
   resolveWallFallbackCredential,
   wallFallbackSpentToday,
-} from '@/lib/subscription-fallback';
+} from '@/lib/provider-wall-fallback';
 
 /**
  * Settings › Models › "When the subscription limit is reached": the team's

@@ -623,6 +623,7 @@ UPDATE workers w SET
   runner = pg_temp.qa_hash('runner-', w.runner),
   branch = 'buildd/' || left(md5(w.id::text), 8) || '-task-' || s.n,
   waiting_for = pg_temp.qa_json(w.waiting_for),
+  wall_fallback = pg_temp.qa_json(w.wall_fallback),
   error = CASE WHEN w.error IS NULL THEN NULL ELSE 'Error: ' || pg_temp.qa_lorem(length(w.error) - 7) END,
   local_ui_url = CASE WHEN w.local_ui_url IS NULL THEN NULL ELSE 'http://localhost:8766' END,
   current_action = pg_temp.qa_text(w.current_action),

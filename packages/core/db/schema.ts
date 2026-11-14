@@ -2542,7 +2542,7 @@ export const workers = pgTable('workers', {
   // and knowledge ingest's by-URL lookup. Partial: most workers never open a PR.
   prNumberIdx: index('workers_pr_number_idx').on(t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),
   prUrlIdx: index('workers_pr_url_idx').on(t.prUrl).where(sql`${t.prUrl} IS NOT NULL`),
-  // The daily fallback cap's spend sum (lib/subscription-fallback.ts). Partial: almost no run is a fallback.
+  // The daily fallback cap's spend sum (lib/provider-wall-fallback.ts). Partial: almost no run is a fallback.
   wallFallbackIdx: index('workers_wall_fallback_created_idx').on(t.createdAt).where(sql`${t.wallFallback} IS NOT NULL`),
 }));
 

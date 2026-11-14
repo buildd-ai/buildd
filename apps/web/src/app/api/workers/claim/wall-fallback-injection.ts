@@ -22,7 +22,7 @@
 import type { ClaimModelEndpoint, ClaimTasksResponse } from '@buildd/shared';
 import { routeNeedsHeaders } from '@buildd/core/agent-endpoint';
 import type { WallFallbackRecord } from '@buildd/core/wall-fallback';
-import type { WallFallbackCredential } from '@/lib/subscription-fallback';
+import type { WallFallbackCredential } from '@/lib/provider-wall-fallback';
 
 export interface WallFallbackPlan {
   credential: WallFallbackCredential;

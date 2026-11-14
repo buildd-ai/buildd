@@ -63,7 +63,7 @@ assertions:
   - id: resolve-team-wall-fallback
     type: symbol
     name: resolveTeamWallFallback
-    path: apps/web/src/lib/subscription-fallback.ts
+    path: apps/web/src/lib/provider-wall-fallback.ts
   - id: apply-wall-fallback-credentials
     type: symbol
     name: applyWallFallbackCredentials
@@ -522,7 +522,7 @@ spend cap, after which the work waits again.
   the hold pauses its claims as before.
 
 **Code surface**: `packages/core/wall-fallback.ts`,
-`apps/web/src/lib/subscription-fallback.ts`,
+`apps/web/src/lib/provider-wall-fallback.ts`,
 `apps/web/src/app/api/workers/claim/wall-fallback-injection.ts`,
 `apps/web/src/app/api/workers/claim/claude-model-route.ts` (`held`),
 `apps/web/src/app/api/workers/claim/route.ts`,

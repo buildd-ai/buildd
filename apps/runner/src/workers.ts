@@ -2685,7 +2685,7 @@ export class WorkerManager {
     // A runner with no Codex login of its own cannot start Codex work, so a held Claude login holds every claim:
     // pause the poll (running sessions are untouched) until the first hold lifts.
     // A provider the team's wall fallback covers is still startable: the claim brings its credential.
-    if (this.providerLimits.allHeld(Date.now(), this.startableProviders().filter(p => !this.wallCover.covers(p)))) {
+    if (this.providerLimits.allHeld(Date.now(), this.startableProviders().filter(p => !this.wallCover?.covers(p)))) {
       this.claimsPaused = true;
       this.claimsPausedUntil = Math.max(this.claimsPausedUntil, this.providerLimits.nextLift() ?? untilMs);
       // The global pause lifts at nextLift, which can precede this limit's reset.

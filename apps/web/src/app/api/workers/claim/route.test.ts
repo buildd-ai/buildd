@@ -111,11 +111,11 @@ mock.module('@/lib/mcp-connector-refresh', () => ({
   refreshMcpConnectorCredential: mockRefreshMcpConnectorCredential,
 }));
 
-// The team's subscription-wall fallback (lib/subscription-fallback.ts). Wait by
+// The team's subscription-wall fallback (lib/provider-wall-fallback.ts). Wait by
 // default, so every other test sees the behaviour from before the setting.
 const mockLoadWallFallbackSetting = mock(async (_teamId: any) => ({ fallback: 'wait', maxCostPerDayUsd: null }) as any);
 const mockResolveTeamWallFallback = mock(async (opts: any) => ({ use: false, setting: opts?.setting ?? { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
-mock.module('@/lib/subscription-fallback', () => ({
+mock.module('@/lib/provider-wall-fallback', () => ({
   loadWallFallbackSetting: (...a: any[]) => (mockLoadWallFallbackSetting as any)(...a),
   resolveTeamWallFallback: (...a: any[]) => (mockResolveTeamWallFallback as any)(...a),
   teamWallCover: async (teamId: string) => (await (mockResolveTeamWallFallback as any)({ teamId, workspaceId: null })).use,

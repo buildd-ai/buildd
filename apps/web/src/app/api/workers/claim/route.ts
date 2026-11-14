@@ -134,7 +134,7 @@ import {
 } from './personal-credential-injection';
 import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } from './claude-model-route';
 import { applyWallFallbackCredentials, type WallFallbackPlan } from './wall-fallback-injection';
-import { loadWallFallbackSetting, resolveTeamWallFallback, teamWallCover, type TeamWallFallback } from '@/lib/subscription-fallback';
+import { loadWallFallbackSetting, resolveTeamWallFallback, teamWallCover, type TeamWallFallback } from '@/lib/provider-wall-fallback';
 import { heldForWall, isSubscriptionPinned, wallFallbackRoute, WALL_FALLBACK_CONTEXT_KEY, type WallFallbackSetting } from '@buildd/core/wall-fallback';
 import { USAGE_WALL_CONTEXT_KEY } from '@/lib/provider-wall';
 import { attachGitHubCredentialModes } from './github-credential-injection';
@@ -1336,7 +1336,7 @@ export async function POST(req: NextRequest) {
     return false;
   };
 
-  // The team's subscription-wall fallback (lib/subscription-fallback.ts,
+  // The team's subscription-wall fallback (lib/provider-wall-fallback.ts,
   // provider-failover spec "Subscription wall fallback"). Only a runner on its
   // own subscription login (`authType: 'oauth'`) falls back, and never a cloud
   // run or an interactive session: neither spends a runner's login. Memoized
