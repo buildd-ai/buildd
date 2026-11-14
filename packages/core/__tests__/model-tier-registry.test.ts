@@ -54,6 +54,11 @@ const {
   TIER_DEFAULTS,
 } = await import('../model-tier-registry');
 
+// DB-free modules: imported directly, not through the mocked registry.
+import { MODEL_MIN_CLI_VERSION } from '../model-capability-requirements';
+import { TIER_PRICE_BANDS } from '../model-catalog';
+import { priceForModel } from '../model-prices';
+
 const TEAM_A = 'aaaaaaaa-0000-0000-0000-000000000001';
 const WS_A   = 'bbbbbbbb-0000-0000-0000-000000000002';
 
@@ -102,6 +107,20 @@ describe('TIER_DEFAULTS', () => {
     expect(TIER_DEFAULTS.premium.provider).toBe('anthropic');
     expect(TIER_DEFAULTS.standard.provider).toBe('anthropic');
     expect(TIER_DEFAULTS.budget.provider).toBe('anthropic');
+  });
+
+  it('the premium-plus default is a model this code can vouch for', () => {
+    // Fable is opt-in and ~2x premium per token, so its default is the one
+    // that must never be a guess: a recorded CLI floor (the claim gate defers
+    // an old runner instead of launching a worker that 400s) and a static
+    // price inside the premium-plus band (the ceiling and budget math do not
+    // undercount it when the catalog is cold). Derived, so the next bump is
+    // one line in the policy defaults plus a floor row and a price row.
+    const { model } = TIER_DEFAULTS['premium-plus'];
+    expect(MODEL_MIN_CLI_VERSION[model]).toMatch(/^\d+\.\d+\.\d+$/);
+    const price = priceForModel(model);
+    expect(price.input).toBeGreaterThanOrEqual(TIER_PRICE_BANDS['premium-plus'].minInput);
+    expect(price.input).toBeLessThan(TIER_PRICE_BANDS['premium-plus'].maxInput);
   });
 });
 
@@ -235,14 +254,17 @@ describe('resolveTierEntry — catalog fallback', () => {
   });
 
   it('a claiming runner whose CLI predates the newest release falls back to the previous in-band model, not a deferral', async () => {
+    // The premium-plus default carries a real MODEL_MIN_CLI_VERSION floor —
+    // using the real model here exercises the real capability map instead of
+    // a synthetic one, and follows the default when the tier moves.
+    const premiumPlus = TIER_DEFAULTS['premium-plus'].model;
+    const floor = MODEL_MIN_CLI_VERSION[premiumPlus];
+    expect(floor).toBeTruthy();
     mockFindMany.mockResolvedValue([]); // no registry row for premium-plus
     mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([
       // An older premium-plus release with no CLI version floor.
       catalogEntry({ id: 'claude-mythos-5', created: 1_780_000_000, input: 9 }),
-      // claude-fable-5-1 IS TIER_DEFAULTS.premium-plus and carries a real
-      // MODEL_MIN_CLI_VERSION floor (2.1.251) — using the real model here
-      // exercises the real capability map instead of a synthetic one.
-      catalogEntry({ id: 'claude-fable-5-1', created: 1_780_000_000 + 86_400 * 30, input: 10 }),
+      catalogEntry({ id: premiumPlus, created: 1_780_000_000 + 86_400 * 30, input: 8 }),
     ]));
     invalidateTierCache(TEAM_A, null);
 
@@ -254,8 +276,28 @@ describe('resolveTierEntry — catalog fallback', () => {
     invalidateTierCache(TEAM_A, null);
 
     // At/above the floor: the newest release is servable and wins normally.
-    const current = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', '2.1.251');
-    expect(current.model).toBe('claude-fable-5-1');
+    const current = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', floor);
+    expect(current.model).toBe(premiumPlus);
+  });
+
+  it('a runner that serves the previous premium-plus model but not the current one is handed the previous one', async () => {
+    // The bump Fable 5.1 → 5.2 raised the CLI floor (2.1.251 → 2.1.321). A
+    // fleet still on a CLI between the two must keep getting premium-plus
+    // work on 5.1 from the catalog, not a deferral and not a launch failure.
+    mockFindMany.mockResolvedValue([]);
+    mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([
+      catalogEntry({ id: 'claude-fable-5-1', created: 1_780_000_000, input: 10 }),
+      catalogEntry({ id: 'claude-fable-5-2', created: 1_780_000_000 + 86_400 * 30, input: 8 }),
+    ]));
+    invalidateTierCache(TEAM_A, null);
+
+    const between = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', '2.1.316');
+    expect(between.model).toBe('claude-fable-5-1');
+    expect(between.source).toBe('catalog');
+
+    invalidateTierCache(TEAM_A, null);
+    const current = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', '2.1.321');
+    expect(current.model).toBe('claude-fable-5-2');
   });
 
   it('a catalog release newer than every model in the floor table is not picked — falls back to the newest recorded one', async () => {
@@ -293,14 +335,15 @@ describe('resolveTierEntry — catalog fallback', () => {
   });
 
   it('an unparseable/missing runner CLI version fails open — no filtering applied', async () => {
+    const premiumPlus = TIER_DEFAULTS['premium-plus'].model;
     mockFindMany.mockResolvedValue([]);
     mockGetCachedOpenRouterCatalog.mockReturnValue(Promise.resolve([
-      catalogEntry({ id: 'claude-fable-5-1', created: 1_780_000_000, input: 10 }),
+      catalogEntry({ id: premiumPlus, created: 1_780_000_000, input: 8 }),
     ]));
     invalidateTierCache(TEAM_A, null);
 
     const entry = await resolveTierEntry('premium-plus', TEAM_A, null, 'agent', undefined);
-    expect(entry.model).toBe('claude-fable-5-1');
+    expect(entry.model).toBe(premiumPlus);
   });
 });
 

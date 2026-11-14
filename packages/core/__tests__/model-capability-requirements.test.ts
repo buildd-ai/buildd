@@ -185,6 +185,43 @@ describe('claude-sonnet-5-5 floor', () => {
   });
 });
 
+// Fable 5.2 first shipped in Claude Code 2.1.321:
+// https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21321
+// It is the premium-plus default, so a runner whose CLI serves Fable 5.1
+// (floor 2.1.251) but predates 2.1.321 must be DEFERRED by the claim gate, not
+// handed a worker that 400s at launch.
+describe('claude-fable-5-2 floor', () => {
+  it('refuses a runner immediately below the first supporting CLI release', () => {
+    expect(checkModelClientCapability('claude-fable-5-2', '2.1.320')).toEqual({
+      ok: false, requiredVersion: '2.1.321',
+    });
+  });
+
+  it('refuses a runner that serves Fable 5.1 but predates 5.2', () => {
+    const serves51 = '2.1.316';
+    expect(checkModelClientCapability('claude-fable-5-1', serves51)).toEqual({ ok: true });
+    expect(checkModelClientCapability('claude-fable-5-2', serves51)).toEqual({
+      ok: false, requiredVersion: '2.1.321',
+    });
+  });
+
+  it('allows runners at or above the floor', () => {
+    for (const version of ['2.1.321', '2.1.325']) {
+      expect(checkModelClientCapability('claude-fable-5-2', version)).toEqual({ ok: true });
+    }
+  });
+
+  it('applies the floor when selecting a catalog model', () => {
+    const catalog = [{ id: 'claude-fable-5-2', canonicalId: null, created: 1_794_253_781 }];
+    expect(makeCatalogServabilityCheck(catalog, '2.1.320')('claude-fable-5-2')).toBe(false);
+    expect(makeCatalogServabilityCheck(catalog, '2.1.321')('claude-fable-5-2')).toBe(true);
+  });
+
+  it('the old premium-plus model keeps its own floor, so a pin to it is still served', () => {
+    expect(checkModelClientCapability('claude-fable-5-1', '2.1.251')).toEqual({ ok: true });
+  });
+});
+
 // Haiku 5.5 first shipped in Claude Code 2.1.293:
 // https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21293
 // Without the row, a registry row naming it was refused as newer_than_floor_table
