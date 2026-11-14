@@ -64,6 +64,7 @@
     "./providers": "./providers/index.ts",
     "./providers/resolve": "./providers/resolve.ts",
     "./providers/assignments": "./providers/assignments.ts",
+    "./providers/embedding": "./providers/embedding.ts",
     "./providers/manage": "./providers/manage.ts",
     "./providers/agent-keys": "./providers/agent-keys.ts",
     "./entitlements": "./entitlements.ts",
