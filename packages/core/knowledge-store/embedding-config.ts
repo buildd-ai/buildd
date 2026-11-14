@@ -168,6 +168,11 @@ export function getEmbedderForCorpus(corpus: Corpus, cfg: EmbeddingConfig, fallb
     }
     return null;
   }
+  // A local runner is never an OpenAI-compatible endpoint and never Voyage:
+  // its embedder goes through the relay queue (the LocalRunnerEmbedder of
+  // docs/specs/local-runner-provider.md §7.1), which this build does not wire
+  // yet. Until then the namespace runs lexical-only; no vendor is ever called.
+  if (cfg.provider === 'local_runner') return null;
   if (!cfg.baseUrl || !cfg.model) {
     const key = `${cfg.source}:${cfg.baseUrl}:${cfg.model}`;
     if (!warnedMisconfigured.has(key)) {
@@ -252,6 +257,16 @@ async function teamConfig(
   resolveCredential: NonNullable<ResolveEmbeddingConfigDeps['resolveCredential']>,
 ): Promise<EmbeddingConfig> {
   if (choice.provider === 'voyage') return voyageConfig('team');
+  if (choice.provider === 'local_runner') {
+    // No credential and no base URL: the relay reaches the runner. The relay
+    // embedder is not wired in this build, so the pick reads as unavailable
+    // (lexical-only) rather than falling back to any paid provider.
+    return {
+      provider: 'local_runner', baseUrl: null, model: choice.model, apiKey: null, queryPrefix: '', docPrefix: '',
+      matryoshka: false, pricePerMTokens: null, unmetered: true, timeoutMs: null, maxBatch: null, source: 'team',
+      unavailable: 'The local runner is chosen for embeddings but the relay is not available in this build; knowledge runs lexical-only.',
+    };
+  }
   const provider = choice.provider;
   const base: EmbeddingConfig = {
     provider: 'openai_compat', baseUrl: null, model: choice.model, apiKey: null, queryPrefix: '', docPrefix: '',

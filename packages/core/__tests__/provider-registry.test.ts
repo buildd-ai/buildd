@@ -29,7 +29,7 @@ describe('provider registry: shape', () => {
   it('has one entry per provider, in a stable id order', () => {
     expect(PROVIDER_REGISTRY.map(p => p.id)).toEqual([...PROVIDER_IDS]);
     expect([...PROVIDER_IDS].sort()).toEqual([
-      'anthropic', 'custom-endpoint', 'litellm', 'openai', 'openrouter',
+      'anthropic', 'custom-endpoint', 'litellm', 'local_runner', 'openai', 'openrouter',
     ]);
   });
 
@@ -58,6 +58,8 @@ describe('provider registry: shape', () => {
       openrouter: ['chat', 'agent-claude', 'agent-codex', 'cloud-egress'],
       litellm: ['chat', 'agent-claude', 'agent-codex', 'cloud-egress'],
       'custom-endpoint': ['agent-claude', 'cloud-egress'],
+      // The relay serves chat only; agents use BUILDD_LOCAL_MODEL_URL directly (spec local-runner-provider R-2).
+      local_runner: ['chat'],
     });
   });
 

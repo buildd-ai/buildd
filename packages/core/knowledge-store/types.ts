@@ -215,6 +215,12 @@ export interface KnowledgeStore {
   /** Count current (is_current=true) chunks in a namespace. Optional; used for corpora availability hints. */
   countNamespace?(namespace: string): Promise<number>;
   /**
+   * One bounded step of a namespace's re-embed into its current space
+   * (docs/specs/local-runner-provider.md §5.3 D-3/D-6). Optional; the caller
+   * ticks it until `remaining` is 0.
+   */
+  reembedNamespace?(namespace: string, opts?: { batchSize?: number }): Promise<{ status: 'done' | 'running' | 'denied' | 'skipped'; processed: number; remaining: number }>;
+  /**
    * Entity-keyed supersession (optional). Mark other `is_current` chunks in the
    * namespace whose `role='defines'` entity set is IDENTICAL to `entityIds`,
    * whose source_ts is older than the new chunk's, and whose corpus authority

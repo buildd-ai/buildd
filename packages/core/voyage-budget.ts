@@ -27,8 +27,12 @@ export const VOYAGE_KEY_PURPOSE = 'voyage_api_key' as const;
  */
 export type VoyageKeySource = 'platform' | 'byok' | 'endpoint' | 'unmetered';
 
-/** Which API served an embedding call. Rerank is always Voyage. */
-export type EmbeddingProvider = 'voyage' | 'openai_compat';
+/**
+ * Which API served an embedding call. Rerank is always Voyage. `local_runner`
+ * is the team's own runner through the relay queue: free, attributed as
+ * `unmetered`, never a Voyage allowance.
+ */
+export type EmbeddingProvider = 'voyage' | 'openai_compat' | 'local_runner';
 
 /** Paid plans' monthly fair-use allowance in tokens, unless VOYAGE_PAID_*_TOKENS says otherwise. */
 export const PAID_VOYAGE_EMBED_TOKENS = 500_000_000;

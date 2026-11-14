@@ -43,6 +43,9 @@ let autoResolveRows: Array<Record<string, unknown>> = [];
 const mockDb = {
   execute: (q: unknown) => {
     const text = flattenSql(q);
+    // The namespace-space lookup runs before the search legs and is not what
+    // this test observes: answer it at once (no row: the default space).
+    if (text.includes('knowledge:namespace_')) return Promise.resolve({ rows: [] });
     // Once the vector AND lexical queries have both been issued, resolve any
     // further call (the source-id fetch) immediately — the test only needs
     // to observe that the first two were issued concurrently.
@@ -75,7 +78,7 @@ function chunkRow(id: string) {
 function mockEmbedder() {
   return {
     model: 'mock-model',
-    dimensions: 4,
+    dimensions: 1024, // the store's own size; a size with no column gets no vector leg
     async embed(texts: string[]): Promise<number[][]> {
       return texts.map(() => [0.1, 0.2, 0.3, 0.4]);
     },
