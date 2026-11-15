@@ -10,6 +10,10 @@ import {
   snapshotBase,
 } from '../model-catalog';
 import fixture from './fixtures/openrouter-models.json';
+import { TIER_DEFAULTS } from '../model-tier-defaults';
+
+/** The premium-plus default: the fixture must carry its catalog row (see below). */
+const PREMIUM_PLUS = TIER_DEFAULTS['premium-plus'].model;
 
 /**
  * OpenRouter's `/api/v1/models` is the only model catalog we can read with NO
@@ -20,8 +24,14 @@ import fixture from './fixtures/openrouter-models.json';
  * The fixture is a trimmed capture of the real response (2026-09-04), kept in
  * the shapes that bite: a `:batch` variant, a `~`-prefixed deprecated alias, a
  * no-tools image model, Anthropic ids written with DOTS (`claude-haiku-4.5`)
- * where the native SDK id uses dashes, and the two price-band boundary cases —
- * Sonnet 4.6 at exactly $3.00 and the retired $15 Opus 4.1.
+ * where the native SDK id uses dashes, and the price-band boundary cases —
+ * Sonnet 4.6 at exactly $3.00, the retired $15 Opus 4.1, and Fable 5.2 at
+ * exactly $8.00 (its row was added from the 2026-11-14 capture): the premium
+ * ceiling and the premium-plus floor are the same number.
+ *
+ * When the premium-plus default moves, add the new model's row here too: the
+ * tier tests below read the default rather than naming a model, so they fail
+ * with "undefined" until the fixture knows it.
  */
 
 const entries = normalizeCatalog(fixture);
@@ -165,7 +175,8 @@ describe('priceFromCatalog', () => {
 
 describe('pickTierModel', () => {
   test('resolves the Anthropic tiers to the current generation', () => {
-    expect(pickTierModel('premium-plus', entries, 'anthropic')?.id).toBe('claude-fable-5-1');
+    expect(byId(PREMIUM_PLUS)).toBeDefined();
+    expect(pickTierModel('premium-plus', entries, 'anthropic')?.id).toBe(PREMIUM_PLUS);
     expect(pickTierModel('premium', entries, 'anthropic')?.id).toBe('claude-opus-5');
     expect(pickTierModel('standard', entries, 'anthropic')?.id).toBe('claude-sonnet-5');
     expect(pickTierModel('budget', entries, 'anthropic')?.id).toBe('claude-haiku-4-5');
@@ -182,10 +193,22 @@ describe('pickTierModel', () => {
   });
 
   test('a retired $15 flagship does not outrank the current one on price alone', () => {
-    // Opus 4.1 ($15) shares the premium-plus band with Fable 5.1 ($10).
-    // Newest-wins is what settles it; price must not.
+    // Opus 4.1 ($15) shares the premium-plus band with Fable 5.1 ($10) and
+    // Fable 5.2 ($8). Newest-wins is what settles it; price must not.
     expect(byId('claude-opus-4-1')!.input).toBeCloseTo(15, 6);
-    expect(pickTierModel('premium-plus', entries, 'anthropic')?.id).toBe('claude-fable-5-1');
+    expect(pickTierModel('premium-plus', entries, 'anthropic')?.id).toBe(PREMIUM_PLUS);
+  });
+
+  test('a cheaper new Fable still wins premium-plus over the pricier previous one', () => {
+    // Fable 5.2 is $8/$40 against 5.1 at $10/$50 and newer. Inside a band the
+    // newer release wins; the pricier-first tiebreak only applies on the same
+    // day. This is the "do not sit on a stale generation" property for the
+    // tier that just moved.
+    const fable52 = byId('claude-fable-5-2')!;
+    const fable51 = byId('claude-fable-5-1')!;
+    expect(fable52.input).toBeLessThan(fable51.input);
+    expect(fable52.created).toBeGreaterThan(fable51.created);
+    expect(pickTierModel('premium-plus', entries, 'anthropic')?.id).toBe('claude-fable-5-2');
   });
 
   test('resolves the OpenAI tiers — no key, no hand-maintained GPT list', () => {
@@ -211,14 +234,28 @@ describe('pickTierModel', () => {
   });
 
   test('a band has a CEILING, so a pricier flagship cannot capture premium either', () => {
-    // Fable 5.1 is $10/$50 AND the newest Anthropic model in the fixture
-    // (2026-09-01, newer than Opus 5). Without a ceiling, newest-wins would
-    // hand it `premium` and double the cost of every premium task unreviewed.
-    // It belongs to premium-plus, which is opt-in.
-    const fable = byId('claude-fable-5-1')!;
+    // The premium-plus default is the newest Anthropic model in the fixture
+    // (Fable 5.2, 2026-11-09, newer than Opus 5). Without a ceiling,
+    // newest-wins would hand it `premium` and raise the cost of every premium
+    // task unreviewed. It belongs to premium-plus, which is opt-in.
+    const fable = byId(PREMIUM_PLUS)!;
     expect(fable.created).toBeGreaterThan(byId('claude-opus-5')!.created);
     expect(fable.input).toBeGreaterThanOrEqual(TIER_PRICE_BANDS.premium.maxInput);
     expect(pickTierModel('premium', entries, 'anthropic')?.id).toBe('claude-opus-5');
+  });
+
+  test('Fable 5.2 at exactly $8.00 sits on the premium-plus floor, not inside premium', () => {
+    // The bands are half-open on input price: premium [4, 8), premium-plus
+    // [8, 20). $8.00 is the one price that is both the premium ceiling and the
+    // premium-plus floor, and the tier default lands exactly there. Off by one
+    // in either comparison would route premium-plus work to Opus, or premium
+    // work to Fable.
+    const fable52 = byId('claude-fable-5-2')!;
+    expect(fable52.input).toBeCloseTo(8, 6);
+    expect(fable52.input).toBe(TIER_PRICE_BANDS['premium-plus'].minInput);
+    expect(fable52.input).toBe(TIER_PRICE_BANDS.premium.maxInput);
+    expect(pickTierModel('premium-plus', entries, 'anthropic')?.id).toBe('claude-fable-5-2');
+    expect(pickTierModel('premium', entries, 'anthropic')?.id).not.toBe('claude-fable-5-2');
   });
 
   test('picks the base variant over -pro indexed seconds later the same day', () => {

@@ -341,6 +341,20 @@ write-back call. Those rows are deleted only in a later step an owner approves.
 Setup per environment (local, service, container): `apps/runner/README.md`,
 "Model login on the runner machine".
 
+### When that login hits its usage limit
+
+A team may name a stored credential as the fallback for a walled login
+(Settings › Models, "When the subscription limit is reached";
+`teams.subscription_wall_fallback`, `packages/core/wall-fallback.ts`): the
+Anthropic API key, the OpenRouter key, the LiteLLM gateway or the agent model
+endpoint, with an optional daily cap. It adds no purpose and no table: the
+fallback is a row the team already has in `secrets`, delivered by the claim
+only for the run whose login is walled. The login itself is never stored or
+sent. Naming the Anthropic key or the endpoint reserves it for walls, so a
+subscription runner's ordinary runs no longer receive it; `api` runners are
+unaffected. Contract: `docs/specs/provider-failover.md`, "Subscription wall
+fallback".
+
 ## Multi-field credentials
 
 `secrets.encryptedValue` holds a single string, so a credential with several fields is

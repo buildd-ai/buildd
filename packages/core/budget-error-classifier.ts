@@ -70,10 +70,23 @@ export const SESSION_BUDGET_CAP_PATTERNS: readonly string[] = [
  * on the task itself. A per-session dollar cap is NOT a match — see
  * `isSessionBudgetCapError`.
  */
+/**
+ * Claude names the seat window that ran out, and the noun changes with the plan
+ * and the date: "session", "weekly", "5-hour", "7-day", a model name. Matching
+ * one noun at a time missed "You've hit your 5-hour limit" entirely, so the
+ * wall hard-failed tasks instead of pausing the pool. Anchored on the full
+ * "hit your <up to two words> limit" shape so prose that only mentions limits
+ * does not match.
+ */
+const WINDOWED_LIMIT_RE = /(?<![\w-])hit your (?:[\w-]+ ){0,2}limit(?![\w-])/;
+
 export function isBudgetExhaustionError(error?: string | null): boolean {
   if (!error) return false;
   const lower = error.toLowerCase();
-  return BUDGET_EXHAUSTION_PATTERNS.some(pattern => lower.includes(pattern));
+  return (
+    BUDGET_EXHAUSTION_PATTERNS.some(pattern => lower.includes(pattern)) ||
+    WINDOWED_LIMIT_RE.test(lower)
+  );
 }
 
 /**

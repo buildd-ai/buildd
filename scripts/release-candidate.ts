@@ -18,10 +18,14 @@
  * runs the same code from a workstation.
  *
  * CLI:
- *   cut    --source <sha|ref> [--require-check build] [--green-depth 50] [--force] [--dry-run]
+ *   cut    --source <sha|ref> [--require-check build] [--green-depth 50] [--wait-pending SECS]
+ *          [--poll-interval SECS] [--force] [--dry-run]
  *            With --require-check, the candidate is cut from the newest commit on
  *            the source's first-parent line whose named check(s) are green, never
- *            from a head CI has not finished with (or failed). Idempotent. An open candidate → reported, never changed. An
+ *            from a head CI has not finished with (or failed); with --wait-pending,
+ *            a still-running check is waited for that long before refusing. A dev
+ *            main already contains, or with no feat/fix since the last tag, is a
+ *            green "nothing" before any check is read. Idempotent. An open candidate → reported, never changed. An
  *            unpublished candidate branch (push landed, PR create died) → its PR
  *            is opened, its content is not rebuilt.
  *   amend  --candidate vX.Y.Z --confirm vX.Y.Z --source <sha|ref> [--dry-run]
@@ -396,6 +400,10 @@ interface Ctx {
   requireChecks: string[];
   /** How many first-parent commits back from the source the green search looks. */
   greenDepth: number;
+  /** How long the green search waits for a pending check before refusing. 0: no wait. */
+  waitPendingSeconds: number;
+  /** Seconds between check polls while waiting. */
+  pollSeconds: number;
 }
 
 function sh(cwd: string, cmd: string, args: string[], input?: string, env?: Record<string, string>) {
@@ -729,9 +737,32 @@ function verdictAt(ctx: Ctx, sha: string): CheckVerdict {
  */
 export function greenSource(ctx: Ctx, sourceSha: string): string {
   if (ctx.requireChecks.length === 0) return sourceSha;
+  const checks = ctx.requireChecks.map((c) => `\`${c}\``).join(', ');
+  // A dispatch seconds after a merge finds the only unreleased commit's CI
+  // still running. That is "not yet", not an error: wait for it (bounded by
+  // --wait-pending) instead of failing the run and making someone re-dispatch.
+  const deadline = Date.now() + ctx.waitPendingSeconds * 1000;
+  for (;;) {
+    const r = findGreen(ctx, sourceSha);
+    if ('sha' in r) return r.sha;
+    const newest = r.passed[0];
+    const pending = r.passed.some((p) => p.verdict === 'pending');
+    if (pending && Date.now() + ctx.pollSeconds * 1000 <= deadline) {
+      console.log(`No ${ctx.sourceBranch} commit since ${ctx.baseBranch} has ${checks} green yet (newest ${newest.sha.slice(0, 12)} is ${newest.verdict}); waiting ${ctx.pollSeconds}s for CI.`);
+      Bun.sleepSync(ctx.pollSeconds * 1000);
+      continue;
+    }
+    throw new Refusal(
+      `no ${ctx.sourceBranch} commit since ${ctx.baseBranch} has ${checks} green` +
+        (newest ? ` (newest ${newest.sha.slice(0, 12)} is ${newest.verdict}, ${r.passed.length} checked` + (pending && ctx.waitPendingSeconds > 0 ? `, still pending after waiting ${ctx.waitPendingSeconds}s` : '') + ')' : '') +
+        `. A candidate is cut only from a commit CI verified: wait for ${ctx.sourceBranch}'s CI, or fix it, and run the Release workflow again.`,
+    );
+  }
+}
+
+function findGreen(ctx: Ctx, sourceSha: string): { sha: string } | { passed: Array<{ sha: string; verdict: CheckVerdict }> } {
   const line = git(ctx.cwd, 'rev-list', '--first-parent', `--max-count=${ctx.greenDepth}`, sourceSha).split('\n').filter(Boolean);
   const passed: Array<{ sha: string; verdict: CheckVerdict }> = [];
-  const checks = ctx.requireChecks.map((c) => `\`${c}\``).join(', ');
   for (const sha of line) {
     if (isAncestor(ctx, sha, remoteRef(ctx, ctx.baseBranch))) break; // already released: nothing older is worth cutting
     const verdict = verdictAt(ctx, sha);
@@ -743,16 +774,11 @@ export function greenSource(ctx: Ctx, sourceSha: string): string {
             'The newer commits are listed as not in this candidate.',
         );
       }
-      return sha;
+      return { sha };
     }
     passed.push({ sha, verdict });
   }
-  const newest = passed[0];
-  throw new Refusal(
-    `no ${ctx.sourceBranch} commit since ${ctx.baseBranch} has ${checks} green` +
-      (newest ? ` (newest ${newest.sha.slice(0, 12)} is ${newest.verdict}, ${passed.length} checked)` : '') +
-      `. A candidate is cut only from a commit CI verified: wait for ${ctx.sourceBranch}'s CI, or fix it, and run the Release workflow again.`,
-  );
+  return { passed };
 }
 
 // ── cut ──────────────────────────────────────────────────────────────────────
@@ -784,15 +810,25 @@ export function cut(ctx: Ctx, source: string, force: boolean): number {
   }
   if (existing.length === 1) return reportExisting(ctx, existing[0], sourceSha);
 
+  // Nothing to release is not a CI question: answer it before the green gate,
+  // which otherwise refuses (red run) on a dev that main already contains (the
+  // daily schedule after sync-dev fast-forwards dev), or on unreleased commits
+  // that are all docs/chore and so may never get a `build` check at all.
+  if (isAncestor(ctx, requestedSha, remoteRef(ctx, ctx.baseBranch))) return nothingToCut(ctx, requestedSha, `${ctx.sourceBranch}@${requestedSha.slice(0, 12)} is already in ${ctx.baseBranch}; nothing to release.`);
+  if (!force && ctx.requireChecks.length > 0) {
+    const head = snapshot(ctx, requestedSha);
+    if (!isShippable(head.subjects)) {
+      return nothingToCut(ctx, requestedSha, `No feat/fix commits since ${head.latestTag ?? 'the start'}; nothing to release (re-run with force to cut anyway).`, head.plan.version);
+    }
+  }
+
   // Never cut a head CI has not verified. Checked only when there is a cut to
   // make: an open candidate above is reported without asking GitHub anything.
   sourceSha = greenSource(ctx, requestedSha);
   if (sourceSha !== requestedSha) console.log(`Cut source: ${sourceSha} (newest green; captured ${requestedSha.slice(0, 12)})`);
 
   if (isAncestor(ctx, sourceSha, remoteRef(ctx, ctx.baseBranch))) {
-    console.log(`${ctx.sourceBranch}@${sourceSha.slice(0, 12)} is already in ${ctx.baseBranch}; nothing to release.`);
-    output({ status: 'nothing', source_sha: sourceSha });
-    return 0;
+    return nothingToCut(ctx, sourceSha, `${ctx.sourceBranch}@${sourceSha.slice(0, 12)} is already in ${ctx.baseBranch}; nothing to release.`);
   }
 
   const snap = snapshot(ctx, sourceSha);
@@ -801,9 +837,7 @@ export function cut(ctx: Ctx, source: string, force: boolean): number {
   console.log(`Previous tag: ${snap.latestTag ?? '(none)'} · ${snap.included.length} commit(s) · ${snap.plan.bump} bump → v${version}`);
 
   if (!force && !isShippable(snap.subjects)) {
-    console.log(`No feat/fix commits since ${snap.latestTag ?? 'the start'}; nothing to release (re-run with force to cut anyway).`);
-    output({ status: 'nothing', source_sha: sourceSha, version });
-    return 0;
+    return nothingToCut(ctx, sourceSha, `No feat/fix commits since ${snap.latestTag ?? 'the start'}; nothing to release (re-run with force to cut anyway).`, version);
   }
   assertVersionFree(ctx, version, open);
 
@@ -832,6 +866,14 @@ export function cut(ctx: Ctx, source: string, force: boolean): number {
   }
   console.log(`Pushed ${branch} at ${candidateSha}`);
   return publish(ctx, meta, body, null);
+}
+
+/** A clean, green "nothing to cut": logged, annotated, written to outputs and the step summary. */
+function nothingToCut(ctx: Ctx, sourceSha: string, why: string, version?: string): number {
+  console.log(`::notice title=Nothing to cut::${why}`);
+  output({ status: 'nothing', source_sha: sourceSha, version });
+  summary(`### Release candidate: nothing to cut\n\n${why}\n\nCaptured \`${ctx.sourceBranch}\` SHA: \`${sourceSha}\``);
+  return 0;
 }
 
 function publish(ctx: Ctx, meta: CandidateMeta, body: string, ignore: number | null): number {
@@ -1131,6 +1173,10 @@ function context(args: string[]): Ctx {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Refusal(`--today must be YYYY-MM-DD`);
   const greenDepth = Number(flag(args, '--green-depth') ?? 50);
   if (!Number.isInteger(greenDepth) || greenDepth < 1) throw new Refusal(`--green-depth must be a positive integer`);
+  const waitPendingSeconds = Number(flag(args, '--wait-pending') ?? 0);
+  if (!Number.isInteger(waitPendingSeconds) || waitPendingSeconds < 0) throw new Refusal(`--wait-pending must be a non-negative integer (seconds)`);
+  const pollSeconds = Number(flag(args, '--poll-interval') ?? 30);
+  if (!Number.isInteger(pollSeconds) || pollSeconds < 1) throw new Refusal(`--poll-interval must be a positive integer (seconds)`);
   return {
     cwd,
     repo,
@@ -1143,6 +1189,8 @@ function context(args: string[]): Ctx {
     dryRun,
     requireChecks: (flag(args, '--require-check') ?? '').split(',').map((c) => c.trim()).filter(Boolean),
     greenDepth,
+    waitPendingSeconds,
+    pollSeconds,
   };
 }
 

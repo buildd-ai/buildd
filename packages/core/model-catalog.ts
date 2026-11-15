@@ -73,6 +73,8 @@ export interface CatalogEntry extends TokenPrice {
  *   would hand it `premium` and quietly downgrade all planning work.
  * - The CEILING stops an unreviewed price jump. Fable at $10/$50 must be an
  *   opt-in tier, not something that silently doubles the cost of premium work.
+ *   Fable 5.2 prices at exactly $8.00: the premium ceiling is exclusive and the
+ *   premium-plus floor inclusive, so it is premium-plus, as intended.
  *
  * The premium floor is $4, not $3, on purpose: Sonnet 4.x prices at exactly
  * $3.00, so a $3 floor puts a mid-tier model inside the premium band. Today

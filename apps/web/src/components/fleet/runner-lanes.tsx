@@ -119,6 +119,20 @@ export function runnerLanes(fleet: FleetSnapshot, axis: { from: number; to: numb
   }));
 }
 
+/**
+ * One sentence per runner whose own model login is waiting out a usage limit
+ * (provider-failover spec, "A usage wall is a wait"): "box-a is waiting for
+ * its Claude usage limit, resumes at 16:00."
+ */
+export function usageWallSentences(fleet: FleetSnapshot, clock: (at: number) => string): string[] {
+  return fleet.runners.flatMap(r => {
+    const at = r.usageWall ? Date.parse(r.usageWall.resetsAt) : NaN;
+    if (!r.usageWall || !Number.isFinite(at)) return [];
+    const provider = r.usageWall.backend === 'codex' ? 'Codex' : 'Claude';
+    return [`${r.name} is waiting for its ${provider} usage limit, resumes at ${clock(at)}.`];
+  });
+}
+
 /** Configured slots left out of the chart because they held no work in the window. */
 export function idleSlotCount(fleet: FleetSnapshot): number {
   return allRunners(fleet).reduce((n, r) => {
@@ -197,7 +211,7 @@ export function RunnerLanes({ fleet, idle, now, timeZone, missions = {} }: {
 }) {
   const fmt = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', ...(timeZone ? { timeZone } : {}) });
   const clock = (at: number) => fmt.format(at);
-  const lines = idleSentences(idle);
+  const lines = [...usageWallSentences(fleet, clock), ...idleSentences(idle)];
   const [selected, setSelected] = useState<SlotLaneBar | null>(null);
   const axis = { from: fleet.window.from, to: now + Math.max(60_000, (now - fleet.window.from) * 0.04) };
   const hidden = idleSlotCount(fleet);

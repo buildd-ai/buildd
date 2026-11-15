@@ -58,6 +58,7 @@ describe('Admin-gated actions return structured 403 for non-admin tokens', () =>
   it('manage_workspaces list', () => expectForbidden('manage_workspaces', { action: 'list' }));
   it('manage_watched_projects list', () => expectForbidden('manage_watched_projects', { action: 'list' }));
   it('manage_model_tiers list', () => expectForbidden('manage_model_tiers', { action: 'list' }));
+  it('manage_platform_tiers list', () => expectForbidden('manage_platform_tiers', { action: 'list' }));
   it('register_skill', () => expectForbidden('register_skill', { name: 'x', content: 'y' }));
   it('list_skills', () => expectForbidden('list_skills'));
   it('get_skill', () => expectForbidden('get_skill', { slug: 'builder' }));

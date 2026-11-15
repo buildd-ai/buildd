@@ -86,6 +86,14 @@ describe('models that reject disabled thinking outright', () => {
     expect(resolveEffectiveThinking('claude-mythos-5-1', 'low', { type: 'disabled' })).toBeUndefined();
   });
 
+  test('covers fable 5.2, the premium-plus default, at every effort and with no effort', () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max', undefined] as const) {
+      expect(resolveEffectiveThinking('claude-fable-5-2', effort, { type: 'disabled' })).toBeUndefined();
+    }
+    expect(resolveEffectiveThinking('claude-fable-5-2-20261109', 'low', { type: 'disabled' })).toBeUndefined();
+    expect(requiresThinkingEnabled('claude-fable-5-2')).toBe(true);
+  });
+
   test('preserves adaptive thinking on fable — only "disabled" is rejected', () => {
     expect(resolveEffectiveThinking('claude-fable-5-1', 'max', { type: 'adaptive' })).toEqual({ type: 'adaptive' });
     expect(resolveEffectiveThinking('claude-fable-5-1', 'max', undefined)).toBeUndefined();

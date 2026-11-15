@@ -62,6 +62,15 @@ describe('checkDispatchModel', () => {
 
   it('does not judge a recorded CLI floor: that stays the runner_capability deferral', () => {
     expect(checkDispatchModel('claude-fable-5-1', CATALOG).ok).toBe(true);
+    expect(checkDispatchModel('claude-fable-5-2', CATALOG).ok).toBe(true);
+  });
+
+  it('a pin to the previous premium-plus model is still launchable after the tier moved on', () => {
+    // Requirement for a tier bump: tasks and roles pinned to the old id keep
+    // working. The old id stays in MODEL_MIN_CLI_VERSION, so it is known-good
+    // even when the catalog has forgotten it.
+    expect(checkDispatchModel('claude-fable-5-1', [entry('claude-x', D(0))]).ok).toBe(true);
+    expect(checkDispatchModel('claude-fable-5-1', CATALOG).ok).toBe(true);
   });
 });
 
@@ -107,6 +116,9 @@ describe('guardDispatchModel', () => {
 
 describe('tierForModelId', () => {
   it('maps a model family to its tier', () => {
+    expect(tierForModelId('claude-fable-5-2')).toBe('premium-plus');
+    // The previous premium-plus model still maps to its tier: a pin to it
+    // falls back within premium-plus, never to a cheaper band.
     expect(tierForModelId('claude-fable-5-1')).toBe('premium-plus');
     expect(tierForModelId('claude-opus-5-5')).toBe('premium');
     expect(tierForModelId('claude-haiku-4-5')).toBe('budget');

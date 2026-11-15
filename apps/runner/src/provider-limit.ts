@@ -110,6 +110,30 @@ export class ProviderLimitHolds {
   }
 }
 
+/**
+ * The server's word that this runner's team falls back when its subscription
+ * login is walled (claim response `wallFallback`, packages/core/wall-fallback.ts):
+ * a held provider it covers still claims, and the claim delivers the team's
+ * fallback credential for the walled run. Renewed by every claim answer and
+ * ended by one without it (the cap reached, the setting changed), so a stale
+ * cover never outlives the server's own answer by more than `TTL_MS`.
+ * The hold itself stays and is still reported (`limitWalls`).
+ */
+export class WallFallbackCover {
+  static readonly TTL_MS = 15 * 60 * 1000;
+  private until = new Map<LimitProvider, number>();
+
+  note(advert: { claude?: boolean } | null | undefined, now: number = Date.now()): void {
+    if (advert?.claude === true) this.until.set('claude', now + WallFallbackCover.TTL_MS);
+    else this.until.delete('claude');
+  }
+
+  covers(provider: LimitProvider, now: number = Date.now()): boolean {
+    const u = this.until.get(provider);
+    return u !== undefined && now < u;
+  }
+}
+
 export function providerOfBackend(backend: string | null | undefined): LimitProvider {
   return backend === 'codex' ? 'codex' : 'claude';
 }

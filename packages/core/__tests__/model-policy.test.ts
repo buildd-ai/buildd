@@ -19,7 +19,10 @@ mock.module('drizzle-orm', () => ({
   eq: (a: unknown, b: unknown) => ({ type: 'eq', a, b }),
   and: (...args: unknown[]) => ({ type: 'and', args }),
   isNull: (col: unknown) => ({ type: 'isNull', col }),
+  sql: Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => ({ type: 'sql', strings, values }), { raw: (s: string) => s }),
 }));
+// No platform default in these tests: the registry and the bundled policy are the subject.
+mock.module('../model-tier-platform-default-store', () => ({ loadPlatformTierDefaults: () => Promise.resolve(new Map()) }));
 const mockCatalog = mock(() => Promise.resolve([] as unknown[]));
 mock.module('../model-catalog-cache', () => ({ getCachedOpenRouterCatalog: mockCatalog }));
 mock.module('../model-certification-store', () => ({ getModelCertifications: () => Promise.resolve(new Map()) }));

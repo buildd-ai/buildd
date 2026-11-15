@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/settings/models/page.tsx, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.tsx, packages/core/providers/policy.ts, packages/core/providers/resolve.ts]
 related: [model-routing-and-tiers, model-policy-cells, provider-failover, team-permissions, credential-isolation]
 keywords: [Models page, model providers, who pays, credential policy, personal_first, used for, provider routing, agent endpoint, LiteLLM gateway, decision model, workspace keys]
-verified_by: [packages/core/__tests__/provider-assignments.test.ts, packages/core/__tests__/provider-resolve.test.ts, apps/web/src/app/api/providers/assignments/route.test.ts, apps/web/src/app/app/(protected)/settings/providers/providers-view.test.ts, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.dom.test.tsx, apps/web/src/app/app/(protected)/settings/models/page.test.ts, apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page-groups.test.ts, apps/web/src/app/api/providers/route.test.ts]
+verified_by: [packages/core/__tests__/provider-assignments.test.ts, packages/core/__tests__/provider-resolve.test.ts, apps/web/src/app/api/providers/assignments/route.test.ts, apps/web/src/app/app/(protected)/settings/providers/providers-view.test.ts, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.dom.test.tsx, apps/web/src/app/app/(protected)/settings/models/page.test.ts, apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page-groups.test.ts, apps/web/src/app/api/providers/route.test.ts, apps/web/src/app/app/(protected)/settings/models/PlatformTierDefaultsSection.dom.test.tsx]
 supersedes: []
 assertions:
   - id: "assignments-parse"
@@ -66,6 +66,13 @@ connected providers) and **Tiers**.
 - The page names no other app or page as the home of a removed control.
 - Every control follows the permission its API enforces; a member sees the same
   page read-only.
+- Inside Tiers, a platform operator (and only an operator) also sees Platform
+  defaults: the model each tier runs for every team without its own row, its
+  source, price and CLI floor, the staleness suggestion with Apply, and Set,
+  Clear and Revert, each asking once before it writes
+  (`apps/web/src/app/app/(protected)/settings/models/PlatformTierDefaultsSection.tsx`,
+  spec `model-routing-and-tiers`, "Platform tier default"). It is not a
+  heading of its own and renders nothing for a team admin.
 - Someone in more than one team sees the Providers heading name the team the
   page holds ("Providers · <team>"), so "Not set" says whose. In one team the
   heading is "Providers".

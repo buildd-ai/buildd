@@ -352,6 +352,65 @@ describe('learn — save a new lesson', () => {
     expect(res.content[0].text).toContain('content');
   });
 
+  it('names only the missing fields and the keys it received', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient();
+    const ctx = { ...recallCtx(store), workerId: WORKER_ID };
+    const res = await handleLearnAction(mem as any, { type: 'gotcha', title: 'Missing param', files: ['a.ts'] }, ctx);
+    expect(res.isError).toBe(true);
+    const msg = res.content[0].text;
+    expect(msg).toContain('missing: content');
+    expect(msg).not.toContain('missing: type');
+    expect(msg).toContain('received keys: type, title, files');
+  });
+
+  it('reports no arguments at all distinctly from a missing field', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient();
+    const ctx = { ...recallCtx(store), workerId: WORKER_ID };
+    const res = await handleLearnAction(mem as any, {}, ctx);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('received no arguments');
+  });
+
+  it('treats a whitespace-only title as missing', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient();
+    const ctx = { ...recallCtx(store), workerId: WORKER_ID };
+    const res = await handleLearnAction(mem as any, { type: 'gotcha', title: '   ', content: 'c' }, ctx);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('missing: title');
+  });
+
+  // Group tools take {action, params}; an agent that just used one often wraps
+  // learn the same way. The fields are all there, so the lesson is recorded.
+  it('accepts fields wrapped in params ({action, params} habit from group tools)', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient({ saveResult: { id: 'saved-wrapped', type: 'gotcha', title: 'Wrapped', content: 'C', files: [], tags: [], project: null, source: 'mcp-agent' } });
+    const ctx = { ...recallCtx(store), workerId: WORKER_ID };
+    const res = await handleLearnAction(mem as any, { action: 'learn', params: { type: 'gotcha', title: 'Wrapped', content: 'C' } }, ctx);
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('saved-wrapped');
+  });
+
+  it('accepts the fields as a JSON-encoded params string', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient({ saveResult: { id: 'saved-json', type: 'gotcha', title: 'Json', content: 'C', files: [], tags: [], project: null, source: 'mcp-agent' } });
+    const ctx = { ...recallCtx(store), workerId: WORKER_ID };
+    const res = await handleLearnAction(mem as any, { params: JSON.stringify({ type: 'gotcha', title: 'Json', content: 'C' }) }, ctx);
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('saved-json');
+  });
+
+  it('accepts the whole argument object as a JSON string', async () => {
+    const store = makeStore([]);
+    const mem = makeMemClient({ saveResult: { id: 'saved-str', type: 'gotcha', title: 'Str', content: 'C', files: [], tags: [], project: null, source: 'mcp-agent' } });
+    const ctx = { ...recallCtx(store), workerId: WORKER_ID };
+    const res = await handleLearnAction(mem as any, JSON.stringify({ type: 'gotcha', title: 'Str', content: 'C' }) as any, ctx);
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('saved-str');
+  });
+
   it('saves a new memory and returns its ID', async () => {
     const store = makeStore([]);
     const mem = makeMemClient({ saveResult: { id: 'saved-mem-1', type: 'gotcha', title: 'Test gotcha', content: 'Test content', files: [], tags: [], project: null, source: 'mcp-agent' } });

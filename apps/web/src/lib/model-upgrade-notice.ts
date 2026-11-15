@@ -44,6 +44,9 @@ function reasonText(t: TierAdoption, mode: ModelUpgradeMode): string {
   if (t.selectedBy === 'pinned_team' || t.selectedBy === 'pinned_workspace' || t.withheld?.reason === 'pinned') {
     return 'the tier is pinned to it';
   }
+  if (t.selectedBy === 'platform_default' || t.withheld?.reason === 'platform') {
+    return 'buildd’s default for every team holds it';
+  }
   if (t.withheld?.reason === 'soak' || mode === 'soak') {
     return t.withheld?.eligibleAt ? `your soak policy moves it on ${day(t.withheld.eligibleAt)}` : 'your soak policy is still waiting';
   }

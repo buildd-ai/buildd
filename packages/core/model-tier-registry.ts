@@ -12,13 +12,17 @@
  *   2. Workspace row             │ the registry as a ModelPolicy: overrides,
  *   3. Team + surface row        │ surfaces, tiers — the policy's precedence
  *   4. Team row                  ┘
- *   5. Remote policy service     (only when BUILDD_MODEL_POLICY_URL/TOKEN are
+ *   5. Platform default          (a platform admin's choice for every team
+ *                                 without a row of its own —
+ *                                 model-tier-platform-default.ts; audited,
+ *                                 revertible, no deploy needed)
+ *   6. Remote policy service     (only when BUILDD_MODEL_POLICY_URL/TOKEN are
  *                                 set; skipped while it is down)
- *   6. Live catalog pick         (newest certified release in the tier's price
+ *   7. Live catalog pick         (newest certified release in the tier's price
  *                                 band that the team's upgrade policy adopts —
  *                                 model-catalog.ts, model-certification.ts,
  *                                 model-upgrade-policy.ts; no deploy needed)
- *   7. Bundled fallback          (DEFAULT_MODEL_POLICY = TIER_DEFAULTS, last resort)
+ *   8. Bundled fallback          (DEFAULT_MODEL_POLICY = TIER_DEFAULTS, last resort)
  *
  * Resolution happens at claim time so a registry update affects already-queued tasks
  * within the next 60-second cache window — no deploy needed. The catalog step
@@ -41,6 +45,7 @@ import type { UnrecognizedModelReason } from './model-capability-requirements';
 import { getModelCertifications } from './model-certification-store';
 import { pickPolicyTierModel } from './model-upgrade-policy';
 import { loadUpgradePolicy } from './model-upgrade-policy-store';
+import { loadPlatformTierDefaults } from './model-tier-platform-default-store';
 import { sqlWhere } from './db/relational-sql';
 
 /** Maps the model-router's legacy alias vocabulary to the new tier vocabulary. */
@@ -156,7 +161,7 @@ async function resolveFromCatalog(
 /**
  * Resolve the effective tier entry for a given team, optional workspace and
  * surface. Returns the entry + source annotation ('workspace' | 'team' |
- * 'policy' | 'catalog' | 'default'); `surface` is set on the entry when a
+ * 'platform' | 'policy' | 'catalog' | 'default'); `surface` is set on the entry when a
  * surface row served it, and `policy` names the policy decision behind it.
  *
  * Every caller names its surface: claims pass 'agent', chat and inference
@@ -185,12 +190,20 @@ export async function resolveTierEntry(
     if (hit) return tierEntryFromRegistry(hit);
   }
 
-  // 5: the policy service, for a tier the registry leaves unset. Its answer is
+  // 5: the platform default. A platform admin's deliberate choice for every
+  // team without a row, so like a registry row it is never second-guessed by
+  // the service or the catalog. Fails open to the next layer when unreadable.
+  const platform = (await loadPlatformTierDefaults()).get(tier);
+  if (platform) {
+    return { provider: platform.provider, model: platform.model, source: 'platform', policy: bundledMeta('buildd-platform', surface) };
+  }
+
+  // 6: the policy service, for a tier the registry leaves unset. Its answer is
   // the default layer; an admin's row above always wins.
   const remote = await resolveRemoteTier(tier, workspaceId, surface);
   if (remote) return tierEntryFromRemote(remote);
 
-  // 6: no explicit registry row (or the DB was unreachable): try the live
+  // 7: no explicit registry row (or the DB was unreachable): try the live
   // catalog before the hand-maintained default. A same-band release is
   // adopted without a registry write when the static floor table already
   // vouches for it or the certification probe has certified it, and the
@@ -202,7 +215,7 @@ export async function resolveTierEntry(
   const catalogEntry = await resolveFromCatalog(tier, teamId, workspaceId, runnerCliVersion);
   if (catalogEntry) return { ...catalogEntry, policy: bundledMeta('buildd-catalog', surface) };
 
-  // 7: the policy's bundled fallback.
+  // 8: the policy's bundled fallback.
   return { ...bundledTierEntry(tier, surface ?? 'agent'), policy: bundledMeta('bundled', surface) };
 }
 

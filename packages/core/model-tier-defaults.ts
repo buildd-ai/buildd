@@ -40,13 +40,15 @@ export interface TierEntry {
   defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   defaultMaxTurns?: number;
   /**
-   * 'catalog' means no registry row exists for this tier and the live catalog
-   * picked the newest in-band release — the self-healing path. 'default'
-   * means even the catalog had nothing (empty/failed fetch), so the
-   * hand-maintained fallback applies. 'policy' means the remote policy
-   * service answered for a tier the registry leaves unset.
+   * 'platform' means a platform admin's default for every team without a row
+   * of its own (model-tier-platform-default.ts). 'catalog' means no row at any
+   * level and the live catalog picked the newest in-band release — the
+   * self-healing path. 'default' means even the catalog had nothing
+   * (empty/failed fetch), so the hand-maintained fallback applies. 'policy'
+   * means the remote policy service answered for a tier the registry leaves
+   * unset.
    */
-  source?: 'workspace' | 'team' | 'default' | 'catalog' | 'policy';
+  source?: 'workspace' | 'team' | 'platform' | 'default' | 'catalog' | 'policy';
   /** Set when the row that served this entry is scoped to one surface. */
   surface?: TierSurface;
   /**
@@ -101,3 +103,10 @@ export const TIER_DEFAULTS: Record<Tier, TierEntry> = Object.freeze(
 // sat on `claude-sonnet-4-6` after `claude-sonnet-5` shipped CHEAPER
 // ($2/$10 input/output per MTok against $3/$15), so the fleet paid more for an
 // older model. Keep the tiers on one generation unless there is a stated reason.
+//
+// Moving a tier for every team no longer needs a release: a platform admin
+// writes the platform default (model-tier-platform-default.ts) from Settings ›
+// Models or `manage_platform_tiers`, and the staleness finding is shown there
+// as a suggestion. The bundled value is the last resort only, and
+// model-tier-defaults-generation.test.ts fails when it falls behind the newest
+// model certified in its family, so it cannot drift far either.

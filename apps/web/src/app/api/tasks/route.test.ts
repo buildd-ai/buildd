@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 
 // Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
 // a per-test policy instead of the DB. No ceiling unless a test sets one.
@@ -4715,7 +4716,7 @@ describe('POST /api/tasks', () => {
       const data = await response.json();
       expect(data.routing).toEqual({
         tier: 'standard',
-        model: 'claude-sonnet-5',
+        model: bundledTierEntry('standard').model,
         reason: expect.stringContaining('no kind/complexity given'),
       });
     });

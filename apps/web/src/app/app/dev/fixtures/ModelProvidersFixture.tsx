@@ -32,7 +32,7 @@ const WORKSPACES = [
 ];
 const FLASH = 'fireworks_ai/deepseek-v4p1-flash';
 const TIERS: Array<[string, string]> = [
-  ['claude-fable-5-1', 'premium-plus'],
+  ['claude-fable-5-2', 'premium-plus'],
   ['claude-opus-5-5', 'premium'],
   ['claude-opus-5', 'premium'],
   ['claude-sonnet-5', 'standard'],
