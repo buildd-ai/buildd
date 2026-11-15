@@ -1,0 +1,2 @@
+ALTER TABLE "skill_usage" DROP CONSTRAINT "skill_usage_skill_id_workspace_skills_id_fkey";--> statement-breakpoint
+ALTER TABLE "skill_usage" ADD COLUMN "telemetry_started_at" timestamp with time zone DEFAULT now() NOT NULL;
