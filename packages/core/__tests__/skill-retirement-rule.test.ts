@@ -43,3 +43,21 @@ describe('skill retirement rule', () => {
     expect(rec.report).toMatch(/telemetry/i);
   });
 });
+
+import { resolveRetirementMode, gateActingMode, parseActingAllowlist } from '../skill-retirement-rule';
+describe('retirement mode resolution', () => {
+  it('unrecognised or absent resolves to recording', () => {
+    expect(resolveRetirementMode(null)).toBe('recording');
+    expect(resolveRetirementMode({ skillRetirement: { mode: 'ACTING' as any } })).toBe('recording');
+    expect(resolveRetirementMode({ skillRetirement: { mode: 'off' } })).toBe('off');
+    expect(resolveRetirementMode({ skillRetirement: { mode: 'acting' } })).toBe('acting');
+  });
+  it('acting is refused before the archive window or off the allowlist', () => {
+    const now = new Date();
+    const allowlist = parseActingAllowlist('WS1, ws2');
+    const base = { workspaceId: 'ws1', allowlist, now, telemetryStartedAt: new Date(now.getTime() - 61 * 86_400_000) };
+    expect(gateActingMode('acting', base)).toEqual({ mode: 'acting' });
+    expect(gateActingMode('acting', { ...base, workspaceId: 'x' }).refusal).toBe('not_allowlisted');
+    expect(gateActingMode('acting', { ...base, telemetryStartedAt: new Date(now.getTime() - 10 * 86_400_000) }).refusal).toBe('archive_window_not_elapsed');
+  });
+});
