@@ -149,6 +149,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   get_manifest_coverage: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_path_claim_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_decision_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
+  procedure_digest: one(deferred('read-only run skeleton; not offered in chat yet')),
   get_budget_forecast: one(read('GET /api/health/budget')),
   get_model_comparison: one(deferred('aggregate read; chat users see it on the Models page')),
   list_connectors: one(read('GET /api/connectors/mounted')),
