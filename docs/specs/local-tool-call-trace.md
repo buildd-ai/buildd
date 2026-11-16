@@ -10,6 +10,24 @@ related: [runner-model-auth-source, model-comparison]
 keywords: [tool trace, per-call trace, rg exit code, no matches, repeated search, result_observed, fingerprint, evidence gap, tool efficiency, tool-call-feedback-loop-spec]
 verified_by: [apps/runner/__tests__/unit/tool-trace.test.ts, apps/runner/__tests__/unit/tool-trace-analysis.test.ts]
 supersedes: []
+assertions:
+  - id: tool-trace-recorder
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
+    type: symbol
+    name: ToolTraceRecorder
+    path: apps/runner/src/tool-trace.ts
+  - id: tool-trace-summary
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
+    type: symbol
+    name: summarizeToolTrace
+    path: apps/runner/src/tool-trace.ts
+  - id: tool-trace-tests
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
+    type: test_file
+    path: apps/runner/__tests__/unit/tool-trace.test.ts
 ---
 
 # Local Tool Call Trace
