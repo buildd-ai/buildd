@@ -1,6 +1,6 @@
 ---
 title: Coding Evaluation Playground
-status: draft
+status: active
 owner: max
 last_verified: 2026-11-08
 summary: The playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden verifiers and admission gates, and report capability profiles, never a single winner.

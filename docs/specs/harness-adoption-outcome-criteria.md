@@ -1,6 +1,6 @@
 ---
-title: Harness Adoption Outcome Criteria (DRAFT)
-status: draft
+title: Harness Adoption Outcome Criteria
+status: active
 owner: max
 last_verified: 2026-11-14
 summary: Each harness change MUST name its success as a relative change on a baseline delivery metric, and none is called adopted until its owner agrees the measure.
@@ -8,6 +8,7 @@ domain: tasks
 surfaces: [apps/runner/src/stuck-detection.ts, apps/runner/src/verify-guard.ts, apps/web/src/lib/loop-dispatcher.ts, apps/web/src/lib/review-verdict-gate.ts]
 related: [mission-task-lifecycle, living-specs]
 keywords: [harness adoption, success measures, baseline, fail-to-resolve loop time, first-push CI failure rate, retries per task, open-to-merge, abandoned PRs, base drift, outcome criteria]
+verified_by: [apps/runner/__tests__/unit/verify-guard.test.ts, apps/runner/__tests__/unit/stuck-detection.test.ts]
 supersedes: []
 assertions:
   - id: verify-guard-tests

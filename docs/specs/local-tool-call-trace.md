@@ -1,6 +1,6 @@
 ---
 title: Local Tool Call Trace
-status: draft
+status: active
 owner: max
 last_verified: 2026-11-08
 summary: The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
