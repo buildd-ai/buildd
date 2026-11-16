@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (92)
+## Active (89)
 
 ### auth (9)
 
@@ -97,7 +97,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-10-24
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (15)
+### runners (14)
 
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-20
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST otherwise start a new attempt of the same task (never a new task) for a recorded, owner-visible reason.
@@ -111,8 +111,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
 - [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-21
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
-- [Local Tool Call Trace](./local-tool-call-trace.md) · @max — verified 2026-11-08
-  The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-11-14
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Failure Alerts](./runner-failure-alerts.md) · @max — verified 2026-10-15
@@ -130,12 +128,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-17
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (21)
+### surfaces (20)
 
 - [Chat Stream Composition](./chat-stream-composition.md) · @max — verified 2026-10-10
   An assistant chat turn MUST render in fixed, keyed regions so streaming text, finished tools and loading cards never move, reparent or duplicate what is already on screen.
-- [Coding Evaluation Playground](./coding-eval-playground.md) · @max — verified 2026-11-08
-  The playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden verifiers and admission gates, and report capability profiles, never a single winner.
 - [Health Runner Timeline](./health-runner-timeline.md) · @max — verified 2026-10-17
   Health › Runners MUST draw only runs actually going as open-ended, end every other bar at its run's end, and re-render when a worker in its workspaces changes.
 - [Initiatives](./initiatives.md) · @max — verified 2026-09-26
@@ -175,7 +171,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workspace Onboarding](./workspace-onboarding.md) · @max — verified 2026-10-03
   Onboarding MUST derive a workspace's readiness from observable repo facts without writing, and every change it proposes to the repo MUST arrive as an owner-merged PR from a non-default branch.
 
-### tasks (21)
+### tasks (20)
 
 - [Agent Question Protocol](./agent-question-protocol.md) · @max — verified 2026-10-23
   An agent question MUST include an actionable brief, pass the question gate and park only when human input is required.
@@ -197,8 +193,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
 - [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-24
   A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours. Start anyway is the same intent over a declared dependency: it admits the task's agent for assessment and keeps the edge (Living Spec 36df686b).
-- [Harness Adoption Outcome Criteria](./harness-adoption-outcome-criteria.md) · @max — verified 2026-11-14
-  Each harness change MUST name its success as a relative change on a baseline delivery metric, and none is called adopted until its owner agrees the measure.
 - [Human Answer Delivery](./human-answer-delivery.md) · @max — verified 2026-10-20
   An authorised human answer MUST reach a live session or a new attempt of the same task, and MUST never be applied twice or silently dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-11-14
@@ -220,12 +214,18 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
-## Draft (9)
+## Draft (12)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
+- [Coding Evaluation Playground](./coding-eval-playground.md) · @max — verified 2026-11-08
+  The playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden verifiers and admission gates, and report capability profiles, never a single winner.
+- [Harness Adoption Outcome Criteria (DRAFT)](./harness-adoption-outcome-criteria.md) · @max — verified 2026-11-14
+  Each harness change MUST name its success as a relative change on a baseline delivery metric, and none is called adopted until its owner agrees the measure.
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-15
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
+- [Local Tool Call Trace](./local-tool-call-trace.md) · @max — verified 2026-11-08
+  The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
 - [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-11-11
   The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-15

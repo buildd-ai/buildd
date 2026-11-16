@@ -1,6 +1,6 @@
 ---
 title: Coding Evaluation Playground
-status: active
+status: draft
 owner: max
 last_verified: 2026-11-08
 summary: The playground MUST extend the local replay harness with a versioned v2 suite of six case categories, hidden verifiers and admission gates, and report capability profiles, never a single winner.
@@ -12,13 +12,19 @@ verified_by: [packages/core/__tests__/local-eval.test.ts, scripts/local-eval/loc
 supersedes: []
 assertions:
   - id: local-eval-score-run
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
     type: symbol
     name: scoreRun
     path: packages/core/local-eval.ts
   - id: local-eval-v2-exec-tests
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
     type: test_file
     path: packages/core/__tests__/local-eval-v2-exec.test.ts
   - id: replay-comparison
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
     type: symbol
     name: buildReplayComparison
     path: packages/core/model-comparison.ts
