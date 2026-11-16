@@ -10,6 +10,24 @@ related: [model-comparison, model-inference-agent-capability, model-routing-and-
 keywords: [coding eval, playground, local-suite v2, score-v2, harbor, terminal-bench, contextbench, repoqa, compaction, abstention, capability profile, cpuOnly]
 verified_by: [packages/core/__tests__/local-eval.test.ts, scripts/local-eval/local-eval.test.ts, packages/core/__tests__/local-eval-v2-exec.test.ts, scripts/local-eval/v2-exec.test.ts]
 supersedes: []
+assertions:
+  - id: local-eval-score-run
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
+    type: symbol
+    name: scoreRun
+    path: packages/core/local-eval.ts
+  - id: local-eval-v2-exec-tests
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
+    type: test_file
+    path: packages/core/__tests__/local-eval-v2-exec.test.ts
+  - id: replay-comparison
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
+    type: symbol
+    name: buildReplayComparison
+    path: packages/core/model-comparison.ts
 ---
 
 # Coding Evaluation Playground

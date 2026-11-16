@@ -1,10 +1,32 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-11-09
-**Previous scan**: 2026-11-02
-**Current SDK version in Buildd**: `^0.3.316` (runner + core, bun.lock resolves 0.3.316). npm head is now 0.3.319 (3 behind; caret range picks it up on next lock refresh, no urgent bump).
+**Last updated**: 2026-11-16
+**Previous scan**: 2026-11-09
+**Current SDK version in Buildd**: `^0.3.325` (apps/runner, bun.lock resolves 0.3.325 = npm latest; no lag). Not declared in packages/core.
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## Nov 16 scan (Nov 10 – Nov 16)
+
+TypeScript SDK 0.3.320–0.3.325 (0.3.320 and 0.3.322/0.3.324 are parity-only). Source: SDK CHANGELOG + npm publish times (0.3.325 published Nov 13). Community repos not re-scanned. Buildd is already on 0.3.325.
+
+| Version | Change |
+|---------|--------|
+| 0.3.325 | `archiveSession()`/`unarchiveSession()` + `archived` on session info; `refuseIfBusy` on `reloadPlugins()`; `system/informational` warning tagged `hook_no_verdict` when a PreToolUse hook can't run/answer/times out without refusing; `invalid_config_file` details on `config_file_invalid`; **fix: deny rules naming in-process SDK MCP tools/servers (or globs) now actually remove the tool**; **`sandbox` option no longer auto-approves sandboxed Bash unless `autoAllowBashIfSandboxed: true`**; read-only git in a foreign repo now goes through permission flow; `applyFlagSettings()` rejects settings that would discard the layer |
+| 0.3.323 | `machinePolicy.didNotLoad` and `matchDeniedModels()` (alpha); `tool_progress` heartbeat during long hooks (`tool_use_id` starts `hook-`, `parent_tool_use_id` may name no tool); `CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES`; fix `forkSession(upToMessageId)` at compaction; PreToolUse-allowed call whose permission check errors now goes to `canUseTool` (or is refused) |
+| 0.3.321 | PreToolUse hook `ask`/`defer` ordering fixes; one `undefined` hook event no longer drops all hooks; queued subagent reports in auto mode share one model call (several results with `num_turns: 0`) |
+
+### Verified against code
+- `apps/runner/src/workers.ts` passes no SDK `sandbox` option (only its own isolation probe), so the 0.3.325 `autoAllowBashIfSandboxed` default change does not alter behaviour.
+- No consumers of `session_writes_lost`, `startup_failure_reason`, `cacheCreationEphemeral*`, `hook_no_verdict` or `credential_expires_at` under apps/ or packages/ (unchanged from Nov 9: signals exist, none surfaced).
+
+### Recommendations
+1. **Heartbeat consumers**: `tool_progress` now fires for hooks with synthetic `hook-*` ids and possibly dangling `parent_tool_use_id`. Check the runner's tool_progress/activity handling does not assume a matching tool call. Low-medium.
+2. **Auto-mode `num_turns: 0` results** (0.3.321): confirm result handling does not treat an empty `result` with `num_turns: 0` as a failure/completion when subagent reports are batched. Low.
+3. **Deny rules for SDK MCP tools now enforced** (0.3.325): any role `disallowedTools` targeting in-process MCP tools previously leaked; re-test role tool restrictions. Low.
+4. Still open from earlier scans: surface `session_writes_lost`, classify startup failure reasons, 5m/1h cache-write cost split, hook `onFailure: "block"` for path guards, `hook_no_verdict` as a fail-open signal worth logging. Watch only: `prewarm()` alpha, `mcp_task`, `archiveSession()`.
 
 ---
 
