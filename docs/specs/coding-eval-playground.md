@@ -10,6 +10,18 @@ related: [model-comparison, model-inference-agent-capability, model-routing-and-
 keywords: [coding eval, playground, local-suite v2, score-v2, harbor, terminal-bench, contextbench, repoqa, compaction, abstention, capability profile, cpuOnly]
 verified_by: [packages/core/__tests__/local-eval.test.ts, scripts/local-eval/local-eval.test.ts, packages/core/__tests__/local-eval-v2-exec.test.ts, scripts/local-eval/v2-exec.test.ts]
 supersedes: []
+assertions:
+  - id: local-eval-score-run
+    type: symbol
+    name: scoreRun
+    path: packages/core/local-eval.ts
+  - id: local-eval-v2-exec-tests
+    type: test_file
+    path: packages/core/__tests__/local-eval-v2-exec.test.ts
+  - id: replay-comparison
+    type: symbol
+    name: buildReplayComparison
+    path: packages/core/model-comparison.ts
 ---
 
 # Coding Evaluation Playground
