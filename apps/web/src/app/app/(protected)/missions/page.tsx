@@ -88,7 +88,8 @@ async function MissionsPage({
           testId="new-mission-link-mobile"
           className={MOBILE_TOP_BAR_ACTION_CLASS}
         >
-          + New
+          {/* Under 360px the label gives way to the bare "+" so the team switcher keeps room. */}
+          +<span className="max-[359px]:sr-only"> New</span>
         </NewWorkLink>
       </MobileTopBarAction>
       <div data-testid="missions-header" className="flex items-center justify-between gap-3 md:mb-4">

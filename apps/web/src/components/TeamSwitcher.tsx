@@ -53,7 +53,7 @@ export function TeamSwitcher({ teams, currentTeamId }: { teams: Team[]; currentT
         // visual baseline or line height; min-h-11 makes it 44px on touch.
         className="flex items-center gap-1 min-w-0 -mx-1 -my-1.5 px-1 py-1.5 max-md:min-h-11 rounded text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
       >
-        <span className="truncate max-w-[140px]">{currentTeam.name}</span>
+        <span className="truncate min-w-0 max-w-[140px]">{currentTeam.name}</span>
         <svg
           className={`w-3 h-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
           fill="none"
