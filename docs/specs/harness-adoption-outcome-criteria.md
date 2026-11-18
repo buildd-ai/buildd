@@ -9,6 +9,17 @@ surfaces: [apps/runner/src/stuck-detection.ts, apps/runner/src/verify-guard.ts, 
 related: [mission-task-lifecycle, living-specs]
 keywords: [harness adoption, success measures, baseline, fail-to-resolve loop time, first-push CI failure rate, retries per task, open-to-merge, abandoned PRs, base drift, outcome criteria]
 supersedes: []
+assertions:
+  - id: verify-guard-tests
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
+    type: test_file
+    path: apps/runner/__tests__/unit/verify-guard.test.ts
+  - id: stuck-detection-tests
+    skip_until: "2027-01-12"
+    skip_reason: "Spec is still draft; assertion proves only that the named surface exists. Remove when the spec is promoted to active."
+    type: test_file
+    path: apps/runner/__tests__/unit/stuck-detection.test.ts
 ---
 
 # Harness Adoption Outcome Criteria (DRAFT)

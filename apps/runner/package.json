@@ -1,6 +1,6 @@
 {
   "name": "@buildd/runner",
-  "version": "0.402.0",
+  "version": "0.402.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -29,7 +29,7 @@
   "devDependencies": {
     "@tailwindcss/cli": "^4.0.0",
     "@types/bun": "^1.3.9",
-    "playwright": "1.65.0",
+    "playwright": "1.65.1",
     "tailwindcss": "^4.0.0"
   },
   "license": "Apache-2.0"

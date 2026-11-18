@@ -145,6 +145,20 @@ export function MissionGrid({
             className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
           />
         </div>
+        {hasGroups && (
+          <Select
+            testId="portfolio-group"
+            aria-label="Group"
+            value={group || ALL_GROUPS}
+            onChange={v => chooseGroup(v === ALL_GROUPS ? '' : v)}
+            options={[
+              { value: ALL_GROUPS, label: 'All groups' },
+              ...groups.map(g => ({ value: g.id, label: `${g.name} (${g.count})` })),
+            ]}
+            size="sm"
+            className="w-auto max-w-[40%] shrink-0 md:max-w-none md:min-w-[180px]"
+          />
+        )}
         <button
           type="button"
           data-testid="portfolio-search-toggle"
@@ -163,21 +177,7 @@ export function MissionGrid({
           </svg>
         </button>
         </div>
-        <div data-testid="portfolio-tools-secondary" className={`${hasGroups || searchOpen ? 'flex' : 'hidden md:flex'} min-w-0 items-center gap-2`}>
-        {hasGroups && (
-          <Select
-            testId="portfolio-group"
-            aria-label="Group"
-            value={group || ALL_GROUPS}
-            onChange={v => chooseGroup(v === ALL_GROUPS ? '' : v)}
-            options={[
-              { value: ALL_GROUPS, label: 'All groups' },
-              ...groups.map(g => ({ value: g.id, label: `${g.name} (${g.count})` })),
-            ]}
-            size="sm"
-            className="w-auto max-w-[45%] shrink-0 md:max-w-none md:min-w-[180px]"
-          />
-        )}
+        <div data-testid="portfolio-tools-secondary" className={`${searchOpen ? 'flex' : 'hidden md:flex'} min-w-0 items-center gap-2`}>
         <input
           ref={searchRef}
           id="portfolio-search"
@@ -235,19 +235,19 @@ export function MissionGrid({
           </h2>
           <div className="mt-1">
             {done.rows.map(r => <DoneRow key={r.delivery.id} row={r} now={now} />)}
-            <div className="flex flex-wrap gap-x-4">
+            <div className="flex flex-wrap items-center gap-x-4">
               {done.moreRecent > 0 && (
-                <button type="button" onClick={() => setShowAllRecent(true)} className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0">
+                <button type="button" onClick={() => setShowAllRecent(true)} className="inline-flex mt-1 min-h-11 items-center text-meta text-text-muted hover:text-text-secondary md:min-h-0">
                   Show {done.moreRecent} more
                 </button>
               )}
               {done.older > 0 && (
-                <button type="button" onClick={() => setShowOlder(v => !v)} className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0">
+                <button type="button" onClick={() => setShowOlder(v => !v)} className="inline-flex mt-1 min-h-11 items-center text-meta text-text-muted hover:text-text-secondary md:min-h-0">
                   {showOlder ? 'Hide older' : `Show ${done.older} older`}
                 </button>
               )}
               {loadOlderHref && !(done.older > 0 && !showOlder) && (
-                <Link href={loadOlderHref} className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0">
+                <Link href={loadOlderHref} className="inline-flex mt-1 min-h-11 items-center text-meta text-text-muted hover:text-text-secondary md:min-h-0">
                   Load older completed missions
                 </Link>
               )}
