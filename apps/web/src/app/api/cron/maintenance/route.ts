@@ -29,8 +29,6 @@
  *   8. Relay queue expiry and retention (@buildd/core/model-relay
  *      `sweepRelayJobs`): a runner's claim sweeps too, but an idle team's
  *      rows would otherwise linger past their deadline and retention.
- *   9. Re-embed (lib/knowledge-reembed.ts): namespaces whose embedding model
- *      or size changed, a few bounded batches each.
  *
  * They live here so a deployment that schedules only the `core` cron profile
  * keeps them (cron-manifest.json, `cron:sync --profile core,ops`). On
@@ -55,7 +53,6 @@ import { isStorageConfigured } from '@/lib/storage';
 import { sweepNoCriteriaChange } from '@/lib/specs/auto-approve';
 import { expireOverdueRequests } from '@/lib/capability-hold-store';
 import { sweepRelayJobs } from '@buildd/core/model-relay';
-import { runReembedTick } from '@/lib/knowledge-reembed';
 
 export async function GET(req: NextRequest) {
   return withCronRun('maintenance', req, report => runCronJob(report));
@@ -102,12 +99,9 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
     console.error('[maintenance] relay job sweep failed', err instanceof Error ? err.message : err);
     return { expired: 0, requeued: 0, lost: 0, pruned: 0 };
   });
-  // 10. Namespaces whose embedding model or size changed (same spec, §5.3).
-  //     Never throws; bounded by its own time budget.
-  const reembed = await runReembedTick();
-  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, laneTasksSynced, uploads, chatAttachments, teamFiles, oauthClientsPruned, specsAutoApproved, accessRequestsExpired, relayJobs, reembed };
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, laneTasksSynced, uploads, chatAttachments, teamFiles, oauthClientsPruned, specsAutoApproved, accessRequestsExpired, relayJobs };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
   // Every sweep logs and swallows its own failures, so errors stays 0 here.
-  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned + specsAutoApproved.approved + accessRequestsExpired + relayJobs.expired + relayJobs.requeued + relayJobs.lost + relayJobs.pruned + reembed.processed, errors: reembed.failed, result });
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned + specsAutoApproved.approved + accessRequestsExpired + relayJobs.expired + relayJobs.requeued + relayJobs.lost + relayJobs.pruned, errors: 0, result });
   return NextResponse.json(result);
 }

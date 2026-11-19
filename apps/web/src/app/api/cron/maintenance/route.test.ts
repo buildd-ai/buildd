@@ -61,8 +61,6 @@ const mockAccessExpiry = mock(async (_opts?: unknown) => [{ requestId: 'r1' }] a
 mock.module('@/lib/capability-hold-store', () => ({ expireOverdueRequests: mockAccessExpiry }));
 const mockRelaySweep = mock(async () => { calls.push('relay-sweep'); return { expired: 1, requeued: 0, lost: 0, pruned: 2 }; });
 mock.module('@buildd/core/model-relay', () => ({ sweepRelayJobs: mockRelaySweep }));
-const mockReembed = mock(async () => { calls.push('reembed'); return { namespaces: 1, processed: 16, done: 0, denied: 0, failed: 0 }; });
-mock.module('@/lib/knowledge-reembed', () => ({ runReembedTick: mockReembed }));
 
 const { GET } = await import('./route');
 
@@ -100,7 +98,7 @@ describe('maintenance cron — the core sweeps', () => {
   it('runs stale-worker cleanup, abandoned path-claim release, the ended-task interactive detach, then the guessed-edge strip', async () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
-    expect(calls).toEqual(['stale-workers', 'path-claims', 'interactive-detach', 'guessed-edges', 'lanes', 'relay-sweep', 'reembed']);
+    expect(calls).toEqual(['stale-workers', 'path-claims', 'interactive-detach', 'guessed-edges', 'lanes', 'relay-sweep']);
     expect(mockStaleWorkers.mock.calls[0]![0]).toBeInstanceOf(Date);
   });
 
@@ -115,18 +113,16 @@ describe('maintenance cron — the core sweeps', () => {
     const chatAttachments = { removed: 4, objectsRemoved: 2 };
     const teamFiles = { removed: 5, objectsRemoved: 5 };
     const relayJobs = { expired: 1, requeued: 0, lost: 0, pruned: 2 };
-    const reembed = { namespaces: 1, processed: 16, done: 0, denied: 0, failed: 0 };
-    expect(await res.json()).toEqual({ relayJobs, reembed, heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 }, accessRequestsExpired: 1 });
+    expect(await res.json()).toEqual({ relayJobs, heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 }, accessRequestsExpired: 1 });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 26 + 3 + 16, errors: 0, result: { relayJobs, reembed, heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 }, accessRequestsExpired: 1 } });
+    expect(row).toMatchObject({ ok: true, changed: 26 + 3, errors: 0, result: { relayJobs, heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, laneTasksSynced: 6, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2, specsAutoApproved: { checked: 3, approved: 1, failed: 0 }, accessRequestsExpired: 1 } });
   });
 
-  it('a failing relay sweep is logged and reads as nothing swept; the re-embed tick still runs', async () => {
+  it('a failing relay sweep is logged and reads as nothing swept', async () => {
     mockRelaySweep.mockRejectedValueOnce(new Error('boom'));
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
     expect((await res.json()).relayJobs).toEqual({ expired: 0, requeued: 0, lost: 0, pruned: 0 });
-    expect(calls).toContain('reembed');
   });
 
   it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {
