@@ -331,7 +331,8 @@ export async function awaitRelayJob(id: string, opts: AwaitRelayJobOptions, exec
       const job = await getRelayJob(id, exec);
       if (!job) return { ok: false, code: 'runner_offline', message: 'relay job not found' };
       if (opts.onPartialText && job.kind === 'chat') {
-        const partial = (job.result as { partialText?: string } | null)?.partialText ?? '';
+        const rawPartial = (job.result as { partialText?: unknown } | null)?.partialText;
+        const partial = typeof rawPartial === 'string' ? rawPartial : '';
         if (partial.length > seenPartial.length && partial.startsWith(seenPartial)) {
           opts.onPartialText(partial.slice(seenPartial.length));
           seenPartial = partial;
