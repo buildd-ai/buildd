@@ -11,6 +11,8 @@ export {
 } from './cards';
 export type { TaskCardInput, SessionCardInput, PrCardInput, ArtifactCardInput, PlanCardInput } from './cards';
 export { PgVectorStore, buildNamespace, reciprocalRankFusion } from './pg-vector-store';
+export { resolveNamespaceSpace, readNamespaceSpace, listNamespacesToReembed, markReembed, resetNamespaceSpaceCache } from './namespace-space';
+export type { NamespaceSpace, SpaceEmbedder, SpaceResolution } from './namespace-space';
 export { VoyageEmbedder, getVoyageEmbedder } from './voyage-embedder';
 export { VoyageReranker, getVoyageReranker, applyRerank, clearsScoreFloor } from './reranker';
 export { getVoyageGuard, getWorkspaceVoyageBudget } from './voyage-guard';

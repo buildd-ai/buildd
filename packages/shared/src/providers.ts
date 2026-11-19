@@ -115,7 +115,8 @@ export interface ListProvidersResponse {
  * PATCH body: `{ teamId?, provider: 'voyage'|'openrouter'|'openai'|'litellm'|null, model? }`.
  */
 export interface ProviderEmbeddingResponse {
-  provider: 'voyage' | 'openrouter' | 'openai' | 'litellm' | null;
+  /** `local_runner`: the team's own runner's Ollama through the relay (no credential). */
+  provider: 'voyage' | 'openrouter' | 'openai' | 'litellm' | 'local_runner' | null;
   model: string | null;
 }
 

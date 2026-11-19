@@ -39,3 +39,5 @@ export * from './uuid';
 export * from './percentile';
 export * from './pg-errors';
 export * from './canonical-json';
+export * from './local-runner';
+export * from './model-relay';

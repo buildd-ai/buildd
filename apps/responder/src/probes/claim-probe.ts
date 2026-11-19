@@ -109,6 +109,20 @@ export function classifyClaimResponse(status: number): ClaimHealthVerdict {
 /**
  * Take one sample. Never throws: a transport failure is data, and a responder
  * that dies because the thing it watches is unreachable is useless.
+ *
+ * ── Stale sockets are the probe's fault, not the platform's ─────────────────
+ * Bun's fetch pools keep-alive sockets. Across a 60-second probe interval the
+ * far end has often closed the pooled socket already, and reusing it fails in
+ * a few milliseconds with "The socket connection was closed unexpectedly" —
+ * the request never reaches the server. That paged as `claim-error-rate`
+ * "unreachable" every day while the route was serving normally (failures ran
+ * an order of magnitude *faster* than healthy samples, which is the tell).
+ *
+ * So every attempt opts out of reuse (`keepalive: false`), and a transport
+ * failure gets exactly one retry. A response is never retried — a 5xx is the
+ * signal and is recorded as-is — and a real outage still reads as unreachable
+ * because it fails both attempts. A sample that needed the retry carries the
+ * first error in `retriedAfter`, so the evidence log still shows it happened.
  */
 export async function sampleClaimEndpoint(
   appUrl: string,
@@ -121,18 +135,31 @@ export async function sampleClaimEndpoint(
   const startedAt = clock();
   const at = new Date(startedAt).toISOString();
 
-  try {
-    const res = await doFetch(req.url, {
+  const attempt = () =>
+    doFetch(req.url, {
       method: req.method,
       headers: req.headers,
       body: req.body,
+      keepalive: false,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     });
+  const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+  let retriedAfter: string | undefined;
+  try {
+    let res: Response;
+    try {
+      res = await attempt();
+    } catch (first) {
+      retriedAfter = message(first);
+      res = await attempt();
+    }
     return {
       at,
       status: res.status,
       latencyMs: clock() - startedAt,
       transport: 'responded',
+      ...(retriedAfter !== undefined ? { retriedAfter } : {}),
     };
   } catch (err) {
     return {
@@ -140,7 +167,7 @@ export async function sampleClaimEndpoint(
       status: null,
       latencyMs: clock() - startedAt,
       transport: 'unreachable',
-      transportError: err instanceof Error ? err.message : String(err),
+      transportError: message(err),
     };
   }
 }
