@@ -246,6 +246,67 @@ describe('stuck lane (I-7)', () => {
   });
 });
 
+describe('abandoned holder: a failed or cancelled task whose open PR went quiet (I-7 bounded escape)', () => {
+  /** A claims the lane, opens a PR, then its task fails with the PR left open; the PR has been quiet `quietHours`. */
+  async function failedHolderWithQuietPr(w: W, prNumber: number, quietHours: number, status: 'failed' | 'cancelled' = 'failed') {
+    const a = await laneTask(w, 30);
+    const b = await laneTask(w, 20);
+    expect(claimedIds(await claim(w))).toEqual([a]);
+    await openPr(w, a, prNumber);
+    // The task ends failed; its worker stays `completed` with the PR still open (nobody closed it).
+    await q(sql`UPDATE tasks SET status = ${status} WHERE id = ${a}::uuid`);
+    await syncLanes({ workspaceIds: [w.workspaceId], now: new Date() });
+    await q(sql`UPDATE serial_lane_entries
+      SET held_at = now() - make_interval(hours => ${quietHours + 5}), activity_at = now() - make_interval(hours => ${quietHours})
+      WHERE task_id = ${a}::uuid`);
+    return { a, b };
+  }
+
+  test('regression: a failed holder with an open PR quiet for 24h+ no longer holds the lane; the task behind it claims', async () => {
+    const w = await world();
+    const { a, b } = await failedHolderWithQuietPr(w, 601, 30);
+    expect(claimedIds(await claim(w))).toEqual([b]);
+    const [row] = await q<{ left_reason: string; held_at: string | null; left_at: string | null }>(sql`
+      SELECT left_reason, held_at, left_at FROM serial_lane_entries WHERE task_id = ${a}::uuid`);
+    expect(row.left_reason).toBe('abandoned');
+    expect(row.held_at).toBeNull();
+    expect(row.left_at).not.toBeNull();
+  });
+
+  test('a cancelled holder with a quiet open PR is let go the same way', async () => {
+    const w = await world();
+    const { b } = await failedHolderWithQuietPr(w, 602, 30, 'cancelled');
+    expect(claimedIds(await claim(w))).toEqual([b]);
+  });
+
+  test('a failed holder whose PR moved within 24h still holds', async () => {
+    const w = await world();
+    const { a, b } = await failedHolderWithQuietPr(w, 603, 2);
+    const rb = await claim(w, { taskId: b });
+    expect(claimedIds(rb)).toEqual([]);
+    expect(rb.diagnostics?.taskExclusion?.detail).toContain(a.slice(0, 8));
+  });
+
+  test('a failed holder whose PR has a repair attempt open still holds', async () => {
+    const w = await world();
+    const { a, b } = await failedHolderWithQuietPr(w, 604, 30);
+    const repair = await seedTask(w.workspaceId, { pathManifest: SCHEMA });
+    await q(sql`UPDATE tasks SET task_class = 'attempt', conflict_retry_pr_number = 604, start_at = now() + interval '1 day' WHERE id = ${repair}::uuid`);
+    const rb = await claim(w, { taskId: b });
+    expect(claimedIds(rb)).toEqual([]);
+    expect(rb.diagnostics?.taskExclusion?.detail).toContain(a.slice(0, 8));
+  });
+
+  test('a completed holder (PR in delivery) quiet for 24h still holds: only a person releases it', async () => {
+    const w = await world();
+    const { a, b } = await failedHolderWithQuietPr(w, 605, 30);
+    await q(sql`UPDATE tasks SET status = 'completed' WHERE id = ${a}::uuid`);
+    const rb = await claim(w, { taskId: b });
+    expect(claimedIds(rb)).toEqual([]);
+    expect(rb.diagnostics?.taskExclusion?.detail).toContain(a.slice(0, 8));
+  });
+});
+
 describe('the sweep (maintenance cron)', () => {
   test('in-flight lane work from before lanes is recorded as the holder; waiting work is placed; merged work leaves', async () => {
     const w = await world();
