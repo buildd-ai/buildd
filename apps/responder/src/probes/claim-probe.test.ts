@@ -8,6 +8,7 @@ import {
   REJECTION_GUARD_MARKER,
   CLAIM_COMMIT_MARKER,
   CLAIM_ROUTE_PATH,
+  sampleClaimEndpoint,
 } from './claim-probe';
 
 /**
@@ -108,5 +109,59 @@ describe('classifyClaimResponse', () => {
     const verdict = classifyClaimResponse(200);
     expect(verdict.healthy).toBe(false);
     expect(verdict.reason).toBe('probe_accepted');
+  });
+});
+
+describe('sampleClaimEndpoint transport', () => {
+  // Bun's fetch reuses a pooled keep-alive socket across the 60 s probe
+  // interval; when the far end has already closed it, the request dies in a
+  // few ms with "The socket connection was closed unexpectedly" without ever
+  // reaching the server. That paged as claim-endpoint "unreachable" daily.
+  const STALE =
+    'The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()';
+
+  function stubFetch(outcomes: Array<number | Error>) {
+    const calls: RequestInit[] = [];
+    const impl = (async (_url: string, init: RequestInit) => {
+      calls.push(init);
+      const next = outcomes.shift();
+      if (next === undefined) throw new Error('unexpected extra fetch');
+      if (next instanceof Error) throw next;
+      return new Response(null, { status: next });
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+  }
+
+  test('a transport failure is retried once on a fresh connection and the response is recorded', async () => {
+    const { impl, calls } = stubFetch([new Error(STALE), 400]);
+    const s = await sampleClaimEndpoint('https://app.example.test', 'bld_illustrative', { fetchImpl: impl });
+    expect(calls.length).toBe(2);
+    expect(s.transport).toBe('responded');
+    expect(s.status).toBe(400);
+    expect(s.retriedAfter).toBe(STALE);
+  });
+
+  test('a real outage still reads as unreachable: both attempts fail', async () => {
+    const { impl, calls } = stubFetch([new Error(STALE), new Error('ECONNREFUSED')]);
+    const s = await sampleClaimEndpoint('https://app.example.test', 'bld_illustrative', { fetchImpl: impl });
+    expect(calls.length).toBe(2);
+    expect(s.transport).toBe('unreachable');
+    expect(s.status).toBeNull();
+    expect(s.transportError).toBe('ECONNREFUSED');
+  });
+
+  test('a response is never retried, so a 5xx is recorded as-is', async () => {
+    const { impl, calls } = stubFetch([503]);
+    const s = await sampleClaimEndpoint('https://app.example.test', 'bld_illustrative', { fetchImpl: impl });
+    expect(calls.length).toBe(1);
+    expect(s.status).toBe(503);
+    expect(s.retriedAfter).toBeUndefined();
+  });
+
+  test('every attempt opts out of connection reuse', async () => {
+    const { impl, calls } = stubFetch([new Error(STALE), 400]);
+    await sampleClaimEndpoint('https://app.example.test', 'bld_illustrative', { fetchImpl: impl });
+    expect(calls.length).toBe(2);
+    for (const init of calls) expect(init.keepalive).toBe(false);
   });
 });
