@@ -120,6 +120,29 @@ export interface ProviderEmbeddingResponse {
   model: string | null;
 }
 
+/**
+ * `GET|PATCH /api/providers/local-runner`: which of the team's runners serves
+ * the `local_runner` provider, and with which models. No credential exists.
+ * PATCH body: `{ teamId?, runnerId, chatModel?: string|null, embedModel?: string|null }`.
+ * `runnerId` is required (a pick without a runner is refused). An omitted
+ * model is left as stored. `embedModel`
+ * sets the team's embedding pick to `local_runner` with that model, or, when
+ * null, puts embeddings back on the default if they were on the runner.
+ */
+export interface ProviderLocalRunnerResponse {
+  runnerId: string | null;
+  chatModel: string | null;
+  /** The embedding model, when the team embeds on its runner. */
+  embedModel: string | null;
+  /** The pinned runner as last reported. Null: no pick, or the runner is gone. */
+  runner: {
+    online: boolean;
+    models: Array<{ name: string; capabilities: string[]; dimensions: number | null }>;
+  } | null;
+  /** PATCH only: namespaces a model or size change queued for re-embedding. Until done, their rows are found by text only. */
+  reembedQueued?: number;
+}
+
 /** `GET|PATCH /api/providers/assignments`: the team's pick per surface; a missing surface = the resolver's own ranking. */
 export interface ProviderAssignmentsResponse {
   assignments: Partial<Record<'chat' | 'agent-claude' | 'agent-codex' | 'cloud-egress', string>>;

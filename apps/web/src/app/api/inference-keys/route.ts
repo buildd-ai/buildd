@@ -59,7 +59,8 @@ async function resolveCaller(
 async function resolveChatUses(teamId: string, userId: string): Promise<ChatUses | null> {
   try {
     const m = await resolveChatModel({ tier: 'standard', teamId, workspaceId: null, userId });
-    if (!m.ok) return null;
+    // Chat on the team's own runner uses no key at all, so there is none to report here.
+    if (!m.ok || m.provider === 'local_runner' || m.via === 'local_runner') return null;
     return { provider: m.provider, scope: m.keyScope, ...(m.via ? { via: m.via } : {}) };
   } catch (error) {
     console.warn('[inference-keys] chat route lookup failed:', error);

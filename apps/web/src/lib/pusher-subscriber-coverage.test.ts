@@ -42,6 +42,11 @@ const RUNNER_CONSUMED_EVENTS: Record<string, string> = {
 };
 
 const SERVER_ONLY_EVENTS: Record<string, string> = {
+  // Published on the runner channel, never to a dashboard. The runner's relay
+  // poller binds it in its own change (docs/specs/local-runner-provider.md
+  // §4.4); move this to RUNNER_CONSUMED_EVENTS with that bind. Until then a
+  // runner claims on its poll, which the relay is correct without.
+  'relay:job_queued': 'nudges the pinned runner to claim a relay job now; ids only, the poll is the fallback',
   // Commands travel server → runner over the worker channel; the dashboard is
   // not a party to them.
   'worker:command': 'runner control plane, not a UI signal',
