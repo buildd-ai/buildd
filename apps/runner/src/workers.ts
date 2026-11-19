@@ -140,6 +140,7 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath, resolveClaudeCliVersion } from './sdk-binary-path';
 import { ModelProbePoller, createModelProbeHttpApi, sdkProbe } from './model-probe';
+import { createRelayPoller, type RelayPoller } from './relay-poller';
 import { BudgetWallProber, describeBudgetProbeRun, type BudgetProbeTrigger } from './budget-wall-probe';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
@@ -877,6 +878,8 @@ export class WorkerManager {
   // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
   private scoutHostPoller: ScoutHostPoller;
   private modelProbePoller: ModelProbePoller;
+  /** Serves the team's embeddings and chat from this machine's local model server when the team pins this runner (relay-poller.ts). No worker slot. */
+  private relayPoller: RelayPoller;
   /** Probes a held provider wall on an interval, on `buildd budget reset` and on a server request (budget-wall-probe.ts). */
   private budgetWallProber: BudgetWallProber;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
@@ -919,6 +922,7 @@ export class WorkerManager {
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
       recover: (workerId, mode) => this.recover(workerId, mode),
       sendHeartbeat: () => this.sendHeartbeat(),
+      relayNudge: (data) => this.relayPoller?.nudge(data),
       claimPendingTasks: () => this.claimPendingTasks(),
       claimAndStart: (task, opts) => this.claimAndStart(task, opts),
       getProbedWorkers: () => this.probedWorkers,
@@ -1069,6 +1073,18 @@ export class WorkerManager {
       enabled: process.env.BUILDD_MODEL_PROBE !== '0',
     });
 
+    // Local model relay (docs/specs/local-runner-provider.md §6): advertise what
+    // the loopback model server serves and, when the team pins this runner,
+    // claim its embed and chat jobs. BUILDD_LOCAL_MODEL_RELAY=0 opts out; a
+    // one-task or serverless runner never hosts.
+    this.relayPoller = createRelayPoller({
+      builddServer: config.builddServer,
+      apiKey: config.apiKey,
+      held: () => claimsHeldByPerson(),
+      enabled: !config.serverless && !config.singleTask,
+      onAdvertChanged: () => { void this.sendHeartbeat(); },
+    });
+
     this.budgetWallProber = new BudgetWallProber({
       probe: () => sdkProbe(process.env.BUILDD_BUDGET_PROBE_MODEL || 'haiku'),
       report: (r) => this.buildd.reportBudgetWall({
@@ -1086,6 +1102,8 @@ export class WorkerManager {
     if (!config.serverless) {
       // Startup hits (one-time, before the aligned loop kicks in).
       this.sendHeartbeat();
+      // Probes the local model server; a change in what it serves sends its own beat.
+      this.relayPoller.start();
       void this.advertiseAfterFirstScan();
       this.reconcileLocalWorkers().catch(err => {
         console.warn('[Reconcile] Startup reconciliation failed:', err instanceof Error ? err.message : err);
@@ -1504,6 +1522,11 @@ export class WorkerManager {
     this.modelProbePoller.poll().catch(() => {});
   }
 
+  /** What `buildd doctor` says about the local model server: the last advert and whether this runner is the relay host. */
+  localModelsStatus(): { enabled: boolean; advert: import('@buildd/shared').LocalModelsAdvert | null; host: boolean } {
+    return { enabled: this.relayPoller.isEnabled(), advert: this.relayPoller.advert(), host: this.relayPoller.isHost() };
+  }
+
   /** `buildd budget reset`: probe the held wall now. Resolves the line to print. */
   async probeBudgetWall(trigger: BudgetProbeTrigger = 'cli'): Promise<string> {
     return describeBudgetProbeRun(await this.budgetWallProber.probeNow(trigger));
@@ -1538,12 +1561,20 @@ export class WorkerManager {
       const slots = this.config.singleTask ? undefined : this.config.maxConcurrent;
       const slotsChangedAt = this.config.singleTask ? undefined : this.config.slotsChangedAt;
       const holdChangedAt = this.config.singleTask ? undefined : getRunnerHold()?.changeMeta()?.changedAt;
+      // What the local model server serves and the relay's last hour; null when there is none or it is opted out.
+      const localModels = this.relayPoller.advert();
+      // A change in the models or in the relay's counts is a change worth a beat; the probe time and the percentiles are not.
+      const localModelsMark = localModels
+        ? [localModels.server.kind, localModels.server.version, localModels.server.reachable, localModels.models, localModels.relayStats?.jobs, localModels.relayStats?.errors, localModels.relayStats?.lastErrorCode]
+        : null;
       // What the server stores from a beat. The claim handoff is left out: the server leaves it out of its own fingerprint.
-      fingerprint = JSON.stringify([activeCount, activeWorkerIds, environment, redactions, sandboxEnabled, probeAt, runnerCommit, RUNNER_VERSION, updateSnapshot, modelAuth, slots, slotsChangedAt, holdChangedAt]);
+      fingerprint = JSON.stringify([activeCount, activeWorkerIds, environment, redactions, sandboxEnabled, probeAt, runnerCommit, RUNNER_VERSION, updateSnapshot, modelAuth, slots, slotsChangedAt, holdChangedAt, localModelsMark]);
       if (opts.onlyIfDue && !this.heartbeatDue(fingerprint, activeWorkerIds.length, Date.now())) return;
       this.lastBeatFingerprint = fingerprint;
       this.nextFallbackBeatAt = Date.now() + fallbackPingDelayMs();
-      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots, desiredPause } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, environment, redactions, sandboxEnabled, probeAt, activeWorkerIds, runnerCommit, RUNNER_VERSION, updateSnapshot, this.handoff().snapshot(), modelAuth, slots, slotsChangedAt, holdChangedAt);
+      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots, desiredPause, heartbeatId, relay } = (await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, environment, redactions, sandboxEnabled, probeAt, activeWorkerIds, runnerCommit, RUNNER_VERSION, updateSnapshot, this.handoff().snapshot(), modelAuth, slots, slotsChangedAt, holdChangedAt, localModels)) ?? {};
+      // Whether the team pins this runner as its relay host; starts or stops the relay poll.
+      this.relayPoller.noteHeartbeat({ heartbeatId, relay });
       // A slot change made on buildd.dev, newer than this runner's own (spec 34a48877 R-20).
       if (!this.config.singleTask) this.applyServerSlots(desiredSlots);
       if (!this.config.singleTask) this.applyServerHold(desiredPause);
@@ -8255,6 +8286,7 @@ export class WorkerManager {
     if (this.livenessInterval) {
       clearInterval(this.livenessInterval);
     }
+    this.relayPoller?.stop();
     if (this.evictionInterval) {
       clearInterval(this.evictionInterval);
     }
