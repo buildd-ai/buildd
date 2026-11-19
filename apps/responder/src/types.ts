@@ -72,6 +72,11 @@ export interface ClaimSample {
   transport: 'responded' | 'unreachable';
   /** Why the sample was recorded as unreachable. Never a response body. */
   transportError?: string;
+  /**
+   * Set when the first attempt failed at the transport layer and the retry
+   * got a response. Kept as evidence; does not count as a failure.
+   */
+  retriedAfter?: string;
 }
 
 /**
