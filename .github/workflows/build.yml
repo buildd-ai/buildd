@@ -72,7 +72,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Cache bun install cache
         uses: actions/cache@v6
@@ -274,7 +274,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       # The dependency handover fixture exercises a real frozen pnpm install.
       - name: Setup Node for pnpm
@@ -347,7 +347,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Cache bun install cache
         uses: actions/cache@v6
@@ -460,7 +460,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Install dependencies
         run: bun install
@@ -602,7 +602,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Cache bun install cache
         uses: actions/cache@v6
@@ -667,7 +667,7 @@ jobs:
         if: steps.gate.outputs.applies == 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Install dependencies
         if: steps.gate.outputs.applies == 'true'
@@ -792,7 +792,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: steps.dedupe.outputs.redundant != 'true'
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
       - name: Decide whether DB tests are needed
         id: decide
         env:
@@ -902,7 +902,7 @@ jobs:
           git fetch --no-tags --depth=1 origin +refs/tags/v0.327.1:refs/tags/v0.327.1
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
       - run: bun install
       # The app's unchanged neon-http driver talks to scripts/ci/neon-sql-shim.ts:
       # the same /sql wire protocol as the local neon-http proxy it replaced,
