@@ -184,12 +184,12 @@ describe('MissionGrid portfolio', () => {
     expect(second).not.toMatch(/\bflex-col\b/);
   });
 
-  it('the group selector sits on the second row with search when missions have groups', () => {
+  it('the group selector sits on the tabs row, not its own row, when missions have groups', () => {
     const grouped = open.map((r, i) => ({ ...r, groupId: i % 2 ? 'g1' : 'g2', groupName: i % 2 ? 'Mobile' : 'Billing' }));
     const out = renderToStaticMarkup(<MissionGrid rows={grouped} slots={{ live: 1, max: 4 }} now={NOW} />);
-    const second = out.match(/<div[^>]*data-testid="portfolio-tools-secondary"[\s\S]*$/)![0];
-    expect(second).toContain('data-testid="portfolio-group"');
-    expect(second).toContain('data-testid="portfolio-search"');
+    const idx = out.indexOf('data-testid="portfolio-tools-secondary"');
+    expect(out.indexOf('data-testid="portfolio-group"')).toBeLessThan(idx);
+    expect(out.indexOf('data-testid="portfolio-group"')).toBeGreaterThan(out.indexOf('data-testid="portfolio-tools-primary"'));
   });
 
   it('hides the group selector when there is only one group to choose', () => {
