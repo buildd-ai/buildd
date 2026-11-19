@@ -271,6 +271,7 @@ const UNAVAILABLE_MESSAGES: Record<ChatUnavailableReason, string> = {
   no_key: 'No provider key is connected for chat.',
   budget_exhausted: 'The chat budget is used up for now.',
   rate_limited: 'Too many chat turns in the last few minutes. Try again shortly.',
+  local_runner_unavailable: 'Your local runner is offline or is not serving this model.',
 };
 
 /** A JSON refusal with the contract's `ChatUnavailableBody`. */

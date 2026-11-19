@@ -231,3 +231,38 @@ describe('PgVectorStore.reembedNamespace (D-3, D-6)', () => {
     expect(executed.some(t => t.includes('UPDATE knowledge_chunks'))).toBe(false);
   });
 });
+
+// The trigger for a team-wide model or size change (spec §5.3 D-3): every
+// namespace of the team in another space moves and is queued, in one guarded
+// statement; a namespace already in the space is not re-queued.
+describe('requestReembedForTeam', () => {
+  const TEAM = '11111111-1111-4111-8111-111111111111';
+
+  it('moves every namespace of the team that is in another space and marks it pending', async () => {
+    const { requestReembedForTeam } = await import('../knowledge-store/namespace-space');
+    const seen: string[] = [];
+    const exec = async (q: unknown) => {
+      seen.push(flatten(q));
+      return { rows: [{ namespace: 'ws-1:code' }, { namespace: 'ws-1:memory' }] };
+    };
+    const queued = await requestReembedForTeam(TEAM, { provider: 'local_runner', model: 'nomic-embed-text', dimensions: 768 }, exec as any);
+    expect(queued).toEqual(['ws-1:code', 'ws-1:memory']);
+    expect(seen).toHaveLength(1);
+    const text = seen[0]!;
+    expect(text).toContain('UPDATE knowledge_namespaces');
+    expect(text).toContain(`n.team_id = "${TEAM}"::uuid`);
+    expect(text).toContain("reembed_status = 'pending'");
+    expect(text).toContain('vector_column = "embedding_768"');
+    // The guard: only rows whose model or size differs are touched.
+    expect(text).toContain('(n.embedding_model <> "nomic-embed-text" OR n.dimensions <> 768::int)');
+    expect(text).toContain('reembed_done = 0');
+  });
+
+  it('a size with no column queues nothing and runs no statement', async () => {
+    const { requestReembedForTeam } = await import('../knowledge-store/namespace-space');
+    let ran = 0;
+    const queued = await requestReembedForTeam(TEAM, { model: 'all-minilm', dimensions: 384 }, (async () => { ran++; return { rows: [] }; }) as any);
+    expect(queued).toEqual([]);
+    expect(ran).toBe(0);
+  });
+});

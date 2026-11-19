@@ -15,6 +15,8 @@ import {
   reconcileDesiredSlots,
   reconcileDesiredPause,
   reportedRunnerPause,
+  parseLocalModelsAdvert,
+  RELAY_DEFAULTS,
   type DesiredSlots,
   type DesiredPause,
 } from '@buildd/shared';
@@ -131,7 +133,17 @@ export async function POST(req: NextRequest) {
       slotsChangedAt: rawSlotsChangedAt = undefined,
       /** Epoch ms of the runner's own last hold or resume (config.json `holdChangedAt`); Pause follows the slots' rule. */
       holdChangedAt: rawHoldChangedAt = undefined,
+      /**
+       * What the runner's local model server serves (docs/specs/local-runner-provider.md
+       * §6.2): models, capabilities, sizes and its last hour of relay figures.
+       * Parsed strictly: unknown fields, and anything shaped like a URL or a
+       * token, are dropped, so this never becomes a way to reach the runner.
+       * Absent from older runners and from one that opted out; the stored
+       * advert is then left as it was.
+       */
+      localModels: rawLocalModels = undefined,
     } = body;
+    const localModels = rawLocalModels === undefined ? null : parseLocalModelsAdvert(rawLocalModels);
     const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
     const codexAuthSource = isRunnerCodexAuthSource(rawCodexAuthSource) ? rawCodexAuthSource : null;
     // Presence of the bundle is keyed on one field rather than requiring all
@@ -233,8 +245,12 @@ export async function POST(req: NextRequest) {
       // or a garbled beat keeps the last good value — runnerVersion's rule.
       ...(modelAuthSource !== null ? { modelAuthSource } : {}),
       ...(codexAuthSource !== null ? { codexAuthSource } : {}),
+      ...(localModels !== null ? { localModels } : {}),
     };
     const fp = JSON.stringify(changes);
+    // When the advert was last reported. Kept out of the fingerprint above: a
+    // timestamp there would make every beat a database write.
+    const advertStamp = localModels !== null ? { localModelsAt: now } : {};
     const due = await liveness.beat('runner', beatId, now, RUNNER_BEAT_TTL_MS);
     const writeDb = due || !cached || cached.fp !== fp || heldIds.some(id => !cached.leaseIds.includes(id));
 
@@ -266,11 +282,13 @@ export async function POST(req: NextRequest) {
             trackedBranch: (trackedBranch ?? null) as string | null,
             modelAuthSource,
             codexAuthSource,
+            ...(localModels !== null ? { localModels } : {}),
+            ...advertStamp,
             lastHeartbeatAt: now,
           })
           .onConflictDoUpdate({
             target: [workerHeartbeats.accountId, workerHeartbeats.localUiUrl],
-            set: { ...changes, lastHeartbeatAt: now, updatedAt: now },
+            set: { ...changes, ...advertStamp, lastHeartbeatAt: now, updatedAt: now },
           });
       } catch (err) {
         await liveness.writeFailed('runner', beatId);
@@ -472,7 +490,27 @@ export async function POST(req: NextRequest) {
       // Best effort: a missed nudge is picked up by the runner's own interval.
     }
 
-    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, workersUnvouched, budgetProbeRequestedAt, desiredSlots, desiredPause });
+    // A runner that advertises local models learns its own heartbeat id (the
+    // `runnerId` of every relay call) and whether its team pins it as the
+    // relay host (docs/specs/local-runner-provider.md §2.3, §6.3). One read,
+    // only for such a runner; `host: false` stops its relay poller.
+    let heartbeatId: string | undefined;
+    let relay: { host: boolean; pollAfterMs: number } | undefined;
+    if (localModels !== null && !account.taskScope && !fleet.ephemeral) {
+      try {
+        const { relayHostForRunner } = await import('@buildd/core/model-relay');
+        const found = await relayHostForRunner(account.id, String(localUiUrl));
+        if (found) {
+          heartbeatId = found.heartbeatId;
+          relay = { host: found.host, pollAfterMs: found.host ? RELAY_DEFAULTS.pollAfterMs : 0 };
+        }
+      } catch (err) {
+        // Best effort: the runner keeps what the last beat told it.
+        console.error('[heartbeat] relay host lookup failed:', err);
+      }
+    }
+
+    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, workersUnvouched, budgetProbeRequestedAt, desiredSlots, desiredPause, heartbeatId, relay });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to process heartbeat' }, { status: 500 });

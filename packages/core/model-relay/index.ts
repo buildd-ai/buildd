@@ -25,3 +25,22 @@ export type {
   SweepRelayJobsOptions,
   SweepRelayJobsResult,
 } from './jobs';
+export {
+  advertisedModel,
+  findTeamRunner,
+  loadLocalRunnerPick,
+  pickUsesRelay,
+  relayAvailability,
+  relayHostForRunner,
+  runRelayJob,
+  setRelayNudge,
+} from './runner';
+export type {
+  LocalRunnerPick,
+  RelayAvailability,
+  RelayNudge,
+  RelayRunner,
+  RunRelayJobDeps,
+  RunRelayJobInput,
+  RunRelayJobOutcome,
+} from './runner';

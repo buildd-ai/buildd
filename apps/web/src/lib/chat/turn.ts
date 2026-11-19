@@ -199,6 +199,7 @@ export function unavailable(reason: ChatUnavailableReason, status: number, extra
     no_key: 'No provider key is connected for chat. An admin can add a team key, or you can use your own.',
     budget_exhausted: 'Today\'s chat budget is used up. It resets at midnight in the team\'s timezone, and a team owner or admin can raise it. The mission form still works.',
     rate_limited: 'Too many chat turns in the last few minutes. Try again shortly.',
+    local_runner_unavailable: 'Your local runner is offline or is not serving this model. Start the runner, or pick another provider in Settings › Providers.',
   };
   return Response.json({ error: reason, message: message[reason], ...extra }, { status });
 }
@@ -463,11 +464,17 @@ export async function runChatTurn(args: {
   }
   const loadCatalog = deps.catalog ?? (() => getCachedOpenRouterCatalog().catch(() => []));
   let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
+  // Chat on the team's own runner is exclusive: an offline runner refuses the
+  // turn. No other tier, key or provider is tried (spec local-runner-provider §7.2).
+  if (!model.ok && model.reason === 'local_runner_unavailable') {
+    return unavailable('local_runner_unavailable', 503, { runnerId: model.runnerId, reason: model.detail, code: model.code });
+  }
   if (!model.ok && route.tier !== FALLBACK_TIER && tierWithin(FALLBACK_TIER, ceiling.max)) {
     model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
   }
   if (!model.ok) return unavailable('no_key', 409, { provider: model.provider });
-  if (ceiling.max) {
+  // A local model costs nothing, so the price ceiling has nothing to check.
+  if (ceiling.max && model.via !== 'local_runner') {
     // By what the served model costs, not its tier label: a pool arm or a
     // registry row priced above the ceiling falls back to the incumbent, and
     // a team mapping that itself crosses the ceiling is refused.
@@ -727,7 +734,7 @@ export async function runChatTurn(args: {
           usage = {
             inputTokens: u?.inputTokens ?? 0,
             outputTokens: u?.outputTokens ?? 0,
-            costUsd: turnCostUsd(resolved.modelId, u, meta, stepResults),
+            costUsd: resolved.via === 'local_runner' ? 0 : turnCostUsd(resolved.modelId, u, meta, stepResults),
             latencyMs: Date.now() - startedAt,
           };
         } catch { /* aborted streams may have no usage */ }

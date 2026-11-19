@@ -163,3 +163,65 @@ describe('resolveChatModel — tier pool step', () => {
     expect(r.ok && r.modelId).toBe('claude-sonnet-5');
   });
 });
+
+// docs/specs/local-runner-provider.md §7.2: a chat assignment to the team's own
+// runner is exclusive. It is served through the relay or refused; the tier
+// registry, every stored key and the gateway are never consulted.
+describe('resolveChatModel — chat assigned to the local runner', () => {
+  const RUNNER = '22222222-2222-4222-8222-222222222222';
+  const NOW = Date.parse('2026-11-14T12:00:00.000Z');
+  const base = { tier: 'premium' as const, teamId: 't', workspaceId: null, userId: 'u' };
+  const paid = () => {
+    const calls: string[] = [];
+    return {
+      calls,
+      deps: {
+        resolveTierEntry: (async () => { calls.push('tier'); return { provider: 'anthropic', model: 'claude-sonnet-5', source: 'default' }; }) as never,
+        resolveInferenceCredential: (async () => { calls.push('credential'); return { key: 'sk-paid', scope: 'team' as const }; }) as never,
+        resolveLiteLLMGateway: (async () => { calls.push('gateway'); return null; }) as never,
+        drawChatPoolArm: (async () => { calls.push('pool'); return null; }) as never,
+        now: () => NOW,
+      },
+    };
+  };
+  const pick = (over: Record<string, unknown> = {}) => ({
+    teamId: 't', runnerId: RUNNER, chatModel: 'llama3.1:8b', embeddingModel: null, chatAssigned: true,
+    runner: {
+      id: RUNNER, accountId: 'acc', lastHeartbeatAt: new Date(NOW - 10_000), presenceConnected: true,
+      localModels: { server: { kind: 'ollama', version: null, reachable: true, checkedAt: null }, models: [{ name: 'llama3.1:8b', family: null, parameterSize: null, capabilities: ['completion'], dimensions: null, contextLength: null }] },
+    },
+    ...over,
+  }) as never;
+  const pool = { conversationId: 'c', drawKey: 'c#0', previous: null, now: new Date(NOW) };
+
+  it('runner online: the local model, on no key, with the pool and every paid lookup skipped', async () => {
+    const p = paid();
+    const r = await resolveChatModel({ ...base, pool }, { ...p.deps, loadLocalRunnerPick: async () => pick() });
+    expect(r).toMatchObject({ ok: true, provider: 'local_runner', via: 'local_runner', modelId: 'llama3.1:8b', tier: 'premium' });
+    expect(p.calls).toEqual([]);
+  });
+
+  it('AC-26: runner offline is local_runner_unavailable with the runner id, and no key is resolved even though one exists', async () => {
+    const p = paid();
+    const offline = pick({ runner: { id: RUNNER, accountId: 'acc', lastHeartbeatAt: new Date(NOW - 10_000), presenceConnected: false, localModels: null } });
+    const r = await resolveChatModel(base, { ...p.deps, loadLocalRunnerPick: async () => offline });
+    expect(r).toMatchObject({ ok: false, reason: 'local_runner_unavailable', provider: 'local_runner', runnerId: RUNNER, code: 'runner_offline' });
+    expect(p.calls).toEqual([]);
+  });
+
+  it('a runner that does not serve the chat model, and an assignment with no chat model, are refused the same way', async () => {
+    const p = paid();
+    const other = await resolveChatModel(base, { ...p.deps, loadLocalRunnerPick: async () => pick({ chatModel: 'qwen3:14b' }) });
+    expect(other).toMatchObject({ ok: false, reason: 'local_runner_unavailable', code: 'model_missing' });
+    const none = await resolveChatModel(base, { ...p.deps, loadLocalRunnerPick: async () => pick({ chatModel: null }) });
+    expect(none).toMatchObject({ ok: false, reason: 'local_runner_unavailable', code: 'model_missing' });
+    expect(p.calls).toEqual([]);
+  });
+
+  it('AC-28: chat not assigned to the local runner resolves as before, whatever the embedding pick is', async () => {
+    const p = paid();
+    const r = await resolveChatModel(base, { ...p.deps, loadLocalRunnerPick: async () => pick({ chatAssigned: false, embeddingModel: 'nomic-embed-text' }) });
+    expect(r.ok && r.provider).toBe('anthropic');
+    expect(p.calls).toContain('credential');
+  });
+});

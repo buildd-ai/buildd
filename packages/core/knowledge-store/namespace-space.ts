@@ -161,6 +161,36 @@ RETURNING ${SELECT_COLS}`));
   return { kind: 'ok', space, created, moved };
 }
 
+// ── Re-embed trigger (D-3) ───────────────────────────────────────────────────
+
+/**
+ * The team changed the model (or its size) every one of its namespaces embeds
+ * with: move each namespace row that is in another space to the new one and
+ * mark it `pending`, now, rather than on its next touch. One guarded UPDATE:
+ * a namespace already in the space is left alone, so calling this twice, or
+ * beside a touch that moved the same row, re-queues nothing. Until a row is
+ * re-embedded it is reachable through the lexical leg only; no vector is cast
+ * or copied. Returns the namespaces now owed a re-embed by this call.
+ *
+ * Only for a pick that embeds every corpus with one model (a `local_runner`
+ * or endpoint pick). The Voyage default embeds by corpus and is left to the
+ * per-touch resolution above.
+ */
+export async function requestReembedForTeam(teamId: string, embedder: SpaceEmbedder, exec: SpaceExec): Promise<string[]> {
+  const column = vectorColumnForDimensions(embedder.dimensions);
+  if (!column) return [];
+  const rows = rowsOf(await exec(sql`-- knowledge:namespaces_request_reembed
+UPDATE knowledge_namespaces n
+SET embedding_provider = ${embedder.provider ?? null}, embedding_model = ${embedder.model}, dimensions = ${embedder.dimensions}::int, vector_column = ${column},
+    reembed_status = 'pending',
+    reembed_total = (SELECT count(*) FROM knowledge_chunks c WHERE c.namespace = n.namespace AND c.is_current = true),
+    reembed_done = 0, reembed_started_at = NULL, reembed_finished_at = NULL, updated_at = now()
+WHERE n.team_id = ${teamId}::uuid AND (n.embedding_model <> ${embedder.model} OR n.dimensions <> ${embedder.dimensions}::int)
+RETURNING n.namespace`));
+  for (const r of rows) cache.delete(String(r.namespace));
+  return rows.map(r => String(r.namespace));
+}
+
 // ── Re-embed progress (D-6; the walker itself is PgVectorStore.reembedNamespace) ──
 
 /** Mark a namespace's re-embed as running (first batch) or finished. One UPDATE each, idempotent. */
