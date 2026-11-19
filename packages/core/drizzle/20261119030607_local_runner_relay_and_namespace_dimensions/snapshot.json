@@ -1,9 +1,10 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "76699813-42e5-4ebd-860f-947581d6d01c",
+  "id": "00c99460-4c33-4bfe-a17f-38f2bb97a160",
   "prevIds": [
-    "7b9a9095-8e71-4388-823c-9f26932773a8"
+    "31031b65-0a5a-4264-bc8a-6e5c372ed807",
+    "a2cd9651-a9a0-42bf-b220-b45f7f274775"
   ],
   "ddl": [
     {
@@ -698,6 +699,24 @@
     {
       "isRlsEnabled": false,
       "name": "sibling_probes",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "skill_lifecycle_events",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "skill_spec_links",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "skill_usage",
       "entityType": "tables",
       "schema": "public"
     },
@@ -21685,6 +21704,266 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "skill_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "action",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mode",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "previous_enabled",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "previous_content_hash",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "skill_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "confirmed_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "skill_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_usage"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_usage"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "claim_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_usage"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "first_claimed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_usage"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "last_claimed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "skill_usage"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "spec_attachments"
     },
     {
@@ -27356,6 +27635,19 @@
       "table": "teams"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "subscription_wall_fallback",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "teams"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -31108,6 +31400,19 @@
       "generated": null,
       "identity": null,
       "name": "model_route",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workers"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "wall_fallback",
       "entityType": "columns",
       "schema": "public",
       "table": "workers"
@@ -41925,6 +42230,125 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "skill_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "skill_lifecycle_events_skill_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "team_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "skill_lifecycle_events_team_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "skill_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "spec_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "skill_spec_links_pair_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "skill_spec_links_spec_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "team_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "skill_usage_team_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "skill_usage"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "spec_id",
           "isExpression": false,
           "asc": true,
@@ -45480,6 +45904,27 @@
       "method": "btree",
       "concurrently": false,
       "name": "workers_pr_url_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workers"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"wall_fallback\" IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workers_wall_fallback_created_idx",
       "entityType": "indexes",
       "schema": "public",
       "table": "workers"
@@ -50427,6 +50872,125 @@
     {
       "nameExplicit": false,
       "columns": [
+        "skill_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workspace_skills",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "skill_lifecycle_events_skill_id_workspace_skills_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "team_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "teams",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "skill_lifecycle_events_team_id_teams_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "skill_lifecycle_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "skill_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workspace_skills",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "skill_spec_links_skill_id_workspace_skills_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "specs",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "skill_spec_links_spec_id_specs_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "team_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "teams",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "skill_spec_links_team_id_teams_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "skill_spec_links"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "skill_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workspace_skills",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "skill_usage_skill_id_workspace_skills_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "skill_usage"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "team_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "teams",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "skill_usage_team_id_teams_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "skill_usage"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "workspace_id"
       ],
       "schemaTo": "public",
@@ -53911,6 +54475,36 @@
       "name": "sibling_probes_pkey",
       "schema": "public",
       "table": "sibling_probes",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "skill_lifecycle_events_pkey",
+      "schema": "public",
+      "table": "skill_lifecycle_events",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "skill_spec_links_pkey",
+      "schema": "public",
+      "table": "skill_spec_links",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "skill_id"
+      ],
+      "nameExplicit": false,
+      "name": "skill_usage_pkey",
+      "schema": "public",
+      "table": "skill_usage",
       "entityType": "pks"
     },
     {
