@@ -273,9 +273,13 @@ describe('listMcpTools — group tools', () => {
   // them for missing access and an action a prompt names must be listed. Hidden on
   // More:, agents never found them and built around missing grants instead.
   // Measured 6.19k admin / 5.06k task token, after trimming their param text.
-  it('keeps the whole groups surface under the 6.35k spec budget', () => {
+  // Raised to 6.4k for manage_platform_tiers on More: (task c0514001): the
+  // platform default model per tier, a platform-admin action whose typed
+  // selector names five sub-actions. Measured 6.35k admin after folding its
+  // purpose line into the model-tiers part; the task-token surface is unchanged.
+  it('keeps the whole groups surface under the 6.4k spec budget', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6350);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6400);
   });
 
   it('keeps a runner worker session (task token) under 5.2k tokens', () => {

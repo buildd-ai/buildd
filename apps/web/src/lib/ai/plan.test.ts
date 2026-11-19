@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import {
   validatePlanRequest, routeEntry, routeChatEntry, tiersFrom, decidePlan, buildPlanResponse, estimateCallUsd,
   DEFAULT_EXPECTED_TOKENS, PLAN_TTL_SECONDS, PLAN_MAX_STALE_SECONDS,
@@ -108,7 +109,9 @@ describe('routeEntry', () => {
 });
 
 describe('routeChatEntry', () => {
-  const cat = [{ openRouterId: 'qwen/qwen3.8-27b', permaslug: 'qwen/qwen3.8-27b' }, { openRouterId: 'anthropic/claude-sonnet-5', permaslug: 'anthropic/claude-sonnet-5' }] as never[];
+  // The tier default's OpenRouter id, whatever release the bundled policy is on today.
+  const DEFAULT_OR = `anthropic/${bundledTierEntry('standard').model.replace(/-(\d+)-(\d+)$/, '-$1.$2')}`;
+  const cat = [{ openRouterId: 'qwen/qwen3.8-27b', permaslug: 'qwen/qwen3.8-27b' }, { openRouterId: DEFAULT_OR, permaslug: DEFAULT_OR }] as never[];
   const incumbent = { provider: 'openrouter' as const, model: 'qwen/qwen3.8-27b', source: 'team' as const };
   const arm = (model: string): PoolArmPick => ({ poolId: 'p', armId: 'a2', route: 'openrouter', model, role: 'challenger' });
 
@@ -124,7 +127,7 @@ describe('routeChatEntry', () => {
 
   it('a registry pick that cannot serve chat falls back to the tier default, routed the same way', () => {
     const r = routeChatEntry('standard', { provider: 'openrouter', model: 'vendor/no-tools', source: 'team' }, null, ['openrouter'], cat);
-    expect(r.routed).toMatchObject({ provider: 'openrouter', model: 'anthropic/claude-sonnet-5', source: 'default', poolId: null });
+    expect(r.routed).toMatchObject({ provider: 'openrouter', model: DEFAULT_OR, source: 'default', poolId: null });
     expect(r.entry.source).toBe('default');
     expect(r.excluded).toBe('vendor/no-tools');
   });

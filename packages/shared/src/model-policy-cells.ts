@@ -42,7 +42,8 @@ export type ModelPolicyCellState = 'always' | 'learning' | 'shifted' | 'reverted
  * Where the cell's primary came from: the team's registry row, a workspace
  * override row, buildd's default, or the remote policy service.
  */
-export type ModelPolicyCellSource = 'team' | 'workspace' | 'default' | 'service';
+/** `platform`: buildd's default for every team without a row of its own (a platform admin set it). */
+export type ModelPolicyCellSource = 'team' | 'workspace' | 'platform' | 'default' | 'service';
 
 export interface ModelPolicyCellModel {
   provider: string;

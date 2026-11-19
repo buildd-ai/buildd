@@ -48,7 +48,11 @@ import { combineCostBasis, costBasisWrite, parseCostBasis, type CostBasis } from
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
-import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
+import { activeBudgetPauses, recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
+import { isRepeatWallEpisode, usageWallFromReport, usageWallRecord, USAGE_WALL_CONTEXT_KEY, wallHolder, wallResetClock } from '@/lib/provider-wall';
+import { isReviewerTaskContext, publishReviewBudgetWait } from '@/lib/provider-wall-status';
+import { resolveTeamWallFallback } from '@/lib/provider-wall-fallback';
+import { isSubscriptionPinned } from '@buildd/core/wall-fallback';
 import { isMachineLoginWallError, parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { credentialExpiredAlert } from '@/lib/credential-expired-alert';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
@@ -1124,6 +1128,33 @@ async function patchWorker(
   }) ?? undefined;
   let status = reportedStatus;
   let error = reportedError;
+
+  // A usage wall is a wait, not a failure (provider-failover spec, "A usage
+  // wall is a wait"). It can arrive as `error`, or as a `completed` session
+  // whose only output is the wall message: the SDK ends a walled turn as an
+  // ordinary result. Both used to miss the budget branch below, which reads
+  // `failed` only: a reviewer's became a dropped verdict (and, retried into
+  // the same wall, "review unavailable"), a plain task's became a failure or
+  // even a completion. Read as the `failed` wall they are, so they requeue to
+  // the reset with no attempt spent.
+  {
+    const wallText = usageWallFromReport({
+      status,
+      error,
+      summary: typeof body.summary === 'string' ? body.summary : null,
+      summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
+      budgetExhausted: body.budgetExhausted === true,
+      sessionBudgetCapped: body.sessionBudgetCapped === true,
+      hasStructuredOutput: !!body.structuredOutput && typeof body.structuredOutput === 'object',
+      hasPr: !!worker.prUrl || !!body.prUrl || !!body.prNumber,
+    });
+    if (wallText) {
+      console.log(`[workers PATCH] worker ${id} reported a usage wall as '${status}': treating it as the wall`);
+      status = 'failed';
+      error = wallText;
+      body.budgetExhausted = true;
+    }
+  }
 
   // ── Who may consume the human-instruction queue ────────────────────────────
   //
@@ -3418,6 +3449,13 @@ async function patchWorker(
     // The account flag below is its narrowest record.
     const subscriptionWallWithoutSeat = walledBackend === 'claude' && !runnerSeatWall
       && !tenantCtx?.tenantId && isMachineLoginWallError(error);
+    // One wall episode is one notice (read before this report's own pause is
+    // written). Every task on the walled login reports the same wall again
+    // until the reset; only the first of them is news.
+    let repeatWallEpisode = isRepeatWallEpisode(
+      await activeBudgetPauses(teamId, walledBackend),
+      { backend: walledBackend, seatKey: runnerSeatWall, resetsAt: budgetResetsAt },
+    );
     if (!subscriptionWallWithoutSeat) {
       await recordBackendPause({
         backend: walledBackend,
@@ -3454,13 +3492,17 @@ async function patchWorker(
     } else if (isClaudePoolWall && account.authType === 'oauth') {
       // Account-level budget exhaustion: set flag (first-writer wins). It is
       // this account's alone; no other account sharing a login is touched.
-      await db
+      const flagged = await db
         .update(accounts)
         .set({ budgetExhaustedAt: new Date(), budgetResetsAt })
         .where(and(
           eq(accounts.id, account.id),
           isNull(accounts.budgetExhaustedAt),
-        ));
+        ))
+        .returning({ id: accounts.id });
+      // A wall with no pause row (no runner to key it to) is a repeat when
+      // another report already set the flag: first writer is the episode.
+      if (subscriptionWallWithoutSeat && Array.isArray(flagged) && flagged.length === 0) repeatWallEpisode = true;
     }
 
     // Provider failover, either direction: move the task to any other enabled,
@@ -3503,6 +3545,24 @@ async function patchWorker(
       }
     }
 
+    // The team's subscription-wall fallback (provider-failover spec,
+    // "Subscription wall fallback"): a subscription runner's Claude wall, on a
+    // task not pinned to the subscription, whose team named a stored
+    // credential with room under its daily cap. The task is claimable now, and
+    // the next claim delivers that credential for the run. Never for a run
+    // that was itself the fallback: its wall (the key's own limit) waits.
+    let wallFallbackLabel: string | null = null;
+    if (
+      walledBackend === 'claude' && !failoverBackend && account.authType === 'oauth' && teamId
+      && !tenantCtx?.tenantId && !isSubscriptionPinned(budgetTaskCtx) && !(worker as { wallFallback?: unknown }).wallFallback
+    ) {
+      const fb = await resolveTeamWallFallback({ teamId, workspaceId: taskForBudget?.workspaceId ?? null });
+      if (fb.use) {
+        wallFallbackLabel = fb.credential.label;
+        console.log(`[workers PATCH] Task ${worker.taskId}: Claude login walled, the team falls back to ${fb.credential.served}: claimable now`);
+      }
+    }
+
     // Reset task to pending (not failed) — retried when budget resets, or
     // immediately on Codex when a failover backend was resolved.
     // Guard: don't re-queue a cancelled task even when its worker hit a budget wall.
@@ -3511,7 +3571,7 @@ async function patchWorker(
     // and no "budget paused" flag: another runner can take it at once, and the
     // walled runner's claims are deferred by its own seat-keyed pause, so no
     // claim lands back in the same wall.
-    const budgetStartAt = failoverBackend || runnerSeatWall ? null : (() => {
+    const budgetStartAt = failoverBackend || runnerSeatWall || wallFallbackLabel ? null : (() => {
       const wakeAt = earliestAlternateReset && earliestAlternateReset < budgetResetsAt
         ? earliestAlternateReset
         : budgetResetsAt;
@@ -3528,7 +3588,7 @@ async function patchWorker(
         ...(budgetStartAt && { startAt: budgetStartAt }),
         context: {
           ...existingCtx,
-          ...(!runnerSeatWall && {
+          ...(!runnerSeatWall && !wallFallbackLabel && {
             budgetExhausted: true,
             // Persisted so every UI surface (detail banner, list/sidebar/mobile
             // badges) can show WHEN it retries without an account join.
@@ -3536,9 +3596,38 @@ async function patchWorker(
           }),
           previousWorkerId: id,
           ...(failoverBackend && { failedOverFrom: taskForBudget?.backend || 'claude', failoverReason: 'budget_exhausted' }),
+          // What the task page and the fleet view say: waiting for the usage
+          // limit, resumes at <reset>, whose login hit it. Written for a
+          // runner-scoped wall too, which carries no budgetExhausted flag.
+          // Not for a failover: that task is not waiting.
+          ...(!failoverBackend && {
+            [USAGE_WALL_CONTEXT_KEY]: usageWallRecord({
+              backend: walledBackend,
+              resetsAt: budgetResetsAt,
+              scope: runnerSeatWall ? 'login' : 'pool',
+              runner: worker.runner ?? null,
+            }),
+          }),
+          // The wall is not the end of the work: the next attempt continues on
+          // the same branch from the runner's checkpoint, and is told so (the
+          // runner's "Prior attempt" section reads resumeBranch). These were
+          // written only on the failure path, which a wall skips.
+          ...(worker.branch && { resumeBranch: worker.branch }),
+          ...((lastCommitSha ?? worker.lastCommitSha) ? { lastCommitSha: lastCommitSha ?? worker.lastCommitSha } : {}),
+          ...(typeof resultMeta?.recoveryRef === 'string' ? { recoveryRef: resultMeta.recoveryRef } : {}),
         },
       },
     });
+    if (failoverBackend || !taskForBudget) {
+      // nothing waits
+    } else if (isReviewerTaskContext(budgetTaskCtx)) {
+      // Review approval (spec: "A usage wall is a wait"): a review held by a
+      // wall is pending with its cause, never "unavailable" or a person's
+      // decision. The kernel heard nothing (no attempt ended), so nothing
+      // else republishes the head's status while it waits.
+      void publishReviewBudgetWait({ context: budgetTaskCtx, resetsAt: budgetResetsAt }).catch(err =>
+        console.warn(`[workers PATCH] review budget-wait status failed for task ${worker.taskId}:`, err));
+    }
 
     // A failover is claimable on the other provider now. A deferral wakes at
     // the reset and not before: an instant wake would re-claim straight into
@@ -3561,22 +3650,30 @@ async function patchWorker(
 
     isBudgetReset = true;
 
-    // Distinct alert: this is a budget/rate-limit PAUSE (task reset to pending,
-    // auto-retries on reset) — not a generic failure. The normal completion-notify
-    // block below is skipped for budget resets, so alert here with the backend +
-    // reset time so the operator sees "paused until X", not a misleading failure.
-    const walledLabel = backendLabel(walledBackend);
-    void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
-      title: `⏳ ${walledLabel} budget/rate-limit hit`,
-      message: failoverBackend
-        ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
-        : runnerSeatWall
-          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: one runner's ${walledLabel} login is at its limit until ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. That runner waits; other runners can take the task now.`
-          : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
-      url: `https://buildd.dev/app/tasks/${worker.taskId}`,
-      urlTitle: 'View task',
-      priority: 0,
-    });
+    // A wall is a wait, not a failure: no per-task push, no priority. One
+    // quiet digest line per wall episode (the first report of it), naming the
+    // login and the reset; every later task on the same wall just waits.
+    // Genuine task failures still alert through the completion path below,
+    // which a budget reset skips.
+    if (!repeatWallEpisode) {
+      const walledLabel = backendLabel(walledBackend);
+      const holder = wallHolder({ backend: walledBackend, scope: runnerSeatWall ? 'login' : 'pool', runner: worker.runner ?? null });
+      void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
+        title: `⏳ ${walledLabel} usage limit: work waits until ${wallResetClock(budgetResetsAt)}`,
+        message: failoverBackend
+          ? `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} is at its limit; work moves to ${backendLabel(failoverBackend)}.`
+          : wallFallbackLabel
+          ? `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} hit its limit (resets ${wallResetClock(budgetResetsAt)}). ` +
+            `Work runs on ${wallFallbackLabel} meanwhile, metered per token.`
+          : `${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${holder} is at its limit until ${wallResetClock(budgetResetsAt)}. ` +
+            'Tasks on it wait and resume by themselves; no attempt is used.',
+        url: `https://buildd.dev/app/tasks/${worker.taskId}`,
+        urlTitle: 'View task',
+        priority: -1,
+      });
+    } else {
+      console.log(`[workers PATCH] Task ${worker.taskId} waits on a wall already reported (${walledBackend}, resets ${budgetResetsAt.toISOString()}): no notice`);
+    }
   }
 
   // sandbox_mount_gap: a bwrap allowlist path was missing (npm postinstall, config file,
@@ -3849,6 +3946,12 @@ async function patchWorker(
           columns: { missionId: true, context: true, status: true, roleSlug: true },
         });
         taskCtxForRetry = (taskForRetry?.context || {}) as Record<string, unknown>;
+        // A wall this task waited out earlier is over: this attempt ran and
+        // ended for its own reason, so nothing may still say it is waiting.
+        if (USAGE_WALL_CONTEXT_KEY in taskCtxForRetry) {
+          const { [USAGE_WALL_CONTEXT_KEY]: _endedWall, ...rest } = taskCtxForRetry;
+          taskCtxForRetry = rest;
+        }
         const retryCount = (taskCtxForRetry.retryCount as number) || 0;
         const maxRetries = taskForRetry?.missionId ? 1 : 0;
         shouldAutoRetry = retryCount < maxRetries;

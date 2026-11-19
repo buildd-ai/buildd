@@ -10,11 +10,17 @@ import { NextRequest } from 'next/server';
  * catalog is additive, and `catalogComplete` reports which of the two happened.
  */
 
+import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
+
+// The premium-plus default, read rather than named: the tier audit below checks
+// it against the mocked live lists, so a bump must not need a test edit here.
+const PREMIUM_PLUS = TIER_DEFAULTS['premium-plus'].model;
+
 const mockGetCurrentUser = mock(() => Promise.resolve(null as any));
 const mockResolveActiveTeamId = mock(() => Promise.resolve('team-1' as string | null));
 const mockResolveAnthropicAuth = mock(() => Promise.resolve(null as any));
 const DEFAULT_TIERS = {
-  'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1', source: 'default' },
+  'premium-plus': { provider: 'anthropic', model: PREMIUM_PLUS, source: 'default' },
   premium: { provider: 'anthropic', model: 'claude-opus-5', source: 'default' },
   standard: { provider: 'anthropic', model: 'claude-sonnet-4-6', source: 'default' },
   budget: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' },
@@ -112,7 +118,7 @@ describe('GET /api/models', () => {
     // Previously []. An empty list is what produced the "check your Anthropic API
     // key in Settings" dead end.
     expect(data.models.map((m: any) => m.id)).toEqual([
-      'claude-fable-5-1',
+      PREMIUM_PLUS,
       'claude-opus-5',
       'claude-sonnet-4-6',
       'claude-haiku-4-5-20251001',
@@ -144,7 +150,7 @@ describe('GET /api/models', () => {
     expect(data.catalogComplete).toBe(true);
     const ids = data.models.map((m: any) => m.id);
     // Tier models lead; catalog entries follow.
-    expect(ids.slice(0, 4)).toEqual(['claude-fable-5-1', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
+    expect(ids.slice(0, 4)).toEqual([PREMIUM_PLUS, 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
     expect(ids).toContain('claude-sonnet-5');
     // claude-opus-5 is in both; it appears once, keeping its tier label.
     expect(ids.filter((i: string) => i === 'claude-opus-5')).toHaveLength(1);
@@ -280,7 +286,7 @@ describe('GET /api/models', () => {
       { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' },
       { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
       { id: 'claude-opus-5', display_name: 'Claude Opus 5' },
-      { id: 'claude-fable-5-1', display_name: 'Claude Fable 5.1' },
+      { id: PREMIUM_PLUS, display_name: 'Claude Fable' },
       { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5' },
     ])));
 
@@ -303,7 +309,7 @@ describe('GET /api/models', () => {
       { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' },
       { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
       { id: 'claude-opus-5', display_name: 'Claude Opus 5' },
-      { id: 'claude-fable-5-1', display_name: 'Claude Fable 5.1' },
+      { id: PREMIUM_PLUS, display_name: 'Claude Fable' },
       { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5' },
     ])));
 
@@ -321,7 +327,7 @@ describe('GET /api/models', () => {
     mockResolveAnthropicAuth.mockReturnValue(Promise.resolve(OAUTH_AUTH));
     mockFetch.mockReturnValue(Promise.resolve(makeAnthropicResponse([
       { id: 'claude-opus-5' },
-      { id: 'claude-fable-5-1' },
+      { id: PREMIUM_PLUS },
       { id: 'claude-haiku-4-5-20251001' },
     ])));
 
@@ -363,7 +369,7 @@ describe('GET /api/models', () => {
       publicEntry('claude-sonnet-5'),
       publicEntry('claude-sonnet-4-6'),
       publicEntry('claude-opus-5'),
-      publicEntry('claude-fable-5-1'),
+      publicEntry(PREMIUM_PLUS),
       publicEntry('claude-haiku-4-5-20251001'),
     ]));
 
@@ -445,7 +451,7 @@ describe('GET /api/models', () => {
     mockFetch.mockReturnValue(Promise.resolve(makeAnthropicResponse([
       { id: 'claude-opus-5' },
       { id: 'claude-sonnet-4-6' },
-      { id: 'claude-fable-5-1' },
+      { id: PREMIUM_PLUS },
       { id: 'claude-haiku-4-5-20251001' },
     ])));
     // The public catalog knows sonnet-5; the credentialed one does not. The

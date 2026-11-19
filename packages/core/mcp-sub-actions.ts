@@ -27,6 +27,7 @@ export const SUB_ACTIONS = {
   manage_providers: ['list', 'set', 'delete', 'explain', 'set_policy'],
   manage_secrets: ['list', 'set', 'delete'],
   manage_model_tiers: ['list', 'set', 'delete', 'policy', 'set_policy', 'adopt', 'model'],
+  manage_platform_tiers: ['list', 'set', 'apply', 'clear', 'revert'],
   manage_evidence_backends: ['list', 'get', 'create', 'update', 'delete', 'verify'],
   consolidate_knowledge: ['find_duplicates', 'find_decayed', 'archive'],
 } as const satisfies Partial<Record<BuilddAction, readonly string[]>>;

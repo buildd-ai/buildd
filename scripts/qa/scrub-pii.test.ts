@@ -161,9 +161,14 @@ const ONE_ROW = new Set([
 // Each entry is a decision; keep the reason next to anything non-obvious.
 const SAFE: Record<string, string[]> = {
   // Token counters keyed by code-defined names: a month, a model, a corpus, a caller.
+  // Audit rows: a fixed-vocabulary reason built by the retirement rule, and a content hash.
+  skill_lifecycle_events: ['reason', 'previous_content_hash'],
+  // A user id (who confirmed the link), not free text.
+  skill_spec_links: ['confirmed_by'],
   voyage_usage_monthly: ['month'],
   voyage_usage_daily: ['model', 'corpus', 'caller'],
-  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model', 'provider_assignments',
+  teams: ['subscription_wall_fallback', // a choice id and a dollar cap (packages/core/wall-fallback.ts)
+    'timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model', 'provider_assignments',
     'embedding_provider', 'embedding_model', // a provider id and a model id (packages/core/providers/embedding.ts)
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)

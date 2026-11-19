@@ -12,6 +12,7 @@ export const SURFACE_LABEL: Record<ModelPolicyCellSurface, string> = { agent: 'C
 /** Footnote marker and text for a primary the team did not set itself. */
 export const SOURCE_NOTE: Record<Exclude<ModelPolicyCellSource, 'team'>, { mark: string; text: string }> = {
   default: { mark: '*', text: 'buildd default' },
+  platform: { mark: '*', text: 'buildd default, set for every team' },
   service: { mark: '†', text: 'set by the policy service' },
   workspace: { mark: '‡', text: 'a workspace row' },
 };

@@ -145,6 +145,9 @@ describe('derivePendingTaskHold', () => {
     expect(noTime.cause).toBe('team daily budget reached');
     const provider = derivePendingTaskHold({ now: NOW, deferral: { reason: 'budget_paused', detail: { wall: 'provider_pause', backend: 'codex', resetsAt: new Date(NOW + H).toISOString() } } });
     expect(provider.cause).toBe('model provider rate limit reached, resumes in 1h 00m');
+    // One runner's own login at its limit is not the team's budget (task 775bf607).
+    const seat = derivePendingTaskHold({ now: NOW, deferral: { reason: 'budget_paused', detail: { wall: 'runner_seat', backend: 'claude', resetsAt: new Date(NOW + H).toISOString() } } });
+    expect(seat.cause).toBe("waiting for the runner's usage limit, resumes in 1h 00m");
     const mission = derivePendingTaskHold({ now: NOW, deferral: { reason: 'mission_budget' } });
     expect(mission.kind).toBe('budget');
     expect(mission.cause).toBe("the mission's budget is spent");

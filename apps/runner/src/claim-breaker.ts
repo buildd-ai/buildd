@@ -17,6 +17,8 @@ import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import {
   CLAUDE_SESSION_LIMIT_PATTERN,
   CODEX_USAGE_LIMIT_PATTERN,
+  isBudgetExhaustionError,
+  isSessionBudgetCapError,
 } from '@buildd/core/budget-error-classifier';
 import {
   clampPauseToQuotedReset,
@@ -212,6 +214,19 @@ function classifyExhaustion(err: string, now: Date): ClaimErrorClassification | 
     const clause = matchResetClause(err);
     return {
       label: clause ? `Usage limit hit (try again ${quoted(clause)})` : 'Usage limit hit',
+      pauseMs: pauseUntilQuotedReset(err, now, 'Usage limit hit'),
+      scope: 'context',
+    };
+  }
+
+  // Every other provider usage wall the shared detector knows: Claude's weekly
+  // and "5-hour" windows ("You've hit your 5-hour limit · resets 4pm (UTC)").
+  // Without this the breaker held nothing for them and the runner kept
+  // claiming into the same login's wall.
+  if (isBudgetExhaustionError(err) && !isSessionBudgetCapError(err)) {
+    const clause = matchResetClause(err);
+    return {
+      label: clause ? `Usage limit hit (resets ${quoted(clause)})` : 'Usage limit hit',
       pauseMs: pauseUntilQuotedReset(err, now, 'Usage limit hit'),
       scope: 'context',
     };

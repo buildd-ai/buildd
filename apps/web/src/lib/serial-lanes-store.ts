@@ -22,7 +22,7 @@ import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { isUniqueViolation, LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { laneOrderBy } from '@/lib/claim-order';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { isOwnPrRepair, laneKeysFor, lanePosition, lanesOf, stuckSince, type LaneMember, type LaneTask, type LaneView } from '@/lib/serial-lanes';
+import { isOwnPrRepair, laneKeysFor, lanePosition, lanesOf, STUCK_LANE_MS, stuckSince, type LaneMember, type LaneTask, type LaneView } from '@/lib/serial-lanes';
 export { lanesOf, type LaneTask } from '@/lib/serial-lanes';
 
 type Row = Record<string, unknown>;
@@ -38,6 +38,8 @@ const LIVE = sql.join(LIVE_WORKER_STATUSES.map(s => sql`${s}`), sql`, `);
 const TERMINAL = sql.join(TERMINAL_TASK_STATUSES.map(s => sql`${s}`), sql`, `);
 /** Statuses of a claimed task that has not ended. */
 const CLAIMED = sql`'assigned', 'in_progress', 'review'`;
+/** Ended statuses whose open PR nobody drives: let go once quiet (I-7 bounded escape). */
+const ABANDONABLE = sql`'failed', 'cancelled'`;
 
 /** The task's latest worker with an open, unmerged PR (same rule as the open-PR snapshot). */
 const openPrWorker = (taskRef: SQL) => sql`(
@@ -80,7 +82,11 @@ export type LaneSnapshot = Map<string, Map<string, LaneView>>;
 export interface LaneRead {
   /** workspaceId → lane → view (members in lane order). */
   lanes: LaneSnapshot;
-  /** Tasks a person released from a lane: their open PR no longer holds anyone (I-7). */
+  /**
+   * Tasks released from a lane, by a person or as an abandoned holder (a
+   * failed/cancelled task whose PR went quiet): their open PR no longer holds
+   * anyone (I-7).
+   */
   releasedTaskIds: Set<string>;
 }
 
@@ -130,7 +136,7 @@ export async function loadLanes(workspaceIds: string[], now: Date): Promise<Lane
     view.members.push(member);
   }
   const released = await rows<{ task_id: string }>(sql`
-    SELECT DISTINCT task_id FROM ${e} WHERE workspace_id IN (${wsList}) AND left_reason = 'released'
+    SELECT DISTINCT task_id FROM ${e} WHERE workspace_id IN (${wsList}) AND left_reason IN ('released', 'abandoned')
   `);
   for (const r of released) out.releasedTaskIds.add(String(r.task_id));
   return out;
@@ -146,6 +152,8 @@ export async function loadLanes(workspaceIds: string[], now: Date): Promise<Lane
  *  - A holder that no longer holds (back to pending, no PR) gives up `held_at`
  *    and keeps its place (I-4).
  *  - Holder PR activity (head commit, CI state) is recorded for the stuck report.
+ *  - A failed or cancelled holder whose open PR has been quiet for
+ *    `STUCK_LANE_MS`, with no open repair attempt for it, ends as `abandoned`.
  */
 export async function syncLanes(input: { workspaceIds: string[]; claimable?: LaneTask[]; now: Date }): Promise<void> {
   const { workspaceIds, now } = input;
@@ -199,6 +207,30 @@ export async function syncLanes(input: { workspaceIds: string[]; claimable?: Lan
     ) pr
     WHERE pr.task_id = ${e}.task_id AND ${e}.workspace_id IN (${wsList}) AND ${e}.left_at IS NULL
       AND ${e}.activity_signature IS DISTINCT FROM pr.sig
+  `);
+  // Abandoned holder (I-7 bounded escape): a task that ended failed or
+  // cancelled with its PR left open, the PR quiet for `STUCK_LANE_MS`, and no
+  // open repair attempt for that PR. Nothing will move that PR again, so it
+  // must not hold the lane (and, through `releasedTaskIds`, the open-PR and
+  // lease checks) until a person happens to close it. A completed holder is
+  // in delivery and is never let go here: only a person releases it.
+  await db.execute(sql`
+    UPDATE ${e} SET left_at = ${now}, held_at = NULL, left_reason = 'abandoned'
+    FROM ${tasks}
+    WHERE ${tasks.id} = ${e}.task_id AND ${e}.workspace_id IN (${wsList}) AND ${e}.left_at IS NULL
+      AND ${tasks.status} IN (${ABANDONABLE})
+      AND EXISTS (
+        SELECT 1 FROM ${openPrWorker(sql`${e}.task_id`)} pr
+        WHERE GREATEST(${e}.activity_at, ${e}.held_at, (
+            SELECT MAX(rf.submitted_at) FROM review_feedback rf
+            WHERE rf.workspace_id = ${e}.workspace_id AND rf.pr_number = pr.pr_number
+          )) <= ${new Date(now.getTime() - STUCK_LANE_MS)}
+          AND NOT EXISTS (
+            SELECT 1 FROM tasks r
+            WHERE r.workspace_id = ${e}.workspace_id AND r.status NOT IN (${TERMINAL})
+              AND pr.pr_number IN (r.conflict_retry_pr_number, r.ci_retry_pr_number, r.reviewer_retry_pr_number)
+          )
+      )
   `);
 }
 

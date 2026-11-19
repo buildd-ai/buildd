@@ -251,3 +251,50 @@ describe('claims pause when every available provider is held (R-18)', () => {
     expect(m.claimsPausedUntil).toBe(t1);
   });
 });
+
+describe('a team fallback covers a held Claude login (subscription wall fallback)', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+  afterAll(() => { cleanupTestWorkspace(); });
+  beforeEach(() => { claimTaskMock.mockClear(); claimTaskMock.mockImplementation(async () => ({ workers: [] as any[] })); });
+  afterEach(() => { manager?.destroy(); claimTaskMock.mockImplementation(async () => ({ workers: [] as any[] })); });
+
+  function setup() {
+    initTestWorkspace();
+    manager = new WorkerManager(makeConfig());
+    const m = manager as any;
+    m.modelAuth = { source: 'oauth' };
+    m.codexAuth = 'none';
+    m.hasCredentials = true;
+    return m;
+  }
+  const holdClaude = (m: any) => {
+    const worker = makeWorker('w-claude');
+    worker.taskBackend = 'claude' as any;
+    injectWorker(manager, worker);
+    m.holdProvider({ provider: 'claude', status: 'rejected', kind: 'five_hour', untilMs: Date.now() + 3_600_000 }, worker);
+  };
+
+  test('a Claude-only runner keeps claiming while the server says the team falls back', async () => {
+    const m = setup();
+    claimTaskMock.mockImplementation(async () => ({ workers: [] as any[], wallFallback: { claude: true } }));
+    await manager.claimPendingTasks();
+    holdClaude(m);
+
+    expect(m.claimsPaused).toBe(false);
+    await manager.claimPendingTasks();
+    expect(claimTaskMock).toHaveBeenCalledTimes(2);
+    // Still reported, so the server knows this login is walled.
+    expect(m.providerLimits.report().map((w: any) => w.provider)).toEqual(['claude']);
+  });
+
+  test('a claim answer without the advert ends the cover', async () => {
+    const m = setup();
+    claimTaskMock.mockImplementation(async () => ({ workers: [] as any[], wallFallback: { claude: true } }));
+    await manager.claimPendingTasks();
+    claimTaskMock.mockImplementation(async () => ({ workers: [] as any[] }));
+    await manager.claimPendingTasks();
+    holdClaude(m);
+    expect(m.claimsPaused).toBe(true);
+  });
+});
+

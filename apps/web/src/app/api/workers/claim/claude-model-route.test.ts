@@ -124,3 +124,26 @@ describe('resolveClaudeModelRoute: canonical and legacy key storage', () => {
     expect(await resolveClaudeModelRoute(base, d)).toBe('oauth_seat');
   });
 });
+
+describe('resolveClaudeModelRoute with a credential reserved for walls', () => {
+  // A team whose subscription-wall fallback names a credential reserves it:
+  // a subscription runner's ordinary run spends its login, not that credential.
+  it('reads a held Anthropic key as the seat', async () => {
+    const d = deps({ listAnthropicKeys: mock(async () => [{ accountId: null, workspaceId: null, healthStatus: 'healthy' }]) });
+    expect(await resolveClaudeModelRoute({ ...base, held: 'anthropic_api_key' }, d)).toBe('oauth_seat');
+    expect(await resolveClaudeModelRoute({ ...base, held: null }, d)).toBe('anthropic_api_key');
+  });
+
+  it('reads a held endpoint that wins the ranking as the seat, never the key it beat', async () => {
+    const d = deps({
+      resolveEndpoint: mock(async () => ({ winner: 'endpoint', endpoint }) as any),
+      listAnthropicKeys: mock(async () => [{ accountId: null, workspaceId: null, healthStatus: 'healthy' }]),
+    });
+    expect(await resolveClaudeModelRoute({ ...base, held: 'agent_endpoint' }, d)).toBe('oauth_seat');
+  });
+
+  it('keeps an endpoint that is not held when the key is', async () => {
+    const d = deps({ resolveEndpoint: mock(async () => ({ winner: 'endpoint', endpoint }) as any) });
+    expect(await resolveClaudeModelRoute({ ...base, held: 'anthropic_api_key' }, d)).toBe('agent_endpoint');
+  });
+});

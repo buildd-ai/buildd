@@ -31,6 +31,37 @@
       ]
     },
     {
+      "id": "anthropic/claude-fable-5.2",
+      "canonical_slug": "anthropic/claude-fable-5.2-20261109",
+      "name": "Anthropic: Claude Fable 5.2",
+      "created": 1794253781,
+      "context_length": 1000000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000008",
+        "completion": "0.00004",
+        "input_cache_read": "0.0000002",
+        "input_cache_write": "0.00001"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "tool_choice",
+        "tools",
+        "verbosity"
+      ]
+    },
+    {
       "id": "anthropic/claude-haiku-4.5",
       "canonical_slug": "anthropic/claude-4.5-haiku-20251001",
       "name": "Anthropic: Claude Haiku 4.5",

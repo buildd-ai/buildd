@@ -34,7 +34,15 @@ import {
  * to correct a probe, or for a model the catalog cannot see.
  */
 export const MODEL_MIN_CLI_VERSION: Readonly<Record<string, string>> = {
+  // The previous premium-plus model. Kept so a task or role pinned to it is
+  // still recognized and served, not refused as unknown.
   'claude-fable-5-1': '2.1.251',
+  // Fable 5.2 (the premium-plus default) support first shipped in Claude Code
+  // 2.1.321, so a runner that serves 5.1 does NOT serve 5.2 until it updates:
+  // https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21321
+  // The runner reports the CLI bundled with @anthropic-ai/claude-agent-sdk
+  // (SDK 0.3.N ships CLI 2.1.N), so the runner's SDK must be >= 0.3.321.
+  'claude-fable-5-2': '2.1.321',
   'claude-opus-5-5': '2.1.280',
   // Sonnet 5.5 support first shipped in Claude Code 2.1.284:
   // https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21284

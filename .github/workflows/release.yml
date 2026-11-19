@@ -98,7 +98,7 @@ jobs:
     needs: mode
     if: needs.mode.outputs.flow == 'candidate'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     # Pushes release/v* (never dev or main) and opens/edits the release PR.
     permissions:
       contents: write
@@ -178,7 +178,9 @@ jobs:
             exit $?
           fi
           if [ "$FORCE" = "true" ]; then args+=(--force); fi
-          bun scripts/release-candidate.ts cut --require-check build "${args[@]}"
+          # A dispatch right after a merge finds that commit's build still running:
+          # wait up to 20 min for it rather than failing (cut job timeout covers it).
+          bun scripts/release-candidate.ts cut --require-check build --wait-pending 1200 "${args[@]}"
 
       # The owner's composition (dashboard Compose step): changes already on dev
       # that this release leaves out. Applied to the candidate the cut step just

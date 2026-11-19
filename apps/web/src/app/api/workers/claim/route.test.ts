@@ -111,6 +111,16 @@ mock.module('@/lib/mcp-connector-refresh', () => ({
   refreshMcpConnectorCredential: mockRefreshMcpConnectorCredential,
 }));
 
+// The team's subscription-wall fallback (lib/provider-wall-fallback.ts). Wait by
+// default, so every other test sees the behaviour from before the setting.
+const mockLoadWallFallbackSetting = mock(async (_teamId: any) => ({ fallback: 'wait', maxCostPerDayUsd: null }) as any);
+const mockResolveTeamWallFallback = mock(async (opts: any) => ({ use: false, setting: opts?.setting ?? { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
+mock.module('@/lib/provider-wall-fallback', () => ({
+  loadWallFallbackSetting: (...a: any[]) => (mockLoadWallFallbackSetting as any)(...a),
+  resolveTeamWallFallback: (...a: any[]) => (mockResolveTeamWallFallback as any)(...a),
+  teamWallCover: async (teamId: string) => (await (mockResolveTeamWallFallback as any)({ teamId, workspaceId: null })).use,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -2167,6 +2177,89 @@ describe('POST /api/workers/claim', () => {
       expect(data.diagnostics?.deferrals?.budget_paused).toBeUndefined();
     });
 
+    describe('subscription wall fallback (team setting)', () => {
+      const anthropicSetting = { fallback: 'anthropic', maxCostPerDayUsd: 20 };
+      const credential = { served: 'anthropic', label: "the team's Anthropic API key", last4: 'wxyz', apiKey: 'sk-ant-fallback' };
+      let workerSets: any[] = [];
+      beforeEach(() => {
+        workerSets = [];
+        mockLoadWallFallbackSetting.mockClear();
+        mockWorkersUpdate.mockImplementation(() => ({ set: mock((v: any) => { workerSets.push(v); return { where: mock(() => ({ returning: mock(() => []) })) }; }) }) as any);
+        mockLoadWallFallbackSetting.mockImplementation(async () => anthropicSetting as any);
+        mockResolveTeamWallFallback.mockImplementation(async () => ({ use: true, setting: anthropicSetting, credential, spentTodayUsd: 3 }) as any);
+      });
+      afterEach(() => {
+        mockLoadWallFallbackSetting.mockImplementation(async () => ({ fallback: 'wait', maxCostPerDayUsd: null }) as any);
+        mockResolveTeamWallFallback.mockImplementation(async (opts: any) => ({ use: false, setting: opts?.setting ?? { fallback: 'wait', maxCostPerDayUsd: null }, reason: 'wait', spentTodayUsd: null }) as any);
+        mockWorkersUpdate.mockImplementation(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }) as any);
+      });
+
+      it('claims a walled Claude task on the team API key, labelled, before any Codex flip', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask({ usageWall: { backend: 'claude' } })]);
+
+        const data = await (await claim()).json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].task.backend).toBe('claude');
+        expect(data.workers[0].serverApiKey).toBe('sk-ant-fallback');
+        // Labelled on the task, and it no longer reads as waiting.
+        expect(claimSet()?.context?.wallFallback).toEqual(expect.objectContaining({
+          served: 'anthropic', label: "the team's Anthropic API key", wall: expect.objectContaining({ scope: 'pool', runner: 'test-runner' }),
+        }));
+        expect('usageWall' in (claimSet()?.context ?? {})).toBe(false);
+        // And on the worker, whose cost the daily cap meters.
+        expect(workerSets).toContainEqual(expect.objectContaining({ modelRoute: 'anthropic_api_key', wallFallback: expect.objectContaining({ served: 'anthropic' }) }));
+        // The runner is told its walled login may keep claiming.
+        expect(data.wallFallback).toEqual({ claude: true });
+      });
+
+      it('never falls back a task pinned to the subscription', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask({ subscriptionPinned: true })]);
+
+        const data = await (await claim({ capabilities: [] })).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.reason).toBe('budget_exhausted');
+        expect(claimSet()).toBeNull();
+      });
+
+      it('waits once the daily cap is reached, and says why', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        mockResolveTeamWallFallback.mockImplementation(async () => ({ use: false, setting: anthropicSetting, reason: 'cap_reached', spentTodayUsd: 20 }) as any);
+
+        const data = await (await claim({ capabilities: [] })).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.reason).toBe('budget_exhausted');
+        expect(data.wallFallback).toBeUndefined();
+      });
+
+      it('withholds the reserved key from an ordinary run of a subscription runner', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), budgetExhaustedAt: null, budgetResetsAt: null, teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        mockSecretsFindMany.mockResolvedValue([
+          { id: 'sec-1', purpose: 'anthropic_api_key', accountId: null, workspaceId: null, healthStatus: 'healthy' },
+        ]);
+
+        const data = await (await claim()).json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].serverApiKey).toBeUndefined();
+        expect(claimSet()?.context?.wallFallback).toBeUndefined();
+        expect(workerSets).toContainEqual({ modelRoute: 'oauth_seat' });
+        mockSecretsFindMany.mockResolvedValue([]);
+      });
+
+      it('leaves an api runner exactly as before: no hold, no fallback', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), authType: 'api', budgetExhaustedAt: null, budgetResetsAt: null, teamId: 'team-1', maxCostPerDay: null, totalCost: '0' });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+
+        const data = await (await claim()).json();
+        expect(data.workers).toHaveLength(1);
+        expect(mockLoadWallFallbackSetting).not.toHaveBeenCalled();
+        expect(data.wallFallback).toBeUndefined();
+      });
+    });
+
     it('defers, never flips, a task whose creator pinned backend claude', async () => {
       mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
       mockTasksFindMany.mockResolvedValueOnce([claudeTask({ backendPinned: true })]);
@@ -2970,7 +3063,7 @@ describe('POST /api/workers/claim', () => {
       expect(mockApplyModelRoutingTreatment).not.toHaveBeenCalled();
       expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
       const claimSet = sets.find(v => v.status === 'assigned');
-      expect(claimSet.predictedModel).toBe('claude-sonnet-5');
+      expect(claimSet.predictedModel).toBe(tierModel('standard'));
     });
 
     it('a treatment draw overrides the tier, and the assignment is recorded after the lock with the served model', async () => {
@@ -2983,7 +3076,7 @@ describe('POST /api/workers/claim', () => {
       expect((await res.json()).workers.length).toBe(1);
 
       const applyArgs = mockApplyModelRoutingTreatment.mock.calls[0][1];
-      expect(applyArgs.controlModel).toBe('claude-sonnet-5');
+      expect(applyArgs.controlModel).toBe(tierModel('standard'));
       // The capability check handed to the experiment is the real one, fed this runner's CLI version.
       expect(applyArgs.clientCanServe('claude-opus-5')).toBe(true);
 
@@ -3044,7 +3137,7 @@ describe('POST /api/workers/claim', () => {
 
       it('an exact premium-plus model pin is held under a premium cap', async () => {
         ceilingTest.inputs = { team: { team: { agent: 'premium' } } };
-        withTask({ context: { model: 'claude-fable-5-1', modelPinned: true } });
+        withTask({ context: { model: 'claude-fable-5-2', modelPinned: true } });
         const data = await claim();
         expect(data.workers.length).toBe(0);
         expect(data.diagnostics?.deferrals?.tier_policy).toBe(1);
@@ -3098,7 +3191,7 @@ describe('POST /api/workers/claim', () => {
         mockApplyModelRoutingTreatment.mockResolvedValue({ tier: 'premium', model: 'claude-opus-5', provider: 'anthropic', source: 'default' });
         const data = await claim();
         expect(data.workers.length).toBe(1);
-        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe(tierModel('standard'));
         expect(draw.served).toBe(false);
         expect(draw.eligibility.fallback).toBe('tier_ceiling');
       });
@@ -3186,7 +3279,7 @@ describe('POST /api/workers/claim', () => {
           workspaceOverride: false,
         });
         expect(mockRecordAgentPoolAssignment).not.toHaveBeenCalled();
-        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe(tierModel('standard'));
       });
 
       it('a challenger arm overrides the tier model and is recorded after the lock', async () => {
@@ -3196,7 +3289,7 @@ describe('POST /api/workers/claim', () => {
         mockApplyAgentPoolArm.mockReturnValue({ model: 'claude-opus-5', provider: 'anthropic' });
         await POST(claimReq());
         const applyArgs = mockApplyAgentPoolArm.mock.calls[0][1];
-        expect(applyArgs.incumbentModel).toBe('claude-sonnet-5');
+        expect(applyArgs.incumbentModel).toBe(tierModel('standard'));
         expect(applyArgs.clientCanServe('claude-opus-5')).toBe(true);
         const claimSet = sets.find(v => v.status === 'assigned');
         expect(claimSet.predictedModel).toBe('claude-opus-5');

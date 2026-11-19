@@ -124,6 +124,13 @@ describe('release.yml: the flow switch', () => {
     expect(cut.env.GH_CHECKS_TOKEN).toBe('${{ github.token }}');
   });
 
+  test('a cut dispatched while the merge\'s build is still running waits for it, inside the job timeout', () => {
+    const run = String(step(RELEASE, 'cut', (s) => s.id === 'cut').run);
+    const wait = Number(/cut --require-check build --wait-pending (\d+)/.exec(run)?.[1]);
+    expect(wait).toBeGreaterThan(0);
+    expect(wf.jobs.cut['timeout-minutes'] * 60).toBeGreaterThan(wait + 5 * 60);
+  });
+
   test('the App key is used only to mint a token, and only outside dry runs', () => {
     const text = readFileSync(RELEASE, 'utf8');
     const uses = text.split('\n').filter((l) => l.includes('${{ secrets.RELEASE_APP_PRIVATE_KEY }}'));

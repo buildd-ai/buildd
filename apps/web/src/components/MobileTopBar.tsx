@@ -7,7 +7,7 @@ export const MOBILE_TOP_BAR_SLOT_ID = 'mobile-top-bar-slot';
 export const MOBILE_TOP_BAR_ACTION_ID = 'mobile-top-bar-action';
 
 /** Classes for a page action in the bar: a 44px `.btn`, never wider than its label. */
-export const MOBILE_TOP_BAR_ACTION_CLASS = 'btn h-11 shrink-0 whitespace-nowrap px-3';
+export const MOBILE_TOP_BAR_ACTION_CLASS = 'btn h-11 min-w-11 shrink-0 whitespace-nowrap px-3';
 
 /**
  * The one geometry every top-level phone route shares: fixed 56px height,

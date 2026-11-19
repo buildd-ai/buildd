@@ -69,6 +69,20 @@ describe('classifyClaimError', () => {
     expect(res!.pauseMs).toBeGreaterThan(0);
   });
 
+  // The weekly and 5-hour walls matched no branch, so the runner kept claiming
+  // into the same login's wall until the server deferred each claim.
+  test.each([
+    ["you've hit your 5-hour limit · resets 4pm (utc)", 'Usage limit hit'],
+    ["you've hit your weekly limit · resets 4pm (utc)", 'Usage limit hit'],
+  ])('a Claude seat wall holds this context until the quoted reset: %s', (err, label) => {
+    const now = new Date('2026-11-14T13:00:00Z');
+    const res = classifyClaimError(err, now);
+    expect(res).not.toBeNull();
+    expect(res!.scope).toBe('context');
+    expect(res!.label).toContain(label);
+    expect(res!.pauseMs).toBe(3 * 60 * 60 * 1000);
+  });
+
   test('server 429 budget exhausted is context-scoped', () => {
     const res = classifyClaimError('api error: 429 - oauth budget exhausted');
     expect(res).not.toBeNull();

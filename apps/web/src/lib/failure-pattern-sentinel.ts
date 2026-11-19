@@ -510,7 +510,10 @@ function ruleLineageMultiPr(facts: SentinelFacts, t: SentinelThresholds): Incide
 /** Exits that are not failures of the work (mirrors failure-analytics' bookkeeping set). */
 // auth_failure belongs to the infrastructure_failure family (one incident per
 // credential, §18.4), never to a per-signature repeated_failure as well.
-const NON_FAILURE_EXITS = new Set(['needs_input', 'task_cancelled', 'reassigned', 'never_started', 'auth_failure']);
+// budget_limited: a provider usage wall. The task waits for the quoted reset and
+// resumes by itself (provider-failover spec, "A usage wall is a wait"), so a
+// burst of them is one wall episode, not a failure pattern to page about.
+const NON_FAILURE_EXITS = new Set(['needs_input', 'task_cancelled', 'reassigned', 'never_started', 'auth_failure', 'budget_limited']);
 
 function failureRef(f: WorkerFailureFact): FailureIncidentEvidenceRef {
   return f.terminalRecordId
@@ -799,7 +802,9 @@ function ruleOutputUnmetBoundary(facts: SentinelFacts, t: SentinelThresholds): I
 /**
  * Stuck lane (I-7): reported through the stranded-gate family, as the gate is
  * `serial_lane` and the work behind it is stranded. Never auto-repaired: only
- * a person releases a lane.
+ * a person releases a lane whose holder is still in delivery. A failed or
+ * cancelled holder's quiet PR is let go by `syncLanes` itself (left as
+ * `abandoned`), so it never reaches this rule.
  */
 function ruleStuckLane(facts: SentinelFacts): IncidentCandidate[] {
   const out: IncidentCandidate[] = [];
