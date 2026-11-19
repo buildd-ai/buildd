@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Lanes: a failed or cancelled lane holder's quiet open PR is released (#6116)
+- Responder: the claim probe retries once on a stale keep-alive socket (#6115)
+
 ## [0.398.0] - 2026-11-13
 
 ### Added
