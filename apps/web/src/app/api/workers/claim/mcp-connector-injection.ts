@@ -11,10 +11,12 @@
  * default). No role or empty connectorRefs → mount nothing (least-privilege),
  * except owned gateway connectors (below), whose every call is decided server-side.
  *
- * Gateway connectors (connector-gateway.ts: Axiom and Vercel by default) are
- * returned as a buildd path, never with a credential: the agent's runtime
- * mounts the connector gateway with its own buildd token, and the provider
- * credential stays on the server.
+ * Gateway connectors (connector-gateway.ts: Axiom and Vercel by default, every
+ * http connector with BUILDD_CONNECTOR_GATEWAY=all, whatever its auth mode) are
+ * returned as a buildd path, never with a provider URL or credential: the
+ * agent's runtime mounts the connector gateway with its own buildd token, and
+ * the provider credential (stored, or minted from an assertion) stays on the
+ * server. stdio connectors always run on the runner.
  *
  * Credentials are resolved by the connector's OWNER team (connector.teamId), not
  * the task's workspace team. Today they are equal; keying on the owner makes the
@@ -61,7 +63,8 @@ export type ResolvedMcpConnector = {
   args?: string[];
   headers?: Record<string, string>;
   env?: Record<string, string>;
-  // assertion-mode exchange metadata (assertionMode=true → runner performs mint+exchange)
+  // assertion-mode exchange metadata (assertionMode=true → runner performs mint+exchange).
+  // Direct mount only: a brokered assertion connector is a plain gateway entry.
   assertionMode?: true;
   mintApiUrl?: string;
   audience?: string;
@@ -269,31 +272,17 @@ export async function resolveMcpConnectorsForTask(
     // http transport.
     if (!connector.url) continue;
 
-    if (connector.authMode === 'none') {
-      mcpConnectors.push({ id: connector.id, name, transport: 'http', url: connector.url });
-      continue;
-    }
-
-    // assertion-mode: return exchange metadata so the runner can mint+exchange
-    if (connector.authMode === 'assertion') {
-      if (!connector.assertionAudience || !connector.assertionTokenEndpoint) continue;
-      mcpConnectors.push({
-        id: connector.id,
-        name,
-        transport: 'http',
-        url: connector.url,
-        assertionMode: true,
-        mintApiUrl: `https://buildd.dev/api/connectors/${connector.id}/assertion`,
-        audience: connector.assertionAudience,
-        tokenEndpoint: connector.assertionTokenEndpoint,
-      });
-      continue;
-    }
-
+    // Whatever reaches the provider must be usable, through the gateway or not:
+    // an assertion connector needs its exchange config, a header/oauth one its
+    // stored credential (missing → omit, AC-18). `none` needs nothing.
+    if (connector.authMode === 'assertion' && (!connector.assertionAudience || !connector.assertionTokenEndpoint)) continue;
     const secretInfo = connectorSecretMap.get(connector.id);
-    if (!secretInfo) continue; // missing credential → omit (AC-18)
+    if ((connector.authMode === 'header' || connector.authMode === 'oauth') && !secretInfo) continue;
 
-    // Brokered: the credential stays on the server; nothing is decrypted here.
+    // Brokered: the runner gets a buildd path, never a provider URL or
+    // credential. The gateway adds the stored credential (header/oauth), mints
+    // and exchanges the assertion itself (assertion), or sends none (none);
+    // either way it decides and records every tools/call. Nothing is decrypted here.
     if (usesGateway(connector, slugOf(connector), mode)) {
       mcpConnectors.push({
         id: connector.id,
@@ -305,6 +294,29 @@ export async function resolveMcpConnectorsForTask(
       });
       continue;
     }
+
+    if (connector.authMode === 'none') {
+      mcpConnectors.push({ id: connector.id, name, transport: 'http', url: connector.url });
+      continue;
+    }
+
+    // assertion-mode, direct mount: return exchange metadata so the runner can mint+exchange
+    if (connector.authMode === 'assertion') {
+      mcpConnectors.push({
+        id: connector.id,
+        name,
+        transport: 'http',
+        url: connector.url,
+        assertionMode: true,
+        mintApiUrl: `https://buildd.dev/api/connectors/${connector.id}/assertion`,
+        // Both checked non-null above.
+        audience: connector.assertionAudience!,
+        tokenEndpoint: connector.assertionTokenEndpoint!,
+      });
+      continue;
+    }
+
+    if (!secretInfo) continue; // unknown auth mode: nothing to mount
 
     if (connector.authMode === 'oauth') {
       // Refresh an expired access token at claim time; omit on unrecoverable failure (AC-17).

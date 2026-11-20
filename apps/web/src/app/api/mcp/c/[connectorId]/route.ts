@@ -4,6 +4,8 @@
  * A verbatim MCP (Streamable HTTP) pass-through in front of a provider's own
  * MCP server (Axiom, Vercel, …). The agent's runtime mounts this URL with its
  * per-task buildd token; the provider credential never leaves the server.
+ * Every http auth mode is served: a stored credential (oauth, header), an
+ * assertion buildd mints and exchanges itself (assertion), or none (none).
  *
  *   POST    one JSON-RPC message, forwarded unchanged with the provider
  *           credential added. `tools/list` is subset-filtered to the run's
@@ -158,9 +160,11 @@ async function readCapped(res: Response): Promise<string | null> {
 }
 
 /**
- * Send one message to the provider with the server-held credential. On a 401
- * the OAuth token is refreshed and the request retried once (a 401 means the
- * provider did not act, so this is safe for writes too).
+ * Send one message to the provider with the server-held credential (none for
+ * an authMode `none` connector; a freshly exchanged token for an assertion
+ * one). On a 401 the OAuth token is refreshed, or the assertion re-minted, and
+ * the request retried once (a 401 means the provider did not act, so this is
+ * safe for writes too).
  */
 async function sendUpstream(g: LoadedGateway, method: 'POST' | 'DELETE', reqHeaders: Headers, body: string | null): Promise<Upstream> {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -172,7 +176,7 @@ async function sendUpstream(g: LoadedGateway, method: 'POST' | 'DELETE', reqHead
       if (v) headers.set(h, v);
     }
     if (method === 'POST' && !headers.has('accept')) headers.set('accept', 'application/json, text/event-stream');
-    headers.set(auth.name, auth.value);
+    if ('name' in auth) headers.set(auth.name, auth.value);
     let res: Response;
     try {
       res = await fetch(g.connector.url, { method, headers, body, redirect: 'manual', signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });

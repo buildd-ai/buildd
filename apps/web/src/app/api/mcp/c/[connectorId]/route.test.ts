@@ -45,7 +45,9 @@ function loaded(over: { run?: Record<string, unknown>; connector?: Record<string
 let currentLoaded: any = loaded();
 const mockLoadRun = mock(async (_p: any, _c: string) => currentLoaded);
 let providerToken = PROVIDER_TOKEN;
-const mockAuthHeader = mock(async (_g: any) => (providerToken ? { name: 'Authorization', value: `Bearer ${providerToken}` } : null));
+/** An authMode 'none' connector: the store answers that no credential is sent. */
+let anonymousProvider = false;
+const mockAuthHeader = mock(async (_g: any) => (anonymousProvider ? { anonymous: true } : providerToken ? { name: 'Authorization', value: `Bearer ${providerToken}` } : null) as any);
 const NO_RETRY = { retry: false, outcome: 'expired' };
 const mockRefresh = mock(async (_g: any, _rejected: any) => NO_RETRY as { retry: boolean; outcome: string });
 const mockMarkRejected = mock(async (_g: any) => {});
@@ -127,6 +129,7 @@ beforeEach(() => {
   __resetGatewayCache();
   currentLoaded = loaded();
   providerToken = PROVIDER_TOKEN;
+  anonymousProvider = false;
   upstreamQueue = [];
   upstreamCalls.length = 0;
   audit.length = 0;
@@ -387,6 +390,36 @@ describe('provider credential lifecycle', () => {
     const out = await toolError(await POST(req(call('queryApl')), ctx()));
     expect(out.code).toBe('reconnect_required');
     expect(upstreamCalls).toHaveLength(0);
+  });
+});
+
+describe('a connector with no credential (authMode none)', () => {
+  it("is proxied with no auth header at all: never the agent's buildd token, and still decided per call", async () => {
+    anonymousProvider = true;
+    currentLoaded = loaded({ connector: { authMode: 'none' } });
+    const list = await (await POST(req({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), ctx())).json();
+    expect(list.result.tools.map((t: any) => t.name)).toEqual(['queryApl', 'createMonitor']);
+    const res = await POST(req(call('queryApl')), ctx());
+    expect((await res.json()).result.content[0].text).toBe('ok');
+    expect(upstreamCalls.length).toBeGreaterThan(0);
+    for (const c of upstreamCalls) {
+      expect(c.headers.get('authorization')).toBeNull();
+      expect(JSON.stringify([...c.headers.entries()])).not.toContain(AGENT_TOKEN);
+    }
+    // A write still needs a grant: the gateway decides, the missing credential changes nothing.
+    const sentBefore = upstreamCalls.length;
+    expect((await toolError(await POST(req(call('createMonitor')), ctx()))).code).toBe('capability_not_granted');
+    expect(upstreamCalls.length).toBe(sentBefore);
+    expect(audit.some(a => a.capability === 'connector.tool_call' && a.decision === 'refused' && a.reasonCode === 'capability_not_granted')).toBe(true);
+  });
+
+  it('a provider 401 is reconnect_required, with no refresh credential to retry', async () => {
+    anonymousProvider = true;
+    currentLoaded = loaded({ connector: { authMode: 'none' } });
+    upstreamQueue.push({ native: true });
+    upstreamQueue.push({ status: 401, body: {} });
+    expect((await toolError(await POST(req(call('queryApl')), ctx()))).code).toBe('reconnect_required');
+    expect(mockRefresh.mock.calls[0][1]).toEqual({ anonymous: true });
   });
 });
 
