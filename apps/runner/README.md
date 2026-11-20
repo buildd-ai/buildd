@@ -244,6 +244,23 @@ the runner logs one `[agent-task-token]` warning with the reason.
 |---|---|---|
 | `BUILDD_AGENT_TASK_TOKEN` | on | `0` keeps the old behaviour: the agent's buildd MCP uses the runner key and no token is minted. |
 
+## Tool calls are decided by policy, not by whoever is watching
+
+Every local tool call (Bash, Read, Edit, Write …) is allowed or refused by the runner's fixed rules
+(`src/local-tool-policy.ts`). Those rules refuse runner kills, destructive commands, reads of the
+runner's credentials, owner-only GitHub commands and writes to sensitive paths, and allow everything
+else.
+
+Sometimes the agent SDK's own safety checks still want a person to approve a call: a path outside
+the working directory, a repo's own `ask` rule, or a background subagent's call. The runner refuses
+those as well and tells the agent why. Nobody is asked, nothing waits, and the session's settings
+are never rewritten. A task that genuinely needs more asks through buildd: a question
+(AskUserQuestion), or `request_capability` for a connected provider, which team policy decides and
+records.
+
+To get the old *Allow once / Always allow / Deny* prompt back while you move over, set
+`BUILDD_PERMISSION_PROMPTS=ask` in the runner's environment.
+
 ## What the agent can and cannot reach on a self-hosted runner
 
 The runner key is a runner credential. On a self-hosted runner the runner keeps

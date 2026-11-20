@@ -272,6 +272,9 @@ describe('session cwd must be a git checkout for a repo task', () => {
   test('does not apply to a workspace with no repo', async () => {
     cwdIsGitRepo = false;
     await runTask(manager, null, 'w-norepo');
+    for (let i = 0; i < 40 && !sessionStarted && !failurePatch('w-norepo'); i++) {
+      await new Promise(r => setTimeout(r, 100));
+    }
 
     expect(sessionStarted).toBe(true);
     expect(failurePatch('w-norepo')).toBeUndefined();

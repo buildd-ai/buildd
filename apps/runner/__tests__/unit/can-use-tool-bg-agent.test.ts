@@ -1,6 +1,9 @@
 /**
  * Unit tests for canUseTool background agent permission forwarding (SDK v0.3.186).
  *
+ * LEGACY ASK MODE (BUILDD_PERMISSION_PROMPTS=ask). By default these prompts are
+ * refused by policy instead: see local-tool-policy.test.ts.
+ *
  * Background agents now forward permission prompts to canUseTool instead of
  * auto-denying. The hook factory provides a createCanUseToolCallback that:
  * - For the main agent (no agentID): returns allow (hooks decide)
@@ -52,7 +55,7 @@ const mockEmit = mock((_e: any) => {});
 
 function makeFactory(pendingPermissionRequests = new Map<string, any>()) {
   return new HookFactory({
-    config: {},
+    config: { permissionPrompts: 'ask' },
     buildd: mockBuildd,
     addMilestone: mockAddMilestone,
     emit: mockEmit,
