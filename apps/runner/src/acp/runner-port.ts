@@ -10,7 +10,7 @@
  */
 import type { PublicWorker } from '../public-worker';
 import { socketClient, type SocketClient } from '../top/client';
-import type { RunnerPort, WorkerActionName } from './bridge';
+import type { BuilddWorkspace, RunnerPort, WorkerActionName } from './bridge';
 
 const RECONNECT_MS = 1_000;
 
@@ -53,6 +53,17 @@ export function socketRunnerPort(socketPath: string, client: SocketClient = sock
       const id = encodeURIComponent(workerId);
       if (action === 'followup') return client.post(`/api/workers/${id}/send`, { message: message ?? '' });
       return client.post(`/api/workers/${id}/${action}`, message === undefined ? {} : { message });
+    },
+    async listWorkspaces() {
+      const r = await client.get<{ workspaces?: BuilddWorkspace[]; error?: string }>('/api/workspaces');
+      if (r.status >= 400) throw new Error(r.body?.error ?? `runner refused /api/workspaces (${r.status})`);
+      return (r.body?.workspaces ?? []).map(ws => ({ id: ws.id, name: ws.name, repo: ws.repo ?? null, teamName: ws.teamName ?? null }));
+    },
+    createTask(input) {
+      return client.post('/api/tasks', input);
+    },
+    claim(taskId) {
+      return client.post('/api/claim', { taskId });
     },
     subscribe(fn) {
       listeners.add(fn);

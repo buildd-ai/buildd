@@ -65,6 +65,57 @@ function clip(text: string, max = 120): string {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
+type Rec = Record<string, unknown>;
+const rec = (v: unknown): Rec => (v && typeof v === 'object' ? (v as Rec) : {});
+const text = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+
+/** The file a tool call touched, for the client's "open file" affordance. */
+function toolPath(input: Rec): string | null {
+  return str(input.file_path) ?? str(input.notebook_path) ?? null;
+}
+
+/**
+ * ACP `diff` content for an edit. The runner keeps the call's input, not the
+ * file, so a diff is the replaced snippet, not the whole file: enough for the
+ * client to show what changed.
+ */
+function toolDiffs(name: string, input: Rec): Array<Record<string, unknown>> {
+  const path = toolPath(input);
+  if (!path) return [];
+  if (name === 'Edit') {
+    const oldText = text(input.old_string);
+    const newText = text(input.new_string);
+    return newText === null ? [] : [{ type: 'diff', path, oldText, newText }];
+  }
+  if (name === 'MultiEdit' && Array.isArray(input.edits)) {
+    return input.edits.flatMap((e) => {
+      const r = rec(e);
+      const newText = text(r.new_string);
+      return newText === null ? [] : [{ type: 'diff', path, oldText: text(r.old_string), newText }];
+    });
+  }
+  if (name === 'Write') {
+    const newText = text(input.content);
+    return newText === null ? [] : [{ type: 'diff', path, oldText: null, newText }];
+  }
+  return [];
+}
+
+const PLAN_STATUS = new Set(['pending', 'in_progress', 'completed']);
+
+/** TodoWrite's list as an ACP plan, or null when the input is not one. */
+function planFrom(input: Rec): SessionUpdate | null {
+  if (!Array.isArray(input.todos)) return null;
+  const entries = input.todos.flatMap((t) => {
+    const r = rec(t);
+    const content = str(r.content);
+    if (!content) return [];
+    const status = typeof r.status === 'string' && PLAN_STATUS.has(r.status) ? r.status : 'pending';
+    return [{ content, priority: 'medium', status }];
+  });
+  return { sessionUpdate: 'plan', entries };
+}
+
 function messageKey(m: ChatMessage): string {
   const body = m.type === 'tool_use' ? `${m.name}:${safeJson(m.input)}` : m.content;
   return `${m.timestamp}|${m.type}|${body}`;
@@ -108,7 +159,12 @@ export class MessageCursor {
       this.seen.add(key);
       out.push(...this.closeOpenTool());
       if (m.type === 'tool_use') {
+        const input = rec(m.input);
+        const plan = m.name === 'TodoWrite' ? planFrom(input) : null;
+        if (plan) { out.push(plan); continue; }
         const toolCallId = `tool-${m.timestamp}-${++this.toolSeq}`;
+        const path = toolPath(input);
+        const diffs = toolDiffs(m.name, input);
         out.push({
           sessionUpdate: 'tool_call',
           toolCallId,
@@ -116,6 +172,8 @@ export class MessageCursor {
           kind: toolKind(m.name),
           status: opts.live ? 'in_progress' : 'completed',
           rawInput: m.input ?? {},
+          ...(path ? { locations: [{ path }] } : {}),
+          ...(diffs.length ? { content: diffs } : {}),
         });
         if (opts.live) this.openTool = toolCallId;
       } else if (m.content) {
@@ -160,10 +218,55 @@ export function waitingText(w: WaitingFor): string {
 /** The line a turn ends on, when the worker's state says something. */
 export function settledText(worker: PublicWorker): string | null {
   if (worker.status === 'waiting' && worker.waitingFor) return waitingText(worker.waitingFor);
-  if (worker.status === 'done') return worker.prUrl ? `Finished. PR: ${worker.prUrl}` : 'Finished.';
-  if (worker.status === 'error') return `Stopped with an error: ${worker.error ?? 'unknown error'}`;
+  const cost = spendText(worker.spend);
+  const tail = cost ? ` · ${cost}` : '';
+  if (worker.status === 'done') return `${worker.prUrl ? `Finished. PR: ${worker.prUrl}` : 'Finished.'}${tail}`;
+  if (worker.status === 'error') return `Stopped with an error: ${worker.error ?? 'unknown error'}${tail}`;
   if (worker.status === 'stale') return 'This run went stale. Reply to continue it.';
   return null;
+}
+
+/**
+ * What the run cost, saying what kind of dollars they are (run-route.ts
+ * DollarKind): a subscription run's figure is list price for its tokens, not
+ * a bill, and must never read as one.
+ */
+export function spendText(spend: PublicWorker['spend']): string | null {
+  if (!spend || !Number.isFinite(spend.usd)) return null;
+  const amount = `${spend.priceUnknown ? '≈' : ''}$${spend.usd.toFixed(2)}`;
+  if (spend.kind === 'plan') return `${amount} at list price (plan usage, not billed)`;
+  if (spend.kind === 'billed') return `${amount} billed`;
+  return `${amount} estimated`;
+}
+
+/**
+ * The form a waiting question or permission request is asked as (ACP
+ * `elicitation/create`, form mode). One field, `answer`: a choice when the
+ * runner offers options, free text otherwise. The chosen label is exactly
+ * what the runner's answer route expects (workers.ts sendMessage).
+ */
+export function waitingForm(w: WaitingFor): { message: string; requestedSchema: Record<string, unknown> } | null {
+  if (w.type === 'pause') return null;
+  const labels = (w.options ?? []).filter(o => o && typeof o.label === 'string' && o.label.trim());
+  const answer: Record<string, unknown> = labels.length
+    ? {
+        type: 'string',
+        title: w.type === 'permission' ? 'Decision' : 'Answer',
+        oneOf: labels.map(o => {
+          const note = o.description ?? o.consequence;
+          return { const: o.label, title: o.recommended ? `${o.label} (recommended)` : o.label, ...(note ? { description: note } : {}) };
+        }),
+      }
+    : { type: 'string', title: w.prompt };
+  return {
+    message: w.context ? `${w.prompt}\n\n${w.context}` : w.prompt,
+    requestedSchema: { type: 'object', properties: { answer }, required: ['answer'] },
+  };
+}
+
+/** Identifies one wait, so an answer is only relayed while that same wait is open. */
+export function waitKey(w: WaitingFor | undefined): string | null {
+  return w ? `${w.type}|${w.prompt}|${w.since ?? ''}` : null;
 }
 
 export function usageOf(worker: PublicWorker): { inputTokens: number; outputTokens: number; totalTokens: number } | undefined {

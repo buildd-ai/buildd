@@ -24,6 +24,8 @@ import {
   settledText,
   textUpdate,
   usageOf,
+  waitKey,
+  waitingForm,
   type SessionUpdate,
 } from './translate';
 
@@ -35,11 +37,40 @@ export interface RunnerPort {
   act(workerId: string, action: WorkerActionName, message?: string): Promise<{ status: number; body: unknown }>;
   /** Called with each worker the runner broadcasts. Returns an unsubscribe. */
   subscribe(onWorker: (worker: PublicWorker) => void): () => void;
+  /** The workspaces this runner's key reaches (`GET /api/workspaces`). */
+  listWorkspaces(): Promise<BuilddWorkspace[]>;
+  createTask(input: { workspaceId: string; title: string; description: string }): Promise<{ status: number; body: unknown }>;
+  /** Claim a task onto this runner as a person would (`c` in top). */
+  claim(taskId: string): Promise<{ status: number; body: unknown }>;
+}
+
+export interface BuilddWorkspace {
+  id: string;
+  name: string;
+  repo?: string | null;
+  teamName?: string | null;
+}
+
+/**
+ * Which worker a client thread is. A thread opened from `session/list` is
+ * named by its worker id; a thread the client started (`session/new`) has an
+ * id of ours and is linked to the worker its first message created. The link
+ * must outlive this process: a client restarts its agent freely, and a
+ * forgotten link would turn a resent message into a second task.
+ */
+export interface SessionLinks {
+  get(sessionId: string): string | null;
+  set(sessionId: string, workerId: string): void;
+  /** The client thread a worker was started from, if any. */
+  sessionFor?(workerId: string): string | null;
 }
 
 export interface BridgeDeps {
   runner: RunnerPort;
+  links: SessionLinks;
   notify(sessionId: string, update: SessionUpdate): void;
+  /** Send a request to the client and await its result (ACP `elicitation/create`). */
+  request?(method: string, params: unknown): Promise<any>;
   /** The main checkout a worktree belongs to, or null when it is not a git worktree. */
   repoRootOf(path: string): Promise<string | null>;
   /**
@@ -68,20 +99,32 @@ type StopReason = 'end_turn' | 'cancelled';
 
 interface Session {
   workerId: string | null;
+  /** The client's project folder: where a first message's task goes. */
+  cwd: string | null;
   cursor: MessageCursor;
   /** Set while a prompt turn is open; calling it ends the turn as cancelled. */
   cancelTurn?: () => void;
 }
 
 const NEW_THREAD_TEXT = [
-  'This thread is not linked to a buildd task.',
-  'buildd tasks start from buildd (dashboard, `buildd top`, or the queue). To open one here,',
-  'go to Settings → Providers → buildd → List sessions, pick a project, and import the worker.',
+  'This thread has no buildd task yet. Describe the work and send it: that becomes a buildd task',
+  'in this project, run on this machine. To open an existing one instead, use',
+  'Settings → Providers → buildd → List sessions.',
 ].join('\n');
+
+const TITLE_MAX = 120;
+
+/** First non-empty line, clipped: what the dashboard and queue show for the task. */
+export function taskTitleFrom(text: string): string {
+  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? text.trim();
+  return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line;
+}
 
 export class AcpBridge {
   private sessions = new Map<string, Session>();
   private grace: number;
+  /** The client renders ACP form elicitations (T3 Code shows them as its own question UI). */
+  private canElicit = false;
 
   constructor(private deps: BridgeDeps) {
     this.grace = deps.settleGraceMs ?? 30_000;
@@ -89,9 +132,11 @@ export class AcpBridge {
 
   async handle(method: string, params: any): Promise<unknown> {
     switch (method) {
-      case 'initialize': return this.initialize();
+      case 'initialize':
+        this.canElicit = !!params?.clientCapabilities?.elicitation?.form && !!this.deps.request;
+        return this.initialize();
       case 'authenticate': return {};
-      case 'session/new': return this.newSession();
+      case 'session/new': return this.newSession(params ?? {});
       case 'session/list': return this.listSessions(params ?? {});
       case 'session/load': return this.loadSession(params ?? {});
       case 'session/prompt': return this.prompt(params ?? {});
@@ -114,9 +159,9 @@ export class AcpBridge {
     };
   }
 
-  private newSession() {
+  private newSession(params: { cwd?: string }) {
     const sessionId = `new-${crypto.randomUUID()}`;
-    this.sessions.set(sessionId, { workerId: null, cursor: new MessageCursor() });
+    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor() });
     return { sessionId };
   }
 
@@ -138,7 +183,9 @@ export class AcpBridge {
       const cwd = params.cwd ?? where;
       if (!cwd) continue;
       sessions.push({
-        sessionId: w.id,
+        // A worker started from a client thread is listed as that thread, so the
+        // client finds it already imported instead of offering a duplicate.
+        sessionId: this.deps.links.sessionFor?.(w.id) ?? w.id,
         cwd,
         title: w.taskTitle ?? w.id,
         updatedAt: w.lastActivity ? new Date(w.lastActivity).toISOString() : null,
@@ -156,21 +203,36 @@ export class AcpBridge {
     return root !== null && normalize(root) === projectRoot;
   }
 
-  private async loadSession(params: { sessionId?: string }) {
-    const workerId = params.sessionId;
-    if (!workerId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
-    const worker = await this.findWorker(workerId);
-    if (!worker) throw new RpcError(INVALID_PARAMS, `worker ${workerId} is not on this runner`);
-    const session: Session = { workerId, cursor: new MessageCursor() };
-    this.sessions.set(workerId, session);
-    for (const u of session.cursor.next(worker.messages, { live: false })) this.emit(workerId, u);
-    this.emit(workerId, {
+  private async loadSession(params: { sessionId?: string; cwd?: string }) {
+    const sessionId = params.sessionId;
+    if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
+    const workerId = this.workerIdFor(sessionId);
+    const commands = {
       sessionUpdate: 'available_commands_update',
       availableCommands: BRIDGE_COMMANDS.map(c => ({ name: c.name, description: c.description })),
-    });
+    };
+    if (workerId === null) {
+      // A thread the client started that never got its task: still a new thread.
+      this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor() });
+      this.emit(sessionId, commands);
+      return {};
+    }
+    const worker = await this.findWorker(workerId);
+    if (!worker) throw new RpcError(INVALID_PARAMS, `worker ${workerId} is not on this runner`);
+    const session: Session = { workerId, cwd: params.cwd ?? null, cursor: new MessageCursor() };
+    this.sessions.set(sessionId, session);
+    for (const u of session.cursor.next(worker.messages, { live: false })) this.emit(sessionId, u);
+    this.emit(sessionId, commands);
     const line = settledText(worker);
-    if (line && worker.status === 'waiting') this.emit(workerId, textUpdate(line));
+    if (line && worker.status === 'waiting') this.emit(sessionId, textUpdate(line));
     return {};
+  }
+
+  /** The worker a session id names: a linked thread's worker, else the id itself (an imported worker). */
+  private workerIdFor(sessionId: string): string | null {
+    const linked = this.deps.links.get(sessionId);
+    if (linked) return linked;
+    return sessionId.startsWith('new-') ? null : sessionId;
   }
 
   private async prompt(params: { sessionId?: string; prompt?: Array<{ type: string; text?: string }> }) {
@@ -180,8 +242,11 @@ export class AcpBridge {
     const text = (params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n').trim();
 
     if (!session.workerId) {
-      this.emit(sessionId, textUpdate(NEW_THREAD_TEXT));
-      return { stopReason: 'end_turn' };
+      if (!text || parseCommand(text)) {
+        this.emit(sessionId, textUpdate(NEW_THREAD_TEXT));
+        return { stopReason: 'end_turn' };
+      }
+      return this.startTask(session, sessionId, text);
     }
     const workerId = session.workerId;
     const worker = await this.findWorker(workerId);
@@ -203,6 +268,7 @@ export class AcpBridge {
     if (!text) return { stopReason: 'end_turn' };
 
     let alreadyMoving = false;
+    let answered: string | null = null;
     if (command !== 'watch') {
       const route = replyRoute(worker);
       const r = await this.deps.runner.act(workerId, route, text);
@@ -211,22 +277,99 @@ export class AcpBridge {
         return { stopReason: 'end_turn' };
       }
       alreadyMoving = route === 'message';
+      if (route === 'answer') answered = waitKey(worker.waitingFor);
     }
-    return this.follow(session, sessionId, worker, { watching: command === 'watch', alreadyMoving });
+    return this.follow(session, sessionId, worker, { watching: command === 'watch', alreadyMoving, answered });
   }
 
-  /** Stream the worker until it settles; resolve with the turn's stop reason. */
+  /**
+   * A new thread's first message: a buildd task in the workspace this project
+   * is, claimed onto this runner the way `c` in top claims one, then followed
+   * like any other run. Everything buildd enforces on a claim (limits, roles,
+   * isolation) applies; a claim it refuses leaves the task queued.
+   */
+  private async startTask(session: Session, sessionId: string, text: string) {
+    const end = (line: string) => { this.emit(sessionId, textUpdate(line)); return { stopReason: 'end_turn' as const }; };
+    if (!session.cwd) return end('This thread has no project folder, so buildd cannot tell which workspace the task is for.');
+
+    const names = (await this.deps.projectNamesOf(session.cwd).catch(() => [])).map(n => n.toLowerCase());
+    let workspaces: BuilddWorkspace[];
+    try {
+      workspaces = await this.deps.runner.listWorkspaces();
+    } catch (err) {
+      return end(`Could not read your buildd workspaces: ${(err as Error).message}`);
+    }
+    const matches = workspaces.filter(ws =>
+      names.includes(ws.name?.toLowerCase()) || (!!ws.repo && (names.includes(ws.repo.toLowerCase()) || names.includes(ws.repo.toLowerCase().split('/').pop()!))));
+    if (matches.length === 0) {
+      return end(`No buildd workspace matches this project (${names.join(', ') || 'no name'}). Connect the repo in buildd first.`);
+    }
+    let ws = matches[0];
+    if (matches.length > 1) {
+      const pick = this.canElicit ? await this.chooseWorkspace(sessionId, matches) : null;
+      if (!pick) {
+        return end(`This folder matches more than one buildd workspace (${matches.map(label).join('; ')}). ${this.canElicit ? 'No workspace was chosen; send the message again to choose one.' : 'Start this task from buildd for now.'}`);
+      }
+      ws = pick;
+    }
+
+    const title = taskTitleFrom(text);
+    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text });
+    const task = (created.body as { task?: { id?: string } } | null)?.task;
+    if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
+
+    const claimed = await this.deps.runner.claim(task.id);
+    const worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
+    if (claimed.status >= 400 || !worker?.id) {
+      return end(`Created the buildd task “${title}” in ${ws.name}. It is queued: this runner could not take it now. ${refusal(claimed)}`);
+    }
+    session.workerId = worker.id;
+    this.deps.links.set(sessionId, worker.id);
+    session.cursor.skip(worker.messages);
+    this.emit(sessionId, textUpdate(`Started a buildd task in ${ws.name}: “${title}”.`));
+    return this.follow(session, sessionId, worker, { watching: true, alreadyMoving: true });
+  }
+
+  private async chooseWorkspace(sessionId: string, options: BuilddWorkspace[]): Promise<BuilddWorkspace | null> {
+    try {
+      const res = await this.deps.request!('elicitation/create', {
+        sessionId,
+        mode: 'form',
+        message: 'This folder matches more than one buildd workspace. Which one is the task for?',
+        requestedSchema: {
+          type: 'object',
+          required: ['answer'],
+          properties: { answer: { type: 'string', title: 'Workspace', oneOf: options.map(ws => ({ const: ws.id, title: label(ws) })) } },
+        },
+      });
+      const id = res?.action === 'accept' ? res.content?.answer : null;
+      return options.find(ws => ws.id === id) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Stream the worker until it settles; resolve with the turn's stop reason.
+   * A question or permission request that comes up while the turn is open is
+   * asked as a form when the client can show one, and the run is followed on
+   * once it is answered. Declined, or with no form support, the turn ends on
+   * the question and the next typed reply answers it.
+   */
   private follow(
     session: Session,
     sessionId: string,
     initial: PublicWorker,
-    opts: { watching: boolean; alreadyMoving: boolean },
-  ): Promise<{ stopReason: StopReason; usage?: ReturnType<typeof usageOf> }> {
+    opts: { watching: boolean; alreadyMoving: boolean; answered?: string | null },
+  ): Promise<{ stopReason: StopReason; usage?: ReturnType<typeof usageOf>; _meta?: unknown }> {
     return new Promise((resolve) => {
       let latest = initial;
       let moving = opts.alreadyMoving;
       let done = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      /** The wait a form is open for, and the last wait this turn answered. */
+      let asking: string | null = null;
+      let answered: string | null = opts.answered ?? null;
 
       const finish = (stopReason: StopReason, note?: string) => {
         if (done) return;
@@ -238,7 +381,30 @@ export class AcpBridge {
         const line = note ?? (stopReason === 'end_turn' ? settledText(latest) : null);
         if (line) this.emit(sessionId, textUpdate(line));
         const usage = usageOf(latest);
-        resolve(usage ? { stopReason, usage } : { stopReason });
+        resolve({
+          stopReason,
+          ...(usage ? { usage } : {}),
+          ...(latest.spend ? { _meta: { buildd: { spend: latest.spend } } } : {}),
+        });
+      };
+
+      const ask = (w: PublicWorker) => {
+        const key = waitKey(w.waitingFor)!;
+        const form = waitingForm(w.waitingFor!)!;
+        asking = key;
+        this.deps.request!('elicitation/create', { sessionId, mode: 'form', ...form })
+          .then(async (res) => {
+            if (asking === key) asking = null;
+            if (done) return;
+            // Answered elsewhere (dashboard, top) or moved on: this answer is stale.
+            if (latest.status !== 'waiting' || waitKey(latest.waitingFor) !== key) return;
+            const value = res?.action === 'accept' && typeof res.content?.answer === 'string' ? res.content.answer.trim() : '';
+            if (!value) { finish('end_turn'); return; }
+            const r = await this.deps.runner.act(session.workerId!, 'answer', value);
+            if (r.status >= 400) { finish('end_turn', refusal(r)); return; }
+            answered = key;
+          })
+          .catch(() => { if (asking === key) asking = null; finish('end_turn'); });
       };
 
       const onWorker = (w: PublicWorker) => {
@@ -247,6 +413,13 @@ export class AcpBridge {
         const updates = session.cursor.next(w.messages, { live: true });
         for (const u of updates) this.emit(sessionId, u);
         if (w.status === 'working' || updates.length > 0) moving = true;
+        if (w.status === 'waiting') {
+          const key = waitKey(w.waitingFor);
+          // Still showing the wait this turn just answered: the runner has not caught up.
+          if (key !== null && key === answered) return;
+          if (key !== null && key === asking) return;
+          if (this.canElicit && w.waitingFor && waitingForm(w.waitingFor)) { moving = true; ask(w); return; }
+        }
         if (moving && isSettled(w.status)) finish('end_turn');
       };
 
@@ -257,7 +430,10 @@ export class AcpBridge {
       };
 
       if (opts.watching) {
-        if (isSettled(initial.status)) finish('end_turn');
+        if (initial.status === 'waiting' && this.canElicit && initial.waitingFor && waitingForm(initial.waitingFor)) {
+          moving = true;
+          ask(initial);
+        } else if (isSettled(initial.status)) finish('end_turn');
         else moving = true;
         return;
       }
@@ -272,9 +448,9 @@ export class AcpBridge {
     session?.cancelTurn?.();
   }
 
-  /** A prompt for a session this process never loaded: the session id is the worker id. */
+  /** A prompt for a session this process never loaded (the client resumed its own thread). */
   private adopt(sessionId: string): Session {
-    const session: Session = { workerId: sessionId.startsWith('new-') ? null : sessionId, cursor: new MessageCursor() };
+    const session: Session = { workerId: this.workerIdFor(sessionId), cwd: null, cursor: new MessageCursor() };
     this.sessions.set(sessionId, session);
     return session;
   }
@@ -287,6 +463,11 @@ export class AcpBridge {
   private emit(sessionId: string, update: SessionUpdate) {
     this.deps.notify(sessionId, update);
   }
+}
+
+function label(ws: BuilddWorkspace): string {
+  const where = ws.teamName ?? ws.repo;
+  return where ? `${ws.name} (${where})` : ws.name;
 }
 
 function refusal(r: { status: number; body: unknown }): string {

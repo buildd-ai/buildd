@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { RpcError } from '../../src/acp/bridge';
-import { notification, rpcLineHandler } from '../../src/acp/rpc';
+import { notification, rpcLineHandler, rpcPeer } from '../../src/acp/rpc';
 import { localPathFor, repoNamesFromRemote, socketRunnerPort } from '../../src/acp/runner-port';
+import { fileSessionLinks } from '../../src/acp/links';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { SocketClient } from '../../src/top/client';
 
 function rpc(handle: (method: string, params: any) => Promise<unknown>) {
@@ -61,8 +65,60 @@ describe('rpcLineHandler', () => {
     expect(out.map(o => o.id)).toEqual([2, 1]);
   });
 
+  test('the agent can ask the client and gets the matching response back', async () => {
+    const out: any[] = [];
+    const peer = rpcPeer({ handle: async () => null }, (f) => out.push(JSON.parse(f)));
+    const a = peer.request('elicitation/create', { q: 1 });
+    const b = peer.request('elicitation/create', { q: 2 });
+    expect(out.map(o => [o.method, o.params.q])).toEqual([['elicitation/create', 1], ['elicitation/create', 2]]);
+    expect(out[0].id).not.toBe(out[1].id);
+    // answered out of order, one with an error
+    await peer.onLine(JSON.stringify({ jsonrpc: '2.0', id: out[1].id, error: { code: -32000, message: 'declined by client' } }));
+    await peer.onLine(JSON.stringify({ jsonrpc: '2.0', id: out[0].id, result: { action: 'accept' } }));
+    expect(await a).toEqual({ action: 'accept' });
+    await expect(b).rejects.toThrow('declined by client');
+  });
+
+  test('a client request that reuses one of our ids is still handled as a request', async () => {
+    const out: any[] = [];
+    const peer = rpcPeer({ handle: async (m) => ({ m }) }, (f) => out.push(JSON.parse(f)));
+    const mine = peer.request('elicitation/create', {});
+    const id = out[0].id;
+    await peer.onLine(JSON.stringify({ jsonrpc: '2.0', id, method: 'initialize' }));
+    expect(out[1]).toEqual({ jsonrpc: '2.0', id, result: { m: 'initialize' } });
+    await peer.onLine(JSON.stringify({ jsonrpc: '2.0', id, result: 'ok' }));
+    expect(await mine).toBe('ok');
+  });
+
   test('notification frames are one JSON line', () => {
     expect(notification('session/update', { sessionId: 's' })).toBe('{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s"}}\n');
+  });
+});
+
+describe('fileSessionLinks', () => {
+  test('links persist across instances and answer both ways', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-links-'));
+    try {
+      const a = fileSessionLinks(join(dir, 'acp-sessions.json'));
+      a.set('new-1', 'w1');
+      const b = fileSessionLinks(join(dir, 'acp-sessions.json'));
+      expect(b.get('new-1')).toBe('w1');
+      expect(b.sessionFor!('w1')).toBe('new-1');
+      expect(b.get('nope')).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('a missing or corrupt file is an empty store, and the oldest links go past the cap', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-links-'));
+    try {
+      const path = join(dir, 'acp-sessions.json');
+      writeFileSync(path, '{not json');
+      const s = fileSessionLinks(path, { max: 2 });
+      expect(s.get('x')).toBeNull();
+      s.set('s1', 'w1'); s.set('s2', 'w2'); s.set('s3', 'w3');
+      const again = fileSessionLinks(path, { max: 2 });
+      expect([again.get('s1'), again.get('s2'), again.get('s3')]).toEqual([null, 'w2', 'w3']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

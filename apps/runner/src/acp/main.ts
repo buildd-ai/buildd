@@ -10,8 +10,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { AcpBridge } from './bridge';
-import { notification, rpcLineHandler } from './rpc';
+import { notification, rpcPeer, type RpcPeer } from './rpc';
 import { gitRepoRoot, projectNames, socketRunnerPort } from './runner-port';
+import { ACP_SESSIONS_FILE, fileSessionLinks } from './links';
 import { resolveBuilddHome } from '../buildd-home';
 import { runnerSocketPath } from '../runner-socket';
 
@@ -21,27 +22,33 @@ function runnerVersion(): string {
   } catch { return '0.0.0'; }
 }
 
-export async function runAcp(opts: { socketPath: string; version: string }): Promise<void> {
+export async function runAcp(opts: { socketPath: string; version: string; builddHome: string }): Promise<void> {
   // stdout is the protocol channel: keep stray logging off it.
   console.log = console.error;
   console.info = console.error;
   console.debug = console.error;
 
   const write = (frame: string) => { process.stdout.write(frame); };
+  // The bridge and the peer need each other: the peer dispatches to the bridge,
+  // the bridge asks the client through the peer.
+  let peer: RpcPeer | null = null;
   const bridge = new AcpBridge({
     runner: socketRunnerPort(opts.socketPath),
+    links: fileSessionLinks(join(opts.builddHome, ACP_SESSIONS_FILE)),
     notify: (sessionId, update) => write(notification('session/update', { sessionId, update })),
+    request: (method, params) => peer!.request(method, params),
     repoRootOf: gitRepoRoot,
     projectNamesOf: projectNames,
     version: opts.version,
   });
-  const onLine = rpcLineHandler(bridge, write);
+  peer = rpcPeer(bridge, write);
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  rl.on('line', (line) => { void onLine(line); });
+  rl.on('line', (line) => { void peer!.onLine(line); });
   await new Promise<void>((resolve) => rl.once('close', () => resolve()));
 }
 
 if (import.meta.main) {
-  await runAcp({ socketPath: runnerSocketPath(resolveBuilddHome()), version: runnerVersion() });
+  const builddHome = resolveBuilddHome();
+  await runAcp({ socketPath: runnerSocketPath(builddHome), version: runnerVersion(), builddHome });
   process.exit(0);
 }
