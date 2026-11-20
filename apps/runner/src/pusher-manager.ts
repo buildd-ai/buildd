@@ -63,6 +63,8 @@ export interface PusherManagerCallbacks {
   rollback: (workerId: string, checkpointUuid: string) => Promise<void>;
   recover: (workerId: string, mode: 'diagnose' | 'complete' | 'restart') => Promise<void>;
   sendHeartbeat: () => void;
+  /** A relay job was queued for a runner of this account (ids only): claim now. Optional for older embedders. */
+  relayNudge?: (data: { runnerId?: unknown } | null | undefined) => void;
   claimPendingTasks: () => Promise<void>;
   /** `byPerson`: the server says a person aimed this assignment at this runner, so a hold does not stop it. */
   claimAndStart: (task: BuilddTask, opts?: { byPerson?: boolean }) => Promise<LocalWorker | null>;
@@ -277,7 +279,7 @@ export class PusherManager {
   }
 
   /**
-   * The account's runner channel carries one nudge, `runner:slots`, with no
+   * The account's runner channel carries `runner:slots`, a nudge with no
    * data: the new slots or Pause (spec 97b1bd0b R-18) come back on the
    * heartbeat reply, never over Pusher.
    * Best effort; without it the next beat picks the change up.
@@ -291,6 +293,8 @@ export class PusherManager {
       if (this.slotChannel) return;
       const channel = this.pusher.subscribe(channelName);
       channel.bind('runner:slots', () => this.callbacks.sendHeartbeat());
+      // The same channel nudges the relay host (apps/web/src/lib/relay-nudge.ts); the poll is the fallback.
+      channel.bind('relay:job_queued', (data: { runnerId?: unknown } | null) => this.callbacks.relayNudge?.(data));
       this.slotChannel = channel;
     } catch { /* the next aligned beat carries it */ }
   }

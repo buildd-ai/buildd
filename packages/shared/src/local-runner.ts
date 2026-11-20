@@ -97,8 +97,12 @@ export interface LocalModelAdvert {
   contextLength: number | null;
 }
 
+/** What answered on the runner's loopback: Ollama, or another server speaking the OpenAI-compatible routes. */
+export const LOCAL_MODEL_SERVER_KINDS = ['ollama', 'openai_compat'] as const;
+export type LocalModelServerKind = (typeof LOCAL_MODEL_SERVER_KINDS)[number];
+
 export interface LocalModelsServer {
-  kind: 'ollama';
+  kind: LocalModelServerKind;
   version: string | null;
   reachable: boolean;
   checkedAt: string | null;
@@ -186,13 +190,14 @@ export function parseLocalModelsAdvert(raw: unknown): LocalModelsAdvert | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
   const server = r.server && typeof r.server === 'object' && !Array.isArray(r.server) ? (r.server as Record<string, unknown>) : null;
-  if (!server || server.kind !== 'ollama') return null;
+  const kind = server?.kind;
+  if (!server || !(LOCAL_MODEL_SERVER_KINDS as readonly unknown[]).includes(kind)) return null;
   const models = Array.isArray(r.models)
     ? r.models.map(parseModel).filter((m): m is LocalModelAdvert => m !== null).slice(0, LOCAL_MODELS_ADVERT_MAX_MODELS)
     : [];
   const out: LocalModelsAdvert = {
     server: {
-      kind: 'ollama',
+      kind: kind as LocalModelServerKind,
       version: shortLabel(server.version),
       reachable: server.reachable === true,
       checkedAt: isoOrNull(server.checkedAt),

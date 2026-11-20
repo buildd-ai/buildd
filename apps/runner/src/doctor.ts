@@ -450,6 +450,29 @@ export function checkIsolation(record?: RunnerIsolationRecord): CheckResult {
   return isolationCheck(record ?? probeThisHost());
 }
 
+/**
+ * The "Local models" line (docs/specs/local-runner-provider.md §6.1): whether
+ * the loopback model server answers, its version, how many models it serves
+ * and whether this runner is its team's relay host. `host` is null when the
+ * caller cannot know (`--doctor` runs outside the runner). Never an error: a
+ * machine with no local model server is a normal machine.
+ */
+export function checkLocalModels(view: { enabled: boolean; advert: import('@buildd/shared').LocalModelsAdvert | null; host: boolean | null }): CheckResult {
+  const name = 'Local models';
+  if (!view.enabled) return { name, status: 'ok', message: 'Relay off (BUILDD_LOCAL_MODEL_RELAY=0 or a one-task runner): nothing is advertised' };
+  if (!view.advert) return { name, status: 'ok', message: 'No local model server found (Ollama or an OpenAI-compatible server on loopback)' };
+  const { server, models } = view.advert;
+  const label = server.kind === 'ollama' ? 'Ollama' : 'OpenAI-compatible server';
+  if (!server.reachable) return { name, status: 'warn', message: `${label} stopped answering; relay jobs for this runner will fail until it is back` };
+  const embedding = models.filter(m => m.capabilities.includes('embedding')).length;
+  const host = view.host === null ? '' : view.host ? '; this runner is the pinned relay host' : '; not the pinned relay host';
+  return {
+    name,
+    status: 'ok',
+    message: `${label}${server.version ? ` ${server.version}` : ''} reachable, ${models.length} model${models.length === 1 ? '' : 's'} (${embedding} embedding)${host}`,
+  };
+}
+
 export interface BackendCheckOpts {
   /** Login probe (env, home); defaults to this process. Injected in tests. */
   probe?: MachineLoginProbe;
@@ -948,6 +971,8 @@ export function runDiagnostics(opts: {
   backends?: { claude?: BackendCheckOpts; codex?: BackendCheckOpts };
   /** Injected service status for tests. */
   hasService?: boolean;
+  /** The "Local models" line (checkLocalModels); left out when the caller did not look. */
+  localModels?: CheckResult;
 } = {}): DoctorReport {
   const record = opts.isolation ?? probeThisHost();
   const checks = [
@@ -965,6 +990,7 @@ export function runDiagnostics(opts: {
     checkDiskUsage(),
     checkStaleWorktrees(),
     checkHistoryDb(),
+    ...(opts.localModels ? [opts.localModels] : []),
   ];
 
   const summary = {

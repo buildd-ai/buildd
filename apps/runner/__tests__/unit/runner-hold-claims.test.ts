@@ -309,6 +309,7 @@ describe('Pause and concurrency 0 from buildd.dev (spec 97b1bd0b R-18, AC-12)', 
     send.mockClear();
     await (manager as any).sendHeartbeat();
     const args = send.mock.calls.at(-1) as any[];
-    expect(args.at(-1)).toBe(4242);
+    // holdChangedAt is the 15th argument; the local models advert follows it.
+    expect(args[14]).toBe(4242);
   });
 });
