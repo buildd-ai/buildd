@@ -51,6 +51,7 @@ export const RUNNER_USAGE = [
   '                             newest extras instead, --abort ends them (asks first)',
   '  buildd budget reset        Probe a held provider limit now; clears it if capacity is back',
   '  buildd web                 Open the runner on this machine in your browser',
+  '  buildd acp                 Serve this runner to an ACP client (T3 Code: Local ACP command)',
   '  buildd wsl install [--distro <name>]   Windows: set up a runner inside WSL2 (asks before',
   '                             installing WSL and Ubuntu, then runs the Linux installer in it)',
   '  buildd help                Show this help',
