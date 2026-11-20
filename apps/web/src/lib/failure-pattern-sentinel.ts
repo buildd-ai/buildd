@@ -802,7 +802,9 @@ function ruleOutputUnmetBoundary(facts: SentinelFacts, t: SentinelThresholds): I
 /**
  * Stuck lane (I-7): reported through the stranded-gate family, as the gate is
  * `serial_lane` and the work behind it is stranded. Never auto-repaired: only
- * a person releases a lane.
+ * a person releases a lane whose holder is still in delivery. A failed or
+ * cancelled holder's quiet PR is let go by `syncLanes` itself (left as
+ * `abandoned`), so it never reaches this rule.
  */
 function ruleStuckLane(facts: SentinelFacts): IncidentCandidate[] {
   const out: IncidentCandidate[] = [];

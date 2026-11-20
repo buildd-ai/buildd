@@ -9,7 +9,9 @@
  *    (lib/hard-overlap-surfaces.ts). `migration` is one lane per workspace;
  *    each hard surface label is its own lane, `surface:<label>`.
  *  - Holder: the one member that is claimed, running, or has an open,
- *    unmerged PR. A pending task with no open PR never holds (I-4).
+ *    unmerged PR. A pending task with no open PR never holds (I-4). A failed
+ *    or cancelled task whose open PR has been quiet for `STUCK_LANE_MS` stops
+ *    holding: the store ends its row as `abandoned` (I-7 bounded escape).
  *  - Position: how many go before this task: the holder, if any, plus the
  *    members ahead of it in the stored order, ready or not. Position 0 is
  *    "next, and the lane is free".
