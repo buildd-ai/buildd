@@ -142,6 +142,7 @@ import { resolveClaudeBinaryPath, resolveClaudeCliVersion } from './sdk-binary-p
 import { ModelProbePoller, createModelProbeHttpApi, sdkProbe } from './model-probe';
 import { BudgetWallProber, describeBudgetProbeRun, type BudgetProbeTrigger } from './budget-wall-probe';
 import { HookFactory } from './hook-factory';
+import { permissionPromptMode } from './local-tool-policy';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
 import { deferOnPathCollision } from './path-collision-defer';
 import {
@@ -924,7 +925,7 @@ export class WorkerManager {
       getProbedWorkers: () => this.probedWorkers,
     });
     this.hookFactory = new HookFactory({
-      config: { inputAsRetry: config.inputAsRetry },
+      config: { inputAsRetry: config.inputAsRetry, permissionPrompts: permissionPromptMode() },
       buildd: this.buildd,
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       emit: (event) => this.emit(event),
