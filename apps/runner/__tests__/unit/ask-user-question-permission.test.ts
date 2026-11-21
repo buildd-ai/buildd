@@ -61,7 +61,7 @@ const mockAddMilestone = mock((_w: LocalWorker, _m: Milestone) => {});
 const mockEmit = mock((_e: any) => {});
 
 function makeFactory(
-  config: { inputAsRetry?: boolean } = {},
+  config: { inputAsRetry?: boolean; permissionPrompts?: 'policy' | 'ask' } = {},
   pendingPermissionRequests = new Map<string, any>(),
 ) {
   return new HookFactory({
@@ -191,10 +191,12 @@ describe('AskUserQuestion permission gates', () => {
       expect(pending.has(worker.id)).toBe(false);
     });
 
-    test('control: a non-AskUserQuestion tool (Bash) STILL surfaces a permission prompt', async () => {
+    // Under the default (policy) a non-AskUserQuestion tool is refused outright
+    // (local-tool-policy.test.ts); the prompt survives only in legacy ask mode.
+    test('control (legacy ask mode): a non-AskUserQuestion tool (Bash) STILL surfaces a permission prompt', async () => {
       const pending = new Map<string, any>();
       const worker = makeWorker();
-      const hook = makeFactory({}, pending).createPermissionRequestHook(worker);
+      const hook = makeFactory({ permissionPrompts: 'ask' }, pending).createPermissionRequestHook(worker);
 
       // Don't await — it blocks until the user resolves.
       hook({
@@ -247,10 +249,10 @@ describe('AskUserQuestion permission gates', () => {
       expect(pending.has(worker.id)).toBe(false);
     });
 
-    test('control: a subagent Bash call STILL blocks on a permission prompt', async () => {
+    test('control (legacy ask mode): a subagent Bash call STILL blocks on a permission prompt', async () => {
       const pending = new Map<string, any>();
       const worker = makeWorker();
-      const cb = makeFactory({}, pending).createCanUseToolCallback(worker, false);
+      const cb = makeFactory({ permissionPrompts: 'ask' }, pending).createCanUseToolCallback(worker, false);
 
       // Don't await — it blocks until resolved.
       cb('Bash', { command: 'npm test' }, {

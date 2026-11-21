@@ -2,7 +2,7 @@ import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, PermissionSuggestion } from './types';
 import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
 import { findWorktreeEscape, findWriteEscape } from './worktree-confinement.js';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS, OWNER_ONLY_GITHUB_COMMAND_PATTERNS, classifyArtifactToolCall, isClaudeAiArtifactTool, type ClaudeAiArtifactAccess } from '@buildd/shared';
+import { classifyArtifactToolCall, isClaudeAiArtifactTool, type ClaudeAiArtifactAccess } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { looksLikeMergeCommand, reportAgentMerges } from './merge-drivers';
 import { saveWorker as storeSaveWorker } from './worker-store';
@@ -11,7 +11,7 @@ import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js
 import { isBuilddActionTool } from '@buildd/shared';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
-import { findRunnerKill, KILL_GUARDED_TOOLS, runnerProcessIds } from './kill-guard.js';
+import { callSubject, localPolicyDenial, outsidePolicyDenial, permissionPromptMode, type PermissionPromptMode } from './local-tool-policy.js';
 import { questionFromToolInput, runQuestionGate } from './question-gate.js';
 import type { QuestionGateReply } from '@buildd/core/question-gate';
 import type { PathClaimResponse } from './buildd';
@@ -77,6 +77,12 @@ export function denyPreToolUse(reason: string) {
 export interface HookFactoryContext {
   config: {
     inputAsRetry?: boolean;
+    /**
+     * What happens when the agent SDK still wants a person to approve a tool
+     * call (local-tool-policy.ts). `policy` (default): refused with a reason.
+     * `ask`: the old Allow / Always allow / Deny prompt.
+     */
+    permissionPrompts?: PermissionPromptMode;
   };
   buildd: BuilddClient;
   addMilestone: (worker: LocalWorker, milestone: Milestone) => void;
@@ -595,84 +601,14 @@ export class HookFactory {
         };
       }
 
-      // A kill by process name reaches the runner itself (kill-guard.ts).
-      if (KILL_GUARDED_TOOLS.has(toolName)) {
-        const kill = findRunnerKill((toolInput.command as string) || '', runnerProcessIds());
-        if (kill) {
-          console.log(`[Worker ${worker.id}] Blocked kill outside the agent's own processes: ${String(toolInput.command).slice(0, 80)}`);
-          return denyPreToolUse(runnerDenial(kill.reason, kill.hint));
-        }
-      }
-
-      // Block dangerous bash commands (destructive ops + credential file reads)
-      if (toolName === 'Bash') {
-        const command = (toolInput.command as string) || '';
-        for (const pattern of DANGEROUS_PATTERNS) {
-          if (pattern.test(command)) {
-            console.log(`[Worker ${worker.id}] Blocked dangerous command: ${command.slice(0, 80)}`);
-            return denyPreToolUse(runnerDenial(
-              `this Bash command matches the destructive-command rule ${pattern}`,
-              'use a narrower command that does the same job (for example delete a specific path inside your worktree, or reset one file), or skip the step if the task does not need it',
-            ));
-          }
-        }
-        // Block bash reads of runner credential files (second layer after env scoping)
-        for (const pattern of DANGEROUS_CREDENTIAL_READ_PATTERNS) {
-          if (pattern.test(command)) {
-            console.log(`[Worker ${worker.id}] Blocked credential read via bash: ${command.slice(0, 80)}`);
-            return denyPreToolUse(runnerDenial(
-              'reading the runner\'s own credential files is blocked',
-              'use the credentials already provided to you through your environment and MCP tools',
-            ));
-          }
-        }
-
-        for (const pattern of OWNER_ONLY_GITHUB_COMMAND_PATTERNS) {
-          if (pattern.test(command)) {
-            console.log(`[Worker ${worker.id}] Blocked owner-only GitHub command: ${command.slice(0, 80)}`);
-            return denyPreToolUse(runnerDenial(
-              'dispatching the Release workflow is an owner action, and from here GitHub would record it as the owner',
-              'buildd amends a release candidate by itself when its fix PR merges; if a release really is needed, ask for it with buildd action=post_note or use the trigger_release action',
-            ));
-          }
-        }
-
-        // Explicitly allow safe bash commands (prevents acceptEdits stall)
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse' as const,
-            permissionDecision: 'allow' as const,
-            permissionDecisionReason: 'Allowed by buildd permission hook',
-          },
-        };
-      }
-
-      // Block reads of runner credential files (capability scoping — not a permission prompt)
-      if (toolName === 'Read') {
-        const filePath = (toolInput.file_path as string) || '';
-        for (const pattern of SENSITIVE_READ_PATHS) {
-          if (pattern.test(filePath)) {
-            console.log(`[Worker ${worker.id}] Blocked read of runner credential file: ${filePath}`);
-            return denyPreToolUse(runnerDenial(
-              `reading the runner's own credential files is blocked (${filePath})`,
-              'use the credentials already provided to you through your environment and MCP tools',
-            ));
-          }
-        }
-      }
-
-      // Block writes to sensitive paths
-      if (['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
-        const filePath = (toolInput.file_path as string) || (toolInput.filePath as string) || '';
-        for (const pattern of SENSITIVE_PATHS) {
-          if (pattern.test(filePath)) {
-            console.log(`[Worker ${worker.id}] Blocked sensitive path write: ${filePath}`);
-            return denyPreToolUse(runnerDenial(
-              `writes to ${filePath} are blocked because it is a sensitive path`,
-              'leave that file unchanged; if the task genuinely needs it changed, say so in your complete_task summary',
-            ));
-          }
-        }
+      // The runner's fixed rules (local-tool-policy.ts): runner kills,
+      // destructive commands, credential reads, owner-only GitHub commands,
+      // sensitive paths. The same rules decide the PermissionRequest and
+      // subagent canUseTool paths, so no path is looser than another.
+      const denial = localPolicyDenial(toolName, toolInput ?? {});
+      if (denial) {
+        console.log(`[Worker ${worker.id}] Refused by policy: ${toolName} ${String(callSubject(toolName, toolInput ?? {}) ?? '').slice(0, 80)}`.trim());
+        return denyPreToolUse(denial);
       }
 
       // Allow all other tools by default (prevents acceptEdits stall —
@@ -823,6 +759,21 @@ export class HookFactory {
         };
       }
 
+      // Decided by policy: the rules' own reason when they name the call,
+      // otherwise "outside this run's policy". Nobody is asked, nothing
+      // waits, and the SDK's suggested rule changes are never applied.
+      if ((this.ctx.config.permissionPrompts ?? 'policy') === 'policy') {
+        const reason = localPolicyDenial(toolName, toolInput ?? {}) ?? outsidePolicyDenial(toolName, callSubject(toolName, toolInput ?? {}));
+        console.log(`[Worker ${worker.id}] Refused by policy (SDK permission check): ${toolName}`);
+        this.ctx.addMilestone(worker, { type: 'status', label: `Refused by policy: ${toolName}`, ts: Date.now() });
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PermissionRequest' as const,
+            decision: { behavior: 'deny' as const, message: reason },
+          },
+        };
+      }
+
       console.log(`[Worker ${worker.id}] Permission requested: ${toolName}, suggestions=${permissionSuggestions?.length || 0}`);
 
       // Build human-readable labels for each suggestion
@@ -930,7 +881,16 @@ export class HookFactory {
         return { behavior: 'allow' as const };
       }
 
-      // Background subagent path: route to user for approval
+      // Background subagent path, decided by policy (local-tool-policy.ts):
+      // refused with a reason, as subagent prompts were before SDK 0.3.186.
+      if ((this.ctx.config.permissionPrompts ?? 'policy') === 'policy') {
+        const message = localPolicyDenial(toolName, input ?? {}) ?? outsidePolicyDenial(toolName, callSubject(toolName, input ?? {}));
+        console.log(`[Worker ${worker.id}] canUseTool: refused by policy ${toolName} from agent ${agentID} (request ${requestId})`);
+        this.ctx.addMilestone(worker, { type: 'status', label: `Refused by policy: ${toolName} (agent: ${agentID})`, ts: Date.now() });
+        return { behavior: 'deny' as const, message };
+      }
+
+      // Legacy (BUILDD_PERMISSION_PROMPTS=ask): route to the user for approval.
       // If another permission request is already pending, deny to avoid deadlock
       if (this.ctx.pendingPermissionRequests.has(worker.id)) {
         console.log(`[Worker ${worker.id}] canUseTool: denied ${toolName} from agent ${agentID} (request ${requestId}) — another request already pending`);
