@@ -6,7 +6,7 @@
  * (reconnect_required, no abort), network outage on either side (fail
  * closed), anti-replay, rate control, audit, and no credential in any answer.
  */
-import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const CONN = '0b0b0b0b-1111-4222-8333-444455556666';
@@ -465,5 +465,65 @@ describe('no credential ever leaves the server', () => {
     const r = new NextRequest(`http://localhost/api/mcp/c/${CONN}?worker=${WORKER}`, { method: 'DELETE', headers: { authorization: `Bearer ${AGENT_TOKEN}`, 'mcp-session-id': 's1' } });
     await DELETE(r, ctx());
     expect(upstreamCalls.at(-1)!.headers.get('authorization')).toBe(`Bearer ${PROVIDER_TOKEN}`);
+  });
+});
+
+describe('the decision comes from a pluggable policy decision point', () => {
+  const ENV_KEYS = ['BUILDD_CONNECTOR_PDP', 'BUILDD_CONNECTOR_CEDAR_POLICIES'] as const;
+  const saved = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
+  const restore = () => { for (const k of ENV_KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } };
+  afterEach(restore);
+  const sent = () => upstreamCalls.filter(c => c.body?.method === 'tools/call');
+  const callAudit = () => audit.filter(a => a.capability === 'connector.tool_call');
+
+  it('built-in (default): audit rows name no policy', async () => {
+    delete process.env.BUILDD_CONNECTOR_PDP;
+    mockAuthorizeTool.mockResolvedValue({ allowed: true, grantId: 'g-1' });
+    await POST(req(call('queryApl')), ctx());
+    await POST(req(call('createMonitor')), ctx());
+    expect(callAudit().map(a => a.sideEffect.policyId)).toEqual([undefined, undefined]);
+  });
+
+  it('cedar: a permitted read is forwarded and its audit row names the policy', async () => {
+    process.env.BUILDD_CONNECTOR_PDP = 'cedar';
+    process.env.BUILDD_CONNECTOR_CEDAR_POLICIES = '@id("reads-only") permit(principal, action in Buildd::Action::"callTool", resource) when { context.risk == "read" };';
+    const j = await (await POST(req(call('queryApl')), ctx())).json();
+    expect(j.result.content[0].text).toBe('ok');
+    expect(callAudit().at(-1)).toMatchObject({ decision: 'allowed', reasonCode: 'role_mount', sideEffect: { policyId: 'reads-only' } });
+  });
+
+  it('cedar: a write the built-in would allow on its grant is refused when no policy permits it, and never sent', async () => {
+    process.env.BUILDD_CONNECTOR_PDP = 'cedar';
+    process.env.BUILDD_CONNECTOR_CEDAR_POLICIES = '@id("reads-only") permit(principal, action, resource) when { context.risk == "read" };';
+    mockAuthorizeTool.mockResolvedValue({ allowed: true, grantId: 'g-1' });
+    const out = await toolError(await POST(req(call('createMonitor')), ctx()));
+    expect(out.code).toBe('policy_denied');
+    expect(sent()).toHaveLength(0);
+    expect(callAudit().at(-1)).toMatchObject({ decision: 'refused', reasonCode: 'policy_denied' });
+  });
+
+  it('cedar: a forbid is named in the audit row', async () => {
+    process.env.BUILDD_CONNECTOR_PDP = 'cedar';
+    process.env.BUILDD_CONNECTOR_CEDAR_POLICIES = 'permit(principal, action, resource);\n@id("no-monitors") forbid(principal, action, resource == Buildd::Tool::"' + CONN + '/createMonitor");';
+    mockAuthorizeTool.mockResolvedValue({ allowed: true, grantId: 'g-1' });
+    expect((await toolError(await POST(req(call('createMonitor')), ctx()))).code).toBe('policy_denied');
+    expect(callAudit().at(-1)).toMatchObject({ reasonCode: 'policy_denied', sideEffect: { policyId: 'no-monitors' } });
+  });
+
+  it('cedar never lifts what the built-in refuses: no grant is still capability_not_granted', async () => {
+    process.env.BUILDD_CONNECTOR_PDP = 'cedar';
+    process.env.BUILDD_CONNECTOR_CEDAR_POLICIES = 'permit(principal, action, resource);';
+    expect((await toolError(await POST(req(call('createMonitor')), ctx()))).code).toBe('capability_not_granted');
+  });
+
+  it('a misconfigured PDP fails closed: nothing is sent', async () => {
+    process.env.BUILDD_CONNECTOR_PDP = 'cedar';
+    delete process.env.BUILDD_CONNECTOR_CEDAR_POLICIES;
+    expect((await toolError(await POST(req(call('queryApl')), ctx()))).code).toBe('gateway_unavailable');
+    process.env.BUILDD_CONNECTOR_CEDAR_POLICIES = 'permit(principal, action resource);';
+    expect((await toolError(await POST(req(call('queryApl')), ctx()))).code).toBe('gateway_unavailable');
+    process.env.BUILDD_CONNECTOR_PDP = 'opa';
+    expect((await toolError(await POST(req(call('queryApl')), ctx()))).code).toBe('gateway_unavailable');
+    expect(sent()).toHaveLength(0);
   });
 });
