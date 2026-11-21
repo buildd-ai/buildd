@@ -12,6 +12,13 @@
  *   |----|-------------|-------|
  *   | **R-1** | Totals are in the shopper's currency. | unit test |
  *
+ * A line that only mentions an id is not a definition, even at the start of
+ * a line: an id followed by punctuation ("R-22); Flow MUST", "D-1, D-2"), an
+ * id followed straight by a lowercase word ("- AC-214 is held by ...",
+ * "AC-4 and AC-5 were retired"), and an id that wraps onto a new line in the
+ * middle of a paragraph ("... the rule in\nAC-13. It replaces ..."). A
+ * heading or a bold id always defines; so does "R-1: text" and "R-1 Text".
+ *
  * An id is a plain kind and number. `AC-3a`, `AC-AQR-1` and `INV-2` are not
  * read (AC-3a is not AC-3); criterionIdProblems lists them, and the ids a body
  * defines more than once, so an import can say what it could not read.
@@ -20,7 +27,33 @@ export type RequirementKind = 'requirement' | 'acceptance' | 'decision' | 'invar
 export interface RequirementRef { id: string; kind: RequirementKind; line: number; text: string }
 
 const KIND: Record<string, RequirementKind> = { R: 'requirement', AC: 'acceptance', D: 'decision', I: 'invariant' };
-const DEF = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\s*(R|AC|D|I)-(\d+)(?![A-Za-z0-9])\s*(?:\*\*|__)?\s*[:.)—–-]?\s*(.*)$/;
+const DEF = /^\s*(#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(\*\*|__)?\s*(R|AC|D|I)-(\d+)(?![A-Za-z0-9])\s*(?:\*\*|__)?\s*([:.)—–-]?)\s*(.*)$/;
+/** A line that ends a sentence, a label or a list item: what comes after it starts afresh. */
+const ENDS_THOUGHT = /[.:!?;)\]`*|]\s*$/;
+const STARTS_ID = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\s*(?:R|AC|D|I)-\d+(?![A-Za-z0-9])/;
+
+/**
+ * The id a line defines, outside a table: its kind, number and text; null when
+ * the line defines none (no id at its start, or one it only mentions). `prev`
+ * is the line above, so an id that wraps mid-paragraph is read as a mention.
+ */
+export function lineDefinition(raw: string, prev?: string): { kind: string; n: number; text: string } | null {
+  const m = DEF.exec(raw);
+  if (!m) return null;
+  const [, lead, bold, kind, num, sep, text] = m as unknown as [string, string | undefined, string | undefined, string, string, string, string];
+  const heading = !!lead && lead.startsWith('#');
+  if (!heading && !bold) {
+    // "R-22);", "D-1, D-2": the id is part of a sentence.
+    if (/^[;,)\]]/.test(text)) return null;
+    // "- AC-214 is held by ...", "AC-4 and AC-5 ...": the id is a sentence's subject.
+    if (!sep && /^[a-z]/.test(text)) return null;
+    // "... the rule in\nAC-13. It replaces": the paragraph above runs on into this line.
+    const listed = !!lead;
+    if (!listed && sep !== ':' && sep !== '—' && sep !== '–' && prev !== undefined && prev.trim()
+      && !ENDS_THOUGHT.test(prev) && !/^\s*(#{1,6}\s|[|>]|```|~~~)/.test(prev) && !STARTS_ID.test(prev)) return null;
+  }
+  return { kind, n: Number(num), text: text.replace(/\*\*|__/g, '').trim() };
+}
 
 const TABLE_ID = /^(?:\*\*|__)?\s*(R|AC|D|I)-(\d+)\s*(?:\*\*|__)?$/;
 
@@ -41,27 +74,25 @@ export function tableRowId(line: string): { kind: string; n: number; text: strin
   return { kind: m[1]!, n: Number(m[2]), text };
 }
 
+/** The id line `i` of a body defines (a table row or a definition line), or null. Every reader of criterion ids uses this one rule. */
+export function definitionAt(lines: readonly string[], i: number): { kind: string; n: number; text: string } | null {
+  return tableRowId(lines[i]!) ?? lineDefinition(lines[i]!, i > 0 ? lines[i - 1] : undefined);
+}
+
 export function requirementIds(body: string): RequirementRef[] {
   const out: RequirementRef[] = [];
   const seen = new Set<string>();
   let fenced = false;
-  body.split('\n').forEach((raw, i) => {
+  const lines = body.split('\n');
+  lines.forEach((raw, i) => {
     if (/^\s*(```|~~~)/.test(raw)) { fenced = !fenced; return; }
     if (fenced) return;
-    const row = tableRowId(raw);
-    if (row) {
-      const id = `${row.kind}-${row.n}`;
-      if (seen.has(id)) return;
-      seen.add(id);
-      out.push({ id, kind: KIND[row.kind]!, line: i + 1, text: row.text });
-      return;
-    }
-    const m = DEF.exec(raw);
-    if (!m) return;
-    const id = `${m[1]}-${Number(m[2])}`;
+    const def = definitionAt(lines, i);
+    if (!def) return;
+    const id = `${def.kind}-${def.n}`;
     if (seen.has(id)) return;
     seen.add(id);
-    out.push({ id, kind: KIND[m[1]!]!, line: i + 1, text: m[3]!.replace(/\*\*|__/g, '').trim() });
+    out.push({ id, kind: KIND[def.kind]!, line: i + 1, text: def.text });
   });
   return out;
 }
@@ -95,14 +126,15 @@ export function criterionIdProblems(body: string): CriterionIdProblems {
   const unreadable: CriterionIdProblems['unreadable'] = [];
   const defs = new Map<string, number[]>();
   let fenced = false;
-  body.split('\n').forEach((raw, i) => {
+  const lines = body.split('\n');
+  lines.forEach((raw, i) => {
     if (/^\s*(```|~~~)/.test(raw)) { fenced = !fenced; return; }
     if (fenced) return;
     const line = i + 1;
-    const row = tableRowId(raw);
-    const m = row ? null : DEF.exec(raw);
-    const id = row ? `${row.kind}-${row.n}` : m ? `${m[1]}-${Number(m[2])}` : null;
-    if (id) { defs.set(id, [...(defs.get(id) ?? []), line]); return; }
+    const def = definitionAt(lines, i);
+    if (def) { const id = `${def.kind}-${def.n}`; defs.set(id, [...(defs.get(id) ?? []), line]); return; }
+    // A mention ("AC-214 is held by ...") is neither a definition nor an unread id.
+    if (DEF.test(raw)) return;
     const cells = tableCells(raw);
     const loose = cells ? LOOSE_TABLE_ID.exec(cells[0]!)?.[1] : LOOSE_DEF.exec(raw)?.[1];
     if (loose && !PLAIN_ID.test(loose)) unreadable.push({ id: loose, line });

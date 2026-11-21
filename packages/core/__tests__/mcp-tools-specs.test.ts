@@ -127,6 +127,20 @@ describe('manage_specs', () => {
     expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/${SPEC}`, 'PATCH', { expectedVersion: 2, body: 'new' }]);
   });
 
+  it('a revise with only replaces sends no body and says the text was kept', async () => {
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, replaces: ['old-spec'] }, ctx()));
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ expectedVersion: 2, replaces: ['old-spec'] });
+    expect(r).toContain('text kept as it was');
+  });
+
+  it('a malformed explanation is refused before anything is sent', async () => {
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'new', explanation: { summary: 'x'.repeat(301), lines: {} } }, ctx());
+    expect(r.isError).toBe(true);
+    expect(out(r)).toContain('at most 300 characters');
+    expect(api.mock.calls).toHaveLength(0);
+  });
+
   it('a revise refused because the body moved outside a revise gives the reason, not retry advice', async () => {
     api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"The spec body was changed outside a spec revise","code":"spec_body_moved"}'));
     const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'new' }, ctx());
