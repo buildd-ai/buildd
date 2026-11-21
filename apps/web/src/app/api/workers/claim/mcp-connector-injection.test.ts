@@ -1085,3 +1085,84 @@ describe('resolveMcpConnectorsForTask — gateway providers are brokered', () =>
     }
   });
 });
+
+describe('resolveMcpConnectorsForTask — none and assertion connectors through the gateway', () => {
+  /** Honours both `inArray(id, …)` and `eq(teamId, …)` lookups. */
+  function stageTeamConnectors(rows: any[]) {
+    mockConnectorsFindMany.mockImplementation(async (args: any) => {
+      const w = args?.where;
+      if (w?.type === 'eq' && w.field === 'teamId') return rows.filter(r => r.teamId === w.value);
+      const ids: string[] = w?.values ?? [];
+      return rows.filter(r => ids.includes(r.id));
+    });
+  }
+  async function withMode<T>(mode: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.BUILDD_CONNECTOR_GATEWAY;
+    process.env.BUILDD_CONNECTOR_GATEWAY = mode;
+    try { return await fn(); } finally {
+      if (prev === undefined) delete process.env.BUILDD_CONNECTOR_GATEWAY; else process.env.BUILDD_CONNECTOR_GATEWAY = prev;
+    }
+  }
+  const assertionConnector = (over: Record<string, any> = {}) => connector({
+    id: 'conn-assert', name: 'cue', url: 'https://cue.example.test/api/mcp', authMode: 'assertion',
+    assertionAudience: 'https://cue.example.test/api/mcp',
+    assertionTokenEndpoint: 'https://cue.example.test/api/oauth/token',
+    ...over,
+  });
+
+  it('mounts a role-listed authMode=none connector as a gateway path, with no url', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-1'])]);
+    stageTeamConnectors([connector()]);
+    const result = await withMode('all', () => resolve());
+    expect(result).toEqual([{ id: 'conn-1', name: 'my-mcp', transport: 'http', gateway: true, gatewayPath: '/api/mcp/c/conn-1' }]);
+    expect(JSON.stringify(result)).not.toContain('mcp.example.com');
+  });
+
+  it('mounts an assertion connector as a gateway path: no mint URL, audience or token endpoint reach the runner', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-assert'])]);
+    stageTeamConnectors([assertionConnector()]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    const result = await withMode('all', () => resolve());
+    expect(result).toEqual([{ id: 'conn-assert', name: 'cue', transport: 'http', gateway: true, gatewayPath: '/api/mcp/c/conn-assert' }]);
+    expect((result[0] as any).assertionMode).toBeUndefined();
+    // Neither mode needs a stored credential.
+    expect(mockSecretsFindMany.mock.calls.find(c => purposeOf(c[0]) === 'mcp_connector_credential')).toBeUndefined();
+  });
+
+  it('still omits a misconfigured assertion connector under the gateway', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-assert'])]);
+    stageTeamConnectors([assertionConnector({ assertionTokenEndpoint: null })]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    expect(await withMode('all', () => resolve())).toEqual([]);
+  });
+
+  it('mounts an owned none/assertion connector the role does not list as optional', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role([])]);
+    stageTeamConnectors([connector(), assertionConnector()]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    const result = await withMode('all', () => resolve());
+    expect(result.map(c => [c.name, (c as any).gateway, c.optional])).toEqual([['my-mcp', true, true], ['cue', true, true]]);
+  });
+
+  it('keeps the direct mount when the gateway does not broker them (default providers mode, or off)', async () => {
+    for (const mode of ['providers', 'off']) {
+      mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-1', 'conn-assert'])]);
+      stageTeamConnectors([connector(), assertionConnector()]);
+      mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+      const result = await withMode(mode, () => resolve());
+      expect(result.map(c => [c.name, (c as any).gateway, (c as any).url])).toEqual([
+        ['my-mcp', undefined, 'https://mcp.example.com'],
+        ['cue', undefined, 'https://cue.example.test/api/mcp'],
+      ]);
+      expect((result[1] as any).assertionMode).toBe(true);
+    }
+  });
+
+  it('never routes a stdio connector to the gateway', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-stdio'])]);
+    stageTeamConnectors([connector({ id: 'conn-stdio', name: 'local', url: null, transport: 'stdio', command: 'npx', args: ['x'] })]);
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    const result = await withMode('all', () => resolve());
+    expect(result).toEqual([{ name: 'local', transport: 'stdio', command: 'npx', args: ['x'] }]);
+  });
+});
