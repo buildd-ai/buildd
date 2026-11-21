@@ -50,10 +50,7 @@ concurrency:
 jobs:
   fresh-install:
     name: Fresh install (ubuntu, non-root, no sudo)
-    # Job containers need the runner's tool cache bind-mounted by host path; the
-    # self-hosted runner reaches the host Docker socket from inside its own
-    # container, so /__e (node) is missing in the job container. Hosted only.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 20
     # The runner pulls a job container before any step runs, so no step can
     # retry it or fall back. Docker Hub rate-limits shared runner IPs and ECR
@@ -91,10 +88,7 @@ jobs:
 
   fresh-install-client:
     name: Fresh install --client (ubuntu, non-root, no sudo)
-    # Job containers need the runner's tool cache bind-mounted by host path; the
-    # self-hosted runner reaches the host Docker socket from inside its own
-    # container, so /__e (node) is missing in the job container. Hosted only.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 20
     # The runner pulls a job container before any step runs, so no step can
     # retry it or fall back. Docker Hub rate-limits shared runner IPs and ECR
