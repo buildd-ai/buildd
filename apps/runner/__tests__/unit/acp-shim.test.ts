@@ -30,7 +30,8 @@ describe('ensureAcpShim', () => {
       expect(ensureAcpShim(opts(h))).toBe('written');
       const p = join(h, '.local', 'bin', 'buildd-acp');
       expect(readFileSync(p, 'utf8')).toContain('acp/main.ts');
-      expect(statSync(p).mode & 0o111).not.toBe(0);
+      // Windows has no exec bit; the shim is never written there in practice.
+      if (process.platform !== 'win32') expect(statSync(p).mode & 0o111).not.toBe(0);
     } finally { rmSync(h, { recursive: true, force: true }); }
   });
 
