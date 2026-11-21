@@ -21,7 +21,7 @@ import { toTopWorkerSummaries } from './top-worker-summary';
 import { todayTotals } from './run-route';
 import { Outbox, createReplayHandler } from './outbox';
 import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
-import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
+import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE, acpLauncherRefusal } from './cli-args';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
   isUpdateTargetReachable, classifyUpdateTarget, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
@@ -178,6 +178,21 @@ if (CLI.kind === 'web') {
   const { runWebCommand } = await import('./runner-web');
   const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
   process.exit(await runWebCommand({ socketPath: socketPathFor(BUILDD_DIR) }));
+}
+
+// `buildd acp`: this runner as an ACP agent on stdio (acp/main.ts). Current
+// launchers exec acp/main.ts themselves; this path serves `bun src/index.ts acp`
+// and older launchers, refusing the case where their loop took stdin away.
+if (CLI.kind === 'acp') {
+  const refusal = acpLauncherRefusal(process.env, !!process.stdin.isTTY);
+  if (refusal) {
+    console.error(refusal);
+    process.exit(EXIT_CLI_USAGE);
+  }
+  const { runAcp } = await import('./acp/main');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  await runAcp({ socketPath: socketPathFor(BUILDD_DIR), version: PKG_VERSION, builddHome: BUILDD_DIR });
+  process.exit(0);
 }
 
 // `buildd wsl install [--distro <name>]`: Windows only. Asks before installing

@@ -701,6 +701,15 @@ CLIENTUSAGE
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" --help
     ;;
 
+  acp)
+    # `buildd acp`: this machine's runner as an ACP agent on stdio, for T3 Code
+    # and other ACP clients (src/acp/main.ts). exec'd here because the restart
+    # loop below backgrounds the runner when stdin is not a terminal, and a
+    # background job's stdin is /dev/null: the protocol would never arrive.
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/acp/main.ts" "$@"
+    ;;
+
   init)
     # Per-workspace MCP registration: writes .mcp.json in the current repo.
     # status, logout and init live in launcher-commands.ts, shared with the
