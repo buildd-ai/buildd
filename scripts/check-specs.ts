@@ -133,7 +133,6 @@ export const DUPLICATE_CRITERIA_DEBT = new Set([
   'artifacts-and-sharing',
   'credential-isolation',
   'mission-branch-refresh',
-  'settings-models',
   'timeline-mobile-rail',
 ]);
 

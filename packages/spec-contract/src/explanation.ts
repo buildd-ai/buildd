@@ -34,6 +34,33 @@ function normalKey(key: string): string {
   return m ? `${m[1]!.toUpperCase()}-${Number(m[2])}` : k;
 }
 
+const RANGE_PART = /^(R|AC)-(\d+)\s*(?:to|through|\u2013|\u2014|-|\.\.)\s*(?:(R|AC)-)?(\d+)$/i;
+
+/**
+ * The criterion ids a key names when it is a range or a list ("R-201 to
+ * R-235", "AC-6 – AC-9", "R-3, R-5 and R-7"): each id once, in order. Null
+ * when the key is one id or a heading. A range runs one kind, low to high, at
+ * most EXPLANATION_LINES_MAX ids.
+ */
+export function explanationKeyIds(key: string): string[] | null {
+  const parts = key.trim().split(/\s*(?:,|;|\band\b|&)\s*/i).filter(Boolean);
+  const out: string[] = [];
+  let ranged = false;
+  for (const part of parts) {
+    const one = CRITERION.exec(part);
+    if (one) { out.push(normalKey(part)); continue; }
+    const r = RANGE_PART.exec(part);
+    if (!r) return null;
+    const kind = r[1]!.toUpperCase();
+    if (r[3] && r[3].toUpperCase() !== kind) return null;
+    const a = Number(r[2]); const b = Number(r[4]);
+    if (b < a || b - a >= EXPLANATION_LINES_MAX) return null;
+    for (let n = a; n <= b; n++) out.push(`${kind}-${n}`);
+    ranged = true;
+  }
+  return ranged || out.length > 1 ? out : null;
+}
+
 /** Read an explanation from a request: null when omitted, an error naming the field when malformed. */
 export function parseExplanation(input: unknown): { ok: true; explanation: SpecExplanation | null } | { ok: false; error: string } {
   if (input === undefined || input === null) return { ok: true, explanation: null };
@@ -56,9 +83,13 @@ export function parseExplanation(input: unknown): { ok: true; explanation: SpecE
     if (!key || key.length > EXPLANATION_KEY_MAX) return { ok: false, error: `explanation.lines keys are a criterion id or a section heading of at most ${EXPLANATION_KEY_MAX} characters` };
     if (typeof text !== 'string' || !text.trim()) return { ok: false, error: `explanation.lines["${rawKey}"] must be a line of text` };
     if (text.trim().length > EXPLANATION_LINE_MAX) return { ok: false, error: `explanation.lines["${rawKey}"] is at most ${EXPLANATION_LINE_MAX} characters` };
-    if (key in out) return { ok: false, error: `explanation.lines names ${key} twice` };
-    out[key] = text.trim();
+    // "R-201 to R-235" is one line for each id it names, stored one key per id.
+    for (const k of explanationKeyIds(key) ?? [key]) {
+      if (k in out) return { ok: false, error: `explanation.lines names ${k} twice` };
+      out[k] = text.trim();
+    }
   }
+  if (Object.keys(out).length > EXPLANATION_LINES_MAX) return { ok: false, error: `explanation.lines holds at most ${EXPLANATION_LINES_MAX} lines, ranges counted one per id` };
   return { ok: true, explanation: { summary: summary.trim(), ...(asked ? { question: asked } : {}), lines: out } };
 }
 
@@ -81,8 +112,13 @@ export interface ExplanationCoverage {
 }
 
 const PREAMBLE = 'Before the first heading';
-/** A heading as a person writes it: no # marks, › or > between parts, case and spacing ignored. */
-const headingKey = (s: string) => s.replace(/^#+\s*/, '').split(/\s*[>›]\s*/).map((p) => p.replace(/^#+\s*/, '').trim().toLowerCase()).filter(Boolean).join(' > ');
+/**
+ * A heading as a person writes it: no # marks, › or > between parts, case and
+ * spacing ignored, and inline markdown ignored (`await_answer`, **Bold**,
+ * await_answer and awaitanswer are one heading: the section path drops the
+ * marks, so a key keeps working however it was copied).
+ */
+const headingKey = (s: string) => s.replace(/^#+\s*/, '').split(/\s*[>›]\s*/).map((p) => p.replace(/^#+\s*/, '').replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()).filter(Boolean).join(' > ');
 const lastPart = (path: string) => { const p = path.split(' > '); return p[p.length - 1]!; };
 
 /**
@@ -91,7 +127,7 @@ const lastPart = (path: string) => { const p = path.split(' > '); return p[p.len
  * changed section by its full heading path or by its own heading.
  */
 export function explanationCoverage(explanation: SpecExplanation | null, lines: readonly ChangeLine[], otherText: readonly SectionTextChange[]): ExplanationCoverage {
-  const given = new Map(Object.entries(explanation?.lines ?? {}).map(([k, v]) => [normalKey(k), v]));
+  const given = new Map(Object.entries(explanation?.lines ?? {}).flatMap(([k, v]) => (explanationKeyIds(normalKey(k)) ?? [normalKey(k)]).map((id) => [id, v] as const)));
   const used = new Set<string>();
   const take = (k: string) => { const v = given.get(k); if (v !== undefined) used.add(k); return v ?? null; };
   const items: CoverageItem[] = [];

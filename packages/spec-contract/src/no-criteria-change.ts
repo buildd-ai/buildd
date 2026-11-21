@@ -1,4 +1,4 @@
-import { criterionIdProblems, tableRowId } from './requirements';
+import { criterionIdProblems, definitionAt, tableRowId } from './requirements';
 import { sectionPaths } from './criterion-records';
 import { contentHash } from './hash';
 
@@ -60,7 +60,6 @@ export type NoCriteriaChangeResult =
 
 const FENCE = /^\s*(```|~~~)/;
 const HEADING = /^\s{0,3}#{1,6}\s/;
-const DEF = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\s*(R|AC|D|I)-(\d+)(?![A-Za-z0-9])/;
 const LABEL = /^\s*(?:[-*+]\s+)?(?:\*\*|__)?(?:check|screens?|verify|replaces)(?:\*\*|__)?\s*:/i;
 
 /**
@@ -79,9 +78,9 @@ export function criterionBlocks(body: string): { blocks: CriterionBlock[]; doubt
     if (FENCE.test(raw)) { fenced = !fenced; current = null; return; }
     if (fenced) return;
     const row = tableRowId(raw);
-    const def = row ? [raw, row.kind, String(row.n)] : DEF.exec(raw);
+    const def = definitionAt(lines, i);
     if (def) {
-      current = { id: `${def[1]}-${Number(def[2])}`, section: paths[i] ?? '', lines: [raw] };
+      current = { id: `${def.kind}-${def.n}`, section: paths[i] ?? '', lines: [raw] };
       blocks.push(current);
       words = !row;
       return;
@@ -140,8 +139,9 @@ function inOrder(x: readonly string[], y: readonly string[]): Set<string> {
 export async function noCriteriaChange(from: NoCriteriaChangeSide, to: NoCriteriaChangeSide): Promise<NoCriteriaChangeResult> {
   const a = criterionBlocks(from.body);
   const b = criterionBlocks(to.body);
-  const doubt = b.doubt ?? a.doubt;
-  if (doubt) return { unchanged: false, reason: 'doubt', message: `Not compared: ${doubt}.` };
+  // Say which side: a doubt only in the approved text stays until a revision is approved, however clean the head.
+  if (b.doubt) return { unchanged: false, reason: 'doubt', message: `Not compared: ${b.doubt}.` };
+  if (a.doubt) return { unchanged: false, reason: 'doubt', message: `Not compared: in the approved revision, ${a.doubt} (this revision is clean; the note goes once a revision without it is approved).` };
 
   // Each id's block on each side, and whether it kept its order among the
   // others; a difference in either is a change.

@@ -1,5 +1,5 @@
 import type { Verdict } from './outcome';
-import { tableRowId } from './requirements';
+import { definitionAt } from './requirements';
 
 /**
  * Check commands on spec criteria (Living Specs V1, mechanical path). A
@@ -19,7 +19,6 @@ export interface CriterionCheck { criterionId: string; command: string }
 
 export const MAX_CHECK_COMMAND = 1000;
 
-const ID = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\s*(R|AC|D|I)-(\d+)\b/;
 const HEADING = /^\s*#{1,6}\s/;
 
 /**
@@ -33,15 +32,15 @@ export function criterionLines(body: string, label: string): Array<{ criterionId
   const seen = new Set<string>();
   let current: string | null = null;
   let fenced = false;
-  for (const raw of body.split('\n')) {
+  const lines = body.split('\n');
+  for (const [i, raw] of lines.entries()) {
     if (/^\s*(```|~~~)/.test(raw)) { fenced = !fenced; continue; }
     if (fenced) continue;
-    const row = tableRowId(raw);
-    const id = row ? [raw, row.kind, String(row.n)] : ID.exec(raw);
+    const id = definitionAt(lines, i);
     if (id) {
-      const key = `${id[1]}-${Number(id[2])}`;
+      const key = `${id.kind}-${id.n}`;
       // The first definition of an id wins (requirements.ts); a repeat owns no line.
-      current = (id[1] === 'R' || id[1] === 'AC') && !seen.has(key) ? key : null;
+      current = (id.kind === 'R' || id.kind === 'AC') && !seen.has(key) ? key : null;
       seen.add(key);
       continue;
     }
