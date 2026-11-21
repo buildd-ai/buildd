@@ -61,6 +61,11 @@ revision stays readable exactly as it was written.
 - An unchanged body is not a new revision.
 - Requirement ids (`R-n`, `AC-n`, `D-n`, `I-n`) are parsed from the body,
   first definition wins, fenced code ignored. They are not stored separately.
+  A line that only mentions an id is not a definition of it: an id followed
+  by punctuation (`R-22);`), straight by a lowercase word (`- AC-214 is held
+  by ...`), or wrapping onto a line in the middle of a paragraph.
+- A revise that sends only `replaces`, `repoRefs` or `design` keeps the
+  head's body as it is.
 - A parent spec must be in the same workspace.
 - `PUT /api/specs/[id]/parent { parentSpecId | null }` sets, changes or clears
   the parent in one statement that walks the new parent's ancestors and writes
