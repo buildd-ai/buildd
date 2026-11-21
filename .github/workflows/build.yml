@@ -933,6 +933,10 @@ jobs:
           echo "neon-sql shim never answered" && exit 1
       - name: Migrate
         run: cd packages/core && bun db:migrate
+      # The self-hosted runner image has no psql client; hosted images do.
+      - name: Ensure psql client
+        run: command -v psql >/dev/null || bash scripts/ci/apt-install.sh postgresql-client
+
       - name: Run DB architecture tests
         run: bun run test:db --shard "${{ matrix.shard }}/4"
       # Mission criteria on the spec page (R-76..R-80, R-102..R-106, AC-122..AC-126,
