@@ -74,7 +74,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 5
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
@@ -116,7 +116,7 @@ jobs:
   dry-run:
     needs: plan
     if: needs.plan.outputs.publish == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -138,7 +138,7 @@ jobs:
   publish:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -304,7 +304,7 @@ jobs:
   # Its own job so the image push never holds contents: write.
   cloud-runner-bundle:
     needs: [plan, publish]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 15
     permissions:
       contents: write

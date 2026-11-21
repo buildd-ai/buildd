@@ -52,7 +52,7 @@ jobs:
     # so scope it here. A feature branch being deleted is not this workflow's
     # business.
     if: github.event_name != 'delete' || (github.event.ref_type == 'branch' && github.event.ref == 'dev')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     steps:
       # The merge commit is pushed to dev; with the release App it triggers
       # Build & Test on dev like any other push. GITHUB_TOKEN pushes do not.

@@ -75,7 +75,7 @@ concurrency:
 jobs:
   ledger:
     name: Tier-2 CI — write spec_discrepancies
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}

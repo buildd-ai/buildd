@@ -51,7 +51,7 @@ concurrency:
 jobs:
   mirror:
     name: Mirror ${{ matrix.name }}:${{ matrix.tag }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 20
     permissions:
       contents: read
