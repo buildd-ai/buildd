@@ -33,8 +33,8 @@ import {
 // ── Which connectors go through the gateway ──────────────────────────────────
 
 /**
- * Catalog providers whose connectors are always brokered. Other connectors
- * keep today's direct mount unless BUILDD_CONNECTOR_GATEWAY=all.
+ * Catalog providers whose connectors are always brokered. Other http
+ * connectors keep today's direct mount unless BUILDD_CONNECTOR_GATEWAY=all.
  */
 export const GATEWAY_PROVIDERS: ReadonlySet<string> = new Set(['axiom', 'vercel']);
 
@@ -48,9 +48,16 @@ export function gatewayMode(env: Record<string, string | undefined> = process.en
 }
 
 /**
- * Is this connector mounted through the gateway? Only remote connectors with a
- * stored credential: stdio runs on the runner, `none` has nothing to broker,
- * assertion mode mints per run.
+ * Auth modes the gateway can serve. `oauth`/`header`: the stored credential is
+ * added server-side. `none`: proxied with no credential, so the call is still
+ * decided and recorded. `assertion`: buildd mints and exchanges the assertion
+ * itself (connector-assertion.ts), so the access token never reaches the runner.
+ */
+const GATEWAY_AUTH_MODES: ReadonlySet<string> = new Set(['oauth', 'header', 'none', 'assertion']);
+
+/**
+ * Is this connector mounted through the gateway? Remote (http) connectors only:
+ * a stdio server runs as a process on the runner and cannot be proxied here.
  */
 export function usesGateway(
   c: { transport: string; authMode: string },
@@ -58,7 +65,7 @@ export function usesGateway(
   mode: GatewayMode = gatewayMode(),
 ): boolean {
   if (mode === 'off') return false;
-  if (c.transport !== 'http' || (c.authMode !== 'oauth' && c.authMode !== 'header')) return false;
+  if (c.transport !== 'http' || !GATEWAY_AUTH_MODES.has(c.authMode)) return false;
   return mode === 'all' || (!!providerSlug && GATEWAY_PROVIDERS.has(providerSlug));
 }
 

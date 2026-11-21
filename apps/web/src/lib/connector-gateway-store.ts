@@ -9,10 +9,14 @@
  *
  * The provider credential is decrypted here, per request, under the
  * connector's OWNER team, and only ever goes into the outbound request to the
- * connector's own URL. It is never returned, logged or audited.
+ * connector's own URL. It is never returned, logged or audited. An assertion
+ * connector has no stored credential: the access token is minted and exchanged
+ * here (connector-assertion.ts) and held in memory for that worker only. A
+ * `none` connector is proxied with no credential at all.
  */
 import { db } from '@buildd/core/db';
 import {
+  accounts,
   agentCapabilityDecisions,
   connectorShares,
   connectorWorkspaces,
@@ -33,6 +37,7 @@ import { checkConnectorBlocked } from './connector-access-policy';
 import { refreshMcpConnectorCredential, type McpRefreshResult } from './mcp-connector-refresh';
 import { loadPolicyRules } from './capability-grants-store';
 import { readRoleCeiling, type CredentialState, type GatewayRun } from './connector-gateway';
+import { exchangeAssertion, mintConnectorAssertion } from './connector-assertion';
 import type { AgentPrincipal } from './agent-capabilities/principal';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -40,8 +45,31 @@ type ConnectorRow = typeof connectors.$inferSelect;
 
 export interface LoadedGateway {
   run: GatewayRun;
-  connector: Pick<ConnectorRow, 'id' | 'name' | 'url' | 'authMode' | 'headerName' | 'teamId' | 'transport' | 'discoveredMetadata'>;
+  connector: Pick<ConnectorRow, 'id' | 'name' | 'url' | 'authMode' | 'headerName' | 'teamId' | 'transport' | 'discoveredMetadata'>
+    & Partial<Pick<ConnectorRow, 'assertionAudience' | 'assertionTokenEndpoint'>>;
   secret: { id: string; tokenExpiresAt: Date | null } | null;
+  /** Who an assertion is minted for (assertion connectors only): the account that claimed the worker. */
+  caller?: { accountId: string; accountTeamId: string | null };
+}
+
+/** The auth modes whose credential is a stored `mcp_connector_credential` secret. */
+const storedCredential = (authMode: string) => authMode === 'oauth' || authMode === 'header';
+
+/**
+ * Can the gateway reach this provider as the connector is configured now?
+ * `none` needs nothing; `assertion` needs its exchange config (it mints per
+ * call); `oauth`/`header` need a stored credential that is not revoked.
+ */
+export function credentialStateFor(
+  connector: { authMode: string; transport?: string; assertionAudience?: string | null; assertionTokenEndpoint?: string | null },
+  secret: { healthStatus?: string | null } | null | undefined,
+): CredentialState {
+  // A stdio connector runs on the runner: there is nothing here to proxy to.
+  if (connector.transport !== undefined && connector.transport !== 'http') return 'missing';
+  if (connector.authMode === 'none') return 'ok';
+  if (connector.authMode === 'assertion') return connector.assertionAudience && connector.assertionTokenEndpoint ? 'ok' : 'missing';
+  if (!secret) return 'missing';
+  return secret.healthStatus === 'revoked' ? 'dead' : 'ok';
 }
 
 /** The catalog slug serving this URL for the team (host match), or null. */
@@ -79,7 +107,7 @@ export async function loadGatewayRun(principal: AgentPrincipal, connectorId: str
   if (!visible) return null;
 
   const roleSlug = task?.roleSlug ?? null;
-  const [cw, block, roleRows, missionRow, secretRow, provider, rules] = await Promise.all([
+  const [cw, block, roleRows, missionRow, secretRow, provider, rules, callerAccount] = await Promise.all([
     db.query.connectorWorkspaces.findFirst({
       where: sqlWhere(and(eq(connectorWorkspaces.connectorId, connector.id), eq(connectorWorkspaces.workspaceId, principal.workspaceId))),
       columns: { enabled: true },
@@ -94,12 +122,16 @@ export async function loadGatewayRun(principal: AgentPrincipal, connectorId: str
       columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true, metadata: true },
     }) : Promise.resolve([]),
     task?.missionId ? db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, task.missionId)), columns: { scheduleId: true } }) : Promise.resolve(null),
-    db.query.secrets.findFirst({
+    storedCredential(connector.authMode) ? db.query.secrets.findFirst({
       where: sqlWhere(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: connector.id })),
       columns: { id: true, tokenExpiresAt: true, healthStatus: true },
-    }),
+    }) : Promise.resolve(undefined),
     providerSlugFor(teamId, connector.url),
     loadPolicyRules(teamId),
+    connector.authMode === 'assertion' ? db.query.accounts.findFirst({
+      where: sqlWhere(eq(accounts.id, principal.accountId)),
+      columns: { teamId: true },
+    }) : Promise.resolve(undefined),
   ]);
 
   const role = roleSlug && task
@@ -107,9 +139,7 @@ export async function loadGatewayRun(principal: AgentPrincipal, connectorId: str
     : null;
   const refs = ((role as { connectorRefs?: string[] } | null)?.connectorRefs) ?? [];
 
-  let credential: CredentialState = 'ok';
-  if (!secretRow) credential = 'missing';
-  else if (secretRow.healthStatus === 'revoked') credential = 'dead';
+  const credential = credentialStateFor(connector, secretRow);
 
   return {
     run: {
@@ -137,18 +167,26 @@ export async function loadGatewayRun(principal: AgentPrincipal, connectorId: str
       id: connector.id, name: connector.name, url: connector.url, authMode: connector.authMode,
       headerName: connector.headerName, teamId: connector.teamId, transport: connector.transport,
       discoveredMetadata: connector.discoveredMetadata,
+      assertionAudience: connector.assertionAudience, assertionTokenEndpoint: connector.assertionTokenEndpoint,
     },
     secret: secretRow ? { id: secretRow.id, tokenExpiresAt: secretRow.tokenExpiresAt ?? null } : null,
+    ...(connector.authMode === 'assertion' ? { caller: { accountId: principal.accountId, accountTeamId: callerAccount?.teamId ?? null } } : {}),
   };
 }
 
 // ── Credential (server-side only) ────────────────────────────────────────────
 
+/** A header the outbound request carries, or `anonymous`: an authMode `none` connector sends none. */
+export type ProviderAuth = { name: string; value: string } | { anonymous: true };
+
 /**
- * The auth header for the outbound provider request, or null when there is no
- * usable credential. An expired OAuth access token is refreshed first.
+ * The auth for the outbound provider request, or null when there is no usable
+ * credential. An expired OAuth access token is refreshed first; an assertion
+ * connector's token is minted and exchanged (or reused while it lives).
  */
-export async function providerAuthHeader(g: LoadedGateway, now: Date = new Date()): Promise<{ name: string; value: string } | null> {
+export async function providerAuthHeader(g: LoadedGateway, now: Date = new Date()): Promise<ProviderAuth | null> {
+  if (g.connector.authMode === 'none') return { anonymous: true };
+  if (g.connector.authMode === 'assertion') return assertionAuthHeader(g, now);
   if (!g.secret) return null;
   if (g.connector.authMode === 'oauth' && g.secret.tokenExpiresAt && g.secret.tokenExpiresAt.getTime() < now.getTime()) {
     const r = await refreshMcpConnectorCredential(g.secret.id);
@@ -173,14 +211,64 @@ async function storedAuthHeader(g: LoadedGateway): Promise<{ name: string; value
   }
 }
 
-export type RejectionOutcome = McpRefreshResult | 'peer_refreshed';
+// ── Assertion tokens (per instance, per worker, short-lived) ─────────────────
+// An exchanged token is the worker's own (the assertion's actor is that worker
+// on its task), so it is cached per worker and never shared across workers.
+// The key also carries the exchange config: an admin edit takes effect at once.
+
+/** Mint again this long before the provider's expiry. */
+const ASSERTION_TOKEN_SKEW_MS = 30_000;
+const MAX_ASSERTION_TOKENS = 500;
+const assertionTokens = new Map<string, { token: string; expiresAt: number }>();
+
+const assertionKey = (g: LoadedGateway) =>
+  [g.connector.id, g.run.workerId, g.connector.assertionAudience ?? '', g.connector.assertionTokenEndpoint ?? ''].join('\n');
+
+/** Test-only. */
+export function __resetAssertionTokens() { assertionTokens.clear(); }
+
+async function assertionAuthHeader(g: LoadedGateway, now: Date): Promise<ProviderAuth | null> {
+  const audience = g.connector.assertionAudience;
+  const tokenEndpoint = g.connector.assertionTokenEndpoint;
+  if (!audience || !tokenEndpoint || !g.caller) return null;
+  const key = assertionKey(g);
+  const cached = assertionTokens.get(key);
+  if (cached && cached.expiresAt - ASSERTION_TOKEN_SKEW_MS > now.getTime()) {
+    return { name: 'Authorization', value: `Bearer ${cached.token}` };
+  }
+  assertionTokens.delete(key);
+  try {
+    const minted = await mintConnectorAssertion({
+      accountId: g.caller.accountId,
+      accountTeamId: g.caller.accountTeamId,
+      workerId: g.run.workerId,
+      taskId: g.run.taskId,
+      audience,
+    }, now);
+    if (!minted) {
+      console.warn(`[connector-gateway] assertion not minted connector=${g.connector.id}: no active signing key`);
+      return null;
+    }
+    const { accessToken, expiresAt } = await exchangeAssertion(tokenEndpoint, minted.assertion);
+    assertionTokens.set(key, { token: accessToken, expiresAt });
+    if (assertionTokens.size > MAX_ASSERTION_TOKENS) assertionTokens.delete(assertionTokens.keys().next().value!);
+    return { name: 'Authorization', value: `Bearer ${accessToken}` };
+  } catch (err) {
+    // The message carries a status, never the assertion or a token.
+    console.warn(`[connector-gateway] assertion exchange failed connector=${g.connector.id}: ${err instanceof Error ? err.message.slice(0, 120) : 'unknown'}`);
+    return null;
+  }
+}
+
+export type RejectionOutcome = McpRefreshResult | 'peer_refreshed' | 'reminted';
 
 /** How long a 401 inside the lock window waits for a peer's refresh to land. */
 const PEER_REFRESH_POLLS = 3;
 const PEER_REFRESH_POLL_MS = 500;
 
 /**
- * After a provider 401: refresh once (oauth). `retry` when a retry may succeed.
+ * After a provider 401: refresh once (oauth), or drop the exchanged token so the
+ * retry mints a fresh one (assertion). `retry` when a retry may succeed.
  *
  * 'locked' means another request refreshed within the lock window, or is
  * refreshing now. If the stored token is no longer the one the provider
@@ -189,10 +277,14 @@ const PEER_REFRESH_POLL_MS = 500;
  */
 export async function refreshAfterRejection(
   g: LoadedGateway,
-  rejected: { name: string; value: string },
+  rejected: ProviderAuth,
   deps: { wait?: (ms: number) => Promise<void> } = {},
 ): Promise<{ retry: boolean; outcome: RejectionOutcome }> {
-  if (!g.secret || g.connector.authMode !== 'oauth') return { retry: false, outcome: 'skipped' };
+  if (g.connector.authMode === 'assertion') {
+    assertionTokens.delete(assertionKey(g));
+    return { retry: true, outcome: 'reminted' };
+  }
+  if (!g.secret || g.connector.authMode !== 'oauth' || !('value' in rejected)) return { retry: false, outcome: 'skipped' };
   const r = await refreshMcpConnectorCredential(g.secret.id);
   if (r === 'refreshed') return { retry: true, outcome: r };
   if (r !== 'locked') return { retry: false, outcome: r };
@@ -211,6 +303,7 @@ export async function refreshAfterRejection(
  * the Reconnect banner all see it. The credential row is kept.
  */
 export async function markCredentialRejected(g: LoadedGateway): Promise<void> {
+  if (!storedCredential(g.connector.authMode)) return; // none/assertion: no stored credential to mark
   await db.update(secrets)
     .set({ tokenExpiresAt: sql`NOW()`, lastVerificationError: 'gateway_401', updatedAt: sql`NOW()` })
     .where(teamCredentialWhere({ teamId: g.connector.teamId, purpose: 'mcp_connector_credential', label: g.connector.id }));
