@@ -116,7 +116,8 @@ jobs:
   dry-run:
     needs: plan
     if: needs.plan.outputs.publish == 'false'
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
+    # Builds linux/amd64; the self-hosted runner is ARM64 with no emulation. Hosted only.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -138,7 +139,8 @@ jobs:
   publish:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
+    # Builds linux/amd64; the self-hosted runner is ARM64 with no emulation. Hosted only.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
