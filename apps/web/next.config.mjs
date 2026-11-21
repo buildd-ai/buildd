@@ -146,7 +146,11 @@ const nextConfig = {
   // chunk — keep it external so it stays a runtime require. When the binary
   // is absent at runtime, symbol-extractor's try/catch degrades gracefully
   // to the line-window chunker.
-  serverExternalPackages: ['@ast-grep/napi'],
+  // @cedar-policy/cedar-wasm (lib/connector-pdp-cedar.ts, the connector
+  // gateway's optional Cedar PDP) loads its .wasm with readFileSync from
+  // its own __dirname, which bundling would break. It is imported only when
+  // BUILDD_CONNECTOR_PDP=cedar, so the default path never loads it.
+  serverExternalPackages: ['@ast-grep/napi', '@cedar-policy/cedar-wasm'],
   // The MCP route reads .claude/skills/buildd-mcp-consumer/SKILL.md and
   // .claude/skills/workspace-onboarding/SKILL.md (repo
   // root, outside apps/web) via readFileSync at request time — a path

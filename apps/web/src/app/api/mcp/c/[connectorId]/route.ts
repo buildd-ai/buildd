@@ -7,9 +7,10 @@
  *
  *   POST    one JSON-RPC message, forwarded unchanged with the provider
  *           credential added. `tools/list` is subset-filtered to the run's
- *           ceiling; `tools/call` is decided per call (connector-gateway.ts)
- *           and audited (attempt, result, denial). A denial is an MCP tool
- *           result with isError, never an HTTP auth challenge.
+ *           ceiling; `tools/call` is decided per call by the configured
+ *           policy decision point (connector-pdp.ts) and audited (attempt,
+ *           result, denial). A denial is an MCP tool result with isError,
+ *           never an HTTP auth challenge.
  *   DELETE  ends the provider session.
  *   GET     405: stateless, no server-initiated stream (same as /api/mcp).
  *
@@ -38,13 +39,13 @@ import {
   callScope,
   classifyNativeTool,
   connectorRefusal,
-  decideToolCall,
   deniedToolResult,
   filterToolsList,
   methodAllowed,
   readToolOverrides,
   toolResource,
   upstreamToolError,
+  type CallDecision,
   type CallRefusal,
   type ToolAnnotations,
   type ToolClass,
@@ -64,6 +65,7 @@ import {
   type RejectionOutcome,
   type ToolAuditRow,
 } from '@/lib/connector-gateway-store';
+import { connectorPdp, toCallDecision, toolCallRequest } from '@/lib/connector-pdp';
 import { isUuid } from '@/lib/uuid';
 
 export const maxDuration = 120;
@@ -365,7 +367,7 @@ async function toolsCall(
   };
 
   let cls: ToolClass;
-  let decision: Awaited<ReturnType<typeof decideToolCall>>;
+  let decision: CallDecision;
   try {
     const limit = g.run.unattended ? RATE_LIMITS.unattended : RATE_LIMITS.attended;
     if (!connectorRefusal(g.run) && await recentCallCount(principal.workerId, g.connector.id) >= limit) return refuse('rate_limited', null);
@@ -377,21 +379,34 @@ async function toolsCall(
       cls = classifyNativeTool(tool, annotations, readToolOverrides(g.connector.discoveredMetadata));
     }
     const scope = callScope(args);
-    decision = await decideToolCall(cls, g.run, () => authorizeConnectorToolUse(principal, {
-      provider: g.run.connector.provider, connectorId: g.connector.id, tool,
-      resource: scope.resource, environment: scope.environment, risk: cls === 'denied' ? 'admin' : cls,
-    }));
+    // The gateway enforces; the decision is the configured PDP's (connector-pdp.ts).
+    const pdp = await connectorPdp();
+    decision = toCallDecision(await pdp.decide(toolCallRequest({
+      principal, run: g.run, tool, risk: cls, scope,
+      grant: () => authorizeConnectorToolUse(principal, {
+        provider: g.run.connector.provider, connectorId: g.connector.id, tool,
+        resource: scope.resource, environment: scope.environment, risk: cls === 'denied' ? 'admin' : cls,
+      }),
+    })));
   } catch (err) {
     console.warn(`[connector-gateway] decision failed: ${err instanceof Error ? err.message.slice(0, 120) : 'unknown'}`);
     return refuse('gateway_unavailable', null);
   }
-  if (!decision.allowed) return refuse(decision.code, cls, decision.grantReason ? { grantReason: decision.grantReason } : {});
+  if (!decision.allowed) {
+    return refuse(decision.code, cls, {
+      ...(decision.grantReason ? { grantReason: decision.grantReason } : {}),
+      ...(decision.policyId ? { policyId: decision.policyId } : {}),
+    });
+  }
 
   const isWrite = cls === 'write' || cls === 'admin';
   const key = callKey({ workerId: principal.workerId, sessionId: req.headers.get('mcp-session-id'), rpcId: msg.id, tool, argsHash: hash });
   const attempt: ToolAuditRow = {
     ...base, capability: TOOL_CALL_CAPABILITY, decision: 'allowed' as const, reasonCode: decision.basis,
-    sideEffect: { risk: cls, basis: decision.basis, grantId: decision.grantId, argsHash: hash, callKey: key, provider: g.run.connector.provider },
+    sideEffect: {
+      risk: cls, basis: decision.basis, grantId: decision.grantId, argsHash: hash, callKey: key, provider: g.run.connector.provider,
+      ...(decision.policyId ? { policyId: decision.policyId } : {}),
+    },
   };
   if (isWrite) {
     // A write is sent once, and only after its attempt is on record.

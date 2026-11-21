@@ -107,6 +107,7 @@
         "@buildd/shared": "workspace:*",
         "@buildd/spec-contract": "workspace:*",
         "@buildd/workflow-kernel": "workspace:*",
+        "@cedar-policy/cedar-wasm": "4.14.0",
         "@modelcontextprotocol/sdk": "^1.26.0",
         "@neondatabase/serverless": "^1.0.0",
         "@openrouter/ai-sdk-provider": "^3.1.0",
@@ -426,6 +427,8 @@
     "@buildd/web": ["@buildd/web@workspace:apps/web"],
 
     "@buildd/workflow-kernel": ["@buildd/workflow-kernel@workspace:packages/workflow-kernel"],
+
+    "@cedar-policy/cedar-wasm": ["@cedar-policy/cedar-wasm@4.14.0", "", {}, "sha512-TPyz3zMl5r7W5iSHq51IgG+NTILGoXB0VPrEcXnzCEpPUqL/7b+AtMPVVHB/UoJWuXA8YORjLuWxKHUW33ePAA=="],
 
     "@cfworker/json-schema": ["@cfworker/json-schema@4.1.1", "", {}, "sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og=="],
 
