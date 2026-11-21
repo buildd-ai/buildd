@@ -132,7 +132,7 @@ async function getArtifact(req: NextRequest, artifactId: string) {
   const legacyFirst = requestedRevision === 1 && artifact.currentRevision === 0 && (artifact.content !== null || artifact.storageKey !== null);
   if (requestedRevision !== null && !revision && !legacyFirst) {
     return NextResponse.json(
-      { error: `Artifact has no revision ${requestedRevision} (current revision is ${artifact.currentRevision})` },
+      { error: `Artifact has no revision ${requestedRevision} (current revision is ${artifact.currentRevision}). Artifact revisions are counted per artifact: a spec's revision N is not its body artifact's revision N; manage_specs get names the artifact revision to read.` },
       { status: 404 },
     );
   }

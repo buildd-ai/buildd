@@ -47,6 +47,14 @@ describe('/api/specs/[specId]', () => {
     expect((await send({ expectedVersion: 1, body: 'x' })).status).toBe(409);
     expect(sectionCalls).toHaveLength(2);
   });
+  it('a revise with only replaces (no body) goes to the section revise, which keeps the head text', async () => {
+    const send = (b: object) => PATCH(new NextRequest('http://l/api/specs/s1', { method: 'PATCH', body: JSON.stringify(b) }), { params });
+    const before = sectionCalls.length;
+    expect((await send({ expectedVersion: 1, replaces: ['s9'] })).status).toBe(200);
+    expect(sectionCalls.slice(before)).toEqual([{ expectedVersion: 1, replaces: ['s9'] }]);
+    expect((await send({ expectedVersion: 1, replaces: ['s9'], body: 'x' })).status).toBe(409);
+    expect(sectionCalls.length).toBe(before + 1);
+  });
   it('a successful revise carries formatHints for the text sent (R-48), and writes it as sent', async () => {
     const body = '## Flow\n1. Open\n2. Pick\n3. Pay\n';
     const res = await PATCH(new NextRequest('http://l/api/specs/s1', { method: 'PATCH', body: JSON.stringify({ expectedVersion: 1, heading: 'Flow', body }) }), { params });
