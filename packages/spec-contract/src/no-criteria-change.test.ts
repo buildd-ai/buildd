@@ -133,6 +133,16 @@ describe('any doubt leaves it to a person (R-27, AC-28)', () => {
     const next = BODY.replace('Refunds.', 'Refunds.\n\n- R-1: Totals are in the shopper\'s currency.');
     expect(await noCriteriaChange(side(next), side(next.replace('Context:', 'Background:')))).toMatchObject({ unchanged: false, reason: 'doubt' });
   });
+  it('a repeat only in the approved revision says so, and that the head is clean', async () => {
+    const approved = BODY.replace('Refunds.', 'Refunds.\n\n- R-1: Totals are in the shopper\'s currency.');
+    const r = await noCriteriaChange(side(approved), side(BODY));
+    expect(r).toMatchObject({ unchanged: false, reason: 'doubt' });
+    expect('message' in r && r.message).toContain('in the approved revision, R-1 defined more than once (this revision is clean');
+  });
+  it('a line that only mentions a criterion is not a repeat of it', async () => {
+    const next = BODY.replace('Refunds.', 'Refunds.\n\n- R-1 is held by fx.test.ts.');
+    expect(await noCriteriaChange(side(next), side(next.replace('Context:', 'Background:')))).toMatchObject({ unchanged: true });
+  });
   it('a criterion-shaped id the parser cannot read', async () => {
     const next = BODY.replace('Refunds.', 'Refunds.\n\n- AC-1a: An odd one.');
     expect(await noCriteriaChange(side(next), side(next.replace('Context:', 'Background:')))).toMatchObject({ unchanged: false, reason: 'doubt' });

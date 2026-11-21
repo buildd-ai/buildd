@@ -47,7 +47,9 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 /**
  * PATCH /api/specs/[specId] { expectedVersion, body, changeSummary? }: revise the
  * draft. With `section` (an outline id) or `heading`, body is that one
- * section's new text and the rest of the spec is kept as it is. A stale
+ * section's new text and the rest of the spec is kept as it is. With no body
+ * and only `replaces`, `repoRefs` or `design`, the head's body is kept and only
+ * those change. A stale
  * expectedVersion is a 409 with currentVersion: re-read, merge, revise on top. Agents and people may revise; approving is a separate,
  * person-only act. formatHints (R-48) suggests a diagram or table for the text sent; it never refuses.
  * duplicateCheck (R-105): the criteria the revise added or changed, checked against the other specs; warnings only.
@@ -59,7 +61,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'a JSON body is required' }, { status: 400 });
-  const r = 'section' in body || 'heading' in body || 'find' in body ? await reviseSpecSection(caller, specId, body) : await reviseSpecDraft(caller, specId, body);
+  // No text at all, only replaces / repoRefs / design: the section revise keeps the head's body.
+  const keepsBody = !('body' in body) && !('content' in body) && ('replaces' in body || 'repoRefs' in body || 'design' in body);
+  const r = 'section' in body || 'heading' in body || 'find' in body || keepsBody ? await reviseSpecSection(caller, specId, body) : await reviseSpecDraft(caller, specId, body);
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.currentVersion !== undefined ? { code: 'version_conflict', currentVersion: r.currentVersion } : r.code ? { code: r.code } : {}) }, { status: r.status });
   return NextResponse.json({ spec: r.spec, revision: r.revision, unchanged: r.unchanged, duplicateCheck: r.duplicateCheck ?? null, autoApproval: ('autoApproval' in r ? r.autoApproval : null) ?? null, formatHints: formatHints(String((body as Record<string, unknown>).body ?? '')) });
 }

@@ -83,6 +83,14 @@ describe('bounds and refusals', () => {
     expect(none.view === 'grep' && none.matches).toEqual([]);
   });
 
+  it('grep "a|b" finds lines holding either part, each part literal; a table pipe alone stays literal', () => {
+    const body = ['R-1: one', 'AC-2: two', 'R-3: three', '| x | y |'].join('\n');
+    const r = readArtifactBody(body, { view: 'grep', pattern: 'r-1|ac-2' });
+    expect(r.view === 'grep' && r.matches.map((m) => m.line)).toEqual([1, 2]);
+    const pipe = readArtifactBody(body, { view: 'grep', pattern: '|' });
+    expect(pipe.view === 'grep' && pipe.matches.map((m) => m.line)).toEqual([4]);
+  });
+
   it('refuses unknown views, missing selectors and an unknown section', () => {
     expect(() => parseReadSelector(q({ view: 'everything' }), '')).toThrow(ArtifactReadError);
     expect(() => parseReadSelector(q({ view: 'section' }), '')).toThrow(ArtifactReadError);

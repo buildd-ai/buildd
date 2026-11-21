@@ -24,5 +24,5 @@ export function explanationRefusalText(approvedBody: string | null, newBody: str
     ids.length ? `criteria ${ids.join(', ')}` : '',
     headings.length ? `sections ${headings.map((h) => `"${h}"`).join(', ')}` : '',
   ].filter(Boolean).join(' and ');
-  return `The explanation does not cover every change since the approved revision (${cov.line}). Not explained: ${parts}. Write one line for each, keyed by its id or heading, covering the changes of every unapproved revision below this one as well as your own (explanation.lines). Nothing was written.`;
+  return `The explanation does not cover every change since the approved revision (${cov.line}). Not explained: ${parts}. Write one line for each, keyed by its id (a range such as "R-n to R-m" covers each id in it) or its heading (inline markdown is ignored; a nested heading may be its own title or the full "Parent > Child" path), covering the changes of every unapproved revision below this one as well as your own (explanation.lines). Nothing was written.`;
 }
