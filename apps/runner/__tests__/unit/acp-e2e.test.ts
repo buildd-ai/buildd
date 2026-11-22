@@ -208,6 +208,8 @@ describe('buildd acp end to end', () => {
     const again = client.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Add a coupon field' }] });
     await until(() => runner.posts.length === 3);
     expect(runner.posts[2]).toEqual({ path: '/api/workers/w-new/send', body: { message: 'Add a coupon field' } });
+    // the send POST lands before the bridge's stream does: push only once it is listening
+    await until(() => runner.subscribers() === 1);
     runner.push({ id: 'w-new', status: 'working', messages: [] });
     runner.push({ id: 'w-new', status: 'done', messages: [] });
     await again;
@@ -242,6 +244,8 @@ function matrixRunner(socketPath: string, opts: {
   workers?: Worker[];
   workspaces?: Worker[];
   claim?: (body: any) => { status: number; body: unknown };
+  /** Ids the SSE init frame leaves out although /api/workers lists them (the runner omits settled workers). */
+  initOmits?: Set<string>;
 } = {}) {
   const workers = new Map<string, Worker>((opts.workers ?? []).map(w => [w.id, w]));
   const streams = new Set<ReadableStreamDefaultController>();
@@ -272,7 +276,7 @@ function matrixRunner(socketPath: string, opts: {
       if (path === '/api/events') {
         let ctrl!: ReadableStreamDefaultController;
         const stream = new ReadableStream({
-          start(c) { ctrl = c; streams.add(c); c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'init', workers: [...workers.values()] })}\n\n`)); },
+          start(c) { ctrl = c; streams.add(c); c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'init', workers: [...workers.values()].filter(w => !opts.initOmits?.has(w.id)) })}\n\n`)); },
           cancel() { streams.delete(ctrl); },
         });
         return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
@@ -641,11 +645,44 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
     expect(said(client, 'w1').at(-1)).toContain('restarted');
   }, 20_000);
 
-  // FAILS TODAY. Same requirement as 7c. When the restarted runner no longer has the
+  for (const status of ['done', 'error'] as const) {
+    test(`7e. runner restart mid-turn: a ${status} worker absent from init but in the worker list ends the turn with its own text`, async () => {
+      const { dir, runner, open } = setup({ workers: [{ id: 'w1', status: 'working', worktreePath: '/x/a', messages: [] }], initOmits: new Set(['w1']) });
+      const client = open();
+      await client.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
+      await client.call('session/load', { sessionId: 'w1', cwd: dir, mcpServers: [] });
+      const turn = client.call('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+      await until(() => runner.subscribers() === 1);
+      runner.down();
+      runner.workers.set('w1', { id: 'w1', status, error: 'boom', prUrl: 'https://example.test/pr/3', worktreePath: '/x/a', messages: [] });
+      runner.up();
+      const res = await within(turn, 8_000);
+      expect(res).not.toBe('timedOut');
+      const lines = said(client, 'w1');
+      expect(lines).not.toContain('This worker is no longer on this runner.');
+      expect(lines.at(-1)).toMatch(status === 'done' ? /^Finished/ : /\S/);
+    }, 20_000);
+  }
+
+  test('7f. runner restart mid-turn: a worker present in the init frame and still working does not end the turn', async () => {
+    const { dir, runner, open } = setup({ workers: [{ id: 'w1', status: 'working', worktreePath: '/x/a', messages: [] }] });
+    const client = open();
+    await client.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    await client.call('session/load', { sessionId: 'w1', cwd: dir, mcpServers: [] });
+    const turn = client.call('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    await until(() => runner.subscribers() === 1);
+    runner.down();
+    runner.up();
+    await until(() => runner.subscribers() === 1, 6_000);
+    expect(await within(turn, 1_500)).toBe('timedOut');
+    expect(said(client, 'w1')).not.toContain('This worker is no longer on this runner.');
+  }, 20_000);
+
+  // Same requirement as 7c. When the restarted runner no longer has the
   // worker (its init frame and updates never name it), nothing ever settles the turn: the
   // bridge only ends a turn from an update for that worker (bridge.ts:428-441) and has no
   // check on reconnect, so the T3 thread spins forever with no message.
-  test.failing('7d. runner restart mid-turn: a worker the restarted runner no longer has ends the turn with a clear message', async () => {
+  test('7d. runner restart mid-turn: a worker the restarted runner no longer has ends the turn with a clear message', async () => {
     const { dir, runner, open } = setup({ workers: [{ id: 'w1', status: 'working', worktreePath: '/x/a', messages: [] }] });
     const client = open();
     await client.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
@@ -655,8 +692,8 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
     runner.down();
     runner.workers.delete('w1');
     runner.up();
-    await until(() => runner.subscribers() === 1, 6_000);
-    const res = await within(turn, 4_000);
+    // The turn ends on the reconnect's init frame and drops its stream, so do not wait for a subscriber.
+    const res = await within(turn, 8_000);
     expect(res).not.toBe('timedOut');
     expect(said(client, 'w1').at(-1)).toBe('This worker is no longer on this runner.');
   }, 20_000);
