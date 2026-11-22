@@ -470,9 +470,11 @@ export class AcpBridge {
             if (latest.status !== 'waiting' || waitKey(latest.waitingFor) !== key) return;
             const value = res?.action === 'accept' && typeof res.content?.answer === 'string' ? res.content.answer.trim() : '';
             if (!value) { finish('end_turn'); return; }
+            // Mark it answered before posting: the form is closed now, and a re-sent
+            // copy of this wait arriving while the post is in flight must not reopen it.
+            answered = key;
             const r = await this.deps.runner.act(session.workerId!, 'answer', value);
             if (r.status >= 400) { finish('end_turn', refusal(r)); return; }
-            answered = key;
           })
           .catch(() => { if (asking === key) asking = null; finish('end_turn'); });
       };
