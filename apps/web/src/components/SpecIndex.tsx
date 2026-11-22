@@ -214,13 +214,20 @@ function Row({ row, ctx, unfiled = false }: { row: IndexRow; ctx: RowCtx; unfile
   );
 }
 
+const FRAME = 'border border-border-default';
 const FILTER_WORDS: Record<ListFilter, string> = { waiting: 'Waiting on you', draft: 'Draft', approved: 'Approved', retired: 'Retired' };
 
 /** Search, order and status chips. All of it is the URL: a form and links, so a view can be shared and reloaded. */
 function ListControls({ query, path, shown, total }: { query: ListQuery; path: string; shown: number; total: number }) {
   const toggled = (f: ListFilter): ListFilter[] => (query.filters.includes(f) ? query.filters.filter((x) => x !== f) : [...query.filters, f]);
-  const pill = 'inline-flex min-h-11 items-center rounded-[var(--radius-cell)] border px-3 text-meta md:min-h-8';
-  const on = 'border-accent bg-accent-soft text-accent-text';
+  const pill = [
+    'inline-flex min-h-11 items-center text-meta md:min-h-8',
+    'rounded-[var(--radius-cell)] px-3',
+    FRAME,
+  ].join(' ');
+  const on = 'border-text-primary bg-surface-2 font-semibold text-text-primary';
+  const sortOn = 'font-semibold text-text-primary';
+  const sortOff = 'underline hover:text-text-primary';
   const off = 'border-border-default text-text-secondary hover:bg-surface-2';
   return (
     <div className="flex flex-col gap-2" data-testid="spec-list-controls">
@@ -229,7 +236,7 @@ function ListControls({ query, path, shown, total }: { query: ListQuery; path: s
         <input type="hidden" name="f" value={query.filters.join(',')} disabled={!query.filters.length} />
         <input
           type="search" name="q" defaultValue={query.q} maxLength={200} aria-label="Search specs by title or text" placeholder="Search specs by title or text"
-          className="min-h-11 min-w-0 flex-1 rounded-[var(--radius-cell)] border border-border-default bg-surface-1 px-3 text-body text-text-primary md:min-h-9"
+          className={"min-h-11 min-w-0 flex-1 bg-surface-1 text-body text-text-primary md:min-h-9 rounded-[var(--radius-cell)] px-3 " + FRAME}
           data-testid="spec-list-search"
         />
         <button type="submit" className="btn h-11 md:h-9">Search</button>
@@ -244,7 +251,7 @@ function ListControls({ query, path, shown, total }: { query: ListQuery; path: s
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-text-muted" role="group" aria-label="Order">
         <span>Order:</span>
         {(['recent', 'tree'] as const).map((s) => (
-          <Link key={s} href={listHref(path, { ...query, sort: s })} replace aria-current={query.sort === s ? 'true' : undefined} className={`inline-flex min-h-11 items-center md:min-h-8 ${query.sort === s ? 'font-semibold text-text-primary' : 'underline hover:text-text-primary'}`} data-testid={`spec-list-sort-${s}`}>
+          <Link key={s} href={listHref(path, { ...query, sort: s })} replace aria-current={query.sort === s ? 'true' : undefined} className={`inline-flex min-h-11 items-center md:min-h-8 ${query.sort === s ? sortOn : sortOff}`} data-testid={`spec-list-sort-${s}`}>
             {s === 'recent' ? 'Recently changed' : 'Outline'}
           </Link>
         ))}
