@@ -39,9 +39,28 @@ export interface RunnerPort {
   subscribe(onWorker: (worker: PublicWorker) => void): () => void;
   /** The workspaces this runner's key reaches (`GET /api/workspaces`). */
   listWorkspaces(): Promise<BuilddWorkspace[]>;
-  createTask(input: { workspaceId: string; title: string; description: string; reserve?: boolean }): Promise<{ status: number; body: unknown }>;
+  createTask(input:  { workspaceId: string; title: string; description: string; reserve?: boolean } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
   /** Claim a task onto this runner as a person would (`c` in top). */
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
+}
+
+/** `_meta.buildd` on `session/new` or the first `session/prompt`: where the thread's task is filed. */
+export interface BuilddTaskMeta {
+  missionId?: string;
+  roleSlug?: string;
+  priority?: number;
+  kind?: string;
+}
+
+function taskMetaFrom(params: unknown): BuilddTaskMeta {
+  const raw = (params as { _meta?: { buildd?: Record<string, unknown> } } | null)?._meta?.buildd;
+  if (!raw || typeof raw !== 'object') return {};
+  const out: BuilddTaskMeta = {};
+  if (typeof raw.missionId === 'string' && raw.missionId) out.missionId = raw.missionId;
+  if (typeof raw.roleSlug === 'string' && raw.roleSlug) out.roleSlug = raw.roleSlug;
+  if (typeof raw.priority === 'number' && Number.isFinite(raw.priority)) out.priority = raw.priority;
+  if (typeof raw.kind === 'string' && raw.kind) out.kind = raw.kind;
+  return out;
 }
 
 export interface BuilddWorkspace {
@@ -102,6 +121,8 @@ interface Session {
   /** The client's project folder: where a first message's task goes. */
   cwd: string | null;
   cursor: MessageCursor;
+  /** `_meta.buildd` the client gave this thread; passed to createTask. */
+  taskMeta?: BuilddTaskMeta;
   /** Set while a prompt turn is open; calling it ends the turn as cancelled. */
   cancelTurn?: () => void;
 }
@@ -177,7 +198,7 @@ export class AcpBridge {
 
   private newSession(params: { cwd?: string }) {
     const sessionId = `new-${crypto.randomUUID()}`;
-    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor() });
+    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor(), taskMeta: taskMetaFrom(params) });
     return { sessionId };
   }
 
@@ -251,13 +272,14 @@ export class AcpBridge {
     return sessionId.startsWith('new-') ? null : sessionId;
   }
 
-  private async prompt(params: { sessionId?: string; prompt?: Array<{ type: string; text?: string }> }) {
+  private async prompt(params: { sessionId?: string; _meta?: unknown; prompt?: Array<{ type: string; text?: string }> }) {
     const sessionId = params.sessionId;
     if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
     const session = this.sessions.get(sessionId) ?? this.adopt(sessionId);
     const text = userTextFrom((params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'));
 
     if (!session.workerId) {
+      session.taskMeta = { ...session.taskMeta, ...taskMetaFrom(params) };
       if (!text || parseCommand(text)) {
         this.emit(sessionId, textUpdate(NEW_THREAD_TEXT));
         return { stopReason: 'end_turn' };
@@ -332,7 +354,7 @@ export class AcpBridge {
     const title = taskTitleFrom(text);
     // Filed reserved for this runner's account, then claimed by id: no other runner
     // can take it in the gap, or the thread would follow nothing (CG-7).
-    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, reserve: true });
+    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true });
     const task = (created.body as { task?: { id?: string } } | null)?.task;
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 

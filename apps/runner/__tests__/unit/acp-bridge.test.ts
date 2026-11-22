@@ -23,7 +23,8 @@ class FakeRunner implements RunnerPort {
   actResult = { status: 200, body: { ok: true } as unknown };
 
   workspaces: Array<{ id: string; name: string; repo?: string }> = [{ id: 'ws-app', name: 'app', repo: 'acme/app' }];
-  created: Array<{ workspaceId: string; title: string; description: string; reserve?: boolean }> = [];
+  created: Array<Record<string, unknown> & { workspaceId: string; title: string; description: string }> = [];
+  createResult: { status: number; body: unknown } | null = null;
   claimResult: { status: number; body: unknown } | null = null;
 
   async listWorkers() { return this.workers; }
@@ -32,7 +33,8 @@ class FakeRunner implements RunnerPort {
     return this.actResult;
   }
   async listWorkspaces() { return this.workspaces; }
-  async createTask(input: { workspaceId: string; title: string; description: string; reserve?: boolean }) {
+  async createTask(input: { workspaceId: string; title: string; description: string; missionId?: string; roleSlug?: string; priority?: number; kind?: string; reserve?: boolean }) {
+    if (this.createResult) return this.createResult;
     this.created.push(input);
     return { status: 200, body: { task: { id: `t${this.created.length}`, title: input.title } } };
   }
@@ -601,5 +603,56 @@ Only targeting dev.`;
   test('an unknown method is a JSON-RPC method-not-found', async () => {
     const { bridge } = setup();
     await expect(bridge.handle('session/fork', {})).rejects.toMatchObject({ code: -32601 });
+  });
+});
+
+describe('_meta.buildd on a new thread', () => {
+  const send = (bridge: AcpBridge, sessionId: string, text = 'Add a retry to the sync job') =>
+    bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+  const finish = async (runner: FakeRunner, turn: Promise<unknown>) => {
+    await tick(); await tick();
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await turn;
+  };
+
+  test('fields given at session/new reach createTask', async () => {
+    const { runner, bridge } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', {
+      cwd: '/repos/app', mcpServers: [],
+      _meta: { buildd: { missionId: 'm-1', roleSlug: 'builder', priority: 7, kind: 'feature' } },
+    });
+    await finish(runner, send(bridge, sessionId));
+    expect(runner.created).toHaveLength(1);
+    expect(runner.created[0]).toMatchObject({ workspaceId: 'ws-app', missionId: 'm-1', roleSlug: 'builder', priority: 7, kind: 'feature' });
+  });
+
+  test('fields on the first prompt reach createTask', async () => {
+    const { runner, bridge } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    await finish(runner, bridge.handle('session/prompt', {
+      sessionId, prompt: [{ type: 'text', text: 'Do the thing' }], _meta: { buildd: { missionId: 'm-2', roleSlug: 'researcher' } },
+    }));
+    expect(runner.created[0]).toMatchObject({ missionId: 'm-2', roleSlug: 'researcher' });
+  });
+
+  test('a mission the server refuses files no task and says why', async () => {
+    const { runner, bridge, updates } = setup([]);
+    runner.createResult = { status: 403, body: { error: 'Mission is outside your team' } };
+    const { sessionId }: any = await bridge.handle('session/new', {
+      cwd: '/repos/app', mcpServers: [], _meta: { buildd: { missionId: 'm-other' } },
+    });
+    const res: any = await send(bridge, sessionId);
+    expect(res.stopReason).toBe('end_turn');
+    expect(runner.created).toHaveLength(0);
+    expect(runner.actions).toHaveLength(0);
+    expect(texts(updates)).toContain('Mission is outside your team');
+    expect(texts(updates)).toContain('did not create');
+  });
+
+  test('no _meta sends exactly today\'s fields', async () => {
+    const { runner, bridge } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    await finish(runner, send(bridge, sessionId));
+    expect(Object.keys(runner.created[0]).sort()).toEqual(['description', 'reserve', 'title', 'workspaceId']);
   });
 });
