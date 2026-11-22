@@ -35,8 +35,12 @@ export type WorkerActionName = 'answer' | 'message' | 'pause' | 'stop' | 'follow
 export interface RunnerPort {
   listWorkers(): Promise<PublicWorker[]>;
   act(workerId: string, action: WorkerActionName, message?: string): Promise<{ status: number; body: unknown }>;
-  /** Called with each worker the runner broadcasts. Returns an unsubscribe. */
-  subscribe(onWorker: (worker: PublicWorker) => void): () => void;
+  /**
+   * Called with each worker the runner broadcasts. Returns an unsubscribe.
+   * `onSnapshot` gets the ids of every worker in a full list the runner sends
+   * (the init frame on each (re)connect), so a turn can tell its worker is gone.
+   */
+  subscribe(onWorker: (worker: PublicWorker) => void, onSnapshot?: (ids: Set<string>) => void): () => void;
   /** The workspaces this runner's key reaches (`GET /api/workspaces`). */
   listWorkspaces(): Promise<BuilddWorkspace[]>;
   createTask(input:  { workspaceId: string; title: string; description: string; reserve?: boolean } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
@@ -463,7 +467,12 @@ export class AcpBridge {
         if (moving && isSettled(w.status)) finish('end_turn');
       };
 
-      const unsubscribe = this.deps.runner.subscribe(onWorker);
+      const onSnapshot = (ids: Set<string>) => {
+        if (done || !session.workerId || ids.has(session.workerId)) return;
+        finish('end_turn', 'This worker is no longer on this runner.');
+      };
+
+      const unsubscribe = this.deps.runner.subscribe(onWorker, onSnapshot);
       session.cancelTurn = () => {
         void this.deps.runner.act(session.workerId!, 'pause').catch(() => {});
         finish('cancelled', 'Pausing the run. Reply to resume it.');

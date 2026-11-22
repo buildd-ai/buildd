@@ -643,11 +643,11 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
     expect(said(client, 'w1').at(-1)).toContain('restarted');
   }, 20_000);
 
-  // FAILS TODAY. Same requirement as 7c. When the restarted runner no longer has the
+  // Same requirement as 7c. When the restarted runner no longer has the
   // worker (its init frame and updates never name it), nothing ever settles the turn: the
   // bridge only ends a turn from an update for that worker (bridge.ts:428-441) and has no
   // check on reconnect, so the T3 thread spins forever with no message.
-  test.failing('7d. runner restart mid-turn: a worker the restarted runner no longer has ends the turn with a clear message', async () => {
+  test('7d. runner restart mid-turn: a worker the restarted runner no longer has ends the turn with a clear message', async () => {
     const { dir, runner, open } = setup({ workers: [{ id: 'w1', status: 'working', worktreePath: '/x/a', messages: [] }] });
     const client = open();
     await client.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
