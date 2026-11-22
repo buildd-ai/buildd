@@ -114,6 +114,22 @@ const NEW_THREAD_TEXT = [
 
 const TITLE_MAX = 120;
 
+/** Blocks T3 Code adds around a message for an agent running inside T3: its tool rules, runtime notes, PR-linking rules. */
+const CLIENT_ENVELOPE_BLOCKS = /<(t3_code_instructions|runtime_info|pull_request_linking)>[\s\S]*?<\/\1>/g;
+
+/**
+ * What the user typed. T3 Code sends `<user_request>…</user_request>` inside an
+ * envelope of instructions meant for an agent that has T3's tools; a buildd
+ * worker has none of them, and the envelope's first line became the task
+ * title. Without the user_request wrapper, the envelope blocks are dropped and
+ * the rest is kept, so any other client's text passes through unchanged.
+ */
+export function userTextFrom(text: string): string {
+  const request = /<user_request>([\s\S]*?)<\/user_request>/.exec(text);
+  if (request) return request[1].trim();
+  return text.replace(CLIENT_ENVELOPE_BLOCKS, '').trim();
+}
+
 /** First non-empty line, clipped: what the dashboard and queue show for the task. */
 export function taskTitleFrom(text: string): string {
   const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? text.trim();
@@ -239,7 +255,7 @@ export class AcpBridge {
     const sessionId = params.sessionId;
     if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
     const session = this.sessions.get(sessionId) ?? this.adopt(sessionId);
-    const text = (params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n').trim();
+    const text = userTextFrom((params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'));
 
     if (!session.workerId) {
       if (!text || parseCommand(text)) {

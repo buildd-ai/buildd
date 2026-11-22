@@ -349,6 +349,46 @@ describe('AcpBridge', () => {
     expect(runner.actions).toEqual([{ workerId: 'w-t1', action: 'followup', message: 'also Chrome' }]);
   });
 
+  test("T3 Code's envelope is unwrapped: the task, follow-ups and commands are what the user typed", async () => {
+    // T3 wraps each message in its own instructions and runtime notes. Those are
+    // for an agent running inside T3, not a buildd worker, and the first line of
+    // the envelope made the task title "<t3_code_instructions>".
+    const wrap = (req: string) => `<t3_code_instructions>
+## T3 Code interaction mode: Default
+
+Use delegate_task.
+</t3_code_instructions>
+
+<user_request>
+${req}
+</user_request>
+<runtime_info>In case you're asked: you are running in T3 Code.</runtime_info>
+
+<pull_request_linking>
+Link each PR.
+</pull_request_linking>`;
+    const request = `Count open PRs
+
+Only targeting dev.`;
+    const { bridge, runner } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap(request) }] });
+    await tick(); await tick();
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Count open PRs', description: request }]);
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done' }));
+    await turn;
+
+    const next = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap('also drafts') }] });
+    await tick();
+    runner.push(worker({ id: 'w-t1', status: 'working' }));
+    runner.push(worker({ id: 'w-t1', status: 'done' }));
+    await next;
+    expect(runner.actions).toEqual([{ workerId: 'w-t1', action: 'followup', message: 'also drafts' }]);
+
+    await bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap('/stop') }] });
+    expect(runner.actions.at(-1)).toEqual({ workerId: 'w-t1', action: 'stop' });
+  });
+
   test('the thread-to-worker link survives a bridge restart, so a resent message never makes a second task', async () => {
     const links = new Map<string, string>();
     const first = setup([], { links });
