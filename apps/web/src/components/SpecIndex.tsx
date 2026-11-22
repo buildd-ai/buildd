@@ -235,7 +235,7 @@ function ListControls({ query, path, shown, total }: { query: ListQuery; path: s
         <input type="hidden" name="sort" value={query.sort} disabled={query.sort === 'recent'} />
         <input type="hidden" name="f" value={query.filters.join(',')} disabled={!query.filters.length} />
         <input
-          type="search" name="q" defaultValue={query.q} maxLength={200} aria-label="Search specs by title or text" placeholder="Search specs by title or text"
+          type="search" name="q" defaultValue={query.q} maxLength={200} aria-label="Search specs by title or text" placeholder="Title or text"
           className={"min-h-11 min-w-0 flex-1 bg-surface-1 text-body text-text-primary md:min-h-9 rounded-[var(--radius-cell)] px-3 " + FRAME}
           data-testid="spec-list-search"
         />
