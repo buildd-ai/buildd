@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
-import { specOwnerQuestions, specRevisions, specs } from '@buildd/core/db/schema';
+import { specOutcomeVerdicts, specOwnerQuestions, specRevisions, specs } from '@buildd/core/db/schema';
 import type { SpecApprovalRecord } from '@buildd/core/db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { criterionChecks } from '@buildd/spec-contract/check-lines';
 import { getArtifactRevisions } from '@/lib/artifact-revisions';
 import { isUuid } from '@/lib/uuid';
@@ -17,7 +17,8 @@ import {
 /**
  * Import auto-confirm (R-370, R-371) and the batch retirement proposal (R-372).
  *
- * `applyImportCheck` is a server-side path with no caller: it takes a spec id
+ * `applyImportCheck` is a server-side path: `settleImportCheck` calls it when a
+ * check run's verdict is recorded (criterion-checks.ts). It takes a spec id
  * and what the check run reported at the repo head, never a person's or an
  * agent's word that the spec was approved. Whoever feeds it results must be
  * the check run's own (the runner's report); there is no route that takes
@@ -90,6 +91,33 @@ export async function applyImportCheck(specId: string, input: { headSha: string;
   return { state: 'confirmed', revision: n };
 }
 
+/**
+ * Called after the runner's verdict for a revision is recorded. If that revision
+ * is an imported spec's waiting head, reads the verdicts recorded for it at the
+ * newest head they name and hands them to `applyImportCheck`. The verdict rows
+ * are written only from the runner's report (handleCriterionCheckOutcome), so
+ * no caller's word is involved. The revision pin fixes the body; the blob is
+ * the spec's own recorded import blob.
+ */
+export async function settleImportCheck(specRevisionId: string): Promise<ImportCheckOutcome> {
+  const none = (reason: string): ImportCheckOutcome => ({ state: 'none', reason });
+  const [rev] = await db.select({ specId: specRevisions.specId, revision: specRevisions.revision }).from(specRevisions).where(eq(specRevisions.id, specRevisionId)).limit(1);
+  if (!rev) return none('revision not found');
+  const [spec] = await db.select().from(specs).where(eq(specs.id, rev.specId)).limit(1);
+  const src = spec?.repoSource;
+  if (!spec || !src || src.state !== 'imported' || src.revision !== rev.revision || spec.headRevision !== rev.revision || !src.blobSha) return none('no imported revision is waiting');
+  const rows = await db.select({ criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha })
+    .from(specOutcomeVerdicts).where(eq(specOutcomeVerdicts.specRevisionId, specRevisionId)).orderBy(desc(specOutcomeVerdicts.createdAt));
+  const headSha = rows.find((r) => r.headSha && /^[0-9a-f]{40}$/.test(r.headSha))?.headSha;
+  if (!headSha) return none('no verdict names a head');
+  const latest = new Map<string, ImportCheckResult>();
+  for (const r of rows) {
+    if (r.headSha !== headSha || latest.has(r.criterionId)) continue;
+    latest.set(r.criterionId, { criterionId: r.criterionId, outcome: r.verdict === 'pass' ? 'pass' : r.verdict === 'fail' ? 'fail' : 'error' });
+  }
+  return applyImportCheck(spec.id, { headSha, fileBlobSha: src.blobSha, results: [...latest.values()] });
+}
+
 // ── The batch retirement proposal (R-372) ───────────────────────────────────
 
 /** An agent proposes; nothing is retired. One open proposal per call, listing every spec with its reason. */
@@ -144,6 +172,8 @@ export async function answerOwnerQuestion(caller: SpecCaller, questionId: string
       else skipped.push({ specId: item.specId, title: item.title, error: r.ok ? 'not retired' : r.error });
     }
   }
+  // Anything skipped keeps the question open, so the owner can answer again for those specs.
+  if (skipped.length > 0) return { ok: true, retired, skipped };
   const claimed = await db.update(specOwnerQuestions).set({ status: 'answered', answeredBy: `user:${caller.userId}`, answeredAt: new Date(), answer: { retired: retired.map((r) => r.specId), skipped: skipped.map((s) => s.specId) } })
     .where(and(eq(specOwnerQuestions.id, questionId), eq(specOwnerQuestions.status, 'open'))).returning({ id: specOwnerQuestions.id });
   if (!claimed.length) return fail(409, 'Already answered');

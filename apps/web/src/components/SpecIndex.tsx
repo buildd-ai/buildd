@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useMemo, useState, type ReactNode } from 'react';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
+import SpecOwnerQuestions from '@/components/SpecOwnerQuestions';
 import SpecClusterMap, { MIN_AREAS_FOR_MAP, UNFILED } from '@/components/SpecClusterMap';
 import {
   MIX_STATES, importedByArea, specIndexView,
@@ -431,6 +432,7 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
 
   return (
     <div className="flex flex-col gap-5" data-testid="spec-index">
+      {workspaceId ? <SpecOwnerQuestions workspaceId={workspaceId} canAnswer={canConfirm} /> : null}
       {controls}
       <div className="flex flex-col gap-1.5">
         <p className="text-body text-text-secondary" data-testid="spec-index-line">
