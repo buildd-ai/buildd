@@ -190,7 +190,7 @@ describe('buildd acp end to end', () => {
     const turn = client.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Add a coupon field' }] });
     await until(() => runner.subscribers() === 1);
     expect(runner.posts).toEqual([
-      { path: '/api/tasks', body: { workspaceId: 'ws-shop', title: 'Add a coupon field', description: 'Add a coupon field' } },
+      { path: '/api/tasks', body: { workspaceId: 'ws-shop', title: 'Add a coupon field', description: 'Add a coupon field', reserve: true } },
       { path: '/api/claim', body: { taskId: 't-new' } },
     ]);
     runner.push({ id: 'w-new', workspaceName: 'shop', status: 'done', messages: [{ type: 'text', content: 'Added it', timestamp: 2 }] });

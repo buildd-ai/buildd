@@ -39,7 +39,7 @@ export interface RunnerPort {
   subscribe(onWorker: (worker: PublicWorker) => void): () => void;
   /** The workspaces this runner's key reaches (`GET /api/workspaces`). */
   listWorkspaces(): Promise<BuilddWorkspace[]>;
-  createTask(input: { workspaceId: string; title: string; description: string } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
+  createTask(input:  { workspaceId: string; title: string; description: string; reserve?: boolean } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
   /** Claim a task onto this runner as a person would (`c` in top). */
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
 }
@@ -352,14 +352,16 @@ export class AcpBridge {
     }
 
     const title = taskTitleFrom(text);
-    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta });
+    // Filed reserved for this runner's account, then claimed by id: no other runner
+    // can take it in the gap, or the thread would follow nothing (CG-7).
+    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true });
     const task = (created.body as { task?: { id?: string } } | null)?.task;
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 
     const claimed = await this.deps.runner.claim(task.id);
     const worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
     if (claimed.status >= 400 || !worker?.id) {
-      return end(`Created the buildd task “${title}” in ${ws.name}. It is queued: this runner could not take it now. ${refusal(claimed)}`);
+      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${refusal(claimed)}`);
     }
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);

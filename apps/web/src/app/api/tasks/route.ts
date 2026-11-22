@@ -77,7 +77,6 @@ import { loadRequestCeiling, previewUnderCeiling, rejectOverCeiling } from '@/li
 import { terminalAuditFields } from './audit-fields';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
-import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
@@ -595,16 +594,19 @@ export async function POST(req: NextRequest) {
       // Explicit PR reach grant for coordination tasks (person only): explicit PR numbers or workspace-wide scope.
       prReachScope: rawPrReachScope,
     } = body;
-    // A reservation is only for a verified interactive session (the one the claim
-    // route lets claim its own reserved task). Refused before anything is filed, so
-    // create_task claim:true can never leave a task parked from every claimer.
-    const reserveVerified = rawReserve === true && !!apiAccount && !apiAccount.taskScope
-      && !!verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), apiAccount.id);
+    // A task is filed reserved by the account that will claim it by id next: an
+    // interactive session (create_task claim:true) or a runner's own key (the ACP
+    // bridge files a T3 thread's task and claims it on that runner; unreserved,
+    // another runner won the gap). The claim route passes that account's explicit
+    // claim (spec claim-gate-legibility CG-7), so the filer is never parked out; a
+    // filer that never claims parks the task until the 20-minute lease lapses.
+    // Never a per-task token: a worker does not claim tasks.
+    const reserveVerified = rawReserve === true && !!apiAccount && !apiAccount.taskScope;
     if (rawReserve !== undefined && typeof rawReserve !== 'boolean') {
       return NextResponse.json({ error: 'reserve must be true or false' }, { status: 400 });
     }
     if (rawReserve === true && !reserveVerified) {
-      return NextResponse.json({ error: 'A task is only filed reserved from your own interactive session, the one claim_task would run as.' }, { status: 403 });
+      return NextResponse.json({ error: 'A task is only filed reserved by the account that claims it next: your interactive session or your runner, not a per-task token.' }, { status: 403 });
     }
     let missionId: string | undefined = requestedMissionId;
 
