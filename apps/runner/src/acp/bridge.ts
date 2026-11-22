@@ -37,8 +37,12 @@ export type WorkerActionName = 'answer' | 'message' | 'pause' | 'stop' | 'follow
 export interface RunnerPort {
   listWorkers(): Promise<PublicWorker[]>;
   act(workerId: string, action: WorkerActionName, message?: string): Promise<{ status: number; body: unknown }>;
-  /** Called with each worker the runner broadcasts. Returns an unsubscribe. */
-  subscribe(onWorker: (worker: PublicWorker) => void): () => void;
+  /**
+   * Called with each worker the runner broadcasts. Returns an unsubscribe.
+   * `onSnapshot` gets the ids of every worker in a full list the runner sends
+   * (the init frame on each (re)connect), so a turn can tell its worker is gone.
+   */
+  subscribe(onWorker: (worker: PublicWorker) => void, onSnapshot?: (ids: Set<string>) => void): () => void;
   /** The workspaces this runner's key reaches (`GET /api/workspaces`). */
   listWorkspaces(): Promise<BuilddWorkspace[]>;
   createTask(input:   { workspaceId: string; title: string; description: string; reserve?: boolean; context?: Record<string, unknown> } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
@@ -379,8 +383,14 @@ export class AcpBridge {
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 
     const claimed = await this.deps.runner.claim(task.id);
-    const worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
+    let worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
     if (claimed.status >= 400 || !worker?.id) {
+      // The runner's own dispatch may have claimed the reserved task first: the
+      // reservation lets this account's claim through, whichever path makes it.
+      // That is this runner running it, so follow that worker.
+      worker = await this.ownWorkerFor(task.id);
+    }
+    if (!worker?.id) {
       return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${refusal(claimed)}`);
     }
     session.workerId = worker.id;
@@ -483,7 +493,22 @@ export class AcpBridge {
         if (moving && isSettled(w.status)) finish('end_turn');
       };
 
-      const unsubscribe = this.deps.runner.subscribe(onWorker);
+      const onSnapshot = (ids: Set<string>) => {
+        const id = session.workerId;
+        if (done || !id || ids.has(id)) return;
+        // The init frame leaves out settled workers, so a miss is not proof the worker is gone:
+        // ask the full list before saying so.
+        this.findWorker(id).then(
+          (w) => {
+            if (done || id !== session.workerId) return;
+            if (w) onWorker(w);
+            else finish('end_turn', 'This worker is no longer on this runner.');
+          },
+          () => {},
+        );
+      };
+
+      const unsubscribe = this.deps.runner.subscribe(onWorker, onSnapshot);
       session.cancelTurn = () => {
         void this.deps.runner.act(session.workerId!, 'pause').catch(() => {});
         finish('cancelled', 'Pausing the run. Reply to resume it.');
@@ -513,6 +538,16 @@ export class AcpBridge {
     const session: Session = { workerId: this.workerIdFor(sessionId), cwd: null, cursor: new MessageCursor() };
     this.sessions.set(sessionId, session);
     return session;
+  }
+
+  /** A worker on this runner for the task, waiting briefly for a dispatch that is still landing. */
+  private async ownWorkerFor(taskId: string): Promise<PublicWorker | undefined> {
+    for (let i = 0; i < 6; i++) {
+      const found = (await this.deps.runner.listWorkers().catch(() => [] as PublicWorker[])).find(w => w.taskId === taskId);
+      if (found) return found;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return undefined;
   }
 
   private async findWorker(workerId: string): Promise<PublicWorker | undefined> {
