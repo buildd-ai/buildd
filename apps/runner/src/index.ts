@@ -842,7 +842,7 @@ const updateDrain = initUpdateDrain();
 // `buildd-acp` on the PATH for ACP clients (T3 Code): see acp/shim.ts. Best
 // effort: a read-only home must not stop the runner.
 try {
-  if (ensureAcpShim() === 'written') console.log('[acp] wrote ~/.local/bin/buildd-acp');
+  if (ensureAcpShim({ installDir: BUILDD_DIR }) === 'written') console.log('[acp] wrote ~/.local/bin/buildd-acp');
 } catch (err) {
   console.warn(`[acp] could not write ~/.local/bin/buildd-acp: ${(err as Error)?.message ?? err}`);
 }
