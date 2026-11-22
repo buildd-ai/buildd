@@ -9,9 +9,9 @@ import SpecIndex from '@/components/SpecIndex';
 export const dynamic = 'force-dynamic';
 
 /** A workspace's Living Specs: what waits for approval, then one card per area (living-specs.md §19). */
-export default async function WorkspaceSpecsPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+export default async function WorkspaceSpecsPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
   const { id } = await params;
-  const query = parseListQuery(await searchParams);
+  const query = parseListQuery((await searchParams) ?? {});
   const user = await getCurrentUser();
   if (!user) redirect(`/app/auth/signin?callbackUrl=${encodeURIComponent(`/app/workspaces/${id}/specs`)}`);
   const view = await specListView(user.id, id, query);
