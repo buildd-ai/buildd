@@ -8,7 +8,7 @@ function home() {
   return mkdtempSync(join(tmpdir(), 'acp-shim-'));
 }
 
-const opts = (h: string) => ({ home: h, bunPath: '/opt/bun/bin/bun', mainPath: '/srv/buildd/apps/runner/src/acp/main.ts', platform: 'linux' });
+const opts = (h: string) => ({ home: h, bunPath: '/opt/bun/bin/bun', mainPath: '/srv/buildd/apps/runner/src/acp/main.ts', installDir: '/srv/buildd', platform: 'linux' });
 
 describe('acpShimScript', () => {
   test('execs the bridge with bun, passes args through, and carries the marker', () => {
@@ -68,6 +68,27 @@ describe('ensureAcpShim', () => {
     const h = home();
     try {
       expect(ensureAcpShim({ ...opts(h), platform: 'win32' })).toBe('skipped');
+      expect(existsSync(join(h, '.local', 'bin', 'buildd-acp'))).toBe(false);
+    } finally { rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test('leaves the shim alone when this runner is not the installed one', () => {
+    // CI's integration job checks buildd out to /tmp/buildd-ci on a machine with
+    // a real install and starts a runner there; that runner used to repoint the
+    // shim at a checkout that is deleted minutes later.
+    const h = home();
+    try {
+      ensureAcpShim(opts(h));
+      const before = readFileSync(join(h, '.local', 'bin', 'buildd-acp'), 'utf8');
+      expect(ensureAcpShim({ ...opts(h), mainPath: '/tmp/buildd-ci/apps/runner/src/acp/main.ts' })).toBe('skipped');
+      expect(readFileSync(join(h, '.local', 'bin', 'buildd-acp'), 'utf8')).toBe(before);
+    } finally { rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test('a sibling directory sharing the install prefix is not the install', () => {
+    const h = home();
+    try {
+      expect(ensureAcpShim({ ...opts(h), mainPath: '/srv/buildd-ci/apps/runner/src/acp/main.ts' })).toBe('skipped');
       expect(existsSync(join(h, '.local', 'bin', 'buildd-acp'))).toBe(false);
     } finally { rmSync(h, { recursive: true, force: true }); }
   });
