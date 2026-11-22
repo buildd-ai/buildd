@@ -379,8 +379,14 @@ export class AcpBridge {
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 
     const claimed = await this.deps.runner.claim(task.id);
-    const worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
+    let worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
     if (claimed.status >= 400 || !worker?.id) {
+      // The runner's own dispatch may have claimed the reserved task first: the
+      // reservation lets this account's claim through, whichever path makes it.
+      // That is this runner running it, so follow that worker.
+      worker = await this.ownWorkerFor(task.id);
+    }
+    if (!worker?.id) {
       return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${refusal(claimed)}`);
     }
     session.workerId = worker.id;
@@ -513,6 +519,16 @@ export class AcpBridge {
     const session: Session = { workerId: this.workerIdFor(sessionId), cwd: null, cursor: new MessageCursor() };
     this.sessions.set(sessionId, session);
     return session;
+  }
+
+  /** A worker on this runner for the task, waiting briefly for a dispatch that is still landing. */
+  private async ownWorkerFor(taskId: string): Promise<PublicWorker | undefined> {
+    for (let i = 0; i < 6; i++) {
+      const found = (await this.deps.runner.listWorkers().catch(() => [] as PublicWorker[])).find(w => w.taskId === taskId);
+      if (found) return found;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return undefined;
   }
 
   private async findWorker(workerId: string): Promise<PublicWorker | undefined> {
