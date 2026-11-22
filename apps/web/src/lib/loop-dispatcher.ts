@@ -105,9 +105,8 @@ function evaluatePrChecksGreen(
   prLifecycleStatus: string | null | undefined,
   prNumber: number | null | undefined,
 ): ConditionResult {
-  if (!prNumber || !prLifecycleStatus) {
-    return { satisfied: false, summary: 'No PR or lifecycle status available' };
-  }
+  if (!prNumber) return { satisfied: false, summary: 'No PR found for this task' };
+  if (!prLifecycleStatus) return { satisfied: false, summary: `PR #${prNumber} has no CI status recorded yet` };
   // ci_green: all check suites passed (set by webhook when check_suite.conclusion=success).
   // merged: PR was merged (CI was green before merge).
   const satisfied = prLifecycleStatus === 'ci_green' || prLifecycleStatus === 'merged';
