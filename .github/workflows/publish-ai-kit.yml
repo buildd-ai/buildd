@@ -62,7 +62,7 @@ permissions:
 jobs:
   plan:
     if: github.event_name == 'push' && github.ref_type == 'branch'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
       version: ${{ steps.plan.outputs.version }}
@@ -133,7 +133,7 @@ jobs:
     needs: plan
     # Tag push / dispatch: plan is skipped. Dev push: only when plan says so.
     if: ${{ !cancelled() && (needs.plan.result == 'skipped' || needs.plan.outputs.publish == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions:
       contents: read
       id-token: write # OIDC token for npm trusted publishing + provenance
@@ -242,7 +242,7 @@ jobs:
   tag:
     needs: [plan, publish]
     if: needs.plan.outputs.publish == 'true' && needs.publish.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions:
       contents: write
     steps:

@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   cron-sync:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     # Only Production, and only on a successful deploy.
     if: >
       github.event.deployment.environment == 'Production' &&
@@ -89,7 +89,7 @@ jobs:
           bun run cron:sync
 
   annotate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     if: >
       github.event.deployment.environment == 'Production' &&
       github.event.deployment_status.state == 'success'
@@ -136,7 +136,7 @@ jobs:
     if: >
       github.event.deployment.environment == 'Production' &&
       (github.event.deployment_status.state == 'failure' || github.event.deployment_status.state == 'error')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 20
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -175,7 +175,7 @@ jobs:
     if: >
       github.event.deployment.environment == 'Production' &&
       github.event.deployment_status.state == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 15
     steps:
       - name: Wait for deploy-identity to report the deployed SHA

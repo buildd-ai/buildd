@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   detect-error-type:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     if: github.event.workflow_run.conclusion == 'failure'
     outputs:
       error_type: ${{ steps.classify.outputs.error_type }}
@@ -79,7 +79,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
 
   infra-auto-retry:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     needs: detect-error-type
     # run_attempt is the attempt number of the Build & Test run that just completed.
     # Each successful `gh run rerun` bumps it and fires a fresh workflow_run event here,
@@ -127,7 +127,7 @@ jobs:
           FAILED_JOB: ${{ needs.detect-error-type.outputs.failed_job }}
 
   infra-retry-exhausted:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     needs: detect-error-type
     if: |
       needs.detect-error-type.outputs.is_infrastructure_error == 'true' &&
@@ -155,7 +155,7 @@ jobs:
           FAILED_JOB: ${{ needs.detect-error-type.outputs.failed_job }}
 
   auto-fix:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     needs: detect-error-type
     if: >
       github.event.workflow_run.conclusion == 'failure' &&

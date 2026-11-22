@@ -59,7 +59,7 @@ concurrency:
 jobs:
   check:
     name: Tier-2 CI — assertion evaluation (blocking)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     env:
       WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
       BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
