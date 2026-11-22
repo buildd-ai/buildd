@@ -84,3 +84,25 @@ export function parseCriterionSources(v: unknown): { ok: true; sources: Record<s
   }
   return { ok: true, sources: entries.length ? out : null };
 }
+
+/**
+ * The conversation a draft is written from (R-350): the cited message must exist
+ * in that conversation and be a person's own message, never an agent's. Stored
+ * with the revision; it is what routes the revision to the independent intent
+ * check and then to the owner as questions only (R-363).
+ */
+export async function resolveDraftProvenance(
+  v: unknown,
+  load: LoadMessage = loadConversationMessage,
+): Promise<{ ok: true; provenance: { conversationId: string; messageId: string; messageAt: string } | null } | SpecError> {
+  if (v === undefined || v === null) return { ok: true, provenance: null };
+  const ref = (typeof v === 'object' && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  if (typeof ref.conversationId !== 'string' || typeof ref.messageId !== 'string' || !isUuid(ref.conversationId) || !isUuid(ref.messageId)) {
+    return fail(400, 'provenance is { conversationId, messageId }: the conversation and the owner\'s message the draft comes from');
+  }
+  const row = await load(ref.conversationId, ref.messageId);
+  if (!row || row.messageConversationId !== ref.conversationId || row.role !== 'user' || !row.authorUserId) {
+    return fail(400, 'provenance must cite a person\'s message in that conversation');
+  }
+  return { ok: true, provenance: { conversationId: ref.conversationId, messageId: ref.messageId, messageAt: row.createdAt.toISOString() } };
+}

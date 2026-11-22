@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { parseCriterionSources, verifyOwnerMessage, type ConversationMessageRow } from './approval-conversation';
+import { parseCriterionSources, resolveDraftProvenance, verifyOwnerMessage, type ConversationMessageRow } from './approval-conversation';
 
 const C = '11111111-1111-4111-8111-111111111111';
 const M = '22222222-2222-4222-8222-222222222222';
@@ -42,5 +42,22 @@ describe('parseCriterionSources', () => {
     expect(parseCriterionSources(undefined)).toEqual({ ok: true, sources: null });
     expect(parseCriterionSources({ foo: 'x' })).toMatchObject({ ok: false, status: 400 });
     expect(parseCriterionSources({ 'R-1': '' })).toMatchObject({ ok: false, status: 400 });
+  });
+});
+
+describe('resolveDraftProvenance (what a revision stores so its intent check can run)', () => {
+  const C2 = '11111111-1111-4111-8111-111111111111';
+  const M2 = '22222222-2222-4222-8222-222222222222';
+  const row = (over: Partial<{ role: string; authorUserId: string | null; messageConversationId: string }> = {}) => async () => ({
+    conversationOwnerId: 'u', messageConversationId: C2, role: 'user', authorUserId: 'u', createdAt: new Date('2026-01-01T00:00:00Z'), ...over,
+  });
+  it('stores the cited person message with its time; none cited is none stored', async () => {
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, row())).toEqual({ ok: true, provenance: { conversationId: C2, messageId: M2, messageAt: '2026-01-01T00:00:00.000Z' } });
+    expect(await resolveDraftProvenance(undefined)).toEqual({ ok: true, provenance: null });
+  });
+  it('refuses an agent message, a missing message or a malformed ref', async () => {
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, row({ role: 'assistant' }))).toMatchObject({ ok: false, status: 400 });
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, async () => null)).toMatchObject({ ok: false, status: 400 });
+    expect(await resolveDraftProvenance({ conversationId: 'x' }, row())).toMatchObject({ ok: false, status: 400 });
   });
 });

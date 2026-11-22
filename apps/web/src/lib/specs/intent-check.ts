@@ -156,3 +156,39 @@ export async function listOpenIntentQuestions(userId: string): Promise<InboxQues
   return rows.flatMap((r) => r.questions.filter((q) => !q.answeredAt)
     .map((q) => ({ ...q, specId: r.specId, specTitle: r.title, revision: r.revision, workspaceName: names.get(r.workspaceId) ?? '' })));
 }
+
+/**
+ * The owner answers one question (R-364): only a person's own session sets
+ * answeredAt, answeredBy and answer, never an agent or task. `answer` is the
+ * suggested one when omitted (the one-action accept). Atomic on the question's
+ * still being open, so a double click answers once.
+ */
+export async function answerIntentQuestion(
+  caller: SpecCaller,
+  specId: string,
+  input: { revision?: unknown; questionId?: unknown; answer?: unknown },
+): Promise<{ ok: true; question: SpecIntentQuestion } | SpecError> {
+  if (caller.kind !== 'user') return fail(403, 'Only the owner answers these questions, from their own signed-in session.', { code: 'not_a_person' });
+  if (!isUuid(specId)) return fail(404, 'Spec not found');
+  if (!Number.isInteger(input.revision) || typeof input.questionId !== 'string') return fail(400, 'revision and questionId are required');
+  if (input.answer !== undefined && (typeof input.answer !== 'string' || !input.answer.trim() || input.answer.length > MAX_TEXT)) {
+    return fail(400, `answer is at most ${MAX_TEXT} characters`);
+  }
+  const [spec] = await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, specId)).limit(1);
+  if (!spec || !(await approverWorkspaces(caller.userId)).some((w) => w.id === spec.workspaceId)) return fail(404, 'Spec not found');
+  const [row] = await db.select({ id: specIntentChecks.id, questions: specIntentChecks.questions }).from(specIntentChecks)
+    .where(and(eq(specIntentChecks.specId, specId), eq(specIntentChecks.revision, input.revision as number))).limit(1);
+  const q = row?.questions.find((x) => x.id === input.questionId);
+  if (!row || !q) return fail(404, 'Question not found');
+  if (q.answeredAt) return fail(409, 'That question is already answered.', { code: 'already_answered' });
+  const answered: SpecIntentQuestion = {
+    ...q, answeredAt: new Date().toISOString(), answeredBy: caller.userId,
+    answer: typeof input.answer === 'string' ? input.answer.trim() : q.recommended,
+  };
+  const next = row.questions.map((x) => (x.id === q.id ? answered : x));
+  const upd = await db.update(specIntentChecks).set({ questions: next })
+    .where(and(eq(specIntentChecks.id, row.id), sql`NOT EXISTS (SELECT 1 FROM jsonb_array_elements(${specIntentChecks.questions}) e WHERE e->>'id' = ${q.id} AND e->>'answeredAt' IS NOT NULL)`))
+    .returning({ id: specIntentChecks.id });
+  if (!upd.length) return fail(409, 'That question is already answered.', { code: 'already_answered' });
+  return { ok: true, question: answered };
+}
