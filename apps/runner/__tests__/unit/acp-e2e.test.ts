@@ -657,8 +657,8 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
     runner.down();
     runner.workers.delete('w1');
     runner.up();
-    await until(() => runner.subscribers() === 1, 6_000);
-    const res = await within(turn, 4_000);
+    // The turn ends on the reconnect's init frame and drops its stream, so do not wait for a subscriber.
+    const res = await within(turn, 8_000);
     expect(res).not.toBe('timedOut');
     expect(said(client, 'w1').at(-1)).toBe('This worker is no longer on this runner.');
   }, 20_000);
