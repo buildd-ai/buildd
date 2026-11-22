@@ -5605,3 +5605,26 @@ export interface FailureRecoveryCauseGroup {
   /** The rule key when this membership was assigned: an override lapses once the rule key changes. */
   ruleKey?: string;
 }
+
+/** How a spec revision was approved, as recorded with the approval. `conversation` is approval by the owner's own message. */
+export type SpecApprovedVia = 'dashboard' | 'mcp' | 'chat' | 'conversation' | 'check';
+
+/** The link recorded on a revision approved in a conversation. */
+export interface SpecApprovalConversationLink {
+  conversationId: string;
+  messageId: string;
+  /** ISO time the owner's message was written. */
+  messageAt: string;
+}
+
+/** POST /api/specs/[specId]/approve/conversation */
+export interface ApproveSpecInConversationRequest {
+  revision: number;
+  expectedVersion: number;
+  conversationId: string;
+  messageId: string;
+  /** Criterion id → short source reference within the conversation. */
+  criterionSources?: Record<string, string>;
+  overrideReason?: string;
+  retire?: unknown;
+}

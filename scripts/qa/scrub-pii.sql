@@ -735,6 +735,7 @@ UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence), criterion
 DELETE FROM spec_criteria;
 DELETE FROM spec_revision_reviews;
 UPDATE spec_revisions SET criteria_count = NULL;
+UPDATE spec_revisions SET criterion_sources = NULL;
 -- A revision's explanation (Living Spec b7fc9316 R-15) is its author's prose:
 -- the summary and each line become placeholders of the same length; a
 -- criterion id key is kept (it names a criterion of the scrubbed body, so the
