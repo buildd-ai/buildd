@@ -49,6 +49,8 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   taskTitle: true,
   taskDescription: true,
   parentTaskId: true,
+  missionId: true,
+  attemptKind: true,
   taskMode: true,
   taskBackend: true,
   promptBundlesLoaded: true, // a boolean, no prompt text

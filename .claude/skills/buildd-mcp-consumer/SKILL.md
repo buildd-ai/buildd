@@ -121,6 +121,17 @@ claims too.
 
 Details: topic `pr-landing`.
 
+## Delegating work a person should watch
+
+When a person should watch the work as it happens and your client offers
+delegation to a buildd-provider thread (T3 Code), delegate there instead of
+filing a task: open the thread with `_meta.buildd` =
+`{ missionId?, roleSlug?, priority?, kind? }` on `session/new` (or the first
+`session/prompt`). The thread's first message becomes a task with those fields.
+A mission outside your team, or a missing one, files nothing and the thread
+says why. For background work nobody needs to watch, use
+`buildd action=create_task`.
+
 ## Friction
 
 When a platform action errors unexpectedly, a tool limit forces a detour or

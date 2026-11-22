@@ -30,7 +30,7 @@ const KERNEL_OWNS_NEXT_MOVE = new Set(['AWAITING_REVIEW', 'REPAIRING', 'LANDING'
 const PERSON_OWNS_NEXT_MOVE = new Set(['ESCALATED']);
 
 /** The kernel delivery this loop task owns (null = none, or released to legacy). Never throws. */
-async function ownerDelivery(taskId: string): Promise<{ state: string; prNumber: number | null; mergedAt: string | null } | null> {
+async function ownerDelivery(taskId: string): Promise<{ state: string; prNumber: number | null; mergedAt: string | null; prStatus?: string | null } | null> {
   try {
     const { kernelOwnerDeliveryFacts } = await import('@/lib/workflow/delivery-view');
     return await kernelOwnerDeliveryFacts(taskId);
@@ -78,7 +78,20 @@ export async function loopPolicy(input: LoopInput): Promise<LoopVerdict> {
   const delivery = prCondition && !shipped ? await ownerDelivery(input.taskId) : null;
   const deliveryMerged = delivery?.state === 'MERGED';
   const prNumber = shipped ?? prWorker?.prNumber ?? delivery?.prNumber ?? null;
-  const prLifecycleStatus = shipped || deliveryMerged ? 'merged' : prWorker?.prLifecycleStatus ?? null;
+  // b6a82104: a later attempt's row carries the task's PR number but starts with no lifecycle
+  // status; the kernel projects one onto it only at the delivery's next transition. Read the
+  // delivery's own reading of that PR, then any other row of the task's PR, before calling it unknown.
+  let prLifecycleStatus: string | null = shipped || deliveryMerged
+    ? 'merged'
+    : (delivery?.prStatus && delivery.prNumber === prNumber ? delivery.prStatus : null) ?? prWorker?.prLifecycleStatus ?? null;
+  if (prCondition && !prLifecycleStatus && prNumber != null) {
+    const sibling = await db.query.workers.findFirst({
+      where: sqlWhere(and(eq(workers.taskId, input.taskId), eq(workers.prNumber, prNumber), isNotNull(workers.prLifecycleStatus))),
+      orderBy: sqlOrderBy(desc(workers.updatedAt)),
+      columns: prColumns,
+    }).catch(() => undefined);
+    prLifecycleStatus = sibling?.prLifecycleStatus ?? null;
+  }
 
   const r = dispatchLoopIteration({
     loopConfig,
