@@ -3247,9 +3247,50 @@ export const specRevisions = pgTable('spec_revisions', {
   // Where each criterion came from in that conversation: criterion id → a
   // short source reference. NULL: none recorded.
   criterionSources: jsonb('criterion_sources').$type<Record<string, string>>(),
+  // The conversation this draft was written from (Living Spec 65ed7fa3 R-350):
+  // thread, the owner's message and its time. Fixed with the revision. NULL: none,
+  // so the revision keeps the document approve flow (R-363).
+  provenance: jsonb('provenance').$type<{ conversationId: string; messageId: string; messageAt: string }>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/** One question the independent intent check raises for the owner (R-361): one sentence and a recommended answer. */
+export interface SpecIntentQuestion {
+  id: string;
+  kind: 'mismatch' | 'gap';
+  /** One sentence, in the owner's terms. */
+  text: string;
+  /** The answer the owner accepts with one action. */
+  recommended: string;
+  criterionId?: string;
+  /** Set only by the owner's own act (R-364). */
+  answeredAt?: string;
+  answeredBy?: string;
+  answer?: string;
+}
+
+/**
+ * The independent intent check of a revision that carries provenance (Living
+ * Spec 65ed7fa3 R-360 to R-362): who ran it and what it read, and the
+ * questions it raised. One per (spec, revision, hash). A clean check has no
+ * questions and puts nothing in the owner's inbox.
+ */
+export const specIntentChecks = pgTable('spec_intent_checks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  contentHash: text('content_hash').notNull(),
+  conversationId: uuid('conversation_id').notNull(),
+  messageIds: jsonb('message_ids').notNull().$type<string[]>(),
+  // Who ran it: an agent account (with its task when task-scoped), never the drafter or a pinned task.
+  checkerAccountId: text('checker_account_id').notNull(),
+  checkerTaskId: text('checker_task_id'),
+  questions: jsonb('questions').notNull().$type<SpecIntentQuestion[]>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specRevisionIdx: uniqueIndex('spec_intent_checks_spec_revision_idx').on(t.specId, t.revision),
 }));
 
 /**

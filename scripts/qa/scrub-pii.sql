@@ -736,6 +736,9 @@ DELETE FROM spec_criteria;
 DELETE FROM spec_revision_reviews;
 UPDATE spec_revisions SET criteria_count = NULL;
 UPDATE spec_revisions SET criterion_sources = NULL;
+-- Draft provenance is conversation/message ids and a timestamp (not content); the
+-- intent check's questions are one-sentence prose about the draft: placeholders.
+UPDATE spec_intent_checks SET questions = pg_temp.qa_json(questions);
 -- A revision's explanation (Living Spec b7fc9316 R-15) is its author's prose:
 -- the summary and each line become placeholders of the same length; a
 -- criterion id key is kept (it names a criterion of the scrubbed body, so the

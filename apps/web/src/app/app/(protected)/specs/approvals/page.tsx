@@ -5,6 +5,8 @@ import { approvalInboxView, type InboxRow } from '@/lib/specs/approval-inbox-vie
 import { SPEC_APPROVAL_INBOX_PATH, SPEC_REVIEW_ALL_PATH } from '@/lib/specs/approval-inbox';
 import { inboxShownCount, INBOX_PAGE_SIZE } from '@/lib/specs/approval-inbox-paging';
 import { rowRevisionLine } from '@/lib/specs/approval-row-line';
+import SpecIntentQuestions from '@/components/SpecIntentQuestions';
+import { listOpenIntentQuestions } from '@/lib/specs/intent-check';
 import SpecApprovalRequest from '@/components/SpecApprovalRequest';
 import SpecShippedLine from '@/components/SpecShippedLine';
 import Card from '@/components/ui/Card';
@@ -26,7 +28,7 @@ export const dynamic = 'force-dynamic';
 export default async function SpecApprovalsPage({ searchParams }: { searchParams?: Promise<{ shown?: string | string[] }> }) {
   const user = await getCurrentUser();
   if (!user) redirect(`/app/auth/signin?callbackUrl=${encodeURIComponent(SPEC_APPROVAL_INBOX_PATH)}`);
-  const allRows = await approvalInboxView(user.id);
+  const [allRows, questions] = await Promise.all([approvalInboxView(user.id), listOpenIntentQuestions(user.id)]);
   const n = allRows.length;
   // Bounded first screen: judgement rows sort first, so the page shows those before low-risk ones.
   const shown = inboxShownCount((await searchParams)?.shown, n);
@@ -42,7 +44,7 @@ export default async function SpecApprovalsPage({ searchParams }: { searchParams
         <Lede className="max-w-none!">
           <span data-testid="spec-approvals-lede">
             {n === 0
-              ? 'Nothing waits for your approval.'
+              ? (questions.length ? 'Only questions wait for you.' : 'Nothing waits for your approval.')
               : `${n} spec ${n === 1 ? 'revision waits' : 'revisions wait'} for you. Read each one and approve it on its own.`}
             {n > 1 ? (
               <>
@@ -52,6 +54,7 @@ export default async function SpecApprovalsPage({ searchParams }: { searchParams
             ) : null}
           </span>
         </Lede>
+        <SpecIntentQuestions questions={questions} />
         {judgement.length > 0 ? (
           <ul className="flex flex-col gap-3" data-testid="spec-approvals-list">
             {judgement.map((r) => <li key={r.specId}><InboxRowCard row={r} open={n === 1} /></li>)}
