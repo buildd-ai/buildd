@@ -47,6 +47,8 @@ import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { openInBrowser } from './open-url';
 import { claimEntryWords } from './claim-words';
+import { isCloudExecutor } from './git-clone';
+import { cloneIntoPlace, createT3ProjectSync, findT3Binary, t3AddProject, SYNC_FIRST_DELAY_MS as T3_SYNC_FIRST_DELAY_MS, SYNC_INTERVAL_MS as T3_SYNC_INTERVAL_MS } from './t3-projects';
 
 const PORT = parseInt(process.env.PORT || '8766');
 // Entrypoint: resolving once at load is fine here (see buildd-home.ts).
@@ -854,6 +856,27 @@ if (config.apiKey && ONCE_TASK_ID === null && !isAutoUpdateDisabled()) {
 // Initialize clients (null if no API key - will show setup UI)
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
 let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
+
+// Every claimable workspace as a T3 Code project, cloned if need be: see
+// t3-projects.ts. Reads `buildd` at each pass, so a later login takes effect.
+const t3Bin = findT3Binary();
+if (t3Bin && process.env.BUILDD_T3_PROJECTS !== 'off' && process.platform !== 'win32'
+  && ONCE_TASK_ID === null && !config.serverless && !isCloudExecutor(process.env)
+  && !config.workspaceIsolationRoot && projectRoots.length > 0) {
+  const t3Sync = createT3ProjectSync({
+    listWorkspaces: async () => (buildd ? await buildd.listWorkspaces() : []),
+    findLocal: async (ws) => (await resolver.resolveExisting?.(ws)) ?? null,
+    cloneInto: (url, path) => cloneIntoPlace(url, path),
+    addProject: (path, title) => t3AddProject(t3Bin, path, title),
+    pathExists: existsSync,
+    rescan: async () => { cachedRepos = null; await resolver.scanGitRepos({ maxAgeMs: 0 }); },
+    log: (m) => console.log(m),
+    now: Date.now,
+  }, { root: projectRoots[0] });
+  const runT3Sync = () => { void t3Sync.run().catch((err) => console.warn(`[t3-projects] ${(err as Error)?.message ?? err}`)); };
+  setTimeout(runT3Sync, T3_SYNC_FIRST_DELAY_MS).unref?.();
+  setInterval(runT3Sync, T3_SYNC_INTERVAL_MS).unref?.();
+}
 
 runnerHold?.onChange((hold) => {
   // top's header, and the server, learn at once; a lifted hold claims straight away.

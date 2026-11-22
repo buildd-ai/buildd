@@ -41,7 +41,7 @@ export interface RunnerPort {
   subscribe(onWorker: (worker: PublicWorker) => void): () => void;
   /** The workspaces this runner's key reaches (`GET /api/workspaces`). */
   listWorkspaces(): Promise<BuilddWorkspace[]>;
-  createTask(input:  { workspaceId: string; title: string; description: string; reserve?: boolean } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
+  createTask(input:   { workspaceId: string; title: string; description: string; reserve?: boolean; context?: Record<string, unknown> } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
   /** Claim a task onto this runner as a person would (`c` in top). */
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
 }
@@ -164,6 +164,8 @@ export class AcpBridge {
   private grace: number;
   /** The client renders ACP form elicitations (T3 Code shows them as its own question UI). */
   private canElicit = false;
+  /** The client's own name from `initialize` clientInfo, kept to say who filed a task. */
+  private clientName: string | null = null;
 
   constructor(private deps: BridgeDeps) {
     this.grace = deps.settleGraceMs ?? 30_000;
@@ -173,6 +175,7 @@ export class AcpBridge {
     switch (method) {
       case 'initialize':
         this.canElicit = !!params?.clientCapabilities?.elicitation?.form && !!this.deps.request;
+        this.clientName = typeof params?.clientInfo?.name === 'string' ? params.clientInfo.name.trim().slice(0, 60) || null : null;
         return this.initialize();
       case 'authenticate': return {};
       case 'session/new': return this.newSession(params ?? {});
@@ -369,13 +372,21 @@ export class AcpBridge {
     const title = taskTitleFrom(text);
     // Filed reserved for this runner's account, then claimed by id: no other runner
     // can take it in the gap, or the thread would follow nothing (CG-7).
-    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true });
+    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true,
+      // Origin marker the task page reads (context.client): the client names itself.
+      context: { client: { kind: 'acp', ...(this.clientName ? { name: this.clientName } : {}) } } });
     const task = (created.body as { task?: { id?: string } } | null)?.task;
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 
     const claimed = await this.deps.runner.claim(task.id);
-    const worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
+    let worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
     if (claimed.status >= 400 || !worker?.id) {
+      // The runner's own dispatch may have claimed the reserved task first: the
+      // reservation lets this account's claim through, whichever path makes it.
+      // That is this runner running it, so follow that worker.
+      worker = await this.ownWorkerFor(task.id);
+    }
+    if (!worker?.id) {
       return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${refusal(claimed)}`);
     }
     session.workerId = worker.id;
@@ -508,6 +519,16 @@ export class AcpBridge {
     const session: Session = { workerId: this.workerIdFor(sessionId), cwd: null, cursor: new MessageCursor() };
     this.sessions.set(sessionId, session);
     return session;
+  }
+
+  /** A worker on this runner for the task, waiting briefly for a dispatch that is still landing. */
+  private async ownWorkerFor(taskId: string): Promise<PublicWorker | undefined> {
+    for (let i = 0; i < 6; i++) {
+      const found = (await this.deps.runner.listWorkers().catch(() => [] as PublicWorker[])).find(w => w.taskId === taskId);
+      if (found) return found;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return undefined;
   }
 
   private async findWorker(workerId: string): Promise<PublicWorker | undefined> {

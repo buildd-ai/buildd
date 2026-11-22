@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { beatWithin, runnerOnlineNow, INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, runnerUpdateState, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { beatWithin, runnerOnlineNow, INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, runnerUpdateState, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type RunnerAcpCapability, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -28,7 +28,7 @@ export interface FleetHeartbeatRow {
   localUiUrl: string;
   maxConcurrentWorkers: number;
   /** `fleet`: a `--once` run's identity (@buildd/shared runner-fleet). */
-  environment?: { labels?: Record<string, string> | null; fleet?: unknown; hold?: unknown } | null;
+  environment?: { labels?: Record<string, string> | null; fleet?: unknown; hold?: unknown; acp?: unknown } | null;
   lastHeartbeatAt: DateLike;
   /** Pusher presence; null/absent = never joined, judged by the beat alone (runnerOnlineNow). */
   presenceConnected?: boolean | null;
@@ -189,6 +189,14 @@ export function fleetCapacity(
   opts: { now?: number; onlineThresholdMs?: number } = {},
 ): number {
   return fleetSlotCounts(heartbeats, opts).online;
+}
+
+function parseAcp(v: unknown): RunnerAcpCapability | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const str = (x: unknown) => (typeof x === 'string' ? x : null);
+  if (typeof o.version !== 'string' || typeof o.pointsHere !== 'boolean') return undefined;
+  return { shimPath: str(o.shimPath), target: str(o.target), pointsHere: o.pointsHere, version: o.version, platform: str(o.platform) ?? '', bunPath: str(o.bunPath) ?? '', mainPath: str(o.mainPath) ?? '' };
 }
 
 export function buildFleetSnapshot(
@@ -357,7 +365,8 @@ export function buildFleetSnapshot(
     const update = g.hb ? runnerUpdateState({ updateDrain: g.hb.updateDrain, lastHeartbeatAt: g.hb.lastHeartbeatAt }, now) : null;
     // Its own login at a usage limit (provider-failover spec, "A usage wall is a wait").
     const usageWall = opts.usageWalls?.get(g.key) ?? null;
-    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(routes.length ? { routes } : {}), ...(hold ? { hold } : {}), ...(update ? { update } : {}), ...(usageWall ? { usageWall } : {}) });
+    const acp = parseAcp(g.hb?.environment?.acp);
+    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(routes.length ? { routes } : {}), ...(hold ? { hold } : {}), ...(update ? { update } : {}), ...(usageWall ? { usageWall } : {}), ...(acp ? { acp } : {}) });
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
