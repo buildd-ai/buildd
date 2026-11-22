@@ -11,6 +11,7 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { readReachLink } from '@/lib/granted-links';
 import { cachedCaller, callerDep } from '@/lib/caller-cache';
 import { isUuid } from '@/lib/uuid';
+import { normalizeRepoRef } from '@/lib/repo-scope';
 
 type McpAccount = { id: string; teamId: string; workspaceIds?: string[] | null; taskScope?: { taskId: string; workspaceId: string } };
 
@@ -155,27 +156,41 @@ export async function callerReachesSensitiveWorkspace(account: McpAccount): Prom
   }
 }
 
+export type RepoParamResolution =
+  | { kind: 'ok'; workspaceId: string }
+  | { kind: 'ambiguous'; candidates: string[] }
+  | { kind: 'none' };
+
 /**
- * Resolve `?repo=` to a workspace id among the account's own team's
- * workspaces and those it is explicitly linked to. Exact match first, then
- * case-insensitive.
+ * Resolve `?repo=` among the account's own team's workspaces and the ones it
+ * is explicitly linked to. Both sides go through normalizeRepoRef, so
+ * `owner/repo`, a GitHub URL, an ssh form or `.git` all match the stored
+ * value. A bare name matches the workspace name or the repo's last segment;
+ * if that names several workspaces nothing is picked and `ambiguous` lists
+ * their `owner/repo` (or name) so no id leaks.
  */
-export async function resolveRepoParamWorkspaceId(repo: string, account: McpAccount): Promise<string | undefined> {
+export async function resolveRepoParam(repo: string, account: McpAccount): Promise<RepoParamResolution> {
+  const want = normalizeRepoRef(repo);
+  if (!want) return { kind: 'none' };
   const linkedIds = await getLinkedWorkspaceIds(account.id);
   const inScope = linkedIds.length > 0
     ? or(eq(workspaces.teamId, account.teamId), inArray(workspaces.id, linkedIds))
     : eq(workspaces.teamId, account.teamId);
-
-  const exact = await db.query.workspaces.findFirst({
-    where: sqlWhere(and(eq(workspaces.repo, repo), inScope)),
-    columns: { id: true },
-  });
-  if (exact) return exact.id;
-
-  const [row] = await db
-    .select({ id: workspaces.id })
+  const rows = await db
+    .select({ id: workspaces.id, name: workspaces.name, repo: workspaces.repo })
     .from(workspaces)
-    .where(and(sql`LOWER(${workspaces.repo}) = LOWER(${repo})`, inScope))
-    .limit(1);
-  return row?.id;
+    .where(inScope);
+  const matches = rows
+    .map((r) => ({ id: r.id, name: r.name, repo: r.repo ? normalizeRepoRef(r.repo) : null }))
+    .filter((r) => want.includes('/')
+      ? r.repo === want
+      : r.name.toLowerCase() === want || (r.repo != null && r.repo.split('/')[1] === want));
+  if (matches.length === 1) return { kind: 'ok', workspaceId: matches[0].id };
+  if (matches.length > 1) return { kind: 'ambiguous', candidates: matches.map((m) => m.repo ?? m.name).sort() };
+  return { kind: 'none' };
+}
+
+export async function resolveRepoParamWorkspaceId(repo: string, account: McpAccount): Promise<string | undefined> {
+  const r = await resolveRepoParam(repo, account);
+  return r.kind === 'ok' ? r.workspaceId : undefined;
 }
