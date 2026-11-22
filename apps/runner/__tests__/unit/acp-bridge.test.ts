@@ -190,7 +190,7 @@ describe('translate', () => {
   test('a finished run ends on its completion summary', () => {
     const summary = 'No secrets found: only .env.example templates with placeholder values.';
     const worker = { id: 'w1', status: 'done', messages: [
-      { type: 'tool_use', name: 'Bash', input: { command: 'git ls-files' }, timestamp: 1 },
+      { type: 'tool_use', name: 'Bash', input: { command: 'ls -a' }, timestamp: 1 },
       { type: 'tool_use', name: 'mcp__buildd__buildd_work', input: { action: 'complete_task', params: { summary } }, timestamp: 2 },
     ] } as unknown as PublicWorker;
     expect(settledText(worker)).toBe(`${summary}\n\nFinished.`);
