@@ -73,7 +73,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.402.0",
+      "version": "0.404.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.325",
         "@buildd/core": "workspace:*",
@@ -93,7 +93,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.402.0",
+      "version": "0.404.0",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.65",
         "@ai-sdk/openai": "^4.0.78",
@@ -182,7 +182,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.402.0",
+      "version": "0.404.0",
       "dependencies": {
         "@ast-grep/napi": "^0.51.0",
         "@buildd/ai-kit": "workspace:*",
@@ -223,7 +223,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.402.0",
+      "version": "0.404.0",
       "devDependencies": {
         "@types/node": "^26.0.0",
         "typescript": "^6.0.0",
