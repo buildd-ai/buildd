@@ -586,6 +586,31 @@ Only targeting dev.`;
     expect(texts(updates)).not.toContain('Reply here to answer');
   });
 
+  test('the runner echoing the wait while the answer is still in flight does not open a second form', async () => {
+    const { bridge, runner, requests } = setup([worker({ status: 'working' })], {
+      answer: async () => ({ action: 'accept', content: { answer: 'SQLite' } }),
+    });
+    // hold the answer request open, as a slow link would
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const act = runner.act.bind(runner);
+    runner.act = async (...args: Parameters<typeof act>) => { const r = await act(...args); await gate; return r; };
+    await bridge.handle('initialize', ELICITING_CLIENT);
+    const turn = bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    await tick();
+    const q = worker(question({ since: 's1' }));
+    runner.push(q);
+    await until(() => runner.actions.length === 1);
+    // the echo of the same wait arrives before the answer call has returned
+    runner.push(q);
+    await tick(); await tick();
+    expect(requests).toHaveLength(1);
+    release();
+    runner.push(worker({ status: 'done' }));
+    await turn;
+    expect(requests).toHaveLength(1);
+  });
+
   test('a question with no options is a free-text field', async () => {
     const { bridge, runner, requests } = setup([worker({ status: 'working' })], {
       answer: async () => ({ action: 'accept', content: { answer: 'staging' } }),
