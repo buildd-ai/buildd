@@ -93,3 +93,49 @@ describe('ensureAcpShim', () => {
     } finally { rmSync(h, { recursive: true, force: true }); }
   });
 });
+
+describe('acpCapability (reported in the environment scan)', () => {
+  const base = (h: string) => ({ home: h, bunPath: '/opt/bun/bin/bun', mainPath: '/srv/buildd/apps/runner/src/acp/main.ts', installDir: '/srv/buildd', platform: 'linux', version: '1.2.3' });
+  const { acpCapability } = require('../../src/acp/shim');
+
+  test('shim written by this install: points here, reports path and version', () => {
+    const h = home();
+    try {
+      ensureAcpShim(opts(h));
+      const cap = acpCapability(base(h));
+      expect(cap.shimPath).toBe(join(h, '.local', 'bin', 'buildd-acp'));
+      expect(cap.target).toBe('/srv/buildd/apps/runner/src/acp/main.ts');
+      expect(cap.pointsHere).toBe(true);
+      expect(cap.version).toBe('1.2.3');
+    } finally { rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test('shim left by another checkout does not point here', () => {
+    const h = home();
+    try {
+      mkdirSync(join(h, '.local', 'bin'), { recursive: true });
+      writeFileSync(join(h, '.local', 'bin', 'buildd-acp'), acpShimScript('/opt/bun/bin/bun', '/tmp/buildd-ci/apps/runner/src/acp/main.ts'));
+      const cap = acpCapability(base(h));
+      expect(cap.pointsHere).toBe(false);
+      expect(cap.target).toBe('/tmp/buildd-ci/apps/runner/src/acp/main.ts');
+    } finally { rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test('a foreign file has no target and no match; a missing shim has no path', () => {
+    const h = home();
+    try {
+      expect(acpCapability(base(h)).shimPath).toBeNull();
+      mkdirSync(join(h, '.local', 'bin'), { recursive: true });
+      writeFileSync(join(h, '.local', 'bin', 'buildd-acp'), '#!/bin/sh\necho mine\n');
+      const cap = acpCapability(base(h));
+      expect(cap.target).toBeNull();
+      expect(cap.pointsHere).toBe(false);
+    } finally { rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test('Windows has no shim and uses the direct command', () => {
+    const cap = acpCapability({ ...base(home()), platform: 'win32' });
+    expect(cap.shimPath).toBeNull();
+    expect(cap.pointsHere).toBe(true);
+  });
+});
