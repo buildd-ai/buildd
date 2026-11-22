@@ -208,6 +208,8 @@ describe('buildd acp end to end', () => {
     const again = client.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Add a coupon field' }] });
     await until(() => runner.posts.length === 3);
     expect(runner.posts[2]).toEqual({ path: '/api/workers/w-new/send', body: { message: 'Add a coupon field' } });
+    // the send POST lands before the bridge's stream does: push only once it is listening
+    await until(() => runner.subscribers() === 1);
     runner.push({ id: 'w-new', status: 'working', messages: [] });
     runner.push({ id: 'w-new', status: 'done', messages: [] });
     await again;
