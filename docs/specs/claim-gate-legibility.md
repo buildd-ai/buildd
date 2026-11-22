@@ -74,8 +74,11 @@ stalled a whole workspace.
   reserving account's own explicit claim of that `taskId` passes. It MUST lapse by itself at `expiresAt` with no
   sweep, MUST be cleared when the task is claimed (so a re-queue is not held from
   runners), and is never lifted by an admin force claim. It is a claim exclusion
-  (`task_reserved`), not a coordination `WaitingKind`: the task page does not
-  yet name it.
+  (`task_reserved`), not a coordination `WaitingKind`. While it is live the task
+  page names the holder (account or runner name, never a key) and the expiry,
+  absolute and relative (`context.reservedBy`, read by `liveReservation`), and
+  hides it once lapsed or claimed; a task filed by an ACP client also shows
+  `from <client>` (`context.client`, `taskClientLabel`).
 
 **Gate inventory** (`gateReason` → class):
 

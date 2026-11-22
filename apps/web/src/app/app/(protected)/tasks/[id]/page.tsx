@@ -12,7 +12,7 @@ import { runnerDisplayResolver } from '@/lib/runner-display';
 import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst } from '@/lib/attempt-order';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workerErrorTraces, releases, taskEstimates } from '@buildd/core/db/schema';
+import { tasks, accounts, workers, artifacts, workerErrorTraces, releases, taskEstimates } from '@buildd/core/db/schema';
 import { readTaskEstimatesSetting } from '@buildd/core/task-estimate-source';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { buildTimeRow } from '@/lib/task-time-row';
@@ -80,6 +80,9 @@ import { deriveTaskModel } from '@/lib/model-presentation';
 import { resolveShippedRelease } from '@/lib/task-ship-state';
 import { deriveTaskOrigin } from '@/lib/task-origin';
 import { originLinkCards } from './origin-links';
+import { TaskReservation, TaskClientFrom } from './TaskReservation';
+import { taskClientLabel } from '@/lib/task-client';
+import { liveReservation } from '@/lib/task-reservation';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { type SpecSourceContext } from '@/components/SpecSourceBlock';
 import { livingSpecLoad } from '@/lib/specs/task-view';
@@ -541,6 +544,12 @@ async function TaskDetailPage({
   const runnerName = runnerDisplayResolver(runnerHeartbeats);
   const runnerLabel = (w: { runner?: string | null; localUiUrl?: string | null; accountId?: string | null }) => runnerName(w)?.name ?? null;
   const shippedReleaseLabel = ship.label;
+
+  // CG-7: a live reservation names its holder by account name, never the id or a key.
+  const reservation = liveReservation(task.context, task.status);
+  const reservationHolder = reservation
+    ? ((await db.select({ name: accounts.name }).from(accounts).where(eq(accounts.id, reservation.accountId)).limit(1))[0]?.name ?? null)
+    : null;
 
   // Origin (U6, Problem §4) — provenance from stored columns only, no title parsing.
   // "You" is claimed only when the creating account is named after the viewer;
@@ -1104,6 +1113,12 @@ async function TaskDetailPage({
           label: 'Scope',
           value: <ul>{pathManifest.map(p => <li key={p} className="truncate" title={p}>{p}</li>)}</ul>,
         }]
+      : []),
+    ...(taskClientLabel(task.context)
+      ? [{ key: 'client', label: 'Filed', value: <TaskClientFrom context={task.context} /> }]
+      : []),
+    ...(reservation
+      ? [{ key: 'reservation', label: 'Held', value: <TaskReservation context={task.context} status={task.status} holderName={reservationHolder} /> }]
       : []),
     ...(!origin.isEmpty || origin.shipped
       ? [{
