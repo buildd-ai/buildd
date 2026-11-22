@@ -10,6 +10,31 @@ related: [claim-gate-legibility]
 keywords: [T3 Code, ACP, buildd-acp, Local ACP command, session/prompt, user_request, acp-sessions.json]
 verified_by: [apps/runner/__tests__/unit/acp-bridge.test.ts, apps/runner/__tests__/unit/acp-e2e.test.ts, apps/runner/__tests__/unit/acp-shim.test.ts, apps/runner/__tests__/unit/acp-transport.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "acp-usertextfrom"
+    type: "symbol"
+    name: "userTextFrom"
+    path: "apps/runner/src/acp/bridge.ts"
+  - id: "acp-tasktitlefrom"
+    type: "symbol"
+    name: "taskTitleFrom"
+    path: "apps/runner/src/acp/bridge.ts"
+  - id: "acp-replyroute"
+    type: "symbol"
+    name: "replyRoute"
+    path: "apps/runner/src/acp/translate.ts"
+  - id: "acp-waitingform"
+    type: "symbol"
+    name: "waitingForm"
+    path: "apps/runner/src/acp/translate.ts"
+  - id: "acp-bridge-commands"
+    type: "symbol"
+    name: "BRIDGE_COMMANDS"
+    path: "apps/runner/src/acp/translate.ts"
+  - id: "acp-bridge-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/acp-bridge.test.ts"
 ---
 
 ## ACP Bridge
