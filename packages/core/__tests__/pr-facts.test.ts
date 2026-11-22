@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { prFactApplies, recordPrFact, recordPrFactSql, setPrFactsRecordedHook, unscopedPrFactScope, type PrFactScope } from '../pr-facts';
-import { guardSql, prFactProjectionSql, prLiveProjectionSql, setSql } from '../pr-fact-sql';
+import { guardSql, prFactProjectionSql, prLiveProjectionSql, prLiveStatusSql, setSql } from '../pr-fact-sql';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -160,6 +160,13 @@ describe('non-terminal facts are scoped: a deferred row is reported, never writt
 
   test('an unscoped scope defers nothing', () => {
     expect(unscopedPrFactScope('test').defers?.('ci') ?? null).toBeNull();
+  });
+
+  test('prLiveStatusSql renders the status CASE over the delivery alias', () => {
+    const { sql: text } = render(prLiveStatusSql());
+    expect(text).toContain("'conflict'");
+    expect(text).toContain("'ci_green'");
+    expect(text).toContain("'pr_open'");
   });
 
   test("the kernel transition's live projection: the delivery's own reading at its current head", () => {
