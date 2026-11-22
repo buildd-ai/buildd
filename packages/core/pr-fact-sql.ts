@@ -114,17 +114,6 @@ RETURNING w.id`;
 const NOT_LIVE = ['MERGED', 'CLOSED_UNMERGED', 'SUPERSEDED', 'ABANDONED', 'FAILED'] as const;
 
 /**
- * AC-1, the non-terminal half: every other kernel transition projects the PR's
- * live status onto its worker rows, in the transition's own statement, from
- * the delivery's own readings at its current head. Dirty mergeability is a
- * conflict, then a red or green CI verdict, else the PR is open (no verdict on
- * this head yet, or a red a re-run withdrew). `conflict_detected_at` stays
- * first-seen. `from` / `where` name the delivery CTE (aliased `d`, carrying
- * `state`, `ci`, `ci_head_sha`, `mergeable`, `mergeable_head_sha`,
- * `current_head_sha`) and how a row belongs to it. A merged row is never moved,
- * and a row already saying it is not rewritten.
- */
-/**
  * The PR's live lifecycle status from a delivery row aliased `d`, by its own readings at its
  * current head: what `prLiveProjectionSql` writes onto the PR's worker rows. A reader that needs the
  * status now (the owner loop's exit condition) reads this instead of a row the projection has not
@@ -138,6 +127,17 @@ export function prLiveStatusSql(): SQL {
     ELSE 'pr_open' END)`;
 }
 
+/**
+ * AC-1, the non-terminal half: every other kernel transition projects the PR's
+ * live status onto its worker rows, in the transition's own statement, from
+ * the delivery's own readings at its current head. Dirty mergeability is a
+ * conflict, then a red or green CI verdict, else the PR is open (no verdict on
+ * this head yet, or a red a re-run withdrew). `conflict_detected_at` stays
+ * first-seen. `from` / `where` name the delivery CTE (aliased `d`, carrying
+ * `state`, `ci`, `ci_head_sha`, `mergeable`, `mergeable_head_sha`,
+ * `current_head_sha`) and how a row belongs to it. A merged row is never moved,
+ * and a row already saying it is not rewritten.
+ */
 export function prLiveProjectionSql(at: { from: SQL; where: SQL }): SQL {
   const status = prLiveStatusSql();
   return sql`UPDATE workers w SET updated_at = now(), pr_lifecycle_status = ${status},
