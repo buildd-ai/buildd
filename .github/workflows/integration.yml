@@ -51,7 +51,7 @@ on:
 jobs:
   integration:
     name: integration
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     # Without this the job inherits GitHub's 6h default, and the concurrency
     # group below makes every other integration run wait behind it: release
     # candidate v0.392.0 sat 40 minutes in a hung sync until it was cancelled.

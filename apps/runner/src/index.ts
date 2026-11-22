@@ -31,6 +31,7 @@ import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain, planDrain, pollAfterBootRelease, resumingSnapshot } from './update-drain';
 import { initRunnerHold, currentRunnerHold, holdOriginLine } from './runner-hold';
 import { installRunnerShutdown, NO_LAUNCHER_WARNING, restartLauncherKnown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
+import { ensureAcpShim } from './acp/shim';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -837,6 +838,14 @@ if (runnerHold?.isHeld()) {
 // says whether an update waits (setLatestCommit), or for the boot hold's bound,
 // so it never starts work on the old build only to pause it a minute later.
 const updateDrain = initUpdateDrain();
+
+// `buildd-acp` on the PATH for ACP clients (T3 Code): see acp/shim.ts. Best
+// effort: a read-only home must not stop the runner.
+try {
+  if (ensureAcpShim({ installDir: BUILDD_DIR }) === 'written') console.log('[acp] wrote ~/.local/bin/buildd-acp');
+} catch (err) {
+  console.warn(`[acp] could not write ~/.local/bin/buildd-acp: ${(err as Error)?.message ?? err}`);
+}
 if (config.apiKey && ONCE_TASK_ID === null && !isAutoUpdateDisabled()) {
   updateDrain.holdForBoot(Date.now());
   if (!restartLauncherKnown()) console.warn(`[update] ${NO_LAUNCHER_WARNING}`);
