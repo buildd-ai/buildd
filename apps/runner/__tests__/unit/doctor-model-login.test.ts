@@ -14,7 +14,7 @@ import { NO_CODEX_AUTH_FIX, NO_MODEL_AUTH_FIX } from '../../src/host-seat';
 import type { RunnerIsolationRecord } from '@buildd/shared';
 
 const dirs: string[] = [];
-afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+afterAll(() => { for (const d of dirs) { try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* Windows may still hold a handle; tmp is reaped */ } } });
 const tmp = (p: string) => { const d = mkdtempSync(join(tmpdir(), p)); dirs.push(d); return d; };
 
 const SECRET = 'sk-ant-oat01-DO-NOT-PRINT-0123456789abcdef';

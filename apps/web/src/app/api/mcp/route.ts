@@ -33,7 +33,7 @@ import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, si
 import { ensureTeamSessionAccount } from "@/lib/oauth/ensure-session-account";
 import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from "@/lib/self-origin";
 import { claimingUserId } from "@/lib/worker-owner";
-import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId, workerIdentity, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
+import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParam, workerIdentity, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
 import { eq } from "drizzle-orm";
@@ -345,6 +345,12 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
    * - `sensitiveRefusalTool`: when set, refuse if the resolved workspace —
    *   pinned or inferred — is sensitive, naming this tool in the refusal.
    */
+  const ambiguousWorkspaceText = (kind: string) => {
+    const who = authType === "oauth" ? "This OAuth token" : "This account";
+    const ignored = "The connection URL has no ?workspace= or ?repo= that binds a workspace. ";
+    return `Cannot resolve workspace for ${kind} action. ${ignored}${who} can reach multiple workspaces — re-connect with ?workspace=<id> (or ?repo=owner/repo) or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.`;
+  };
+
   const resolveMemoryContext = async (opts: {
     ambiguousWorkspaceMessage: string;
     memoryStoreRequired: boolean;
@@ -561,7 +567,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         const params = (args?.params || {}) as Record<string, unknown>;
 
         const resolved = await resolveMemoryContext({
-          ambiguousWorkspaceMessage: "Cannot resolve workspace for memory action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.",
+          ambiguousWorkspaceMessage: ambiguousWorkspaceText("memory"),
           memoryStoreRequired: true,
           forwardIsSensitive: true,
           sensitiveRefusalTool: "buildd_memory",
@@ -580,7 +586,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         }
         // Workspace / memory store resolution shared with buildd_memory
         const resolved = await resolveMemoryContext({
-          ambiguousWorkspaceMessage: "Cannot resolve workspace for knowledge action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.",
+          ambiguousWorkspaceMessage: ambiguousWorkspaceText("knowledge"),
           memoryStoreRequired: true,
           forwardIsSensitive: true,
           sensitiveRefusalTool: name,
@@ -1036,9 +1042,22 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   } else if (repoParam) {
     // Resolved only among the account's own team's workspaces and the ones it
     // is explicitly linked to.
-    workspaceId = await resolveRepoParamWorkspaceId(repoParam, account);
-    if (!workspaceId) {
-      console.warn(`[MCP] No workspace found for repo="${repoParam}"`);
+    const resolvedRepo = await resolveRepoParam(repoParam, account);
+    if (resolvedRepo.kind === 'ok') {
+      workspaceId = resolvedRepo.workspaceId;
+    } else {
+      // Never fall through unscoped: tools would act with no workspace and
+      // fail later with a message that hides the ignored ?repo=. The text is
+      // the same for "no such workspace" and "not yours" (no probing); an
+      // ambiguous bare name lists only workspaces already in the caller's reach.
+      console.warn(`[MCP] No workspace resolved for repo="${repoParam}" (${resolvedRepo.kind})`);
+      const hint = resolvedRepo.kind === 'ambiguous'
+        ? ` It is ambiguous: it matches ${resolvedRepo.candidates.join(", ")}. Use owner/repo or ?workspace=<id>.`
+        : " Use ?workspace=<id> instead.";
+      return new Response(JSON.stringify({
+        error: "forbidden",
+        message: `The ?repo= value matched no workspace you can reach.${hint}`,
+      }), { status: 403, headers: { "Content-Type": "application/json" } });
     }
   }
 

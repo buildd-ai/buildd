@@ -14,6 +14,8 @@
  * taxonomy proposals (§17 R-4) passed in `options.proposals`.
  */
 
+import { waitingOnYou } from './list-query';
+
 export type SpecMixState = 'approved' | 'draft' | 'imported' | 'failing';
 /** Fill order of a status mix, left to right, and the order counts are said in. */
 export const MIX_STATES: readonly SpecMixState[] = ['approved', 'draft', 'imported', 'failing'];
@@ -33,6 +35,8 @@ export interface SpecIndexInput {
   approvedRevision: number | null;
   headRevision: number;
   updatedAt: Date | string;
+  /** When the head revision was written; recent order reads it, else `updatedAt`. */
+  changedAt?: Date | string | null;
   imported?: boolean;
   failing?: string | null;
   filedBy?: 'buildd' | null;
@@ -73,6 +77,8 @@ export interface IndexRow {
   state: SpecMixState | null;
   standing: string;
   waiting: number | null;
+  /** A revision waits for a person's approval (in review, or the head is past the approved one). */
+  awaiting: boolean;
   updatedAgo: string;
   imported: boolean;
   failing: string | null;
@@ -204,7 +210,7 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
   const rowsById = new Map<string, IndexRow>();
   for (const r of input) {
     rowsById.set(r.id, {
-      id: r.id, title: r.title, scope: r.scope, state: isArea(r.scope) ? null : mixState(r), ...standingOf(r),
+      id: r.id, title: r.title, scope: r.scope, state: isArea(r.scope) ? null : mixState(r), ...standingOf(r), awaiting: waitingOnYou(r),
       updatedAgo: ago(r.updatedAt, now), imported: !!r.imported, failing: r.failing || null,
       filedBy: r.filedBy ?? null, filingId: r.filingId ?? null, suggestion: r.suggestion ?? null, children: [],
     });
