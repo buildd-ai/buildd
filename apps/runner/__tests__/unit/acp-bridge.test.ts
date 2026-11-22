@@ -23,7 +23,7 @@ class FakeRunner implements RunnerPort {
   actResult = { status: 200, body: { ok: true } as unknown };
 
   workspaces: Array<{ id: string; name: string; repo?: string }> = [{ id: 'ws-app', name: 'app', repo: 'acme/app' }];
-  created: Array<{ workspaceId: string; title: string; description: string }> = [];
+  created: Array<{ workspaceId: string; title: string; description: string; reserve?: boolean }> = [];
   claimResult: { status: number; body: unknown } | null = null;
 
   async listWorkers() { return this.workers; }
@@ -32,7 +32,7 @@ class FakeRunner implements RunnerPort {
     return this.actResult;
   }
   async listWorkspaces() { return this.workspaces; }
-  async createTask(input: { workspaceId: string; title: string; description: string }) {
+  async createTask(input: { workspaceId: string; title: string; description: string; reserve?: boolean }) {
     this.created.push(input);
     return { status: 200, body: { task: { id: `t${this.created.length}`, title: input.title } } };
   }
@@ -329,7 +329,8 @@ describe('AcpBridge', () => {
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Fix the login redirect\n\nIt loops on Safari.' }] });
     await tick(); await tick();
-    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Fix the login redirect', description: 'Fix the login redirect\n\nIt loops on Safari.' }]);
+    // Filed reserved, so no other runner takes it before this runner's claim.
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Fix the login redirect', description: 'Fix the login redirect\n\nIt loops on Safari.', reserve: true }]);
     expect(texts(updates)).toContain('Started a buildd task in app');
 
     runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'working', messages: [{ type: 'text', content: 'On it', timestamp: 4 }] }));
@@ -399,7 +400,7 @@ describe('AcpBridge', () => {
     expect(texts(told.updates)).toMatch(/more than one buildd workspace/);
   });
 
-  test('a task this runner cannot take stays queued, and the thread says why', async () => {
+  test('a task this runner cannot take is held for it, then freed, and the thread says why', async () => {
     const runner = new FakeRunner();
     runner.claimResult = { status: 400, body: { error: 'at max concurrent' } };
     const { bridge, updates } = setup([], { runner });
@@ -407,7 +408,7 @@ describe('AcpBridge', () => {
     const res: any = await bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
     expect(res.stopReason).toBe('end_turn');
     expect(runner.created).toHaveLength(1);
-    expect(texts(updates)).toMatch(/queued.*at max concurrent/s);
+    expect(texts(updates)).toMatch(/held for this runner for 20 minutes.*at max concurrent/s);
   });
 
   test('a command in a thread with no task yet creates nothing', async () => {

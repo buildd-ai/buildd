@@ -67,9 +67,11 @@ stalled a whole workspace.
 
 - **CG-7 (a reservation is a lease, not a lock)**: a session MAY reserve one
   waiting task (`update_task reserve`, or `create_task claim`, which files it
-  already reserved). While the reservation is live, runners and every other
-  account's claim MUST skip the task, and the reserving account's own explicit
-  `claim_task {taskId}` passes. It MUST lapse by itself at `expiresAt` with no
+  already reserved), and a runner MAY file a task reserved that it claims by id
+  next (the ACP bridge, for a T3 Code thread); a per-task token never may.
+  While the reservation is live, polling claims (the reserving account's
+  included) and every other account's claim MUST skip the task, and the
+  reserving account's own explicit claim of that `taskId` passes. It MUST lapse by itself at `expiresAt` with no
   sweep, MUST be cleared when the task is claimed (so a re-queue is not held from
   runners), and is never lifted by an admin force claim. It is a claim exclusion
   (`task_reserved`), not a coordination `WaitingKind`: the task page does not
