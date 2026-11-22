@@ -2998,6 +2998,10 @@ export class WorkerManager {
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
       parentTaskId: fullTask.parentTaskId ?? null,
+      missionId: fullTask.missionId ?? null,
+      attemptKind: fullTask.ciRetryPrNumber != null && (fullTask.context as any)?.driftDiagnosis !== true ? 'ci'
+        : fullTask.reviewerRetryPrNumber != null ? 'reviewer'
+        : fullTask.conflictRetryPrNumber != null ? 'conflict' : null,
       taskMode: fullTask.mode,
       taskBackend: fullTask.backend || 'claude',
       workspaceId: fullTask.workspaceId,

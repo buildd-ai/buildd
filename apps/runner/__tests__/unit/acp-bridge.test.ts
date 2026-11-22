@@ -197,14 +197,49 @@ describe('AcpBridge', () => {
     expect(res.agentInfo.name).toBe('buildd');
   });
 
-  test('session/list keeps the workers whose worktree belongs to the project', async () => {
+  test('session/list files the project\'s workers under the project folder and still lists the rest', async () => {
     const { bridge } = setup([
       worker({ id: 'w1' }),
       worker({ id: 'w2', worktreePath: '/elsewhere/w2', taskTitle: 'Other repo' }),
     ]);
     const res: any = await bridge.handle('session/list', { cwd: '/repos/app' });
-    expect(res.sessions.map((s: any) => s.sessionId)).toEqual(['w1']);
-    expect(res.sessions[0]).toMatchObject({ cwd: '/repos/app', title: 'Fix the flaky test', updatedAt: '2026-11-19T10:00:00.000Z' });
+    expect(res.sessions.map((s: any) => s.sessionId).sort()).toEqual(['w1', 'w2']);
+    const byId = Object.fromEntries(res.sessions.map((s: any) => [s.sessionId, s]));
+    expect(byId.w1).toMatchObject({ cwd: '/repos/app', title: 'Fix the flaky test', updatedAt: '2026-11-19T10:00:00.000Z' });
+    expect(byId.w2.cwd).toBe('/elsewhere/w2');
+  });
+
+  test('session/list shows buildd-started workers with mission, attempt kind and branch', async () => {
+    const { bridge } = setup([
+      worker({ id: 'm1', taskId: 'tm', taskTitle: 'Mission step', missionId: 'mis1', workspaceName: 'app', branch: 'buildd/tm-step' } as any),
+      worker({ id: 'r1', taskId: 'tr', taskTitle: 'Fix PR 7', attemptKind: 'ci', worktreePath: '/other/r1', workspaceName: 'zzz' } as any),
+      worker({ id: 'r2', taskId: 'tq', taskTitle: 'Fix PR 8', attemptKind: 'reviewer', worktreePath: '/other/r2' } as any),
+    ]);
+    const res: any = await bridge.handle('session/list', { cwd: '/repos/app' });
+    const byId = Object.fromEntries(res.sessions.map((s: any) => [s.sessionId, s]));
+    expect(Object.keys(byId).sort()).toEqual(['m1', 'r1', 'r2']);
+    expect(byId.m1._meta.buildd).toMatchObject({ taskId: 'tm', status: 'working', missionId: 'mis1', workspace: 'app', branch: 'buildd/tm-step' });
+    expect(byId.r1._meta.buildd.missionId).toBeNull();
+    expect(byId.r1.title).toBe('Fix PR 7 (CI fix)');
+    expect(byId.r2.title).toBe('Fix PR 8 (review)');
+  });
+
+  test('a buildd-started worker loads, replays, and takes an answer and /stop', async () => {
+    const { bridge, runner, updates } = setup([worker({
+      id: 'm1', status: 'waiting', missionId: 'mis1', worktreePath: '/other/m1',
+      waitingFor: { type: 'question', prompt: 'Proceed?' },
+      messages: [{ type: 'text', content: 'Working', timestamp: 2 }],
+    } as any)]);
+    await bridge.handle('session/load', { sessionId: 'm1', cwd: '/other/m1', mcpServers: [] });
+    expect(texts(updates)).toContain('Working');
+    expect(texts(updates)).toContain('Proceed?');
+    const turn = bridge.handle('session/prompt', { sessionId: 'm1', prompt: [{ type: 'text', text: 'yes' }] });
+    await tick();
+    expect(runner.actions).toEqual([{ workerId: 'm1', action: 'answer', message: 'yes' }]);
+    runner.push(worker({ id: 'm1', status: 'done' }));
+    await turn;
+    await bridge.handle('session/prompt', { sessionId: 'm1', prompt: [{ type: 'text', text: '/stop' }] });
+    expect(runner.actions.at(-1)).toEqual({ workerId: 'm1', action: 'stop' });
   });
 
   test('a worker with no path left (a finished run) matches by its workspace name', async () => {
@@ -214,8 +249,10 @@ describe('AcpBridge', () => {
     ]);
     // a Windows client (T3) talking to a runner in WSL hands over a Windows path
     const res: any = await bridge.handle('session/list', { cwd: 'C:\\code\\app' });
-    expect(res.sessions.map((s: any) => s.sessionId)).toEqual(['w1']);
-    expect(res.sessions[0].cwd).toBe('C:\\code\\app');
+    const w1 = res.sessions.find((s: any) => s.sessionId === 'w1');
+    expect(w1.cwd).toBe('C:\\code\\app');
+    // the other workspace's worker has no path of its own: it falls back to the asked folder
+    expect(res.sessions.map((s: any) => s.sessionId).sort()).toEqual(['w1', 'w2']);
   });
 
   test('session/load replays history and states a pending question', async () => {

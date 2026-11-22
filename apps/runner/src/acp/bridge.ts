@@ -29,6 +29,8 @@ import {
   type SessionUpdate,
 } from './translate';
 
+const ATTEMPT_LABEL = { ci: 'CI fix', reviewer: 'review', conflict: 'conflict fix' } as const;
+
 export type WorkerActionName = 'answer' | 'message' | 'pause' | 'stop' | 'followup';
 
 /** What the bridge needs from the runner (runner-port.ts implements it over the socket). */
@@ -189,23 +191,36 @@ export class AcpBridge {
     for (const w of workers) {
       if (!w.id) continue;
       const where = w.worktreePath ?? w.sessionCwd ?? null;
+      // Never filtered out: a worker buildd started itself (mission task, review or
+      // CI-fix attempt) has no client thread, and the client's project folder says
+      // nothing about it. The folder only decides which cwd the entry is filed under.
+      let inProject = false;
       if (wanted) {
-        const byPath = where !== null && (await this.belongsTo(where, wanted));
-        if (!byPath) {
+        inProject = where !== null && (await this.belongsTo(where, wanted));
+        if (!inProject) {
           names ??= (await this.deps.projectNamesOf(params.cwd!).catch(() => [])).map(n => n.toLowerCase());
-          if (!w.workspaceName || !names.includes(w.workspaceName.toLowerCase())) continue;
+          inProject = !!w.workspaceName && names.includes(w.workspaceName.toLowerCase());
         }
       }
-      const cwd = params.cwd ?? where;
+      const cwd = inProject ? params.cwd! : (where ?? params.cwd ?? null);
       if (!cwd) continue;
+      const attempt = w.attemptKind ? ATTEMPT_LABEL[w.attemptKind] : null;
+      const title = w.taskTitle ?? w.id;
       sessions.push({
         // A worker started from a client thread is listed as that thread, so the
         // client finds it already imported instead of offering a duplicate.
         sessionId: this.deps.links.sessionFor?.(w.id) ?? w.id,
         cwd,
-        title: w.taskTitle ?? w.id,
+        title: attempt ? `${title} (${attempt})` : title,
         updatedAt: w.lastActivity ? new Date(w.lastActivity).toISOString() : null,
-        _meta: { buildd: { taskId: w.taskId ?? null, status: w.status, workspace: w.workspaceName ?? null, worktree: where, branch: w.branch ?? null } },
+        _meta: { buildd: {
+          taskId: w.taskId ?? null,
+          status: w.status,
+          missionId: w.missionId ?? null,
+          workspace: w.workspaceName ?? null,
+          worktree: where,
+          branch: w.branch ?? null,
+        } },
       });
     }
     sessions.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
