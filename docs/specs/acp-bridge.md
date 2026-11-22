@@ -121,14 +121,13 @@ The first message of a client-started thread files a buildd task in the matching
 
 The runner writes `~/.local/bin/buildd-acp` (marker line `# buildd-acp: written by the buildd runner`) at startup so a client's Local ACP command is just `buildd-acp`. It rewrites only a file carrying its marker, never a foreign one; writes nothing on Windows; and writes only from the installed runner, whose code is inside `BUILDD_HOME`, so a CI or dev checkout never repoints it.
 
-### Planned (NOT implemented): thread to mission mapping
+### Mission, role, priority and kind: `_meta.buildd`
 
-A T3 thread or project could map to a buildd mission, so the tasks a thread files join that mission. Nothing in the bridge reads or writes a mission today. Open questions, deliberately unresolved:
+A client may open a thread with `_meta.buildd` = `{ missionId?, roleSlug?, priority?, kind? }` on `session/new` or on the first `session/prompt` of that session. The bridge keeps it on the session and passes the fields to the task it files, so the task joins that mission and carries that role, priority and kind.
 
-- Is the unit a thread or a project (folder)? One mission per project, or per thread?
-- Does a mission need to exist first, or does the first message create it?
-- How does the mapping persist beside `acp-sessions.json`, and what happens when the mission is archived?
-- Which mission owns a task when a folder matches several workspaces?
+- Without `_meta.buildd` nothing changes.
+- A mission the server refuses (outside the runner's team, or missing) files **no task**: the thread gets one agent message naming the server's error and the turn ends with `end_turn`.
+- Which mission a T3 project maps to, and persisting that mapping beside `acp-sessions.json`, remain unspecified; the client supplies `missionId` per thread.
 
 ### Acceptance criteria
 
@@ -141,6 +140,7 @@ A T3 thread or project could map to a buildd mission, so the tasks a thread file
 - AC-7: [GIVEN no workspace matches the folder] WHEN a new thread sends text THEN no task is created and the no-match message is emitted.
 - AC-8: [GIVEN an unsupported method] WHEN called THEN the bridge answers `-32601`.
 - AC-9: [pending #6136] [GIVEN a new thread's first message] WHEN the task is filed THEN it is reserved for the filing account (CG-7) before the claim by id.
+- AC-10: [GIVEN `_meta.buildd` on a new thread] WHEN the first message is sent THEN the task is filed with those fields; WHEN the server refuses the mission THEN no task is filed and the thread says why, ending `end_turn`.
 
 ### Code surface
 
