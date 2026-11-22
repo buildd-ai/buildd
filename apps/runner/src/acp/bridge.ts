@@ -29,6 +29,8 @@ import {
   type SessionUpdate,
 } from './translate';
 
+const ATTEMPT_LABEL = { ci: 'CI fix', reviewer: 'review', conflict: 'conflict fix' } as const;
+
 export type WorkerActionName = 'answer' | 'message' | 'pause' | 'stop' | 'followup';
 
 /** What the bridge needs from the runner (runner-port.ts implements it over the socket). */
@@ -39,9 +41,28 @@ export interface RunnerPort {
   subscribe(onWorker: (worker: PublicWorker) => void): () => void;
   /** The workspaces this runner's key reaches (`GET /api/workspaces`). */
   listWorkspaces(): Promise<BuilddWorkspace[]>;
-  createTask(input: { workspaceId: string; title: string; description: string }): Promise<{ status: number; body: unknown }>;
+  createTask(input:  { workspaceId: string; title: string; description: string; reserve?: boolean } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
   /** Claim a task onto this runner as a person would (`c` in top). */
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
+}
+
+/** `_meta.buildd` on `session/new` or the first `session/prompt`: where the thread's task is filed. */
+export interface BuilddTaskMeta {
+  missionId?: string;
+  roleSlug?: string;
+  priority?: number;
+  kind?: string;
+}
+
+function taskMetaFrom(params: unknown): BuilddTaskMeta {
+  const raw = (params as { _meta?: { buildd?: Record<string, unknown> } } | null)?._meta?.buildd;
+  if (!raw || typeof raw !== 'object') return {};
+  const out: BuilddTaskMeta = {};
+  if (typeof raw.missionId === 'string' && raw.missionId) out.missionId = raw.missionId;
+  if (typeof raw.roleSlug === 'string' && raw.roleSlug) out.roleSlug = raw.roleSlug;
+  if (typeof raw.priority === 'number' && Number.isFinite(raw.priority)) out.priority = raw.priority;
+  if (typeof raw.kind === 'string' && raw.kind) out.kind = raw.kind;
+  return out;
 }
 
 export interface BuilddWorkspace {
@@ -102,6 +123,8 @@ interface Session {
   /** The client's project folder: where a first message's task goes. */
   cwd: string | null;
   cursor: MessageCursor;
+  /** `_meta.buildd` the client gave this thread; passed to createTask. */
+  taskMeta?: BuilddTaskMeta;
   /** Set while a prompt turn is open; calling it ends the turn as cancelled. */
   cancelTurn?: () => void;
 }
@@ -177,7 +200,7 @@ export class AcpBridge {
 
   private newSession(params: { cwd?: string }) {
     const sessionId = `new-${crypto.randomUUID()}`;
-    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor() });
+    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor(), taskMeta: taskMetaFrom(params) });
     return { sessionId };
   }
 
@@ -189,23 +212,36 @@ export class AcpBridge {
     for (const w of workers) {
       if (!w.id) continue;
       const where = w.worktreePath ?? w.sessionCwd ?? null;
+      // Never filtered out: a worker buildd started itself (mission task, review or
+      // CI-fix attempt) has no client thread, and the client's project folder says
+      // nothing about it. The folder only decides which cwd the entry is filed under.
+      let inProject = false;
       if (wanted) {
-        const byPath = where !== null && (await this.belongsTo(where, wanted));
-        if (!byPath) {
+        inProject = where !== null && (await this.belongsTo(where, wanted));
+        if (!inProject) {
           names ??= (await this.deps.projectNamesOf(params.cwd!).catch(() => [])).map(n => n.toLowerCase());
-          if (!w.workspaceName || !names.includes(w.workspaceName.toLowerCase())) continue;
+          inProject = !!w.workspaceName && names.includes(w.workspaceName.toLowerCase());
         }
       }
-      const cwd = params.cwd ?? where;
+      const cwd = inProject ? params.cwd! : (where ?? params.cwd ?? null);
       if (!cwd) continue;
+      const attempt = w.attemptKind ? ATTEMPT_LABEL[w.attemptKind] : null;
+      const title = w.taskTitle ?? w.id;
       sessions.push({
         // A worker started from a client thread is listed as that thread, so the
         // client finds it already imported instead of offering a duplicate.
         sessionId: this.deps.links.sessionFor?.(w.id) ?? w.id,
         cwd,
-        title: w.taskTitle ?? w.id,
+        title: attempt ? `${title} (${attempt})` : title,
         updatedAt: w.lastActivity ? new Date(w.lastActivity).toISOString() : null,
-        _meta: { buildd: { taskId: w.taskId ?? null, status: w.status, workspace: w.workspaceName ?? null, worktree: where, branch: w.branch ?? null } },
+        _meta: { buildd: {
+          taskId: w.taskId ?? null,
+          status: w.status,
+          missionId: w.missionId ?? null,
+          workspace: w.workspaceName ?? null,
+          worktree: where,
+          branch: w.branch ?? null,
+        } },
       });
     }
     sessions.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
@@ -251,13 +287,14 @@ export class AcpBridge {
     return sessionId.startsWith('new-') ? null : sessionId;
   }
 
-  private async prompt(params: { sessionId?: string; prompt?: Array<{ type: string; text?: string }> }) {
+  private async prompt(params: { sessionId?: string; _meta?: unknown; prompt?: Array<{ type: string; text?: string }> }) {
     const sessionId = params.sessionId;
     if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
     const session = this.sessions.get(sessionId) ?? this.adopt(sessionId);
     const text = userTextFrom((params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'));
 
     if (!session.workerId) {
+      session.taskMeta = { ...session.taskMeta, ...taskMetaFrom(params) };
       if (!text || parseCommand(text)) {
         this.emit(sessionId, textUpdate(NEW_THREAD_TEXT));
         return { stopReason: 'end_turn' };
@@ -330,14 +367,16 @@ export class AcpBridge {
     }
 
     const title = taskTitleFrom(text);
-    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text });
+    // Filed reserved for this runner's account, then claimed by id: no other runner
+    // can take it in the gap, or the thread would follow nothing (CG-7).
+    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true });
     const task = (created.body as { task?: { id?: string } } | null)?.task;
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 
     const claimed = await this.deps.runner.claim(task.id);
     const worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
     if (claimed.status >= 400 || !worker?.id) {
-      return end(`Created the buildd task “${title}” in ${ws.name}. It is queued: this runner could not take it now. ${refusal(claimed)}`);
+      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${refusal(claimed)}`);
     }
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);

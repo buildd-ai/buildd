@@ -809,14 +809,21 @@ describe('POST /api/tasks', () => {
       expect(new Date(ctxOf(values).reservedBy.expiresAt).getTime()).toBeGreaterThan(Date.now());
     });
 
-    it('is refused, and nothing is filed, from a caller that is not a verified interactive session', async () => {
+    it('is filed reserved from a runner\'s own API key too: the runner claims it by id next (CG-7)', async () => {
+      // The ACP bridge files a task for a T3 thread and claims it on its own
+      // runner. Unreserved, another runner won the gap and the thread got nothing.
       const values = setup();
-      // No marker at all, a marker for another account, and a forged one.
-      const other = { 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'someone-else', userId: null })! };
-      for (const headers of [{}, other, { 'x-buildd-interactive-session': 'v2.1.a.b.c.forged' }]) {
-        const res = await file({ reserve: true }, headers);
-        expect(res.status).toBe(403);
-      }
+      expect((await file({ reserve: true })).status).toBe(200);
+      expect(ctxOf(values).reservedBy.accountId).toBe('account-ci');
+    });
+
+    it('is refused, and nothing is filed, from a per-task token', async () => {
+      const values = setup();
+      mockAccountsFindFirst.mockResolvedValue({
+        id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1',
+        taskScope: { taskId: 't-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+      });
+      expect((await file({ reserve: true })).status).toBe(403);
       expect(values).not.toHaveBeenCalled();
     });
 
