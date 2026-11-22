@@ -132,7 +132,7 @@ describe('createT3ProjectSync', () => {
     const { deps } = fakeDeps(
       [{ id: 'w1', name: 'a', repo: 'acme/a' }, { id: 'w2', name: 'b', repo: 'acme/b' }],
       { 'acme/a': `${P("a")}`, 'acme/b': `${P("b")}` },
-      { addProject: async (p) => { if (p.endsWith('/a')) throw new Error('t3 down'); adds.push(p); return 'added'; } },
+      { addProject: async (p) => { if (p === P('a')) throw new Error('t3 down'); adds.push(p); return 'added'; } },
     );
     const r = await createT3ProjectSync(deps, { root: ROOT }).run();
     expect(adds).toEqual([`${P("b")}`]);
