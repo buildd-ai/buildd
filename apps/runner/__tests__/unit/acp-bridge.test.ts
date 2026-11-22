@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { AcpBridge, type RunnerPort, type WorkerActionName } from '../../src/acp/bridge';
-import { MessageCursor, toolKind, toolTitle, replyRoute, waitingText } from '../../src/acp/translate';
+import { MessageCursor, toolKind, toolTitle, replyRoute, settledText, waitingText } from '../../src/acp/translate';
 import type { PublicWorker } from '../../src/public-worker';
 
 function worker(over: Partial<PublicWorker> = {}): PublicWorker {
@@ -183,6 +183,32 @@ describe('translate', () => {
     expect(text).toContain('Which DB?');
     expect(text).toContain('1. Postgres — the default');
     expect(text).toContain('2. SQLite');
+  });
+
+  // A run that answers through complete_task leaves its answer only inside the
+  // tool call; the closing line must carry it as text, or T3 shows "Finished."
+  test('a finished run ends on its completion summary', () => {
+    const summary = 'No secrets found: only .env.example templates with placeholder values.';
+    const worker = { id: 'w1', status: 'done', messages: [
+      { type: 'tool_use', name: 'Bash', input: { command: 'git ls-files' }, timestamp: 1 },
+      { type: 'tool_use', name: 'mcp__buildd__buildd_work', input: { action: 'complete_task', params: { summary } }, timestamp: 2 },
+    ] } as unknown as PublicWorker;
+    expect(settledText(worker)).toBe(`${summary}\n\nFinished.`);
+  });
+
+  test('the summary is read from a flat complete_task call too', () => {
+    const worker = { id: 'w1', status: 'done', prUrl: 'https://example.test/pr/2', messages: [
+      { type: 'tool_use', name: 'mcp__buildd__complete_task', input: { summary: 'Fixed it.' }, timestamp: 1 },
+    ] } as unknown as PublicWorker;
+    expect(settledText(worker)).toBe('Fixed it.\n\nFinished. PR: https://example.test/pr/2');
+  });
+
+  test('a summary the agent already said as text is not repeated', () => {
+    const worker = { id: 'w1', status: 'done', messages: [
+      { type: 'tool_use', name: 'mcp__buildd__buildd_work', input: { action: 'complete_task', params: { summary: 'Done.' } }, timestamp: 1 },
+      { type: 'text', content: 'Done.', timestamp: 2 },
+    ] } as unknown as PublicWorker;
+    expect(settledText(worker)).toBe('Finished.');
   });
 });
 
