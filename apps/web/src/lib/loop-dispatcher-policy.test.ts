@@ -31,7 +31,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 mock.module('@buildd/core/db/schema', () => ({ tasks: {}, workers: {} }));
 // 92a439a6: the kernel delivery the loop task owns (null = none, legacy decides).
-let ownerDelivery: { state: string; prNumber: number | null; mergedAt: string | null } | null = null;
+let ownerDelivery: { state: string; prNumber: number | null; mergedAt: string | null; prStatus?: string | null } | null = null;
 mock.module('@/lib/workflow/delivery-view', () => ({ kernelOwnerDeliveryFacts: async () => ownerDelivery }));
 mock.module('drizzle-orm', () => ({ eq: () => ({}), and: () => ({}), desc: () => ({}), isNotNull: () => ({}) }));
 
@@ -138,6 +138,14 @@ describe("loopPolicy resolves the task's own PR from an earlier worker", () => {
     expect(v?.kind === 'hold' && v.until).toBe('webhook');
     expect(v?.kind === 'hold' && v.retryContext.loopWebhookWait).toMatchObject({ prNumber: 77 });
   });
+
+  // b6a82104: the completing row has the PR number but no status yet; a sibling row of the same PR has it.
+  it("reads the status from another row of the task's PR when the completing row has none", async () => {
+    taskRow = { ...baseTask, context: { loopWebhookWait: { prNumber: 77 } } };
+    completingWorker = { prLifecycleStatus: null, prNumber: 77, mergedAt: null };
+    priorPrWorker = { prLifecycleStatus: 'ci_green', prNumber: 77, mergedAt: null };
+    expect((await loopPolicy(input))?.kind).toBe('pass');
+  });
 });
 
 // 92a439a6 (#5179): the owner loop spent its attempts while the kernel was reviewing and refreshing its PR.
@@ -197,6 +205,25 @@ describe('loopPolicy on a kernel owner while the kernel owns the PR', () => {
   it('an ESCALATED delivery that has since merged still satisfies the loop', async () => {
     owned('MERGED', { mergedAt: '2026-10-18T10:00:00Z' });
     expect((await loopPolicy(input))?.kind).toBe('pass');
+  });
+
+  // b6a82104: a later attempt's worker row carries the task's PR number but no lifecycle status
+  // (the kernel projects status onto rows only at its next transition). The loop read that NULL as
+  // "No PR or lifecycle status available", spent an iteration, and the task idled for hours.
+  it("reads the PR's status from the delivery when the completing row has none yet", async () => {
+    owned('WORKING', { prStatus: 'ci_green' });
+    completingWorker = { prLifecycleStatus: null, prNumber: 42, mergedAt: null };
+    expect((await loopPolicy(input))?.kind).toBe('pass');
+  });
+
+  it("a delivery reading CI red is evaluated as red, not as a missing PR", async () => {
+    owned('WORKING', { prStatus: 'ci_failed' });
+    taskRow = { ...taskRow, loopIteration: 0 };
+    completingWorker = { prLifecycleStatus: null, prNumber: 42, mergedAt: null };
+    const v = await loopPolicy(input);
+    if (v?.kind !== 'hold') throw new Error(`expected hold, got ${v?.kind}`);
+    expect(v.until).toBe('requeue');
+    expect(v.progress.history.at(-1)?.summary).toBe('PR #42 not green: ci_failed');
   });
 
   it('a structured-predicate loop ignores the delivery', async () => {
