@@ -64,6 +64,20 @@ describe('prod server runtime', () => {
     expect(wf).toMatch(/PAGE_CODE/);
   });
 
+  it('the readiness probe tells an unreachable port apart from a server that never came up', () => {
+    const wf = read('.github/workflows/integration.yml');
+    const step = wf.slice(wf.indexOf('- name: Start preview server'), wf.indexOf('- name: Verify SDK native binary (pre-runner)'));
+    // The tests run on the GitHub runner against $TEST_HOST:3333, which only
+    // works while the test machine's Docker host forwards 3333 into the
+    // container. When a recreated container lost that, the probe reported
+    // "failed to start after 150s" for a server that was answering fine
+    // inside the container. Probe from inside too, and name that case.
+    expect(step).toContain('http://localhost:3333/api/version');
+    expect(step).toContain('not forwarding host port 3333');
+    // The fail-fast crash check must still run.
+    expect(step).toContain('Failed to load external module');
+  });
+
   it('the server env file survives being sourced', () => {
     const wf = read('.github/workflows/integration.yml');
     // A Neon URL carries `&channel_binding=...`; written with %s and then
