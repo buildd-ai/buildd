@@ -5,6 +5,9 @@ import { homedir, platform, arch, hostname } from 'os';
 import type { WorkerEnvironment, WorkerTool } from '@buildd/shared';
 import { CAPABILITY_BROWSER, CAPABILITY_MCP_GROUP_TOOLS, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
 import { runnerHostName } from './runner-host';
+import { acpCapability } from './acp/shim';
+import { resolveBuilddHome } from './buildd-home';
+import { PKG_VERSION } from './updater';
 
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
@@ -298,5 +301,14 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
     scannedAt: new Date().toISOString(),
     browserProvider: getBrowserProviderProbe(),
     claudeCliVersion: resolveClaudeCliVersion(),
+    acp: acpCapabilitySafe(),
   };
+}
+
+function acpCapabilitySafe() {
+  try {
+    return acpCapability({ installDir: resolveBuilddHome(), version: PKG_VERSION });
+  } catch {
+    return undefined; // never fail a scan over a capability advert
+  }
 }
