@@ -44,21 +44,21 @@ function fakeDeps(workspaces: T3Workspace[], local: Record<string, string> = {},
 describe('createT3ProjectSync', () => {
   test('adds an existing clone without cloning it again', async () => {
     const { deps, calls } = fakeDeps(
-      [{ id: 'w1', name: 'moa-ops', repo: 'https://github.com/acme/moa-ops' }],
-      { 'https://github.com/acme/moa-ops': `${ROOT}/moa-ops` },
+      [{ id: 'w1', name: 'sample-app', repo: 'https://github.com/acme/sample-app' }],
+      { 'https://github.com/acme/sample-app': `${ROOT}/sample-app` },
     );
     const r = await createT3ProjectSync(deps, { root: ROOT }).run();
     expect(calls.clones).toEqual([]);
-    expect(calls.adds).toEqual([`moa-ops @ ${ROOT}/moa-ops`]);
-    expect(r.added).toEqual([`${ROOT}/moa-ops`]);
+    expect(calls.adds).toEqual([`sample-app @ ${ROOT}/sample-app`]);
+    expect(r.added).toEqual([`${ROOT}/sample-app`]);
   });
 
   test('clones a missing repo into the first project root, then adds it', async () => {
-    const { deps, calls } = fakeDeps([{ id: 'w1', name: 'Recut', repo: 'acme/recut' }]);
+    const { deps, calls } = fakeDeps([{ id: 'w1', name: 'Sample Lib', repo: 'acme/sample-lib' }]);
     const r = await createT3ProjectSync(deps, { root: ROOT }).run();
-    expect(calls.clones).toEqual([`https://github.com/acme/recut.git -> ${ROOT}/recut`]);
-    expect(calls.adds).toEqual([`recut @ ${ROOT}/recut`]);
-    expect(r.cloned).toEqual([`${ROOT}/recut`]);
+    expect(calls.clones).toEqual([`https://github.com/acme/sample-lib.git -> ${ROOT}/sample-lib`]);
+    expect(calls.adds).toEqual([`sample-lib @ ${ROOT}/sample-lib`]);
+    expect(r.cloned).toEqual([`${ROOT}/sample-lib`]);
     expect(calls.rescans).toBe(1);
   });
 
@@ -195,8 +195,8 @@ describe('t3AddProject', () => {
   test.if(posix)('passes the path and title to `t3 project add`', async () => {
     const { dir, bin } = fakeT3(`echo "$@" > "${'$'}(dirname "$0")/args"; echo "Added project x"`);
     try {
-      expect(await t3AddProject(bin, '/p/recut', 'recut')).toBe('added');
-      expect(execFileSync('cat', [join(dir, 'args')], { encoding: 'utf8' }).trim()).toBe('project add /p/recut --title recut');
+      expect(await t3AddProject(bin, '/p/sample-lib', 'sample-lib')).toBe('added');
+      expect(execFileSync('cat', [join(dir, 'args')], { encoding: 'utf8' }).trim()).toBe('project add /p/sample-lib --title sample-lib');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
