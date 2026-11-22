@@ -42,7 +42,7 @@ permissions:
 jobs:
   gate:
     name: Artifact gate (real CLI, no login)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7

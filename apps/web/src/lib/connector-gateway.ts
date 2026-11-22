@@ -33,8 +33,8 @@ import {
 // ── Which connectors go through the gateway ──────────────────────────────────
 
 /**
- * Catalog providers whose connectors are always brokered. Other connectors
- * keep today's direct mount unless BUILDD_CONNECTOR_GATEWAY=all.
+ * Catalog providers whose connectors are always brokered. Other http
+ * connectors keep today's direct mount unless BUILDD_CONNECTOR_GATEWAY=all.
  */
 export const GATEWAY_PROVIDERS: ReadonlySet<string> = new Set(['axiom', 'vercel']);
 
@@ -48,9 +48,16 @@ export function gatewayMode(env: Record<string, string | undefined> = process.en
 }
 
 /**
- * Is this connector mounted through the gateway? Only remote connectors with a
- * stored credential: stdio runs on the runner, `none` has nothing to broker,
- * assertion mode mints per run.
+ * Auth modes the gateway can serve. `oauth`/`header`: the stored credential is
+ * added server-side. `none`: proxied with no credential, so the call is still
+ * decided and recorded. `assertion`: buildd mints and exchanges the assertion
+ * itself (connector-assertion.ts), so the access token never reaches the runner.
+ */
+const GATEWAY_AUTH_MODES: ReadonlySet<string> = new Set(['oauth', 'header', 'none', 'assertion']);
+
+/**
+ * Is this connector mounted through the gateway? Remote (http) connectors only:
+ * a stdio server runs as a process on the runner and cannot be proxied here.
  */
 export function usesGateway(
   c: { transport: string; authMode: string },
@@ -58,7 +65,7 @@ export function usesGateway(
   mode: GatewayMode = gatewayMode(),
 ): boolean {
   if (mode === 'off') return false;
-  if (c.transport !== 'http' || (c.authMode !== 'oauth' && c.authMode !== 'header')) return false;
+  if (c.transport !== 'http' || !GATEWAY_AUTH_MODES.has(c.authMode)) return false;
   return mode === 'all' || (!!providerSlug && GATEWAY_PROVIDERS.has(providerSlug));
 }
 
@@ -214,17 +221,22 @@ export function toolVisible(cls: ToolClass, run: GatewayRun): boolean {
 export type CallRefusal =
   | ConnectorRefusal
   | 'tool_denied_by_admin' | 'role_ceiling' | 'unattended_ceiling' | 'policy_forbidden'
-  | 'capability_not_granted' | 'rate_limited' | 'replayed_call' | 'gateway_unavailable';
+  | 'capability_not_granted' | 'policy_denied' | 'rate_limited' | 'replayed_call' | 'gateway_unavailable';
 
+/**
+ * What the gateway enforces. `policyId` names the policy behind the answer when
+ * the deciding PDP has one (connector-pdp.ts); the built-in never sets it.
+ */
 export type CallDecision =
-  | { allowed: true; basis: 'role_mount' | 'grant'; grantId: string | null }
-  | { allowed: false; code: CallRefusal; grantReason?: string };
+  | { allowed: true; basis: 'role_mount' | 'grant' | 'policy'; grantId: string | null; policyId?: string }
+  | { allowed: false; code: CallRefusal; grantReason?: string; policyId?: string };
 
 /** The grant check, injected so the rules stay pure (store: authorizeConnectorToolUse). */
 export type GrantCheck = () => Promise<{ allowed: true; grantId: string } | { allowed: false; reasonCode: string }>;
 
 /**
- * Decide one `tools/call`. A role-mounted connector covers reads and queries;
+ * Decide one `tools/call` (the built-in policy decision point; the gateway
+ * asks it through connector-pdp.ts). A role-mounted connector covers reads and queries;
  * a write or admin call, or any call on a connector the role does not mount,
  * needs a live task grant that covers the exact tool, risk, resource and
  * environment (checked by `checkGrantUse`, fresh). Nothing lifts the ceiling.
@@ -305,6 +317,7 @@ const NEXT_STEPS: Record<CallRefusal, string> = {
   unattended_ceiling: 'Scheduled and sentinel runs may only read from providers. Do not retry; file a task for a person-supervised run if a change is needed.',
   policy_forbidden: 'Team capability policy forbids this access.',
   capability_not_granted: 'Ask for it with request_capability (provider, access, and this exact tool). Writes need a person to approve; keep working on other things meanwhile.',
+  policy_denied: "Your organisation's access policy does not allow this call. Do not retry; if it is needed, say so in a note.",
   rate_limited: 'Too many provider calls in the last minute. Wait before calling again.',
   replayed_call: 'This exact write was already sent once in this session; it was not sent again.',
   gateway_unavailable: 'buildd could not check this call right now, so it was not sent. Try again shortly.',

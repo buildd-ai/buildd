@@ -21,7 +21,7 @@ import { toTopWorkerSummaries } from './top-worker-summary';
 import { todayTotals } from './run-route';
 import { Outbox, createReplayHandler } from './outbox';
 import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
-import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
+import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE, acpLauncherRefusal } from './cli-args';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
   isUpdateTargetReachable, classifyUpdateTarget, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
@@ -31,6 +31,7 @@ import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain, planDrain, pollAfterBootRelease, resumingSnapshot } from './update-drain';
 import { initRunnerHold, currentRunnerHold, holdOriginLine } from './runner-hold';
 import { installRunnerShutdown, NO_LAUNCHER_WARNING, restartLauncherKnown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
+import { ensureAcpShim } from './acp/shim';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -178,6 +179,21 @@ if (CLI.kind === 'web') {
   const { runWebCommand } = await import('./runner-web');
   const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
   process.exit(await runWebCommand({ socketPath: socketPathFor(BUILDD_DIR) }));
+}
+
+// `buildd acp`: this runner as an ACP agent on stdio (acp/main.ts). Current
+// launchers exec acp/main.ts themselves; this path serves `bun src/index.ts acp`
+// and older launchers, refusing the case where their loop took stdin away.
+if (CLI.kind === 'acp') {
+  const refusal = acpLauncherRefusal(process.env, !!process.stdin.isTTY);
+  if (refusal) {
+    console.error(refusal);
+    process.exit(EXIT_CLI_USAGE);
+  }
+  const { runAcp } = await import('./acp/main');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  await runAcp({ socketPath: socketPathFor(BUILDD_DIR), version: PKG_VERSION, builddHome: BUILDD_DIR });
+  process.exit(0);
 }
 
 // `buildd wsl install [--distro <name>]`: Windows only. Asks before installing
@@ -822,6 +838,14 @@ if (runnerHold?.isHeld()) {
 // says whether an update waits (setLatestCommit), or for the boot hold's bound,
 // so it never starts work on the old build only to pause it a minute later.
 const updateDrain = initUpdateDrain();
+
+// `buildd-acp` on the PATH for ACP clients (T3 Code): see acp/shim.ts. Best
+// effort: a read-only home must not stop the runner.
+try {
+  if (ensureAcpShim({ installDir: BUILDD_DIR }) === 'written') console.log('[acp] wrote ~/.local/bin/buildd-acp');
+} catch (err) {
+  console.warn(`[acp] could not write ~/.local/bin/buildd-acp: ${(err as Error)?.message ?? err}`);
+}
 if (config.apiKey && ONCE_TASK_ID === null && !isAutoUpdateDisabled()) {
   updateDrain.holdForBoot(Date.now());
   if (!restartLauncherKnown()) console.warn(`[update] ${NO_LAUNCHER_WARNING}`);
