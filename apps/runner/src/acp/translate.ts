@@ -206,7 +206,7 @@ export function isSettled(status: string | undefined): boolean {
 }
 
 export function waitingText(w: WaitingFor): string {
-  if (w.type === 'pause') return 'Paused. Reply here to resume it.';
+  if (w.type === 'pause') return w.context ? `Paused. ${w.context}\n\nReply here to resume it.` : 'Paused. Reply here to resume it.';
   const head = w.type === 'permission' ? `**Needs permission:** ${w.prompt}` : `**Question:** ${w.prompt}`;
   const options = (w.options ?? []).map((o, i) => {
     const note = o.description ?? o.consequence;
