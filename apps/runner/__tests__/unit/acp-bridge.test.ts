@@ -91,6 +91,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 const kinds = (updates: Array<{ update: any }>) => updates.map(u => u.update.sessionUpdate);
 const texts = (updates: Array<{ update: any }>) =>
   updates.filter(u => u.update.sessionUpdate === 'agent_message_chunk').map(u => u.update.content.text).join('\n');
+const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise(r => setTimeout(r, 5)); };
 
 describe('translate', () => {
   test('tool kinds follow the tool name', () => {
@@ -523,6 +524,29 @@ Only targeting dev.`;
     expect(res.stopReason).toBe('end_turn');
     expect(runner.created).toHaveLength(1);
     expect(texts(updates)).toMatch(/held for this runner for 20 minutes.*at max concurrent/s);
+  });
+
+  // The runner's own dispatch can claim the reserved task before the bridge's
+  // explicit claim lands: that refusal is a race this runner won, not a refusal.
+  test('a task this runner already took on its own is followed, not reported refused', async () => {
+    const runner = new FakeRunner();
+    runner.claimResult = { status: 400, body: { error: 'task is no longer available (may already be claimed or completed)' } };
+    const { bridge, updates } = setup([], { runner });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    const origCreate = runner.createTask.bind(runner);
+    runner.createTask = async (input) => {
+      const res = await origCreate(input);
+      const taskId = (res.body as any).task.id;
+      runner.workers = [...runner.workers, worker({ id: `w-${taskId}`, taskId, status: 'working', messages: [] })];
+      return res;
+    };
+    const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await until(() => texts(updates).includes('Started a buildd task'));
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    const res: any = await turn;
+    expect(res.stopReason).toBe('end_turn');
+    expect(texts(updates)).not.toMatch(/could not take it now/);
+    expect(texts(updates)).toMatch(/Finished\./);
   });
 
   test('a command in a thread with no task yet creates nothing', async () => {
