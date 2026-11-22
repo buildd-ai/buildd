@@ -52,7 +52,7 @@ mock.module('@buildd/core/db', () => ({
     update: mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve([])) })) })),
     insert: mock(() => ({ values: mock(() => Promise.resolve([])) })),
     select: mock(() => ({
-      from: mock(() => ({ where: mock((w: unknown) => { selectWheres.push(w); return { limit: mockSelectLimit }; }) })),
+      from: mock(() => ({ where: mock((w: unknown) => { selectWheres.push(w); return Object.assign(Promise.resolve([{ id: WORKSPACE_ID, name: 'ws', repo: 'https://github.com/owner/repo' }]), { limit: mockSelectLimit }); }) })),
     })),
   },
 }));
