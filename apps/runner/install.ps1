@@ -146,6 +146,13 @@ if /i "%SUBCMD%"=="codex" (
     exit /b !ERRORLEVEL!
 )
 
+REM `buildd acp`: this runner as an ACP agent on stdio, for T3 Code and other ACP
+REM clients (src/acp/main.ts), as in the bash launcher.
+if /i "%SUBCMD%"=="acp" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\acp\main.ts" !REST!
+    exit /b !ERRORLEVEL!
+)
+
 REM `buildd status`, `buildd logout` and `buildd init <workspace-id>` run the same
 REM launcher-commands.ts the bash launcher does; the runner rejects them.
 if /i "%SUBCMD%"=="status" (

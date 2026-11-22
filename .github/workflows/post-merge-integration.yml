@@ -50,7 +50,7 @@ jobs:
     # Also posts a check-run on the release PR head, so it needs the advisory
     # prefix too; a bare "changes" would count toward the release PR's ciState.
     name: post-merge integration / changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     outputs:
       api: ${{ steps.filter.outputs.api }}
       runner: ${{ steps.filter.outputs.runner }}
@@ -102,7 +102,7 @@ jobs:
     name: post-merge integration streak
     needs: integration
     if: always() && needs.integration.result != 'skipped' && needs.integration.result != 'cancelled'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions:
       actions: read
     steps:

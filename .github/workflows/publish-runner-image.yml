@@ -74,7 +74,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 5
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
@@ -116,6 +116,7 @@ jobs:
   dry-run:
     needs: plan
     if: needs.plan.outputs.publish == 'false'
+    # Builds linux/amd64; the self-hosted runner is ARM64 with no emulation. Hosted only.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -138,6 +139,7 @@ jobs:
   publish:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
+    # Builds linux/amd64; the self-hosted runner is ARM64 with no emulation. Hosted only.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -304,7 +306,7 @@ jobs:
   # Its own job so the image push never holds contents: write.
   cloud-runner-bundle:
     needs: [plan, publish]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 15
     permissions:
       contents: write

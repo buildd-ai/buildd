@@ -53,7 +53,8 @@ function codexBinaryInstalled(): boolean {
 }
 
 const onWindows = process.platform === 'win32';
-const canClaude = !onWindows && claudeBinaryInstalled();
+// The CLI refuses bypassPermissions as root.
+const canClaude = !onWindows && process.getuid?.() !== 0 && claudeBinaryInstalled();
 const canCodex = !onWindows && codexBinaryInstalled();
 
 let server: ReturnType<typeof Bun.serve> | undefined;

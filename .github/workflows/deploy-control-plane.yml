@@ -51,7 +51,7 @@ jobs:
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event.deployment.environment == 'Production' && github.event.deployment_status.state == 'success')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 20
     env:
       SHA: ${{ inputs.ref || github.event.deployment.sha || github.sha }}

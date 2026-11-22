@@ -42,7 +42,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy buildd-dispatch
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 15
     steps:
       # Before checkout, so a missing secret fails in seconds with a clear
