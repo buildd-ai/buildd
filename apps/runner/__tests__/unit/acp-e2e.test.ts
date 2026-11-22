@@ -452,7 +452,7 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
     expect(said(client, 'w2')).toContain('Pausing at the next safe point.');
     runner.push({ id: 'w2', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused', since: '2026-11-22T00:00:00Z', context: 'You paused this run.' }, messages: [] });
     expect((await watch2).result.stopReason).toBe('end_turn');
-    expect(said(client, 'w2').at(-1)).toBe('Paused. Reply here to resume it.');
+    expect(said(client, 'w2').at(-1)).toBe('Paused. You paused this run.\n\nReply here to resume it.');
   }, 20_000);
 
   // 4. Follow-ups: "A question … that arises during a turn is asked as a form … and the
@@ -617,13 +617,11 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
     expect(said(client, 'w1').at(-1)).toBe('Finished. PR: https://example.test/pr/2');
   }, 20_000);
 
-  // FAILS TODAY. Requirement: "A turn … ends … with a closing line from settledText" and
-  // "A user-visible failure MUST be an agent_message_chunk that ends the turn" (Invariants).
-  // The runner pauses an in-flight run when it restarts (pause.ts pausedWaitingFor
-  // cause 'shutdown', R-37) and says why in `waitingFor.context`. The turn does end, but on
-  // "Paused. Reply here to resume it." alone: waitingText drops the context for a pause
-  // (translate.ts:209), so the thread never says the runner restarted.
-  test.failing('7c. runner restart mid-turn: a run the restart paused ends the turn saying the runner restarted', async () => {
+  // "A turn … ends … with a closing line from settledText" and "A user-visible failure
+  // MUST be an agent_message_chunk that ends the turn" (Invariants). The runner pauses an
+  // in-flight run when it restarts (pause.ts pausedWaitingFor, cause 'shutdown', R-37) and
+  // says why in `waitingFor.context`; waitingText carries that context into the closing line.
+  test('7c. runner restart mid-turn: a run the restart paused ends the turn saying the runner restarted', async () => {
     const { dir, runner, open } = setup({ workers: [{ id: 'w1', status: 'working', worktreePath: '/x/a', messages: [] }] });
     const client = open();
     await client.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
