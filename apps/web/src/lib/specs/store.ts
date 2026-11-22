@@ -571,7 +571,7 @@ export async function searchSpecIds(caller: SpecCaller, workspaceId: string, tex
   if (!needle) return { ok: true, ids: new Set() };
   const like = `%${needle.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
   const rows = await db.select({ id: specs.id }).from(specs)
-    .innerJoin(artifacts, eq(artifacts.id, specs.bodyArtifactId))
+    .leftJoin(artifacts, eq(artifacts.id, specs.bodyArtifactId))
     .where(and(eq(specs.workspaceId, workspaceId), sql`(${specs.title} ilike ${like} or ${artifacts.content} ilike ${like})`))
     .limit(MAX_INDEX_SPECS);
   return { ok: true, ids: new Set(rows.map((r) => r.id)) };
