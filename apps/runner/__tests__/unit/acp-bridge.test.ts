@@ -33,7 +33,7 @@ class FakeRunner implements RunnerPort {
     return this.actResult;
   }
   async listWorkspaces() { return this.workspaces; }
-  async createTask(input: { workspaceId: string; title: string; description: string; missionId?: string; roleSlug?: string; priority?: number; kind?: string; reserve?: boolean }) {
+  async createTask(input: { workspaceId: string; title: string; description: string; missionId?: string; roleSlug?: string; priority?: number; kind?: string; reserve?: boolean; context?: Record<string, unknown> }) {
     if (this.createResult) return this.createResult;
     this.created.push(input);
     return { status: 200, body: { task: { id: `t${this.created.length}`, title: input.title } } };
@@ -389,13 +389,22 @@ describe('AcpBridge', () => {
     expect(runner.actions).toEqual([{ workerId: 'w1', action: 'stop' }]);
   });
 
+  test('a new thread\'s task carries the ACP client\'s own name as its origin, not a guess', async () => {
+    const { bridge, runner } = setup([]);
+    await bridge.handle('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'T3 Code', version: '1.2' } });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Say from Zed in the title' }] });
+    await tick(); await tick();
+    expect(runner.created[0].context).toEqual({ client: { kind: 'acp', name: 'T3 Code' } });
+  });
+
   test('a new thread\'s first message becomes a buildd task on this runner, and the turn follows it', async () => {
     const { bridge, runner, updates } = setup([]);
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Fix the login redirect\n\nIt loops on Safari.' }] });
     await tick(); await tick();
     // Filed reserved, so no other runner takes it before this runner's claim.
-    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Fix the login redirect', description: 'Fix the login redirect\n\nIt loops on Safari.', reserve: true }]);
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Fix the login redirect', description: 'Fix the login redirect\n\nIt loops on Safari.', reserve: true, context: { client: { kind: 'acp' } } }]);
     expect(texts(updates)).toContain('Started a buildd task in app');
 
     runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'working', messages: [{ type: 'text', content: 'On it', timestamp: 4 }] }));
@@ -439,7 +448,7 @@ Only targeting dev.`;
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap(request) }] });
     await tick(); await tick();
-    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Count open PRs', description: request, reserve: true }]);
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Count open PRs', description: request, reserve: true, context: { client: { kind: 'acp' } } }]);
     runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done' }));
     await turn;
 
@@ -686,10 +695,10 @@ describe('_meta.buildd on a new thread', () => {
     expect(texts(updates)).toContain('did not create');
   });
 
-  test('no _meta sends exactly today\'s fields', async () => {
+  test('no _meta sends exactly today\'s fields plus the origin context', async () => {
     const { runner, bridge } = setup([]);
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     await finish(runner, send(bridge, sessionId));
-    expect(Object.keys(runner.created[0]).sort()).toEqual(['description', 'reserve', 'title', 'workspaceId']);
+    expect(Object.keys(runner.created[0]).sort()).toEqual(['context', 'description', 'reserve', 'title', 'workspaceId']);
   });
 });
