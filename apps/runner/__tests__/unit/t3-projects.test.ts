@@ -13,7 +13,8 @@ import {
   type T3Workspace,
 } from '../../src/t3-projects';
 
-const ROOT = '/home/u/project';
+const ROOT = join('/home/u', 'project');
+const P = (name: string) => join(ROOT, name);
 
 afterAll(() => cleanupTestWorkspace());
 
@@ -45,20 +46,20 @@ describe('createT3ProjectSync', () => {
   test('adds an existing clone without cloning it again', async () => {
     const { deps, calls } = fakeDeps(
       [{ id: 'w1', name: 'sample-app', repo: 'https://github.com/acme/sample-app' }],
-      { 'https://github.com/acme/sample-app': `${ROOT}/sample-app` },
+      { 'https://github.com/acme/sample-app': `${P("sample-app")}` },
     );
     const r = await createT3ProjectSync(deps, { root: ROOT }).run();
     expect(calls.clones).toEqual([]);
-    expect(calls.adds).toEqual([`sample-app @ ${ROOT}/sample-app`]);
-    expect(r.added).toEqual([`${ROOT}/sample-app`]);
+    expect(calls.adds).toEqual([`sample-app @ ${P("sample-app")}`]);
+    expect(r.added).toEqual([`${P("sample-app")}`]);
   });
 
   test('clones a missing repo into the first project root, then adds it', async () => {
     const { deps, calls } = fakeDeps([{ id: 'w1', name: 'Sample Lib', repo: 'acme/sample-lib' }]);
     const r = await createT3ProjectSync(deps, { root: ROOT }).run();
-    expect(calls.clones).toEqual([`https://github.com/acme/sample-lib.git -> ${ROOT}/sample-lib`]);
-    expect(calls.adds).toEqual([`sample-lib @ ${ROOT}/sample-lib`]);
-    expect(r.cloned).toEqual([`${ROOT}/sample-lib`]);
+    expect(calls.clones).toEqual([`https://github.com/acme/sample-lib.git -> ${P("sample-lib")}`]);
+    expect(calls.adds).toEqual([`sample-lib @ ${P("sample-lib")}`]);
+    expect(r.cloned).toEqual([`${P("sample-lib")}`]);
     expect(calls.rescans).toBe(1);
   });
 
@@ -76,7 +77,7 @@ describe('createT3ProjectSync', () => {
     ]);
     await createT3ProjectSync(deps, { root: ROOT }).run();
     expect(calls.clones.length).toBe(1);
-    expect(calls.adds).toEqual([`dispatch @ ${ROOT}/dispatch`]);
+    expect(calls.adds).toEqual([`dispatch @ ${P("dispatch")}`]);
   });
 
   test('does not ask T3 again for a path it already registered or already had', async () => {
@@ -84,7 +85,7 @@ describe('createT3ProjectSync', () => {
     const adds: string[] = [];
     const { deps } = fakeDeps(
       [{ id: 'w1', name: 'a', repo: 'acme/a' }],
-      { 'acme/a': `${ROOT}/a` },
+      { 'acme/a': `${P("a")}` },
       { addProject: async (p) => { adds.push(p); return answer; } },
     );
     const sync = createT3ProjectSync(deps, { root: ROOT });
@@ -92,12 +93,12 @@ describe('createT3ProjectSync', () => {
     expect(first.added).toEqual([]);
     answer = 'added';
     await sync.run();
-    expect(adds).toEqual([`${ROOT}/a`]);
+    expect(adds).toEqual([`${P("a")}`]);
   });
 
   test('leaves alone a folder at the clone path that is not this repo', async () => {
     const { deps, calls, disk } = fakeDeps([{ id: 'w1', name: 'infra', repo: 'acme/infrastructure' }]);
-    disk.add(`${ROOT}/infrastructure`);
+    disk.add(`${P("infrastructure")}`);
     const r = await createT3ProjectSync(deps, { root: ROOT }).run();
     expect(calls.clones).toEqual([]);
     expect(calls.adds).toEqual([]);
@@ -130,11 +131,11 @@ describe('createT3ProjectSync', () => {
     const adds: string[] = [];
     const { deps } = fakeDeps(
       [{ id: 'w1', name: 'a', repo: 'acme/a' }, { id: 'w2', name: 'b', repo: 'acme/b' }],
-      { 'acme/a': `${ROOT}/a`, 'acme/b': `${ROOT}/b` },
+      { 'acme/a': `${P("a")}`, 'acme/b': `${P("b")}` },
       { addProject: async (p) => { if (p.endsWith('/a')) throw new Error('t3 down'); adds.push(p); return 'added'; } },
     );
     const r = await createT3ProjectSync(deps, { root: ROOT }).run();
-    expect(adds).toEqual([`${ROOT}/b`]);
+    expect(adds).toEqual([`${P("b")}`]);
     expect(r.failed.map(f => f.error)).toEqual(['t3 down']);
   });
 
