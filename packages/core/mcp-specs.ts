@@ -62,6 +62,7 @@
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 import { criteriaUnreadText, type CriterionIdProblems } from '@buildd/spec-contract/requirements';
+import { parseExplanation } from '@buildd/spec-contract/explanation';
 import { SUB_ACTIONS } from './mcp-sub-actions';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
@@ -437,7 +438,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       return text([
         line(s).slice(2),
         `Spec URL: ${specUrl(s.id)}`,
-        `Showing revision ${view.revision.revision} (sha256 ${view.revision.contentHash}). Revise with expectedVersion ${s.version}.`,
+        `Showing revision ${view.revision.revision} (sha256 ${view.revision.contentHash}; its body is artifact ${s.bodyArtifactId} revision ${view.revision.artifactRevision}, numbered apart from spec revisions). Revise with expectedVersion ${s.version}.`,
         reqs.length ? `Requirement ids: ${reqs.join(', ')}` : 'Requirement ids: none',
         ...(criteriaUnreadText(s.metadata?.criteria_unread) ? [`Imported: ${criteriaUnreadText(s.metadata?.criteria_unread)}`] : []),
         `Revisions:\n${history}`,
@@ -463,9 +464,18 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       if (patch && (target || bodyText !== undefined)) throw new Error('find + replace patch the whole body: do not also pass body, section or heading');
       if (patch && typeof params.replace !== 'string') throw new Error('replace (the new text; "" deletes the match) is required with find');
       if (!patch && target && (typeof bodyText !== 'string' || !bodyText.trim())) throw new Error('body (the section text, its heading line included) is required');
+      // Only replaces / repoRefs / design, no text: the head's body is kept (no cosmetic edit to attach them).
+      const keepBody = !patch && !target && bodyText === undefined && (params.replaces !== undefined || params.repoRefs !== undefined || params.design !== undefined);
+      if (params.explanation !== undefined) {
+        // Checked here, before the request: a refused explanation writes nothing, so say so before a long body is spent on it.
+        const checked = parseExplanation(params.explanation);
+        if (!checked.ok) return errorResult(`${checked.error}. Nothing was written.`);
+      }
       const payload: Record<string, unknown> = patch
         ? { expectedVersion: params.expectedVersion, find: params.find, replace: params.replace }
-        : { expectedVersion: params.expectedVersion, ...target, body: target ? bodyText : need(bodyText, 'body (or find + replace to patch)') };
+        : keepBody
+          ? { expectedVersion: params.expectedVersion }
+          : { expectedVersion: params.expectedVersion, ...target, body: target ? bodyText : need(bodyText, 'body (or find + replace to patch, or only replaces / repoRefs / design to keep the text)') };
       if (params.changeSummary !== undefined) payload.changeSummary = params.changeSummary;
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
       if (params.design !== undefined) payload.design = params.design;
@@ -474,7 +484,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
-        const what = patch ? ' (find/replace applied, the rest kept)' : target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
+        const what = patch ? ' (find/replace applied, the rest kept)' : keepBody ? ' (text kept as it was)' : target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
         return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${autoApprovalText(r.autoApproval)}${reviseDuplicateText(r.duplicateCheck)}${tipText(r.formatHints)}`);
       } catch (err) {
         const e = apiError(err);

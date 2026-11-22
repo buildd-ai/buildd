@@ -13,9 +13,8 @@ import { db } from '@buildd/core/db';
 import { workers, tasks, connectors, connectorWorkspaces, connectorShares, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getActiveSigningKey, signAssertion } from '@/lib/signing-keys';
 import { Redis } from '@upstash/redis';
-import { getIssuer } from '@/lib/oauth/config';
+import { mintConnectorAssertion } from '@/lib/connector-assertion';
 import { isUuid } from '@/lib/uuid';
 import { checkConnectorBlocked, blockedBody } from '@/lib/connector-access-policy';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -182,44 +181,20 @@ export async function POST(
     return NextResponse.json({ error: 'rate_limit_exceeded', error_description: 'Too many assertion requests' }, { status: 429 });
   }
 
-  // ── Get Active signing key ────────────────────────────────────────────────
-  const activeKey = await getActiveSigningKey();
-  if (!activeKey) {
+  // ── Mint (claims per spec §A.1: sub = accountId:teamId, act = this worker) ──
+  const minted = await mintConnectorAssertion({
+    accountId: account.id,
+    accountTeamId: account.teamId,
+    workerId,
+    taskId,
+    audience: connector.assertionAudience,
+  });
+  if (!minted) {
     console.error('[AssertionMint] No active signing key found');
     return NextResponse.json({ error: 'internal_error', error_description: 'No active signing key' }, { status: 500 });
   }
-
-  // ── Build assertion claims per spec §A.1 ─────────────────────────────────
-  const iatSec = Math.floor(Date.now() / 1000);
-  const expSec = iatSec + 300; // 5 minutes
-
-  // sub = accountId:teamId (tenant identity)
-  const sub = `${account.id}:${account.teamId}`;
-
-  // jti: 128-bit random hex
-  const jtiBytes = crypto.getRandomValues(new Uint8Array(16));
-  const jti = Array.from(jtiBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-
-  const payload = {
-    // Derived, not hardcoded. The literal made a preview deployment mint
-    // assertions claiming the production issuer — signed by the same
-    // production key set, so they verified. In production getIssuer() returns
-    // that same canonical host, so this changes nothing there.
-    iss: getIssuer(),
-    sub,
-    act: {
-      sub: `worker:${workerId}`,
-      tid: taskId,
-    },
-    aud: connector.assertionAudience,
-    jti,
-    iat: iatSec,
-    exp: expSec,
-  };
-
-  const assertion = await signAssertion(payload, activeKey.privateKeyJwk, activeKey.kid);
-
-  const expiresAt = new Date(expSec * 1000).toISOString();
+  const { assertion } = minted;
+  const expiresAt = minted.expiresAt.toISOString();
 
   return NextResponse.json({
     assertion,

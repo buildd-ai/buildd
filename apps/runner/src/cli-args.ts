@@ -51,6 +51,7 @@ export const RUNNER_USAGE = [
   '                             newest extras instead, --abort ends them (asks first)',
   '  buildd budget reset        Probe a held provider limit now; clears it if capacity is back',
   '  buildd web                 Open the runner on this machine in your browser',
+  '  buildd acp                 Serve this runner to an ACP client (T3 Code: Local ACP command)',
   '  buildd wsl install [--distro <name>]   Windows: set up a runner inside WSL2 (asks before',
   '                             installing WSL and Ubuntu, then runs the Linux installer in it)',
   '  buildd help                Show this help',
@@ -127,6 +128,8 @@ export type CliDecision =
   | { kind: 'budget-reset' }
   /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
   | { kind: 'web' }
+  /** `buildd acp`: serve the running runner to an ACP client on stdio (acp/main.ts). */
+  | { kind: 'acp' }
   /** `buildd wsl install [--distro <name>]` (wsl-setup.ts installWsl). */
   | { kind: 'wsl-install'; distro: string | null }
   | { kind: 'run' }
@@ -245,6 +248,9 @@ export function classifyCliArgs(argv: string[]): CliDecision {
   if (args[0] === 'web') {
     return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'web' };
   }
+  if (args[0] === 'acp') {
+    return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'acp' };
+  }
   if (args[0] === 'wsl') {
     if (args[1] !== 'install') return { kind: 'unknown', arg: args[1] ?? 'wsl' };
     const rest = args.slice(2);
@@ -272,6 +278,24 @@ export function classifyCliArgs(argv: string[]): CliDecision {
     return { kind: 'unknown', arg: a };
   }
   return { kind: 'run' };
+}
+
+/**
+ * `buildd acp` reached the runner through a launcher's restart loop. The
+ * launcher only writes itself at install time, and one written before `acp`
+ * had its own case runs every unknown subcommand through that loop, which
+ * backgrounds the runner when stdin is not a terminal (an ACP client never
+ * gives it one). A background job's stdin is /dev/null, so the protocol would
+ * never arrive. Say what works instead. Null when the bridge can run.
+ */
+export function acpLauncherRefusal(env: Record<string, string | undefined>, stdinIsTTY: boolean): string | null {
+  if (env.BUILDD_LAUNCHER !== 'buildd' || stdinIsTTY) return null;
+  return [
+    'buildd acp: this buildd launcher was installed before `buildd acp` existed and cannot pass the',
+    'protocol through. Point your ACP client at the bridge directly:',
+    '  bun run ~/.buildd/apps/runner/src/acp/main.ts',
+    'or reinstall buildd to get a launcher that runs `buildd acp` itself.',
+  ].join('\n');
 }
 
 /**

@@ -93,3 +93,34 @@ describe('criterionIdProblems: ids a reader would take for criteria that the par
     expect(criterionIdProblems('- R-1: one\n- AC-1: two\n| D-1 | three |')).toEqual({ unreadable: [], duplicates: [] });
   });
 });
+
+describe('a line that mentions an id is not a second definition of it', () => {
+  const body = [
+    '# Spec',
+    '- **AC-214**: the claim holds the lock.',
+    '- AC-526: the reply names the spec.',
+    '- R-10: steps run in order.',
+    '',
+    '## Notes',
+    '- AC-214 is held by the claim route test.',
+    'The rule was written before',
+    'AC-526. It replaces the older wording.',
+    '1. R-10 runs first, then the rest.',
+    'R-22); Flow MUST NOT compute its own.',
+    '- AC-4 and AC-5 (retired): kept for history.',
+  ].join('\n');
+
+  it('reads only the definitions: no duplicates, no phantom ids', () => {
+    expect(criterionIdProblems(body)).toEqual({ unreadable: [], duplicates: [] });
+    expect(requirementIds(body).map((r) => r.id)).toEqual(['AC-214', 'AC-526', 'R-10']);
+  });
+
+  it('still reads the definition forms specs use', () => {
+    const defs = [
+      'R-1: colon.', '- AC-1 GIVEN a cart THEN it shows.', '- AC-4 (error): GIVEN x THEN y.', '- I-1. Every row is set.',
+      '### D-2 a heading always defines', '- **R-72** `copy { specId }` is the action', 'R-2. Totals are in currency.',
+      'R-3 Totals show without a separator', 'R-4 Rates too, on the line straight after',
+    ].join('\n');
+    expect(requirementIds(defs).map((r) => r.id)).toEqual(['R-1', 'AC-1', 'AC-4', 'I-1', 'D-2', 'R-72', 'R-2', 'R-3', 'R-4']);
+  });
+});

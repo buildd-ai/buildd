@@ -47,7 +47,7 @@ permissions:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     # Skip the push this workflow itself made. Idempotency would make the
     # re-run a no-op anyway; this just saves the runner.
     # Off entirely under the frozen-candidate flow: it would push version bumps

@@ -218,6 +218,35 @@ Codex task per login, or give Codex a team OpenAI API key.
 | `buildd install --global --as-agent` (or `--here --as-agent`) | The same sign-in, but the connection **acts as your agent**, not as you. Use it on a shared or remote machine |
 | `buildd install --global --status` | List every buildd MCP entry in `~/.claude.json`: whether it uses the key or OAuth, and for OAuth whether it connects as you, as your agent, or is unknown until signed in (no network) |
 | `buildd install [--global] --status` / `--uninstall` | Show or remove only buildd's own hook entries; every other hook is preserved |
+| `buildd acp` | Serve the runner already running on this machine to an ACP client, such as T3 Code (see below) |
+
+## Using the runner from T3 Code (ACP)
+
+`buildd acp` makes this machine's runner an [Agent Client Protocol](https://agentclientprotocol.com) agent.
+In [T3 Code](https://t3.codes), each buildd run on this machine is a thread. You can watch it, answer its
+questions (they appear in T3's own question UI, phone included), steer it, pause or stop it, and start a new
+task by typing in a new thread.
+
+The runner still does the work. Sandbox, budgets, roles, MCP config, the PR flow and reporting to buildd are
+all unchanged. The bridge only reads the runner's state over its local socket and relays your actions the
+way `buildd top` does. Pressing stop in T3 **pauses** the run, so you can resume it.
+
+Add it in T3 Code under **Settings → Providers → Add provider → Show more → Local ACP command**:
+
+| Runner | Executable | Arguments |
+|---|---|---|
+| macOS / Linux | `buildd` | `acp` |
+| In WSL, with T3 on Windows | `wsl.exe` | `-e`, `/home/<you>/.local/bin/buildd`, `acp` |
+| Installed before `buildd acp` existed | `bun` | `run`, `~/.buildd/apps/runner/src/acp/main.ts` (in WSL: `wsl.exe -e /home/<you>/.bun/bin/bun run /home/<you>/.buildd/apps/runner/src/acp/main.ts`) |
+
+The launcher is written when buildd is installed, and updates don't rewrite it. An older one cannot pass the
+protocol through and says so; the last row works with any install whose runner has updated.
+
+Then, on the provider's card, choose **List sessions**, pick a project and import a run. In a thread:
+
+- **Replying** answers the run's question if it has one, steers it if it is working, or starts a follow-up if it has finished.
+- `/watch` follows the run without sending anything. `/pause` and `/stop` do what they say.
+- **A new thread's first message** becomes a buildd task in the workspace whose repo matches the project folder, claimed onto this runner.
 
 ## Agent identity on buildd
 

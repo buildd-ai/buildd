@@ -4,7 +4,7 @@
  * starts — classifyCliArgs is that decision.
  */
 import { describe, test, expect } from 'bun:test';
-import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE } from '../../src/cli-args';
+import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE, acpLauncherRefusal } from '../../src/cli-args';
 
 const argv = (...a: string[]) => ['bun', '/x/index.ts', ...a];
 
@@ -210,6 +210,26 @@ describe('hold and resume (R-32)', () => {
   test('help lists hold and resume', () => {
     expect(RUNNER_USAGE).toMatch(/^ {2}buildd hold \[--for <time>\] +\S/m);
     expect(RUNNER_USAGE).toMatch(/^ {2}buildd resume {2,}\S/m);
+  });
+});
+
+describe('acp', () => {
+  test('`acp` serves the runner to an ACP client; nothing may follow it', () => {
+    expect(classifyCliArgs(argv('acp'))).toEqual({ kind: 'acp' });
+    expect(classifyCliArgs(argv('acp', '--json'))).toEqual({ kind: 'unknown', arg: '--json' });
+  });
+
+  test('an old launcher running it in its background loop is refused with the command that works', () => {
+    // Launchers written before `buildd acp` reach the runner through their restart
+    // loop, which backgrounds it when stdin is not a terminal: stdin is /dev/null.
+    const msg = acpLauncherRefusal({ BUILDD_LAUNCHER: 'buildd' }, false);
+    expect(msg).toContain('bun run ~/.buildd/apps/runner/src/acp/main.ts');
+    expect(acpLauncherRefusal({ BUILDD_LAUNCHER: 'buildd' }, true)).toBeNull();
+    expect(acpLauncherRefusal({}, false)).toBeNull();
+  });
+
+  test('help lists acp', () => {
+    expect(RUNNER_USAGE).toMatch(/^ {2}buildd acp {2,}\S/m);
   });
 });
 

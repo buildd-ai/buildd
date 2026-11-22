@@ -110,6 +110,12 @@ export function parseReadSelector(params: URLSearchParams, body: string): Artifa
   }
 }
 
+/** The literal strings a grep finds, lowercased: "R-1|R-2" is either; a pattern without two parts is itself. */
+export function grepNeedles(pattern: string): string[] {
+  const parts = pattern.split('|').map((p) => p.trim().toLowerCase()).filter(Boolean);
+  return parts.length >= 2 ? parts : [pattern.toLowerCase()];
+}
+
 export function readArtifactBody(body: string, sel: ArtifactReadSelector): ArtifactReadResult {
   const chars = body.length;
   switch (sel.view) {
@@ -132,7 +138,8 @@ export function readArtifactBody(body: string, sel: ArtifactReadSelector): Artif
     }
     case 'grep': {
       // Literal, case-insensitive: no caller-supplied regex reaches the engine.
-      const needle = sel.pattern.toLowerCase();
+      // "a|b" finds lines holding either, each part still literal.
+      const needles = grepNeedles(sel.pattern);
       const lines = body.split('\n');
       const matches: Array<{ line: number; offset: number; text: string }> = [];
       let offset = 0;
@@ -140,7 +147,8 @@ export function readArtifactBody(body: string, sel: ArtifactReadSelector): Artif
       const starts: number[] = [];
       for (const l of lines) { starts.push(offset); offset += l.length + 1; }
       for (let i = 0; i < lines.length; i++) {
-        if (!lines[i].toLowerCase().includes(needle)) continue;
+        const lower = lines[i].toLowerCase();
+        if (!needles.some((n) => lower.includes(n))) continue;
         if (matches.length >= MAX_GREP_MATCHES) { truncated = true; break; }
         const from = Math.max(0, i - (sel.context ?? 0));
         const to = Math.min(lines.length - 1, i + (sel.context ?? 0));
