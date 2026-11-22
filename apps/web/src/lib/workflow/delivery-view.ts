@@ -13,6 +13,7 @@ import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { toAttemptSnapshot, toDeliverySnapshot, toFindingSnapshot, toRoundSnapshot, type Exec } from './kernel';
 import { workspaceKernelOnSql } from './authority';
+import { prLiveStatusSql } from '@buildd/core/pr-fact-sql';
 import { holdingSql, LANE_PARKED_OUTCOME } from './landing-lane';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
 import type { EscalationBriefPermissions } from '@buildd/workflow-kernel/escalation-brief';
@@ -286,20 +287,28 @@ WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)}
  * The newest kernel-owned delivery a loop task owns, for its owner loop's PR exit condition
  * (lib/loop-dispatcher-policy.ts, 92a439a6): while the kernel owns the PR's next move the loop
  * waits instead of spending an iteration, and `MERGED` satisfies it. Null when the task owns
- * none or it was released to legacy. A SELECT; throws on a read failure.
+ * none or it was released to legacy. `prStatus` is the PR's live status by the delivery's own
+ * readings (`prLiveStatusSql`, null with no PR): a worker row the kernel's projection has not
+ * reached yet reads NULL there (b6a82104). A SELECT; throws on a read failure.
  */
 export async function kernelOwnerDeliveryFacts(
   taskId: string,
   exec: Exec = dbExec,
-): Promise<{ state: string; prNumber: number | null; mergedAt: string | null } | null> {
+): Promise<{ state: string; prNumber: number | null; mergedAt: string | null; prStatus: string | null } | null> {
   const res = await exec(sql`-- workflow:kernel_owner_delivery_facts
-SELECT d.state AS state, d.pr_number AS "prNumber", d.merged_at AS "mergedAt"
+SELECT d.state AS state, d.pr_number AS "prNumber", d.merged_at AS "mergedAt",
+  CASE WHEN d.pr_number IS NULL THEN NULL ELSE ${prLiveStatusSql()} END AS "prStatus"
 FROM workflow_deliveries d
 WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)} AND d.owner_task_id = ${taskId}::uuid
 ORDER BY d.created_at DESC LIMIT 1`);
-  const r = (res.rows ?? [])[0] as { state?: unknown; prNumber?: unknown; mergedAt?: unknown } | undefined;
+  const r = (res.rows ?? [])[0] as { state?: unknown; prNumber?: unknown; mergedAt?: unknown; prStatus?: unknown } | undefined;
   if (!r || typeof r.state !== 'string') return null;
-  return { state: r.state, prNumber: r.prNumber == null ? null : Number(r.prNumber), mergedAt: r.mergedAt == null ? null : String(r.mergedAt) };
+  return {
+    state: r.state,
+    prNumber: r.prNumber == null ? null : Number(r.prNumber),
+    mergedAt: r.mergedAt == null ? null : String(r.mergedAt),
+    prStatus: typeof r.prStatus === 'string' ? r.prStatus : null,
+  };
 }
 
 /**
