@@ -546,6 +546,8 @@ function History({ view, base, reviewing, at }: { view: Ok; base: string; review
                 ) : r.approvedAt ? (
                   <span className="text-meta text-text-muted" data-testid="spec-page-approved-by">
                     Approved by {r.approvedBy} {r.approvedAgo}
+                    {r.approvedVia ? ` ${APPROVED_VIA_LABEL[r.approvedVia]}` : ''}
+                    {r.approvedConversation ? ` (message written ${new Date(r.approvedConversation.messageAt).toISOString().slice(0, 16).replace('T', ' ')} UTC)` : ''}
                   </span>
                 ) : null}
               </div>
@@ -556,6 +558,13 @@ function History({ view, base, reviewing, at }: { view: Ok; base: string; review
     </div>
   );
 }
+
+const APPROVED_VIA_LABEL = {
+  dashboard: 'on the confirm page',
+  mcp: 'from a connected session',
+  chat: 'from chat',
+  conversation: 'in a conversation, by their own message',
+} as const;
 
 /** Contents (R-95): the sections and the criteria in each; picking one scrolls to it. */
 function ContentsList({ sections, onPick }: { sections: Array<{ title: string; criteria: number }>; onPick: (i: number) => void }) {

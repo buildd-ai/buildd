@@ -3185,7 +3185,7 @@ export interface SpecAutoApprovalEvidence {
  * `check:no-criteria-change` did, with its evidence in `check`.
  */
 export interface SpecApprovalRecord {
-  via: 'mcp' | 'chat' | 'dashboard' | 'check';
+  via: 'mcp' | 'chat' | 'dashboard' | 'check' | 'conversation';
   gate: SpecGateResult | null;
   overrideReason?: string;
   check?: { name: 'check:no-criteria-change'; evidence: SpecAutoApprovalEvidence };
@@ -3237,6 +3237,16 @@ export const specRevisions = pgTable('spec_revisions', {
   // gate's result and the reason a person overrode a refusal. NULL: approved
   // before this was recorded.
   approval: jsonb('approval').$type<SpecApprovalRecord>(),
+  // Approval by recorded intent (Living Spec 65ed7fa3, D-18): set with
+  // approved_at only when approval.via is 'conversation'. The conversation and
+  // the owner's message that approved, and that message's time. The message is
+  // kept as a plain id (no FK) so deleting a chat never rewrites an approval.
+  approvalConversationId: uuid('approval_conversation_id'),
+  approvalMessageId: uuid('approval_message_id'),
+  approvalMessageAt: timestamp('approval_message_at', { withTimezone: true }),
+  // Where each criterion came from in that conversation: criterion id → a
+  // short source reference. NULL: none recorded.
+  criterionSources: jsonb('criterion_sources').$type<Record<string, string>>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
