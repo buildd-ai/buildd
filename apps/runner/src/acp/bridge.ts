@@ -468,8 +468,18 @@ export class AcpBridge {
       };
 
       const onSnapshot = (ids: Set<string>) => {
-        if (done || !session.workerId || ids.has(session.workerId)) return;
-        finish('end_turn', 'This worker is no longer on this runner.');
+        const id = session.workerId;
+        if (done || !id || ids.has(id)) return;
+        // The init frame leaves out settled workers, so a miss is not proof the worker is gone:
+        // ask the full list before saying so.
+        this.findWorker(id).then(
+          (w) => {
+            if (done || id !== session.workerId) return;
+            if (w) onWorker(w);
+            else finish('end_turn', 'This worker is no longer on this runner.');
+          },
+          () => {},
+        );
       };
 
       const unsubscribe = this.deps.runner.subscribe(onWorker, onSnapshot);
