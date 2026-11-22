@@ -374,7 +374,7 @@ Only targeting dev.`;
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap(request) }] });
     await tick(); await tick();
-    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Count open PRs', description: request }]);
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Count open PRs', description: request, reserve: true }]);
     runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done' }));
     await turn;
 
