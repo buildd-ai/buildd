@@ -1118,7 +1118,7 @@ async function TaskDetailPage({
       ? [{ key: 'client', label: 'Filed', value: <TaskClientFrom context={task.context} /> }]
       : []),
     ...(reservation
-      ? [{ key: 'reservation', label: 'Held', value: <TaskReservation context={task.context} status={task.status} holderName={reservationHolder} /> }]
+      ? [{ key: 'reservation', label: 'Reserved', value: <TaskReservation context={task.context} status={task.status} holderName={reservationHolder} /> }]
       : []),
     ...(!origin.isEmpty || origin.shipped
       ? [{

@@ -32,7 +32,7 @@ export function TaskReservation({ context, status, holderName, now = new Date() 
   if (!r) return null;
   return (
     <span data-testid="task-reservation" className="[overflow-wrap:anywhere]">
-      Held for {holderName ?? 'another account'} until {utcStamp(r.expiresAt)}
+      Reserved for {holderName ?? 'another account'} until {utcStamp(r.expiresAt)}
       <span className="text-text-muted"> · {reservationRemainingLabel(Date.parse(r.expiresAt) - now.getTime())}</span>
     </span>
   );
