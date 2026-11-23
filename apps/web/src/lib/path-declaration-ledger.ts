@@ -6,6 +6,7 @@
  * unreachable, or where a task's manifest came from. One `path_declaration`
  * gate row per outcome answers all four (`get_failure_analytics family=gate`).
  */
+import { after } from 'next/server';
 import { fireCoalescedGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import type { GateCallerOrigin } from '@buildd/core/gate-events';
 import { PATH_SIGNAL_REASONS } from '@buildd/core/path-coordination-signal';
@@ -45,8 +46,9 @@ export function recordPathDeclaration(input: {
   detail?: Record<string, unknown>;
 }): void {
   if (!(input.pathCount > 0) && input.provenance !== 'creation') return;
-  try {
-    fireCoalescedGateEvent({
+  // The coalescing read-then-write is two round trips; run it after the
+  // response so a hot caller (worker PATCH) keeps its round-trip budget.
+  const write = () => fireCoalescedGateEvent({
       gate: GATE_SLUGS.PATH_DECLARATION,
       surface: input.surface,
       outcome: OUTCOME[input.result],
@@ -62,6 +64,12 @@ export function recordPathDeclaration(input: {
         ...(input.detail ?? {}),
       },
     });
+  try {
+    try {
+      after(write);
+    } catch {
+      write(); // outside a request scope (tests, scripts)
+    }
   } catch {
     // A counter is never what fails a declaration.
   }
