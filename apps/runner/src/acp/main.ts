@@ -46,7 +46,9 @@ export async function runAcp(opts: { socketPath: string; version: string; buildd
     cwdExists: (cwd) => existsSync(localPathFor(cwd)),
     runnerName: () => resolveRunnerName().name,
     version: opts.version,
+    installedVersion: runnerVersion,
   });
+  console.error(`buildd acp ${opts.version} started`);
   peer = rpcPeer(bridge, write);
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on('line', (line) => { void peer!.onLine(line); });
