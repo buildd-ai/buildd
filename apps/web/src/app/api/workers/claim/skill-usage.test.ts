@@ -81,4 +81,18 @@ describe('recordClaimedSkillUsage (claim path)', () => {
     await expect(inj.recordClaimedSkillUsage([cw], tasks)).resolves.toBeUndefined();
     expect(executed).toHaveLength(0);
   });
+
+  it('R-13: an upsert that never resolves does not hold the claim', async () => {
+    const { inj, cw, tasks } = await claim('00000000-0000-0000-0000-0000000000f1');
+    const core = await import('@buildd/core/db');
+    const orig = core.db.execute;
+    (core.db as any).execute = () => new Promise(() => {});
+    try {
+      const t0 = Date.now();
+      await inj.recordClaimedSkillUsage([cw], tasks, 50);
+      expect(Date.now() - t0).toBeLessThan(500);
+    } finally {
+      (core.db as any).execute = orig;
+    }
+  });
 });
