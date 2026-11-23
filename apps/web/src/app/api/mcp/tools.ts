@@ -284,7 +284,9 @@ Buildd is a task coordination system for AI coding agents. ${tools}
 
 ${scopes != null ? `**Token scopes:** ${scopes.join(', ') || 'none'} — explicit capabilities replace legacy level permissions.` : `**Token level:** ${accountLevel} — gates ${gated} (trigger ⊂ worker ⊂ admin).`} A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
 
-**Before your first task action**, load the buildd-mcp-consumer skill (claim → progress → PR → artifact → learn → complete, blocked-vs-question, friction, branch strategy). No skill installed? Read the \`buildd://workspace/skills\` resource.`;
+**Before your first task action**, load the buildd-mcp-consumer skill (claim → progress → PR → artifact → learn → complete, blocked-vs-question, friction, branch strategy). No skill installed? Read the \`buildd://workspace/skills\` resource.
+
+**In T3 Code** (your session has \`delegate_task\` and a buildd provider): work a person will want to watch goes to \`delegate_task\`, not \`create_task\`, with a self-contained task text; background work stays \`create_task\`. Details: skill section "Delegating work a person should watch".`;
 }
 
 /** The legacy one-tool `buildd`: every action the level may call, with the long docs inline. LEGACY: old-runner fallback only. */
