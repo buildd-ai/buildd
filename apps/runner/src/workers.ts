@@ -22,6 +22,8 @@ import { emitPhase } from './phase-lines';
 import { ClaimHandoffTracker } from './claim-handoff';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS, fallbackPingDelayMs, DEFAULT_LOGIN_MODE, type LoginMode, type RunnerLoginUse } from '@buildd/shared';
 import { loginUseFor } from './runner-logins';
+import { HeartbeatTracker } from './heartbeat-watchdog';
+import { logInfo as logHeartbeatInfo, logWarn as logHeartbeatWarn } from './log';
 import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -814,6 +816,8 @@ export class WorkerManager {
   private terminalWorktreeSweepRunning = false;
   private heartbeatInterval?: Timer;
   private livenessInterval?: Timer;
+  /** Every beat's outcome, read by the heartbeat watchdog (heartbeat-watchdog.ts). */
+  private heartbeatTracker = new HeartbeatTracker();
   /** Content of the last heartbeat sent, and when the fallback ping next falls due (liveness tick). */
   private lastBeatFingerprint?: string;
   private nextFallbackBeatAt = 0;
@@ -1116,8 +1120,10 @@ export class WorkerManager {
       // not a presence member (older server, no Pusher) or holds workers (their leases
       // renew on the beat) keeps the 60s cadence.
       this.livenessInterval = setInterval(() => {
+        this.heartbeatTracker.noteTick();
         this.sendHeartbeat({ onlyIfDue: true });
       }, LIVENESS_PING_INTERVAL_MS);
+      this.heartbeatTracker.arm();
     }
 
     // Initialize Pusher if configured
@@ -1354,6 +1360,11 @@ export class WorkerManager {
     return (this.claimHandoff ??= new ClaimHandoffTracker());
   }
 
+  /** The heartbeat tracker the watchdog reads (index.ts, heartbeat-watchdog.ts). */
+  getHeartbeatTracker(): HeartbeatTracker {
+    return this.heartbeatTracker;
+  }
+
   /** Push a heartbeat right away (e.g. so a canary trip reaches the server before a restart). */
   async sendHeartbeatNow(): Promise<void> {
     await this.sendHeartbeat();
@@ -1512,6 +1523,7 @@ export class WorkerManager {
 
   private async sendHeartbeat(opts: { onlyIfDue?: boolean } = {}) {
     let fingerprint: string | undefined;
+    let beatToken: number | undefined;
     try {
       // A paused worker holds no slot (pause.ts), nor a question whose session
       // ended; one asked inside a live session still does.
@@ -1544,7 +1556,11 @@ export class WorkerManager {
       if (opts.onlyIfDue && !this.heartbeatDue(fingerprint, activeWorkerIds.length, Date.now())) return;
       this.lastBeatFingerprint = fingerprint;
       this.nextFallbackBeatAt = Date.now() + fallbackPingDelayMs();
+      beatToken = this.heartbeatTracker.begin();
       const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots, desiredPause } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, environment, redactions, sandboxEnabled, probeAt, activeWorkerIds, runnerCommit, RUNNER_VERSION, updateSnapshot, this.handoff().snapshot(), modelAuth, slots, slotsChangedAt, holdChangedAt);
+      const recovered = this.heartbeatTracker.succeed(beatToken);
+      beatToken = undefined;
+      if (recovered) logHeartbeatInfo(recovered);
       // A slot change made on buildd.dev, newer than this runner's own (spec 34a48877 R-20).
       if (!this.config.singleTask) this.applyServerSlots(desiredSlots);
       if (!this.config.singleTask) this.applyServerHold(desiredPause);
@@ -1570,8 +1586,17 @@ export class WorkerManager {
           this.claimPendingTasks().catch(() => {});
         }
       }
-    } catch {
+    } catch (err) {
       // Non-fatal - heartbeat is best-effort. A beat that did not land is owed again on the next tick.
+      // Logged (rate limited) and counted: a heartbeat that fails silently leaves a runner
+      // up but invisible, and the watchdog restarts a runner whose beats stop landing.
+      if (beatToken !== undefined) {
+        const line = this.heartbeatTracker.fail(beatToken, err);
+        if (line) logHeartbeatWarn(line);
+      } else {
+        // Failed before the request (building the payload) or after it landed (handling the reply).
+        logHeartbeatWarn(`[heartbeat] beat handling failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       if (fingerprint !== undefined && this.lastBeatFingerprint === fingerprint) this.lastBeatFingerprint = undefined;
     }
   }
