@@ -128,6 +128,8 @@ A client may open a thread with `_meta.buildd` = `{ missionId?, roleSlug?, prior
 
 - Without `_meta.buildd` nothing changes.
 - A mission the server refuses (outside the runner's team, or missing) files **no task**: the thread gets one agent message naming the server's error and the turn ends with `end_turn`.
+- **Directive line.** A client that cannot send `_meta` (T3's delegation) may begin the first message with `buildd: mission=<id or short id> role=<slug> priority=<n> kind=<kind>` (any subset, `key=value` pairs). It is parsed like `_meta.buildd` (same validation, same refusal), removed from the title and description, and loses to `_meta.buildd` when both are present. A first line of any other shape stays text.
+- T3's delegation role line (`Act as the <role> sub-agent for this task.` as the first line) is dropped before the title is taken, so the title is the first line of the delegated text.
 - Which mission a T3 project maps to, and persisting that mapping beside `acp-sessions.json`, remain unspecified; the client supplies `missionId` per thread.
 
 ### Acceptance criteria
