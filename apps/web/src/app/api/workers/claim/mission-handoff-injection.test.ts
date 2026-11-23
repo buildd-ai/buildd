@@ -142,6 +142,34 @@ describe('attachMissionHandoff', () => {
     expect(block).toContain('Old task (completed)');
   });
 
+  it('takes the mission brief phase from the claimed task, not a missions column', async () => {
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'dep-1',
+        title: 'Upstream',
+        status: 'completed',
+        result: { structuredOutput: { handoff: { delivered: 'Done.' } } },
+        missionId: 'm-1',
+        missionPhaseLabel: 'Build',
+        pathManifest: null,
+      },
+    ]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1', title: 'Ship it', goalCriteriaState: null }]);
+
+    const cw = claimedWorker('task-6');
+    const claimedTasks = [
+      { id: 'task-6', missionId: 'm-1', missionPhaseLabel: 'Verify', dependsOn: ['dep-1'], title: 'Downstream' },
+    ] as any;
+
+    await attachMissionHandoff([cw], claimedTasks);
+
+    // missions has no mission_phase_label column; asking for it is a type error on drizzle rc.6.
+    const missionQuery = (mockMissionsFindMany.mock.calls[0] as any[])[0];
+    expect(missionQuery.columns).not.toHaveProperty('missionPhaseLabel');
+    const block = mockAppendContextBlock.mock.calls[0][1] as string;
+    expect(block).toContain('**Ship it** — Phase: Verify');
+  });
+
   it('is best-effort: a DB error attaches nothing rather than throwing', async () => {
     mockTasksFindMany.mockRejectedValue(new Error('DB down'));
 

@@ -101,8 +101,10 @@ function legacySubset(src: string, label: string, keep: (e: JournalEntry, i: num
  * A per-case copy of the real tree as the cutover left it (the legacy folders
  * and the rebase; migrations written after the cutover are not part of what
  * this file proves) plus any probe folders `post` adds on top. The migrator
- * reads only `migration.sql`; the probe folders get a minimal v8 snapshot
- * chained to the rebase so the layout check and drift gate can still read the tree.
+ * reads only `migration.sql`; the probe folders get the snapshot `drizzle-kit
+ * generate --custom` writes for hand-written SQL (format 10: a diff with no deltas
+ * and no footprints), chained to the rebase, so the layout check and drift gate can
+ * still read the tree and expect the rebase's schema.
  */
 function convertToV1(label: string, post: Array<{ name: string; sql: string }>): V1Tree {
   const dir = join(work, label);
@@ -111,7 +113,7 @@ function convertToV1(label: string, post: Array<{ name: string; sql: string }>):
   const cutover = new Set([...legacy.map((e) => e.name), REBASE]);
   for (const m of readMigrationTree(dir)) if (!cutover.has(m.name)) rmSync(join(dir, m.name), { recursive: true, force: true });
   const tip = REBASE;
-  const tipSnapshot = JSON.parse(readFileSync(join(REAL_TREE, tip, 'snapshot.json'), 'utf8')) as { id: string; ddl: unknown[] };
+  const tipSnapshot = JSON.parse(readFileSync(join(REAL_TREE, tip, 'snapshot.json'), 'utf8')) as { id: string; version: string };
   let prev = tipSnapshot.id;
   for (const p of post) {
     if (readdirSync(dir).includes(p.name)) {
@@ -121,7 +123,10 @@ function convertToV1(label: string, post: Array<{ name: string; sql: string }>):
     mkdirSync(join(dir, p.name));
     writeFileSync(join(dir, p.name, 'migration.sql'), p.sql);
     const id = `00000000-0000-4000-8000-${String(prev.length).padStart(12, '0')}`;
-    writeFileSync(join(dir, p.name, 'snapshot.json'), JSON.stringify({ version: '8', dialect: 'postgres', id, prevIds: [prev], ddl: tipSnapshot.ddl }));
+    writeFileSync(
+      join(dir, p.name, 'snapshot.json'),
+      JSON.stringify({ type: 'diff', version: tipSnapshot.version, dialect: 'postgres', id, prevIds: [prev], footprints: [], deltas: [] }),
+    );
     prev = id;
   }
   return { dir, legacyPath: LEGACY_MIGRATIONS_PATH, legacy };

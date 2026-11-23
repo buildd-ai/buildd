@@ -156,7 +156,8 @@ describe('can: session users', () => {
 function boundValues(node: unknown, seen = new Set<unknown>()): string[] {
   if (!node || typeof node !== 'object' || seen.has(node)) return [];
   seen.add(node);
-  const own = (node as { value?: unknown }).value;
+  // A StringChunk (raw SQL text such as " = ") also has a string `value` on drizzle rc.6; only params are bound.
+  const own = node.constructor?.name === 'StringChunk' ? undefined : (node as { value?: unknown }).value;
   const out = typeof own === 'string' ? [own] : [];
   for (const child of Object.values(node as Record<string, unknown>)) {
     if (child && typeof child === 'object' && !('table' in (child as object) && 'name' in (child as object))) out.push(...boundValues(child, seen));

@@ -25,6 +25,15 @@
  *  - the two chains are not each linear from one shared parent (`chain`);
  *  - the snapshots are not the same format (`format`).
  *
+ * Format 10 (drizzle-kit 1.0.0-rc.6 and later) stores a **diff** snapshot per
+ * migration: only that migration's `deltas`, plus a `footprint` per statement
+ * naming the schema parts it writes and reads. A diff does not depend on what a
+ * sibling branch changed, so re-parenting one is the same snapshot with a new
+ * `id` and `prevIds`: nothing to fold in. The refusals are the same, judged
+ * from the footprints the way `drizzle-kit check` judges branches: `overlap`
+ * when both sides write one part, `reference` when one side reads a part the
+ * other writes, `renames` when either side carries a rename delta.
+ *
  * The caller then falls back to the regenerate task. A re-parented snapshot is
  * verified by the same gates that catch a fork today: `migrations:commute`,
  * `db:generate` reporting no changes, and schema-matches-snapshot on the next
@@ -41,10 +50,20 @@ export interface V1Snapshot {
   dialect: string;
   id: string;
   prevIds: string[];
-  ddl: unknown[];
+  /** Format 8: the whole schema. Format 10 keeps it only in the base snapshot. */
+  ddl?: unknown[];
   renames?: unknown[];
+  /** Format 10: `base` (the first migration) or `diff` (every later one). */
+  type?: 'base' | 'diff';
+  /** Format 10 diff: this migration's changes. */
+  deltas?: Array<{ op?: string; [key: string]: unknown }>;
+  /** Format 10: per statement, the schema parts it writes and reads. */
+  footprints?: Array<{ writes?: string[]; reads?: string[]; [key: string]: unknown }>;
   [key: string]: unknown;
 }
+
+/** Format 10 and later: diff snapshots over one base snapshot. */
+export const isDiffFormat = (s: V1Snapshot): boolean => s.type !== undefined;
 
 export interface MissionSnapshot {
   /** `<YYYYMMDDHHMMSS>_<slug>`. */
@@ -134,8 +153,8 @@ export interface SnapshotDelta {
 
 /** What `side` changed relative to `base`, by entity identity. */
 export function snapshotDelta(base: V1Snapshot, side: V1Snapshot): SnapshotDelta {
-  const baseBy = new Map(base.ddl.map((e) => [entityKey(e), e] as const));
-  const sideBy = new Map(side.ddl.map((e) => [entityKey(e), e] as const));
+  const baseBy = new Map((base.ddl ?? []).map((e) => [entityKey(e), e] as const));
+  const sideBy = new Map((side.ddl ?? []).map((e) => [entityKey(e), e] as const));
   const removed = new Set<string>();
   const upserted = new Map<string, unknown>();
   for (const k of baseBy.keys()) if (!sideBy.has(k)) removed.add(k);
@@ -208,6 +227,7 @@ const slugOf = (folder: string) => folder.replace(/^\d{14}_/, '');
  * construction, so the caller carries each `migration.sql` as it is.
  */
 export function planReparent(input: ReparentInput): ReparentPlan {
+  if (isDiffFormat(input.base)) return planReparentDiff(input);
   const { base, nowMs = Date.now() } = input;
   const format = (s: V1Snapshot) => `${s.version}/${s.dialect}`;
   for (const s of [...input.trunk, ...input.mission]) {
@@ -261,7 +281,7 @@ export function planReparent(input: ReparentInput): ReparentPlan {
       dialect: m.snapshot.dialect,
       id,
       prevIds: [parentId],
-      ddl: applyDelta(m.snapshot.ddl, trunkDelta, trunkLeaf.snapshot.ddl),
+      ddl: applyDelta(m.snapshot.ddl!, trunkDelta, trunkLeaf.snapshot.ddl!),
       renames: [],
     };
     folders.push({ from: m.folder, to: `${formatFolderPrefix(lastMs)}_${slugOf(m.folder)}`, snapshot });
@@ -270,8 +290,73 @@ export function planReparent(input: ReparentInput): ReparentPlan {
   return { ok: true, trunkLeaf, folders };
 }
 
+/** The footprint parts a chain writes and reads, across every statement of every snapshot. */
+function footprintParts(chain: readonly MissionSnapshot[]): { writes: Set<string>; reads: Set<string> } {
+  const writes = new Set<string>();
+  const reads = new Set<string>();
+  for (const m of chain) {
+    for (const f of m.snapshot.footprints ?? []) {
+      for (const w of f.writes ?? []) writes.add(w);
+      for (const r of f.reads ?? []) reads.add(r);
+    }
+  }
+  return { writes, reads };
+}
+
+const listSome = (keys: string[]) => `${keys.slice(0, 5).join(', ')}${keys.length > 5 ? ` and ${keys.length - 5} more` : ''}`;
+
+/** Format 10: each mission diff snapshot, unchanged but for `id` / `prevIds`, chained onto trunk's leaf. */
+function planReparentDiff(input: ReparentInput): ReparentPlan {
+  const { base, nowMs = Date.now() } = input;
+  for (const s of [...input.trunk, ...input.mission]) {
+    const snap = s.snapshot;
+    if (snap.type !== 'diff' || !Array.isArray(snap.deltas) || !Array.isArray(snap.footprints) || !Array.isArray(snap.prevIds)) {
+      return { ok: false, reason: 'format', detail: `${s.folder}: snapshot is not a drizzle format-${base.version} diff snapshot` };
+    }
+    if (`${snap.version}/${snap.dialect}` !== `${base.version}/${base.dialect}`) {
+      return { ok: false, reason: 'format', detail: `${s.folder}: snapshot format ${snap.version}/${snap.dialect} differs from the fork point's ${base.version}/${base.dialect}` };
+    }
+    if (snap.deltas.some((d) => d?.op === 'rename')) {
+      return { ok: false, reason: 'renames', detail: `${s.folder}: snapshot carries a rename, which only a regenerate can re-resolve` };
+    }
+    if (!V1_FOLDER.test(s.folder)) return { ok: false, reason: 'format', detail: `${s.folder}: not a v1 migration folder name` };
+  }
+  if (input.trunk.length === 0 || input.mission.length === 0) {
+    return { ok: false, reason: 'chain', detail: 'both sides must have added a migration for there to be a fork to re-parent' };
+  }
+  const trunk = linearChain(input.trunk, base.id);
+  if (!trunk) return { ok: false, reason: 'chain', detail: `trunk's new snapshots are not one linear chain from ${base.id}` };
+  const mission = linearChain(input.mission, base.id);
+  if (!mission) return { ok: false, reason: 'chain', detail: `the mission's new snapshots are not one linear chain from ${base.id}` };
+  const trunkLeaf = trunk[trunk.length - 1]!;
+
+  const t = footprintParts(trunk);
+  const m = footprintParts(mission);
+  const overlap = [...t.writes].filter((k) => m.writes.has(k)).sort();
+  if (overlap.length > 0) return { ok: false, reason: 'overlap', detail: `both sides changed ${listSome(overlap)}` };
+  const missionReadsTrunk = [...m.reads].filter((k) => t.writes.has(k)).sort();
+  const trunkReadsMission = [...t.reads].filter((k) => m.writes.has(k)).sort();
+  if (missionReadsTrunk.length > 0) return { ok: false, reason: 'reference', detail: `the mission depends on ${listSome(missionReadsTrunk)}, which trunk changed` };
+  if (trunkReadsMission.length > 0) return { ok: false, reason: 'reference', detail: `trunk depends on ${listSome(trunkReadsMission)}, which the mission changed` };
+
+  let lastMs = Math.max(nowMs, ...[...input.existingFolders, ...input.trunk.map((x) => x.folder), ...input.mission.map((x) => x.folder)].map(folderMillis));
+  let parentId = trunkLeaf.snapshot.id;
+  const folders: ReparentedFolder[] = [];
+  for (const ms of mission) {
+    lastMs = Math.floor(lastMs / 1000) * 1000 + 1000;
+    const id = reparentedId(trunkLeaf.snapshot.id, ms.snapshot.id);
+    // Spread keeps the kit's key order; only id and prevIds change.
+    const snapshot: V1Snapshot = { ...ms.snapshot, id, prevIds: [parentId] };
+    folders.push({ from: ms.folder, to: `${formatFolderPrefix(lastMs)}_${slugOf(ms.folder)}`, snapshot });
+    parentId = id;
+  }
+  return { ok: true, trunkLeaf, folders };
+}
+
 /** The kit's own serialisation of a snapshot file. */
 export function serializeSnapshot(snapshot: V1Snapshot): string {
+  // Format 10: written in the kit's key order, which the plan preserved.
+  if (isDiffFormat(snapshot)) return JSON.stringify(snapshot, null, 2);
   const { version, dialect, id, prevIds, ddl, renames, ...rest } = snapshot;
   return JSON.stringify({ version, dialect, id, prevIds, ddl, renames: renames ?? [], ...rest }, null, 2);
 }
