@@ -37,7 +37,7 @@
  * one the open-PR status reads its review from), so a repo linked from several
  * workspaces is reviewed once.
  */
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -120,10 +120,26 @@ ORDER BY gr.full_name, w.created_at, w.id`)) as unknown as { rows?: Array<Record
   }));
 }
 
+/**
+ * The worker rows that make PR `n` known: one that recorded this PR number, or
+ * one on its head branch that has recorded no PR yet (a task whose PR is about
+ * to open). A worker on the same branch that recorded a *different* PR does not
+ * count: a dependency bot reuses one branch per package for every update, so
+ * that row is an earlier PR's, and matching it left every later PR on the
+ * branch "known" and holding a pending status nobody would clear.
+ */
+export function knownWorkerWhere(workspaceIds: string[], n: number, headRef: string | null) {
+  const byNumber = eq(workers.prNumber, n);
+  return and(
+    inArray(workers.workspaceId, workspaceIds),
+    headRef ? or(byNumber, and(eq(workers.branch, headRef), isNull(workers.prNumber))) : byNumber,
+  )!;
+}
+
 const foreignLiveDeps = (): Required<ForeignPrDeps> => ({
   kernelOwned: async (w, r, n) => !!(await (await import('@/lib/workflow/authority')).kernelDeliveryForPr(w, r, n)),
   knownWorker: async (ids, n, headRef) => (ids.length ? (await db.query.workers.findFirst({
-    where: sqlWhere(and(inArray(workers.workspaceId, ids), headRef ? or(eq(workers.prNumber, n), eq(workers.branch, headRef)) : eq(workers.prNumber, n))),
+    where: sqlWhere(knownWorkerWhere(ids, n, headRef)),
     columns: { id: true },
   })) ?? null : null),
   reviewTask: async (w, n) => (await import('@/lib/pr-review-request')).findReviewTaskForPr(w, n),

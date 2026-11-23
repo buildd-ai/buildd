@@ -5,7 +5,8 @@
  * "Review not requested" forever. Everything here is injected; no DB, no GitHub.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { isBuilddBranch, maybeAutoReviewUnownedPr, type AutoReviewDeps, type AutoReviewWorkspace } from './auto-review-unowned';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { isBuilddBranch, knownWorkerWhere, maybeAutoReviewUnownedPr, type AutoReviewDeps, type AutoReviewWorkspace } from './auto-review-unowned';
 
 const ws = (over: Partial<AutoReviewWorkspace> = {}): AutoReviewWorkspace => ({
   id: 'ws-a', teamId: 'team-a', name: 'repo', repo: 'org/repo',
@@ -216,5 +217,30 @@ describe('isBuilddBranch', () => {
     expect(isBuilddBranch('fix/thing')).toBe(false);
     expect(isBuilddBranch('buildd/not-an-id')).toBe(false);
     expect(isBuilddBranch(null)).toBe(false);
+  });
+});
+
+describe('knownWorkerWhere: which worker rows make a PR known', () => {
+  const render = (headRef: string | null) => {
+    const q = new PgDialect().sqlToQuery(knownWorkerWhere(['ws-a'], 5999, headRef));
+    return { sql: q.sql.replace(/[()]/g, '').replace(/\s+/g, ' '), params: q.params };
+  };
+
+  it('a worker with this PR number', () => {
+    const { sql, params } = render(null);
+    expect(sql).toContain('"pr_number" = $');
+    expect(sql).not.toContain('"branch"');
+    expect(params).toContain(5999);
+  });
+
+  // Regression: Renovate reuses one head branch per package for every update
+  // (renovate/openai-codex-sdk-0.x has carried many PRs). A worker left from an
+  // earlier, adopted PR on that branch made each later PR "known", so it got a
+  // pending "Review not requested" status nobody would ever clear, and
+  // Renovate's automerge waited on it forever.
+  it('a head-branch match counts only for a worker with no PR number yet, never one that recorded another PR', () => {
+    const { sql, params } = render('renovate/openai-codex-sdk-0.x');
+    expect(sql).toMatch(/"branch" = \$\d+ and "workers"\."pr_number" is null/);
+    expect(params).toContain('renovate/openai-codex-sdk-0.x');
   });
 });
