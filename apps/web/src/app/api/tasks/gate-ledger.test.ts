@@ -83,7 +83,7 @@ mock.module('@/lib/mission-integration-branch', () => ({
 // ── Route dependencies ────────────────────────────────────────────────────────
 
 const WS = 'ws-1';
-const MISSION = 'm-1';
+const MISSION = '6341fe61-0000-4000-8000-000000000001';
 
 const mockAccount = { id: 'acct-1', name: 'test', teamId: 'team-1', level: 'admin' };
 
