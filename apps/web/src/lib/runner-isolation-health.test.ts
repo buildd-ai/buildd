@@ -325,6 +325,6 @@ describe('isolationBlockedCounts / isolationStrandedCount: the claim rule over p
     expect(pendingIsolationTask({ backend: 'claude', kind: null, context: null, isolationPolicy: 'protected', accessMode: 'restricted' }, 1).requirement)
       .toBe('protected');
     expect(pendingIsolationTask({ backend: 'claude', kind: null, context: null, isolationPolicy: undefined, accessMode: 'open' }, 1).requirement)
-      .toBe('protected');
+      .toBe('trusted_local');
   });
 });

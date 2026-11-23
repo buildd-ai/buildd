@@ -67,20 +67,22 @@ export type IsolationRequirementSource = 'workspace' | 'single_owner_team' | 'de
  * R-4: a task's requirement, from policy.
  *
  * - The workspace's `gitConfig.isolationPolicy`, when set, decides.
- * - Otherwise a team of exactly one member, on a workspace not open to other
- *   accounts, defaults to `trusted_local`: the only person whose work runs is
- *   the one who operates the runner. That alone runs nothing reduced; the
- *   runner operator's opt-in (R-5) is still the only switch for that.
- * - Everything else is `protected`: a shared team, an open workspace, or a
- *   team whose size could not be read.
+ * - Otherwise a team of exactly one member defaults to `trusted_local`,
+ *   whatever the workspace's access mode: with one member, open and restricted
+ *   admit the same person, so the only task author is the one who operates the
+ *   runner. That alone runs nothing reduced; the runner operator's opt-in
+ *   (R-5) is still the only switch for that.
+ * - Everything else is `protected`: a shared team, or a team whose size could
+ *   not be read.
  */
 export function resolveIsolationRequirement(input: {
   workspacePolicy?: unknown;
+  /** Not read: a single-member team resolves the same in every access mode. Kept so callers need not change. */
   workspaceAccessMode?: string | null;
   teamMemberCount: number | null;
 }): { requirement: IsolationRequirement; source: IsolationRequirementSource } {
   if (isIsolationRequirement(input.workspacePolicy)) return { requirement: input.workspacePolicy, source: 'workspace' };
-  if (input.teamMemberCount === 1 && input.workspaceAccessMode !== 'open') {
+  if (input.teamMemberCount === 1) {
     return { requirement: 'trusted_local', source: 'single_owner_team' };
   }
   return { requirement: 'protected', source: 'default' };

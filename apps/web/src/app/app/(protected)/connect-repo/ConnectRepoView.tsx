@@ -18,7 +18,11 @@ export interface ConnectRepoViewProps {
   error?: string | null;
   /** The last confirm created the workspace. */
   created?: boolean;
+  /** The last confirm set the workspace to trusted local. */
+  trusted?: boolean;
 }
+
+const TRUST_SENTENCE = 'Trusted local lets its tasks run on a runner that has no sandbox, such as one in a container. Only your team, who already runs this runner, can start work in it.';
 
 function Frame({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -52,7 +56,7 @@ function Choice({ name, options }: { name: string; options: Array<{ value: strin
  * The connect-repo page body (page.tsx reads the case; the dev fixture
  * passes one). One confirm button, or a notice saying why there is none.
  */
-export default function ConnectRepoView({ repo, runnerId, found, token, action, error, created }: ConnectRepoViewProps) {
+export default function ConnectRepoView({ repo, runnerId, found, token, action, error, created, trusted }: ConnectRepoViewProps) {
   const errorNotice = error ? <Notice tone="err" data-testid="connect-repo-error">{error}</Notice> : null;
   const hidden = (
     <>
@@ -81,14 +85,40 @@ export default function ConnectRepoView({ repo, runnerId, found, token, action, 
           </Notice>
         </Frame>
       );
-    case 'already':
+    case 'already': {
+      const blocked = found.workspace.isolationBlocked;
+      if (blocked) {
+        return (
+          <Frame title={`${found.runnerName} cannot run ${found.workspace.name}'s tasks yet`}>
+            <Notice tone="warn" title="This runner does not give the isolation the workspace asks for" data-testid="connect-repo-isolation">
+              {found.runnerName} works on {found.workspace.name} in {found.workspace.teamName}, but the workspace needs its tasks sandboxed and this runner has its sandbox off.
+            </Notice>
+            {errorNotice}
+            {blocked.canFix ? (
+              <form method="post" action={action} className="space-y-4">
+                {hidden}
+                <input type="hidden" name="trustLocal" value="1" />
+                <p className="text-sm text-text-secondary">{TRUST_SENTENCE}</p>
+                <PrimaryAction type="submit" fullWidthOnMobile data-testid="connect-repo-trust-local">
+                  Set {found.workspace.name} to trusted local
+                </PrimaryAction>
+              </form>
+            ) : (
+              <p className="text-sm text-text-secondary" data-testid="connect-repo-isolation-ask">
+                A team owner or admin of {found.workspace.teamName} can set {found.workspace.name} to trusted local. {TRUST_SENTENCE}
+              </p>
+            )}
+          </Frame>
+        );
+      }
       return (
         <Frame title={created ? `Connected ${repo}` : `${found.runnerName} can already work on ${repo}`}>
-          <Notice tone="ok" title={created ? `Created ${found.workspace.name}` : 'Nothing to change'} data-testid="connect-repo-done">
+          <Notice tone="ok" title={created ? `Created ${found.workspace.name}` : trusted ? `${found.workspace.name} is set to trusted local` : 'Nothing to change'} data-testid="connect-repo-done">
             {found.runnerName} works on {found.workspace.name} in {found.workspace.teamName}. {RESEND}
           </Notice>
         </Frame>
       );
+    }
     case 'pick': {
       const one = found.workspaces.length === 1 ? found.workspaces[0] : null;
       return (
@@ -102,6 +132,21 @@ export default function ConnectRepoView({ repo, runnerId, found, token, action, 
           <form method="post" action={action} className="space-y-4">
             {hidden}
             <Choice name="workspaceId" options={found.workspaces.map((w) => ({ value: w.id, label: w.name, detail: w.teamName }))} />
+            {found.workspaces.some((w) => w.isolationBlocked) && (
+              <div className="space-y-2" data-testid="connect-repo-isolation">
+                <p className="text-sm text-text-secondary">
+                  {found.workspaces.filter((w) => w.isolationBlocked).map((w) => w.name).join(', ')} needs its tasks sandboxed and {found.runnerName} has its sandbox off, so it could not run them. {TRUST_SENTENCE}
+                </p>
+                {found.workspaces.some((w) => w.isolationBlocked?.canFix) ? (
+                  <label className="flex items-start gap-3 min-h-11 cursor-pointer text-sm text-text-primary">
+                    <input type="checkbox" name="trustLocal" value="1" defaultChecked className="mt-1" />
+                    <span>Also set {one ? one.name : 'it'} to trusted local</span>
+                  </label>
+                ) : (
+                  <p className="text-sm text-text-secondary">A team owner or admin can set it to trusted local.</p>
+                )}
+              </div>
+            )}
             <PrimaryAction type="submit" fullWidthOnMobile data-testid="connect-repo-confirm">
               {one ? `Let ${found.runnerName} work on ${one.name}` : `Let ${found.runnerName} work on it`}
             </PrimaryAction>

@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
     repo,
     workspaceId: form.get('workspaceId'),
     teamId: form.get('teamId'),
+    trustLocal: form.get('trustLocal') === '1',
     origin: req.nextUrl.origin,
   });
 
@@ -53,6 +54,7 @@ export async function POST(req: NextRequest) {
   back.searchParams.set('runner', accountId);
   if (result.ok) {
     if (result.created) back.searchParams.set('created', '1');
+    if (result.isolationSet) back.searchParams.set('trusted', '1');
   } else {
     if (result.status === 404) return plain(result.message, 404);
     back.searchParams.set('error', result.message);

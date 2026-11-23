@@ -7,7 +7,7 @@
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
-import { accounts, githubInstallations, teamMembers } from '@buildd/core/db/schema';
+import { accounts, githubInstallations, teamMembers, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
 
 process.env.OAUTH_JWT_SECRET = 'connect-repo-test-secret-0123456789abcdef';
 delete process.env.OAUTH_ISSUER;
@@ -24,6 +24,9 @@ let personTeams: any[] = [];
 let memberships: any[] = [];
 let installs: any[] = [];
 let teamKeyRows: any[] = [];
+let heartbeatRows: any[] = [];
+let workspaceRows: any[] = [];
+let updatedWorkspaces: any[] = [];
 
 const mockAuth = mock(async () => ({ user: { id: 'user-1' } }) as any);
 const mockList = mock(async (_u: string) => [key()] as any[]);
@@ -51,10 +54,15 @@ mock.module('@buildd/core/db', () => ({
       const chain: any = {
         from(t: unknown) { table = t; return chain; },
         innerJoin() { return chain; },
-        where() { return Promise.resolve(table === teamMembers ? memberships : table === githubInstallations ? installs.map((i) => ({ id: i.id })) : table === accounts ? teamKeyRows : []); },
+        where() {
+          const rows = table === teamMembers ? memberships : table === githubInstallations ? installs.map((i) => ({ id: i.id })) : table === accounts ? teamKeyRows
+            : table === workerHeartbeats ? heartbeatRows : table === workspaces ? workspaceRows : [];
+          return Object.assign(Promise.resolve(rows), { orderBy: () => ({ limit: () => Promise.resolve(rows) }) });
+        },
       };
       return chain;
     },
+    update: (t: unknown) => ({ set: (v: any) => ({ where: () => { updatedWorkspaces.push({ table: t, set: v }); return Promise.resolve(); } }) }),
   },
 }));
 
@@ -74,6 +82,9 @@ beforeEach(() => {
   memberships = [{ id: 'team-a', name: 'Alpha' }];
   installs = [{ id: 'inst-1', installationId: 7, login: 'acme', owners: ['team-a'] }];
   teamKeyRows = [];
+  heartbeatRows = [];
+  workspaceRows = [];
+  updatedWorkspaces = [];
   mockAuth.mockReset();
   mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
   mockList.mockReset();
@@ -118,6 +129,58 @@ describe('connect-repo: the page cases', () => {
     mockList.mockResolvedValue([key([{ workspaceId: 'ws-app', reachable: true, removedByAdmin: false }])]);
     const found = await resolveConnectRepo({ userId: 'user-1', accountId: KEY, repo: REPO });
     expect(found.kind).toBe('already');
+  });
+
+  const containerRunner = {
+    platform: 'linux-container', evidence: [],
+    claude: { mechanism: 'none', scope: [], reason: 'opt_out' },
+    codex: { 'read-only': { mechanism: 'none', scope: [], reason: 'opt_out' }, 'workspace-write': { mechanism: 'none', scope: [], reason: 'opt_out' } },
+    probeAt: '2026-10-17T00:00:01.000Z', processStartedAt: '2026-10-17T00:00:00.000Z', runnerVersion: '1.0.0', reducedOptIn: true,
+  };
+  const cannotConfine = () => {
+    heartbeatRows = [{ isolation: containerRunner }];
+    workspaceRows = [{ gitConfig: { isolationPolicy: 'protected' }, accessMode: 'open' }];
+  };
+
+  it('the runner already reaches it but cannot confine what the workspace asks: shows it and offers the one fix', async () => {
+    mockList.mockResolvedValue([key([{ workspaceId: 'ws-app', reachable: true, removedByAdmin: false }])]);
+    cannotConfine();
+    const found: any = await resolveConnectRepo({ userId: 'user-1', accountId: KEY, repo: REPO });
+    expect(found.kind).toBe('already');
+    expect(found.workspace.isolationBlocked).toEqual({ canFix: true });
+  });
+
+  it('a person who may not change workspace settings sees it but is not offered the fix, and confirming changes nothing', async () => {
+    mockList.mockResolvedValue([key([{ workspaceId: 'ws-app', reachable: true, removedByAdmin: false }])]);
+    cannotConfine();
+    mockCan.mockImplementation(async (_a: any, perm: string) => perm !== 'manage_workspace_settings');
+    const found: any = await resolveConnectRepo({ userId: 'user-1', accountId: KEY, repo: REPO });
+    expect(found.workspace.isolationBlocked).toEqual({ canFix: false });
+    const res = await POST(post({ trustLocal: '1' }));
+    expect(res.status).toBe(303);
+    expect(updatedWorkspaces).toHaveLength(0);
+  });
+
+  it('confirming sets the workspace to trusted local', async () => {
+    mockList.mockResolvedValue([key([{ workspaceId: 'ws-app', reachable: true, removedByAdmin: false }])]);
+    cannotConfine();
+    const res = await POST(post({ trustLocal: '1' }));
+    expect(res.status).toBe(303);
+    expect(updatedWorkspaces).toHaveLength(1);
+    expect(res.headers.get('location')).toContain('trusted=1');
+  });
+
+  it('a runner that can serve the workspace is left alone even if trustLocal is posted', async () => {
+    mockList.mockResolvedValue([key([{ workspaceId: 'ws-app', reachable: true, removedByAdmin: false }])]);
+    await POST(post({ trustLocal: '1' }));
+    expect(updatedWorkspaces).toHaveLength(0);
+  });
+
+  it('a workspace to pick that the runner cannot confine carries the same flag', async () => {
+    cannotConfine();
+    const found: any = await resolveConnectRepo({ userId: 'user-1', accountId: KEY, repo: REPO });
+    expect(found.kind).toBe('pick');
+    expect(found.workspaces[0].isolationBlocked).toEqual({ canFix: true });
   });
 
   it('a workspace a team admin removed this runner from is not offered again', async () => {

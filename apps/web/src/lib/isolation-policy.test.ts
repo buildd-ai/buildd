@@ -41,9 +41,13 @@ describe('resolveIsolationRequirement (R-4)', () => {
       .toEqual({ requirement: 'trusted_local', source: 'single_owner_team' });
   });
 
-  it('is protected for a shared team, an open workspace, an unreadable team or a bad value', () => {
+  it('defaults a single-owner team to trusted_local in an open workspace too', () => {
+    expect(resolveIsolationRequirement({ teamMemberCount: 1, workspaceAccessMode: 'open' }))
+      .toEqual({ requirement: 'trusted_local', source: 'single_owner_team' });
+  });
+
+  it('is protected for a shared team, an unreadable team or a bad value', () => {
     expect(resolveIsolationRequirement({ teamMemberCount: 2 }).requirement).toBe('protected');
-    expect(resolveIsolationRequirement({ teamMemberCount: 1, workspaceAccessMode: 'open' }).requirement).toBe('protected');
     expect(resolveIsolationRequirement({ teamMemberCount: null }).requirement).toBe('protected');
     expect(resolveIsolationRequirement({ workspacePolicy: 'yolo', teamMemberCount: 3 }).requirement).toBe('protected');
   });

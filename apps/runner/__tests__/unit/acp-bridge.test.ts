@@ -604,6 +604,34 @@ Only targeting dev.`;
     expect(texts(updates)).toMatch(/held for this runner for 20 minutes.*at max concurrent/s);
   });
 
+  async function refusedWith(body: unknown, repo: string | null = 'acme/app') {
+    const runner = new FakeRunner();
+    runner.workspaces = [{ id: 'ws1', name: 'app', repo }] as any;
+    runner.claimResult = { status: 400, body };
+    const { bridge, updates } = setup([], { runner });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    await bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    return texts(updates);
+  }
+
+  test('an isolation deferral says the workspace needs isolation this runner lacks, and links the fix', async () => {
+    const t = await refusedWith({ error: 'x', claimReason: 'all_candidates_deferred', exclusion: 'isolation_unenforced' });
+    expect(t).toMatch(/needs isolation this runner does not give/);
+    expect(t).toContain('https://buildd.example/app/connect-repo?repo=acme%2Fapp&runner=acct-1');
+    expect(t).not.toMatch(/400|all_candidates_deferred/);
+  });
+
+  test('another deferral is named in words, not as the raw 400', async () => {
+    const t = await refusedWith({ error: 'x', claimReason: 'all_candidates_deferred', exclusion: 'mission_concurrent' });
+    expect(t).toMatch(/The server deferred it: mission is at its task limit\./);
+    expect(t).not.toMatch(/400/);
+  });
+
+  test('a deferral with no gate named keeps the raw refusal', async () => {
+    const t = await refusedWith({ error: 'plain', claimReason: 'all_candidates_deferred' });
+    expect(t).toMatch(/refused that \(400\): plain/);
+  });
+
   // The runner's own dispatch can claim the reserved task before the bridge's
   // explicit claim lands: that refusal is a race this runner won, not a refusal.
   test('a task this runner already took on its own is followed, not reported refused', async () => {
