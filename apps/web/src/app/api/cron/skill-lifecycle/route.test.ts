@@ -5,7 +5,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const DAY = 86_400_000;
 const ago = (d: number) => new Date(Date.now() - d * DAY).toISOString();
 
-let tables: { links?: any[]; skills: any[]; started: string | null; schedules: any[]; active: string[] };
+let tables: { teamStarted?: Record<string, string>; links?: any[]; skills: any[]; started: string | null; schedules: any[]; active: string[] };
 const executed: string[] = [];
 const dialect = new PgDialect();
 
@@ -15,7 +15,10 @@ const mockExecute = mock(async (q: any) => {
   if (text.includes('FROM skill_spec_links')) return { rows: tables.links ?? [] };
   if (text.includes('FROM workspace_skills WHERE enabled')) return { rows: tables.skills };
   if (text.includes('FROM workspace_skills s')) return { rows: tables.skills };
-  if (text.includes('min(first_claimed_at)')) return { rows: [{ started: tables.started }] };
+  if (text.includes('min(telemetry_started_at)')) {
+    const byTeam = tables.teamStarted ?? (tables.started ? { '00000000-0000-0000-0000-0000000000aa': tables.started } : {});
+    return { rows: Object.entries(byTeam).map(([team_id, started]) => ({ team_id, started })) };
+  }
   if (text.includes('FROM task_schedules')) return { rows: tables.schedules };
   if (text.includes('jsonb_array_elements_text')) return { rows: tables.active.map(slug => ({ slug })) };
   if (text.includes('UPDATE workspace_skills')) return { rows: [{ id: 'x' }] };
@@ -125,6 +128,18 @@ describe('GET /api/cron/skill-lifecycle', () => {
     const body = await (await GET(req())).json();
     expect(body.archivable).toBe(0);
     expect(updates()).toHaveLength(0);
+  });
+
+  it('per-team clock: a team 10d into telemetry is not archivable though another is 90d in', async () => {
+    process.env.SKILL_RETIREMENT_ACTING_WORKSPACES = WS;
+    const A = '00000000-0000-0000-0000-0000000000aa', B = '00000000-0000-0000-0000-0000000000cc';
+    tables.teamStarted = { [A]: ago(90), [B]: ago(10) };
+    tables.skills = [skill({ n: 1, team_id: A }), skill({ n: 2, team_id: B, slug: 'other', created_at: ago(300) })];
+    const body = await (await GET(req())).json();
+    expect(body.archived).toBe(1);
+    expect(updates()).toHaveLength(1);
+    expect(inserts().length).toBe(1);
+    expect(body.refusals.some((r: any) => r.refusal === 'archive_window_not_elapsed' && r.telemetryDays === 10)).toBe(true);
   });
 
   describe('confirmed spec links', () => {

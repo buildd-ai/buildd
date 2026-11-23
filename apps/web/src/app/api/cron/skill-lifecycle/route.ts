@@ -60,7 +60,7 @@ async function run(report: CronReport): Promise<NextResponse> {
       LEFT JOIN skill_usage u ON u.skill_id = s.id
       LEFT JOIN workspaces w ON w.id = s.workspace_id
       WHERE s.enabled = true`),
-    db.execute(sql`SELECT min(first_claimed_at) AS started FROM skill_usage`),
+    db.execute(sql`SELECT team_id, min(telemetry_started_at) AS started FROM skill_usage GROUP BY team_id`),
     // Every schedule template counts, enabled or not: a paused schedule resumes.
     db.execute(sql`SELECT task_template FROM task_schedules`),
     db.execute(sql`
@@ -70,18 +70,20 @@ async function run(report: CronReport): Promise<NextResponse> {
         AND jsonb_typeof(context->'skillSlugs') = 'array'`),
   ]);
 
-  // No claim has ever been counted: telemetry has not started, so it starts now.
-  const started = rowsOf(telemetryRes)[0]?.started;
-  const telemetryStartedAt = started ? new Date(started) : now;
+  // Telemetry start is per team: a team with no counted claim has not started, so it starts now.
+  const startedByTeam = new Map<string, Date>();
+  for (const r of rowsOf(telemetryRes)) if (r.started) startedByTeam.set(String(r.team_id), new Date(r.started));
+  const startOf = (teamId: string) => startedByTeam.get(teamId) ?? now;
 
   const byId = new Map<string, Row>();
   const modeOf = new Map<string, 'recording' | 'acting'>();
   const refusals: Array<{ workspaceId: string | null; refusal: string; telemetryDays: number; archiveDays: number }> = [];
   const refused = new Set<string>();
-  const telemetryDays = Math.floor((now.getTime() - telemetryStartedAt.getTime()) / 86_400_000);
-  const skills: RetirementSkill[] = rowsOf(skillRes).flatMap(r => {
+  const skills: Array<RetirementSkill & { teamId: string }> = rowsOf(skillRes).flatMap(r => {
     const requested = resolveRetirementMode(r.git_config);
     if (requested === 'off') return [];
+    const telemetryStartedAt = startOf(String(r.team_id));
+    const telemetryDays = Math.floor((now.getTime() - telemetryStartedAt.getTime()) / 86_400_000);
     const d = gateActingMode(requested, { workspaceId: r.workspace_id ?? null, allowlist, now, telemetryStartedAt });
     modeOf.set(r.id, d.mode as 'recording' | 'acting');
     if (d.refusal) {
@@ -95,19 +97,26 @@ async function run(report: CronReport): Promise<NextResponse> {
   }).map(r => {
     byId.set(r.id, r);
     return {
-      id: r.id, slug: r.slug, enabled: r.enabled, isRole: !!r.is_role, pinned: !!r.pinned,
+      id: r.id, teamId: String(r.team_id), slug: r.slug, enabled: r.enabled, isRole: !!r.is_role, pinned: !!r.pinned,
       createdAt: new Date(r.created_at),
       lastClaimedAt: r.last_claimed_at ? new Date(r.last_claimed_at) : null,
       lastRestoredAt: r.last_restored_at ? new Date(r.last_restored_at) : null,
     };
   });
 
-  const verdict = evaluateRetirement({
-    skills, now, telemetryStartedAt,
-    defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug),
-    scheduleSkillSlugs: rowsOf(scheduleRes).flatMap(r => templateSlugs(r.task_template)),
-    activeTaskSkillSlugs: rowsOf(activeRes).map(r => String(r.slug)),
-  });
+  // The rule takes one telemetry start, so evaluate each team on its own clock.
+  const scheduleSkillSlugs = rowsOf(scheduleRes).flatMap(r => templateSlugs(r.task_template));
+  const activeTaskSkillSlugs = rowsOf(activeRes).map(r => String(r.slug));
+  const teamIds = [...new Set(skills.map(s => s.teamId))];
+  const verdicts = teamIds.map(teamId => evaluateRetirement({
+    skills: skills.filter(s => s.teamId === teamId), now, telemetryStartedAt: startOf(teamId),
+    defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug), scheduleSkillSlugs, activeTaskSkillSlugs,
+  }));
+  const verdict = {
+    stale: verdicts.flatMap(v => v.stale),
+    archivable: verdicts.flatMap(v => v.archivable),
+    report: verdicts.map(v => v.report).join('; '),
+  };
 
   const archivableIds = new Set(verdict.archivable.map(s => s.id));
   const events: LifecycleEvent[] = [];
