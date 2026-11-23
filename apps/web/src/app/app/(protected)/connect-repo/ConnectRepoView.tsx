@@ -34,9 +34,9 @@ function Frame({ title, children }: { title: string; children: ReactNode }) {
 function Choice({ name, options }: { name: string; options: Array<{ value: string; label: string; detail?: string }> }) {
   if (options.length === 1) return <input type="hidden" name={name} value={options[0].value} />;
   return (
-    <fieldset className="space-y-2">
+    <fieldset className="divide-y divide-border-default border-y border-border-default">
       {options.map((o, i) => (
-        <label key={o.value} className="flex items-start gap-3 rounded-md border border-border-default px-3 py-3 min-h-11 cursor-pointer">
+        <label key={o.value} className="flex items-start gap-3 py-3 min-h-11 cursor-pointer">
           <input type="radio" name={name} value={o.value} defaultChecked={i === 0} className="mt-1" />
           <span className="min-w-0">
             <span className="block text-sm text-text-primary break-words">{o.label}</span>

@@ -10,7 +10,6 @@ import { db } from '@buildd/core/db';
 import { githubRepos, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
-import { enqueueFullIngestJob, logIngestSkip } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { invalidateAppChrome } from '@/lib/app-chrome';
@@ -125,21 +124,16 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Crea
   // an MCP connection covering the team as a whole.
   await clearCallerCache(callerDep.teamOpenWorkspaces(teamId), callerDep.teamWorkspaces(teamId));
 
-  // Modules react (e.g. connectors preinstalled from the team's catalog).
-  await emit({ type: 'workspace.created', workspaceId: workspace.id, teamId, origin: input.origin });
-
-  // Auto-ingest on repo link: enqueue a full ingest job when a repo URL was
-  // provided, unless the workspace was created with knowledge ingest off.
-  if (repoUrl && !input.knowledgeIngest) {
-    logIngestSkip('workspace_create', { workspaceId: workspace.id });
-  } else if (repoUrl) {
-    const fullName = normalizeRepoFullName(repoUrl);
-    if (fullName) {
-      enqueueFullIngestJob({ workspaceId: workspace.id, repo: fullName, trigger: 'repo_link' }).catch(err =>
-        console.error(`[knowledge-ingest] repo-link enqueue failed for new workspace ${workspace.id}:`, err)
-      );
-    }
-  }
+  // Modules react: connectors preinstalled from the team's catalog, and the
+  // knowledge module's repo-link ingest (lib/knowledge-subscribers.ts).
+  await emit({
+    type: 'workspace.created',
+    workspaceId: workspace.id,
+    teamId,
+    origin: input.origin,
+    repoUrl: repoUrl || null,
+    knowledgeIngest: input.knowledgeIngest,
+  });
 
   // The acting user's shell shows this at once (lib/app-chrome.ts).
   if (input.userId) invalidateAppChrome(input.userId);
