@@ -178,6 +178,19 @@ mock.module('@/lib/worker-pause', () => ({
   requestWorkerPause: mockRequestWorkerPause,
 }));
 
+// Resume in place: the rules are real, the writes are stubs. The live worker
+// comes from the same findFirst stub the other tests already set.
+const mockResolveChangeTarget = mock(async (_t: any, _r: any): Promise<any> => null);
+const mockStartInPlaceResume = mock(async (_a: any) => true);
+const mockPostResumeNote = mock(async (..._a: any[]) => {});
+mock.module('@/lib/in-place-resume', () => ({
+  ...require('@/lib/in-place-resume-policy'),
+  loadLiveWorkerForResume: () => mockWorkersFindFirst(),
+  resolveChangeTarget: mockResolveChangeTarget,
+  startInPlaceResume: mockStartInPlaceResume,
+  postResumeNote: mockPostResumeNote,
+}));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: {
@@ -1695,9 +1708,106 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(body.modelChange).toMatchObject({
         appliesTo: 'next_attempt', workerId: 'w-live', runningTier: 'standard', runningModel: 'claude-sonnet-5-5',
       });
-      expect(body.modelChange.message).toMatch(/still running at standard.*next attempt/);
+      expect(body.modelChange.message).toMatch(/keeps running at standard.*next attempt/);
+      expect(body.modelChange.reasonCode).toBe('runner_not_reporting');
+      expect(sets[0].context.inPlaceResume).toBeUndefined();
+      expect(sets[0].context.resumeHistory.at(-1)).toMatchObject({ kind: 'new_attempt', cause: 'model_change', reasonCode: 'runner_not_reporting' });
+      expect(mockRequestWorkerPause).not.toHaveBeenCalled();
       expect(sets[0].context.pendingModelChange).toMatchObject({ tier: 'premium', runningTier: 'standard', workerId: 'w-live' });
       expect(sets[0].context.resolvedTier).toEqual({ tier: 'standard', provider: 'anthropic' });
+    });
+
+    const resumable = (over: Record<string, unknown> = {}) => ({
+      id: 'w-live', status: 'running', runner: 'runner-a', waitingFor: null, updatedAt: new Date(),
+      parkedUntil: null, supportsInstructionAck: true, pendingInstructions: null, instructionHistory: [], workspaceId: 'ws-1', taskId: TASK_ID, ...over,
+    });
+    const running = () => ({
+      ...baseTask({ model: 'claude-sonnet-5-5', resolvedTier: { tier: 'standard', provider: 'anthropic' } }),
+      status: 'in_progress', claimedBy: 'account-1', predictedModel: 'claude-sonnet-5-5',
+    });
+
+    it('re-tiering a running task pauses the agent and resumes the same session on the new model', async () => {
+      mockWorkersFindFirst.mockResolvedValue(resumable());
+      mockResolveChangeTarget.mockResolvedValueOnce({ tier: 'premium', model: 'claude-opus-5-5' });
+      mockStartInPlaceResume.mockClear();
+      const { res, sets } = await patch(running(), { tier: 'premium' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.modelChange).toMatchObject({ appliesTo: 'resume_in_place', workerId: 'w-live', targetModel: 'claude-opus-5-5', runningModel: 'claude-sonnet-5-5' });
+      expect(body.modelChange.message).toMatch(/^Resuming in place/);
+      expect(sets[0].context.inPlaceResume).toMatchObject({
+        workerId: 'w-live', cause: 'model_change', phase: 'pausing', fromModel: 'claude-sonnet-5-5', toModel: 'claude-opus-5-5', toTier: 'premium',
+      });
+      expect(sets[0].context.pendingModelChange).toMatchObject({ resolvedModel: 'claude-opus-5-5' });
+      expect(mockStartInPlaceResume).toHaveBeenCalledTimes(1);
+      expect(mockStartInPlaceResume.mock.calls[0][0].intent.phase).toBe('pausing');
+    });
+
+    it('a paused agent whose tier changes resumes at once', async () => {
+      mockWorkersFindFirst.mockResolvedValue(resumable({ status: 'waiting_input', waitingFor: { type: 'pause' } }));
+      mockResolveChangeTarget.mockResolvedValueOnce({ tier: 'premium', model: 'claude-opus-5-5' });
+      mockStartInPlaceResume.mockClear();
+      const { res, sets } = await patch(running(), { tier: 'premium' });
+      expect((await res.json()).modelChange.appliesTo).toBe('resume_in_place');
+      expect(sets[0].context.inPlaceResume.phase).toBe('resuming');
+      expect(mockStartInPlaceResume).toHaveBeenCalledTimes(1);
+    });
+
+    it('a change to the model the run is already on pauses nothing', async () => {
+      mockWorkersFindFirst.mockResolvedValue(resumable());
+      mockResolveChangeTarget.mockResolvedValueOnce({ tier: 'standard', model: 'claude-sonnet-5-5' });
+      mockStartInPlaceResume.mockClear();
+      const { res, sets } = await patch(running(), { tier: 'standard' });
+      expect((await res.json()).modelChange).toBeUndefined();
+      expect(sets[0].context?.inPlaceResume).toBeUndefined();
+      expect(mockStartInPlaceResume).not.toHaveBeenCalled();
+    });
+
+    // Regression: a requeue used to end the live worker ("Runner offline,
+    // requeued by owner"), so the next attempt started with no transcript.
+    it('requeueing a task whose agent can be resumed keeps the worker and its session', async () => {
+      mockWorkersFindFirst.mockResolvedValue(resumable());
+      mockStartInPlaceResume.mockClear();
+      mockWakeTask.mockClear();
+      const { res, sets } = await patch(running(), { status: 'pending' });
+      expect(res.status).toBe(200);
+      // No worker was ended: the only write is the task's own.
+      expect(sets).toHaveLength(1);
+      expect(sets[0].status).toBeUndefined();
+      expect('claimedBy' in sets[0]).toBe(false);
+      expect(sets[0].context.inPlaceResume).toMatchObject({ workerId: 'w-live', cause: 'requeue', phase: 'pausing' });
+      expect(mockStartInPlaceResume).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.requeue).toMatchObject({ outcome: 'resumed_in_place', workerId: 'w-live' });
+      expect(body.requeue.message).toMatch(/same session/);
+    });
+
+    it('requeueing with a new tier resumes the same session on the new model', async () => {
+      mockWorkersFindFirst.mockResolvedValue(resumable());
+      mockResolveChangeTarget.mockResolvedValueOnce({ tier: 'premium', model: 'claude-opus-5-5' });
+      const { res, sets } = await patch(running(), { status: 'pending', tier: 'premium' });
+      expect(sets[0].context.inPlaceResume).toMatchObject({ cause: 'requeue', toModel: 'claude-opus-5-5' });
+      const body = await res.json();
+      expect(body.requeue.outcome).toBe('resumed_in_place');
+      expect(body.modelChange.appliesTo).toBe('resume_in_place');
+    });
+
+    it('requeueing a task whose runner stopped reporting takes a new attempt and says why', async () => {
+      mockWorkersFindFirst.mockResolvedValue(resumable({ updatedAt: new Date(Date.now() - 30 * 60_000) }));
+      mockStartInPlaceResume.mockClear();
+      const { res, sets } = await patch(running(), { status: 'pending' });
+      expect(res.status).toBe(200);
+      const task = sets.find(v => v.status === 'pending');
+      expect(task).toBeDefined();
+      expect(task.claimedBy).toBeNull();
+      expect(task.context.resumeHistory.at(-1)).toMatchObject({ kind: 'new_attempt', cause: 'requeue', workerId: 'w-live', reasonCode: 'runner_not_reporting' });
+      // The live worker was ended, as before.
+      expect(sets.some(v => v.status === 'failed' && v.error === 'Runner offline, requeued by owner')).toBe(true);
+      expect(mockStartInPlaceResume).not.toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.requeue).toMatchObject({ outcome: 'new_attempt', reasonCode: 'runner_not_reporting' });
+      expect(body.requeue.message).toMatch(/^New attempt/);
     });
 
     it('re-tiering a task with no live worker carries no modelChange', async () => {
