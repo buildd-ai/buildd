@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { AcpBridge, type RunnerPort, type WorkerActionName } from '../../src/acp/bridge';
+import { AcpBridge, userTextFrom, type RunnerPort, type WorkerActionName } from '../../src/acp/bridge';
 import { MessageCursor, toolKind, toolTitle, replyRoute, settledText, waitingText } from '../../src/acp/translate';
 import type { PublicWorker } from '../../src/public-worker';
 
@@ -772,5 +772,51 @@ describe('_meta.buildd on a new thread', () => {
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     await finish(runner, send(bridge, sessionId));
     expect(Object.keys(runner.created[0]).sort()).toEqual(['context', 'description', 'reserve', 'title', 'workspaceId']);
+  });
+});
+
+describe('T3 delegation: role line and directive line', () => {
+  const ROLE = 'Act as the implementation sub-agent for this task.';
+  const run = async (text: string, meta?: unknown, createResult?: { status: number; body: unknown }) => {
+    const { runner, bridge, updates } = setup([]);
+    if (createResult) runner.createResult = createResult;
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [], ...(meta ? { _meta: meta } : {}) });
+    const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+    await tick(); await tick();
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await turn;
+    return { runner, updates };
+  };
+
+  test('the role line is not the title or in the description', async () => {
+    const { runner } = await run(`${ROLE}\n\nAdd a retry to the sync job\nwith backoff`);
+    expect(runner.created[0].title).toBe('Add a retry to the sync job');
+    expect(runner.created[0].description).not.toContain(ROLE);
+    expect(runner.created[0].description).toBe('Add a retry to the sync job\nwith backoff');
+  });
+
+  test('other first lines are kept', () => {
+    expect(userTextFrom('Act as the reviewer for this task.\nGo')).toContain('Act as the reviewer');
+  });
+
+  test('a directive line files the task in that mission and is removed', async () => {
+    const { runner } = await run(`${ROLE}\n\nbuildd: mission=ab12cd34 role=builder priority=3 kind=feature\nAdd a retry`);
+    expect(runner.created[0]).toMatchObject({ missionId: 'ab12cd34', roleSlug: 'builder', priority: 3, kind: 'feature', title: 'Add a retry', description: 'Add a retry' });
+  });
+
+  test('_meta.buildd wins over the directive', async () => {
+    const { runner } = await run('buildd: mission=from-text role=builder\nDo it', { buildd: { missionId: 'from-meta' } });
+    expect(runner.created[0]).toMatchObject({ missionId: 'from-meta', roleSlug: 'builder' });
+  });
+
+  test('a mission from another team is refused', async () => {
+    const { runner, updates } = await run('buildd: mission=m-other\nDo it', undefined, { status: 403, body: { error: 'Mission is outside your team' } });
+    expect(runner.created).toHaveLength(0);
+    expect(texts(updates)).toContain('Mission is outside your team');
+  });
+
+  test('an unrecognised buildd: line stays as text', async () => {
+    const { runner } = await run('buildd: is great\nDo it');
+    expect(runner.created[0].title).toBe('buildd: is great');
   });
 });

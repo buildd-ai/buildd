@@ -59,7 +59,10 @@ export interface BuilddTaskMeta {
 }
 
 function taskMetaFrom(params: unknown): BuilddTaskMeta {
-  const raw = (params as { _meta?: { buildd?: Record<string, unknown> } } | null)?._meta?.buildd;
+  return taskMetaFromRaw((params as { _meta?: { buildd?: Record<string, unknown> } } | null)?._meta?.buildd);
+}
+
+function taskMetaFromRaw(raw: Record<string, unknown> | undefined): BuilddTaskMeta {
   if (!raw || typeof raw !== 'object') return {};
   const out: BuilddTaskMeta = {};
   if (typeof raw.missionId === 'string' && raw.missionId) out.missionId = raw.missionId;
@@ -153,8 +156,44 @@ const CLIENT_ENVELOPE_BLOCKS = /<(t3_code_instructions|runtime_info|pull_request
  */
 export function userTextFrom(text: string): string {
   const request = /<user_request>([\s\S]*?)<\/user_request>/.exec(text);
-  if (request) return request[1].trim();
-  return text.replace(CLIENT_ENVELOPE_BLOCKS, '').trim();
+  const body = request ? request[1].trim() : text.replace(CLIENT_ENVELOPE_BLOCKS, '').trim();
+  return dropDelegationRoleLine(body);
+}
+
+/** T3's delegation prefix: `Act as the <role> sub-agent for this task.` as the whole first line. */
+const DELEGATION_ROLE_LINE = /^Act as the \S+ sub-agent for this task\.[ \t]*$/;
+
+function dropDelegationRoleLine(text: string): string {
+  const lines = text.split('\n');
+  if (!DELEGATION_ROLE_LINE.test(lines[0].trim())) return text;
+  return lines.slice(1).join('\n').trim();
+}
+
+const DIRECTIVE_LINE = /^buildd:[ \t]+(\S.*)$/;
+
+/**
+ * An optional leading `buildd: mission=<id> role=<slug> priority=<n> kind=<kind>`
+ * line, for clients (T3's delegation) that cannot send `_meta.buildd`. Parsed
+ * with the same validation as `_meta.buildd`; the line is removed from the text.
+ * A first line that is not this exact shape leaves the text untouched.
+ */
+export function directiveFrom(text: string): { text: string; meta: BuilddTaskMeta } {
+  const lines = text.split('\n');
+  const first = DIRECTIVE_LINE.exec(lines[0].trim());
+  if (!first) return { text, meta: {} };
+  const raw: Record<string, unknown> = {};
+  for (const pair of first[1].split(/\s+/)) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) return { text, meta: {} };
+    const key = pair.slice(0, eq).toLowerCase();
+    const value = pair.slice(eq + 1);
+    if (key === 'mission' || key === 'missionid') raw.missionId = value;
+    else if (key === 'role' || key === 'roleslug') raw.roleSlug = value;
+    else if (key === 'priority') raw.priority = value === '' ? NaN : Number(value);
+    else if (key === 'kind') raw.kind = value;
+    else return { text, meta: {} };
+  }
+  return { text: lines.slice(1).join('\n').trim(), meta: taskMetaFromRaw(raw) };
 }
 
 /** First non-empty line, clipped: what the dashboard and queue show for the task. */
@@ -298,10 +337,13 @@ export class AcpBridge {
     const sessionId = params.sessionId;
     if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
     const session = this.sessions.get(sessionId) ?? this.adopt(sessionId);
-    const text = userTextFrom((params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'));
+    let text = userTextFrom((params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'));
 
     if (!session.workerId) {
-      session.taskMeta = { ...session.taskMeta, ...taskMetaFrom(params) };
+      const directive = directiveFrom(text);
+      text = directive.text;
+      // `_meta.buildd` wins over the in-text directive.
+      session.taskMeta = { ...directive.meta, ...session.taskMeta, ...taskMetaFrom(params) };
       if (!text || parseCommand(text)) {
         this.emit(sessionId, textUpdate(NEW_THREAD_TEXT));
         return { stopReason: 'end_turn' };
