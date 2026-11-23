@@ -243,12 +243,6 @@ export function synthesizeLegacyTree(label = 'legacy'): string {
   return dir;
 }
 
-/** The newest folder's v8 snapshot `ddl[]`: the real tree's own, for fixtures that need one. */
-export function realTipSnapshotDdl(): unknown[] {
-  const tip = readMigrationTree(DRIZZLE_DIR).at(-1)!.name;
-  return (JSON.parse(readFileSync(join(DRIZZLE_DIR, tip, 'snapshot.json'), 'utf8')) as { ddl: unknown[] }).ddl;
-}
-
 /**
  * The previous release's migrator, out of git, with the drizzle it was written
  * against. It reads a legacy journal tree through drizzle-orm 0.45's

@@ -61,6 +61,7 @@ import {
 import { detectLayout, readMigrationTree, type MigrationLayout } from '../packages/core/db/migrate-tree';
 import { LEGACY_MIGRATIONS_ENV, LEGACY_MIGRATIONS_PATH, loadLegacyMap } from '../packages/core/db/legacy-migrations';
 import { assertLoopbackUrl } from '../packages/core/db/neon-local';
+import { reconstructSchemaDdl } from '../packages/core/db/snapshot-reconstruct';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -166,7 +167,7 @@ function droppedByMigration(): { columns: Set<string>; tables: Set<string> } {
 
 // ─── Load latest snapshot ────────────────────────────────────────────────────
 
-function latestSnapshot(): unknown {
+async function latestSnapshot(): Promise<unknown> {
   const metas = loadSnapshotMetasV1(MIGRATIONS_DIR);
   const selection = resolveSnapshotSelectionV1(metas);
 
@@ -180,7 +181,21 @@ function latestSnapshot(): unknown {
   const gaps = snapshotChainGaps(metas);
   if (gaps.length > 0) console.log(`  [note] snapshot chain gaps: ${gaps.join('; ')} — not release-blocking`);
 
-  const read = (file: string) => JSON.parse(readFileSync(join(MIGRATIONS_DIR, file), 'utf8')) as { ddl?: unknown[] };
+  const read = (file: string) =>
+    JSON.parse(readFileSync(join(MIGRATIONS_DIR, file), 'utf8')) as { ddl?: unknown[]; type?: string };
+
+  // Format 10 (drizzle-kit rc.6+): only the base snapshot holds the schema, every
+  // later one holds deltas. drizzle-kit replays them; a forked tree is reconstructed
+  // per leaf and unioned, the same rule as the format-8 branch below.
+  if (read(selection.file).type !== undefined) {
+    const { snapshot, leaves } = await reconstructSchemaDdl(MIGRATIONS_DIR);
+    if (leaves.length > 1) {
+      console.log(`  [note] ${leaves.length} parallel leaf snapshots (${leaves.map((l) => l.split('/')[0]).join(', ')}): expecting their union`);
+    }
+    return snapshot;
+  }
+
+  // Format 8 (drizzle-kit rc.4): every snapshot holds the full schema.
   if (selection.kind === 'forked') {
     // Parallel migrations, each generated from the same base. `drizzle-kit check`
     // (CI, every PR) fails a pair that does not commute, so the schema is the union
@@ -257,7 +272,7 @@ async function appliedRows(sql: NeonClient): Promise<AppliedSet | null> {
 }
 
 async function main() {
-  const snapshot = latestSnapshot();
+  const snapshot = await latestSnapshot();
   const expected = expectedColumnsFromSnapshot(snapshot);
   const sources = loadSources();
   console.log(

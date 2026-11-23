@@ -34,7 +34,8 @@ mock.module('@buildd/core/db', () => ({
       const chunks = (q?.queryChunks ?? []) as any[];
       executeSql.push(
         chunks
-          .map(c => (Array.isArray(c?.value) ? c.value.join('') : typeof c === 'string' ? c : ''))
+          // A StringChunk's value is a string on drizzle rc.6, a string[] before it.
+          .map(c => (c?.constructor?.name === 'StringChunk' ? [c.value].flat().join('') : typeof c === 'string' ? c : ''))
           .join(''),
       );
       return { rows: executeRows };
