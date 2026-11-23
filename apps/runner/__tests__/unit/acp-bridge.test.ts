@@ -515,6 +515,28 @@ Only targeting dev.`;
     expect(texts(told.updates)).toMatch(/more than one buildd workspace/);
   });
 
+  test('the first message names the role and the model the claimed worker will use', async () => {
+    const runner = new FakeRunner();
+    runner.claim = async (taskId: string) => ({ status: 200, body: { worker: worker({ id: `w-${taskId}`, taskId, messages: [], roleName: 'Builder', claimedModel: 'claude-opus-5-5' } as any) } });
+    const { bridge, updates } = setup([], { runner });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await tick(); await tick();
+    expect(texts(updates)).toContain('Started a buildd task in app: “Do it” · Builder on claude-opus-5-5.');
+  });
+
+  test('a claimed worker with a role but no known model names the role only', async () => {
+    const runner = new FakeRunner();
+    runner.claim = async (taskId: string) => ({ status: 200, body: { worker: worker({ id: `w-${taskId}`, taskId, messages: [], roleName: 'Builder' } as any) } });
+    const { bridge, updates } = setup([], { runner });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await tick(); await tick();
+    const t = texts(updates);
+    expect(t).toContain('Started a buildd task in app: “Do it” · Builder.');
+    expect(t).not.toMatch(/ on /);
+  });
+
   test('a task this runner cannot take is held for it, then freed, and the thread says why', async () => {
     const runner = new FakeRunner();
     runner.claimResult = { status: 400, body: { error: 'at max concurrent' } };
