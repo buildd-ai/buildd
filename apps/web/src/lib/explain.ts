@@ -39,6 +39,7 @@ import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmet
 import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
 import { loadDependencyRows } from '@/lib/dependency-rows';
 import { resolveDependencyHolders, type DependencyHolder, type DependencyViewer } from '@/lib/task-dependency-reach';
+import { withDependencyNeedsYou } from '@/lib/needs-you-dependency';
 import { resolvePrDisplayState } from '@/lib/pr-presentation';
 import { deliverySettled } from '@/lib/workflow/delivery-display';
 import type { DeliveryView } from '@/lib/workflow/projections';
@@ -1510,7 +1511,10 @@ export async function explainTask(taskId: string, actor: EvidenceActor, viewer: 
   // long-running task's renewals do not crowd out the answer.
   const access = (await loadTaskAccess(taskId).catch(() => [])).slice(-40);
   const routed = withBackendRouting(answerFrom(view, subject, buildHistory(lineage, deliveries), because, gateHistory, evidenceObjects), task);
-  const answer = withOfflineRunnerWait(withDelivery(routed, dv), runnerWait);
+  // A dependency whose PR only a person can move makes this wait the person's too.
+  const depIds = (answerExtras.openTasks?.find(t => t.id === taskId)?.waitingOn ?? []).map(w => w.id);
+  const depViews = depIds.length > 0 ? await getDeliveryViewsForTasks(depIds).catch(() => new Map<string, DeliveryView>()) : new Map<string, DeliveryView>();
+  const answer = withOfflineRunnerWait(withDependencyNeedsYou(withDelivery(routed, dv), depIds.map(id => depViews.get(id))), runnerWait);
   // The verdict the task page leads with, from the same loader the
   // state-change recompute uses. Read-only: no model call. A failure omits it.
   const verdict = await loadTaskVerdictForExplain(taskId).catch(() => null);

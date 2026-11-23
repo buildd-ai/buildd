@@ -16,6 +16,8 @@ mock.module('@/lib/task-token-auth', () => ({
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockUser }));
 mock.module('@/lib/workspace-access', () => ({ listReachableWorkspaceIds: mockReach }));
+let deliveryViews = new Map<string, any>();
+mock.module('@/lib/workflow/delivery-view', () => ({ getDeliveryViewsForTasks: async () => deliveryViews }));
 mock.module('@/lib/workflow/task-pr', () => ({ taskPrsFor: mockPrs }));
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -35,7 +37,7 @@ const { GET } = await import('./route');
 const req = (q: string) => new NextRequest(`http://localhost/api/tasks/thread-events${q}`, { headers: { authorization: 'Bearer bld_x' } });
 
 beforeEach(() => {
-  call = 0; taskRows = []; workerRows = []; taskWhere = null;
+  deliveryViews = new Map(); call = 0; taskRows = []; workerRows = []; taskWhere = null;
   mockAuth.mockResolvedValue({ id: 'acct-1' });
   mockUser.mockResolvedValue(null);
   mockReach.mockResolvedValue(['ws-1']);
@@ -80,5 +82,17 @@ describe('GET /api/tasks/thread-events', () => {
     const keys = events.map((e: any) => e.key);
     expect(keys).toEqual(['a:started', 'a:waiting_input', 'b:started', 'b:pr_opened', 'c:started', 'c:pr_opened', 'c:completed', 'd:started', 'd:failed']);
     expect(events.find((e: any) => e.key === 'b:pr_opened').text).toContain('pull/1');
+  });
+
+  it('adds one needs_you note, keyed by state, when the task or its dependency waits on a person', async () => {
+    const view = { needsYou: true, state: 'ESCALATED', stateReason: 'unsafe_other', prNumber: 6108, headline: 'Needs a person to merge' };
+    taskRows = [{ id: 'a', title: 'Ship it', status: 'pending', dependsOn: ['dep'] }];
+    deliveryViews = new Map([['dep', view]]);
+    mockPrs.mockResolvedValue(new Map([['dep', { prUrl: 'https://github.com/o/r/pull/6108' }]]));
+    const first = (await (await GET(req('?threadId=t'))).json()).events.filter((e: any) => e.event === 'needs_you');
+    const again = (await (await GET(req('?threadId=t'))).json()).events.filter((e: any) => e.event === 'needs_you');
+    expect(first).toHaveLength(1);
+    expect(first[0].text).toContain('Needs you: waiting on PR #6108');
+    expect(again[0].key).toBe(first[0].key);
   });
 });
