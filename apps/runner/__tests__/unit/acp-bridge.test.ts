@@ -958,6 +958,23 @@ describe('thread notes: a task remembers the thread that filed it', () => {
     expect(texts(sent.map(x => ({ update: x.u })))).not.toContain('buildd: started');
   });
 
+  test('a note for a different task arriving during a turn is shown on the next turn', async () => {
+    sent = [];
+    const runner = new FakeRunner();
+    runner.workers = [worker({ id: 'w1', taskId: 't1', status: 'done' })];
+    let phase = 0;
+    (runner as any).threadEvents = async () => phase === 0 ? [] : [{ key: 't2:failed', taskId: 't2', event: 'failed', text: 'buildd: other failed' }];
+    const bridge = mk(runner, withShown().store);
+    const orig = (bridge as any).promptTurn.bind(bridge);
+    (bridge as any).promptTurn = async (p: any) => { phase = 1; return orig(p); };
+    await bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    expect(texts(sent.map(x => ({ update: x.u })))).not.toContain('buildd: other failed');
+    sent = [];
+    (bridge as any).promptTurn = orig;
+    await bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    expect(texts(sent.map(x => ({ update: x.u })))).toContain('buildd: other failed');
+  });
+
   test('a failing notes read never blocks the turn', async () => {
     sent = [];
     const runner = new FakeRunner();

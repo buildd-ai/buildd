@@ -388,18 +388,23 @@ export class AcpBridge {
     try {
       return await this.promptTurn(params);
     } finally {
-      await this.flushNotes(sessionId, { quiet: true });
+      // Only the task this turn followed live has shown its notes; a note for any other
+      // task stays unmarked, so the next turn's leading flush shows it.
+      const wid = this.sessions.get(sessionId)?.workerId;
+      const followed = wid ? (await this.findWorker(wid).catch(() => null))?.taskId : null;
+      if (followed) await this.flushNotes(sessionId, { quietTaskId: followed });
     }
   }
 
-  private async flushNotes(sessionId: string, opts: { quiet?: boolean } = {}): Promise<void> {
+  private async flushNotes(sessionId: string, opts: { quietTaskId?: string } = {}): Promise<void> {
     const { shownNotes } = this.deps;
     if (!shownNotes || !this.deps.runner.threadEvents) return;
     try {
       for (const n of await this.deps.runner.threadEvents(sessionId)) {
         if (shownNotes.has(sessionId, n.key)) continue;
+        if (opts.quietTaskId !== undefined && n.taskId !== opts.quietTaskId) continue;
         shownNotes.add(sessionId, n.key);
-        if (!opts.quiet) this.emit(sessionId, textUpdate(n.text));
+        if (opts.quietTaskId === undefined) this.emit(sessionId, textUpdate(n.text));
       }
     } catch { /* a note we cannot fetch now is fetched next turn */ }
   }

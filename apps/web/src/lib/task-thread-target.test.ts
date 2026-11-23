@@ -3,7 +3,6 @@ import {
   THREAD_EVENTS,
   parseThreadTarget,
   withThreadTarget,
-  selectCallbackTargets,
   threadEventsFor,
   threadNote,
 } from './task-thread-target';
@@ -27,19 +26,6 @@ describe('withThreadTarget', () => {
       .toEqual({ kind: 't3_thread', threadId: 'a' });
     expect('callbackTarget' in withThreadTarget({ callbackTarget: { kind: 'bogus' }, other: 1 })).toBe(false);
     expect(withThreadTarget(null)).toEqual({});
-  });
-});
-
-describe('selectCallbackTargets', () => {
-  it('returns url and thread targets independently', () => {
-    expect(selectCallbackTargets({})).toEqual([]);
-    expect(selectCallbackTargets({ callback: { url: 'https://x.test/h' } })).toEqual(['url']);
-    expect(selectCallbackTargets({ callbackTarget: { kind: 't3_thread', threadId: 'a' } })).toEqual(['t3_thread']);
-    expect(selectCallbackTargets({ callback: { url: 'https://x.test/h' }, callbackTarget: { kind: 't3_thread', threadId: 'a' } }))
-      .toEqual(['url', 't3_thread']);
-  });
-  it('ignores a non-https url', () => {
-    expect(selectCallbackTargets({ callback: { url: 'http://x.test' } })).toEqual([]);
   });
 });
 

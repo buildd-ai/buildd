@@ -33,15 +33,6 @@ export function withThreadTarget(context: Record<string, unknown> | null | undef
   return target ? { ...rest, callbackTarget: target } : rest;
 }
 
-/** Which targets a task has: the plain URL callback and/or a thread, independently. */
-export function selectCallbackTargets(context: Record<string, unknown> | null | undefined): Array<'url' | 't3_thread'> {
-  const out: Array<'url' | 't3_thread'> = [];
-  const url = (context?.callback as { url?: unknown } | undefined)?.url;
-  if (typeof url === 'string' && url.startsWith('https://')) out.push('url');
-  if (parseThreadTarget(context?.callbackTarget)) out.push('t3_thread');
-  return out;
-}
-
 /**
  * The events a task has reached, oldest first. A later state implies the earlier ones
  * (a finished task was started). `waiting_input` shows only while the worker waits:

@@ -1550,6 +1550,19 @@ describe('POST /api/tasks', () => {
       expect(seen.values.context).not.toHaveProperty('prReach');
     });
 
+    it('context.callbackTarget is sanitized: extra fields and invalid kinds are dropped', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      let seen = capture();
+      const file = (callbackTarget: unknown) => POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Do it', context: { callbackTarget } } }));
+      expect((await file({ kind: 't3_thread', threadId: 'th-1', token: 'secret' })).status).toBe(200);
+      expect(seen.values.context.callbackTarget).toEqual({ kind: 't3_thread', threadId: 'th-1' });
+      seen = capture();
+      expect((await file({ kind: 'slack', threadId: 'th-1' })).status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('callbackTarget');
+    });
+
     const agentFiling = () => {
       mockGetCurrentUser.mockResolvedValue(null);
       mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
