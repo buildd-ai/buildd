@@ -33,9 +33,9 @@ export function acpSnippets(acp: RunnerAcpCapability | null | undefined, hostNam
       note: `Paste it as the Local ACP command. ${NO_SECRET}`,
     },
     {
-      id: 'ssh', title: 'T3 on another machine', where: 'Settings → Providers → Local ACP command, on the machine running T3',
+      id: 'ssh', title: 'T3 on another machine (fallback)', where: 'Settings → Providers → Local ACP command, on the machine running T3',
       text: `ssh -T -o BatchMode=yes user@${host} buildd acp`,
-      note: `Runs buildd acp on the runner host over SSH with no TTY. Replace user@${host} with how you reach it. The remote shell's PATH must find buildd (a non-interactive shell skips .bashrc: put it in .profile or use the absolute shim path). ${NO_SECRET}`,
+      note: `Prefer linked environments: have the orchestrator start the thread in the runner machine's own T3 environment, so T3's project and diffs match the run. If not linked, this command runs buildd acp on the runner host over SSH with no TTY; T3 then shows the thread under your local project, and its diff panel shows your local checkout, not the task's changes (the first message says where they are). Replace user@${host} with how you reach it. The remote shell's PATH must find buildd (a non-interactive shell skips .bashrc: put it in .profile or use the absolute shim path). ${NO_SECRET}`,
     },
     {
       id: 'on-host', title: 'T3 server on the runner host', where: 'Settings → Providers → Local ACP command, in the T3 running on the host',

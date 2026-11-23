@@ -108,6 +108,15 @@ export interface BridgeDeps {
    * open (a Windows client talking to a runner in WSL).
    */
   projectNamesOf(cwd: string): Promise<string[]>;
+  /**
+   * Whether the client's project folder exists on this machine's filesystem.
+   * Absent means "assume it does" (nothing changes). False marks a thread
+   * remote: the client runs elsewhere (T3 over `ssh host buildd acp`), so its
+   * checkout is not the one the task works in.
+   */
+  cwdExists?(cwd: string): boolean;
+  /** This runner's display name, for a remote thread's first message. */
+  runnerName?(): string;
   version: string;
   /** How long a reply may go unanswered by the runner before the turn ends anyway. */
   settleGraceMs?: number;
@@ -129,6 +138,8 @@ interface Session {
   workerId: string | null;
   /** The client's project folder: where a first message's task goes. */
   cwd: string | null;
+  /** The client's folder is not on this machine, so its checkout never sees the task's changes. */
+  remote?: boolean;
   cursor: MessageCursor;
   /** `_meta.buildd` the client gave this thread; passed to createTask. */
   taskMeta?: BuilddTaskMeta;
@@ -246,7 +257,8 @@ export class AcpBridge {
 
   private newSession(params: { cwd?: string }) {
     const sessionId = `new-${crypto.randomUUID()}`;
-    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor(), taskMeta: taskMetaFrom(params) });
+    const remote = !!params.cwd && this.deps.cwdExists?.(params.cwd) === false;
+    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, ...(remote ? { remote } : {}), cursor: new MessageCursor(), taskMeta: taskMetaFrom(params) });
     return { sessionId };
   }
 
@@ -438,7 +450,14 @@ export class AcpBridge {
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);
     session.cursor.skip(worker.messages);
-    this.emit(sessionId, textUpdate(`Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}.`));
+    const started = `Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}`;
+    if (session.remote) {
+      const name = this.deps.runnerName?.().trim();
+      const where = worker.branch ? `on branch ${worker.branch} and in its PR` : 'on its branch and in its PR';
+      this.emit(sessionId, textUpdate(`${started}, on runner ${name || 'this runner'}, not this machine. Changes will be ${where}, not in your checkout.`));
+    } else {
+      this.emit(sessionId, textUpdate(`${started}.`));
+    }
     return this.follow(session, sessionId, worker, { watching: true, alreadyMoving: true });
   }
 
