@@ -47,13 +47,21 @@ export async function GET(req: NextRequest) {
     const prs = await taskPrsFor(ids);
     // Owner-only states (kernel delivery needsYou), the task's own or its dependency's. Best effort:
     // a failed read drops the note, never the rest of the thread's events.
-    const depIds = [...new Set(rows.flatMap(r => (r.status === 'pending' ? r.dependsOn ?? [] : [])))];
+    // Only dependencies in workspaces the caller can reach: a cross-workspace one must not leak its PR.
+    const wantedDeps = [...new Set(rows.flatMap(r => (r.status === 'pending' ? r.dependsOn ?? [] : [])))];
+    const visibleDeps = wantedDeps.length > 0
+      ? await db.select({ id: tasks.id }).from(tasks)
+        .where(and(inArray(tasks.id, wantedDeps), inArray(tasks.workspaceId, workspaceIds)))
+        .catch(() => [] as { id: string }[])
+      : [];
+    const depIds = visibleDeps.map(d => d.id);
     const deliveries = await getDeliveryViewsForTasks([...ids, ...depIds]).catch(() => new Map());
     const depPrs = depIds.length > 0 ? await taskPrsFor(depIds).catch(() => new Map()) : new Map();
 
     const events = rows.flatMap(task => {
       const prUrl = prs.get(task.id)?.prUrl ?? null;
       const dependency = (task.status === 'pending' ? task.dependsOn ?? [] : [])
+        .filter((id: string) => depIds.includes(id))
         .map((id: string) => ({ delivery: deliveries.get(id), prUrl: depPrs.get(id)?.prUrl ?? null }))
         .find((d: { delivery?: { needsYou: boolean } }) => d.delivery?.needsYou);
       const need = needsYouNote({ delivery: deliveries.get(task.id) ?? null, prUrl, dependency: dependency as never });

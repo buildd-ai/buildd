@@ -14,3 +14,8 @@ export function withDependencyNeedsYou(answer: ExplainAnswer, deps: ReadonlyArra
   }
   return answer;
 }
+
+/** Ids of the dependencies this viewer may see; a hidden one must not lend its PR to the answer. */
+export function visibleDependencyIds(waitingOn: ReadonlyArray<{ id: string; hidden?: boolean }>): string[] {
+  return waitingOn.filter(w => !w.hidden).map(w => w.id);
+}

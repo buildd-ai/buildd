@@ -19,14 +19,19 @@ mock.module('@/lib/workspace-access', () => ({ listReachableWorkspaceIds: mockRe
 let deliveryViews = new Map<string, any>();
 mock.module('@/lib/workflow/delivery-view', () => ({ getDeliveryViewsForTasks: async () => deliveryViews }));
 mock.module('@/lib/workflow/task-pr', () => ({ taskPrsFor: mockPrs }));
+let depRows: any[] = [];
+const { tasks: tasksTable } = await import('@buildd/core/db/schema');
 mock.module('@buildd/core/db', () => ({
   db: {
     select: () => {
-      const n = call++;
+      let isTasks = false;
+      let ordered = false;
       const chain: any = {
-        from: () => chain,
-        where: (w: unknown) => { if (n % 2 === 0) taskWhere = w; return chain; },
-        orderBy: () => (n % 2 === 0 ? { limit: async () => taskRows } : Promise.resolve(workerRows)),
+        from: (t: unknown) => { isTasks = t === tasksTable; return chain; },
+        where: (w: unknown) => { if (isTasks && !ordered) taskWhere = taskWhere ?? w; return chain; },
+        orderBy: () => { ordered = true; return isTasks ? { limit: async () => taskRows } : Promise.resolve(workerRows); },
+        then: (res: any, rej: any) => Promise.resolve(depRows).then(res, rej),
+        catch: (rej: any) => Promise.resolve(depRows).catch(rej),
       };
       return chain;
     },
@@ -37,7 +42,7 @@ const { GET } = await import('./route');
 const req = (q: string) => new NextRequest(`http://localhost/api/tasks/thread-events${q}`, { headers: { authorization: 'Bearer bld_x' } });
 
 beforeEach(() => {
-  deliveryViews = new Map(); call = 0; taskRows = []; workerRows = []; taskWhere = null;
+  deliveryViews = new Map(); depRows = []; call = 0; taskRows = []; workerRows = []; taskWhere = null;
   mockAuth.mockResolvedValue({ id: 'acct-1' });
   mockUser.mockResolvedValue(null);
   mockReach.mockResolvedValue(['ws-1']);
@@ -88,11 +93,23 @@ describe('GET /api/tasks/thread-events', () => {
     const view = { needsYou: true, state: 'ESCALATED', stateReason: 'unsafe_other', prNumber: 6108, headline: 'Needs a person to merge' };
     taskRows = [{ id: 'a', title: 'Ship it', status: 'pending', dependsOn: ['dep'] }];
     deliveryViews = new Map([['dep', view]]);
+    depRows = [{ id: 'dep' }];
     mockPrs.mockResolvedValue(new Map([['dep', { prUrl: 'https://github.com/o/r/pull/6108' }]]));
     const first = (await (await GET(req('?threadId=t'))).json()).events.filter((e: any) => e.event === 'needs_you');
     const again = (await (await GET(req('?threadId=t'))).json()).events.filter((e: any) => e.event === 'needs_you');
     expect(first).toHaveLength(1);
     expect(first[0].text).toContain('Needs you: waiting on PR #6108');
     expect(again[0].key).toBe(first[0].key);
+  });
+
+  it('emits no needs_you note for a dependency outside the reachable workspaces', async () => {
+    const view = { needsYou: true, state: 'ESCALATED', stateReason: 'unsafe_other', prNumber: 6108, headline: 'Needs a person to merge' };
+    taskRows = [{ id: 'a', title: 'Ship it', status: 'pending', dependsOn: ['dep'] }];
+    deliveryViews = new Map([['dep', view]]);
+    depRows = []; // the scoped dependency lookup finds nothing
+    mockPrs.mockResolvedValue(new Map([['dep', { prUrl: 'https://github.com/o/r/pull/6108' }]]));
+    const { events } = await (await GET(req('?threadId=t'))).json();
+    expect(events.filter((e: any) => e.event === 'needs_you')).toHaveLength(0);
+    expect(JSON.stringify(events)).not.toContain('6108');
   });
 });
