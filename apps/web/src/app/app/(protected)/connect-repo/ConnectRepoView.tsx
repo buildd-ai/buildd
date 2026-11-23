@@ -77,8 +77,7 @@ export default function ConnectRepoView({ repo, runnerId, found, token, action, 
       return (
         <Frame title="Connect a repo">
           <Notice tone="warn" title={`${found.runnerName} is ${found.teamName}'s runner`} data-testid="connect-repo-team-key">
-            Its key belongs to the team, so it only works in {found.teamName}&apos;s workspaces and cannot be given {repo}.
-            To use this machine across your teams, run <code>buildd login</code> on it so it signs in as you, then open the link from the thread again.
+            Its key only works in {found.teamName}&apos;s workspaces. Run <code>buildd login</code> on this machine to sign in as you, then open the link again.
           </Notice>
         </Frame>
       );
