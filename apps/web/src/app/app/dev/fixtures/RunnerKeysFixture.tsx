@@ -20,7 +20,7 @@ const LONG_NAME = 'customer-notifications-and-billing-reconciliation-service';
 
 const KEYS: RunnerKeySummary[] = [
   {
-    id: 'fixture-runner-laptop', name: 'Laptop', apiKeyPrefix: 'bld_fx01', level: 'worker', homeTeamName: 'Acme Platform',
+    id: 'fixture-runner-laptop', name: 'Laptop', apiKeyPrefix: 'bld_fx01', level: 'worker', homeTeamId: 'fixture-team', homeTeamName: 'Acme Platform',
     createdAt: '2026-09-20T09:00:00Z', lastUsedAt: '2026-10-09T10:40:00Z',
     picks: [
       pick('fixture-team-a', 'Acme Platform', 'fixture-ws-api', 'api'),
@@ -31,7 +31,7 @@ const KEYS: RunnerKeySummary[] = [
     ],
   },
   {
-    id: 'fixture-runner-desktop', name: 'Build box', apiKeyPrefix: 'bld_fx02', level: 'worker', homeTeamName: 'Acme Platform',
+    id: 'fixture-runner-desktop', name: 'Build box', apiKeyPrefix: 'bld_fx02', level: 'worker', homeTeamId: 'fixture-team', homeTeamName: 'Acme Platform',
     createdAt: '2026-08-02T09:00:00Z', lastUsedAt: '2026-10-08T18:00:00Z', picks: null,
   },
 ];

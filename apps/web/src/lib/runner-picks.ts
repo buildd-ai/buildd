@@ -184,6 +184,24 @@ export async function replaceRunnerPicks(args: {
   return { ok: true, workspaceIds: check.workspaceIds };
 }
 
+/**
+ * Add one workspace to a key's picks, keeping the picks that still reach
+ * (the connect-repo page, lib/connect-repo.ts). It goes through
+ * replaceRunnerPicks, so every check an Edit applies applies here: only the
+ * key's minter, only an offered workspace, no tombstone, no level raise.
+ * A pick that no longer reaches anything (the person left that team) is
+ * dropped: checkPicks refuses one that is not offered.
+ */
+export async function addRunnerPick(args: { accountId: string; userId: string; workspaceId: string }): Promise<ReplaceResult> {
+  const key = (await listRunnerKeys(args.userId)).find((k) => k.id === args.accountId);
+  if (!key) return { ok: false, status: 404, message: 'Key not found.' };
+  if (key.picks == null) {
+    return { ok: false, status: 400, message: 'This key was made before runners picked workspaces. Run buildd login on the runner to make one that can.' };
+  }
+  const kept = key.picks.filter((p) => p.reachable).map((p) => p.workspaceId);
+  return replaceRunnerPicks({ accountId: args.accountId, userId: args.userId, workspaceIds: [...kept, args.workspaceId] });
+}
+
 export interface RunnerKeyPick {
   workspaceId: string;
   workspaceName: string;
@@ -200,6 +218,7 @@ export interface RunnerKeySummary {
   name: string;
   apiKeyPrefix: string | null;
   level: string;
+  homeTeamId: string;
   homeTeamName: string;
   createdAt: string | null;
   lastUsedAt: string | null;
@@ -218,6 +237,7 @@ export async function listRunnerKeys(userId: string): Promise<RunnerKeySummary[]
       workspaceIds: accounts.workspaceIds,
       createdAt: accounts.createdAt,
       lastUsedAt: accounts.lastUsedAt,
+      homeTeamId: accounts.teamId,
       homeTeamName: teams.name,
     })
     .from(accounts)
@@ -250,6 +270,7 @@ export async function listRunnerKeys(userId: string): Promise<RunnerKeySummary[]
     name: k.name,
     apiKeyPrefix: k.apiKeyPrefix ?? null,
     level: k.level,
+    homeTeamId: k.homeTeamId,
     homeTeamName: k.homeTeamName,
     createdAt: k.createdAt ? new Date(k.createdAt).toISOString() : null,
     lastUsedAt: k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : null,

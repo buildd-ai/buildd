@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { RpcError } from '../../src/acp/bridge';
 import { notification, rpcLineHandler, rpcPeer } from '../../src/acp/rpc';
-import { localPathFor, repoNamesFromRemote, socketRunnerPort } from '../../src/acp/runner-port';
+import { githubRepoFromRemote, localPathFor, repoNamesFromRemote, socketRunnerPort } from '../../src/acp/runner-port';
 import { fileSessionLinks } from '../../src/acp/links';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -128,6 +128,16 @@ describe('project identity', () => {
     expect(repoNamesFromRemote('https://github.com/acme/app')).toEqual(['app', 'acme/app']);
     expect(repoNamesFromRemote('https://github.com/acme/app.git/')).toEqual(['app', 'acme/app']);
     expect(repoNamesFromRemote('not a url')).toEqual([]);
+  });
+
+  test('the GitHub repo comes only from a github.com origin', () => {
+    expect(githubRepoFromRemote('git@github.com:acme/app.git')).toBe('acme/app');
+    expect(githubRepoFromRemote('https://github.com/Acme/app')).toBe('Acme/app');
+    expect(githubRepoFromRemote('ssh://git@github.com/acme/app.git/')).toBe('acme/app');
+    expect(githubRepoFromRemote('https://token@github.com/acme/app.git')).toBe('acme/app');
+    expect(githubRepoFromRemote('git@gitlab.com:acme/app.git')).toBeNull();
+    expect(githubRepoFromRemote('https://github.com.evil.example/acme/app')).toBeNull();
+    expect(githubRepoFromRemote('not a url')).toBeNull();
   });
 
   test('a Windows path is read through /mnt on Linux, untouched on Windows', () => {

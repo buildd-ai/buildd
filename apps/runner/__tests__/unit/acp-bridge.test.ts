@@ -33,6 +33,8 @@ class FakeRunner implements RunnerPort {
     return this.actResult;
   }
   async listWorkspaces() { return this.workspaces; }
+  info: { server: string; accountId: string | null } | null = { server: 'https://buildd.example/', accountId: 'acct-1' };
+  async runnerInfo() { return this.info; }
   async createTask(input: { workspaceId: string; title: string; description: string; missionId?: string; roleSlug?: string; priority?: number; kind?: string; reserve?: boolean; context?: Record<string, unknown> }) {
     if (this.createResult) return this.createResult;
     this.created.push(input);
@@ -57,7 +59,7 @@ class FakeRunner implements RunnerPort {
 
 function setup(
   workers: PublicWorker[] = [worker()],
-  opts: { cwdExists?: (cwd: string) => boolean; answer?: (params: any) => Promise<any>; links?: Map<string, string>; runner?: FakeRunner } = {},
+  opts: { cwdExists?: (cwd: string) => boolean; answer?: (params: any) => Promise<any>; links?: Map<string, string>; runner?: FakeRunner; githubRepoOf?: (cwd: string) => Promise<string | null> } = {},
 ) {
   const runner = opts.runner ?? new FakeRunner();
   runner.workers = workers;
@@ -76,6 +78,7 @@ function setup(
     repoRootOf: async (p) => (p.startsWith('/repos/app') ? '/repos/app' : null),
     projectNamesOf: async (cwd) => (cwd.replace(/\\/g, '/').endsWith('/app') ? ['app', 'acme/app'] : []),
     cwdExists: opts.cwdExists,
+    githubRepoOf: opts.githubRepoOf,
     runnerName: () => 'coder-box',
     version: '0.0.0-test',
     settleGraceMs: 50,
@@ -487,13 +490,40 @@ Only targeting dev.`;
     expect(second.runner.actions.map(a => a.action)).toEqual(['followup']);
   });
 
-  test('a project that matches no buildd workspace says so and creates nothing', async () => {
-    const { bridge, runner, updates } = setup([]);
+  test('a GitHub project that matches no workspace this runner reaches: one link to connect it, nothing created', async () => {
+    const { bridge, runner, updates } = setup([], { githubRepoOf: async () => 'Acme/zzz' });
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/elsewhere/zzz', mcpServers: [] });
     const res: any = await bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
     expect(res.stopReason).toBe('end_turn');
     expect(runner.created).toEqual([]);
-    expect(texts(updates)).toMatch(/No buildd workspace/);
+    const text = texts(updates);
+    expect(text).toContain('Open this to connect Acme/zzz to buildd and let this runner work on it: https://buildd.example/app/connect-repo?repo=Acme%2Fzzz&runner=acct-1');
+    // It names the repo, not a guess that the workspace is missing.
+    expect(text).not.toMatch(/Connect the repo in buildd first/);
+  });
+
+  test('a GitHub project on a runner whose account is unknown points at Settings instead of a broken link', async () => {
+    const runner = new FakeRunner();
+    runner.info = null;
+    const { bridge, updates } = setup([], { runner, githubRepoOf: async () => 'acme/zzz' });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/elsewhere/zzz', mcpServers: [] });
+    await bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    const text = texts(updates);
+    expect(text).toContain('acme/zzz');
+    expect(text).not.toContain('/app/connect-repo');
+    expect(text).toContain('https://buildd.dev/app/settings/connections');
+  });
+
+  test('a project with no GitHub remote says buildd needs one and that T3\'s own threads work here', async () => {
+    const { bridge, runner, updates } = setup([], { githubRepoOf: async () => null });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/elsewhere/zzz', mcpServers: [] });
+    const res: any = await bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    expect(res.stopReason).toBe('end_turn');
+    expect(runner.created).toEqual([]);
+    const text = texts(updates);
+    expect(text).toMatch(/buildd works on GitHub repos/);
+    expect(text).toMatch(/T3's own Claude or Codex threads work in this folder/);
+    expect(text).not.toContain('connect-repo');
   });
 
   test('several matching workspaces: the client is asked which, and a client without forms is told to choose', async () => {
