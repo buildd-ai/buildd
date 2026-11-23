@@ -319,6 +319,16 @@ export const MISSION_SCOPE_ANSWER = {
 };
 
 /**
+ * The tier-to-model slot (docs/specs/in-place-resume.md): a tier change on a
+ * task with a live agent needs the model that tier serves now, so the session
+ * can continue on it. The model-tiers module answers, loaded on first use.
+ */
+export const TIER_MODEL = {
+  resolve: async (tier: import('@buildd/core/model-tier-registry').Tier, teamId: string | null, workspaceId: string) =>
+    (await (await import('@buildd/core/model-tier-registry')).resolveTierEntry(tier, teamId, workspaceId, 'agent')).model,
+};
+
+/**
  * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger
  * and the repair filer, for a core caller such as Home that gates PRs.
  */

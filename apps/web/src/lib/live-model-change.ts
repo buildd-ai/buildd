@@ -9,7 +9,17 @@
  */
 
 export interface LiveModelChangeNotice {
-  appliesTo: 'next_attempt';
+  /**
+   * `resume_in_place`: the run is paused at a safe point and its own session
+   * continues on the new model (lib/in-place-resume.ts). `next_attempt`: the
+   * session could not be kept, so the running attempt keeps its model.
+   */
+  appliesTo: 'resume_in_place' | 'next_attempt';
+  /** The model the session continues on, when the change resolved to one. */
+  targetModel?: string | null;
+  /** next_attempt only: why the session could not be resumed in place. */
+  reasonCode?: string;
+  reason?: string;
   workerId: string;
   workerStatus: string;
   /** Tier the claim resolved for the live run (`context.resolvedTier.tier`), null when unrecorded. */
@@ -35,9 +45,38 @@ function readRunning(task: { predictedModel?: string | null; context?: unknown }
 export function liveModelChangeNotice(
   task: { predictedModel?: string | null; context?: unknown },
   worker: { id: string; status: string },
+  outcome?: { inPlace: true; targetModel: string; paused: boolean } | { inPlace: false; targetModel?: string | null; reasonCode: string; reason: string },
 ): LiveModelChangeNotice {
   const { tier, model } = readRunning(task);
   const running = [tier, model].filter(Boolean).join(', ') || 'the model it was claimed with';
+  if (outcome?.inPlace) {
+    return {
+      appliesTo: 'resume_in_place',
+      targetModel: outcome.targetModel,
+      workerId: worker.id,
+      workerStatus: worker.status,
+      runningTier: tier,
+      runningModel: model,
+      message:
+        `Resuming in place: worker ${worker.id} ${outcome.paused ? 'is paused' : 'pauses at its next safe point'} and continues the same session on ${outcome.targetModel} (it was at ${running}). ` +
+        'Its transcript and worktree are kept; only the prompt cache is rebuilt. If the pause or the resume does not happen, the change applies to a new attempt and the task activity says so.',
+    };
+  }
+  if (outcome) {
+    return {
+      appliesTo: 'next_attempt',
+      targetModel: outcome.targetModel ?? null,
+      reasonCode: outcome.reasonCode,
+      reason: outcome.reason,
+      workerId: worker.id,
+      workerStatus: worker.status,
+      runningTier: tier,
+      runningModel: model,
+      message:
+        `New attempt: worker ${worker.id} (${worker.status}) keeps running at ${running}, because ${outcome.reason}. The new tier/model applies from the next attempt. ` +
+        'To restart it now, set status: pending (the session is kept when it can be resumed; otherwise unpushed work is lost).',
+    };
+  }
   return {
     appliesTo: 'next_attempt',
     workerId: worker.id,
@@ -61,6 +100,8 @@ export interface PendingModelChange {
   /** The requested tier, null when cleared, absent when only the model changed. */
   tier?: string | null;
   model?: string | null;
+  /** The model the change resolved to when it was made, null when it named none. */
+  resolvedModel?: string | null;
   runningTier: string | null;
   runningModel: string | null;
   workerId: string;
@@ -75,6 +116,7 @@ export function pendingModelChangeRecord(
   return {
     ...(requested.tier !== undefined ? { tier: (requested.tier as string | null) ?? null } : {}),
     ...(requested.model !== undefined ? { model: typeof requested.model === 'string' ? requested.model.trim() : null } : {}),
+    ...(notice.targetModel ? { resolvedModel: notice.targetModel } : {}),
     runningTier: notice.runningTier,
     runningModel: notice.runningModel,
     workerId: notice.workerId,
@@ -93,6 +135,7 @@ export function readPendingModelChange(context: unknown): PendingModelChange | n
   return {
     ...('tier' in r ? { tier: str(r.tier) } : {}),
     ...('model' in r ? { model: str(r.model) } : {}),
+    ...(str(r.resolvedModel) ? { resolvedModel: str(r.resolvedModel) } : {}),
     runningTier: str(r.runningTier),
     runningModel: str(r.runningModel),
     workerId: r.workerId,

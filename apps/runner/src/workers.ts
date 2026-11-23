@@ -1,3 +1,4 @@
+import { adoptServerSessionModel, takesSessionModel } from './session-model-switch';
 import { canonicalToolName, decideTaskIsolation, isolationRefusalError, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, readTaskIsolationStamp, type TaskIsolationDecision } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -8157,11 +8158,21 @@ export class WorkerManager {
       // possibly-terminal worker, as opposed to the periodic keepalive sync
       // (which sends the same status:'running' and must never resurrect a
       // completed worker — see the reactivation guard in the worker PATCH route).
-      await this.buildd.updateWorker(worker.id, {
+      // The reply may carry the model the session continues on: the task's
+      // tier or model was changed while this session existed (resume in
+      // place, session-model-switch.ts). Adopted before the resume below.
+      const reactivated = await this.buildd.updateWorker(worker.id, {
         status: 'running',
         currentAction: 'Processing follow-up...',
         reactivate: true,
+        ...(takesSessionModel() ? { takesSessionModel: true } : {}),
       });
+      const modelSwitch = adoptServerSessionModel(worker, reactivated);
+      if (modelSwitch) {
+        console.log(`[Worker ${worker.id}] Resuming the same session on ${modelSwitch.to} (was ${modelSwitch.from ?? 'the runner default'})`);
+        this.addMilestone(worker, { type: 'status', label: `Model changed: ${modelSwitch.from ?? 'default'} → ${modelSwitch.to} (same session)`, ts: Date.now() });
+        storeSaveWorker(worker);
+      }
 
       // Get workspace path. A follow-up in the first seconds after start
       // waits for the first repo scan rather than scanning synchronously.
