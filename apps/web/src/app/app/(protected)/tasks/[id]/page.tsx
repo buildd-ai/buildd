@@ -1292,12 +1292,12 @@ async function TaskDetailPage({
                         // or the task took a new attempt and why.
                         const underWay = readInPlaceResume(task.context);
                         if (underWay?.workerId === worker.id && (worker.status === 'running' || worker.status === 'waiting_input')) {
-                          return <p className="text-[11px] text-status-info mt-0.5" data-testid="worker-resume-in-progress">{describeResumeInProgress(underWay)}</p>;
+                          return <p className="text-meta text-status-info mt-0.5" data-testid="worker-resume-in-progress">{describeResumeInProgress(underWay)}</p>;
                         }
                         const line = resumeLineFor(task.context, worker.id);
                         if (!line) return null;
                         return (
-                          <p className={`text-[11px] mt-0.5 ${line.kind === 'resumed_in_place' ? 'text-status-success' : 'text-text-muted'}`} data-testid={line.kind === 'resumed_in_place' ? 'worker-resumed-in-place' : 'worker-new-attempt'}>
+                          <p className={`text-meta mt-0.5 ${line.kind === 'resumed_in_place' ? 'text-status-success' : 'text-text-muted'}`} data-testid={line.kind === 'resumed_in_place' ? 'worker-resumed-in-place' : 'worker-new-attempt'}>
                             {line.text}
                           </p>
                         );

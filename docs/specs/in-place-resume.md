@@ -10,6 +10,31 @@ related: [answered-question-resume, worker-reclamation, runner-liveness, mission
 keywords: [resume in place, resumed in place, new attempt, requeue, status pending, tier change, model change, model switch, inPlaceResume, resumeHistory, pendingModelChange, sessionModel, takesSessionModel, pause, park, Runner offline requeued by owner]
 verified_by: [apps/web/src/lib/in-place-resume-policy.test.ts, apps/web/src/lib/in-place-resume.test.ts, apps/web/src/app/api/tasks/[id]/route.test.ts, apps/runner/__tests__/unit/session-model-switch.test.ts, packages/core/__tests__/mcp-tools-update-task-model.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "plan-in-place-resume"
+    type: "symbol"
+    name: "planInPlaceResume"
+    path: "apps/web/src/lib/in-place-resume-policy.ts"
+  - id: "resume-after-pause"
+    type: "symbol"
+    name: "resumeAfterPause"
+    path: "apps/web/src/lib/in-place-resume.ts"
+  - id: "settle-on-reactivation"
+    type: "symbol"
+    name: "settleOnReactivation"
+    path: "apps/web/src/lib/in-place-resume.ts"
+  - id: "sweep-in-place-resumes"
+    type: "symbol"
+    name: "sweepInPlaceResumes"
+    path: "apps/web/src/lib/in-place-resume.ts"
+  - id: "adopt-server-session-model"
+    type: "symbol"
+    name: "adoptServerSessionModel"
+    path: "apps/runner/src/session-model-switch.ts"
+  - id: "atomic-guards-on-real-rows"
+    type: "test_file"
+    path: "apps/web/tests/db/in-place-resume.test.ts"
 ---
 # In-Place Resume
 
