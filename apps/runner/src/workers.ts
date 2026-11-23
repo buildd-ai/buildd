@@ -2242,8 +2242,14 @@ export class WorkerManager {
         out.ended.push(w.id);
         return;
       }
-      // The other pass may have continued it while the server was answering.
-      if (w.status !== 'waiting' || !w.resumeOnStart) return;
+      // Another path may have continued it while the server was answering (the
+      // sync draining a queued instruction into sendMessage). That is a
+      // continue: counting it as not sent made the update watch call the new
+      // version broken, roll the runner back and re-pause a live session.
+      if (w.status !== 'waiting' || !w.resumeOnStart) {
+        if (w.status === 'working') out.continued.push(w.id);
+        return;
+      }
       if (claimsHeldByPerson()) {
         out.held.push(w.id);
         return;
