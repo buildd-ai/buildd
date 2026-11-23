@@ -586,29 +586,30 @@ Only targeting dev.`;
     expect(texts(updates)).not.toContain('Reply here to answer');
   });
 
-  test('the runner echoing the wait while the answer is still in flight does not open a second form', async () => {
+  test('the same question re-sent while its answer is still being posted opens no second form', async () => {
     const { bridge, runner, requests } = setup([worker({ status: 'working' })], {
       answer: async () => ({ action: 'accept', content: { answer: 'SQLite' } }),
     });
-    // hold the answer request open, as a slow link would
+    // hold the answer post open, as a loaded runner would
     let release!: () => void;
-    const gate = new Promise<void>(r => { release = r; });
+    const posted = new Promise<void>(r => { release = r; });
     const act = runner.act.bind(runner);
-    runner.act = async (...args: Parameters<typeof act>) => { const r = await act(...args); await gate; return r; };
+    runner.act = async (...args) => { const r = await act(...args); await posted; return r; };
     await bridge.handle('initialize', ELICITING_CLIENT);
     const turn = bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
     await tick();
-    const q = worker(question({ since: 's1' }));
-    runner.push(q);
+    runner.push(worker(question({ since: 's1' })));
     await until(() => runner.actions.length === 1);
-    // the echo of the same wait arrives before the answer call has returned
-    runner.push(q);
+    // the runner echoes the wait it is still answering
+    runner.push(worker(question({ since: 's1' })));
     await tick(); await tick();
-    expect(requests).toHaveLength(1);
     release();
+    await tick(); await tick();
+    runner.push(worker(question({ since: 's1' })));
+    await tick();
+    expect(requests).toHaveLength(1);
     runner.push(worker({ status: 'done' }));
     await turn;
-    expect(requests).toHaveLength(1);
   });
 
   test('a question with no options is a free-text field', async () => {

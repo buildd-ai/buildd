@@ -470,8 +470,8 @@ export class AcpBridge {
             if (latest.status !== 'waiting' || waitKey(latest.waitingFor) !== key) return;
             const value = res?.action === 'accept' && typeof res.content?.answer === 'string' ? res.content.answer.trim() : '';
             if (!value) { finish('end_turn'); return; }
-            // Mark the wait answered before the call: the runner can echo it while the
-            // request is still in flight (slow link), and that echo must not open a second form.
+            // Mark it answered before posting: the form is closed now, and a re-sent
+            // copy of this wait arriving while the post is in flight must not reopen it.
             answered = key;
             const r = await this.deps.runner.act(session.workerId!, 'answer', value);
             if (r.status >= 400) { finish('end_turn', refusal(r)); return; }

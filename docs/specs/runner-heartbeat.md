@@ -52,6 +52,19 @@ supersedes: []
   `LIVENESS_PING_INTERVAL_MS` (60 s) ping; the hourly aligned tick
   (`RUNNER_HEARTBEAT_INTERVAL_MS`, `BUILDD_RUNNER_POLL_MIN`, default 60 min)
   stays for reconcile, claim fallback and idle-job polling.
+- **A runner whose heartbeat dies restarts itself** (`apps/runner/src/heartbeat-watchdog.ts`).
+  Every failed beat is counted and logged as a warning: the first failure of a
+  streak, then at most every 10 minutes, and a recovery line when a beat lands
+  again. A once-a-minute watchdog logs an error and restarts the runner the way
+  an update does (agents pause and continue, exit 75) when the 60 s liveness
+  timer has not fired for 5 minutes, when one beat has been in flight for over 5
+  minutes, or when no beat has landed for `BUILDD_HEARTBEAT_WATCHDOG_MS`
+  (default 3 × RUNNER_FALLBACK_PING_MS) and the last failure was a transport
+  fault, or no beat was attempted at all. If the server is answering with an
+  HTTP error, the watchdog logs and does not restart, because a restart cannot
+  fix a refusal and an outage would restart the whole fleet in a loop. A gap
+  in the watchdog's own checks means the process was suspended, so it resets
+  its baseline.
 - **Note:** Pusher delivers realtime task notifications to runners. The
   heartbeat interval is NOT a polling frequency for new tasks.
 - Each `(accountId, localUiUrl)` pair has at most one `worker_heartbeats` row;

@@ -75,11 +75,14 @@ const { WorkerManager } = await import('../../src/workers');
 const { getPresenceState, __resetPresenceForTests } = await import('../../src/pusher-manager');
 
 const realFetch = globalThis.fetch;
+/** When set, POST /api/workers/heartbeat rejects with this network error. */
+let heartbeatFault: Error | null = null;
 function fakeServer() {
   const reqs: string[] = [];
   globalThis.fetch = (async (url: string) => {
     const u = new URL(String(url));
     reqs.push(u.pathname);
+    if (u.pathname === '/api/workers/heartbeat' && heartbeatFault) throw heartbeatFault;
     let reply: unknown = {};
     if (u.pathname === '/api/workers/heartbeat') reply = { ok: true, viewerToken: 'v', pendingTaskCount: 0 };
     else if (u.pathname === '/api/accounts/me') reply = { id: 'acct1', name: 'a' };
@@ -104,7 +107,7 @@ describe('fallbackPingDelayMs', () => {
 describe('liveness tick of a presence-connected runner', () => {
   let manager: any;
   let now = 1_000_000_000_000;
-  afterEach(() => { manager?.destroy?.(); globalThis.fetch = realFetch; __resetPresenceForTests(); joinOutcome = 'pusher:subscription_succeeded'; });
+  afterEach(() => { manager?.destroy?.(); globalThis.fetch = realFetch; heartbeatFault = null; __resetPresenceForTests(); joinOutcome = 'pusher:subscription_succeeded'; });
   afterAll(() => cleanupTestWorkspace());
 
   async function start() {
@@ -183,6 +186,28 @@ describe('liveness tick of a presence-connected runner', () => {
       await ticks(tick, 3);
       expect(beats()).toBe(before + 3);
     } finally { manager.workers.delete('w1'); clock.mockRestore(); }
+  });
+
+  test('a failing beat is logged and counted; the next landed beat logs recovery (2026-11-22)', async () => {
+    joinOutcome = 'pusher:subscription_error'; // 60s cadence: every tick beats
+    const { tick, clock } = await start();
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const info = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const tracker = manager.getHeartbeatTracker();
+      expect(tracker.snapshot().armed).toBe(true);
+      expect(tracker.snapshot().lastSuccessAt).not.toBeNull();
+      heartbeatFault = new TypeError('fetch failed');
+      await ticks(tick, 2);
+      const failed = warn.mock.calls.map(c => String(c[0])).filter(l => l.includes('[heartbeat] beat failed'));
+      expect(failed.length).toBe(1); // the streak's first failure; the second is rate limited
+      expect(failed[0]).toContain('fetch failed');
+      expect(tracker.snapshot().consecutiveFailures).toBe(2);
+      heartbeatFault = null;
+      await ticks(tick, 1);
+      expect(info.mock.calls.some(c => String(c[0]).includes('[heartbeat] recovered after 2 failed beats'))).toBe(true);
+      expect(tracker.snapshot().consecutiveFailures).toBe(0);
+    } finally { warn.mockRestore(); info.mockRestore(); clock.mockRestore(); }
   });
 
   test('a refused presence join (older server) keeps the legacy 60s ping', async () => {

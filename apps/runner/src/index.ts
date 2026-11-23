@@ -36,6 +36,8 @@ import { initHistory, searchSessions, getSession, getArchivedData, getStats as g
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
+import { HeartbeatWatchdog, HEARTBEAT_WATCHDOG_INTERVAL_MS } from './heartbeat-watchdog';
+import { logError } from './log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { getPusherConfirmedAt } from './pusher-manager';
@@ -3748,3 +3750,20 @@ setInterval(() => {
   const { degraded, reason } = heartbeatState(getLastServerContactAt(), Date.now(), undefined, getPusherConfirmedAt());
   emitHeartbeatTick(degraded, reason);
 }, 60_000);
+
+// Heartbeat watchdog (2026-11-22: a runner stopped heartbeating with the process
+// still up and nothing logged, so the server showed it offline and it never took
+// the next update). When the liveness timer stops firing, a beat hangs, or no beat
+// lands for HEARTBEAT_STALE_MS on a transport fault, log an error and restart the
+// way an update does: agents pause and continue on the next start, and exit 75 is
+// non-zero, so the launcher loop and a service manager both start the runner again.
+// A server that answers with a refusal gets an error line instead: a restart would
+// not fix it. See heartbeat-watchdog.ts.
+const heartbeatWatchdog = new HeartbeatWatchdog();
+setInterval(() => {
+  if (!workerManager || config.serverless || updateState.updating) return;
+  const decision = heartbeatWatchdog.check(workerManager.getHeartbeatTracker());
+  if (!decision) return;
+  logError(decision.message);
+  if (decision.action === 'restart') scheduleGracefulRestart('heartbeat watchdog');
+}, HEARTBEAT_WATCHDOG_INTERVAL_MS);
