@@ -58,6 +58,12 @@ describe('touchedFiles', () => {
     expect(reads).toEqual([{ kind: 'read', path: 'm.ts', add: 0, rem: 0, lastTs: T0 + 4, count: 2 }]);
   });
 
+  test('a Skill milestone produces no touched-files row', () => {
+    const { rows, reads } = touchedFiles([{ type: 'action', label: 'Skill: foo', ts: T0, tool: 'Skill', skill: 'foo' } as any]);
+    expect(rows).toEqual([]);
+    expect(reads).toEqual([]);
+  });
+
   test('legacy rows have unknown line counts (null), not zero', () => {
     const { rows } = touchedFiles([{ type: 'action', label: 'Edited a.ts', ts: T0 }]);
     expect(rows[0]).toMatchObject({ path: 'a.ts', add: null, rem: null });

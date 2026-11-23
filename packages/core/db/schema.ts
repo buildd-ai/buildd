@@ -2203,12 +2203,13 @@ export type WorkerMilestone =
       type: 'action';
       label?: string;
       ts: number;
-      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash';
+      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash' | 'Skill';
       path?: string;
       add?: number;
       rem?: number;
       cmd?: string;
       count?: number;
+      skill?: string;
     };
 
 export const workers = pgTable('workers', {

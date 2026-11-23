@@ -263,14 +263,20 @@ describe('commitMessageOf', () => {
   });
 });
 
-describe('toolActionMilestone — Skill', () => {
-  test('emits a names-only Skill milestone', () => {
-    const m = toolActionMilestone('Skill', { skill: 'buildd-workflow', args: 'secret /home/x/y' }, '/w', 5);
-    expect(m).toEqual({ type: 'action', label: 'Skill buildd-workflow', ts: 5, tool: 'Skill', skill: 'buildd-workflow' });
+describe('Skill tool milestones', () => {
+  test('emits the slug only, never args', () => {
+    const m = toolActionMilestone('Skill', { skill: 'schema-change', args: 'secret task text /home/x' }, ROOT, 1);
+    expect(m).toEqual({ type: 'action', label: 'Skill schema-change', ts: 1, tool: 'Skill', skill: 'schema-change' });
     expect(JSON.stringify(m)).not.toContain('secret');
   });
-  test('no milestone without a plain skill name', () => {
-    expect(toolActionMilestone('Skill', {}, '/w')).toBeNull();
-    expect(toolActionMilestone('Skill', { skill: 'a b/../../etc' }, '/w')).toBeNull();
+  test('rejects missing or path-like slugs', () => {
+    expect(toolActionMilestone('Skill', {}, ROOT)).toBeNull();
+    expect(toolActionMilestone('Skill', { skill: '/etc/passwd' }, ROOT)).toBeNull();
+    expect(toolActionMilestone('Skill', { skill: 'a b' }, ROOT)).toBeNull();
+  });
+  test('survives the shape the procedure digest reads', () => {
+    const m = toolActionMilestone('Skill', { skill: 'buildd-workflow' }, ROOT) as Record<string, unknown>;
+    expect(m.type === 'action' && m.tool === 'Skill' && typeof m.skill === 'string').toBe(true);
+    expect(m.skill).toBe('buildd-workflow');
   });
 });
