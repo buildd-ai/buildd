@@ -211,10 +211,13 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
       let filesRead = 0;
       let filesOverCeiling = 0;
 
+      // The claim route says whether this workspace's code corpus is on. Off:
+      // no code file is read, chunked or embedded, and no code chunk is pruned.
+      const codeIngest = job.codeIngest !== false;
       for (const filePath of allPaths) {
         if (!shouldIngestFile(filePath)) { skipped++; continue; }
         const corpus = classifyIngestCorpus(filePath);
-        if (!corpus) { skipped++; continue; }
+        if (!corpus || (corpus === 'code' && !codeIngest)) { skipped++; continue; }
         // Past the ceiling, count rather than read: a huge repo stays out of memory.
         if (filesOverCeiling > 0 || filesRead >= MAX_FULL_INGEST_FILES) { filesOverCeiling++; continue; }
         const content = await reader.readFile(filePath);
@@ -273,7 +276,7 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
       const [codePruned, docsPruned, specPruned] = filesOverCeiling > 0
         ? [[], [], []]
         : await Promise.all([
-            pruneOrphans(codeStore, job.workspaceId, 'code', '', codeSeenPaths),
+            codeIngest ? pruneOrphans(codeStore, job.workspaceId, 'code', '', codeSeenPaths) : Promise.resolve([]),
             pruneOrphans(docsStore, job.workspaceId, 'docs', '', docsSeenPaths),
             pruneOrphans(specStore, job.workspaceId, 'spec', '', docsSeenPaths),
           ]);

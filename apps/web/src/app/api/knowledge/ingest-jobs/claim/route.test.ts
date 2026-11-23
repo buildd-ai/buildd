@@ -66,9 +66,11 @@ mock.module('@/lib/knowledge-ingest-lease', () => ({
 
 // The ingest switch: which workspaces have knowledge ingest off.
 let disabledWorkspaces = new Set<string>();
+let codeOffWorkspaces = new Set<string>();
 let skippedClosed: Array<{ id: string; site: string }> = [];
 mock.module('@/lib/knowledge-ingest-switch', () => ({
   knowledgeIngestDisabledAmong: async (ids: string[]) => new Set(ids.filter(id => disabledWorkspaces.has(id))),
+  knowledgeCodeIngestOffAmong: async (ids: string[]) => new Set(ids.filter(id => codeOffWorkspaces.has(id))),
   closeIngestJobAsSkipped: async (job: { id: string }, site: string) => {
     skippedClosed.push({ id: job.id, site });
     return true;
@@ -99,7 +101,25 @@ describe('POST /api/knowledge/ingest-jobs/claim', () => {
     reclaimSummary = { scanned: 0, requeued: [], parked: [], escalated: [], stalled: [], raceLost: 0 };
     mockReclaim.mockClear();
     disabledWorkspaces = new Set();
+    codeOffWorkspaces = new Set();
     skippedClosed = [];
+  });
+
+  it('tells the runner whether to ingest the code corpus: codeIngest false when the workspace has it off', async () => {
+    codeOffWorkspaces = new Set(['ws-1']);
+    queuedJobs = [{ id: 'job-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'queued', scope: 'full' }];
+    claimResults = [[{ id: 'job-1', workspaceId: 'ws-1', status: 'running', scope: 'full' }]];
+    const data = await (await POST(createRequest({ repos: ['test-org/test-repo'] }))).json();
+    expect(data.job.id).toBe('job-1');
+    expect(data.job.codeIngest).toBe(false);
+    expect(skippedClosed).toEqual([]);
+  });
+
+  it('codeIngest true by default', async () => {
+    queuedJobs = [{ id: 'job-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', status: 'queued', scope: 'full' }];
+    claimResults = [[{ id: 'job-1', workspaceId: 'ws-1', status: 'running', scope: 'full' }]];
+    const data = await (await POST(createRequest({ repos: ['test-org/test-repo'] }))).json();
+    expect(data.job.codeIngest).toBe(true);
   });
 
   it('never hands out a job of a workspace with knowledge ingest off: closes it as skipped', async () => {
