@@ -137,6 +137,10 @@ export interface BridgeDeps {
   /** This runner's display name, for a remote thread's first message. */
   runnerName?(): string;
   version: string;
+  /** The runner version installed on disk now; differs from `version` once the runner updated under this process. */
+  installedVersion?: () => string;
+  /** How long to look for this runner's own worker after a refused claim (default 20 x 500ms). */
+  ownWorkerWait?: { attempts: number; delayMs: number };
   /** How long a reply may go unanswered by the runner before the turn ends anyway. */
   settleGraceMs?: number;
 }
@@ -237,9 +241,25 @@ export function directiveFrom(text: string): { text: string; meta: BuilddTaskMet
   return { text: lines.slice(1).join('\n').trim(), meta: taskMetaFromRaw(raw) };
 }
 
-/** First non-empty line, clipped: what the dashboard and queue show for the task. */
+/**
+ * A line that says who wrote the text, not what it asks: a whole-line bracketed
+ * note naming the client and saying the message was not typed by the user
+ * (`[T3 Code: the agent in T3 thread "…" sent this message, not the user.]`),
+ * or a generic role opener. Matched by shape, so a reworded note still counts.
+ */
+function isAttributionLine(line: string): boolean {
+  return (/^\[[^\]\n]*\bnot\b[^\]\n]*\buser\b[^\]\n]*\]$/i.test(line))
+    || /^Act as the \S+ sub-agent for this task\.$/.test(line);
+}
+
+/**
+ * First meaningful line, clipped: what the dashboard and queue show for the task.
+ * A leading attribution note or generic opener is skipped (it stays in the
+ * description); if nothing else is left, the first non-empty line is used.
+ */
 export function taskTitleFrom(text: string): string {
-  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? text.trim();
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const line = lines.find(l => !isAttributionLine(l)) ?? lines[0] ?? text.trim();
   return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line;
 }
 
@@ -490,12 +510,15 @@ export class AcpBridge {
     }
 
     const title = taskTitleFrom(text);
+    const installed = this.deps.installedVersion?.();
+    const stale = !!installed && installed !== this.deps.version;
+    if (stale) console.error(`buildd acp ${this.deps.version} is older than the installed runner ${installed}; restart it to pick up the update.`);
     // Filed reserved for this runner's account, then claimed by id: no other runner
     // can take it in the gap, or the thread would follow nothing (CG-7).
     const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true,
       // Origin marker the task page reads (context.client): the client names itself.
       // callbackTarget: the thread to send notes to (a thread id, not a secret).
-      context: { client: { kind: 'acp', ...(this.clientName ? { name: this.clientName } : {}) }, callbackTarget: { kind: 't3_thread', threadId: sessionId } } });
+      context: { client: { kind: 'acp', version: this.deps.version, ...(this.clientName ? { name: this.clientName } : {}), ...(stale ? { stale: true, installedVersion: installed } : {}) }, callbackTarget: { kind: 't3_thread', threadId: sessionId } } });
     const task = (created.body as { task?: { id?: string } } | null)?.task;
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 
@@ -508,12 +531,13 @@ export class AcpBridge {
       worker = await this.ownWorkerFor(task.id);
     }
     if (!worker?.id) {
-      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${await this.claimRefusalText(claimed, ws)}`);
+      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it. This runner did not start it just now. ${await this.claimRefusalText(claimed, ws)}`);
     }
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);
     session.cursor.skip(worker.messages);
-    const started = `Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}`;
+    const started = `Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}`
+      + (stale ? ` (this buildd acp process is ${this.deps.version}, older than the installed runner ${installed}: restart it)` : '');
     if (session.remote) {
       const name = this.deps.runnerName?.().trim();
       const where = worker.branch ? `on branch ${worker.branch} and in its PR` : 'on its branch and in its PR';
@@ -531,6 +555,10 @@ export class AcpBridge {
    */
   private async claimRefusalText(claimed: { status: number; body: unknown }, ws: { name: string; repo?: string | null }): Promise<string> {
     const b = (claimed.body && typeof claimed.body === 'object' ? claimed.body : {}) as { claimReason?: unknown; exclusion?: unknown; exclusionDetail?: unknown };
+    const said = typeof (claimed.body as { error?: unknown } | null)?.error === 'string' ? (claimed.body as { error: string }).error : '';
+    if (/no longer available|already claimed/i.test(said)) {
+      return 'Another claim got to it first, so it is most likely already starting; this is not a failure. Check its page in buildd before sending it again.';
+    }
     if (b.claimReason !== 'all_candidates_deferred') return refusal(claimed);
     const code = typeof b.exclusion === 'string' ? b.exclusion : null;
     if (code === 'isolation_unenforced') {
@@ -715,10 +743,11 @@ export class AcpBridge {
 
   /** A worker on this runner for the task, waiting briefly for a dispatch that is still landing. */
   private async ownWorkerFor(taskId: string): Promise<PublicWorker | undefined> {
-    for (let i = 0; i < 6; i++) {
+    const { attempts, delayMs } = this.deps.ownWorkerWait ?? { attempts: 20, delayMs: 500 };
+    for (let i = 0; i < attempts; i++) {
       const found = (await this.deps.runner.listWorkers().catch(() => [] as PublicWorker[])).find(w => w.taskId === taskId);
       if (found) return found;
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, delayMs));
     }
     return undefined;
   }
