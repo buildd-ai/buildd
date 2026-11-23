@@ -1,0 +1,1505 @@
+{
+  "type": "diff",
+  "version": "10",
+  "dialect": "postgres",
+  "id": "91b18bef-5a39-4289-804c-ce796d21f71c",
+  "prevIds": [
+    "6bb24f28-f0b4-403b-9073-f5648c3678b6"
+  ],
+  "footprints": [
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "public",
+        "knowledge_namespaces"
+      ],
+      "writes": [
+        "s|tbl|public.knowledge_namespaces",
+        "n|tbl|public.knowledge_namespaces",
+        "e|tbl|public.knowledge_namespaces",
+        "n|rel|public.knowledge_namespaces",
+        "n|type|public.knowledge_namespaces",
+        "n|rel|public.knowledge_namespaces_pkey"
+      ],
+      "reads": [
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "public",
+        "model_relay_jobs"
+      ],
+      "writes": [
+        "s|tbl|public.model_relay_jobs",
+        "n|tbl|public.model_relay_jobs",
+        "e|tbl|public.model_relay_jobs",
+        "n|rel|public.model_relay_jobs",
+        "n|type|public.model_relay_jobs",
+        "n|rel|public.model_relay_jobs_pkey"
+      ],
+      "reads": [
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "public",
+        "model_relay_usage_daily"
+      ],
+      "writes": [
+        "s|tbl|public.model_relay_usage_daily",
+        "n|tbl|public.model_relay_usage_daily",
+        "e|tbl|public.model_relay_usage_daily",
+        "n|rel|public.model_relay_usage_daily",
+        "n|type|public.model_relay_usage_daily",
+        "n|rel|public.model_relay_usage_daily_pkey"
+      ],
+      "reads": [
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "knowledge_chunks",
+        "embedding_768"
+      ],
+      "writes": [
+        "s|col|public.knowledge_chunks.embedding_768",
+        "n|col|public.knowledge_chunks.embedding_768",
+        "e|col|public.knowledge_chunks.embedding_768"
+      ],
+      "reads": [
+        "n|tbl|public.knowledge_chunks",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "knowledge_chunks",
+        "embedding_1536"
+      ],
+      "writes": [
+        "s|col|public.knowledge_chunks.embedding_1536",
+        "n|col|public.knowledge_chunks.embedding_1536",
+        "e|col|public.knowledge_chunks.embedding_1536"
+      ],
+      "reads": [
+        "n|tbl|public.knowledge_chunks",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "teams",
+        "local_runner"
+      ],
+      "writes": [
+        "s|col|public.teams.local_runner",
+        "n|col|public.teams.local_runner",
+        "e|col|public.teams.local_runner"
+      ],
+      "reads": [
+        "n|tbl|public.teams",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "worker_heartbeats",
+        "local_models"
+      ],
+      "writes": [
+        "s|col|public.worker_heartbeats.local_models",
+        "n|col|public.worker_heartbeats.local_models",
+        "e|col|public.worker_heartbeats.local_models"
+      ],
+      "reads": [
+        "n|tbl|public.worker_heartbeats",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "worker_heartbeats",
+        "local_models_at"
+      ],
+      "writes": [
+        "s|col|public.worker_heartbeats.local_models_at",
+        "n|col|public.worker_heartbeats.local_models_at",
+        "e|col|public.worker_heartbeats.local_models_at"
+      ],
+      "reads": [
+        "n|tbl|public.worker_heartbeats",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "knowledge_chunks",
+        "knowledge_chunks_embedding_768_hnsw_idx"
+      ],
+      "writes": [
+        "s|idx|public.knowledge_chunks_embedding_768_hnsw_idx",
+        "n|idx|public.knowledge_chunks_embedding_768_hnsw_idx",
+        "e|idx|public.knowledge_chunks_embedding_768_hnsw_idx",
+        "n|rel|public.knowledge_chunks_embedding_768_hnsw_idx"
+      ],
+      "reads": [
+        "n|tbl|public.knowledge_chunks",
+        "n|sch|public",
+        "n|col|public.knowledge_chunks.embedding_768"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "knowledge_chunks",
+        "knowledge_chunks_embedding_1536_hnsw_idx"
+      ],
+      "writes": [
+        "s|idx|public.knowledge_chunks_embedding_1536_hnsw_idx",
+        "n|idx|public.knowledge_chunks_embedding_1536_hnsw_idx",
+        "e|idx|public.knowledge_chunks_embedding_1536_hnsw_idx",
+        "n|rel|public.knowledge_chunks_embedding_1536_hnsw_idx"
+      ],
+      "reads": [
+        "n|tbl|public.knowledge_chunks",
+        "n|sch|public",
+        "n|col|public.knowledge_chunks.embedding_1536"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "knowledge_namespaces",
+        "knowledge_namespaces_team_idx"
+      ],
+      "writes": [
+        "s|idx|public.knowledge_namespaces_team_idx",
+        "n|idx|public.knowledge_namespaces_team_idx",
+        "e|idx|public.knowledge_namespaces_team_idx",
+        "n|rel|public.knowledge_namespaces_team_idx"
+      ],
+      "reads": [
+        "n|tbl|public.knowledge_namespaces",
+        "n|sch|public",
+        "n|col|public.knowledge_namespaces.team_id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "knowledge_namespaces",
+        "knowledge_namespaces_reembed_idx"
+      ],
+      "writes": [
+        "s|idx|public.knowledge_namespaces_reembed_idx",
+        "n|idx|public.knowledge_namespaces_reembed_idx",
+        "e|idx|public.knowledge_namespaces_reembed_idx",
+        "n|rel|public.knowledge_namespaces_reembed_idx"
+      ],
+      "reads": [
+        "n|tbl|public.knowledge_namespaces",
+        "n|sch|public",
+        "n|col|public.knowledge_namespaces.reembed_status"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "model_relay_jobs",
+        "model_relay_jobs_claim_idx"
+      ],
+      "writes": [
+        "s|idx|public.model_relay_jobs_claim_idx",
+        "n|idx|public.model_relay_jobs_claim_idx",
+        "e|idx|public.model_relay_jobs_claim_idx",
+        "n|rel|public.model_relay_jobs_claim_idx"
+      ],
+      "reads": [
+        "n|tbl|public.model_relay_jobs",
+        "n|sch|public",
+        "n|col|public.model_relay_jobs.team_id",
+        "n|col|public.model_relay_jobs.runner_id",
+        "n|col|public.model_relay_jobs.status",
+        "n|col|public.model_relay_jobs.not_before"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "model_relay_jobs",
+        "model_relay_jobs_deadline_idx"
+      ],
+      "writes": [
+        "s|idx|public.model_relay_jobs_deadline_idx",
+        "n|idx|public.model_relay_jobs_deadline_idx",
+        "e|idx|public.model_relay_jobs_deadline_idx",
+        "n|rel|public.model_relay_jobs_deadline_idx"
+      ],
+      "reads": [
+        "n|tbl|public.model_relay_jobs",
+        "n|sch|public",
+        "n|col|public.model_relay_jobs.deadline_at"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "model_relay_jobs",
+        "model_relay_jobs_finished_idx"
+      ],
+      "writes": [
+        "s|idx|public.model_relay_jobs_finished_idx",
+        "n|idx|public.model_relay_jobs_finished_idx",
+        "e|idx|public.model_relay_jobs_finished_idx",
+        "n|rel|public.model_relay_jobs_finished_idx"
+      ],
+      "reads": [
+        "n|tbl|public.model_relay_jobs",
+        "n|sch|public",
+        "n|col|public.model_relay_jobs.finished_at"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "public",
+        "model_relay_jobs"
+      ],
+      "writes": [
+        "s|fk|public.model_relay_jobs.model_relay_jobs_team_id_teams_id_fkey",
+        "n|fk|public.model_relay_jobs.model_relay_jobs_team_id_teams_id_fkey",
+        "e|fk|public.model_relay_jobs.model_relay_jobs_team_id_teams_id_fkey",
+        "n|con|public.model_relay_jobs.model_relay_jobs_team_id_teams_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.model_relay_jobs",
+        "n|sch|public",
+        "n|tbl|public.teams",
+        "n|sch|public",
+        "n|col|public.model_relay_jobs.team_id",
+        "n|col|public.teams.id",
+        "e|uniqueness|public.teams.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "public",
+        "model_relay_jobs"
+      ],
+      "writes": [
+        "s|fk|public.model_relay_jobs.model_relay_jobs_runner_id_worker_heartbeats_id_fkey",
+        "n|fk|public.model_relay_jobs.model_relay_jobs_runner_id_worker_heartbeats_id_fkey",
+        "e|fk|public.model_relay_jobs.model_relay_jobs_runner_id_worker_heartbeats_id_fkey",
+        "n|con|public.model_relay_jobs.model_relay_jobs_runner_id_worker_heartbeats_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.model_relay_jobs",
+        "n|sch|public",
+        "n|tbl|public.worker_heartbeats",
+        "n|sch|public",
+        "n|col|public.model_relay_jobs.runner_id",
+        "n|col|public.worker_heartbeats.id",
+        "e|uniqueness|public.worker_heartbeats.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "public",
+        "model_relay_usage_daily"
+      ],
+      "writes": [
+        "s|fk|public.model_relay_usage_daily.model_relay_usage_daily_team_id_teams_id_fkey",
+        "n|fk|public.model_relay_usage_daily.model_relay_usage_daily_team_id_teams_id_fkey",
+        "e|fk|public.model_relay_usage_daily.model_relay_usage_daily_team_id_teams_id_fkey",
+        "n|con|public.model_relay_usage_daily.model_relay_usage_daily_team_id_teams_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.model_relay_usage_daily",
+        "n|sch|public",
+        "n|tbl|public.teams",
+        "n|sch|public",
+        "n|col|public.model_relay_usage_daily.team_id",
+        "n|col|public.teams.id",
+        "e|uniqueness|public.teams.id"
+      ]
+    },
+    {
+      "statementType": "add_check",
+      "statementTarget": [
+        "table",
+        "public",
+        "knowledge_chunks"
+      ],
+      "writes": [
+        "s|ck|public.knowledge_chunks.knowledge_chunks_one_vector",
+        "n|ck|public.knowledge_chunks.knowledge_chunks_one_vector",
+        "e|ck|public.knowledge_chunks.knowledge_chunks_one_vector",
+        "n|con|public.knowledge_chunks.knowledge_chunks_one_vector"
+      ],
+      "reads": [
+        "n|tbl|public.knowledge_chunks",
+        "n|sch|public",
+        "n|col|public.knowledge_chunks.embedding",
+        "n|col|public.knowledge_chunks.embedding_768",
+        "n|col|public.knowledge_chunks.embedding_1536"
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "knowledge_namespaces",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "model_relay_jobs",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "model_relay_usage_daily",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_chunks",
+        "name": "embedding_768",
+        "type": "vector(768)",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_chunks",
+        "name": "embedding_1536",
+        "type": "vector(1536)",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "namespace",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "team_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "corpus",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "embedding_provider",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "embedding_model",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "dimensions",
+        "type": "integer",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "vector_column",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "reembed_status",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "'none'",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "reembed_total",
+        "type": "integer",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "0",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "reembed_done",
+        "type": "integer",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "0",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "reembed_started_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "reembed_finished_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "updated_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "gen_random_uuid()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "team_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "workspace_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "runner_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "kind",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "surface",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "namespace",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "model",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "status",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "'queued'",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "payload",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "result",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "error",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "attempts",
+        "type": "integer",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "0",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "max_attempts",
+        "type": "integer",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "lease_owner",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "lease_expires_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "not_before",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "deadline_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "leased_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "finished_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "day",
+        "type": "date",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "team_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "runner_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "kind",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "model",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "jobs",
+        "type": "bigint",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "0",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "errors",
+        "type": "bigint",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "0",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "prompt_tokens",
+        "type": "bigint",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "0",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "completion_tokens",
+        "type": "bigint",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "0",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "duration_ms",
+        "type": "bigint",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "0",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "teams",
+        "name": "local_runner",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "worker_heartbeats",
+        "name": "local_models",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "worker_heartbeats",
+        "name": "local_models_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_chunks",
+        "name": "knowledge_chunks_embedding_768_hnsw_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "embedding_768",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": {
+              "name": "vector_cosine_ops",
+              "default": false
+            }
+          }
+        ],
+        "isUnique": false,
+        "where": null,
+        "with": "",
+        "method": "hnsw",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_chunks",
+        "name": "knowledge_chunks_embedding_1536_hnsw_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "embedding_1536",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": {
+              "name": "vector_cosine_ops",
+              "default": false
+            }
+          }
+        ],
+        "isUnique": false,
+        "where": null,
+        "with": "",
+        "method": "hnsw",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "knowledge_namespaces_team_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "team_id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": false,
+        "where": null,
+        "with": "",
+        "method": "btree",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "knowledge_namespaces_reembed_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "reembed_status",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": false,
+        "where": "\"reembed_status\" IN ('pending', 'running')",
+        "with": "",
+        "method": "btree",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "model_relay_jobs_claim_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "team_id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "runner_id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "status",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "not_before",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": false,
+        "where": null,
+        "with": "",
+        "method": "btree",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "model_relay_jobs_deadline_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "deadline_at",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": false,
+        "where": "\"status\" IN ('queued', 'leased')",
+        "with": "",
+        "method": "btree",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "model_relay_jobs_finished_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "finished_at",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": false,
+        "where": null,
+        "with": "",
+        "method": "btree",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "model_relay_jobs_team_id_teams_id_fkey",
+        "nameExplicit": false,
+        "columns": [
+          "team_id"
+        ],
+        "schemaTo": "public",
+        "tableTo": "teams",
+        "columnsTo": [
+          "id"
+        ],
+        "onUpdate": "NO ACTION",
+        "onDelete": "CASCADE",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "model_relay_jobs_runner_id_worker_heartbeats_id_fkey",
+        "nameExplicit": false,
+        "columns": [
+          "runner_id"
+        ],
+        "schemaTo": "public",
+        "tableTo": "worker_heartbeats",
+        "columnsTo": [
+          "id"
+        ],
+        "onUpdate": "NO ACTION",
+        "onDelete": "SET NULL",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "model_relay_usage_daily_team_id_teams_id_fkey",
+        "nameExplicit": false,
+        "columns": [
+          "team_id"
+        ],
+        "schemaTo": "public",
+        "tableTo": "teams",
+        "columnsTo": [
+          "id"
+        ],
+        "onUpdate": "NO ACTION",
+        "onDelete": "CASCADE",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_usage_daily",
+        "name": "model_relay_usage_daily_pkey",
+        "columns": [
+          "day",
+          "team_id",
+          "runner_id",
+          "kind",
+          "model"
+        ],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_namespaces",
+        "name": "knowledge_namespaces_pkey",
+        "columns": [
+          "namespace"
+        ],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "model_relay_jobs",
+        "name": "model_relay_jobs_pkey",
+        "columns": [
+          "id"
+        ],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "knowledge_chunks",
+        "name": "knowledge_chunks_one_vector",
+        "value": "num_nonnulls(\"embedding\", \"embedding_768\", \"embedding_1536\") <= 1",
+        "entityType": "checks"
+      }
+    }
+  ]
+}
