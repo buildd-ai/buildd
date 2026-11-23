@@ -70,6 +70,11 @@ export function socketRunnerPort(socketPath: string, client: SocketClient = sock
     claim(taskId) {
       return client.post('/api/claim', { taskId });
     },
+    async runnerInfo() {
+      const r = await client.get<{ builddServer?: string; accountId?: string | null }>('/api/config');
+      if (r.status >= 400) return null;
+      return { server: r.body?.builddServer ?? '', accountId: r.body?.accountId ?? null };
+    },
     subscribe(fn, onSnapshot) {
       listeners.add(fn);
       if (onSnapshot) snapshotListeners.add(onSnapshot);
@@ -113,6 +118,18 @@ export function localPathFor(path: string, platform: string = process.platform):
 export function repoNamesFromRemote(url: string): string[] {
   const m = url.trim().match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/);
   return m ? [m[2], `${m[1]}/${m[2]}`] : [];
+}
+
+/** `git@github.com:acme/app.git`, `https://github.com/acme/app` -> 'acme/app'; null for any other host. */
+export function githubRepoFromRemote(url: string): string | null {
+  const m = url.trim().match(/^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?(?:www\.)?github\.com[:/]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/i);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/** The project's GitHub repo, from `origin`. */
+export async function githubRepo(cwd: string): Promise<string | null> {
+  const remote = await git(localPathFor(cwd), ['remote', 'get-url', 'origin']);
+  return remote ? githubRepoFromRemote(remote) : null;
 }
 
 export async function projectNames(cwd: string): Promise<string[]> {

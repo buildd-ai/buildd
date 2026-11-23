@@ -1,23 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, githubRepos, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
-import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
-import { enqueueFullIngestJob, logIngestSkip } from '@/lib/knowledge-ingest';
-import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { toPublicWorkspace } from '@/lib/workspace-public';
-import { emit } from '@/lib/core-emit';
 import { can } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { isGrantSession } from '@/lib/grant-scope';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { invalidateAppChrome } from '@/lib/app-chrome';
+import { createWorkspace } from '@/lib/workspace-create';
 
 /**
  * The account fields a workspace listing may carry. The response spreads each
@@ -252,108 +247,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Creating a workspace in this team requires team admin' }, { status: 403 });
     }
 
-    // A GitHub installation may only be linked into a team it belongs to (see
-    // lib/github-installation-access.ts).
-    if (githubInstallationId) {
-      const ownerTeamIds = await getInstallationOwnerTeamIds(githubInstallationId);
-      if (!ownerTeamIds.includes(teamId)) {
-        return NextResponse.json(
-          { error: 'That GitHub installation is not connected to this team' },
-          { status: 403 },
-        );
-      }
+    const created = await createWorkspace({
+      teamId,
+      name: workspaceName,
+      repoUrl,
+      defaultBranch,
+      gitConfig,
+      githubRepo,
+      githubInstallationId,
+      accessMode,
+      knowledgeIngest: ingestOn,
+      origin: req.nextUrl.origin,
+      userId: user?.id ?? null,
+    });
+    if (!created.ok) {
+      return NextResponse.json({ error: created.error }, { status: created.status });
     }
-
-    // If a GitHub repo is selected, persist it on-demand
-    let githubRepoDbId: string | null = null;
-    if (githubRepo && githubInstallationId) {
-      const [upserted] = await db
-        .insert(githubRepos)
-        .values({
-          installationId: githubInstallationId,
-          repoId: parseInt(githubRepo.repoId || githubRepo.id),
-          fullName: githubRepo.fullName,
-          name: githubRepo.name,
-          owner: githubRepo.owner,
-          private: githubRepo.private ?? false,
-          defaultBranch: githubRepo.defaultBranch || 'main',
-          htmlUrl: githubRepo.htmlUrl || null,
-          description: githubRepo.description || null,
-        })
-        .onConflictDoUpdate({
-          target: githubRepos.repoId,
-          // Only refresh a row that already belongs to this installation.
-          setWhere: eq(githubRepos.installationId, githubInstallationId),
-          set: {
-            fullName: githubRepo.fullName,
-            name: githubRepo.name,
-            owner: githubRepo.owner,
-            private: githubRepo.private ?? false,
-            defaultBranch: githubRepo.defaultBranch || 'main',
-            htmlUrl: githubRepo.htmlUrl || null,
-            description: githubRepo.description || null,
-            updatedAt: new Date(),
-          },
-        })
-        .returning();
-      if (!upserted) {
-        return NextResponse.json(
-          { error: 'That repository is linked through a different GitHub installation' },
-          { status: 409 },
-        );
-      }
-      githubRepoDbId = upserted.id;
-    }
-
-    // Merge gitConfig: support both top-level defaultBranch (legacy) and gitConfig.defaultBranch (new)
-    const mergedGitConfig: Record<string, unknown> = {
-      ...(gitConfig && typeof gitConfig === 'object' ? gitConfig : {}),
-    };
-    // If defaultBranch is provided at top level, add it to gitConfig
-    if (defaultBranch) {
-      mergedGitConfig.defaultBranch = defaultBranch;
-    }
-
-    const [workspace] = await db
-      .insert(workspaces)
-      .values({
-        name: workspaceName,
-        // Canonical `owner/name` when parseable, else the caller's input
-        // verbatim — see the PATCH handler for why unparseable input survives.
-        repo: repoUrl ? (normalizeRepoFullName(repoUrl) ?? repoUrl) : null,
-        localPath: defaultBranch || null,
-        githubRepoId: githubRepoDbId,
-        githubInstallationId: githubInstallationId || null,
-        accessMode: accessMode || 'open',
-        knowledgeIngest: ingestOn,
-        gitConfig: Object.keys(mergedGitConfig).length > 0 ? (mergedGitConfig as unknown as WorkspaceGitConfig) : null,
-        teamId,
-      })
-      .returning();
-
-    // Created open: the team's accounts reach it on their next call; so does
-    // an MCP connection covering the team as a whole.
-    await clearCallerCache(callerDep.teamOpenWorkspaces(teamId), callerDep.teamWorkspaces(teamId));
-
-    // Modules react (e.g. connectors preinstalled from the team's catalog).
-    await emit({ type: 'workspace.created', workspaceId: workspace.id, teamId, origin: req.nextUrl.origin });
-
-    // Auto-ingest on repo link: enqueue a full ingest job when a repo URL was
-    // provided, unless the workspace was created with knowledge ingest off.
-    if (repoUrl && !ingestOn) {
-      logIngestSkip('workspace_create', { workspaceId: workspace.id });
-    } else if (repoUrl) {
-      const fullName = normalizeRepoFullName(repoUrl);
-      if (fullName) {
-        enqueueFullIngestJob({ workspaceId: workspace.id, repo: fullName, trigger: 'repo_link' }).catch(err =>
-          console.error(`[knowledge-ingest] repo-link enqueue failed for new workspace ${workspace.id}:`, err)
-        );
-      }
-    }
-
-    // The acting user's shell shows this at once (lib/app-chrome.ts).
-    if (user) invalidateAppChrome(user.id);
-    return NextResponse.json(toPublicWorkspace(workspace));
+    return NextResponse.json(toPublicWorkspace(created.workspace));
   } catch (error) {
     console.error('Create workspace error:', error);
     return NextResponse.json({ error: 'Failed to create workspace' }, { status: 500 });

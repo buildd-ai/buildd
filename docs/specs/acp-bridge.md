@@ -2,7 +2,7 @@
 title: ACP Bridge
 status: active
 owner: max
-last_verified: 2026-11-22
+last_verified: 2026-11-23
 summary: The `buildd acp` bridge MUST present this machine's runner workers as ACP threads, route each reply by worker state, file a new thread's task reserved for this runner, and say plainly when it cannot.
 domain: runners
 surfaces: [apps/runner/src/acp/bridge.ts, apps/runner/src/acp/translate.ts, apps/runner/src/acp/runner-port.ts, apps/runner/src/acp/links.ts]
@@ -109,7 +109,8 @@ The first message of a client-started thread files a buildd task in the matching
 |---|---|---|
 | Runner not running / socket refused | `/api/workers` or `/api/workspaces` fail: "runner refused /api/workers (<status>): <reason>", "Could not read your buildd workspaces: <reason>"; the connection error itself surfaces from the socket client | Start the runner on this machine (the bridge only talks to it), then retry |
 | New thread, no folder | "This thread has no project folder, so buildd cannot tell which workspace the task is for." | Open the thread inside a project folder |
-| No matching workspace | "No buildd workspace matches this project (<names>). Connect the repo in buildd first." | Connect the repo as a buildd workspace |
+| No matching workspace, GitHub `origin` | "This runner does not work on <owner/name> yet. Open this to connect <owner/name> to buildd and let this runner work on it: <server>/app/connect-repo?repo=<owner/name>&runner=<account id>" then "Then send your message again here." The link is built from the runner's own config (`GET /api/config`); the bridge MUST NOT ask the server whether another team has a workspace for the repo. With no account id known it names `<server>/app/settings/connections` instead | Open the link signed in: the page picks this runner for the repo's workspace, or creates the workspace and picks it, or says it is already fine (`apps/web/src/lib/connect-repo.ts`, session only). Resend; no restart |
+| No matching workspace, no GitHub `origin` | "buildd works on GitHub repos, and this folder has no GitHub remote (origin), so buildd has no workspace for it. T3's own Claude or Codex threads work in this folder without buildd." | Use a T3 Claude/Codex thread, or add a GitHub remote |
 | Several workspaces match | "This folder matches more than one buildd workspace (<list>). No workspace was chosen; send the message again to choose one." (or "Start this task from buildd for now." when the client has no forms) | Resend and pick one, or start the task from buildd |
 | Task not created | "buildd did not create the task. The runner refused that (<status>): <reason>." | Fix the cause named, resend |
 | Claim refused (current) | "Created the buildd task “<title>” in <workspace>. It is queued: this runner could not take it now. The runner refused that (<status>): <reason>." | Free a slot or fix the limit named; the task stays queued. Pending #6136: it names the 20-minute hold for this runner |

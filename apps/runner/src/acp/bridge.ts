@@ -15,6 +15,7 @@
  * the right place (answer / message / follow-up, translate.ts replyRoute).
  */
 import type { PublicWorker } from '../public-worker';
+import { DEFAULT_SERVER } from '../server-url';
 import {
   BRIDGE_COMMANDS,
   MessageCursor,
@@ -48,6 +49,8 @@ export interface RunnerPort {
   createTask(input:   { workspaceId: string; title: string; description: string; reserve?: boolean; context?: Record<string, unknown> } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
   /** Claim a task onto this runner as a person would (`c` in top). */
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
+  /** The buildd server this runner talks to and its key's account id (`GET /api/config`), for links. */
+  runnerInfo?(): Promise<{ server: string; accountId: string | null } | null>;
 }
 
 /** `_meta.buildd` on `session/new` or the first `session/prompt`: where the thread's task is filed. */
@@ -115,6 +118,8 @@ export interface BridgeDeps {
    * checkout is not the one the task works in.
    */
   cwdExists?(cwd: string): boolean;
+  /** The project's GitHub repo (`owner/name` from `origin`), or null when origin is not on GitHub. */
+  githubRepoOf?(cwd: string): Promise<string | null>;
   /** This runner's display name, for a remote thread's first message. */
   runnerName?(): string;
   version: string;
@@ -426,9 +431,7 @@ export class AcpBridge {
     }
     const matches = workspaces.filter(ws =>
       names.includes(ws.name?.toLowerCase()) || (!!ws.repo && (names.includes(ws.repo.toLowerCase()) || names.includes(ws.repo.toLowerCase().split('/').pop()!))));
-    if (matches.length === 0) {
-      return end(`No buildd workspace matches this project (${names.join(', ') || 'no name'}). Connect the repo in buildd first.`);
-    }
+    if (matches.length === 0) return end(await this.noMatchText(session.cwd));
     let ws = matches[0];
     if (matches.length > 1) {
       const pick = this.canElicit ? await this.chooseWorkspace(sessionId, matches) : null;
@@ -470,6 +473,31 @@ export class AcpBridge {
       this.emit(sessionId, textUpdate(`${started}.`));
     }
     return this.follow(session, sessionId, worker, { watching: true, alreadyMoving: true });
+  }
+
+  /**
+   * A project no workspace this runner reaches is for. The usual cause is not
+   * a missing workspace but a missing pick: a person picks workspaces per
+   * runner, and one created later is not picked on its own. So the message
+   * names the repo and links the page that sorts out either
+   * (/app/connect-repo, apps/web/src/lib/connect-repo.ts). The link is built
+   * here from what the runner already knows; nothing asks the server whether
+   * some other team has a workspace for the repo.
+   */
+  private async noMatchText(cwd: string): Promise<string> {
+    const repo = await this.deps.githubRepoOf?.(cwd).catch(() => null) ?? null;
+    if (!repo) {
+      return 'buildd works on GitHub repos, and this folder has no GitHub remote (origin), so buildd has no workspace for it. '
+        + "T3's own Claude or Codex threads work in this folder without buildd.";
+    }
+    const info = await this.deps.runner.runnerInfo?.().catch(() => null) ?? null;
+    const server = (info?.server || DEFAULT_SERVER).replace(/\/+$/, '');
+    if (!info?.accountId) {
+      return `This runner does not work on ${repo} yet. In buildd, connect ${repo} and pick it for this runner: ${server}/app/settings/connections`;
+    }
+    const url = `${server}/app/connect-repo?repo=${encodeURIComponent(repo)}&runner=${encodeURIComponent(info.accountId)}`;
+    return `This runner does not work on ${repo} yet. Open this to connect ${repo} to buildd and let this runner work on it: ${url}\n`
+      + 'Then send your message again here.';
   }
 
   private async chooseWorkspace(sessionId: string, options: BuilddWorkspace[]): Promise<BuilddWorkspace | null> {

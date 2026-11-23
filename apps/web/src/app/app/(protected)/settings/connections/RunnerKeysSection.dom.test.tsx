@@ -18,7 +18,7 @@ type Key = import('@/lib/runner-picks').RunnerKeySummary;
 type Foreign = import('@/lib/runner-picks').ForeignRunner;
 
 const key: Key = {
-  id: 'acct-1', name: 'Laptop runner', apiKeyPrefix: 'bld_abcd', level: 'worker', homeTeamName: 'Team One',
+  id: 'acct-1', name: 'Laptop runner', apiKeyPrefix: 'bld_abcd', level: 'worker', homeTeamId: 'team-1', homeTeamName: 'Team One',
   createdAt: null, lastUsedAt: null, picks: null,
 };
 const foreign: Foreign = {

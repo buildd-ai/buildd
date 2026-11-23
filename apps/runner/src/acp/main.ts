@@ -11,7 +11,7 @@ import { join } from 'path';
 import { createInterface } from 'readline';
 import { AcpBridge } from './bridge';
 import { notification, rpcPeer, type RpcPeer } from './rpc';
-import { gitRepoRoot, localPathFor, projectNames, socketRunnerPort } from './runner-port';
+import { githubRepo, gitRepoRoot, localPathFor, projectNames, socketRunnerPort } from './runner-port';
 import { ACP_SESSIONS_FILE, fileSessionLinks } from './links';
 import { resolveBuilddHome } from '../buildd-home';
 import { runnerSocketPath } from '../runner-socket';
@@ -40,6 +40,7 @@ export async function runAcp(opts: { socketPath: string; version: string; buildd
     request: (method, params) => peer!.request(method, params),
     repoRootOf: gitRepoRoot,
     projectNamesOf: projectNames,
+    githubRepoOf: githubRepo,
     cwdExists: (cwd) => existsSync(localPathFor(cwd)),
     runnerName: () => resolveRunnerName().name,
     version: opts.version,
