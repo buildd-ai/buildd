@@ -23,6 +23,8 @@ export interface WorkspaceSettingsRow extends Pick<Row,
   newStartsPausedUntil: Date | string | null;
   /** workspaces.knowledge_ingest. Absent on a row cached before the column existed: read as on. */
   knowledgeIngest?: boolean;
+  /** workspaces.knowledge_code_ingest: the code corpus alone. Absent: read as on. */
+  knowledgeCodeIngest?: boolean;
 }
 
 export async function loadWorkspaceSettingsUncached(teamId: string, workspaceId: string): Promise<WorkspaceSettingsRow | null> {
@@ -41,6 +43,7 @@ export async function loadWorkspaceSettingsUncached(teamId: string, workspaceId:
       webhookConfig: true,
       newStartsPausedUntil: true,
       knowledgeIngest: true,
+      knowledgeCodeIngest: true,
     },
   });
   if (!row) return null;
@@ -58,6 +61,7 @@ export async function loadWorkspaceSettingsUncached(teamId: string, workspaceId:
     webhookConfig: hook ? { enabled: hook.enabled, events: hook.events } : null,
     newStartsPausedUntil: row.newStartsPausedUntil ?? null,
     knowledgeIngest: row.knowledgeIngest !== false,
+    knowledgeCodeIngest: row.knowledgeCodeIngest !== false,
   };
 }
 

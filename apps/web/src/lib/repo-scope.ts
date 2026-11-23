@@ -24,6 +24,13 @@ export const GITHUB_HOST_PREFIX_RE =
 /** Strips a trailing `.git` and/or trailing slashes. */
 export const GIT_SUFFIX_RE = '(\\.git)?/*$';
 
+/** JS twin of normalizedRepoSql: any stored/typed repo form to bare lowercase `owner/name`. */
+export function normalizeRepoRef(ref: string): string {
+  return ref.trim().toLowerCase()
+    .replace(/^(https?:\/\/(www\.)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/, '')
+    .replace(/(\.git)?\/*$/, '');
+}
+
 /**
  * Normalizes a repo column down to a bare lowercase `owner/name`, so all of
  * these match the same repo:

@@ -278,6 +278,12 @@ export class BuilddClient {
     return { teams: Array.isArray(data?.teams) ? data.teams : [], truncated: !!data?.truncated };
   }
 
+  /** Notes owed to a client thread by tasks that remember it (server: GET /api/tasks/thread-events). */
+  async threadEvents(threadId: string): Promise<Array<{ key: string; taskId: string; event: string; text: string }>> {
+    const res = await this.fetch(`/api/tasks/thread-events?threadId=${encodeURIComponent(threadId)}`);
+    return Array.isArray(res?.events) ? res.events : [];
+  }
+
   async getTask(id: string): Promise<BuilddTask | null> {
     try {
       // The whole row: the claim path and park restore read context and the workspace config.

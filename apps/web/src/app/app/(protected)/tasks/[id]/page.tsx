@@ -80,6 +80,10 @@ import { deriveTaskModel } from '@/lib/model-presentation';
 import { resolveShippedRelease } from '@/lib/task-ship-state';
 import { deriveTaskOrigin } from '@/lib/task-origin';
 import { originLinkCards } from './origin-links';
+import { TaskClientFrom } from './TaskReservation';
+import { TaskReservationHolder } from './TaskReservationHolder';
+import { taskClientLabel } from '@/lib/task-client';
+import { liveReservation } from '@/lib/task-reservation';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { type SpecSourceContext } from '@/components/SpecSourceBlock';
 import { livingSpecLoad } from '@/lib/specs/task-view';
@@ -541,6 +545,9 @@ async function TaskDetailPage({
   const runnerName = runnerDisplayResolver(runnerHeartbeats);
   const runnerLabel = (w: { runner?: string | null; localUiUrl?: string | null; accountId?: string | null }) => runnerName(w)?.name ?? null;
   const shippedReleaseLabel = ship.label;
+
+  // CG-7: a live reservation names its holder by account name, never the id or a key.
+  const reservation = liveReservation(task.context, task.status);
 
   // Origin (U6, Problem §4) — provenance from stored columns only, no title parsing.
   // "You" is claimed only when the creating account is named after the viewer;
@@ -1104,6 +1111,12 @@ async function TaskDetailPage({
           label: 'Scope',
           value: <ul>{pathManifest.map(p => <li key={p} className="truncate" title={p}>{p}</li>)}</ul>,
         }]
+      : []),
+    ...(taskClientLabel(task.context)
+      ? [{ key: 'client', label: 'Filed', value: <TaskClientFrom context={task.context} /> }]
+      : []),
+    ...(reservation
+      ? [{ key: 'reservation', label: 'Reserved', value: <TaskReservationHolder context={task.context} status={task.status} /> }]
       : []),
     ...(!origin.isEmpty || origin.shipped
       ? [{

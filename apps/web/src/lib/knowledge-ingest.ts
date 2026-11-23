@@ -38,6 +38,7 @@ import {
 } from '@/lib/knowledge-ingest-lease';
 import {
   isKnowledgeIngestEnabled,
+  knowledgeIngestFlags,
   knowledgeIngestDisabledAmong,
   closeIngestJobAsSkipped,
   logIngestSkip,
@@ -385,13 +386,14 @@ export async function runDiffIngestJob(jobId: string): Promise<DiffIngestOutcome
 
   // A job whose workspace was switched off since enqueue is closed as skipped,
   // never run (and no embedder is constructed for it).
-  if (!(await isKnowledgeIngestEnabled(job.workspaceId))) {
+  const flags = await knowledgeIngestFlags(job.workspaceId);
+  if (!flags.enabled) {
     await closeIngestJobAsSkipped(job, 'run_diff');
     return { claimed: true, status: 'skipped', reason: 'ingest_disabled' };
   }
 
   try {
-    const { stats, changedFiles } = await executeDiffJob(job);
+    const { stats, changedFiles } = await executeDiffJob(job, flags.codeIngest);
     await db
       .update(knowledgeIngestJobs)
       .set({ status: 'done', stats, changedFiles, finishedAt: new Date(), leaseOwner: null, leaseExpiresAt: null })
@@ -526,7 +528,7 @@ async function executePushJob(job: IngestJob): Promise<DiffExecution> {
   };
 }
 
-async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
+async function executeDiffJob(job: IngestJob, codeIngest = true): Promise<DiffExecution> {
   if (job.trigger === 'push') return executePushJob(job);
   if (!job.prNumber || !job.sha) {
     throw new Error(`diff job ${job.id} is missing prNumber/sha`);
@@ -554,16 +556,21 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
   const deletions: string[] = [];
   const toFetch: string[] = [];
   let skipped = 0;
+  // Code corpus off: code paths are neither fetched, chunked nor deleted.
+  const corpusOf = (path: string) => {
+    const c = classifyIngestCorpus(path);
+    return c === 'code' && !codeIngest ? null : c;
+  };
   for (const f of prFiles) {
-    if (f.status === 'renamed' && f.previous_filename && classifyIngestCorpus(f.previous_filename)) {
+    if (f.status === 'renamed' && f.previous_filename && corpusOf(f.previous_filename)) {
       deletions.push(f.previous_filename);
     }
     if (f.status === 'removed') {
-      if (classifyIngestCorpus(f.filename)) deletions.push(f.filename);
+      if (corpusOf(f.filename)) deletions.push(f.filename);
       else skipped++;
       continue;
     }
-    if (!shouldIngestFile(f.filename)) {
+    if (!shouldIngestFile(f.filename) || !corpusOf(f.filename)) {
       skipped++;
       continue;
     }
@@ -687,9 +694,11 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
   // First-index backfill (spec §3.4): the diff alone isn't a full index —
   // enqueue a full backfill job so the whole repo gets ingested.
   let backfillEnqueued = false;
-  if (!hadCodeIndex && !(await isKnowledgeIngestEnabled(job.workspaceId))) {
+  if (!hadCodeIndex && codeIngest && !(await isKnowledgeIngestEnabled(job.workspaceId))) {
     logIngestSkip('backfill', { workspaceId: job.workspaceId, repo: job.repo, jobId: job.id });
-  } else if (!hadCodeIndex) {
+  } else if (!hadCodeIndex && codeIngest) {
+    // With code ingest off there is never a code index to backfill; a full job
+    // here would re-enqueue on every diff.
     // Belt-and-braces: skip insert when a full job is already active for this
     // workspace+repo (the unique partial index catches the same race at the DB
     // layer, but an explicit check avoids a spurious conflict log entry).

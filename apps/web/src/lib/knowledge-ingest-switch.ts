@@ -22,6 +22,12 @@
  * Turning the switch off deletes nothing; `purgeWorkspaceRepoKnowledge` does,
  * and only when asked explicitly (PATCH /api/workspaces/[id] purgeKnowledge).
  *
+ * Within an enabled workspace, `workspaces.knowledge_code_ingest` gates the `code`
+ * corpus alone (the bulk of embedding tokens; agents read code from the checkout).
+ * Off = code is never chunked or embedded, by any executor, while docs, specs and
+ * PR diffs ingest as usual. Code deletions are skipped too: turning it off deletes
+ * nothing. New workspaces start with it off; existing rows keep it on.
+ *
  * Other indexers (memory, task / artifact mirror, evidence) are not gated here;
  * see docs/specs/knowledge-ingest-pipeline.md for what each embeds.
  */
@@ -60,6 +66,52 @@ export async function knowledgeIngestDisabledAmong(workspaceIds: string[]): Prom
 /** Whether repo content of this workspace may be ingested. */
 export async function isKnowledgeIngestEnabled(workspaceId: string): Promise<boolean> {
   return !(await knowledgeIngestDisabledAmong([workspaceId])).has(workspaceId);
+}
+
+/**
+ * Of these workspace ids, the ones whose `code` corpus must not be ingested:
+ * code switch off, or the master switch off. A missing row is not reported.
+ * DB errors propagate.
+ */
+export async function knowledgeCodeIngestOffAmong(workspaceIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(workspaceIds.filter(Boolean))];
+  if (ids.length === 0) return new Set();
+  const rows = await db
+    .select({
+      id: workspaces.id,
+      knowledgeIngest: workspaces.knowledgeIngest,
+      knowledgeCodeIngest: workspaces.knowledgeCodeIngest,
+    })
+    .from(workspaces)
+    .where(inArray(workspaces.id, ids));
+  return new Set(
+    (rows as Array<{ id: string; knowledgeIngest?: boolean | null; knowledgeCodeIngest?: boolean | null }>)
+      .filter(r => r.knowledgeIngest === false || r.knowledgeCodeIngest === false)
+      .map(r => r.id),
+  );
+}
+
+/** Whether this workspace's code corpus may be chunked and embedded. */
+export async function isKnowledgeCodeIngestEnabled(workspaceId: string): Promise<boolean> {
+  return !(await knowledgeCodeIngestOffAmong([workspaceId])).has(workspaceId);
+}
+
+/**
+ * Both switches in one read: whether the workspace ingests at all, and whether
+ * its code corpus does. For callers that need the pair (runDiffIngestJob).
+ */
+export async function knowledgeIngestFlags(workspaceId: string): Promise<{ enabled: boolean; codeIngest: boolean }> {
+  const rows = await db
+    .select({
+      id: workspaces.id,
+      knowledgeIngest: workspaces.knowledgeIngest,
+      knowledgeCodeIngest: workspaces.knowledgeCodeIngest,
+    })
+    .from(workspaces)
+    .where(inArray(workspaces.id, [workspaceId]));
+  const row = (rows as Array<{ id: string; knowledgeIngest?: boolean | null; knowledgeCodeIngest?: boolean | null }>)[0];
+  const enabled = row?.knowledgeIngest !== false;
+  return { enabled, codeIngest: enabled && row?.knowledgeCodeIngest !== false };
 }
 
 /** Where a skip happened, for the log line. */

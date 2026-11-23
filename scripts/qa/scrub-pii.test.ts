@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration';
-import { knownColumns, latestSnapshotPath, normalizeSnapshot, schemaShape, textColumns } from './known-columns';
+import { knownColumns, latestSnapshotPath, normalizeSnapshot, replayDiffTree, schemaShape, snapshotOf, textColumns } from './known-columns';
+import { reconstructSchemaDdl } from '../../packages/core/db/snapshot-reconstruct';
 
 /**
  * scrub-pii.sql rewrites a prod clone before Visual QA screenshots it, and the
@@ -511,7 +512,7 @@ describe('scrub-pii.sql covers the schema', () => {
   test('a branch behind prod leaves the newer table off the known list', () => {
     // Replays the incident: the snapshot a lagging branch carries has no
     // post_session_runs, so its facts column is not "known" and gets overwritten.
-    const snap = normalizeSnapshot(JSON.parse(readFileSync(latestSnapshotPath(join(root, 'packages/core/drizzle')), 'utf8')));
+    const snap = normalizeSnapshot(snapshotOf(join(root, 'packages/core/drizzle')));
     expect(textColumns(snap)).toContain('post_session_runs.facts');
     delete snap.tables['public.post_session_runs'];
     const lagging = textColumns(snap);
@@ -624,10 +625,61 @@ describe('scrub-pii.sql covers the schema', () => {
   });
 
   test('the schema shape is every public table and column of a snapshot, with its type', () => {
-    const shape = schemaShape(JSON.parse(readFileSync(latestSnapshotPath(join(root, 'packages/core/drizzle')), 'utf8')));
+    const shape = schemaShape(snapshotOf(join(root, 'packages/core/drizzle')));
     expect(shape.tasks.title).toBe('text');
     expect(shape.tasks.id).toBe('uuid');
     expect(Object.keys(shape)).toContain('artifact_revisions');
+  });
+
+  // drizzle-kit 1.0.0-rc.6 writes snapshot format 10: only the first folder holds
+  // the schema, every later one its deltas. The replay must be the kit's own answer.
+  test('the format-10 replay holds the same tables and columns as drizzle-kit reconstruct()', async () => {
+    const dir = join(root, 'packages/core/drizzle');
+    const pick = (ddl: unknown[]) =>
+      (ddl as Array<Record<string, unknown>>)
+        .filter((e) => e.entityType === 'tables' || e.entityType === 'columns')
+        .map((e) => [e.entityType, e.schema, e.table ?? '', e.name, e.type ?? '', e.typeSchema ?? null, e.dimensions ?? 0].join('|'))
+        .sort();
+    const byKit = (await reconstructSchemaDdl(dir)).snapshot.ddl;
+    const replayed = replayDiffTree(dir).ddl;
+    expect(pick(replayed)).toEqual(pick(byKit));
+    expect(pick(replayed).length).toBeGreaterThan(1000);
+  });
+
+  test('the format-10 replay applies create, alter, drop and a table rename, and refuses what it does not know', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'known-cols-v10-'));
+    try {
+      const folder = (name: string, snap: unknown) => {
+        mkdirSync(join(tmp, name), { recursive: true });
+        writeFileSync(join(tmp, name, 'snapshot.json'), JSON.stringify(snap));
+      };
+      const col = (table: string, name: string, type: string) => ({ entityType: 'columns', schema: 'public', table, name, type, typeSchema: null, dimensions: 0 });
+      const key = (type: string, ...parts: string[]) => `${type}\u0000${JSON.stringify(['public', ...parts])}`;
+      folder('20260101000000_base', { type: 'base', version: '10', ddl: [
+        { entityType: 'tables', schema: 'public', name: 'tasks' }, col('tasks', 'title', 'text'), col('tasks', 'gone', 'text'),
+        { entityType: 'indexes', schema: 'public', table: 'tasks', name: 'tasks_title_idx' },
+      ] });
+      folder('20260102000000_change', { type: 'diff', version: '10', deltas: [
+        { op: 'create', row: { entityType: 'tables', schema: 'public', name: 'notes' } },
+        { op: 'create', row: col('notes', 'body', 'varchar') },
+        { op: 'alter', key: key('columns', 'notes', 'body'), set: { type: 'text' } },
+        { op: 'drop', key: key('columns', 'tasks', 'gone') },
+        { op: 'alter', key: key('indexes', 'tasks_title_idx'), set: { where: 'x' } },
+      ] });
+      folder('20260103000000_rename', { type: 'diff', version: '10', deltas: [
+        { op: 'rename', key: key('tables', 'notes'), set: { name: 'memos' } },
+      ] });
+      expect(knownColumns(tmp)).toEqual(['memos.body', 'tasks.title']);
+      expect(schemaShape(snapshotOf(tmp))).toEqual({ tasks: { title: 'text' }, memos: { body: 'text' } });
+
+      // A delta on something the replay does not hold, or of an unknown op: fail closed.
+      folder('20260104000000_bad', { type: 'diff', version: '10', deltas: [{ op: 'drop', key: key('columns', 'tasks', 'never') }] });
+      expect(() => knownColumns(tmp)).toThrow(/does not hold/);
+      folder('20260104000000_bad', { type: 'diff', version: '10', deltas: [{ op: 'reorder', key: key('tables', 'tasks') }] });
+      expect(() => knownColumns(tmp)).toThrow(/does not know/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test('the CI QA user is designated before the general user scrub', () => {

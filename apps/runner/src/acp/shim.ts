@@ -23,6 +23,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, posix, resolve } from 'path';
+import type { RunnerAcpCapability } from '@buildd/shared';
 
 export const ACP_SHIM_MARKER = '# buildd-acp: written by the buildd runner';
 
@@ -67,4 +68,38 @@ export function ensureAcpShim(opts: EnsureAcpShimOptions): AcpShimResult {
   writeFileSync(path, script);
   chmodSync(path, 0o755);
   return 'written';
+}
+
+export interface AcpCapabilityOptions {
+  home?: string;
+  /** The runner install dir (BUILDD_HOME). */
+  installDir: string;
+  version: string;
+  bunPath?: string;
+  mainPath?: string;
+  platform?: string;
+}
+
+/**
+ * What this runner reports about ACP in its environment scan (`environment.acp`).
+ * buildd cannot see T3, so the runner is the only one who can say the bridge
+ * works: where the shim is, whether it launches THIS install, and which build.
+ * `shimPath` is null when no shim exists (Windows, or not yet written);
+ * `target` is the main.ts the shim execs, null for a foreign file.
+ */
+export function acpCapability(opts: AcpCapabilityOptions): RunnerAcpCapability {
+  const platform = opts.platform ?? process.platform;
+  const bunPath = opts.bunPath ?? process.execPath;
+  const mainPath = platform === 'win32' ? (opts.mainPath ?? resolve(import.meta.dir, 'main.ts')) : posix.resolve(opts.mainPath ?? resolve(import.meta.dir, 'main.ts'));
+  const base = { version: opts.version, platform, bunPath, mainPath };
+  if (platform === 'win32') return { ...base, shimPath: null, target: null, pointsHere: true };
+  const path = join(opts.home ?? homedir(), '.local', 'bin', 'buildd-acp');
+  if (!existsSync(path)) return { ...base, shimPath: null, target: null, pointsHere: false };
+  let text = '';
+  try { text = readFileSync(path, 'utf8'); } catch { /* unreadable: treated as foreign */ }
+  const m = text.includes(ACP_SHIM_MARKER) ? text.match(/ run '((?:[^']|'\\'')*)'/) : null;
+  const target = m ? m[1].replace(/'\\''/g, "'") : null;
+  const install = posix.resolve(opts.installDir);
+  const pointsHere = !!target && posix.resolve(target).startsWith(install.endsWith('/') ? install : install + '/');
+  return { ...base, shimPath: path, target, pointsHere };
 }

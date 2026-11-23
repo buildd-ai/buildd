@@ -6,15 +6,17 @@
  * launcher, `bun` with `run <buildd home>/apps/runner/src/acp/main.ts`).
  * The runner must already be running on this machine; this only talks to it.
  */
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { AcpBridge } from './bridge';
 import { notification, rpcPeer, type RpcPeer } from './rpc';
-import { gitRepoRoot, projectNames, socketRunnerPort } from './runner-port';
+import { githubRepo, gitRepoRoot, localPathFor, projectNames, socketRunnerPort } from './runner-port';
 import { ACP_SESSIONS_FILE, fileSessionLinks } from './links';
+import { ACP_NOTES_FILE, fileShownNotes } from './notes';
 import { resolveBuilddHome } from '../buildd-home';
 import { runnerSocketPath } from '../runner-socket';
+import { resolveRunnerName } from '../runner-name';
 
 function runnerVersion(): string {
   try {
@@ -35,12 +37,18 @@ export async function runAcp(opts: { socketPath: string; version: string; buildd
   const bridge = new AcpBridge({
     runner: socketRunnerPort(opts.socketPath),
     links: fileSessionLinks(join(opts.builddHome, ACP_SESSIONS_FILE)),
+    shownNotes: fileShownNotes(join(opts.builddHome, ACP_NOTES_FILE)),
     notify: (sessionId, update) => write(notification('session/update', { sessionId, update })),
     request: (method, params) => peer!.request(method, params),
     repoRootOf: gitRepoRoot,
     projectNamesOf: projectNames,
+    githubRepoOf: githubRepo,
+    cwdExists: (cwd) => existsSync(localPathFor(cwd)),
+    runnerName: () => resolveRunnerName().name,
     version: opts.version,
+    installedVersion: runnerVersion,
   });
+  console.error(`buildd acp ${opts.version} started`);
   peer = rpcPeer(bridge, write);
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on('line', (line) => { void peer!.onLine(line); });

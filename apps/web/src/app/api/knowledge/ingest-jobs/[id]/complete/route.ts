@@ -19,6 +19,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { isUuid } from '@/lib/uuid';
 import { sweepUnrefreshedFileChunks } from '@/lib/knowledge-ingest-batch';
+import { isKnowledgeCodeIngestEnabled } from '@/lib/knowledge-ingest-switch';
 import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 interface CompleteBody {
@@ -130,7 +131,9 @@ export async function POST(
   let prunedChunks = 0;
   if (status === 'done' && body.sweep === true && job.scope === 'full' && job.startedAt) {
     try {
-      prunedChunks = await sweepUnrefreshedFileChunks(job.workspaceId, job.startedAt);
+      prunedChunks = await sweepUnrefreshedFileChunks(job.workspaceId, job.startedAt, {
+        codeIngest: await isKnowledgeCodeIngestEnabled(job.workspaceId),
+      });
 
       if (prunedChunks > 0) {
         // Best-effort: reflect the prune in the stored stats for the health UI.

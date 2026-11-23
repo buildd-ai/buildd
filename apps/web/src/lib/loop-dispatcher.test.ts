@@ -123,6 +123,15 @@ describe('evaluateExitCondition — pr_checks_green', () => {
     expect(result.satisfied).toBe(true);
   });
 
+  // b6a82104: "No PR or lifecycle status available" hid that the PR was there and only its status unknown.
+  it('says which is missing: the PR, or only its CI status', () => {
+    const base = { exitCondition: { type: 'pr_checks_green' as const }, workerId: 'w1', iteration: 0, verificationEvidence: null, structuredOutput: null };
+    expect(evaluateExitCondition({ ...base, prLifecycleStatus: null, prNumber: null }).summary).toBe('No PR found for this task');
+    const r = evaluateExitCondition({ ...base, prLifecycleStatus: null, prNumber: 6138 });
+    expect(r.satisfied).toBe(false);
+    expect(r.summary).toBe('PR #6138 has no CI status recorded yet');
+  });
+
   it('is not satisfied when prLifecycleStatus=ci_running', () => {
     const result = evaluateExitCondition({
       exitCondition: { type: 'pr_checks_green' },

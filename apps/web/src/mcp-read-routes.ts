@@ -71,6 +71,7 @@ export const MCP_LOCAL_READ_SHADOWS: readonly string[] = [
   '/api/releases/trigger',
   '/api/tasks/bulk',
   '/api/tasks/cleanup',
+  '/api/tasks/thread-events',
   '/api/tasks/waiting-input',
   '/api/workers/active',
   '/api/workers/claim',

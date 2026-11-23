@@ -84,7 +84,7 @@ mock.module('@/lib/merge-policy', () => ({ resolvePolicy: () => ({ tier: 'agent-
 mock.module('@/lib/pr-review-request', () => ({ listWorkspaceRoles: async () => roles }));
 mock.module('@/lib/pr-review-status', () => ({ pickReviewerRole: (p: any) => ({ role: p.available[0]?.slug ?? null }) }));
 mock.module('@/lib/path-declaration', () => ({ conformanceManifest: (t: any) => t.pathManifest ?? null }));
-mock.module('@/lib/dependency-bot-pr', () => ({ isDependencyBotPrContext: (c: any) => !!c?.dependencyBot }));
+mock.module('@/lib/dependency-bot-pr', () => ({ isDependencyBotPrContext: (c: any) => !!c?.dependencyBot, isDependencyBotAuthor: () => false }));
 mock.module('@/lib/pr-scope-reconcile-trigger', () => ({ schedulePrScopeReconcile: () => {} }));
 const mockCreateReviewer = mock(async (_p: any) => created);
 const mockSupersedeFix = mock(async (_p: any) => ({ superseded: true }));
