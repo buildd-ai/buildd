@@ -22,7 +22,7 @@ export interface ConnectRepoViewProps {
   trusted?: boolean;
 }
 
-const TRUST_SENTENCE = 'Trusted local lets its tasks run on a runner that has no sandbox, such as one in a container. Only your team, who already runs this runner, can start work in it.';
+const TRUST_SENTENCE = 'Trusted local lets tasks in this workspace use a runner that has no extra isolation. Only your own team can start work in it.';
 
 function Frame({ title, children }: { title: string; children: ReactNode }) {
   return (
