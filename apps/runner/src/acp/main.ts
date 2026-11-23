@@ -13,6 +13,7 @@ import { AcpBridge } from './bridge';
 import { notification, rpcPeer, type RpcPeer } from './rpc';
 import { githubRepo, gitRepoRoot, localPathFor, projectNames, socketRunnerPort } from './runner-port';
 import { ACP_SESSIONS_FILE, fileSessionLinks } from './links';
+import { ACP_NOTES_FILE, fileShownNotes } from './notes';
 import { resolveBuilddHome } from '../buildd-home';
 import { runnerSocketPath } from '../runner-socket';
 import { resolveRunnerName } from '../runner-name';
@@ -36,6 +37,7 @@ export async function runAcp(opts: { socketPath: string; version: string; buildd
   const bridge = new AcpBridge({
     runner: socketRunnerPort(opts.socketPath),
     links: fileSessionLinks(join(opts.builddHome, ACP_SESSIONS_FILE)),
+    shownNotes: fileShownNotes(join(opts.builddHome, ACP_NOTES_FILE)),
     notify: (sessionId, update) => write(notification('session/update', { sessionId, update })),
     request: (method, params) => peer!.request(method, params),
     repoRootOf: gitRepoRoot,

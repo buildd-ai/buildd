@@ -190,7 +190,7 @@ describe('buildd acp end to end', () => {
     const turn = client.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Add a coupon field' }] });
     await until(() => runner.subscribers() === 1);
     expect(runner.posts).toEqual([
-      { path: '/api/tasks', body: { workspaceId: 'ws-shop', title: 'Add a coupon field', description: 'Add a coupon field', reserve: true, context: { client: { kind: 'acp' } } } },
+      { path: '/api/tasks', body: { workspaceId: 'ws-shop', title: 'Add a coupon field', description: 'Add a coupon field', reserve: true, context: { client: { kind: 'acp' }, callbackTarget: { kind: 't3_thread', threadId: expect.any(String) } } } },
       { path: '/api/claim', body: { taskId: 't-new' } },
     ]);
     runner.push({ id: 'w-new', workspaceName: 'shop', status: 'done', messages: [{ type: 'text', content: 'Added it', timestamp: 2 }] });
@@ -374,7 +374,7 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
     await until(() => runner.subscribers() === 1);
 
     expect(runner.posts).toEqual([
-      { path: '/api/tasks', body: { workspaceId: 'ws-shop', title: 'Add a coupon field to checkout', description: request, reserve: true, context: { client: { kind: 'acp' } } } },
+      { path: '/api/tasks', body: { workspaceId: 'ws-shop', title: 'Add a coupon field to checkout', description: request, reserve: true, context: { client: { kind: 'acp' }, callbackTarget: { kind: 't3_thread', threadId: expect.any(String) } } } },
       { path: '/api/claim', body: { taskId: 't-1' } },
     ]);
     expect(said(client, sessionId)).toContain('Started a buildd task in shop: “Add a coupon field to checkout”.');
@@ -723,7 +723,7 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
 
     expect(res.result.stopReason).toBe('end_turn');
     expect(runner.posts).toEqual([
-      { path: '/api/tasks', body: { workspaceId: 'ws-shop', title: 'Fix the cart total', description: 'Fix the cart total', reserve: true, context: { client: { kind: 'acp' } } } },
+      { path: '/api/tasks', body: { workspaceId: 'ws-shop', title: 'Fix the cart total', description: 'Fix the cart total', reserve: true, context: { client: { kind: 'acp' }, callbackTarget: { kind: 't3_thread', threadId: expect.any(String) } } } },
       { path: '/api/claim', body: { taskId: 't-1' } },
     ]);
     const line = said(client, sessionId).at(-1)!;
