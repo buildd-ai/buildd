@@ -49,11 +49,11 @@ async function run(report: CronReport): Promise<NextResponse> {
   const now = new Date();
   const allowlist = parseActingAllowlist(process.env.SKILL_RETIREMENT_ACTING_WORKSPACES);
 
-  const [skillRes, telemetryRes, scheduleRes, activeRes] = await Promise.all([
+  const [skillRes, telemetryRes, scheduleRes, activeRes, metricsRes] = await Promise.all([
     db.execute(sql`
       SELECT s.id, s.team_id, s.workspace_id, w.git_config, s.slug, s.enabled, s.is_role, s.content, s.content_hash, s.created_at,
              COALESCE((s.metadata->>'pinned') = 'true', false) AS pinned,
-             u.last_claimed_at,
+             u.last_claimed_at, (u.skill_id IS NOT NULL) AS has_usage,
              (SELECT max(e.created_at) FROM skill_lifecycle_events e
                WHERE e.skill_id = s.id AND e.action = 'restored') AS last_restored_at
       FROM workspace_skills s
@@ -68,6 +68,19 @@ async function run(report: CronReport): Promise<NextResponse> {
       FROM tasks
       WHERE status IN ('pending', 'assigned', 'in_progress')
         AND jsonb_typeof(context->'skillSlugs') = 'array'`),
+    // R-19 metrics from the event log. would_archive: events per week over the last 4 weeks.
+    // Restored: archived events (acting) followed by a restore of the same skill within 30 days.
+    db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM skill_lifecycle_events
+          WHERE action = 'would_archive' AND created_at > now() - interval '28 days') AS would_archive_28d,
+        (SELECT count(*) FROM skill_lifecycle_events a
+          WHERE a.action = 'archived' AND a.mode = 'acting') AS archived_total,
+        (SELECT count(*) FROM skill_lifecycle_events a
+          WHERE a.action = 'archived' AND a.mode = 'acting' AND EXISTS (
+            SELECT 1 FROM skill_lifecycle_events r
+            WHERE r.skill_id = a.skill_id AND r.action = 'restored'
+              AND r.created_at >= a.created_at AND r.created_at <= a.created_at + interval '30 days')) AS restored_within_30d`),
   ]);
 
   // Telemetry start is per team: a team with no counted claim has not started, so it starts now.
@@ -112,10 +125,23 @@ async function run(report: CronReport): Promise<NextResponse> {
     skills: skills.filter(s => s.teamId === teamId), now, telemetryStartedAt: startOf(teamId),
     defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug), scheduleSkillSlugs, activeTaskSkillSlugs,
   }));
+  // R-19: share of enabled (non-off) skills that have a skill_usage row. Null when there are none.
+  const withUsage = rowsOf(skillRes).filter(r => byId.has(r.id) && r.has_usage).length;
+  const usageRowCoverage = skills.length > 0 ? withUsage / skills.length : null;
+  const m = rowsOf(metricsRes)[0] ?? {};
+  const archivedTotal = Number(m.archived_total ?? 0);
+  const metrics = {
+    usageRowCoverage,
+    wouldArchivePerWeek: Number(m.would_archive_28d ?? 0) / 4,
+    archivedTotal,
+    restoredWithin30d: Number(m.restored_within_30d ?? 0),
+  };
+  const coverageText = usageRowCoverage === null ? 'no enabled skills' : `${Math.round(usageRowCoverage * 100)}% of enabled skills have a usage row`;
   const verdict = {
     stale: verdicts.flatMap(v => v.stale),
     archivable: verdicts.flatMap(v => v.archivable),
-    report: verdicts.map(v => v.report).join('; '),
+    // The recording report is what gates acting (R-16), so coverage travels with it.
+    report: [...verdicts.map(v => v.report), `usage-row coverage: ${coverageText}`].join('; '),
   };
 
   const archivableIds = new Set(verdict.archivable.map(s => s.id));
@@ -178,9 +204,9 @@ async function run(report: CronReport): Promise<NextResponse> {
           AND e.created_at > now() - make_interval(days => ${REFLAG_AFTER_DAYS}))`);
   }
 
-  report({ processed: skills.length, changed: archived, result: { refusals: refusals.length, stale: verdict.stale.length, archivable: verdict.archivable.length, archived } });
+  report({ processed: skills.length, changed: archived, result: { refusals: refusals.length, stale: verdict.stale.length, archivable: verdict.archivable.length, archived, ...metrics } });
   return NextResponse.json({
     ok: true, archived, refusals,
-    stale: verdict.stale.length, archivable: verdict.archivable.length, report: verdict.report,
+    stale: verdict.stale.length, archivable: verdict.archivable.length, report: verdict.report, metrics,
   });
 }

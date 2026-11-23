@@ -19,6 +19,7 @@ const mockExecute = mock(async (q: any) => {
     const byTeam = tables.teamStarted ?? (tables.started ? { '00000000-0000-0000-0000-0000000000aa': tables.started } : {});
     return { rows: Object.entries(byTeam).map(([team_id, started]) => ({ team_id, started })) };
   }
+  if (text.includes('would_archive_28d')) return { rows: [{ would_archive_28d: 8, archived_total: 4, restored_within_30d: 1 }] };
   if (text.includes('FROM task_schedules')) return { rows: tables.schedules };
   if (text.includes('jsonb_array_elements_text')) return { rows: tables.active.map(slug => ({ slug })) };
   if (text.includes('UPDATE workspace_skills')) return { rows: [{ id: 'x' }] };
@@ -49,6 +50,13 @@ beforeEach(() => {
 });
 
 describe('GET /api/cron/skill-lifecycle', () => {
+  it('reports R-19 metrics and puts coverage in the gating report', async () => {
+    tables.skills = [skill({ n: 1, has_usage: true }), skill({ n: 2, has_usage: false })];
+    const body = await (await GET(req())).json();
+    expect(body.metrics).toEqual({ usageRowCoverage: 0.5, wouldArchivePerWeek: 2, archivedTotal: 4, restoredWithin30d: 1 });
+    expect(body.report).toContain('usage-row coverage: 50%');
+  });
+
   it('rejects a wrong secret without touching the db', async () => {
     const res = await GET(req('nope'));
     expect(res.status).toBe(401);
