@@ -16,6 +16,7 @@
  */
 import type { PublicWorker } from '../public-worker';
 import { DEFAULT_SERVER } from '../server-url';
+import { DEFERRAL_WORDS } from '../top/state';
 import {
   BRIDGE_COMMANDS,
   MessageCursor,
@@ -459,7 +460,7 @@ export class AcpBridge {
       worker = await this.ownWorkerFor(task.id);
     }
     if (!worker?.id) {
-      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${refusal(claimed)}`);
+      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${await this.claimRefusalText(claimed, ws)}`);
     }
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);
@@ -473,6 +474,28 @@ export class AcpBridge {
       this.emit(sessionId, textUpdate(`${started}.`));
     }
     return this.follow(session, sessionId, worker, { watching: true, alreadyMoving: true });
+  }
+
+  /**
+   * Why the claim came back refused. A broad deferral names the gate the server
+   * gave instead of the raw 400; an isolation deferral also says what to change
+   * and links the page that does it (/app/connect-repo).
+   */
+  private async claimRefusalText(claimed: { status: number; body: unknown }, ws: { name: string; repo?: string | null }): Promise<string> {
+    const b = (claimed.body && typeof claimed.body === 'object' ? claimed.body : {}) as { claimReason?: unknown; exclusion?: unknown; exclusionDetail?: unknown };
+    if (b.claimReason !== 'all_candidates_deferred') return refusal(claimed);
+    const code = typeof b.exclusion === 'string' ? b.exclusion : null;
+    if (code === 'isolation_unenforced') {
+      const info = await this.deps.runner.runnerInfo?.().catch(() => null) ?? null;
+      const server = (info?.server || DEFAULT_SERVER).replace(/\/+$/, '');
+      const link = ws.repo && info?.accountId
+        ? `${server}/app/connect-repo?repo=${encodeURIComponent(ws.repo)}&runner=${encodeURIComponent(info.accountId)}`
+        : `${server}/app/settings/connections`;
+      return `${ws.name} needs isolation this runner does not give (its isolation policy asks for protected, and this runner runs with its sandbox off). `
+        + `A person who may change the workspace's settings can set it to trusted local, which lets it run on a runner without a sandbox: ${link}`;
+    }
+    const words = code ? (typeof b.exclusionDetail === 'string' && !DEFERRAL_WORDS[code] ? b.exclusionDetail : DEFERRAL_WORDS[code]) : null;
+    return words ? `The server deferred it: ${words.replace(/\.$/, '')}.` : refusal(claimed);
   }
 
   /**

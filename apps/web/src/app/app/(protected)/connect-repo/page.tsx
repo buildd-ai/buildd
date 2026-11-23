@@ -36,6 +36,7 @@ export default async function ConnectRepoPage({ searchParams }: { searchParams: 
       action="/api/connect-repo"
       error={first(params.error) || null}
       created={first(params.created) === '1'}
+      trusted={first(params.trusted) === '1'}
     />
   );
 }
