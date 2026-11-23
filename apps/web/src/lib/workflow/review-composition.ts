@@ -23,6 +23,7 @@ import { sql } from 'drizzle-orm';
 import { isCiVerifiedGeneratedPath, isMigrationSqlPath, pairMovedMigrations } from '@buildd/core/generated-artifacts';
 import { classifyReleasePr, releaseConstituentBase, type ReleasePrFacts } from '@buildd/core/release-candidate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import { isDependencyBotAuthor, type PrAuthor } from '@/lib/dependency-bot-pr';
 import type { Exec } from './kernel';
 import type { CompositionAttestation, CompositionConstituent, ConstituentEvidence, DeliveryState, NovelDelta, RoundStatus, Verdict } from './types';
 
@@ -279,6 +280,13 @@ export interface ConstituentPr {
   mergedHeadSha: string;
   /** The PR's kernel delivery; absent when its review ran on the legacy path. */
   delivery?: ConstituentDelivery | null;
+  /**
+   * Set when a dependency bot (Renovate, Dependabot) opened the PR and wrote every commit on it
+   * (`lib/dependency-bot-pr.ts`). Such a PR merges without a review by policy, so with no approve
+   * covering it, it is covered as the bot's own change rather than owed one. Only the collector
+   * sets it, after reading the PR's commits; anything it could not read leaves it unset.
+   */
+  dependencyBot?: string | null;
 }
 
 export interface CompositionInput {
@@ -324,6 +332,8 @@ export interface CompositionResult {
   novelCommits: Array<{ sha: string; reason: string; paths: string[] }>;
   /** Each novel commit's own diff, limited to its novel paths, as read (absent when unreadable). */
   novelDiffs?: Record<string, FileDiff[]>;
+  /** Commits that landed a dependency bot's own PR: covered without a review (see `ConstituentPr.dependencyBot`). */
+  dependencyBotPrs: Array<{ sha: string; prNumber: number; author: string }>;
 }
 
 /** The decided approve round that covers `head` in a constituent's delivery. */
@@ -356,6 +366,7 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
   const constituents: CompositionConstituent[] = [];
   const evidence: ConstituentEvidence[] = [];
   const novel: CompositionResult['novelCommits'] = [];
+  const dependencyBotPrs: CompositionResult['dependencyBotPrs'] = [];
   let unverifiable: string | null = input.abandoned ?? null;
 
   if (!input.commits) unverifiable = unverifiable ?? 'commit_list_truncated';
@@ -369,9 +380,16 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
 
   // The proof that a landed change is the reviewed one, for a squash commit and
   // for a PR's merge commit alike.
-  type Proof = { kind: 'constituent'; constituent: CompositionConstituent; evidence: ConstituentEvidence } | { kind: 'novel'; reason: string; paths: string[] } | { kind: 'unverifiable'; reason: string };
+  type Proof =
+    | { kind: 'constituent'; constituent: CompositionConstituent; evidence: ConstituentEvidence }
+    | { kind: 'dependency_bot'; prNumber: number; author: string }
+    | { kind: 'novel'; reason: string; paths: string[] }
+    | { kind: 'unverifiable'; reason: string };
   const prove = (c: CommitFacts & { files: string[] }, pr: ConstituentPr): Proof => {
     const cov = pr.delivery ? coveringRound(pr.delivery, pr.mergedHeadSha) : null;
+    // A dependency bot's own PR merges without a review by policy, so it is owed none here either.
+    // Only when no review ran on it: a review someone asked for and that did not approve still counts.
+    if (!pr.delivery && pr.dependencyBot) return { kind: 'dependency_bot', prNumber: pr.prNumber, author: pr.dependencyBot };
     if (!pr.delivery || !cov) {
       return { kind: 'novel', reason: pr.delivery ? `pr_${pr.prNumber}_not_approved_at_merged_head` : `pr_${pr.prNumber}_no_kernel_review`, paths: c.files };
     }
@@ -437,6 +455,7 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
   const accept = (p: Proof, sha: string) => {
     if (p.kind === 'unverifiable') unverifiable = unverifiable ?? p.reason;
     else if (p.kind === 'novel') { if (p.paths.length) novel.push({ sha, reason: p.reason, paths: p.paths }); }
+    else if (p.kind === 'dependency_bot') dependencyBotPrs.push({ sha, prNumber: p.prNumber, author: p.author });
     else { constituents.push(p.constituent); evidence.push(p.evidence); }
   };
 
@@ -469,7 +488,8 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
       continue;
     }
     if (isReleaseArtifactCommit(c)) continue;
-    if (c.landedVia && mergeProofs.get(c.landedVia)?.kind === 'constituent') continue;
+    const via = c.landedVia ? mergeProofs.get(c.landedVia)?.kind : undefined;
+    if (via === 'constituent' || via === 'dependency_bot') continue;
     const pr = input.constituentsByCommit[c.sha] ?? null;
     if (!pr) { if (c.files.length) novel.push({ sha: c.sha, reason: 'direct_commit', paths: c.files }); continue; }
     accept(prove(c as CommitFacts & { files: string[] }, pr), c.sha);
@@ -501,6 +521,7 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
     },
     constituentsEvidence: evidence,
     novelCommits: novel,
+    dependencyBotPrs,
     novelDiffs: Object.fromEntries(novel.flatMap((n) => {
       const diff = input.commits?.find((c) => c.sha === n.sha)?.diff;
       return diff ? [[n.sha, diff.filter((f) => n.paths.includes(f.filename))]] : [];
@@ -513,6 +534,8 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
 /** GitHub caps a compare at 250 commits and a diff at 300 files; at the cap the list may be cut. */
 export const COMPARE_COMMIT_CAP = 250;
 export const DIFF_FILE_CAP = 300;
+/** One page of a PR's commits; a dependency bot's PR is a commit or two, and a full page is not read as the whole list. */
+export const PR_COMMIT_CAP = 100;
 /**
  * How long `collectComposition` may spend reading GitHub. It runs inside `dispatch_review`, and a
  * read that outlives the drain (60s) takes the reviewer with it: the effect is re-claimed and re-run
@@ -598,12 +621,12 @@ export async function collectComposition(p: {
   // branch; anything else's on its head branch.
   const constituentBase = refreshTrunk ?? (p.constituentBase?.trim() || p.headRef);
   const commits: CommitFacts[] = [];
-  const prsByCommit: Record<string, { prNumber: number; mergedHeadSha: string } | null> = {};
+  const prsByCommit: Record<string, { prNumber: number; mergedHeadSha: string; author?: PrAuthor | null } | null> = {};
   const mergedPrOf = async (sha: string) => {
     try {
-      const pulls = (await api(inst, `/repos/${repo}/commits/${sha}/pulls`)) as Array<{ number: number; merged_at?: string | null; base?: { ref?: string }; head?: { sha?: string } }> | null;
+      const pulls = (await api(inst, `/repos/${repo}/commits/${sha}/pulls`)) as Array<{ number: number; merged_at?: string | null; base?: { ref?: string }; head?: { sha?: string }; user?: PrAuthor | null }> | null;
       const hit = (pulls ?? []).find((x) => x.merged_at && x.base?.ref === constituentBase && x.head?.sha);
-      return hit ? { prNumber: hit.number, mergedHeadSha: hit.head!.sha! } : null;
+      return hit ? { prNumber: hit.number, mergedHeadSha: hit.head!.sha!, author: hit.user ?? null } : null;
     } catch { return null; }
   };
   for (const c of rawCommits) {
@@ -667,9 +690,27 @@ export async function collectComposition(p: {
       });
     }
   }
+  // A dependency bot's PR that no review ran on: it is the bot's own change only if the bot opened
+  // it and wrote every commit on it. A commit anyone else pushed, or a list that cannot be read in
+  // full, leaves it an ordinary unreviewed PR.
+  const botAuthored = new Map<number, string>();
+  for (const pr of Object.values(prsByCommit)) {
+    if (!pr || deliveries.has(pr.prNumber) || botAuthored.has(pr.prNumber) || !isDependencyBotAuthor(pr.author)) continue;
+    if (spent()) return unproven(BUDGET_SPENT);
+    try {
+      const prCommits = (await api(inst, `/repos/${repo}/pulls/${pr.prNumber}/commits?per_page=${PR_COMMIT_CAP}`)) as Array<{ author?: PrAuthor | null }> | null;
+      if (prCommits?.length && prCommits.length < PR_COMMIT_CAP && prCommits.every((x) => isDependencyBotAuthor(x.author) && x.author!.login!.toLowerCase() === pr.author!.login!.toLowerCase())) {
+        botAuthored.set(pr.prNumber, pr.author!.login!);
+      }
+    } catch { /* unreadable: not the bot's own */ }
+  }
   const constituentsByCommit: Record<string, ConstituentPr | null> = {};
   for (const [sha, pr] of Object.entries(prsByCommit)) {
-    constituentsByCommit[sha] = pr ? { ...pr, delivery: deliveries.get(pr.prNumber) ?? null } : null;
+    if (!pr) { constituentsByCommit[sha] = null; continue; }
+    constituentsByCommit[sha] = {
+      prNumber: pr.prNumber, mergedHeadSha: pr.mergedHeadSha, delivery: deliveries.get(pr.prNumber) ?? null,
+      ...(botAuthored.has(pr.prNumber) ? { dependencyBot: botAuthored.get(pr.prNumber)! } : {}),
+    };
   }
 
   // The second, independent read: what each constituent's reviewed head

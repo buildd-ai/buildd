@@ -373,6 +373,56 @@ describe('collectComposition: a frozen release candidate', () => {
     expect(b.novelCommits.map((n) => n.reason)).toEqual(['pr_11_not_approved_at_merged_head']);
   });
 
+  // A dependency bot's PR (Renovate, Dependabot) merges on dev without a review by policy, so the
+  // release owes it none either, provided every commit on it is the bot's own.
+  describe('a dependency-bot PR on dev', () => {
+    type Who = { login: string; type: string };
+    const withBot = (prUser: Who, prCommits: Who[] | null) => api((path) => {
+      if (path.startsWith(`/repos/${REPO}/compare/main...AGG`)) return {
+        merge_base_commit: { sha: 'B0' }, base_commit: { sha: 'B9' }, total_commits: 3,
+        commits: [
+          { sha: 'S1', parents: [{ sha: 'B0' }], commit: { message: 'feat: one (#11)' } },
+          { sha: 'R1', parents: [{ sha: 'S1' }], commit: { message: 'fix(deps): update dependency x to v2.1.0 (#20)' } },
+          { sha: 'V1', parents: [{ sha: 'R1' }], commit: { message: 'chore: bump version to v1.2.3' } },
+        ],
+        files: [{ filename: 'a.ts' }, { filename: 'package.json' }, { filename: 'bun.lock' }, { filename: 'CHANGELOG.md' }],
+      };
+      if (path === `/repos/${REPO}/commits/R1`) return { files: [{ filename: 'package.json', status: 'modified', patch: '@@ -1 +1 @@\n-2.0.0\n+2.1.0' }, { filename: 'bun.lock', status: 'modified', patch: '@@ -1 +1 @@\n-2.0.0\n+2.1.0' }] };
+      if (path === `/repos/${REPO}/commits/R1/pulls`) return [{ number: 20, merged_at: '2026-10-06T00:00:00Z', base: { ref: 'dev' }, head: { sha: 'P20' }, user: prUser }];
+      if (path.startsWith(`/repos/${REPO}/pulls/20/commits`)) {
+        if (!prCommits) throw new Error('unreadable');
+        return prCommits.map((a, i) => ({ sha: `C20${i}`, author: a }));
+      }
+      return undefined;
+    });
+    const renovate = { login: 'renovate[bot]', type: 'Bot' };
+
+    test("every commit is the bot's own: covered, named, and no review is owed", async () => {
+      const b = await collect(withBot(renovate, [renovate]));
+      expect(b.attestation.novelDelta).toEqual({ result: 'none' });
+      expect(b.dependencyBotPrs).toEqual([{ sha: 'R1', prNumber: 20, author: 'renovate[bot]' }]);
+      expect(b.novelCommits).toEqual([]);
+    });
+
+    test("a person also committed to the bot's branch: owed a review like any unreviewed PR", async () => {
+      const b = await collect(withBot(renovate, [renovate, { login: 'someone', type: 'User' }]));
+      expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['bun.lock', 'package.json'] });
+      expect(b.novelCommits.map((n) => n.reason)).toEqual(['pr_20_no_kernel_review']);
+      expect(b.dependencyBotPrs).toEqual([]);
+    });
+
+    test("a user account, not a GitHub App, with a bot's login is not a dependency bot", async () => {
+      const impostor = { login: 'renovate[bot]', type: 'User' };
+      const b = await collect(withBot(impostor, [impostor]));
+      expect(b.novelCommits.map((n) => n.reason)).toEqual(['pr_20_no_kernel_review']);
+    });
+
+    test("an unreadable commit list on the bot's PR is not taken as the bot's own", async () => {
+      const b = await collect(withBot(renovate, null));
+      expect(b.novelCommits.map((n) => n.reason)).toEqual(['pr_20_no_kernel_review']);
+    });
+  });
+
   test('an attestation for an amended candidate SHA does not cover the old one, and vice versa', async () => {
     const b = await collect(api());
     // The PR head moved to the amendment: the attestation for AGG is stale.
