@@ -262,3 +262,21 @@ describe('commitMessageOf', () => {
     expect(commitMessageOf('git commit -F msg.txt')).toBeNull();
   });
 });
+
+describe('Skill tool milestones', () => {
+  test('emits the slug only, never args', () => {
+    const m = toolActionMilestone('Skill', { skill: 'schema-change', args: 'secret task text /home/x' }, ROOT, 1);
+    expect(m).toEqual({ type: 'action', label: 'Skill schema-change', ts: 1, tool: 'Skill', skill: 'schema-change' });
+    expect(JSON.stringify(m)).not.toContain('secret');
+  });
+  test('rejects missing or path-like slugs', () => {
+    expect(toolActionMilestone('Skill', {}, ROOT)).toBeNull();
+    expect(toolActionMilestone('Skill', { skill: '/etc/passwd' }, ROOT)).toBeNull();
+    expect(toolActionMilestone('Skill', { skill: 'a b' }, ROOT)).toBeNull();
+  });
+  test('survives the shape the procedure digest reads', () => {
+    const m = toolActionMilestone('Skill', { skill: 'buildd-workflow' }, ROOT) as Record<string, unknown>;
+    expect(m.type === 'action' && m.tool === 'Skill' && typeof m.skill === 'string').toBe(true);
+    expect(m.skill).toBe('buildd-workflow');
+  });
+});
