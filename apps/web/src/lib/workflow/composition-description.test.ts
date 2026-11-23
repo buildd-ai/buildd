@@ -18,6 +18,11 @@ describe('compositionBlock keeps the four things apart', () => {
     expect(b).toContain('No uncovered delta');
     expect(b).toContain('### 4. Final policy gate');
   });
+  test('a dependency bot\'s own PR is listed as covered without a review', () => {
+    const b = compositionBlock({ attestation: att({ result: 'none' }), dependencyBotPrs: [{ sha: 'f'.repeat(40), prNumber: 20, author: 'renovate[bot]' }], gate });
+    expect(b).toContain("- #20: renovate[bot]'s own change, which needs no review, landed as `fffffff`");
+    expect(b).toContain('No uncovered delta');
+  });
   test('novel delta lists paths and says a review is owed', () => {
     const b = compositionBlock({ attestation: att({ result: 'present', paths: ['x.ts'] }), deltaReview: 'pending', gate });
     expect(b).toContain('review owed');

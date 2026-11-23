@@ -163,7 +163,7 @@ export async function candidateReviewScope(input: CandidateReviewInput, deps: Ca
   // The description says which part is reviewed constituent work and which is the delta. Best effort.
   try {
     const block = compositionBlock({
-      attestation: built.attestation, novelCommits: built.novelCommits,
+      attestation: built.attestation, novelCommits: built.novelCommits, dependencyBotPrs: built.dependencyBotPrs,
       deltaReview: delta.result === 'none' ? 'not_owed' : 'pending',
       gate: { state: scope.kind === 'composed' ? 'COMPOSED' : scope.kind === 'delta' ? 'AWAITING_DELTA_REVIEW' : 'AWAITING_REVIEW', openFindings: 0 },
     });
