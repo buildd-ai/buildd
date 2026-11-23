@@ -345,9 +345,9 @@ export function runnerStateWord(online: boolean): 'Online' | 'Offline' {
 
 /** "Last successful call 5m ago", or the plain fact that there has not been one. */
 export function lastCallLine(at: string | null | undefined, now: Date = new Date()): string {
-  if (!at) return 'No successful call yet';
+  if (!at) return 'No successful call';
   const t = new Date(at).getTime();
-  if (!Number.isFinite(t)) return 'No successful call yet';
+  if (!Number.isFinite(t)) return 'No successful call';
   const s = Math.max(0, Math.round((now.getTime() - t) / 1000));
   if (s < 60) return 'Last successful call just now';
   const m = Math.round(s / 60);

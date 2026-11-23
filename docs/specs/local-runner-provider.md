@@ -678,7 +678,7 @@ which:
   `GET /api/providers/local-runner`), or "Runner gone" when the pinned
   heartbeat row no longer exists. Beside the pick it shows when the runner last
   completed a relay call ("Last successful call 5m ago", or "No successful
-  call yet"); that is `max(finished_at)` of the team's `done` jobs on the
+  call"); that is `max(finished_at)` of the team's `done` jobs on the
   pinned runner (`lastRelaySuccessAt`), never a figure that implies success
   where there was none. Throughput and p95 stay on the runner page (6.4).
 - The runner select lists every team runner that has advertised models, each

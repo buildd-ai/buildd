@@ -323,7 +323,7 @@ describe('local runner card', () => {
 
   it('last successful call reads as an age, or says there has been none', () => {
     const now = new Date('2026-11-23T12:00:00Z');
-    expect(lastCallLine(null, now)).toBe('No successful call yet');
+    expect(lastCallLine(null, now)).toBe('No successful call');
     expect(lastCallLine('2026-11-23T11:55:00Z', now)).toBe('Last successful call 5m ago');
     expect(lastCallLine('2026-11-23T09:00:00Z', now)).toBe('Last successful call 3h ago');
     expect(lastCallLine('2026-11-20T12:00:00Z', now)).toBe('Last successful call 3d ago');
