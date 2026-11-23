@@ -87,7 +87,7 @@ export interface AutoReviewPr {
 export interface ForeignPrDeps {
   kernelOwned?: (workspaceId: string, repoFullName: string, prNumber: number) => Promise<boolean>;
   /** A worker row in one of these workspaces mapped to the PR number or to its head branch. */
-  knownWorker?: (workspaceIds: string[], prNumber: number, headRef: string | null) => Promise<unknown | null>;
+  knownWorker?: (workspaceIds: string[], prNumber: number, headRef: string | null, repoFullName?: string) => Promise<unknown | null>;
   reviewTask?: (workspaceId: string, prNumber: number) => Promise<unknown | null>;
 }
 
@@ -128,8 +128,12 @@ ORDER BY gr.full_name, w.created_at, w.id`)) as unknown as { rows?: Array<Record
  * that row is an earlier PR's, and matching it left every later PR on the
  * branch "known" and holding a pending status nobody would clear.
  */
-export function knownWorkerWhere(workspaceIds: string[], n: number, headRef: string | null) {
-  const byNumber = eq(workers.prNumber, n);
+export function knownWorkerWhere(workspaceIds: string[], n: number, headRef: string | null, repoFullName?: string) {
+  // Workers carry no repo column, only the PR's URL: a same-number PR in another repo is not this one.
+  const inRepo = repoFullName
+    ? or(isNull(workers.prUrl), sql`lower(${workers.prUrl}) LIKE ${`%/${repoFullName.toLowerCase().replace(/[\\%_]/g, '\\$&')}/pull/%`}`)
+    : undefined;
+  const byNumber = and(eq(workers.prNumber, n), inRepo)!;
   return and(
     inArray(workers.workspaceId, workspaceIds),
     headRef ? or(byNumber, and(eq(workers.branch, headRef), isNull(workers.prNumber))) : byNumber,
@@ -138,8 +142,8 @@ export function knownWorkerWhere(workspaceIds: string[], n: number, headRef: str
 
 const foreignLiveDeps = (): Required<ForeignPrDeps> => ({
   kernelOwned: async (w, r, n) => !!(await (await import('@/lib/workflow/authority')).kernelDeliveryForPr(w, r, n)),
-  knownWorker: async (ids, n, headRef) => (ids.length ? (await db.query.workers.findFirst({
-    where: sqlWhere(knownWorkerWhere(ids, n, headRef)),
+  knownWorker: async (ids, n, headRef, repo) => (ids.length ? (await db.query.workers.findFirst({
+    where: sqlWhere(knownWorkerWhere(ids, n, headRef, repo)),
     columns: { id: true },
   })) ?? null : null),
   reviewTask: async (w, n) => (await import('@/lib/pr-review-request')).findReviewTaskForPr(w, n),
@@ -167,7 +171,7 @@ export async function isForeignPr(
   const d = { ...foreignLiveDeps(), ...deps };
   if (isBuilddBranch(p.headRef, p.workspaces.map((w) => w.gitConfig))) return false;
   const ids = p.workspaces.map((w) => w.id);
-  if (await d.knownWorker(ids, p.prNumber, p.headRef ?? null)) return false;
+  if (await d.knownWorker(ids, p.prNumber, p.headRef ?? null, p.repoFullName)) return false;
   for (const id of ids) {
     if (await d.kernelOwned(id, p.repoFullName, p.prNumber)) return false;
     if (await d.reviewTask(id, p.prNumber)) return false;

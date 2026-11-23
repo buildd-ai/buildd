@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { isBuilddBranch, knownWorkerWhere, maybeAutoReviewUnownedPr, type AutoReviewDeps, type AutoReviewWorkspace } from './auto-review-unowned';
+import { isBuilddBranch, isForeignPr, knownWorkerWhere, maybeAutoReviewUnownedPr, type AutoReviewDeps, type AutoReviewWorkspace } from './auto-review-unowned';
 
 const ws = (over: Partial<AutoReviewWorkspace> = {}): AutoReviewWorkspace => ({
   id: 'ws-a', teamId: 'team-a', name: 'repo', repo: 'org/repo',
@@ -242,5 +242,29 @@ describe('knownWorkerWhere: which worker rows make a PR known', () => {
     const { sql, params } = render('renovate/openai-codex-sdk-0.x');
     expect(sql).toMatch(/"branch" = \$\d+ and "workers"\."pr_number" is null/);
     expect(params).toContain('renovate/openai-codex-sdk-0.x');
+  });
+});
+
+describe('knownWorkerWhere: repo scope', () => {
+  it('a PR-number match is confined to the PR\'s own repo through the worker\'s PR url', () => {
+    const q = new PgDialect().sqlToQuery(knownWorkerWhere(['ws-a'], 5999, null, 'Acme/Widgets'));
+    expect(q.sql.replace(/\s+/g, ' ')).toContain('lower("workers"."pr_url") LIKE');
+    expect(q.params).toContain('%/acme/widgets/pull/%');
+  });
+});
+
+describe('isForeignPr: a dependency bot reusing a branch', () => {
+  const base = { workspaces: [{ id: 'ws-a' }], repoFullName: 'acme/widgets', prNumber: 6000, headRef: 'renovate/thing-1.x' };
+  // Mirrors knownWorkerWhere: only a worker on the branch with no PR number yet counts.
+  const rows = [{ branch: 'renovate/thing-1.x', prNumber: 5999 }];
+  const knownWorker = async (_i: string[], n: number, ref: string | null) =>
+    rows.find((r) => r.prNumber === n || (r.branch === ref && r.prNumber == null)) ?? null;
+
+  it('a prior worker on the same branch with a different PR number leaves the new PR foreign', async () => {
+    expect(await isForeignPr(base, { knownWorker, kernelOwned: async () => false, reviewTask: async () => null })).toBe(true);
+  });
+
+  it('the same worker with this PR number makes it known', async () => {
+    expect(await isForeignPr({ ...base, prNumber: 5999 }, { knownWorker, kernelOwned: async () => false, reviewTask: async () => null })).toBe(false);
   });
 });
