@@ -29,19 +29,47 @@ import {
   type SessionUpdate,
 } from './translate';
 
+const ATTEMPT_LABEL = { ci: 'CI fix', reviewer: 'review', conflict: 'conflict fix' } as const;
+
 export type WorkerActionName = 'answer' | 'message' | 'pause' | 'stop' | 'followup';
 
 /** What the bridge needs from the runner (runner-port.ts implements it over the socket). */
 export interface RunnerPort {
   listWorkers(): Promise<PublicWorker[]>;
   act(workerId: string, action: WorkerActionName, message?: string): Promise<{ status: number; body: unknown }>;
-  /** Called with each worker the runner broadcasts. Returns an unsubscribe. */
-  subscribe(onWorker: (worker: PublicWorker) => void): () => void;
+  /**
+   * Called with each worker the runner broadcasts. Returns an unsubscribe.
+   * `onSnapshot` gets the ids of every worker in a full list the runner sends
+   * (the init frame on each (re)connect), so a turn can tell its worker is gone.
+   */
+  subscribe(onWorker: (worker: PublicWorker) => void, onSnapshot?: (ids: Set<string>) => void): () => void;
   /** The workspaces this runner's key reaches (`GET /api/workspaces`). */
   listWorkspaces(): Promise<BuilddWorkspace[]>;
-  createTask(input: { workspaceId: string; title: string; description: string }): Promise<{ status: number; body: unknown }>;
+  createTask(input:   { workspaceId: string; title: string; description: string; reserve?: boolean; context?: Record<string, unknown> } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
   /** Claim a task onto this runner as a person would (`c` in top). */
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
+}
+
+/** `_meta.buildd` on `session/new` or the first `session/prompt`: where the thread's task is filed. */
+export interface BuilddTaskMeta {
+  missionId?: string;
+  roleSlug?: string;
+  priority?: number;
+  kind?: string;
+}
+
+function taskMetaFrom(params: unknown): BuilddTaskMeta {
+  return taskMetaFromRaw((params as { _meta?: { buildd?: Record<string, unknown> } } | null)?._meta?.buildd);
+}
+
+function taskMetaFromRaw(raw: Record<string, unknown> | undefined): BuilddTaskMeta {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: BuilddTaskMeta = {};
+  if (typeof raw.missionId === 'string' && raw.missionId) out.missionId = raw.missionId;
+  if (typeof raw.roleSlug === 'string' && raw.roleSlug) out.roleSlug = raw.roleSlug;
+  if (typeof raw.priority === 'number' && Number.isFinite(raw.priority)) out.priority = raw.priority;
+  if (typeof raw.kind === 'string' && raw.kind) out.kind = raw.kind;
+  return out;
 }
 
 export interface BuilddWorkspace {
@@ -102,6 +130,8 @@ interface Session {
   /** The client's project folder: where a first message's task goes. */
   cwd: string | null;
   cursor: MessageCursor;
+  /** `_meta.buildd` the client gave this thread; passed to createTask. */
+  taskMeta?: BuilddTaskMeta;
   /** Set while a prompt turn is open; calling it ends the turn as cancelled. */
   cancelTurn?: () => void;
 }
@@ -114,6 +144,58 @@ const NEW_THREAD_TEXT = [
 
 const TITLE_MAX = 120;
 
+/** Blocks T3 Code adds around a message for an agent running inside T3: its tool rules, runtime notes, PR-linking rules. */
+const CLIENT_ENVELOPE_BLOCKS = /<(t3_code_instructions|runtime_info|pull_request_linking)>[\s\S]*?<\/\1>/g;
+
+/**
+ * What the user typed. T3 Code sends `<user_request>…</user_request>` inside an
+ * envelope of instructions meant for an agent that has T3's tools; a buildd
+ * worker has none of them, and the envelope's first line became the task
+ * title. Without the user_request wrapper, the envelope blocks are dropped and
+ * the rest is kept, so any other client's text passes through unchanged.
+ */
+export function userTextFrom(text: string): string {
+  const request = /<user_request>([\s\S]*?)<\/user_request>/.exec(text);
+  const body = request ? request[1].trim() : text.replace(CLIENT_ENVELOPE_BLOCKS, '').trim();
+  return dropDelegationRoleLine(body);
+}
+
+/** T3's delegation prefix: `Act as the <role> sub-agent for this task.` as the whole first line. */
+const DELEGATION_ROLE_LINE = /^Act as the \S+ sub-agent for this task\.[ \t]*$/;
+
+function dropDelegationRoleLine(text: string): string {
+  const lines = text.split('\n');
+  if (!DELEGATION_ROLE_LINE.test(lines[0].trim())) return text;
+  return lines.slice(1).join('\n').trim();
+}
+
+const DIRECTIVE_LINE = /^buildd:[ \t]+(\S.*)$/;
+
+/**
+ * An optional leading `buildd: mission=<id> role=<slug> priority=<n> kind=<kind>`
+ * line, for clients (T3's delegation) that cannot send `_meta.buildd`. Parsed
+ * with the same validation as `_meta.buildd`; the line is removed from the text.
+ * A first line that is not this exact shape leaves the text untouched.
+ */
+export function directiveFrom(text: string): { text: string; meta: BuilddTaskMeta } {
+  const lines = text.split('\n');
+  const first = DIRECTIVE_LINE.exec(lines[0].trim());
+  if (!first) return { text, meta: {} };
+  const raw: Record<string, unknown> = {};
+  for (const pair of first[1].split(/\s+/)) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) return { text, meta: {} };
+    const key = pair.slice(0, eq).toLowerCase();
+    const value = pair.slice(eq + 1);
+    if (key === 'mission' || key === 'missionid') raw.missionId = value;
+    else if (key === 'role' || key === 'roleslug') raw.roleSlug = value;
+    else if (key === 'priority') raw.priority = value === '' ? NaN : Number(value);
+    else if (key === 'kind') raw.kind = value;
+    else return { text, meta: {} };
+  }
+  return { text: lines.slice(1).join('\n').trim(), meta: taskMetaFromRaw(raw) };
+}
+
 /** First non-empty line, clipped: what the dashboard and queue show for the task. */
 export function taskTitleFrom(text: string): string {
   const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? text.trim();
@@ -125,6 +207,8 @@ export class AcpBridge {
   private grace: number;
   /** The client renders ACP form elicitations (T3 Code shows them as its own question UI). */
   private canElicit = false;
+  /** The client's own name from `initialize` clientInfo, kept to say who filed a task. */
+  private clientName: string | null = null;
 
   constructor(private deps: BridgeDeps) {
     this.grace = deps.settleGraceMs ?? 30_000;
@@ -134,6 +218,7 @@ export class AcpBridge {
     switch (method) {
       case 'initialize':
         this.canElicit = !!params?.clientCapabilities?.elicitation?.form && !!this.deps.request;
+        this.clientName = typeof params?.clientInfo?.name === 'string' ? params.clientInfo.name.trim().slice(0, 60) || null : null;
         return this.initialize();
       case 'authenticate': return {};
       case 'session/new': return this.newSession(params ?? {});
@@ -161,7 +246,7 @@ export class AcpBridge {
 
   private newSession(params: { cwd?: string }) {
     const sessionId = `new-${crypto.randomUUID()}`;
-    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor() });
+    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor(), taskMeta: taskMetaFrom(params) });
     return { sessionId };
   }
 
@@ -173,23 +258,36 @@ export class AcpBridge {
     for (const w of workers) {
       if (!w.id) continue;
       const where = w.worktreePath ?? w.sessionCwd ?? null;
+      // Never filtered out: a worker buildd started itself (mission task, review or
+      // CI-fix attempt) has no client thread, and the client's project folder says
+      // nothing about it. The folder only decides which cwd the entry is filed under.
+      let inProject = false;
       if (wanted) {
-        const byPath = where !== null && (await this.belongsTo(where, wanted));
-        if (!byPath) {
+        inProject = where !== null && (await this.belongsTo(where, wanted));
+        if (!inProject) {
           names ??= (await this.deps.projectNamesOf(params.cwd!).catch(() => [])).map(n => n.toLowerCase());
-          if (!w.workspaceName || !names.includes(w.workspaceName.toLowerCase())) continue;
+          inProject = !!w.workspaceName && names.includes(w.workspaceName.toLowerCase());
         }
       }
-      const cwd = params.cwd ?? where;
+      const cwd = inProject ? params.cwd! : (where ?? params.cwd ?? null);
       if (!cwd) continue;
+      const attempt = w.attemptKind ? ATTEMPT_LABEL[w.attemptKind] : null;
+      const title = w.taskTitle ?? w.id;
       sessions.push({
         // A worker started from a client thread is listed as that thread, so the
         // client finds it already imported instead of offering a duplicate.
         sessionId: this.deps.links.sessionFor?.(w.id) ?? w.id,
         cwd,
-        title: w.taskTitle ?? w.id,
+        title: attempt ? `${title} (${attempt})` : title,
         updatedAt: w.lastActivity ? new Date(w.lastActivity).toISOString() : null,
-        _meta: { buildd: { taskId: w.taskId ?? null, status: w.status, workspace: w.workspaceName ?? null, worktree: where, branch: w.branch ?? null } },
+        _meta: { buildd: {
+          taskId: w.taskId ?? null,
+          status: w.status,
+          missionId: w.missionId ?? null,
+          workspace: w.workspaceName ?? null,
+          worktree: where,
+          branch: w.branch ?? null,
+        } },
       });
     }
     sessions.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
@@ -235,13 +333,17 @@ export class AcpBridge {
     return sessionId.startsWith('new-') ? null : sessionId;
   }
 
-  private async prompt(params: { sessionId?: string; prompt?: Array<{ type: string; text?: string }> }) {
+  private async prompt(params: { sessionId?: string; _meta?: unknown; prompt?: Array<{ type: string; text?: string }> }) {
     const sessionId = params.sessionId;
     if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
     const session = this.sessions.get(sessionId) ?? this.adopt(sessionId);
-    const text = (params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n').trim();
+    let text = userTextFrom((params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'));
 
     if (!session.workerId) {
+      const directive = directiveFrom(text);
+      text = directive.text;
+      // `_meta.buildd` wins over the in-text directive.
+      session.taskMeta = { ...directive.meta, ...session.taskMeta, ...taskMetaFrom(params) };
       if (!text || parseCommand(text)) {
         this.emit(sessionId, textUpdate(NEW_THREAD_TEXT));
         return { stopReason: 'end_turn' };
@@ -314,19 +416,29 @@ export class AcpBridge {
     }
 
     const title = taskTitleFrom(text);
-    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text });
+    // Filed reserved for this runner's account, then claimed by id: no other runner
+    // can take it in the gap, or the thread would follow nothing (CG-7).
+    const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true,
+      // Origin marker the task page reads (context.client): the client names itself.
+      context: { client: { kind: 'acp', ...(this.clientName ? { name: this.clientName } : {}) } } });
     const task = (created.body as { task?: { id?: string } } | null)?.task;
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 
     const claimed = await this.deps.runner.claim(task.id);
-    const worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
+    let worker = (claimed.body as { worker?: PublicWorker } | null)?.worker;
     if (claimed.status >= 400 || !worker?.id) {
-      return end(`Created the buildd task “${title}” in ${ws.name}. It is queued: this runner could not take it now. ${refusal(claimed)}`);
+      // The runner's own dispatch may have claimed the reserved task first: the
+      // reservation lets this account's claim through, whichever path makes it.
+      // That is this runner running it, so follow that worker.
+      worker = await this.ownWorkerFor(task.id);
+    }
+    if (!worker?.id) {
+      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${refusal(claimed)}`);
     }
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);
     session.cursor.skip(worker.messages);
-    this.emit(sessionId, textUpdate(`Started a buildd task in ${ws.name}: “${title}”.`));
+    this.emit(sessionId, textUpdate(`Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}.`));
     return this.follow(session, sessionId, worker, { watching: true, alreadyMoving: true });
   }
 
@@ -400,9 +512,11 @@ export class AcpBridge {
             if (latest.status !== 'waiting' || waitKey(latest.waitingFor) !== key) return;
             const value = res?.action === 'accept' && typeof res.content?.answer === 'string' ? res.content.answer.trim() : '';
             if (!value) { finish('end_turn'); return; }
+            // Mark it answered before posting: the form is closed now, and a re-sent
+            // copy of this wait arriving while the post is in flight must not reopen it.
+            answered = key;
             const r = await this.deps.runner.act(session.workerId!, 'answer', value);
             if (r.status >= 400) { finish('end_turn', refusal(r)); return; }
-            answered = key;
           })
           .catch(() => { if (asking === key) asking = null; finish('end_turn'); });
       };
@@ -423,7 +537,22 @@ export class AcpBridge {
         if (moving && isSettled(w.status)) finish('end_turn');
       };
 
-      const unsubscribe = this.deps.runner.subscribe(onWorker);
+      const onSnapshot = (ids: Set<string>) => {
+        const id = session.workerId;
+        if (done || !id || ids.has(id)) return;
+        // The init frame leaves out settled workers, so a miss is not proof the worker is gone:
+        // ask the full list before saying so.
+        this.findWorker(id).then(
+          (w) => {
+            if (done || id !== session.workerId) return;
+            if (w) onWorker(w);
+            else finish('end_turn', 'This worker is no longer on this runner.');
+          },
+          () => {},
+        );
+      };
+
+      const unsubscribe = this.deps.runner.subscribe(onWorker, onSnapshot);
       session.cancelTurn = () => {
         void this.deps.runner.act(session.workerId!, 'pause').catch(() => {});
         finish('cancelled', 'Pausing the run. Reply to resume it.');
@@ -455,6 +584,16 @@ export class AcpBridge {
     return session;
   }
 
+  /** A worker on this runner for the task, waiting briefly for a dispatch that is still landing. */
+  private async ownWorkerFor(taskId: string): Promise<PublicWorker | undefined> {
+    for (let i = 0; i < 6; i++) {
+      const found = (await this.deps.runner.listWorkers().catch(() => [] as PublicWorker[])).find(w => w.taskId === taskId);
+      if (found) return found;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return undefined;
+  }
+
   private async findWorker(workerId: string): Promise<PublicWorker | undefined> {
     const workers = await this.deps.runner.listWorkers();
     return workers.find(w => w.id === workerId);
@@ -463,6 +602,15 @@ export class AcpBridge {
   private emit(sessionId: string, update: SessionUpdate) {
     this.deps.notify(sessionId, update);
   }
+}
+
+/** ` · Builder on <model>`; role only when the model is unknown, nothing when neither is. Never a guess. */
+function runsAs(w: PublicWorker): string {
+  const role = w.roleName?.trim();
+  const model = (w.claimedModel ?? w.sessionModel)?.trim();
+  if (role && model) return ` · ${role} on ${model}`;
+  if (role) return ` · ${role}`;
+  return '';
 }
 
 function label(ws: BuilddWorkspace): string {

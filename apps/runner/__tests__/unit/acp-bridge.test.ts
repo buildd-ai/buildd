@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { AcpBridge, type RunnerPort, type WorkerActionName } from '../../src/acp/bridge';
-import { MessageCursor, toolKind, toolTitle, replyRoute, waitingText } from '../../src/acp/translate';
+import { AcpBridge, userTextFrom, type RunnerPort, type WorkerActionName } from '../../src/acp/bridge';
+import { MessageCursor, toolKind, toolTitle, replyRoute, settledText, waitingText } from '../../src/acp/translate';
 import type { PublicWorker } from '../../src/public-worker';
 
 function worker(over: Partial<PublicWorker> = {}): PublicWorker {
@@ -23,7 +23,8 @@ class FakeRunner implements RunnerPort {
   actResult = { status: 200, body: { ok: true } as unknown };
 
   workspaces: Array<{ id: string; name: string; repo?: string }> = [{ id: 'ws-app', name: 'app', repo: 'acme/app' }];
-  created: Array<{ workspaceId: string; title: string; description: string }> = [];
+  created: Array<Record<string, unknown> & { workspaceId: string; title: string; description: string }> = [];
+  createResult: { status: number; body: unknown } | null = null;
   claimResult: { status: number; body: unknown } | null = null;
 
   async listWorkers() { return this.workers; }
@@ -32,7 +33,8 @@ class FakeRunner implements RunnerPort {
     return this.actResult;
   }
   async listWorkspaces() { return this.workspaces; }
-  async createTask(input: { workspaceId: string; title: string; description: string }) {
+  async createTask(input: { workspaceId: string; title: string; description: string; missionId?: string; roleSlug?: string; priority?: number; kind?: string; reserve?: boolean; context?: Record<string, unknown> }) {
+    if (this.createResult) return this.createResult;
     this.created.push(input);
     return { status: 200, body: { task: { id: `t${this.created.length}`, title: input.title } } };
   }
@@ -89,6 +91,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 const kinds = (updates: Array<{ update: any }>) => updates.map(u => u.update.sessionUpdate);
 const texts = (updates: Array<{ update: any }>) =>
   updates.filter(u => u.update.sessionUpdate === 'agent_message_chunk').map(u => u.update.content.text).join('\n');
+const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise(r => setTimeout(r, 5)); };
 
 describe('translate', () => {
   test('tool kinds follow the tool name', () => {
@@ -184,6 +187,32 @@ describe('translate', () => {
     expect(text).toContain('1. Postgres — the default');
     expect(text).toContain('2. SQLite');
   });
+
+  // A run that answers through complete_task leaves its answer only inside the
+  // tool call; the closing line must carry it as text, or T3 shows "Finished."
+  test('a finished run ends on its completion summary', () => {
+    const summary = 'No secrets found: only .env.example templates with placeholder values.';
+    const worker = { id: 'w1', status: 'done', messages: [
+      { type: 'tool_use', name: 'Bash', input: { command: 'ls -a' }, timestamp: 1 },
+      { type: 'tool_use', name: 'mcp__buildd__buildd_work', input: { action: 'complete_task', params: { summary } }, timestamp: 2 },
+    ] } as unknown as PublicWorker;
+    expect(settledText(worker)).toBe(`${summary}\n\nFinished.`);
+  });
+
+  test('the summary is read from a flat complete_task call too', () => {
+    const worker = { id: 'w1', status: 'done', prUrl: 'https://example.test/pr/2', messages: [
+      { type: 'tool_use', name: 'mcp__buildd__complete_task', input: { summary: 'Fixed it.' }, timestamp: 1 },
+    ] } as unknown as PublicWorker;
+    expect(settledText(worker)).toBe('Fixed it.\n\nFinished. PR: https://example.test/pr/2');
+  });
+
+  test('a summary the agent already said as text is not repeated', () => {
+    const worker = { id: 'w1', status: 'done', messages: [
+      { type: 'tool_use', name: 'mcp__buildd__buildd_work', input: { action: 'complete_task', params: { summary: 'Done.' } }, timestamp: 1 },
+      { type: 'text', content: 'Done.', timestamp: 2 },
+    ] } as unknown as PublicWorker;
+    expect(settledText(worker)).toBe('Finished.');
+  });
 });
 
 describe('AcpBridge', () => {
@@ -197,14 +226,49 @@ describe('AcpBridge', () => {
     expect(res.agentInfo.name).toBe('buildd');
   });
 
-  test('session/list keeps the workers whose worktree belongs to the project', async () => {
+  test('session/list files the project\'s workers under the project folder and still lists the rest', async () => {
     const { bridge } = setup([
       worker({ id: 'w1' }),
       worker({ id: 'w2', worktreePath: '/elsewhere/w2', taskTitle: 'Other repo' }),
     ]);
     const res: any = await bridge.handle('session/list', { cwd: '/repos/app' });
-    expect(res.sessions.map((s: any) => s.sessionId)).toEqual(['w1']);
-    expect(res.sessions[0]).toMatchObject({ cwd: '/repos/app', title: 'Fix the flaky test', updatedAt: '2026-11-19T10:00:00.000Z' });
+    expect(res.sessions.map((s: any) => s.sessionId).sort()).toEqual(['w1', 'w2']);
+    const byId = Object.fromEntries(res.sessions.map((s: any) => [s.sessionId, s]));
+    expect(byId.w1).toMatchObject({ cwd: '/repos/app', title: 'Fix the flaky test', updatedAt: '2026-11-19T10:00:00.000Z' });
+    expect(byId.w2.cwd).toBe('/elsewhere/w2');
+  });
+
+  test('session/list shows buildd-started workers with mission, attempt kind and branch', async () => {
+    const { bridge } = setup([
+      worker({ id: 'm1', taskId: 'tm', taskTitle: 'Mission step', missionId: 'mis1', workspaceName: 'app', branch: 'buildd/tm-step' } as any),
+      worker({ id: 'r1', taskId: 'tr', taskTitle: 'Fix PR 7', attemptKind: 'ci', worktreePath: '/other/r1', workspaceName: 'zzz' } as any),
+      worker({ id: 'r2', taskId: 'tq', taskTitle: 'Fix PR 8', attemptKind: 'reviewer', worktreePath: '/other/r2' } as any),
+    ]);
+    const res: any = await bridge.handle('session/list', { cwd: '/repos/app' });
+    const byId = Object.fromEntries(res.sessions.map((s: any) => [s.sessionId, s]));
+    expect(Object.keys(byId).sort()).toEqual(['m1', 'r1', 'r2']);
+    expect(byId.m1._meta.buildd).toMatchObject({ taskId: 'tm', status: 'working', missionId: 'mis1', workspace: 'app', branch: 'buildd/tm-step' });
+    expect(byId.r1._meta.buildd.missionId).toBeNull();
+    expect(byId.r1.title).toBe('Fix PR 7 (CI fix)');
+    expect(byId.r2.title).toBe('Fix PR 8 (review)');
+  });
+
+  test('a buildd-started worker loads, replays, and takes an answer and /stop', async () => {
+    const { bridge, runner, updates } = setup([worker({
+      id: 'm1', status: 'waiting', missionId: 'mis1', worktreePath: '/other/m1',
+      waitingFor: { type: 'question', prompt: 'Proceed?' },
+      messages: [{ type: 'text', content: 'Working', timestamp: 2 }],
+    } as any)]);
+    await bridge.handle('session/load', { sessionId: 'm1', cwd: '/other/m1', mcpServers: [] });
+    expect(texts(updates)).toContain('Working');
+    expect(texts(updates)).toContain('Proceed?');
+    const turn = bridge.handle('session/prompt', { sessionId: 'm1', prompt: [{ type: 'text', text: 'yes' }] });
+    await tick();
+    expect(runner.actions).toEqual([{ workerId: 'm1', action: 'answer', message: 'yes' }]);
+    runner.push(worker({ id: 'm1', status: 'done' }));
+    await turn;
+    await bridge.handle('session/prompt', { sessionId: 'm1', prompt: [{ type: 'text', text: '/stop' }] });
+    expect(runner.actions.at(-1)).toEqual({ workerId: 'm1', action: 'stop' });
   });
 
   test('a worker with no path left (a finished run) matches by its workspace name', async () => {
@@ -214,8 +278,10 @@ describe('AcpBridge', () => {
     ]);
     // a Windows client (T3) talking to a runner in WSL hands over a Windows path
     const res: any = await bridge.handle('session/list', { cwd: 'C:\\code\\app' });
-    expect(res.sessions.map((s: any) => s.sessionId)).toEqual(['w1']);
-    expect(res.sessions[0].cwd).toBe('C:\\code\\app');
+    const w1 = res.sessions.find((s: any) => s.sessionId === 'w1');
+    expect(w1.cwd).toBe('C:\\code\\app');
+    // the other workspace's worker has no path of its own: it falls back to the asked folder
+    expect(res.sessions.map((s: any) => s.sessionId).sort()).toEqual(['w1', 'w2']);
   });
 
   test('session/load replays history and states a pending question', async () => {
@@ -324,12 +390,22 @@ describe('AcpBridge', () => {
     expect(runner.actions).toEqual([{ workerId: 'w1', action: 'stop' }]);
   });
 
+  test('a new thread\'s task carries the ACP client\'s own name as its origin, not a guess', async () => {
+    const { bridge, runner } = setup([]);
+    await bridge.handle('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'T3 Code', version: '1.2' } });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Say from Zed in the title' }] });
+    await tick(); await tick();
+    expect(runner.created[0].context).toEqual({ client: { kind: 'acp', name: 'T3 Code' } });
+  });
+
   test('a new thread\'s first message becomes a buildd task on this runner, and the turn follows it', async () => {
     const { bridge, runner, updates } = setup([]);
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Fix the login redirect\n\nIt loops on Safari.' }] });
     await tick(); await tick();
-    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Fix the login redirect', description: 'Fix the login redirect\n\nIt loops on Safari.' }]);
+    // Filed reserved, so no other runner takes it before this runner's claim.
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Fix the login redirect', description: 'Fix the login redirect\n\nIt loops on Safari.', reserve: true, context: { client: { kind: 'acp' } } }]);
     expect(texts(updates)).toContain('Started a buildd task in app');
 
     runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'working', messages: [{ type: 'text', content: 'On it', timestamp: 4 }] }));
@@ -346,6 +422,46 @@ describe('AcpBridge', () => {
     await next;
     expect(runner.created).toHaveLength(1);
     expect(runner.actions).toEqual([{ workerId: 'w-t1', action: 'followup', message: 'also Chrome' }]);
+  });
+
+  test("T3 Code's envelope is unwrapped: the task, follow-ups and commands are what the user typed", async () => {
+    // T3 wraps each message in its own instructions and runtime notes. Those are
+    // for an agent running inside T3, not a buildd worker, and the first line of
+    // the envelope made the task title "<t3_code_instructions>".
+    const wrap = (req: string) => `<t3_code_instructions>
+## T3 Code interaction mode: Default
+
+Use delegate_task.
+</t3_code_instructions>
+
+<user_request>
+${req}
+</user_request>
+<runtime_info>In case you're asked: you are running in T3 Code.</runtime_info>
+
+<pull_request_linking>
+Link each PR.
+</pull_request_linking>`;
+    const request = `Count open PRs
+
+Only targeting dev.`;
+    const { bridge, runner } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap(request) }] });
+    await tick(); await tick();
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Count open PRs', description: request, reserve: true, context: { client: { kind: 'acp' } } }]);
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done' }));
+    await turn;
+
+    const next = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap('also drafts') }] });
+    await tick();
+    runner.push(worker({ id: 'w-t1', status: 'working' }));
+    runner.push(worker({ id: 'w-t1', status: 'done' }));
+    await next;
+    expect(runner.actions).toEqual([{ workerId: 'w-t1', action: 'followup', message: 'also drafts' }]);
+
+    await bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap('/stop') }] });
+    expect(runner.actions.at(-1)).toEqual({ workerId: 'w-t1', action: 'stop' });
   });
 
   test('the thread-to-worker link survives a bridge restart, so a resent message never makes a second task', async () => {
@@ -399,7 +515,29 @@ describe('AcpBridge', () => {
     expect(texts(told.updates)).toMatch(/more than one buildd workspace/);
   });
 
-  test('a task this runner cannot take stays queued, and the thread says why', async () => {
+  test('the first message names the role and the model the claimed worker will use', async () => {
+    const runner = new FakeRunner();
+    runner.claim = async (taskId: string) => ({ status: 200, body: { worker: worker({ id: `w-${taskId}`, taskId, messages: [], roleName: 'Builder', claimedModel: 'claude-opus-5-5' } as any) } });
+    const { bridge, updates } = setup([], { runner });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await tick(); await tick();
+    expect(texts(updates)).toContain('Started a buildd task in app: “Do it” · Builder on claude-opus-5-5.');
+  });
+
+  test('a claimed worker with a role but no known model names the role only', async () => {
+    const runner = new FakeRunner();
+    runner.claim = async (taskId: string) => ({ status: 200, body: { worker: worker({ id: `w-${taskId}`, taskId, messages: [], roleName: 'Builder' } as any) } });
+    const { bridge, updates } = setup([], { runner });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await tick(); await tick();
+    const t = texts(updates);
+    expect(t).toContain('Started a buildd task in app: “Do it” · Builder.');
+    expect(t).not.toMatch(/ on /);
+  });
+
+  test('a task this runner cannot take is held for it, then freed, and the thread says why', async () => {
     const runner = new FakeRunner();
     runner.claimResult = { status: 400, body: { error: 'at max concurrent' } };
     const { bridge, updates } = setup([], { runner });
@@ -407,7 +545,30 @@ describe('AcpBridge', () => {
     const res: any = await bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
     expect(res.stopReason).toBe('end_turn');
     expect(runner.created).toHaveLength(1);
-    expect(texts(updates)).toMatch(/queued.*at max concurrent/s);
+    expect(texts(updates)).toMatch(/held for this runner for 20 minutes.*at max concurrent/s);
+  });
+
+  // The runner's own dispatch can claim the reserved task before the bridge's
+  // explicit claim lands: that refusal is a race this runner won, not a refusal.
+  test('a task this runner already took on its own is followed, not reported refused', async () => {
+    const runner = new FakeRunner();
+    runner.claimResult = { status: 400, body: { error: 'task is no longer available (may already be claimed or completed)' } };
+    const { bridge, updates } = setup([], { runner });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    const origCreate = runner.createTask.bind(runner);
+    runner.createTask = async (input) => {
+      const res = await origCreate(input);
+      const taskId = (res.body as any).task.id;
+      runner.workers = [...runner.workers, worker({ id: `w-${taskId}`, taskId, status: 'working', messages: [] })];
+      return res;
+    };
+    const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await until(() => texts(updates).includes('Started a buildd task'));
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    const res: any = await turn;
+    expect(res.stopReason).toBe('end_turn');
+    expect(texts(updates)).not.toMatch(/could not take it now/);
+    expect(texts(updates)).toMatch(/Finished\./);
   });
 
   test('a command in a thread with no task yet creates nothing', async () => {
@@ -445,6 +606,32 @@ describe('AcpBridge', () => {
     expect(res.stopReason).toBe('end_turn');
     expect(texts(updates)).toContain('Using SQLite');
     expect(texts(updates)).not.toContain('Reply here to answer');
+  });
+
+  test('the same question re-sent while its answer is still being posted opens no second form', async () => {
+    const { bridge, runner, requests } = setup([worker({ status: 'working' })], {
+      answer: async () => ({ action: 'accept', content: { answer: 'SQLite' } }),
+    });
+    // hold the answer post open, as a loaded runner would
+    let release!: () => void;
+    const posted = new Promise<void>(r => { release = r; });
+    const act = runner.act.bind(runner);
+    runner.act = async (...args) => { const r = await act(...args); await posted; return r; };
+    await bridge.handle('initialize', ELICITING_CLIENT);
+    const turn = bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    await tick();
+    runner.push(worker(question({ since: 's1' })));
+    await until(() => runner.actions.length === 1);
+    // the runner echoes the wait it is still answering
+    runner.push(worker(question({ since: 's1' })));
+    await tick(); await tick();
+    release();
+    await tick(); await tick();
+    runner.push(worker(question({ since: 's1' })));
+    await tick();
+    expect(requests).toHaveLength(1);
+    runner.push(worker({ status: 'done' }));
+    await turn;
   });
 
   test('a question with no options is a free-text field', async () => {
@@ -534,5 +721,102 @@ describe('AcpBridge', () => {
   test('an unknown method is a JSON-RPC method-not-found', async () => {
     const { bridge } = setup();
     await expect(bridge.handle('session/fork', {})).rejects.toMatchObject({ code: -32601 });
+  });
+});
+
+describe('_meta.buildd on a new thread', () => {
+  const send = (bridge: AcpBridge, sessionId: string, text = 'Add a retry to the sync job') =>
+    bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+  const finish = async (runner: FakeRunner, turn: Promise<unknown>) => {
+    await tick(); await tick();
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await turn;
+  };
+
+  test('fields given at session/new reach createTask', async () => {
+    const { runner, bridge } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', {
+      cwd: '/repos/app', mcpServers: [],
+      _meta: { buildd: { missionId: 'm-1', roleSlug: 'builder', priority: 7, kind: 'feature' } },
+    });
+    await finish(runner, send(bridge, sessionId));
+    expect(runner.created).toHaveLength(1);
+    expect(runner.created[0]).toMatchObject({ workspaceId: 'ws-app', missionId: 'm-1', roleSlug: 'builder', priority: 7, kind: 'feature' });
+  });
+
+  test('fields on the first prompt reach createTask', async () => {
+    const { runner, bridge } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    await finish(runner, bridge.handle('session/prompt', {
+      sessionId, prompt: [{ type: 'text', text: 'Do the thing' }], _meta: { buildd: { missionId: 'm-2', roleSlug: 'researcher' } },
+    }));
+    expect(runner.created[0]).toMatchObject({ missionId: 'm-2', roleSlug: 'researcher' });
+  });
+
+  test('a mission the server refuses files no task and says why', async () => {
+    const { runner, bridge, updates } = setup([]);
+    runner.createResult = { status: 403, body: { error: 'Mission is outside your team' } };
+    const { sessionId }: any = await bridge.handle('session/new', {
+      cwd: '/repos/app', mcpServers: [], _meta: { buildd: { missionId: 'm-other' } },
+    });
+    const res: any = await send(bridge, sessionId);
+    expect(res.stopReason).toBe('end_turn');
+    expect(runner.created).toHaveLength(0);
+    expect(runner.actions).toHaveLength(0);
+    expect(texts(updates)).toContain('Mission is outside your team');
+    expect(texts(updates)).toContain('did not create');
+  });
+
+  test('no _meta sends exactly today\'s fields plus the origin context', async () => {
+    const { runner, bridge } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    await finish(runner, send(bridge, sessionId));
+    expect(Object.keys(runner.created[0]).sort()).toEqual(['context', 'description', 'reserve', 'title', 'workspaceId']);
+  });
+});
+
+describe('T3 delegation: role line and directive line', () => {
+  const ROLE = 'Act as the implementation sub-agent for this task.';
+  const run = async (text: string, meta?: unknown, createResult?: { status: number; body: unknown }) => {
+    const { runner, bridge, updates } = setup([]);
+    if (createResult) runner.createResult = createResult;
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [], ...(meta ? { _meta: meta } : {}) });
+    const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+    await tick(); await tick();
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await turn;
+    return { runner, updates };
+  };
+
+  test('the role line is not the title or in the description', async () => {
+    const { runner } = await run(`${ROLE}\n\nAdd a retry to the sync job\nwith backoff`);
+    expect(runner.created[0].title).toBe('Add a retry to the sync job');
+    expect(runner.created[0].description).not.toContain(ROLE);
+    expect(runner.created[0].description).toBe('Add a retry to the sync job\nwith backoff');
+  });
+
+  test('other first lines are kept', () => {
+    expect(userTextFrom('Act as the reviewer for this task.\nGo')).toContain('Act as the reviewer');
+  });
+
+  test('a directive line files the task in that mission and is removed', async () => {
+    const { runner } = await run(`${ROLE}\n\nbuildd: mission=ab12cd34 role=builder priority=3 kind=feature\nAdd a retry`);
+    expect(runner.created[0]).toMatchObject({ missionId: 'ab12cd34', roleSlug: 'builder', priority: 3, kind: 'feature', title: 'Add a retry', description: 'Add a retry' });
+  });
+
+  test('_meta.buildd wins over the directive', async () => {
+    const { runner } = await run('buildd: mission=from-text role=builder\nDo it', { buildd: { missionId: 'from-meta' } });
+    expect(runner.created[0]).toMatchObject({ missionId: 'from-meta', roleSlug: 'builder' });
+  });
+
+  test('a mission from another team is refused', async () => {
+    const { runner, updates } = await run('buildd: mission=m-other\nDo it', undefined, { status: 403, body: { error: 'Mission is outside your team' } });
+    expect(runner.created).toHaveLength(0);
+    expect(texts(updates)).toContain('Mission is outside your team');
+  });
+
+  test('an unrecognised buildd: line stays as text', async () => {
+    const { runner } = await run('buildd: is great\nDo it');
+    expect(runner.created[0].title).toBe('buildd: is great');
   });
 });

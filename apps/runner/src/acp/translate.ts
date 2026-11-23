@@ -206,7 +206,7 @@ export function isSettled(status: string | undefined): boolean {
 }
 
 export function waitingText(w: WaitingFor): string {
-  if (w.type === 'pause') return 'Paused. Reply here to resume it.';
+  if (w.type === 'pause') return w.context ? `Paused. ${w.context}\n\nReply here to resume it.` : 'Paused. Reply here to resume it.';
   const head = w.type === 'permission' ? `**Needs permission:** ${w.prompt}` : `**Question:** ${w.prompt}`;
   const options = (w.options ?? []).map((o, i) => {
     const note = o.description ?? o.consequence;
@@ -215,12 +215,42 @@ export function waitingText(w: WaitingFor): string {
   return [head, ...(w.context ? [w.context] : []), ...(options.length ? ['', ...options] : []), '', 'Reply here to answer.'].join('\n');
 }
 
+/** A `complete_task` call's summary: the grouped tool (`buildd_work` action) or the flat one. */
+function completionSummary(m: ChatMessage): string | null {
+  if (m.type !== 'tool_use') return null;
+  const input = rec(m.input);
+  const name = shortToolName(m.name);
+  if (name === 'complete_task') return str(input.summary);
+  if (input.action === 'complete_task') return str(rec(input.params).summary) ?? str(input.summary);
+  return null;
+}
+
+/**
+ * The run's completion summary, unless the agent also said it as text after
+ * the call. A run that answers only through complete_task otherwise leaves
+ * its answer inside a collapsed tool call and the thread reads "Finished.".
+ */
+function unsaidSummary(messages: ChatMessage[] | undefined): string | null {
+  const list = messages ?? [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const summary = completionSummary(list[i]);
+    if (!summary) continue;
+    const said = list.slice(i + 1).some(m => m.type === 'text' && m.content.trim() === summary);
+    return said ? null : summary;
+  }
+  return null;
+}
+
 /** The line a turn ends on, when the worker's state says something. */
 export function settledText(worker: PublicWorker): string | null {
   if (worker.status === 'waiting' && worker.waitingFor) return waitingText(worker.waitingFor);
   const cost = spendText(worker.spend);
   const tail = cost ? ` · ${cost}` : '';
-  if (worker.status === 'done') return `${worker.prUrl ? `Finished. PR: ${worker.prUrl}` : 'Finished.'}${tail}`;
+  if (worker.status === 'done') {
+    const end = `${worker.prUrl ? `Finished. PR: ${worker.prUrl}` : 'Finished.'}${tail}`;
+    const summary = unsaidSummary(worker.messages);
+    return summary ? `${summary}\n\n${end}` : end;
+  }
   if (worker.status === 'error') return `Stopped with an error: ${worker.error ?? 'unknown error'}${tail}`;
   if (worker.status === 'stale') return 'This run went stale. Reply to continue it.';
   return null;

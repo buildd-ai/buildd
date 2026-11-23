@@ -16,6 +16,7 @@ const RECONNECT_MS = 1_000;
 
 export function socketRunnerPort(socketPath: string, client: SocketClient = socketClient(socketPath)): RunnerPort {
   const listeners = new Set<(w: PublicWorker) => void>();
+  const snapshotListeners = new Set<(ids: Set<string>) => void>();
   let stream: AbortController | null = null;
 
   const fan = (w: unknown) => {
@@ -32,7 +33,11 @@ export function socketRunnerPort(socketPath: string, client: SocketClient = sock
         try {
           await client.events((event) => {
             if (event?.worker) fan(event.worker);
-            if (Array.isArray(event?.workers)) event.workers.forEach(fan);
+            if (Array.isArray(event?.workers)) {
+              event.workers.forEach(fan);
+              const ids = new Set<string>(event.workers.map((w: any) => w?.id).filter((id: unknown) => typeof id === 'string'));
+              for (const fn of [...snapshotListeners]) fn(ids);
+            }
           }, ctrl.signal);
         } catch (err) {
           if (ctrl.signal.aborted) return;
@@ -65,11 +70,13 @@ export function socketRunnerPort(socketPath: string, client: SocketClient = sock
     claim(taskId) {
       return client.post('/api/claim', { taskId });
     },
-    subscribe(fn) {
+    subscribe(fn, onSnapshot) {
       listeners.add(fn);
+      if (onSnapshot) snapshotListeners.add(onSnapshot);
       open();
       return () => {
         listeners.delete(fn);
+        if (onSnapshot) snapshotListeners.delete(onSnapshot);
         if (listeners.size === 0 && stream) {
           stream.abort();
           stream = null;
