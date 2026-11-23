@@ -45,6 +45,8 @@ mock.module('@buildd/core/db', () => ({
 }));
 mock.module('@buildd/core/model-relay', () => ({
   findTeamRunner: async (teamId: string, runnerId: string) => (teamId === TEAM && runnerId === RUNNER ? runnerRow() : null),
+  listTeamLocalRunners: async () => [{ ...runnerRow(), name: 'studio' }],
+  lastRelaySuccessAt: async () => '2026-11-20T10:00:00.000Z',
   loadLocalRunnerPick: async () => {
     const cfg = (team.localRunner ?? {}) as { runnerId?: string; chatModel?: string };
     return {
@@ -94,13 +96,16 @@ describe('GET /api/providers/local-runner', () => {
     sessionUser = { id: 'u-member' };
     const res = await GET(req('GET'));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ runnerId: null, chatModel: null, embedModel: null, runner: null });
+    expect(await res.json()).toEqual({
+      runnerId: null, chatModel: null, embedModel: null, runner: null, lastSuccessAt: null,
+      runners: [{ id: RUNNER, name: 'studio', online: true, models: expect.any(Array) }],
+    });
   });
 
   it('a pick reads back with the runner\'s state and what it serves, and no URL', async () => {
     team = { localRunner: { runnerId: RUNNER, chatModel: 'llama3.1:8b' }, embeddingProvider: 'local_runner', embeddingModel: 'nomic-embed-text' };
     const body = await (await GET(req('GET'))).json();
-    expect(body).toMatchObject({ runnerId: RUNNER, chatModel: 'llama3.1:8b', embedModel: 'nomic-embed-text', runner: { online: true } });
+    expect(body).toMatchObject({ runnerId: RUNNER, chatModel: 'llama3.1:8b', embedModel: 'nomic-embed-text', runner: { online: true }, lastSuccessAt: '2026-11-20T10:00:00.000Z' });
     expect(body.runner.models).toContainEqual({ name: 'nomic-embed-text', capabilities: ['embedding'], dimensions: 768 });
     expect(JSON.stringify(body)).not.toContain('http');
   });

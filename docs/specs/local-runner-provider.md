@@ -161,8 +161,9 @@ One new jsonb column carries what neither of those can:
     (section 5), so a model that changes size shows up as a mismatch, not a
     silent overwrite.
 
-Routes (NOT IMPLEMENTED; proposed): GET /api/providers/local-runner returns
-`{ runnerId, chatModel, embedModel, runner: { online, models[] } | null }`;
+Routes: GET /api/providers/local-runner returns
+`{ runnerId, chatModel, embedModel, runner: { online, models[] } | null, runners[], lastSuccessAt }`
+(`runners[]` is every team runner that advertised models, for the pickers);
 PATCH /api/providers/local-runner writes the column and, in the same request,
 the embedding pick (so the three places change atomically for the reader: one
 UPDATE on `teams`). Permission: `POLICY_PERMISSION` (`manage_team_settings`),
@@ -667,21 +668,37 @@ which:
 
 ### 7.3 UI behaviour (contract, not layout)
 
-- Settings › Providers shows a "Local runner" card (registry `settingsCard`)
-  whenever the team has at least one runner that has ever advertised
-  localModels; otherwise a one-line hint on how to get one ("install the
-  runner on a machine with Ollama") with no card.
-- The card lists the team's runners with their online state (the same
-  `runnerOnlineNow` predicate as the runners page), the models each
-  advertises, the pick (runner + chat model), and the last hour's relay
-  figures (jobs, errors, p95) from the advert.
+- Settings › Providers shows a "Local runner" row (`LocalRunnerCard.tsx`, in
+  the team's provider list) whenever the team has at least one runner that has
+  ever advertised localModels; otherwise a one-line hint on how to get one
+  ("Install the runner on a machine with Ollama...") and no row. It has no key
+  and no form: opened, it holds a runner select, a chat model select and Save.
+- The row's one status word is the pinned runner's state: Online or Offline
+  (the same `runnerOnlineNow` predicate as the runners page, evaluated by
+  `GET /api/providers/local-runner`), or "Runner gone" when the pinned
+  heartbeat row no longer exists. Beside the pick it shows when the runner last
+  completed a relay call ("Last successful call 5m ago", or "No successful
+  call yet"); that is `max(finished_at)` of the team's `done` jobs on the
+  pinned runner (`lastRelaySuccessAt`), never a figure that implies success
+  where there was none. Throughput and p95 stay on the runner page (6.4).
+- The runner select lists every team runner that has advertised models, each
+  with its Online/Offline word; the chat model select lists only tags whose
+  capabilities include `completion`. Changing the runner clears the chat model.
 - The Embeddings row (`UsedForSection`, Settings › Providers › Used for)
   offers `local_runner` only when a runner advertises at least one
-  `embedding`-capable model; its model field is a select of those tags with
-  the dimension shown, unsupported sizes disabled (section 6.2). Changing the
-  model or size shows the re-embed consequence before saving ("N rows in M
-  namespaces will be re-embedded; until then they are found by text only") and
-  the per-namespace progress after.
+  `embedding`-capable model with a supported size; choosing it shows a runner
+  select and a model select of those tags with the dimension in each label
+  ("nomic-embed-text · 768"), an unsupported size disabled ("Size not
+  supported"). Saving goes to `PATCH /api/providers/local-runner` (one UPDATE on
+  `teams`). After a save that changes the model or size the row says that
+  knowledge embedded with the old model is found by keyword until it is
+  indexed again, with the count of namespaces queued when the server reports
+  one. A stored `local_runner` pick whose runners no longer advertise an
+  embedding model stays shown, disabled ("Needs a runner"). Per-namespace
+  progress is not drawn on this row.
+- Everyone on the team reads these rows; changing them needs
+  `manage_team_settings`, otherwise the selects are disabled and the row says
+  "Admins can change this."
 - A chat turn refused with `local_runner_unavailable` renders the copy above
   with a link to the runner; it never offers "use a team key instead" inline,
   because that would be the paid fallback by another door (an admin changes
@@ -713,8 +730,9 @@ which:
 
 ## 8. Docs plan
 
-Written in the `buildd-docs` repo (product docs) in the same mission; this
-spec is the contract they describe.
+The setup guide is `docs/local-runner-setup.md` in this repo. The pages below
+are the product-docs set in the `buildd-docs` repo; this spec is the contract
+they describe.
 
 ### 8.1 Pages
 

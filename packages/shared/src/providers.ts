@@ -139,6 +139,15 @@ export interface ProviderLocalRunnerResponse {
     online: boolean;
     models: Array<{ name: string; capabilities: string[]; dimensions: number | null }>;
   } | null;
+  /** Every team runner that has advertised local models: the picker's options. */
+  runners: Array<{
+    id: string;
+    name: string;
+    online: boolean;
+    models: Array<{ name: string; capabilities: string[]; dimensions: number | null }>;
+  }>;
+  /** When the pinned runner last completed a relay call (ISO). Null: never, or no pick. */
+  lastSuccessAt: string | null;
   /** PATCH only: namespaces a model or size change queued for re-embedding. Until done, their rows are found by text only. */
   reembedQueued?: number;
 }

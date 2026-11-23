@@ -28,6 +28,8 @@ export type {
 export {
   advertisedModel,
   findTeamRunner,
+  lastRelaySuccessAt,
+  listTeamLocalRunners,
   loadLocalRunnerPick,
   pickUsesRelay,
   relayAvailability,
@@ -43,4 +45,5 @@ export type {
   RunRelayJobDeps,
   RunRelayJobInput,
   RunRelayJobOutcome,
+  TeamLocalRunner,
 } from './runner';
