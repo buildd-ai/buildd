@@ -164,13 +164,13 @@ export async function recordOrCoalesceDeferral(input: RecordGateEventInput): Pro
     const [latest] = await db
       .select({ id: gateEvents.id, reason: gateEvents.reason, outcome: gateEvents.outcome, detail: gateEvents.detail })
       .from(gateEvents)
-      // Scoped to (task, gate, outcome), not just the task: a task waiting on
-      // two gates, or flipping deferred/stranded inside one, would otherwise
-      // never see its own previous row as "the latest" and insert every pass.
+      // Newest row for (task, gate) regardless of outcome: a flip such as
+      // deferred -> stranded -> deferred must record the return as a new row,
+      // so coalescing happens only when the newest row's outcome AND reason
+      // both match the input.
       .where(and(
         eq(gateEvents.taskId, taskId),
         eq(gateEvents.gate, input.gate),
-        eq(gateEvents.outcome, input.outcome),
       ))
       .orderBy(desc(gateEvents.occurredAt))
       .limit(1);
