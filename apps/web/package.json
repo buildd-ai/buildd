@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.408.0",
+  "version": "0.409.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -45,7 +45,7 @@
     "@vercel/otel": "^2.1.1",
     "ai": "^7.0.116",
     "croner": "^11.0.0",
-    "drizzle-orm": "1.0.0-rc.4",
+    "drizzle-orm": "1.0.0-rc.6",
     "jose": "^6.2.0",
     "mermaid": "12.3.0",
     "next": "^16.3.6",

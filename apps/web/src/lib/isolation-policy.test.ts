@@ -41,6 +41,11 @@ describe('resolveIsolationRequirement (R-4)', () => {
       .toEqual({ requirement: 'trusted_local', source: 'single_owner_team' });
   });
 
+  it('pins: a single-member team stays protected in an open workspace, since open admits other accounts\' tasks', () => {
+    expect(resolveIsolationRequirement({ teamMemberCount: 1, workspaceAccessMode: 'open' }))
+      .toEqual({ requirement: 'protected', source: 'default' });
+  });
+
   it('is protected for a shared team, an open workspace, an unreadable team or a bad value', () => {
     expect(resolveIsolationRequirement({ teamMemberCount: 2 }).requirement).toBe('protected');
     expect(resolveIsolationRequirement({ teamMemberCount: 1, workspaceAccessMode: 'open' }).requirement).toBe('protected');

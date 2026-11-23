@@ -20,7 +20,7 @@ import { isUuid } from '@/lib/uuid';
 import { dbLeaseUntil, liveness } from '@/lib/liveness';
 import { ingestFileBatch } from '@/lib/knowledge-ingest-batch';
 import { sqlWhereFn } from '@buildd/core/db/relational-sql';
-import { isKnowledgeIngestEnabled, closeIngestJobAsSkipped, INGEST_DISABLED } from '@/lib/knowledge-ingest-switch';
+import { isKnowledgeIngestEnabled, isKnowledgeCodeIngestEnabled, closeIngestJobAsSkipped, INGEST_DISABLED } from '@/lib/knowledge-ingest-switch';
 
 // Stay under serverless request-body limits (~4.5 MB) with JSON overhead room.
 export const MAX_BATCH_TOTAL_BYTES = 4 * 1024 * 1024;
@@ -125,7 +125,8 @@ export async function POST(
   }
 
   try {
-    const result = await ingestFileBatch(job.workspaceId, files, deletions);
+    const codeIngest = await isKnowledgeCodeIngestEnabled(job.workspaceId);
+    const result = await ingestFileBatch(job.workspaceId, files, deletions, { codeIngest });
     return NextResponse.json(result);
   } catch (err) {
     console.error(`[knowledge-ingest] files batch failed for job ${id}:`, err);

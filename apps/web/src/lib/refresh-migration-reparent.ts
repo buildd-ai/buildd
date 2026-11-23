@@ -74,7 +74,10 @@ async function readBlobJson(api: Api, installationId: number, repoFullName: stri
 
 function asSnapshot(folder: string, raw: unknown): V1Snapshot {
   const s = raw as Partial<V1Snapshot> | null;
-  if (!s || typeof s !== 'object' || typeof s.id !== 'string' || !Array.isArray(s.prevIds) || !Array.isArray(s.ddl) || typeof s.version !== 'string' || typeof s.dialect !== 'string') {
+  // Format 8 carries the schema in every snapshot (`ddl`); format 10 carries a
+  // `type` and, past the first migration, only `deltas` (planReparent checks which).
+  const body = Array.isArray(s?.ddl) || typeof s?.type === 'string';
+  if (!s || typeof s !== 'object' || typeof s.id !== 'string' || !Array.isArray(s.prevIds) || !body || typeof s.version !== 'string' || typeof s.dialect !== 'string') {
     throw new Error(`${folder}/snapshot.json is not a drizzle v1 snapshot`);
   }
   return s as V1Snapshot;

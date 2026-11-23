@@ -12,35 +12,26 @@
  * empty Postgres before this runs, so this compares exactly that DB.
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
-import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { sql } from 'drizzle-orm';
+import { reconstructSchemaDdl } from '@buildd/core/db/snapshot-reconstruct';
 import { assertDbConfigured, q } from './harness';
 
 const DRIZZLE = join(import.meta.dir, '../../../../packages/core/drizzle');
 
-/** drizzle v1 snapshots are v8: a flat `ddl[]` of entities, columns among them. */
+/** An entity of the reconstructed `ddl[]`; columns among them. */
 type SnapshotColumn = { entityType: string; name: string; table: string; schema?: string; notNull?: boolean };
 
 /**
- * Parallel branches leave several snapshot leaves (two migrations naming one
- * parent); the schema is the union of every leaf, not the newest folder alone.
+ * The schema the migrations folder describes. From drizzle-kit 1.0.0-rc.6
+ * (snapshot format 10) only the first snapshot holds it, the rest hold deltas,
+ * so drizzle-kit replays them; parallel leaves are reconstructed each and unioned.
  */
-function latestSnapshotColumns(): SnapshotColumn[] {
-  const snaps = readdirSync(DRIZZLE)
-    .filter((f) => /^\d{14}_/.test(f))
-    .sort()
-    .map((f) => JSON.parse(readFileSync(join(DRIZZLE, f, 'snapshot.json'), 'utf8')) as { id: string; prevIds?: string[]; ddl: SnapshotColumn[] });
-  const parents = new Set(snaps.flatMap((s) => s.prevIds ?? []));
-  const leaves = snaps.filter((s) => !parents.has(s.id));
-  const byKey = new Map<string, SnapshotColumn>();
-  for (const leaf of leaves) {
-    for (const e of leaf.ddl) {
-      if (e.entityType === 'columns') byKey.set(`${e.schema ?? 'public'}.${e.table}.${e.name}`, e);
-    }
-  }
-  return [...byKey.values()];
+async function latestSnapshotColumns(): Promise<SnapshotColumn[]> {
+  const { snapshot } = await reconstructSchemaDdl(DRIZZLE);
+  return (snapshot.ddl as SnapshotColumn[]).filter((e) => e.entityType === 'columns');
 }
+const snapshotColumns = await latestSnapshotColumns();
 
 let live: Map<string, boolean>;
 beforeAll(async () => {
@@ -52,7 +43,7 @@ beforeAll(async () => {
 });
 
 describe('migrated schema matches the latest snapshot', () => {
-  const expected = latestSnapshotColumns()
+  const expected = snapshotColumns
     .filter((c) => (c.schema || 'public') === 'public')
     .map((c) => ({ key: `${c.table}.${c.name}`, notNull: !!c.notNull }));
 

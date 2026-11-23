@@ -1504,14 +1504,21 @@ export class WorkerManager {
 
   // Send heartbeat to server announcing this runner instance is alive and ready
   /**
-   * Idle runners pick up full knowledge-ingest jobs, Scout runs and model
-   * probes (fire-and-forget; each poller serializes itself and never throws).
-   * None starts while a person holds this runner: "nothing new starts" (R-32).
+   * Full knowledge-ingest jobs poll whenever a worker slot is free, so an
+   * always-busy runner still serves the repos it holds. A running ingest
+   * counts as one slot against maxConcurrent (the poller also serialises to
+   * one at a time). Scout runs and model probes are cheap to defer and keep
+   * the strict idle gate (no active worker). Nothing starts while a person
+   * holds this runner: "nothing new starts" (R-32); singleTask never polls.
    */
   private pollIdleJobs(active: number): void {
-    if (active !== 0 || this.config.singleTask || claimsHeldByPerson()) return;
-    this.knowledgeIngestPoller.poll().catch(() => {});
-    // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
+    if (this.config.singleTask || claimsHeldByPerson()) return;
+    const ingestSlot = this.knowledgeIngestPoller.isRunning ? 1 : 0;
+    if (active + ingestSlot < this.config.maxConcurrent) {
+      this.knowledgeIngestPoller.poll().catch(() => {});
+    }
+    if (active !== 0) return;
+    // Scout runs: one at a time, no worker slot, re-checks busy before checkout.
     this.scoutHostPoller.poll().catch(() => {});
     this.modelProbePoller.poll().catch(() => {});
   }

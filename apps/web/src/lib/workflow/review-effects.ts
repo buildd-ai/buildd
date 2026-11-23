@@ -454,7 +454,7 @@ async function attestComposition(d: DeliverySnapshot, round: RoundSnapshot): Pro
     // Best effort: the description is a report of the kernel's decision, never an input to it.
     try {
       const block = compositionBlock({
-        attestation: built.attestation, novelCommits: built.novelCommits,
+        attestation: built.attestation, novelCommits: built.novelCommits, dependencyBotPrs: built.dependencyBotPrs,
         deltaReview: built.attestation.novelDelta.result === 'none' ? 'not_owed' : 'pending',
         gate: { state: res.result === 'applied' ? (built.attestation.novelDelta.result === 'none' ? 'APPROVED' : 'AWAITING_REVIEW') : d.state, openFindings: 0 },
       });

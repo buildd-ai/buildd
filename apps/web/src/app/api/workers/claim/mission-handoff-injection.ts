@@ -185,7 +185,7 @@ export async function attachMissionHandoff(
     if (missionIds.size > 0) {
       const missionRows = await db.query.missions.findMany({
         where: sqlWhere(inArray(missions.id, Array.from(missionIds))),
-        columns: { id: true, title: true, goalCriteriaState: true, missionPhaseLabel: true },
+        columns: { id: true, title: true, goalCriteriaState: true },
       });
       for (const m of missionRows) {
         missionMap.set(m.id, m);
@@ -243,7 +243,8 @@ export async function attachMissionHandoff(
           ?.filter((v: any) => v.verdict !== 'pass')
           .map((v: any) => `${v.label}: ${v.verdict}`)
           .join('; ') ?? '';
-        missionBrief = `**${mission.title}** — Phase: ${mission.missionPhaseLabel ?? 'unknown'}${goals ? `, Goals: ${goals}` : ''}`;
+        // The phase lives on the task (tasks.mission_phase_label); missions has no such column.
+        missionBrief = `**${mission.title}** — Phase: ${(task as any).missionPhaseLabel ?? 'unknown'}${goals ? `, Goals: ${goals}` : ''}`;
       }
 
       const handoffBlock = renderMissionHandoff(

@@ -1,0 +1,48 @@
+{
+  "type": "diff",
+  "version": "10",
+  "dialect": "postgres",
+  "id": "6bb24f28-f0b4-403b-9073-f5648c3678b6",
+  "prevIds": [
+    "a2cd9651-a9a0-42bf-b220-b45f7f274775",
+    "31031b65-0a5a-4264-bc8a-6e5c372ed807"
+  ],
+  "footprints": [
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "workspaces",
+        "knowledge_code_ingest"
+      ],
+      "writes": [
+        "s|col|public.workspaces.knowledge_code_ingest",
+        "n|col|public.workspaces.knowledge_code_ingest",
+        "e|col|public.workspaces.knowledge_code_ingest"
+      ],
+      "reads": [
+        "n|tbl|public.workspaces",
+        "n|sch|public"
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "workspaces",
+        "name": "knowledge_code_ingest",
+        "type": "boolean",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "true",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    }
+  ]
+}

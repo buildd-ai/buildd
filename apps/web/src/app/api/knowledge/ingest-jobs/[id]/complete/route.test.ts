@@ -48,6 +48,8 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+mock.module('@/lib/knowledge-ingest-switch', () => ({ isKnowledgeCodeIngestEnabled: async () => true }));
+
 import { POST } from './route';
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';

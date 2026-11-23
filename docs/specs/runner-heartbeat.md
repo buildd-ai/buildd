@@ -51,7 +51,10 @@ supersedes: []
   This replaces the former "MUST heartbeat each cycle" rule and the fixed
   `LIVENESS_PING_INTERVAL_MS` (60 s) ping; the hourly aligned tick
   (`RUNNER_HEARTBEAT_INTERVAL_MS`, `BUILDD_RUNNER_POLL_MIN`, default 60 min)
-  stays for reconcile, claim fallback and idle-job polling.
+  stays for reconcile, claim fallback and idle-job polling. Full knowledge-ingest
+  jobs poll whenever a worker slot is free (a running ingest counts as one slot);
+  Scout runs and model probes poll only with zero active workers. A person hold
+  or `singleTask` blocks all of them.
 - **A runner whose heartbeat dies restarts itself** (`apps/runner/src/heartbeat-watchdog.ts`).
   Every failed beat is counted and logged as a warning: the first failure of a
   streak, then at most every 10 minutes, and a recovery line when a beat lands
