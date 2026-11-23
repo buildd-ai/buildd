@@ -673,6 +673,9 @@ which:
   ever advertised localModels; otherwise a one-line hint on how to get one
   ("Install the runner on a machine with Ollama...") and no row. It has no key
   and no form: opened, it holds a runner select, a chat model select and Save.
+  Saving a chat model sets `provider_assignments.chat = 'local_runner'` in the
+  same `PATCH`; saving None removes that assignment (only if it is
+  `local_runner`). The Used for › Chat row does not list Local runner.
 - The row's one status word is the pinned runner's state: Online or Offline
   (the same `runnerOnlineNow` predicate as the runners page, evaluated by
   `GET /api/providers/local-runner`), or "Runner gone" when the pinned

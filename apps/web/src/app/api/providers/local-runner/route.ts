@@ -34,8 +34,10 @@ import { TASK_TOKEN_READ_ONLY, resolveProvidersCaller } from '@/lib/providers/ca
  * UPDATE on `teams`. Models are checked against what the runner advertises, so
  * a size the store has no column for is refused here, never truncated later.
  *
- * Chat is routed to the runner by the `chat` assignment
- * (`/api/providers/assignments`), which this route does not change.
+ * Chat is routed to the runner by the `chat` assignment. Saving a chat model
+ * here sets `provider_assignments.chat = 'local_runner'` in the same UPDATE;
+ * clearing it (null) removes that assignment, only if it is `local_runner`.
+ * An omitted chatModel leaves the assignment alone.
  *
  * A changed embedding model or size queues every namespace of the team for
  * re-embedding (spec §5.3 D-3); until a row is re-embedded it is found by text.
@@ -132,7 +134,12 @@ export async function PATCH(req: NextRequest) {
     }
 
     const localRunner: LocalRunnerConfig = { runnerId, chatModel };
-    const set: { localRunner: LocalRunnerConfig; updatedAt: Date; embeddingProvider?: 'local_runner' | SQL; embeddingModel?: string | SQL } = { localRunner, updatedAt: new Date() };
+    const set: { localRunner: LocalRunnerConfig; updatedAt: Date; embeddingProvider?: 'local_runner' | SQL; embeddingModel?: string | SQL; providerAssignments?: SQL } = { localRunner, updatedAt: new Date() };
+    if (chatModelSent !== undefined) {
+      set.providerAssignments = chatModel
+        ? sql`coalesce(${teams.providerAssignments}, '{}'::jsonb) || jsonb_build_object('chat'::text, 'local_runner'::text)`
+        : sql`CASE WHEN ${teams.providerAssignments}->>'chat' = 'local_runner' THEN coalesce(${teams.providerAssignments}, '{}'::jsonb) - 'chat' ELSE ${teams.providerAssignments} END`;
+    }
     if (embedModel) {
       set.embeddingProvider = 'local_runner';
       set.embeddingModel = embedModel;

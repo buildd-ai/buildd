@@ -173,6 +173,15 @@ describe('PATCH /api/providers/local-runner', () => {
     expect(writes[1]).toMatchObject({ localRunner: { runnerId: RUNNER, chatModel: null } });
   });
 
+  it('saving a chat model writes the chat assignment in the same update; an omitted one leaves it alone', async () => {
+    await PATCH(req('PATCH', { runnerId: RUNNER, chatModel: 'llama3.1:8b' }));
+    expect(writes[0].providerAssignments).toBeDefined();
+    await PATCH(req('PATCH', { runnerId: RUNNER, chatModel: null }));
+    expect(writes[1].providerAssignments).toBeDefined();
+    await PATCH(req('PATCH', { runnerId: RUNNER, embedModel: 'nomic-embed-text' }));
+    expect(writes[2].providerAssignments).toBeUndefined();
+  });
+
   it('a model the runner does not advertise, the wrong kind of model, or an unsupported size is refused at pick time', async () => {
     const cases: Array<[Record<string, unknown>, RegExp]> = [
       [{ embedModel: 'mxbai-embed-large' }, /does not serve mxbai-embed-large/],

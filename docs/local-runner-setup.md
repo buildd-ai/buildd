@@ -19,12 +19,15 @@ local Ollama and sends the answer back. The contract is
    To keep a runner out of this, set `BUILDD_LOCAL_MODEL_RELAY=0`.
 3. **Settings › Providers.** A **Local runner** row appears once a runner has
    listed models (before that, one line says how to get one). Open it, choose
-   the runner and a chat model, Save. The row shows whether the runner is
+   the runner and a chat model, Save. Saving a chat model also makes chat use
+   the runner; choosing None stops that. The row shows whether the runner is
    Online or Offline and when it last completed a call.
 4. **Search.** In **Used for › Embeddings** choose **Local runner**, then a
    runner and an embedding model; each model shows its vector size. Sizes 768,
    1024 and 1536 are supported; any other is greyed out.
-5. **Chat.** In **Used for › Chat** choose **Local runner**.
+5. **Chat.** Nothing more to do: step 3 routes chat to the runner. If you
+   later pick another provider for chat under **Used for › Chat**, pick the
+   chat model on the Local runner row again to route it back.
 
 Changing the embedding model or its size means the stored vectors no longer
 match. Knowledge embedded with the old model is found by keyword until it is
