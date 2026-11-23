@@ -5,6 +5,7 @@ const events: RecordGateEventInput[] = [];
 mock.module('@/lib/gate-ledger', () => ({
   GATE_SLUGS: { PATH_DECLARATION: 'path_declaration' },
   fireGateEvent: (e: RecordGateEventInput) => { events.push(e); return 'sig'; },
+  fireCoalescedGateEvent: (e: RecordGateEventInput) => { events.push(e); },
 }));
 
 const { recordPathDeclaration, manifestShape } = await import('./path-declaration-ledger');

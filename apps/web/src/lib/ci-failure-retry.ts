@@ -49,7 +49,7 @@ import { prepareSubjectFiling, recordSubjectMatchObserved } from '@/lib/subject-
 import { workerOwnsPr, workspaceRepoMatches } from '@/lib/repo-scope';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
-import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { fireCoalescedGateEvent, fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
@@ -143,7 +143,7 @@ function recordSkip(
   reason: CiRetrySkipReason,
   extra: Record<string, unknown> = {},
 ): void {
-  fireGateEvent({
+  fireCoalescedGateEvent({
     gate: GATE_SLUGS.CI_RETRY_SKIPPED,
     surface: ctx.input.surface,
     outcome: reason === 'fix_in_flight' ? 'deferred' : 'rejected',
