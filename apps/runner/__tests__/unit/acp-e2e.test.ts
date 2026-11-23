@@ -6,7 +6,7 @@
  * the socket client, SSE parsing, and an elicitation round trip.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -365,6 +365,7 @@ describe('T3 → buildd interaction matrix (spec acp-bridge)', () => {
     const { dir, runner, open } = setup({ workspaces: [{ id: 'ws-shop', name: 'shop', repo: 'acme/shop' }] });
     const client = open();
     await client.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    mkdirSync(join(dir, 'shop'), { recursive: true });
     const { result: { sessionId } } = await client.call('session/new', { cwd: join(dir, 'shop'), mcpServers: [] });
     expect(sessionId).toStartWith('new-');
 

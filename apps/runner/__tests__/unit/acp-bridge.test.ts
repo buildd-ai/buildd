@@ -57,7 +57,7 @@ class FakeRunner implements RunnerPort {
 
 function setup(
   workers: PublicWorker[] = [worker()],
-  opts: { answer?: (params: any) => Promise<any>; links?: Map<string, string>; runner?: FakeRunner } = {},
+  opts: { cwdExists?: (cwd: string) => boolean; answer?: (params: any) => Promise<any>; links?: Map<string, string>; runner?: FakeRunner } = {},
 ) {
   const runner = opts.runner ?? new FakeRunner();
   runner.workers = workers;
@@ -75,6 +75,8 @@ function setup(
     },
     repoRootOf: async (p) => (p.startsWith('/repos/app') ? '/repos/app' : null),
     projectNamesOf: async (cwd) => (cwd.replace(/\\/g, '/').endsWith('/app') ? ['app', 'acme/app'] : []),
+    cwdExists: opts.cwdExists,
+    runnerName: () => 'coder-box',
     version: '0.0.0-test',
     settleGraceMs: 50,
   });
@@ -523,6 +525,30 @@ Only targeting dev.`;
     void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
     await tick(); await tick();
     expect(texts(updates)).toContain('Started a buildd task in app: “Do it” · Builder on claude-opus-5-5.');
+  });
+
+  test('a cwd absent on this machine marks the thread remote: names the runner and says changes are not in the checkout', async () => {
+    const runner = new FakeRunner();
+    runner.claim = async (taskId: string) => ({ status: 200, body: { worker: worker({ id: `w-${taskId}`, taskId, messages: [], roleName: 'Builder', branch: 'buildd/abc-do-it' } as any) } });
+    const { bridge, updates } = setup([], { runner, cwdExists: () => false });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: 'C:\\code\\app', mcpServers: [] });
+    void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await tick(); await tick();
+    const t = texts(updates);
+    expect(t).toContain('Started a buildd task in app: “Do it” · Builder, on runner coder-box, not this machine.');
+    expect(t).toContain('Changes will be on branch buildd/abc-do-it and in its PR, not in your checkout.');
+  });
+
+  test('a cwd that exists here gets the plain first message', async () => {
+    const runner = new FakeRunner();
+    runner.claim = async (taskId: string) => ({ status: 200, body: { worker: worker({ id: `w-${taskId}`, taskId, messages: [], branch: 'b' } as any) } });
+    const { bridge, updates } = setup([], { runner, cwdExists: () => true });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await tick(); await tick();
+    const t = texts(updates);
+    expect(t).toContain('Started a buildd task in app: “Do it”.');
+    expect(t).not.toMatch(/not this machine|your checkout/);
   });
 
   test('a claimed worker with a role but no known model names the role only', async () => {
