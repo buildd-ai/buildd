@@ -1062,3 +1062,51 @@ describe('knowledge ingest switch off', () => {
     expect(ids).toEqual(['new-job-1']);
   });
 });
+
+describe('knowledge code ingest off (docs, specs, PR still on)', () => {
+  beforeEach(resetAll);
+
+  const codeOff = () => {
+    selectResults = (table: any) =>
+      table === workspaces ? [{ id: 'ws-1', knowledgeIngest: true, knowledgeCodeIngest: false }] : [];
+  };
+
+  it('runDiffIngestJob fetches, chunks and embeds no code, deletes no code chunks, still ingests docs', async () => {
+    codeOff();
+    namespaces = [];
+    prFilePages = [[
+      { filename: 'src/app.ts', status: 'modified' },
+      { filename: 'src/old.ts', status: 'removed' },
+      { filename: 'docs/guide.md', status: 'modified' },
+    ]];
+    contentsByPath = {
+      'src/app.ts': { content: 'export const app = 1;' },
+      'docs/guide.md': { content: '# Guide\n\nSome words.' },
+    };
+
+    const out = await runDiffIngestJob('job-1');
+
+    expect((out as any).status).toBe('done');
+    expect(upsertCalls.some(c => c.namespace === 'ws-1:code')).toBe(false);
+    expect(upsertCalls.some(c => c.namespace === 'ws-1:docs')).toBe(true);
+    expect(deleteBySourceCalls.some(c => c.namespace === 'ws-1:code')).toBe(false);
+    expect(githubApiCalls.some(p => String(p).includes('contents/src/app.ts'))).toBe(false);
+  });
+
+  it('does not enqueue the first-index backfill (it would only ever be a code index)', async () => {
+    codeOff();
+    namespaces = [];
+    prFilePages = [[{ filename: 'docs/guide.md', status: 'modified' }]];
+    contentsByPath = { 'docs/guide.md': { content: '# Guide' } };
+    await runDiffIngestJob('job-1');
+    expect(insertCalls.filter(c => c.table === knowledgeIngestJobs)).toHaveLength(0);
+    expect((finalUpdate()?.stats as any).backfillEnqueued).toBe(false);
+  });
+
+  it('still opens jobs: enqueueFullIngestJobDetailed is not blocked by the code switch alone', async () => {
+    codeOff();
+    const res = await enqueueFullIngestJobDetailed({ workspaceId: 'ws-1', repo: 'test-org/test-repo' });
+    expect((res as any).status).not.toBe('disabled');
+  });
+});
+

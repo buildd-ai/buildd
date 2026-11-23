@@ -238,6 +238,7 @@ export default async function WorkspaceSettingsPage({
           <KnowledgeIngestSection
             workspaceId={workspace.id}
             initial={workspace.knowledgeIngest !== false}
+            initialCode={workspace.knowledgeCodeIngest !== false}
             canEdit={canManageSettings}
           />
         </div>

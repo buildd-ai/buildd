@@ -13,13 +13,19 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 export default function KnowledgeIngestSection({
   workspaceId,
   initial,
+  initialCode = true,
   canEdit,
 }: {
   workspaceId: string;
   initial: boolean;
+  /** workspaces.knowledge_code_ingest: the code corpus alone. */
+  initialCode?: boolean;
   canEdit: boolean;
 }) {
   const [on, setOn] = useState(initial);
+  const [codeOn, setCodeOn] = useState(initialCode);
+  const [codeSaving, setCodeSaving] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -50,6 +56,21 @@ export default function KnowledgeIngestSection({
       setError(e instanceof Error ? e.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function toggleCode(next: boolean) {
+    if (codeSaving) return;
+    setCodeOn(next);
+    setCodeSaving(true);
+    setCodeError(null);
+    try {
+      await patch({ knowledgeCodeIngest: next });
+    } catch (e) {
+      setCodeOn(!next);
+      setCodeError(e instanceof Error ? e.message : 'Could not save. Try again.');
+    } finally {
+      setCodeSaving(false);
     }
   }
 
@@ -89,6 +110,27 @@ export default function KnowledgeIngestSection({
         )}
       </div>
       {error && <p className="text-status-error text-sm mt-2" role="alert">{error}</p>}
+
+      <div data-testid="knowledge-code-ingest" className="mt-4 flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h3 id="knowledge-code-ingest-label" className="text-sm font-medium text-text-primary">Index code</h3>
+          <p className="text-xs text-text-secondary mt-0.5">
+            Code is most of the embedding cost, and agents already read it straight from the checkout. Off keeps docs, specs and pull requests searchable and keeps what is stored.
+          </p>
+        </div>
+        {canEdit ? (
+          <Switch
+            checked={codeOn}
+            onChange={toggleCode}
+            disabled={codeSaving}
+            labelledBy="knowledge-code-ingest-label"
+            className={SWITCH_HIT_AREA}
+          />
+        ) : (
+          <span data-testid="knowledge-code-ingest-value" className="text-sm text-text-primary shrink-0">{codeOn ? 'On' : 'Off'}</span>
+        )}
+      </div>
+      {codeError && <p className="text-status-error text-sm mt-2" role="alert">{codeError}</p>}
 
       {canEdit && (
         <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

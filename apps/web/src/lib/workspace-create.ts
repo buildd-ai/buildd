@@ -36,6 +36,8 @@ export interface CreateWorkspaceInput {
   githubInstallationId?: string | null;
   accessMode?: string | null;
   knowledgeIngest: boolean;
+  /** Embed this workspace's code corpus. Absent = off: a new workspace keeps notes, specs, tasks and PRs searchable without paying to embed every line of code. */
+  knowledgeCodeIngest?: boolean;
   origin: string;
   /** The person acting, if any: their app shell is refreshed. */
   userId?: string | null;
@@ -115,6 +117,7 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Crea
       githubInstallationId: githubInstallationId || null,
       accessMode: (input.accessMode || 'open') as typeof workspaces.$inferInsert.accessMode,
       knowledgeIngest: input.knowledgeIngest,
+      knowledgeCodeIngest: input.knowledgeCodeIngest === true,
       gitConfig: Object.keys(mergedGitConfig).length > 0 ? (mergedGitConfig as unknown as WorkspaceGitConfig) : null,
       teamId,
     })
