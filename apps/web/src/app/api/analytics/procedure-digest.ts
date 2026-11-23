@@ -53,3 +53,21 @@ export async function procedureDigest(opts: {
     skills: [...new Set(r.skillsLoaded.filter((s) => registered.has(s)))],
   }));
 }
+
+/** Tool-call names and skill slugs out of a worker's stored milestones. */
+export function digestSourceFromMilestones(milestones: unknown): {
+  toolCalls: Array<{ name: unknown }>;
+  skillsLoaded: string[];
+} {
+  const ms = (Array.isArray(milestones) ? milestones : []) as Array<Record<string, unknown>>;
+  const toolCalls: Array<{ name: unknown }> = [];
+  const skillsLoaded: string[] = [];
+  for (const m of ms) {
+    if (m?.type === 'phase' && Array.isArray(m.ops)) for (const o of m.ops) toolCalls.push({ name: o });
+    else if (m?.type === 'action') {
+      toolCalls.push({ name: m.tool });
+      if (m.tool === 'Skill' && typeof m.skill === 'string') skillsLoaded.push(m.skill);
+    }
+  }
+  return { toolCalls, skillsLoaded };
+}
