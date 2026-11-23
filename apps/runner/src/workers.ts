@@ -3022,6 +3022,9 @@ export class WorkerManager {
       taskId: fullTask.id,
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
+      // What the run will use, named to the person who started it (ACP bridge's first message).
+      roleName: claimedWorker.roleInstructions?.name?.trim() || claimedWorker.roleInstructions?.slug || fullTask.roleSlug || undefined,
+      claimedModel: resolveSessionModel(fullTask.context, this.config.model)?.trim() || undefined,
       parentTaskId: fullTask.parentTaskId ?? null,
       missionId: fullTask.missionId ?? null,
       attemptKind: fullTask.ciRetryPrNumber != null && (fullTask.context as any)?.driftDiagnosis !== true ? 'ci'

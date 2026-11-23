@@ -396,7 +396,7 @@ export class AcpBridge {
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);
     session.cursor.skip(worker.messages);
-    this.emit(sessionId, textUpdate(`Started a buildd task in ${ws.name}: “${title}”.`));
+    this.emit(sessionId, textUpdate(`Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}.`));
     return this.follow(session, sessionId, worker, { watching: true, alreadyMoving: true });
   }
 
@@ -560,6 +560,15 @@ export class AcpBridge {
   private emit(sessionId: string, update: SessionUpdate) {
     this.deps.notify(sessionId, update);
   }
+}
+
+/** ` · Builder on <model>`; role only when the model is unknown, nothing when neither is. Never a guess. */
+function runsAs(w: PublicWorker): string {
+  const role = w.roleName?.trim();
+  const model = (w.claimedModel ?? w.sessionModel)?.trim();
+  if (role && model) return ` · ${role} on ${model}`;
+  if (role) return ` · ${role}`;
+  return '';
 }
 
 function label(ws: BuilddWorkspace): string {

@@ -138,6 +138,8 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   phaseTools: true,
   phaseOps: true,
   sessionModel: true,
+  roleName: true,
+  claimedModel: true,
   reportedModel: true,
   resultMeta: true,
   stagedSelfReview: true,
