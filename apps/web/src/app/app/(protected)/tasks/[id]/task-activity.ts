@@ -40,6 +40,8 @@ export function classifyAction(m: { type: string; label?: string | null; [k: str
     const add = typeof a.add === 'number' ? a.add : 0;
     const rem = typeof a.rem === 'number' ? a.rem : 0;
     if (a.tool === 'Bash') return { kind: 'run', cmd: a.cmd ?? a.label?.replace(/^Ran:\s*/, '') ?? '', add, rem, count };
+    // Skill milestones carry a slug, not a file; they feed the procedure digest only.
+    if (a.tool === 'Skill') return null;
     if (a.tool === 'Read') return { kind: 'read', path: a.path, add, rem, count };
     return { kind: a.tool === 'Write' ? 'new' : 'edit', path: a.path, add, rem, count };
   }

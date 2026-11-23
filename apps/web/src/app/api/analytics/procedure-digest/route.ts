@@ -6,7 +6,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/ta
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { sqlWhere, sqlOrderBy } from '@buildd/core/db/relational-sql';
-import { procedureDigest, type DigestWindow } from '../procedure-digest';
+import { procedureDigest, digestSourceFromMilestones, type DigestWindow } from '../procedure-digest';
 
 const WINDOW_MS: Record<DigestWindow, number> = { '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5 };
 
@@ -52,16 +52,7 @@ export async function GET(req: NextRequest) {
         with: { task: { columns: { roleSlug: true } } },
       });
       return found.map((r) => {
-        const ms = (Array.isArray(r.milestones) ? r.milestones : []) as Array<Record<string, unknown>>;
-        const toolCalls: Array<{ name: unknown }> = [];
-        const skillsLoaded: string[] = [];
-        for (const m of ms) {
-          if (m?.type === 'phase' && Array.isArray(m.ops)) for (const o of m.ops) toolCalls.push({ name: o });
-          else if (m?.type === 'action') {
-            toolCalls.push({ name: m.tool });
-            if (m.tool === 'Skill' && typeof m.skill === 'string') skillsLoaded.push(m.skill);
-          }
-        }
+        const { toolCalls, skillsLoaded } = digestSourceFromMilestones(r.milestones);
         return { id: r.taskId!, roleSlug: (r as any).task?.roleSlug ?? null, verifiedBasis: 'pr_merged', toolCalls, skillsLoaded };
       });
     },
