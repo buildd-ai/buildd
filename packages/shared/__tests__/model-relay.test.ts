@@ -144,6 +144,8 @@ describe('localModels advert parser (AC-19, strict)', () => {
     expect(parseLocalModelsAdvert(many)!.models).toHaveLength(LOCAL_MODELS_ADVERT_MAX_MODELS);
     expect(parseLocalModelsAdvert({ server: { kind: 'vllm' }, models: [] })).toBeNull();
     expect(parseLocalModelsAdvert('nope')).toBeNull();
+    // Another server speaking the OpenAI-compatible routes is a known kind.
+    expect(parseLocalModelsAdvert({ server: { kind: 'openai_compat', reachable: true }, models: [] })!.server.kind).toBe('openai_compat');
     expect(parseLocalModelsAdvert({ server: { kind: 'ollama' } })!.models).toEqual([]);
   });
 

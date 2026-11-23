@@ -531,6 +531,11 @@ New table `knowledge_namespaces` (proposed; Drizzle `knowledgeNamespaces`):
   Ollama's POST api/show per model yields `capabilities` (`embedding`, `completion`)
   and `model_info.<arch>.embedding_length` (the dimension). Probe on start,
   then at most every 5 min (default) and on every relay `model_missing`.
+  When Ollama's api/tags does not answer as Ollama, the runner tries the
+  OpenAI-compatible model list (GET v1/models: LM Studio, llama.cpp, vLLM) and
+  advertises `server.kind: "openai_compat"`. That list carries no capabilities,
+  so an embedding model is recognised by name and its size is measured with one
+  small embedding call (`apps/runner/src/local-model-server.ts`).
 - Opt out with `BUILDD_LOCAL_MODEL_RELAY=0`: the runner still uses the model
   for its agents but advertises nothing and claims nothing. Default on when
   Ollama answers; a machine with no Ollama costs one refused connection per
@@ -575,9 +580,11 @@ which:
   run, because a chat answer cannot wait for a 40-minute task. They DO stop
   while a person holds the runner (`claimsHeldByPerson`), the same "nothing
   new starts" rule the other pollers obey;
-- runs `embed` via Ollama's POST api/embed (`{ model, input: string[] }`) and
-  `chat` via Ollama's POST api/chat with `stream: true`, forwarding deltas as
-  progress posts every 500 ms and the full text as the result;
+- runs `embed` via the server's OpenAI-compatible POST v1/embeddings
+  (`{ model, input: string[] }`) and `chat` via POST v1/chat/completions with
+  `stream: true`, forwarding deltas as progress posts every 500 ms and the full
+  text as the result. Ollama and every other compatible server answer both
+  routes, so one client serves either kind;
 - enforces per-job budgets from `deadline_at` minus a safety margin, aborts the
   Ollama call at the budget and posts `timeout`;
 - never substitutes a model, never pads or truncates a vector
