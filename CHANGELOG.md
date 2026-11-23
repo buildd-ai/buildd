@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- ACP: a no-match T3 thread links to a connect-repo page that picks this runner (#6169)
+- ACP: say where changes land when the client's folder is not on the runner (#6166)
+- ACP: drop T3's delegation role line and read a leading `buildd:` directive line (#6165)
+- ACP: name the role and model in a thread's first message (#6163)
+
+### Fixed
+
+- ACP: drop T3's relay note on a linked-environment child thread (#6167)
+- Tasks: a short missionId resolves or is refused with a 4xx instead of a 500 (#6164)
+- Runner: log heartbeat failures and restart a runner whose heartbeat dies (#6162)
+- ACP: a question re-sent while its form answer is posting opens no second form (#6160)
+
 ## [0.402.2] - 2026-11-19
 
 ### Fixed
