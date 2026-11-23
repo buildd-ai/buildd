@@ -19,9 +19,9 @@
  * grants nothing: a key the person did not mint reads as not found.
  */
 import { createHmac, timingSafeEqual } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { githubInstallations, teamMembers, teams } from '@buildd/core/db/schema';
+import { accounts, githubInstallations, teamMembers, teams } from '@buildd/core/db/schema';
 import { consentTeamsForUser } from './mcp-grant-admin';
 import { runnerPickerTeams } from './runner-picks-plan';
 import { addRunnerPick, listRunnerKeys, type RunnerKeySummary } from './runner-picks';
@@ -47,6 +47,8 @@ export interface ConnectTeam {
 export type ConnectRepoCase =
   | { kind: 'bad_request'; message: string }
   | { kind: 'key_not_found' }
+  /** A team's runner key (not a person's) in one of the person's teams: it only ever works in that team's workspaces. */
+  | { kind: 'team_key'; runnerName: string; teamName: string }
   /** The runner already reaches a workspace for this repo. */
   | { kind: 'already'; runnerName: string; workspace: ConnectWorkspace }
   /** Workspaces for this repo the person may pick for the runner. */
@@ -98,8 +100,25 @@ export async function resolveConnectRepo(args: { userId: string; accountId: stri
   const repo = normalizeRepoFullName(args.repo);
   if (!repo) return { kind: 'bad_request', message: 'The link names no GitHub repo (owner/name).' };
   const key = (await listRunnerKeys(args.userId)).find((k) => k.id === args.accountId);
-  if (!key) return { kind: 'key_not_found' };
+  if (!key) return (await teamKeyOf(args.userId, args.accountId)) ?? { kind: 'key_not_found' };
   return resolveForKey(args.userId, key, repo);
+}
+
+/**
+ * A runner key that is not a person's: a team's own key, named only when the person is in that
+ * team (otherwise it reads as not found, like anyone else's key). Nothing here adds a workspace to
+ * it: a team key works only in its own team's workspaces, which that team's admins manage, and a
+ * machine that works across a person's teams runs on that person's key (spec "One runner for every
+ * team you run", R-8).
+ */
+async function teamKeyOf(userId: string, accountId: string): Promise<ConnectRepoCase | null> {
+  const [row] = await db
+    .select({ name: accounts.name, teamName: teams.name })
+    .from(accounts)
+    .innerJoin(teams, eq(teams.id, accounts.teamId))
+    .innerJoin(teamMembers, eq(teamMembers.teamId, accounts.teamId))
+    .where(and(eq(accounts.id, accountId), ne(accounts.type, 'user'), eq(teamMembers.userId, userId)));
+  return row ? { kind: 'team_key', runnerName: row.name, teamName: row.teamName } : null;
 }
 
 async function resolveForKey(userId: string, key: RunnerKeySummary, repo: string): Promise<ConnectRepoCase> {
@@ -211,6 +230,7 @@ export async function confirmConnectRepo(args: {
 
   if (found.kind === 'bad_request') return { ok: false, status: 400, message: found.message };
   if (found.kind === 'key_not_found') return { ok: false, status: 404, message: 'Runner not found.' };
+  if (found.kind === 'team_key') return { ok: false, status: 409, message: `${found.runnerName} is ${found.teamName}'s runner key; it cannot be given other workspaces here.` };
   if (found.kind === 'blocked') return { ok: false, status: 403, message: found.message };
   return { ok: false, status: 409, message: 'There is nothing to confirm here yet.' };
 }
