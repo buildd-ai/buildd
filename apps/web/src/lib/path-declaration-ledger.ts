@@ -6,7 +6,7 @@
  * unreachable, or where a task's manifest came from. One `path_declaration`
  * gate row per outcome answers all four (`get_failure_analytics family=gate`).
  */
-import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { fireCoalescedGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import type { GateCallerOrigin } from '@buildd/core/gate-events';
 import { PATH_SIGNAL_REASONS } from '@buildd/core/path-coordination-signal';
 
@@ -46,7 +46,7 @@ export function recordPathDeclaration(input: {
 }): void {
   if (!(input.pathCount > 0) && input.provenance !== 'creation') return;
   try {
-    fireGateEvent({
+    fireCoalescedGateEvent({
       gate: GATE_SLUGS.PATH_DECLARATION,
       surface: input.surface,
       outcome: OUTCOME[input.result],

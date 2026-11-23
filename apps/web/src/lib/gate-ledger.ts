@@ -75,6 +75,14 @@ export function fireDeferralEvent(input: RecordGateEventInput): void {
 }
 
 /**
+ * Same writer as `fireDeferralEvent`, named for gates that are not deferrals
+ * (path declaration, landing, CI retry): one row per state change, repeats of
+ * the same (task, gate, outcome, reason) bump `detail.consecutiveDeferrals`.
+ * Without a `taskId` it is a plain insert.
+ */
+export const fireCoalescedGateEvent = fireDeferralEvent;
+
+/**
  * Record a gate event without awaiting it, collapsing repeats of the same
  * (gate, outcome, reason, key) inside `windowMs` into one row's `detail.count`.
  * For refusals with no task to key on that a misconfigured client can trigger
