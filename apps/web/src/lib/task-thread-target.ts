@@ -9,7 +9,7 @@
  * remembers which notes it has already shown.
  */
 
-export const THREAD_EVENTS = ['started', 'waiting_input', 'pr_opened', 'completed', 'failed'] as const;
+export const THREAD_EVENTS = ['started', 'waiting_input', 'needs_you', 'pr_opened', 'completed', 'failed'] as const;
 export type ThreadEvent = typeof THREAD_EVENTS[number];
 
 export interface ThreadTarget { kind: 't3_thread'; threadId: string }
@@ -54,9 +54,39 @@ export function threadNote(event: ThreadEvent, task: { title: string; prUrl?: st
   const t = `“${task.title.length > 80 ? `${task.title.slice(0, 79)}…` : task.title}”`;
   switch (event) {
     case 'started': return `buildd: a runner started ${t}.`;
-    case 'waiting_input': return `buildd: ${t} has a question and is waiting for an answer.`;
+    case 'waiting_input': return `Needs you: ${t} has a question and is waiting for an answer.`;
+    case 'needs_you': return `Needs you: ${t}.`;
     case 'pr_opened': return `buildd: ${t} opened a pull request${task.prUrl ? `: ${task.prUrl}` : '.'}`;
     case 'completed': return `buildd: ${t} completed.`;
     case 'failed': return `buildd: ${t} failed.`;
   }
+}
+
+/** The slice of a kernel DeliveryView the owner-only check reads. */
+export interface OwnerDelivery { needsYou: boolean; state: string; stateReason: string | null; prNumber: number | null; headline: string }
+
+export interface NeedsYouNote { reason: string; text: string }
+
+/**
+ * One line when only a person can move a task: its own delivery (pr_landing needs_human,
+ * review escalated, a merge refused for a person) or the delivery of a dependency it waits
+ * on. `reason` names the state, not the wording, so a note repeats only on a state change.
+ * Null for an ordinary wait.
+ */
+export function needsYouNote(input: {
+  delivery: OwnerDelivery | null;
+  prUrl: string | null;
+  dependency?: { delivery: OwnerDelivery; prUrl: string | null } | null;
+}): NeedsYouNote | null {
+  const own = input.delivery?.needsYou ? input.delivery : null;
+  const dep = !own && input.dependency?.delivery.needsYou ? input.dependency : null;
+  const d = own ?? dep?.delivery;
+  if (!d) return null;
+  const url = own ? input.prUrl : dep!.prUrl;
+  const pr = d.prNumber ? `PR #${d.prNumber}` : 'its PR';
+  const what = d.headline.replace(/\.$/, '');
+  const text = own
+    ? `Needs you: ${pr}: ${what}.${url ? ` ${url}` : ''}`
+    : `Needs you: waiting on ${pr}: ${what}.${url ? ` ${url}` : ''}`;
+  return { reason: `${dep ? 'dep:' : ''}${d.state}:${d.stateReason ?? ''}`, text };
 }

@@ -6,7 +6,8 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/ta
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { taskPrsFor } from '@/lib/workflow/task-pr';
-import { parseThreadTarget, threadEventsFor, threadNote } from '@/lib/task-thread-target';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { parseThreadTarget, threadEventsFor, threadNote, needsYouNote } from '@/lib/task-thread-target';
 
 /**
  * GET /api/tasks/thread-events?threadId=<id>
@@ -31,7 +32,7 @@ export async function GET(req: NextRequest) {
     if (apiAccount) workspaceIds = workspaceIds.filter(id => taskScopeAllowsWorkspace(apiAccount, id));
     if (workspaceIds.length === 0) return NextResponse.json({ events: [] });
 
-    const rows = await db.select({ id: tasks.id, title: tasks.title, status: tasks.status }).from(tasks).where(and(
+    const rows = await db.select({ id: tasks.id, title: tasks.title, status: tasks.status, dependsOn: tasks.dependsOn }).from(tasks).where(and(
       inArray(tasks.workspaceId, workspaceIds),
       sql`${tasks.context}->'callbackTarget'->>'kind' = 't3_thread'`,
       sql`${tasks.context}->'callbackTarget'->>'threadId' = ${target.threadId}`,
@@ -44,10 +45,31 @@ export async function GET(req: NextRequest) {
       .where(inArray(workers.taskId, ids)).orderBy(desc(workers.createdAt));
     for (const w of ws) if (w.taskId && !latest.has(w.taskId)) latest.set(w.taskId, w.status);
     const prs = await taskPrsFor(ids);
+    // Owner-only states (kernel delivery needsYou), the task's own or its dependency's. Best effort:
+    // a failed read drops the note, never the rest of the thread's events.
+    // Only dependencies in workspaces the caller can reach: a cross-workspace one must not leak its PR.
+    const wantedDeps = [...new Set(rows.flatMap(r => (r.status === 'pending' ? r.dependsOn ?? [] : [])))];
+    const visibleDeps = wantedDeps.length > 0
+      ? await db.select({ id: tasks.id }).from(tasks)
+        .where(and(inArray(tasks.id, wantedDeps), inArray(tasks.workspaceId, workspaceIds)))
+        .catch(() => [] as { id: string }[])
+      : [];
+    const depIds = visibleDeps.map(d => d.id);
+    const deliveries = await getDeliveryViewsForTasks([...ids, ...depIds]).catch(() => new Map());
+    const depPrs = depIds.length > 0 ? await taskPrsFor(depIds).catch(() => new Map()) : new Map();
 
     const events = rows.flatMap(task => {
       const prUrl = prs.get(task.id)?.prUrl ?? null;
-      return threadEventsFor({
+      const dependency = (task.status === 'pending' ? task.dependsOn ?? [] : [])
+        .filter((id: string) => depIds.includes(id))
+        .map((id: string) => ({ delivery: deliveries.get(id), prUrl: depPrs.get(id)?.prUrl ?? null }))
+        .find((d: { delivery?: { needsYou: boolean } }) => d.delivery?.needsYou);
+      const need = needsYouNote({ delivery: deliveries.get(task.id) ?? null, prUrl, dependency: dependency as never });
+      const needEvents = need ? [{
+        key: `${task.id}:needs_you:${need.reason}`, taskId: task.id, event: 'needs_you' as const, text: need.text,
+        dashboardUrl: `https://buildd.dev/app/tasks/${task.id}`,
+      }] : [];
+      return [...threadEventsFor({
         taskStatus: task.status,
         workerStatus: latest.get(task.id) ?? null,
         prUrl,
@@ -58,7 +80,7 @@ export async function GET(req: NextRequest) {
         event,
         text: threadNote(event, { title: task.title, prUrl }),
         dashboardUrl: `https://buildd.dev/app/tasks/${task.id}`,
-      }));
+      })), ...needEvents];
     });
     return NextResponse.json({ events });
   } catch (error) {
