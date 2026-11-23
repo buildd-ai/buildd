@@ -286,7 +286,7 @@ ${scopes != null ? `**Token scopes:** ${scopes.join(', ') || 'none'} — explici
 
 **Before your first task action**, load the buildd-mcp-consumer skill (claim → progress → PR → artifact → learn → complete, blocked-vs-question, friction, branch strategy). No skill installed? Read the \`buildd://workspace/skills\` resource.
 
-**In T3 Code** (your session has \`delegate_task\` and a buildd provider): work a person will want to watch goes to \`delegate_task\`, not \`create_task\`, with a self-contained task text; background work stays \`create_task\`. Details: skill section "Delegating work a person should watch".`;
+**In T3 Code** (you have \`delegate_task\` and a buildd provider): work a person will watch goes to \`delegate_task\`, not \`create_task\`; background work stays \`create_task\`. See skill section "Delegating work a person should watch".`;
 }
 
 /** The legacy one-tool `buildd`: every action the level may call, with the long docs inline. LEGACY: old-runner fallback only. */
