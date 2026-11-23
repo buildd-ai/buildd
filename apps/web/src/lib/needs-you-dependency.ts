@@ -10,7 +10,7 @@ export function withDependencyNeedsYou(answer: ExplainAnswer, deps: ReadonlyArra
   for (const d of deps) {
     const n = d ? needsYouNote({ delivery: null, prUrl: null, dependency: { delivery: d, prUrl: null } }) : null;
     if (!n) continue;
-    return { ...answer, presentation: { ...answer.presentation, needsYou: true, cause: 'human_approval', causeText: n.text.replace(/^Needs you: /, '') } };
+    return { ...answer, presentation: { ...answer.presentation, needsYou: true, cause: 'human_approval', causeText: n.text } };
   }
   return answer;
 }

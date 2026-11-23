@@ -49,16 +49,20 @@ export function threadEventsFor(s: { taskStatus: string; workerStatus: string | 
   return out;
 }
 
-/** The one-line note a thread shows. */
+/**
+ * The one-line note a thread shows. A plain sentence, the way the thread itself talks:
+ * no "buildd:" or "Needs you:" label in front, and "input" for a wait on the person,
+ * which is T3's own word for it.
+ */
 export function threadNote(event: ThreadEvent, task: { title: string; prUrl?: string | null }): string {
   const t = `“${task.title.length > 80 ? `${task.title.slice(0, 79)}…` : task.title}”`;
   switch (event) {
-    case 'started': return `buildd: a runner started ${t}.`;
-    case 'waiting_input': return `Needs you: ${t} has a question and is waiting for an answer.`;
-    case 'needs_you': return `Needs you: ${t}.`;
-    case 'pr_opened': return `buildd: ${t} opened a pull request${task.prUrl ? `: ${task.prUrl}` : '.'}`;
-    case 'completed': return `buildd: ${t} completed.`;
-    case 'failed': return `buildd: ${t} failed.`;
+    case 'started': return `Working on ${t}.`;
+    case 'waiting_input': return `${t} is waiting for your input.`;
+    case 'needs_you': return `${t} is waiting for your input.`;
+    case 'pr_opened': return `Opened a pull request for ${t}${task.prUrl ? `: ${task.prUrl}` : '.'}`;
+    case 'completed': return `Finished ${t}.`;
+    case 'failed': return `${t} failed.`;
   }
 }
 
@@ -85,8 +89,7 @@ export function needsYouNote(input: {
   const url = own ? input.prUrl : dep!.prUrl;
   const pr = d.prNumber ? `PR #${d.prNumber}` : 'its PR';
   const what = d.headline.replace(/\.$/, '');
-  const text = own
-    ? `Needs you: ${pr}: ${what}.${url ? ` ${url}` : ''}`
-    : `Needs you: waiting on ${pr}: ${what}.${url ? ` ${url}` : ''}`;
+  const lead = own ? `${pr} is waiting for your input.` : `This is waiting on ${pr}, which needs your input.`;
+  const text = `${lead} ${what}.${url ? ` ${url}` : ''}`;
   return { reason: `${dep ? 'dep:' : ''}${d.state}:${d.stateReason ?? ''}`, text };
 }
