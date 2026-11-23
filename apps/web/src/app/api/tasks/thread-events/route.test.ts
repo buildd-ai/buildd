@@ -98,7 +98,7 @@ describe('GET /api/tasks/thread-events', () => {
     const first = (await (await GET(req('?threadId=t'))).json()).events.filter((e: any) => e.event === 'needs_you');
     const again = (await (await GET(req('?threadId=t'))).json()).events.filter((e: any) => e.event === 'needs_you');
     expect(first).toHaveLength(1);
-    expect(first[0].text).toContain('Needs you: waiting on PR #6108');
+    expect(first[0].text).toContain('This is waiting on PR #6108, which needs your input.');
     expect(again[0].key).toBe(first[0].key);
   });
 
