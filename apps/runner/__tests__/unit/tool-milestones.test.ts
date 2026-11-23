@@ -262,3 +262,15 @@ describe('commitMessageOf', () => {
     expect(commitMessageOf('git commit -F msg.txt')).toBeNull();
   });
 });
+
+describe('toolActionMilestone — Skill', () => {
+  test('emits a names-only Skill milestone', () => {
+    const m = toolActionMilestone('Skill', { skill: 'buildd-workflow', args: 'secret /home/x/y' }, '/w', 5);
+    expect(m).toEqual({ type: 'action', label: 'Skill buildd-workflow', ts: 5, tool: 'Skill', skill: 'buildd-workflow' });
+    expect(JSON.stringify(m)).not.toContain('secret');
+  });
+  test('no milestone without a plain skill name', () => {
+    expect(toolActionMilestone('Skill', {}, '/w')).toBeNull();
+    expect(toolActionMilestone('Skill', { skill: 'a b/../../etc' }, '/w')).toBeNull();
+  });
+});

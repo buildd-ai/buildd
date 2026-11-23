@@ -10,7 +10,7 @@
 
 import type { Milestone } from './types';
 
-export type ActionTool = 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash';
+export type ActionTool = 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash' | 'Skill';
 export type ActionMilestone = Extract<Milestone, { type: 'action' }>;
 
 /** Total milestones kept per worker. */
@@ -123,6 +123,12 @@ export function toolActionMilestone(
       const cmd = typeof inp.command === 'string' ? inp.command : '';
       if (!isNotableBash(cmd)) return null;
       return { type: 'action', label: `Ran: ${cmd.slice(0, 50)}`, ts, tool: 'Bash', cmd: truncateCmd(cmd) };
+    }
+    case 'Skill': {
+      // Names only: the skill's `args` (free text) and any path are never read.
+      const raw = typeof inp.skill === 'string' ? inp.skill.trim() : '';
+      if (!/^[\w.:@/-]{1,100}$/.test(raw)) return null;
+      return { type: 'action', label: `Skill ${raw}`, ts, tool: 'Skill', skill: raw };
     }
     default:
       return null;
