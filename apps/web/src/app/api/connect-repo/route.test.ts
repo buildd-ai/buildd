@@ -7,7 +7,7 @@
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
-import { githubInstallations, teamMembers } from '@buildd/core/db/schema';
+import { accounts, githubInstallations, teamMembers } from '@buildd/core/db/schema';
 
 process.env.OAUTH_JWT_SECRET = 'connect-repo-test-secret-0123456789abcdef';
 delete process.env.OAUTH_ISSUER;
@@ -23,6 +23,7 @@ const wsOther = { id: 'ws-other', name: 'other', repo: 'acme/other', accessMode:
 let personTeams: any[] = [];
 let memberships: any[] = [];
 let installs: any[] = [];
+let teamKeyRows: any[] = [];
 
 const mockAuth = mock(async () => ({ user: { id: 'user-1' } }) as any);
 const mockList = mock(async (_u: string) => [key()] as any[]);
@@ -50,7 +51,7 @@ mock.module('@buildd/core/db', () => ({
       const chain: any = {
         from(t: unknown) { table = t; return chain; },
         innerJoin() { return chain; },
-        where() { return Promise.resolve(table === teamMembers ? memberships : table === githubInstallations ? installs.map((i) => ({ id: i.id })) : []); },
+        where() { return Promise.resolve(table === teamMembers ? memberships : table === githubInstallations ? installs.map((i) => ({ id: i.id })) : table === accounts ? teamKeyRows : []); },
       };
       return chain;
     },
@@ -72,6 +73,7 @@ beforeEach(() => {
   personTeams = [{ id: 'team-a', name: 'Alpha', role: 'owner', workspaces: [wsApp, wsOther] }];
   memberships = [{ id: 'team-a', name: 'Alpha' }];
   installs = [{ id: 'inst-1', installationId: 7, login: 'acme', owners: ['team-a'] }];
+  teamKeyRows = [];
   mockAuth.mockReset();
   mockAuth.mockResolvedValue({ user: { id: 'user-1' } });
   mockList.mockReset();
@@ -133,6 +135,21 @@ describe('connect-repo: the page cases', () => {
   it("another person's runner reads as not found", async () => {
     mockList.mockResolvedValue([]);
     expect((await resolveConnectRepo({ userId: 'user-1', accountId: KEY, repo: REPO })).kind).toBe('key_not_found');
+  });
+
+  it("a team's runner key in one of the person's teams: says it is the team's and how to use the machine across teams", async () => {
+    mockList.mockResolvedValue([]);
+    teamKeyRows = [{ name: 'coder-workspace', teamName: 'Alpha' }];
+    expect(await resolveConnectRepo({ userId: 'user-1', accountId: KEY, repo: REPO })).toEqual({ kind: 'team_key', runnerName: 'coder-workspace', teamName: 'Alpha' });
+  });
+
+  it('confirm on a team key changes nothing', async () => {
+    mockList.mockResolvedValue([]);
+    teamKeyRows = [{ name: 'coder-workspace', teamName: 'Alpha' }];
+    const { confirmConnectRepo } = await import('@/lib/connect-repo');
+    const r = await confirmConnectRepo({ userId: 'user-1', accountId: KEY, repo: REPO, workspaceId: 'ws-app', origin: ORIGIN });
+    expect(r.ok).toBe(false);
+    expect(mockAddPick).not.toHaveBeenCalled();
   });
 });
 

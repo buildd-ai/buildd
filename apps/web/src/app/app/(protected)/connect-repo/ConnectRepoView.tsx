@@ -73,6 +73,14 @@ export default function ConnectRepoView({ repo, runnerId, found, token, action, 
           </Notice>
         </Frame>
       );
+    case 'team_key':
+      return (
+        <Frame title="Connect a repo">
+          <Notice tone="warn" title={`${found.runnerName} is ${found.teamName}'s runner`} data-testid="connect-repo-team-key">
+            Its key only works in {found.teamName}&apos;s workspaces. Run <code>buildd login</code> on this machine to sign in as you, then open the link again.
+          </Notice>
+        </Frame>
+      );
     case 'already':
       return (
         <Frame title={created ? `Connected ${repo}` : `${found.runnerName} can already work on ${repo}`}>
