@@ -516,6 +516,8 @@ export class BuilddClient {
      * deriving it from resultMeta.
      */
     actualModel?: string;
+    /** On a resume call: this runner adopts a `sessionModel` the reply carries (session-model-switch.ts). */
+    takesSessionModel?: boolean;
     /** Per-attempt model configuration (no content, no URLs); whitelisted again server-side. */
     modelObservation?: Record<string, unknown>;
     // SDK result metadata

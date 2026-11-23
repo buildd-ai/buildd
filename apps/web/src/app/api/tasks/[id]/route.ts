@@ -46,7 +46,12 @@ import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
 import { TIERS } from '@buildd/core/model-tier-defaults';
-import { liveModelChangeNotice, pendingModelChangeRecord, PENDING_MODEL_CHANGE_KEY, type LiveModelChangeNotice } from '@/lib/live-model-change';
+import { liveModelChangeNotice, pendingModelChangeRecord, readPendingModelChange, PENDING_MODEL_CHANGE_KEY, type LiveModelChangeNotice } from '@/lib/live-model-change';
+import {
+  IN_PLACE_RESUME_KEY, RESUME_HISTORY_KEY, appendResumeHistory, buildInPlaceResumeIntent, describeResumeInProgress, describeResumeOutcome,
+  loadLiveWorkerForResume, newAttemptEntry, newAttemptPlan, planInPlaceResume, postResumeNote, resolveChangeTarget, startInPlaceResume,
+  type InPlaceResumeIntent, type NewAttemptReason, type ResumableWorker,
+} from '@/lib/in-place-resume';
 import { appBaseUrl } from '@/lib/app-url';
 import { TASK_RESERVATION_KEY, buildReservation } from '../../workers/claim/held-gate';
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
@@ -546,6 +551,15 @@ export async function PATCH(
       updatedAt: new Date(),
     };
     let modelChange: LiveModelChangeNotice | null = null;
+    // Resume in place (lib/in-place-resume.ts): a tier/model change or a
+    // requeue of a task with a live agent keeps that agent's session when it
+    // can be resumed. The intent is written with the task; the pause or the
+    // resume message follows the write.
+    let resumeIntent: InPlaceResumeIntent | null = null;
+    let resumeWorker: ResumableWorker | null = null;
+    let requeue: { outcome: 'resumed_in_place' | 'new_attempt'; workerId: string | null; reasonCode?: NewAttemptReason; reason?: string; message: string } | null = null;
+    let liveForResume: ResumableWorker | null | undefined;
+    const liveWorkerForResume = async () => (liveForResume !== undefined ? liveForResume : (liveForResume = await loadLiveWorkerForResume(id)));
 
     if (title !== undefined) updateData.title = title;
     if (description !== undefined) updateData.description = description;
@@ -622,14 +636,36 @@ export async function PATCH(
       if (ceilingRejection) return ceilingRejection;
       if (tier !== undefined) updateData.tier = tier;
 
-      // A live agent keeps the model it was claimed with. Say so in the reply,
-      // with the tier it is actually running at, so a re-tier mid-run is not
-      // read later as the tier the run used.
-      const liveWorker = await db.query.workers.findFirst({
-        where: sqlWhere(and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
-        columns: { id: true, status: true },
-      });
-      if (liveWorker) modelChange = liveModelChangeNotice(task, liveWorker);
+      // A live agent's own session continues on the new model when it can be
+      // resumed: paused at a safe point, then resumed by the server. Where it
+      // cannot, the running attempt keeps its model and the reply says why.
+      const liveWorker = await liveWorkerForResume();
+      let modelFallback: ReturnType<typeof newAttemptEntry> | null = null;
+      if (liveWorker) {
+        const target = await resolveChangeTarget(task, { tier, model });
+        const running = liveModelChangeNotice(task, liveWorker);
+        if (!target || target.model !== running.runningModel) {
+          const workerPlan = planInPlaceResume(liveWorker);
+          const plan = workerPlan.kind !== 'in_place' ? workerPlan
+            : task.backend === 'codex' ? newAttemptPlan('codex_model')
+            : !target ? newAttemptPlan('model_not_resolved')
+            : workerPlan;
+          if (plan.kind === 'in_place' && target) {
+            modelChange = liveModelChangeNotice(task, liveWorker, { inPlace: true, targetModel: target.model, paused: plan.step === 'resume_now' });
+            resumeWorker = liveWorker;
+            resumeIntent = buildInPlaceResumeIntent({
+              workerId: liveWorker.id, cause: 'model_change', phase: plan.step === 'pause' ? 'pausing' : 'resuming',
+              fromTier: running.runningTier, fromModel: running.runningModel, toTier: target.tier, toModel: target.model,
+            });
+          } else if (plan.kind === 'new_attempt') {
+            modelChange = liveModelChangeNotice(task, liveWorker, { inPlace: false, targetModel: target?.model ?? null, reasonCode: plan.reasonCode, reason: plan.reason });
+            modelFallback = newAttemptEntry({
+              cause: 'model_change', workerId: liveWorker.id, reasonCode: plan.reasonCode,
+              fromModel: running.runningModel, toModel: target?.model ?? null, fromTier: running.runningTier, toTier: target?.tier ?? null,
+            });
+          }
+        }
+      }
 
       const baseCtx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
       if (model !== undefined && model !== null) {
@@ -638,12 +674,15 @@ export async function PATCH(
         const { model: _dropped, ...rest } = baseCtx;
         updateData.context = { ...rest, modelPinned: false };
       }
-      // Kept on the task until the next claim clears it, so the task page can
-      // say the live run is still on the old tier.
+      // Kept on the task until the resumed session or the next claim takes it,
+      // so the task page can say which model the live run is on.
       if (modelChange) {
+        const ctx = (updateData.context ?? baseCtx) as Record<string, unknown>;
         updateData.context = {
-          ...((updateData.context ?? baseCtx) as Record<string, unknown>),
+          ...ctx,
           [PENDING_MODEL_CHANGE_KEY]: pendingModelChangeRecord(modelChange, { tier, model }),
+          ...(resumeIntent ? { [IN_PLACE_RESUME_KEY]: resumeIntent } : {}),
+          ...(modelFallback ? { [RESUME_HISTORY_KEY]: appendResumeHistory(ctx, modelFallback) } : {}),
         };
       }
     }
@@ -926,15 +965,51 @@ export async function PATCH(
       }
       updateData.status = status;
 
-      // When resetting to pending, clear claim fields so the task is claimable again
+      // Putting a task back in the queue. With a live agent whose session can
+      // be resumed, that is a pause and a resume of the SAME session: the task
+      // keeps its worker and is not freed for another claim. Otherwise it is a
+      // new attempt, as before, and the reply says why.
       if (status === 'pending') {
-        // The owner's requeue also ends the task's live workers (their runner
-        // may be gone); otherwise they stay running and the task never leaves
-        // RUNNING until the stale-worker reap.
-        await endLiveWorkersForRequeue(id);
-        updateData.claimedBy = null;
-        updateData.claimedAt = null;
-        updateData.expiresAt = null;
+        const liveWorker = await liveWorkerForResume();
+        const plan = planInPlaceResume(liveWorker);
+        const ctx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
+        if (liveWorker && plan.kind === 'in_place') {
+          const running = liveModelChangeNotice(task, liveWorker);
+          // A model change from this request, or one still waiting on this worker.
+          const waiting = readPendingModelChange(task.context);
+          const toModel = resumeIntent?.toModel ?? (waiting?.workerId === liveWorker.id ? waiting.resolvedModel : null) ?? null;
+          const toTier = resumeIntent?.toTier ?? (waiting?.workerId === liveWorker.id ? waiting.tier : null) ?? null;
+          resumeWorker = liveWorker;
+          resumeIntent = buildInPlaceResumeIntent({
+            workerId: liveWorker.id, cause: 'requeue', phase: plan.step === 'pause' ? 'pausing' : 'resuming',
+            fromTier: running.runningTier, fromModel: running.runningModel, toTier, toModel,
+          });
+          delete updateData.status;
+          updateData.context = { ...ctx, [IN_PLACE_RESUME_KEY]: resumeIntent };
+          requeue = { outcome: 'resumed_in_place', workerId: liveWorker.id, message: describeResumeInProgress(resumeIntent) };
+        } else {
+          // The owner's requeue ends the task's live workers (their runner
+          // may be gone); otherwise they stay running and the task never
+          // leaves RUNNING until the stale-worker reap.
+          await endLiveWorkersForRequeue(id);
+          updateData.claimedBy = null;
+          updateData.claimedAt = null;
+          updateData.expiresAt = null;
+          const reasonCode: NewAttemptReason = plan.kind === 'new_attempt' ? plan.reasonCode : 'no_live_worker';
+          const running = liveWorker ? liveModelChangeNotice(task, liveWorker) : null;
+          const entry = newAttemptEntry({
+            cause: 'requeue', workerId: liveWorker?.id ?? null, reasonCode,
+            fromModel: running?.runningModel ?? null, fromTier: running?.runningTier ?? null,
+          });
+          requeue = { outcome: 'new_attempt', workerId: liveWorker?.id ?? null, reasonCode, reason: entry.reason, message: describeResumeOutcome(entry) };
+          if (liveWorker) {
+            // A session was given up: keep the reason with the task.
+            const { [IN_PLACE_RESUME_KEY]: _intent, ...rest } = ctx;
+            updateData.context = { ...rest, [RESUME_HISTORY_KEY]: appendResumeHistory(ctx, entry) };
+            resumeIntent = null;
+            resumeWorker = null;
+          }
+        }
       }
     }
 
@@ -947,9 +1022,24 @@ export async function PATCH(
     // Its mission's stored summary, and the one it left (lib/work-changed.ts).
     if (updated) noteWorkChanged({ missionIds: [updated.missionId, task.missionId] });
 
+    // Resume in place: the intent is on the task now, so ask for the pause (or
+    // resume a worker that is already parked) and say so in the task activity.
+    if (updated && resumeIntent && resumeWorker) {
+      await startInPlaceResume({ worker: resumeWorker, task: { ...task, context: updated.context ?? task.context }, intent: resumeIntent })
+        .catch((err) => console.error('[task-patch] in-place resume failed to start:', err));
+      await postResumeNote(task, resumeWorker.id, 'Resuming in place', describeResumeInProgress(resumeIntent));
+    } else if (updated) {
+      const fellBack = requeue?.outcome === 'new_attempt' && requeue.workerId ? requeue : modelChange?.appliesTo === 'next_attempt' ? modelChange : null;
+      if (fellBack) await postResumeNote(task, fellBack.workerId, 'New attempt', fellBack.message, 'warning');
+    }
+    const requeuedInPlace = requeue?.outcome === 'resumed_in_place';
+    if (requeuedInPlace && updated) {
+      await emitTaskUpdated({ id, workspaceId: updated.workspaceId, missionId: updated.missionId ?? null, status: updated.status });
+    }
+
     // Status-change side effects. A PATCH that doesn't touch status (title,
-    // priority, …) runs none of this.
-    if (status !== undefined && updated) {
+    // priority, …) runs none of this, nor does a requeue that kept its worker.
+    if (status !== undefined && updated && !requeuedInPlace) {
       const ref = { id, workspaceId: updated.workspaceId, missionId: updated.missionId ?? null };
       if (status === 'cancelled') {
         // Abort the active worker, release path claims, resolve (parent/mission
@@ -1051,7 +1141,7 @@ export async function PATCH(
       });
     }
 
-    return NextResponse.json(modelChange && updated ? { ...updated, modelChange } : updated);
+    return NextResponse.json(updated && (modelChange || requeue) ? { ...updated, ...(modelChange ? { modelChange } : {}), ...(requeue ? { requeue } : {}) } : updated);
   } catch (error) {
     console.error('Update task error:', error);
     return NextResponse.json({ error: 'Failed to update task' }, { status: 500 });

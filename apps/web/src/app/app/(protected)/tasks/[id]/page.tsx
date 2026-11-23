@@ -36,6 +36,7 @@ import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLE
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
 import { answeredAttemptLine } from '@/lib/answer-resume';
+import { describeResumeInProgress, readInPlaceResume, resumeLineFor } from '@/lib/in-place-resume-policy';
 import PlanningNotice from './PlanningNotice';
 import LocalTime from '../LocalTime';
 import ReassignButton from './ReassignButton';
@@ -1283,6 +1284,22 @@ async function TaskDetailPage({
                         if (!shown) return null;
                         return (
                           <p className={`mt-0.5 whitespace-pre-wrap break-words text-status-error ${shown.plain ? 'text-[12px]' : 'font-mono text-[11px]'}`} title={shown.raw}>{shown.text}</p>
+                        );
+                      })()}
+                      {(() => {
+                        // A restart or a tier/model change: this attempt's own
+                        // session was kept (resumed in place, old → new model),
+                        // or the task took a new attempt and why.
+                        const underWay = readInPlaceResume(task.context);
+                        if (underWay?.workerId === worker.id && (worker.status === 'running' || worker.status === 'waiting_input')) {
+                          return <p className="text-meta text-status-info mt-0.5" data-testid="worker-resume-in-progress">{describeResumeInProgress(underWay)}</p>;
+                        }
+                        const line = resumeLineFor(task.context, worker.id);
+                        if (!line) return null;
+                        return (
+                          <p className={`text-meta mt-0.5 ${line.kind === 'resumed_in_place' ? 'text-status-success' : 'text-text-muted'}`} data-testid={line.kind === 'resumed_in_place' ? 'worker-resumed-in-place' : 'worker-new-attempt'}>
+                            {line.text}
+                          </p>
                         );
                       })()}
                       {worker.status === 'superseded' && (
