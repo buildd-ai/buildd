@@ -99,7 +99,8 @@ describe('sweepTerminalWorktrees', () => {
   });
 
   // A 0o500 directory is still writable on Windows (the DACL decides), so the archive never fails there.
-  test.skipIf(process.platform === 'win32')('keeps the worktree when the archive cannot be written', async () => {
+  // root ignores the directory mode, so the write succeeds there too.
+  test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('keeps the worktree when the archive cannot be written', async () => {
     const path = makeWorktree('noarchive', { push: false, commit: true });
     mkdirSync(archiveDir, { recursive: true });
     chmodSync(archiveDir, 0o500);

@@ -49,7 +49,7 @@ export function __resetWorkerStoreRoot(): void {
 
 // Fields to persist (excludes transient UI state)
 const PERSISTED_FIELDS = [
-  'id', 'taskId', 'taskTitle', 'taskDescription', 'taskMode', 'taskBackend', 'workspaceId', 'workspaceName',
+  'id', 'taskId', 'taskTitle', 'taskDescription', 'missionId', 'attemptKind', 'taskMode', 'taskBackend', 'workspaceId', 'workspaceName',
   'branch', 'status', 'error', 'completedAt', 'startedAt', 'lastActivity', 'sessionId', 'codexThreadId',
   'waitingFor',
   // Paused by the runner (a service stop, or a crash it recovered from): the
@@ -321,6 +321,8 @@ export function loadAllWorkers(opts: { reconcileRestart?: boolean } = {}): Local
         taskId: data.taskId as string,
         taskTitle: data.taskTitle as string,
         taskDescription: data.taskDescription as string | undefined,
+        missionId: data.missionId as string | null | undefined,
+        attemptKind: data.attemptKind as LocalWorker['attemptKind'],
         taskMode: data.taskMode as string | undefined,
         workspaceId: data.workspaceId as string,
         workspaceName: data.workspaceName as string,

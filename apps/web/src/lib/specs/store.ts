@@ -543,9 +543,11 @@ export const SPEC_INDEX_COLUMNS = {
   status: specs.status, approvedRevision: specs.approvedRevision, headRevision: specs.headRevision, updatedAt: specs.updatedAt,
   bodyArtifactId: specs.bodyArtifactId,
   repoSourceState: sql<string | null>`${specs.repoSource}->>'state'`,
+  // When the head revision was written: "recently changed" reads it, not updatedAt (which a placement or metadata change also moves).
+  changedAt: sql<Date | null>`(select ${specRevisions.createdAt} from ${specRevisions} where ${specRevisions.specId} = ${specs.id} and ${specRevisions.revision} = ${specs.headRevision})`,
 } as const;
 export type SpecIndexRow = Pick<SpecRow, 'id' | 'workspaceId' | 'title' | 'scope' | 'parentSpecId' | 'status' | 'approvedRevision' | 'headRevision' | 'updatedAt' | 'bodyArtifactId'>
-  & { repoSourceState: string | null };
+  & { repoSourceState: string | null; changedAt: Date | string | null };
 
 /** Specs one index reads at most; a workspace past this lists its most recently changed. */
 export const MAX_INDEX_SPECS = 1000;
@@ -557,6 +559,24 @@ export async function listSpecIndexRows(caller: SpecCaller, workspaceId: string)
     .orderBy(desc(specs.updatedAt)).limit(MAX_INDEX_SPECS);
   return { ok: true, specs: rows as SpecIndexRow[] };
 }
+
+/**
+ * The ids of a workspace's specs whose title or body contains `text`, read in
+ * the database and scoped as the list is (reach on the workspace). The body is
+ * the current one, criteria included. The text is matched literally, any case.
+ */
+export async function searchSpecIds(caller: SpecCaller, workspaceId: string, text: string): Promise<{ ok: true; ids: Set<string> } | SpecError> {
+  if (!isUuid(workspaceId) || !(await reach(caller, workspaceId, false))) return fail(404, 'Workspace not found');
+  const needle = text.trim().slice(0, MAX_SEARCH_CHARS);
+  if (!needle) return { ok: true, ids: new Set() };
+  const like = `%${needle.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const rows = await db.select({ id: specs.id }).from(specs)
+    .leftJoin(artifacts, eq(artifacts.id, specs.bodyArtifactId))
+    .where(and(eq(specs.workspaceId, workspaceId), sql`(${specs.title} ilike ${like} or ${artifacts.content} ilike ${like})`))
+    .limit(MAX_INDEX_SPECS);
+  return { ok: true, ids: new Set(rows.map((r) => r.id)) };
+}
+const MAX_SEARCH_CHARS = 200;
 
 export async function listSpecs(caller: SpecCaller, workspaceId: string): Promise<{ ok: true; specs: SpecRow[] } | SpecError> {
   if (!isUuid(workspaceId) || !(await reach(caller, workspaceId, false))) return fail(404, 'Workspace not found');

@@ -36,7 +36,7 @@ jobs:
   # scripts/build-workflow-split.test.ts.
   build-checks:
     name: build · lints + type check
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
 
     steps:
       - uses: actions/checkout@v7
@@ -72,7 +72,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Cache bun install cache
         uses: actions/cache@v6
@@ -259,7 +259,7 @@ jobs:
   # go unreported and the next push finds them one shard at a time.
   build-unit-tests:
     name: build · unit tests (${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     strategy:
       fail-fast: false
       matrix:
@@ -274,7 +274,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       # The dependency handover fixture exercises a real frozen pnpm install.
       - name: Setup Node for pnpm
@@ -337,7 +337,7 @@ jobs:
 
   build-next:
     name: build · next build
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
 
     steps:
       - uses: actions/checkout@v7
@@ -347,7 +347,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Cache bun install cache
         uses: actions/cache@v6
@@ -374,6 +374,12 @@ jobs:
       # resolves. This installs the packed tarball into a clean project outside
       # it (public registry only) and imports every entry with and without the
       # optional peers, the way a consumer gets it. 0.1.0's /decide fails here.
+      # The self-hosted runner image has node but no npm; hosted images ship both.
+      - name: Setup Node for the consumer install
+        uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+
       - name: Install @buildd/ai-kit into a clean consumer project
         run: node packages/ai-kit/scripts/smoke-consumer.mjs
 
@@ -407,7 +413,7 @@ jobs:
   build:
     needs: [build-checks, build-unit-tests, build-next, runner-changes, runner-unit-tests-windows]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     steps:
       - name: All build parts passed
         run: |
@@ -452,7 +458,7 @@ jobs:
   # read only from the default branch and are therefore easy to leave dead.
   sandbox-isolation:
     name: Sandbox isolation probe (bwrap)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
 
     steps:
       - uses: actions/checkout@v7
@@ -460,7 +466,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Install dependencies
         run: bun install
@@ -558,7 +564,7 @@ jobs:
   # record. Never skipped itself, so `build` can tell "nothing to test" apart
   # from "the gate broke".
   runner-changes:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     outputs:
       runner: ${{ steps.filter.outputs.runner }}
     steps:
@@ -602,7 +608,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Cache bun install cache
         uses: actions/cache@v6
@@ -643,7 +649,7 @@ jobs:
   # exits 0 immediately for non-main PRs, and runs the real check only for dev→main.
   schema-drift:
     name: Schema Drift / check-prod
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     # No job-level if: — job must always run so it always emits success/failure,
     # never the Skipped status that satisfies branch protection without actually running.
 
@@ -667,7 +673,7 @@ jobs:
         if: steps.gate.outputs.applies == 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Install dependencies
         if: steps.gate.outputs.applies == 'true'
@@ -750,7 +756,7 @@ jobs:
   # The name says which ref is under test, so the two checks are not near-twins.
   db-architecture-plan:
     name: DB architecture · plan
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions:
       contents: read
       actions: read
@@ -792,7 +798,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: steps.dedupe.outputs.redundant != 'true'
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
       - name: Decide whether DB tests are needed
         id: decide
         env:
@@ -812,7 +818,7 @@ jobs:
     name: DB architecture shard ${{ matrix.shard }}/4
     needs: db-architecture-plan
     if: needs.db-architecture-plan.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     strategy:
       fail-fast: false
       matrix:
@@ -862,6 +868,9 @@ jobs:
             ghcr.io/buildd-ai/ci-mirror/postgres:17 \
             public.ecr.aws/docker/library/postgres:17 \
             docker.io/library/postgres:17
+          # A self-hosted runner (vars.CI_RUNS_ON) reuses one Docker daemon, so
+          # an earlier run's container may still hold the name and the port.
+          docker rm -f postgres >/dev/null 2>&1 || true
           docker run -d --name postgres -p 5432:5432 \
             -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=buildd_test \
             "$IMAGE"
@@ -902,7 +911,7 @@ jobs:
           git fetch --no-tags --depth=1 origin +refs/tags/v0.327.1:refs/tags/v0.327.1
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
       - run: bun install
       # The app's unchanged neon-http driver talks to scripts/ci/neon-sql-shim.ts:
       # the same /sql wire protocol as the local neon-http proxy it replaced,
@@ -924,6 +933,10 @@ jobs:
           echo "neon-sql shim never answered" && exit 1
       - name: Migrate
         run: cd packages/core && bun db:migrate
+      # The self-hosted runner image has no psql client; hosted images do.
+      - name: Ensure psql client
+        run: command -v psql >/dev/null || bash scripts/ci/apt-install.sh postgresql-client
+
       - name: Run DB architecture tests
         run: bun run test:db --shard "${{ matrix.shard }}/4"
       # Mission criteria on the spec page (R-76..R-80, R-102..R-106, AC-122..AC-126,
@@ -959,7 +972,7 @@ jobs:
     name: DB architecture (real Postgres) · ${{ github.event_name == 'pull_request' && 'merge ref' || 'branch HEAD' }}
     needs: [db-architecture-plan, db-architecture-shards]
     if: always() && !contains(needs.*.result, 'cancelled')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions: {}
     steps:
       - name: All DB architecture shards passed
@@ -993,7 +1006,7 @@ jobs:
 
   # Detect which areas changed to skip expensive integration/E2E when unnecessary
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     outputs:
       api: ${{ steps.filter.outputs.api }}
@@ -1087,7 +1100,7 @@ jobs:
   candidate-identify:
     name: candidate verification / identify
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions:
       contents: read
     outputs:
@@ -1151,7 +1164,7 @@ jobs:
     name: release candidate verified
     needs: [candidate-identify, candidate-integration]
     if: always() && github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions: {}
     steps:
       - env:

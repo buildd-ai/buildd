@@ -138,3 +138,33 @@ describe('questionToLead', () => {
     expect(questionToLead(null)).toBeNull();
   });
 });
+
+describe('explanation keys as agents copy them', () => {
+  it('a range or a list of ids is one line per id', () => {
+    const r = parseExplanation({ summary: 's', lines: { 'R-201 – R-203': 'merged', 'AC-6 to AC-7': 'reworded', 'R-9, R-11 and r-12': 'dropped' } });
+    expect(r.ok && Object.keys(r.explanation!.lines)).toEqual(['R-201', 'R-202', 'R-203', 'AC-6', 'AC-7', 'R-9', 'R-11', 'R-12']);
+    expect(r.ok && r.explanation!.lines['R-202']).toBe('merged');
+  });
+
+  it('a range that overlaps another key, mixes kinds or runs backwards is not read as a range', () => {
+    expect(parseExplanation({ summary: 's', lines: { 'R-1 to R-3': 'a', 'R-2': 'b' } })).toMatchObject({ ok: false, error: 'explanation.lines names R-2 twice' });
+    const mixed = parseExplanation({ summary: 's', lines: { 'R-1 to AC-3': 'a', 'R-5 to R-2': 'b' } });
+    expect(mixed.ok && Object.keys(mixed.explanation!.lines)).toEqual(['R-1 to AC-3', 'R-5 to R-2']);
+  });
+
+  it('a heading key matches with or without its inline markdown, alone or as a full path', () => {
+    const other: SectionTextChange[] = [
+      { kind: 'changed', section: 'Spec > Tools > awaitanswer' },
+      { kind: 'changed', section: 'Spec > Tools > The listtasks reply' },
+      { kind: 'changed', section: 'Spec > Bold heading' },
+    ];
+    const c = explanationCoverage(expl({ '`await_answer`': 'a', 'Spec > Tools > The `list_tasks` reply': 'b', '**Bold** heading': 'c' }), [], other);
+    expect(c.passed).toBe(true);
+    expect(c.extra).toEqual([]);
+  });
+
+  it('coverage reads a range key even on an explanation that was not parsed first', () => {
+    const c = explanationCoverage(expl({ 'R-1 – R-3': 'a', 'AC-1': 'd' }), four, []);
+    expect(c.passed).toBe(true);
+  });
+});

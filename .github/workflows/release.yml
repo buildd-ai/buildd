@@ -65,7 +65,7 @@ permissions: {}
 jobs:
   mode:
     name: Resolve release flow
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions: {}
     outputs:
       flow: ${{ steps.flow.outputs.flow }}
@@ -97,7 +97,7 @@ jobs:
     name: Cut release candidate
     needs: mode
     if: needs.mode.outputs.flow == 'candidate'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 30
     # Pushes release/v* (never dev or main) and opens/edits the release PR.
     permissions:
@@ -148,7 +148,7 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Cut or amend the candidate
         id: cut
@@ -211,7 +211,7 @@ jobs:
     name: Promote CHANGELOG
     needs: mode
     if: needs.mode.outputs.flow == 'legacy'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions:
       contents: write
     steps:

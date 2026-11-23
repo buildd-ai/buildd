@@ -43,7 +43,7 @@ import {
 } from '@buildd/core/db/schema';
 import { isGrantClaims, type AnyAccessTokenClaims } from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
-import { normalizedRepoSql } from './repo-scope';
+import { normalizedRepoSql, normalizeRepoRef } from './repo-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { displayTeamName, isSystemWorkspace } from '@buildd/shared';
 import { clearCallerCache, callerDep } from './caller-cache';
@@ -489,9 +489,7 @@ export function resolveGrantWorkspaceRef(choices: GrantWorkspaceChoice[], ref: s
     const hit = choices.find((c) => c.workspaceId.toLowerCase() === raw.toLowerCase());
     return hit ? { kind: 'ok', workspace: hit } : { kind: 'not_granted', ref: raw, choices };
   }
-  const want = raw.toLowerCase()
-    .replace(/^(https?:\/\/(www\.)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/, '')
-    .replace(/(\.git)?\/*$/, '');
+  const want = normalizeRepoRef(raw);
   const matches = want.includes('/')
     ? choices.filter((c) => c.repo === want)
     : choices.filter((c) => c.name.toLowerCase() === want || (c.repo != null && c.repo.split('/')[1] === want));

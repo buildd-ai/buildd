@@ -380,3 +380,33 @@ describe('SpecIndex cluster map (R-37)', () => {
     expect(q('[data-testid="spec-index-line"]')).not.toBeNull();
   });
 });
+
+describe('search, order and chips (the URL is the state)', () => {
+  const q = (over: Partial<import('@/lib/specs/list-query').ListQuery> = {}) => ({ q: '', sort: 'recent' as const, filters: [], ...over });
+  const render = (specs: Input[], query: ReturnType<typeof q>) =>
+    act(() => root.render(<SpecIndex specs={specs} workspaceId="w" query={query} total={specs.length} />));
+
+  it('recent order is one flat list in the order given, with a marker for what waits on you', () => {
+    render([spec('b', { status: 'in_review' }), spec('a')], q());
+    const rows = [...container.querySelectorAll('[data-testid="spec-index-row"]')].map((r) => r.getAttribute('data-spec-id'));
+    expect(rows).toEqual(['b', 'a']);
+    expect(container.querySelectorAll('[data-testid="spec-index-waiting"]').length).toBe(1);
+    expect(container.querySelector('[data-testid="spec-index-area"]')).toBeNull();
+  });
+  it('keeps q in the search box and chips as links that toggle the URL', () => {
+    render([spec('a')], q({ q: 'T3', filters: ['draft'] }));
+    expect((container.querySelector('[data-testid="spec-list-search"]') as HTMLInputElement).value).toBe('T3');
+    expect(container.querySelector('[data-testid="spec-list-chip-draft"]')!.getAttribute('href')).toBe('/app/workspaces/w/specs?q=T3');
+    expect(container.querySelector('[data-testid="spec-list-chip-waiting"]')!.getAttribute('href')).toBe('/app/workspaces/w/specs?q=T3&f=draft%2Cwaiting');
+    expect(container.querySelector('[data-testid="spec-list-sort-tree"]')!.getAttribute('href')).toContain('sort=tree');
+  });
+  it('says so when nothing matches, and keeps the controls', () => {
+    render([], q({ q: 'zzz' }));
+    expect(container.querySelector('[data-testid="spec-list-no-match"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="spec-list-search"]')).not.toBeNull();
+  });
+  it('outline order keeps the area cards', () => {
+    render([area('ar', 'Area'), approved('f', 'ar')], q({ sort: 'tree' }));
+    expect(container.querySelector('[data-testid="spec-index-area"]')).not.toBeNull();
+  });
+});

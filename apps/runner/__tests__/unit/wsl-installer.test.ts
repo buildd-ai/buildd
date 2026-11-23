@@ -38,8 +38,9 @@ function run(script: string, opts: { present?: string[]; answer?: 'y' | 'n' | 'n
   const bin = temp('buildd-wsl-bin-');
   const log = join(bin, 'calls.log');
   writeFileSync(log, '');
-  for (const tool of REAL_TOOLS) { const p = which(tool); if (p && !(opts.root && tool === 'id')) symlinkSync(p, join(bin, tool)); }
-  if (opts.root) writeFileSync(join(bin, 'id'), '#!/bin/sh\necho 0\n');
+  for (const tool of REAL_TOOLS) { const p = which(tool); if (p && tool !== 'id') symlinkSync(p, join(bin, tool)); }
+  // A fixed uid, so the result does not depend on who runs the suite (CI may be root).
+  writeFileSync(join(bin, 'id'), `#!/bin/sh\necho ${opts.root ? 0 : 1000}\n`);
   for (const c of opts.present ?? []) writeFileSync(join(bin, c), '#!/bin/sh\nexit 0\n');
   // Recorders: every sudo/apt-get call lands in calls.log.
   writeFileSync(join(bin, 'sudo'), `#!/bin/sh\necho "sudo $*" >> "${log}"\nexec "$@"\n`);

@@ -167,6 +167,10 @@ export interface LocalWorker {
   /** The task's parentTaskId at claim — lets a later retry recognise this
    *  worker as part of its lineage (see classifyResumeBranchHolder). */
   parentTaskId?: string | null;
+  /** The mission the task belongs to at claim, when it has one (ACP session list). */
+  missionId?: string | null;
+  /** Set when the task is a CI-fix, review or conflict attempt of its parent's deliverable. */
+  attemptKind?: 'ci' | 'reviewer' | 'conflict' | null;
   taskMode?: string;  // 'execution' or 'planning'
   taskBackend?: 'claude' | 'codex';  // Which agent backend ran this task
   /**
@@ -435,6 +439,10 @@ export interface LocalWorker {
    * task_outcomes.actual_model reflects what really ran.
    */
   sessionModel?: string;
+  /** Role's display name, known at claim; reported to ACP clients. */
+  roleName?: string;
+  /** Model the claim resolved for this run, known at claim (before sessionModel is set). */
+  claimedModel?: string;
   /** Per-attempt model observation state (model-observation.ts): tool failures, VRAM peak. */
   observation?: import('./model-observation').WorkerObservationState;
   /** Model id the SDK reported on the init message, when it provides one. */
@@ -686,6 +694,10 @@ export interface BuilddTask {
   dependsOn?: string[];
   /** The mission this task belongs to, when it has one. */
   missionId?: string | null;
+  /** Retry counters: set when this task re-runs its parent's deliverable (CI fix, review, conflict). */
+  ciRetryPrNumber?: number | null;
+  reviewerRetryPrNumber?: number | null;
+  conflictRetryPrNumber?: number | null;
   /**
    * Option A′ integration fields for this task's mission, sent by the claim
    * route. They exist so `resolveTaskPrBase` can answer "what base does this

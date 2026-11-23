@@ -9,12 +9,13 @@ import { neon } from '@neondatabase/serverless';
 import * as schema from './schema';
 import { relations } from './relations';
 import { applyNeonLocalOverride } from './neon-local';
+import { withRawTextTypes } from './neon-raw-text';
 
 export function createLocalDb(env: Record<string, string | undefined> = process.env) {
   if (!applyNeonLocalOverride(env)) {
     throw new Error('[local-client] NEON_LOCAL_FETCH_ENDPOINT is required (loopback only)');
   }
-  return drizzle({ client: neon(env.DATABASE_URL!), relations });
+  return drizzle({ client: withRawTextTypes(neon(env.DATABASE_URL!)), relations });
 }
 
 export type LocalDb = ReturnType<typeof createLocalDb>;

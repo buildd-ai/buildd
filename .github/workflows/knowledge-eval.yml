@@ -48,7 +48,7 @@ concurrency:
 jobs:
   eval:
     name: Retrieval regression gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     env:
       VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -60,7 +60,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

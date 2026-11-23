@@ -31,7 +31,7 @@ on:
 jobs:
   tag:
     if: github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     permissions:
       contents: write
       actions: write # dispatch publish-runner-image.yml for the new tag
@@ -148,7 +148,7 @@ jobs:
         if: steps.version.outputs.needs_tag == 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Warn on a semver under-bump
         # A release PR's version is computed at cut time. A frozen candidate

@@ -29,9 +29,9 @@ const OWN = join(PRIMARY, '.buildd-worktrees', 'own');
 // A shell word for PRIMARY: forward slashes, since `\` is an escape in the Bash tokenizer.
 const PRIMARY_SH = PRIMARY.replace(/\\/g, '/');
 
-function makeFactory(opts: { inputAsRetry?: boolean; pending?: Map<string, any> } = {}) {
+function makeFactory(opts: { inputAsRetry?: boolean; pending?: Map<string, any>; permissionPrompts?: 'policy' | 'ask' } = {}) {
   return new HookFactory({
-    config: { inputAsRetry: opts.inputAsRetry },
+    config: { inputAsRetry: opts.inputAsRetry, permissionPrompts: opts.permissionPrompts },
     buildd: { updateWorker: mock(async () => ({})) } as any,
     addMilestone: () => {},
     emit: () => {},
@@ -178,10 +178,26 @@ const CASES: Case[] = [
     )(pre('Bash', { command: 'git push origin HEAD' }), undefined, signal)),
   },
   {
-    name: 'canUseTool: second subagent request while one is pending',
+    name: 'canUseTool: a background subagent\'s would-be prompt, refused by policy',
+    run: async () => {
+      const r = await makeFactory().createCanUseToolCallback(worker, false)(
+        'Bash', { command: 'ls' }, { signal: new AbortController().signal, agentID: 'sub-1', requestId: 'r', toolUseID: 'u' });
+      return r.behavior === 'deny' ? r.message : undefined;
+    },
+  },
+  {
+    name: 'PermissionRequest: the SDK\'s own safety check, refused by policy',
+    run: async () => {
+      const r: any = await makeFactory().createPermissionRequestHook(worker)(
+        { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'cat /outside/x' } } as any, undefined, signal);
+      return r?.hookSpecificOutput?.decision?.behavior === 'deny' ? r.hookSpecificOutput.decision.message : undefined;
+    },
+  },
+  {
+    name: 'canUseTool (legacy ask mode): second subagent request while one is pending',
     run: async () => {
       const pending = new Map<string, any>([[worker.id, { resolve: () => {}, toolInput: {}, suggestions: [] }]]);
-      const r = await makeFactory({ pending }).createCanUseToolCallback(worker, false)(
+      const r = await makeFactory({ pending, permissionPrompts: 'ask' }).createCanUseToolCallback(worker, false)(
         'Bash', { command: 'ls' }, { signal: new AbortController().signal, agentID: 'sub-1', requestId: 'r', toolUseID: 'u' });
       return r.behavior === 'deny' ? r.message : undefined;
     },
@@ -249,16 +265,34 @@ describe('every deny site in the runner source is covered', () => {
     }
   });
 
+  // The fixed rule set lives in local-tool-policy.ts; the PreToolUse hook
+  // passes its result straight to denyPreToolUse(denial).
+  const policy = readFileSync(join(SRC, 'local-tool-policy.ts'), 'utf8');
+  const ruleSet = policy.slice(policy.indexOf('export function localPolicyDenial'), policy.indexOf('export function outsidePolicyDenial'));
+
   test('every denyPreToolUse call wraps a runnerDenial reason', () => {
     const calls = hookFactory.match(/denyPreToolUse\((?!reason: string)[^\n]*/g) ?? [];
     expect(calls.length).toBeGreaterThan(0);
-    for (const call of calls) expect(call).toContain('denyPreToolUse(runnerDenial(');
+    for (const call of calls) {
+      if (call.startsWith('denyPreToolUse(denial)')) continue; // localPolicyDenial's result, checked below
+      expect(call).toContain('denyPreToolUse(runnerDenial(');
+    }
+    expect(hookFactory).toContain('const denial = localPolicyDenial(');
   });
 
-  test('the behavioural table has one case per PreToolUse deny site, plus canUseTool', () => {
-    const sites = (hookFactory.match(/denyPreToolUse\(runnerDenial\(/g) ?? []).length;
-    // One worktree-confinement site covers Bash and every write tool.
-    expect(CASES.length).toBe(sites + 1);
+  test('every refusal in the rule set is a runnerDenial', () => {
+    const returns = ruleSet.match(/return (?!null)[^\n]*/g) ?? [];
+    expect(returns.length).toBeGreaterThan(0);
+    for (const r of returns) expect(r).toMatch(/^return runnerDenial\(/);
+  });
+
+  test('the behavioural table has one case per PreToolUse deny site, plus the permission paths', () => {
+    const sites = (hookFactory.match(/denyPreToolUse\(runnerDenial\(/g) ?? []).length
+      + (ruleSet.match(/return runnerDenial\(/g) ?? []).length;
+    // One worktree-confinement site covers Bash and every write tool. The
+    // permission paths: subagent canUseTool and PermissionRequest refused by
+    // policy, and legacy ask mode's one-pending-at-a-time refusal.
+    expect(CASES.length).toBe(sites + 3);
   });
 
   test('every behavior: deny result in the runner carries a non-empty message', () => {

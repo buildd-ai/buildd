@@ -1316,6 +1316,10 @@ export const workspaces = pgTable('workspaces', {
   // enqueued, claimed or run for it (apps/web/src/lib/knowledge-ingest-switch.ts).
   // Turning it off never deletes stored chunks; PATCH purgeKnowledge does that.
   knowledgeIngest: boolean('knowledge_ingest').default(true).notNull(),
+  // Per-corpus: false = the `code` corpus is never chunked or embedded (docs,
+  // specs and PR diffs still are). Column default true keeps every existing row
+  // as it was; new workspaces are created with false (workspace-create.ts).
+  knowledgeCodeIngest: boolean('knowledge_code_ingest').default(true).notNull(),
   // Which transport delivers this workspace's dispatch outbox rows.
   // 'dispatch' (default): handed off to the Dispatch Worker; the in-app drain
   // only takes rows the Worker never acked, and nothing is published at all

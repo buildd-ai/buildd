@@ -51,7 +51,7 @@ on:
 jobs:
   integration:
     name: integration
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     # Without this the job inherits GitHub's 6h default, and the concurrency
     # group below makes every other integration run wait behind it: release
     # candidate v0.392.0 sat 40 minutes in a hung sync until it was cancelled.
@@ -108,7 +108,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Install dependencies
         run: bun install
@@ -382,6 +382,23 @@ jobs:
           # and then 500'd every request. The page check matters because API
           # routes and pages load different compiled runtimes.
           BASE="http://$TEST_HOST:3333"
+          # The tests below run on this runner against $BASE, which only works
+          # while the test machine's Docker host forwards port 3333 into the
+          # container. A recreated container that lost that mapping looked like
+          # "failed to start after 150s" while the server answered fine inside
+          # it. So also probe from inside: crashed / up / down.
+          probe_inside() {
+            timeout 30 tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" 2>/dev/null << 'PROBE' || echo unknown
+          if grep -q -e 'Failed to load external module' -e 'command not found' /tmp/buildd-web.log 2>/dev/null; then
+            echo crashed
+          elif [ "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://localhost:3333/api/version)" = 200 ]; then
+            echo up
+          else
+            echo down
+          fi
+          PROBE
+          }
+          UP_INSIDE=0
           for i in $(seq 1 30); do
             if curl -s -m 10 "$BASE/api/version" 2>/dev/null | jq -e . >/dev/null 2>&1; then
               PAGE_CODE=$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$BASE/" || echo 000)
@@ -393,13 +410,25 @@ jobs:
               dump_log
               exit 1
             fi
-            # Fail fast on a known crash instead of waiting out the timeout.
-            if timeout 30 tailscale ssh "$TEST_USER@$TEST_HOST" \
-                "docker exec $TEST_CONTAINER grep -q -e 'Failed to load external module' -e 'command not found' /tmp/buildd-web.log" 2>/dev/null; then
-              echo "::error::Preview server is up but cannot serve requests (see log). NO integration tests ran."
-              dump_log
-              exit 1
-            fi
+            # Fail fast on a known crash, or on a server that is healthy inside
+            # the container but unreachable from here, instead of waiting out
+            # the timeout.
+            case "$(probe_inside)" in
+              crashed)
+                echo "::error::Preview server is up but cannot serve requests (see log). NO integration tests ran."
+                dump_log
+                exit 1
+                ;;
+              up)
+                UP_INSIDE=$((UP_INSIDE + 1))
+                if [ "$UP_INSIDE" -ge 3 ]; then
+                  echo "::error::Preview server answers on localhost:3333 inside $TEST_CONTAINER but not at $BASE from this runner. The server is fine: the test machine is not forwarding host port 3333 to the container (recreated without publishing 3333?). Republish the port, then re-run. NO integration tests ran."
+                  dump_log
+                  exit 1
+                fi
+                ;;
+              *) UP_INSIDE=0 ;;
+            esac
             if [ "$i" -eq 30 ]; then
               echo "::error::Preview server failed to start after 150s. NO integration tests ran."
               dump_log

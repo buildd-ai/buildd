@@ -42,7 +42,7 @@ permissions:
 jobs:
   gate:
     name: Artifact gate (real CLI, no login)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -50,7 +50,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Install dependencies
         run: bun install

@@ -214,15 +214,27 @@ describe('call identity, scope and denial shape', () => {
 });
 
 describe('which connectors are brokered', () => {
-  it('Axiom and Vercel oauth/header connectors by default; stdio, none and assertion never', () => {
+  it('Axiom and Vercel connectors by default, every http connector with all; stdio never', () => {
     expect(usesGateway({ transport: 'http', authMode: 'oauth' }, 'axiom', 'providers')).toBe(true);
     expect(usesGateway({ transport: 'http', authMode: 'header' }, 'vercel', 'providers')).toBe(true);
     expect(usesGateway({ transport: 'http', authMode: 'oauth' }, 'linear', 'providers')).toBe(false);
     expect(usesGateway({ transport: 'http', authMode: 'oauth' }, 'linear', 'all')).toBe(true);
-    expect(usesGateway({ transport: 'http', authMode: 'none' }, 'axiom', 'all')).toBe(false);
-    expect(usesGateway({ transport: 'http', authMode: 'assertion' }, 'axiom', 'all')).toBe(false);
     expect(usesGateway({ transport: 'stdio', authMode: 'header' }, 'axiom', 'all')).toBe(false);
+    expect(usesGateway({ transport: 'stdio', authMode: 'none' }, null, 'all')).toBe(false);
     expect(usesGateway({ transport: 'http', authMode: 'oauth' }, 'axiom', 'off')).toBe(false);
+  });
+
+  it('brokers none and assertion connectors under the same rollout as credentialed ones', () => {
+    // none: the gateway proxies with no credential. assertion: the gateway mints and exchanges.
+    expect(usesGateway({ transport: 'http', authMode: 'none' }, null, 'all')).toBe(true);
+    expect(usesGateway({ transport: 'http', authMode: 'assertion' }, null, 'all')).toBe(true);
+    expect(usesGateway({ transport: 'http', authMode: 'none' }, 'axiom', 'providers')).toBe(true);
+    expect(usesGateway({ transport: 'http', authMode: 'none' }, null, 'providers')).toBe(false);
+    expect(usesGateway({ transport: 'http', authMode: 'assertion' }, null, 'providers')).toBe(false);
+    expect(usesGateway({ transport: 'http', authMode: 'none' }, null, 'off')).toBe(false);
+    expect(usesGateway({ transport: 'http', authMode: 'assertion' }, 'axiom', 'off')).toBe(false);
+    // An auth mode the gateway cannot serve stays off it.
+    expect(usesGateway({ transport: 'http', authMode: 'mystery' }, null, 'all')).toBe(false);
   });
 
   it('reads the mode and the role ceiling defensively', () => {

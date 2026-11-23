@@ -228,8 +228,12 @@ export type CoreEvent =
     }
   /** A team row and its owner membership are written. */
   | { type: 'team.created'; teamId: string }
-  /** A workspace row is written (POST /api/workspaces). `origin` is the request origin, for OAuth callbacks. */
-  | { type: 'workspace.created'; workspaceId: string; teamId: string; origin: string }
+  /**
+   * A workspace row is written (lib/workspace-create.ts). `origin` is the
+   * request origin, for OAuth callbacks. `repoUrl` and `knowledgeIngest` are
+   * as stored, so the knowledge module can queue the repo-link ingest.
+   */
+  | { type: 'workspace.created'; workspaceId: string; teamId: string; origin: string; repoUrl: string | null; knowledgeIngest: boolean }
   /**
    * A PR was opened/reopened/pushed/readied on a linked repo. The releases
    * module adopts it when it is a trusted release candidate (so get_pr/

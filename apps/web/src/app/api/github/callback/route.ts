@@ -115,7 +115,7 @@ export async function GET(req: NextRequest) {
   } catch (dbError) {
     console.error('[GitHub Callback] DB error:', dbError);
     return NextResponse.redirect(
-      new URL(`${returnUrl}?error=db_error&message=${encodeURIComponent(String(dbError))}`, req.url)
+      new URL(`${returnUrl}${returnUrl.includes('?') ? '&' : '?'}error=db_error&message=${encodeURIComponent(String(dbError))}`, req.url)
     );
   }
 
@@ -134,7 +134,7 @@ export async function GET(req: NextRequest) {
 
   console.log('[GitHub Callback] Success, redirecting to:', returnUrl);
   return NextResponse.redirect(
-    new URL(`${returnUrl}?github_connected=true&org=${installation.account.login}`, req.url)
+    new URL(`${returnUrl}${returnUrl.includes('?') ? '&' : '?'}github_connected=true&org=${installation.account.login}`, req.url)
   );
 }
 

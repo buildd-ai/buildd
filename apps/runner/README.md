@@ -218,6 +218,35 @@ Codex task per login, or give Codex a team OpenAI API key.
 | `buildd install --global --as-agent` (or `--here --as-agent`) | The same sign-in, but the connection **acts as your agent**, not as you. Use it on a shared or remote machine |
 | `buildd install --global --status` | List every buildd MCP entry in `~/.claude.json`: whether it uses the key or OAuth, and for OAuth whether it connects as you, as your agent, or is unknown until signed in (no network) |
 | `buildd install [--global] --status` / `--uninstall` | Show or remove only buildd's own hook entries; every other hook is preserved |
+| `buildd acp` | Serve the runner already running on this machine to an ACP client, such as T3 Code (see below) |
+
+## Using the runner from T3 Code (ACP)
+
+`buildd acp` makes this machine's runner an [Agent Client Protocol](https://agentclientprotocol.com) agent.
+In [T3 Code](https://t3.codes), each buildd run on this machine is a thread. You can watch it, answer its
+questions (they appear in T3's own question UI, phone included), steer it, pause or stop it, and start a new
+task by typing in a new thread.
+
+The runner still does the work. Sandbox, budgets, roles, MCP config, the PR flow and reporting to buildd are
+all unchanged. The bridge only reads the runner's state over its local socket and relays your actions the
+way `buildd top` does. Pressing stop in T3 **pauses** the run, so you can resume it.
+
+Add it in T3 Code under **Settings → Providers → Add provider → Show more → Local ACP command**:
+
+| Runner | Executable | Arguments |
+|---|---|---|
+| macOS / Linux | `buildd` | `acp` |
+| In WSL, with T3 on Windows | `wsl.exe` | `-e`, `/home/<you>/.local/bin/buildd`, `acp` |
+| Installed before `buildd acp` existed | `bun` | `run`, `~/.buildd/apps/runner/src/acp/main.ts` (in WSL: `wsl.exe -e /home/<you>/.bun/bin/bun run /home/<you>/.buildd/apps/runner/src/acp/main.ts`) |
+
+The launcher is written when buildd is installed, and updates don't rewrite it. An older one cannot pass the
+protocol through and says so; the last row works with any install whose runner has updated.
+
+Then, on the provider's card, choose **List sessions**, pick a project and import a run. In a thread:
+
+- **Replying** answers the run's question if it has one, steers it if it is working, or starts a follow-up if it has finished.
+- `/watch` follows the run without sending anything. `/pause` and `/stop` do what they say.
+- **A new thread's first message** becomes a buildd task in the workspace whose repo matches the project folder, claimed onto this runner.
 
 ## Agent identity on buildd
 
@@ -243,6 +272,23 @@ the runner logs one `[agent-task-token]` warning with the reason.
 | Variable | Default | Effect |
 |---|---|---|
 | `BUILDD_AGENT_TASK_TOKEN` | on | `0` keeps the old behaviour: the agent's buildd MCP uses the runner key and no token is minted. |
+
+## Tool calls are decided by policy, not by whoever is watching
+
+Every local tool call (Bash, Read, Edit, Write …) is allowed or refused by the runner's fixed rules
+(`src/local-tool-policy.ts`). Those rules refuse runner kills, destructive commands, reads of the
+runner's credentials, owner-only GitHub commands and writes to sensitive paths, and allow everything
+else.
+
+Sometimes the agent SDK's own safety checks still want a person to approve a call: a path outside
+the working directory, a repo's own `ask` rule, or a background subagent's call. The runner refuses
+those as well and tells the agent why. Nobody is asked, nothing waits, and the session's settings
+are never rewritten. A task that genuinely needs more asks through buildd: a question
+(AskUserQuestion), or `request_capability` for a connected provider, which team policy decides and
+records.
+
+To get the old *Allow once / Always allow / Deny* prompt back while you move over, set
+`BUILDD_PERMISSION_PROMPTS=ask` in the runner's environment.
 
 ## What the agent can and cannot reach on a self-hosted runner
 

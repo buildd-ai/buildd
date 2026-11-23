@@ -21,7 +21,7 @@ import { toTopWorkerSummaries } from './top-worker-summary';
 import { todayTotals } from './run-route';
 import { Outbox, createReplayHandler } from './outbox';
 import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
-import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
+import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE, acpLauncherRefusal } from './cli-args';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
   isUpdateTargetReachable, classifyUpdateTarget, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
@@ -31,10 +31,13 @@ import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain, planDrain, pollAfterBootRelease, resumingSnapshot } from './update-drain';
 import { initRunnerHold, currentRunnerHold, holdOriginLine } from './runner-hold';
 import { installRunnerShutdown, NO_LAUNCHER_WARNING, restartLauncherKnown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
+import { ensureAcpShim } from './acp/shim';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
+import { HeartbeatWatchdog, HEARTBEAT_WATCHDOG_INTERVAL_MS } from './heartbeat-watchdog';
+import { logError } from './log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { getPusherConfirmedAt } from './pusher-manager';
@@ -46,6 +49,8 @@ import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { openInBrowser } from './open-url';
 import { claimEntryWords } from './claim-words';
+import { isCloudExecutor } from './git-clone';
+import { cloneIntoPlace, createT3ProjectSync, findT3Binary, t3AddProject, SYNC_FIRST_DELAY_MS as T3_SYNC_FIRST_DELAY_MS, SYNC_INTERVAL_MS as T3_SYNC_INTERVAL_MS } from './t3-projects';
 
 const PORT = parseInt(process.env.PORT || '8766');
 // Entrypoint: resolving once at load is fine here (see buildd-home.ts).
@@ -178,6 +183,21 @@ if (CLI.kind === 'web') {
   const { runWebCommand } = await import('./runner-web');
   const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
   process.exit(await runWebCommand({ socketPath: socketPathFor(BUILDD_DIR) }));
+}
+
+// `buildd acp`: this runner as an ACP agent on stdio (acp/main.ts). Current
+// launchers exec acp/main.ts themselves; this path serves `bun src/index.ts acp`
+// and older launchers, refusing the case where their loop took stdin away.
+if (CLI.kind === 'acp') {
+  const refusal = acpLauncherRefusal(process.env, !!process.stdin.isTTY);
+  if (refusal) {
+    console.error(refusal);
+    process.exit(EXIT_CLI_USAGE);
+  }
+  const { runAcp } = await import('./acp/main');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  await runAcp({ socketPath: socketPathFor(BUILDD_DIR), version: PKG_VERSION, builddHome: BUILDD_DIR });
+  process.exit(0);
 }
 
 // `buildd wsl install [--distro <name>]`: Windows only. Asks before installing
@@ -829,6 +849,14 @@ if (runnerHold?.isHeld()) {
 // says whether an update waits (setLatestCommit), or for the boot hold's bound,
 // so it never starts work on the old build only to pause it a minute later.
 const updateDrain = initUpdateDrain();
+
+// `buildd-acp` on the PATH for ACP clients (T3 Code): see acp/shim.ts. Best
+// effort: a read-only home must not stop the runner.
+try {
+  if (ensureAcpShim({ installDir: BUILDD_DIR }) === 'written') console.log('[acp] wrote ~/.local/bin/buildd-acp');
+} catch (err) {
+  console.warn(`[acp] could not write ~/.local/bin/buildd-acp: ${(err as Error)?.message ?? err}`);
+}
 if (config.apiKey && ONCE_TASK_ID === null && !isAutoUpdateDisabled()) {
   updateDrain.holdForBoot(Date.now());
   if (!restartLauncherKnown()) console.warn(`[update] ${NO_LAUNCHER_WARNING}`);
@@ -837,6 +865,27 @@ if (config.apiKey && ONCE_TASK_ID === null && !isAutoUpdateDisabled()) {
 // Initialize clients (null if no API key - will show setup UI)
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
 let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
+
+// Every claimable workspace as a T3 Code project, cloned if need be: see
+// t3-projects.ts. Reads `buildd` at each pass, so a later login takes effect.
+const t3Bin = findT3Binary();
+if (t3Bin && process.env.BUILDD_T3_PROJECTS !== 'off' && process.platform !== 'win32'
+  && ONCE_TASK_ID === null && !config.serverless && !isCloudExecutor(process.env)
+  && !config.workspaceIsolationRoot && projectRoots.length > 0) {
+  const t3Sync = createT3ProjectSync({
+    listWorkspaces: async () => (buildd ? await buildd.listWorkspaces() : []),
+    findLocal: async (ws) => (await resolver.resolveExisting?.(ws)) ?? null,
+    cloneInto: (url, path) => cloneIntoPlace(url, path),
+    addProject: (path, title) => t3AddProject(t3Bin, path, title),
+    pathExists: existsSync,
+    rescan: async () => { cachedRepos = null; await resolver.scanGitRepos({ maxAgeMs: 0 }); },
+    log: (m) => console.log(m),
+    now: Date.now,
+  }, { root: projectRoots[0] });
+  const runT3Sync = () => { void t3Sync.run().catch((err) => console.warn(`[t3-projects] ${(err as Error)?.message ?? err}`)); };
+  setTimeout(runT3Sync, T3_SYNC_FIRST_DELAY_MS).unref?.();
+  setInterval(runT3Sync, T3_SYNC_INTERVAL_MS).unref?.();
+}
 
 runnerHold?.onChange((hold) => {
   // top's header, and the server, learn at once; a lifted hold claims straight away.
@@ -2373,6 +2422,15 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
+    if (path === '/api/tasks/thread-events' && req.method === 'GET') {
+      const threadId = url.searchParams.get('threadId') ?? '';
+      try {
+        return Response.json({ events: await buildd!.threadEvents(threadId) }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to load thread events', events: [] }, { status: 502, headers: corsHeaders });
+      }
+    }
+
     if (path === '/api/tasks' && req.method === 'POST') {
       const body = await parseBody(req);
       try {
@@ -3709,3 +3767,20 @@ setInterval(() => {
   const { degraded, reason } = heartbeatState(getLastServerContactAt(), Date.now(), undefined, getPusherConfirmedAt());
   emitHeartbeatTick(degraded, reason);
 }, 60_000);
+
+// Heartbeat watchdog (2026-11-22: a runner stopped heartbeating with the process
+// still up and nothing logged, so the server showed it offline and it never took
+// the next update). When the liveness timer stops firing, a beat hangs, or no beat
+// lands for HEARTBEAT_STALE_MS on a transport fault, log an error and restart the
+// way an update does: agents pause and continue on the next start, and exit 75 is
+// non-zero, so the launcher loop and a service manager both start the runner again.
+// A server that answers with a refusal gets an error line instead: a restart would
+// not fix it. See heartbeat-watchdog.ts.
+const heartbeatWatchdog = new HeartbeatWatchdog();
+setInterval(() => {
+  if (!workerManager || config.serverless || updateState.updating) return;
+  const decision = heartbeatWatchdog.check(workerManager.getHeartbeatTracker());
+  if (!decision) return;
+  logError(decision.message);
+  if (decision.action === 'restart') scheduleGracefulRestart('heartbeat watchdog');
+}, HEARTBEAT_WATCHDOG_INTERVAL_MS);

@@ -114,6 +114,20 @@ RETURNING w.id`;
 const NOT_LIVE = ['MERGED', 'CLOSED_UNMERGED', 'SUPERSEDED', 'ABANDONED', 'FAILED'] as const;
 
 /**
+ * The PR's live lifecycle status from a delivery row aliased `d`, by its own readings at its
+ * current head: what `prLiveProjectionSql` writes onto the PR's worker rows. A reader that needs the
+ * status now (the owner loop's exit condition) reads this instead of a row the projection has not
+ * reached yet.
+ */
+export function prLiveStatusSql(): SQL {
+  return sql`(CASE
+    WHEN d.mergeable = 'dirty' AND d.mergeable_head_sha = d.current_head_sha THEN 'conflict'
+    WHEN d.ci = 'red' AND d.ci_head_sha = d.current_head_sha THEN 'ci_failed'
+    WHEN d.ci = 'green' AND d.ci_head_sha = d.current_head_sha THEN 'ci_green'
+    ELSE 'pr_open' END)`;
+}
+
+/**
  * AC-1, the non-terminal half: every other kernel transition projects the PR's
  * live status onto its worker rows, in the transition's own statement, from
  * the delivery's own readings at its current head. Dirty mergeability is a
@@ -125,11 +139,7 @@ const NOT_LIVE = ['MERGED', 'CLOSED_UNMERGED', 'SUPERSEDED', 'ABANDONED', 'FAILE
  * and a row already saying it is not rewritten.
  */
 export function prLiveProjectionSql(at: { from: SQL; where: SQL }): SQL {
-  const status = sql`(CASE
-    WHEN d.mergeable = 'dirty' AND d.mergeable_head_sha = d.current_head_sha THEN 'conflict'
-    WHEN d.ci = 'red' AND d.ci_head_sha = d.current_head_sha THEN 'ci_failed'
-    WHEN d.ci = 'green' AND d.ci_head_sha = d.current_head_sha THEN 'ci_green'
-    ELSE 'pr_open' END)`;
+  const status = prLiveStatusSql();
   return sql`UPDATE workers w SET updated_at = now(), pr_lifecycle_status = ${status},
   conflict_detected_at = CASE WHEN ${status} = 'conflict' THEN COALESCE(w.conflict_detected_at, now()) ELSE w.conflict_detected_at END
 FROM ${at.from}

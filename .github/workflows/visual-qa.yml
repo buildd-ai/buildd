@@ -102,7 +102,7 @@ permissions:
 jobs:
   visual-qa:
     name: Visual QA — spec-driven page audit
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.CI_RUNS_ON == '') && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON) }}
     # Release PRs are dev→main only. Hotfix PRs (feature→main) bypass this.
     # Label-gated: opt in per-PR with the 'visual-qa' label (or run manually via
     # workflow_dispatch). Gate added while the judge path is being provisioned
@@ -173,7 +173,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
 
       - name: Install dependencies
         run: bun install

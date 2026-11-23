@@ -14,8 +14,12 @@ import { join } from 'path';
  * The proposed replacement text was ~709 chars (~177 tokens). The threshold
  * below is 1,200 chars: comfortably clear of the proposal (room to reword)
  * while still roughly half of what was truncating.
+ *
+ * Raised to 1,500 for the two-sentence T3 delegation pointer (R-5, ~250
+ * chars); the block was already ~1,150-1,200 chars before it. It is still
+ * well under the 2,437 that truncated; the detail lives in the skill.
  */
-const MAX_INSTRUCTIONS_CHARS = 1200;
+const MAX_INSTRUCTIONS_CHARS = 1500;
 
 const repoRoot = join(__dirname, '..');
 const routeSource = readFileSync(

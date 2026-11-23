@@ -117,6 +117,30 @@ describe('runFullIngestJob', () => {
     expect(typeof stats.durationMs).toBe('number');
   });
 
+  it('codeIngest:false on the job: reads and pushes no code file, still pushes docs, and skips SCIP', async () => {
+    const { api, pushed, completions } = fakeApi();
+    const reads: string[] = [];
+    const reader: RepoReader = {
+      listFiles: async () => ['src/app.ts', 'docs/guide.md'],
+      readFile: async (p: string) => { reads.push(p); return 'content'; },
+    };
+    let scipCalled = false;
+    const result = await runFullIngestJob({ ...job, codeIngest: false }, reader, api, undefined, {
+      scipEnrich: async () => { scipCalled = true; return null; },
+    });
+    expect(result.status).toBe('done');
+    expect(reads).toEqual(['docs/guide.md']);
+    expect(pushed.flat().map(f => f.path)).toEqual(['docs/guide.md']);
+    expect(scipCalled).toBe(false);
+    expect(completions[0].sweep).toBe(true);
+  });
+
+  it('codeIngest absent or true keeps code (older servers, existing workspaces)', async () => {
+    const { api, pushed } = fakeApi();
+    await runFullIngestJob(job, fakeReader({ 'src/app.ts': 'x', 'docs/guide.md': '# g' }), api);
+    expect(pushed.flat().map(f => f.path).sort()).toEqual(['docs/guide.md', 'src/app.ts']);
+  });
+
   it('computes and attaches fileHash to each pushed entry', async () => {
     const { api, pushed } = fakeApi();
     const reader = fakeReader({ 'src/app.ts': 'export const app = 1;' });
