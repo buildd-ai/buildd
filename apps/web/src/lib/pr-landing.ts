@@ -52,7 +52,7 @@ import {
 } from '@/lib/conflict-retry';
 import { guardMissionPrMerge, finalizeMissionPrMerge, deliveryOwnerTask } from '@/lib/mission-pr';
 import { TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, judgeBaseDelta, versionBumpManifests } from '@/lib/workflow/base-delta';
-import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { fireCoalescedGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import type { ChecksState, LandingAlertInput } from '@/lib/pr-landing-alert';
 import type { StaleApprovalReReviewInput, StaleApprovalReReviewResult } from '@/lib/stale-approval-re-review';
@@ -504,9 +504,9 @@ const dryRunCarryForward: typeof carryForwardApprovalIfUnchanged = (p) =>
   carryForwardApprovalIfUnchanged({ ...p, deps: { ...p.deps, record: async () => {} } });
 
 /** A ledger write must never be what fails a landing (or the door that asked). */
-function safeFireGateEvent(input: Parameters<typeof fireGateEvent>[0]): void {
+function safeFireGateEvent(input: Parameters<typeof fireCoalescedGateEvent>[0]): void {
   try {
-    fireGateEvent(input);
+    fireCoalescedGateEvent(input);
   } catch (err) {
     console.warn('[pr-landing] gate event write failed:', errMessage(err));
   }

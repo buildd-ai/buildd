@@ -166,6 +166,70 @@ describe('recordGateEvent', () => {
 });
 
 describe('recordOrCoalesceDeferral', () => {
+  it('N identical deferrals leave one row counting N', async () => {
+    latestRow = undefined;
+    const input = {
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred' as const,
+      reason: 'role_env_unsatisfied',
+      taskId: TASK,
+    };
+    await recordOrCoalesceDeferral(input);
+    expect(inserted).toHaveLength(1);
+    // The store now holds that one row; every later pass must find and bump it.
+    let stored = inserted[0].detail;
+    for (let n = 2; n <= 5; n++) {
+      latestRow = { id: 'row-1', reason: inserted[0].reason, outcome: 'deferred', detail: stored };
+      await recordOrCoalesceDeferral(input);
+      expect(inserted).toHaveLength(1);
+      stored = updateCalls[updateCalls.length - 1].set.detail as Record<string, unknown>;
+      expect(stored.consecutiveDeferrals).toBe(n);
+    }
+    expect(typeof stored!.lastSeenAt).toBe('string');
+  });
+
+  it('looks up the newest row for (task, gate) without filtering by outcome', async () => {
+    latestRow = undefined;
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.PR_LANDING, surface: 's', outcome: 'deferred', reason: 'r', taskId: TASK,
+    });
+    const q = renderWhere();
+    expect(q.sql).toContain('"gate"');
+    expect(q.sql).not.toContain('"outcome"');
+    expect(q.params).toContain(GATE_SLUGS.PR_LANDING);
+  });
+
+  it('deferred -> stranded -> deferred records 3 rows (a flip back is a new transition)', async () => {
+    // Stateful driver: after each write, the "newest row" the fake DB hands
+    // back is whatever the writer last inserted or updated.
+    const base = { gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL, surface: 's', reason: 'R', taskId: TASK };
+    const seq = ['deferred', 'stranded', 'deferred', 'deferred'] as const;
+    for (const outcome of seq) {
+      const beforeUpdates = updateCalls.length;
+      await recordOrCoalesceDeferral({ ...base, outcome });
+      if (updateCalls.length > beforeUpdates) {
+        latestRow = { ...latestRow!, detail: updateCalls[updateCalls.length - 1].set.detail as Record<string, unknown> };
+      } else {
+        const row = inserted[inserted.length - 1];
+        latestRow = { id: `row-${inserted.length}`, reason: row.reason, outcome: row.outcome, detail: row.detail };
+      }
+    }
+    expect(inserted.map((r) => r.outcome)).toEqual(['deferred', 'stranded', 'deferred']);
+    // The fourth write is a repeat of the third row and coalesces into it.
+    expect(updateCalls).toHaveLength(1);
+    expect((updateCalls[0].set.detail as Record<string, unknown>).consecutiveDeferrals).toBe(2);
+  });
+
+  it('a changed outcome gives a new row', async () => {
+    latestRow = { id: 'row-existing', reason: 'r', outcome: 'deferred', detail: { consecutiveDeferrals: 3 } };
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.PR_LANDING, surface: 's', outcome: 'rejected', reason: 'r', taskId: TASK,
+    });
+    expect(inserted).toHaveLength(1);
+    expect(updateCalls).toHaveLength(0);
+  });
+
   it('inserts a fresh row at consecutiveDeferrals=1 when there is no prior row', async () => {
     latestRow = undefined;
     await recordOrCoalesceDeferral({

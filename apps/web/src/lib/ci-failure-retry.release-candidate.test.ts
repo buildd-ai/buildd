@@ -112,6 +112,7 @@ mock.module('@/lib/gate-ledger', () => ({
   gateFrictionSignature: () => 'sig',
   gateCallerOrigin: () => 'system',
   fireGateEvent: (e: any) => { gateEvents.push(e); return 'gate-id'; },
+  fireCoalescedGateEvent: (e: any) => { gateEvents.push(e); },
   fireDeferralEvent: () => {},
   fireRepeatGateEvent: () => {},
   fireGateEventForWorkspaceRef: () => {},
