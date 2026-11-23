@@ -13,7 +13,7 @@ import { keptDirForClone, seedCloneFromKept } from './container-reset';
 export { isolatedWorkspacePath };
 
 /** https://, git@, file:/// and absolute local paths (POSIX or Windows drive), with no shell metacharacters. */
-const CLONE_URL_RE = /^(https?:\/\/|git@|file:\/\/\/|\/[\w./-]+|[A-Za-z]:[\\/][\w.\\/-]*)[\w.@:/-]*$/;
+export const CLONE_URL_RE = /^(https?:\/\/|git@|file:\/\/\/|\/[\w./-]+|[A-Za-z]:[\\/][\w.\\/-]*)[\w.@:/-]*$/;
 
 /**
  * Clone a repo into the per-workspace isolation directory if the path does not
@@ -128,6 +128,12 @@ export interface WorkspaceResolver {
    * the claim is found instead of cloned a second time.
    */
   resolveAsync?(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null, opts?: { maxAgeMs?: number }): Promise<string | null>;
+  /**
+   * A repo workspace's existing local clone, found as a claim finds it (override,
+   * remote, then the name fallbacks), after a scan no older than the TTL. Never
+   * clones, creates a folder, or takes the isolated clone: null on a miss.
+   */
+  resolveExisting?(workspace: ResolveWorkspace): Promise<string | null>;
   getProjectRoots(): string[];
 }
 
@@ -364,8 +370,8 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
   const attemptResolve = (
     workspace: ResolveWorkspace,
     taskContext?: Record<string, unknown> | null,
-    /** false: stop before auto-clone (a miss returns null). */
-    opts: { autoClone?: boolean } = {},
+    /** autoClone false: stop before auto-clone (a miss returns null). isolation false: skip the isolated clone. */
+    opts: { autoClone?: boolean; isolation?: boolean } = {},
   ): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
     const attempts: ResolveDebugInfo['attemptedPaths'] = [];
 
@@ -377,7 +383,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
       : null;
 
     // Tier 3B: per-workspace isolated clone takes priority when isolation is enabled.
-    if (isolationRoot && workspace.id && workspace.repo) {
+    if (opts.isolation !== false && isolationRoot && workspace.id && workspace.repo) {
       const isolatedPath = isolatedWorkspacePath(workspace.id, isolationRoot);
       const alreadyCloned = existsSync(join(isolatedPath, '.git'));
       attempts.push({ path: isolatedPath, exists: alreadyCloned, method: 'isolated' });
@@ -649,6 +655,12 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
         }
       }
       return resolver.resolve(workspace, taskContext);
+    },
+
+    async resolveExisting(workspace) {
+      if (!workspace.repo) return null;
+      try { await scanAsync(REPO_SCAN_TTL_MS); } catch { /* the snapshot as it is */ }
+      return attemptResolve(workspace, null, { autoClone: false, isolation: false }).path;
     },
 
     getProjectRoots() {

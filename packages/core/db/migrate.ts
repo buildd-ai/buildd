@@ -1,4 +1,5 @@
 import { drizzle } from 'drizzle-orm/neon-http';
+import { withRawTextTypes } from './neon-raw-text';
 import { neon } from '@neondatabase/serverless';
 import { sql, type SQL } from 'drizzle-orm';
 import { hostname } from 'os';
@@ -152,7 +153,7 @@ async function main() {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const neonSql = neon(config.databaseUrl);
+      const neonSql = withRawTextTypes(neon(config.databaseUrl));
       // Object form: drizzle v1 reads a positional client as a config object
       // and silently builds its own client instead of using this one.
       const db = drizzle({ client: neonSql });

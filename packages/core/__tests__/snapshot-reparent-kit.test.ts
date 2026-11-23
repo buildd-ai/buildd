@@ -103,7 +103,16 @@ describe('a re-parented snapshot is what the pinned drizzle-kit would have gener
     generate('--name=mission_m_by_kit');
     const byKit = readSnap(folders().find((f) => f.endsWith('_mission_m_by_kit'))!);
     expect(byKit.prevIds).toEqual([trunk.snapshot.id]);
-    expect(new Set(byKit.ddl.map(entityKey))).toEqual(new Set(moved!.snapshot.ddl.map(entityKey)));
+    if (byKit.type === 'diff') {
+      // Format 10 (rc.6+): a diff snapshot holds only its own migration's changes,
+      // so the kit's regeneration on trunk's leaf is the mission's snapshot as it was.
+      expect(moved!.snapshot.type).toBe('diff');
+      expect(moved!.snapshot.deltas).toEqual(byKit.deltas!);
+      expect(moved!.snapshot.footprints).toEqual(byKit.footprints!);
+      expect(serializeSnapshot(moved!.snapshot)).toBe(JSON.stringify({ ...byKit, id: moved!.snapshot.id }, null, 2));
+    } else {
+      expect(new Set(byKit.ddl!.map(entityKey))).toEqual(new Set(moved!.snapshot.ddl!.map(entityKey)));
+    }
     expect(readFileSync(join(drizzle(), folders().find((f) => f.endsWith('_mission_m_by_kit'))!, 'migration.sql'), 'utf8')).toBe(missionSql);
   }, 180_000);
 });

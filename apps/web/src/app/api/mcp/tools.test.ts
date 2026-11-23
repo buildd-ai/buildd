@@ -431,6 +431,12 @@ describe('surface choice and instructions', () => {
     expect(mcpServerInstructions('admin')).toBe(mcpServerInstructions('admin', 'groups'));
   });
 
+  it('points T3 sessions at the delegate_task rule in the consumer skill', () => {
+    const t = mcpServerInstructions('worker', 'groups');
+    expect(t).toContain('delegate_task');
+    expect(t).toContain('Delegating work a person should watch');
+  });
+
   it('groups instructions name the reachable group tools and help', () => {
     const t = mcpServerInstructions('trigger', 'groups');
     expect(t).toContain('buildd_<group>');

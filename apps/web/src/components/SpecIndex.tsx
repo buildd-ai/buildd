@@ -10,6 +10,7 @@ import {
   type ImportedGroup, type IndexArea, type IndexRow, type Mix, type PossibleArea, type PossibleGroup,
   type SpecIndexInput, type SpecIndexOptions, type SpecMixState, type SpecSuggestion,
 } from '@/lib/specs/index-view';
+import { LIST_FILTERS, listHref, type ListFilter, type ListQuery } from '@/lib/specs/list-query';
 import { withPasskey } from '@/lib/passkeys/client';
 
 /** Solid fills for a status mix (R-21): state hues, never orange, always said in words beside them. */
@@ -199,6 +200,7 @@ function Row({ row, ctx, unfiled = false }: { row: IndexRow; ctx: RowCtx; unfile
           {row.failing ? <span className="text-meta text-status-error [overflow-wrap:anywhere]" data-testid="spec-index-row-failing">Failing: {row.failing}</span> : null}
           {row.imported ? <span className="text-meta text-status-info" data-testid="spec-index-row-imported">Imported, awaiting confirmation</span> : null}
           {row.waiting ? <span className="text-meta text-status-warning" data-testid="spec-index-waiting">Revision {row.waiting} waiting for approval</span> : null}
+          {row.awaiting && !row.waiting ? <span className="text-meta text-status-warning" data-testid="spec-index-waiting">Waiting for your approval</span> : null}
         </span>
       </Link>
       <FiledBy row={row} actions={ctx.actions} canAct={ctx.canAct} />
@@ -209,6 +211,54 @@ function Row({ row, ctx, unfiled = false }: { row: IndexRow; ctx: RowCtx; unfile
         </ul>
       ) : null}
     </li>
+  );
+}
+
+const FRAME = 'border border-border-default';
+const FILTER_WORDS: Record<ListFilter, string> = { waiting: 'Waiting on you', draft: 'Draft', approved: 'Approved', retired: 'Retired' };
+
+/** Search, order and status chips. All of it is the URL: a form and links, so a view can be shared and reloaded. */
+function ListControls({ query, path, shown, total }: { query: ListQuery; path: string; shown: number; total: number }) {
+  const toggled = (f: ListFilter): ListFilter[] => (query.filters.includes(f) ? query.filters.filter((x) => x !== f) : [...query.filters, f]);
+  const pill = [
+    'inline-flex min-h-11 items-center text-meta md:min-h-8',
+    'rounded-[var(--radius-cell)] px-3',
+    FRAME,
+  ].join(' ');
+  const on = 'border-text-primary bg-surface-2 font-semibold text-text-primary';
+  const sortOn = 'font-semibold text-text-primary';
+  const sortOff = 'underline hover:text-text-primary';
+  const off = 'border-border-default text-text-secondary hover:bg-surface-2';
+  return (
+    <div className="flex flex-col gap-2" data-testid="spec-list-controls">
+      <form method="get" action={path} role="search" className="flex gap-2">
+        <input type="hidden" name="sort" value={query.sort} disabled={query.sort === 'recent'} />
+        <input type="hidden" name="f" value={query.filters.join(',')} disabled={!query.filters.length} />
+        <input
+          type="search" name="q" defaultValue={query.q} maxLength={200} aria-label="Search specs by title or text" placeholder="Title or text"
+          className={"min-h-11 min-w-0 flex-1 bg-surface-1 text-body text-text-primary md:min-h-9 rounded-[var(--radius-cell)] px-3 " + FRAME}
+          data-testid="spec-list-search"
+        />
+        <button type="submit" className="btn h-11 md:h-9">Search</button>
+      </form>
+      <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Show">
+        {LIST_FILTERS.map((f) => (
+          <Link key={f} href={listHref(path, { ...query, filters: toggled(f) })} replace aria-pressed={query.filters.includes(f)} className={`${pill} ${query.filters.includes(f) ? on : off}`} data-testid={`spec-list-chip-${f}`}>
+            {FILTER_WORDS[f]}
+          </Link>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-text-muted" role="group" aria-label="Order">
+        <span>Order:</span>
+        {(['recent', 'tree'] as const).map((s) => (
+          <Link key={s} href={listHref(path, { ...query, sort: s })} replace aria-current={query.sort === s ? 'true' : undefined} className={`inline-flex min-h-11 items-center md:min-h-8 ${query.sort === s ? sortOn : sortOff}`} data-testid={`spec-list-sort-${s}`}>
+            {s === 'recent' ? 'Recently changed' : 'Outline'}
+          </Link>
+        ))}
+        <span data-testid="spec-list-shown">{shown === total ? specWord(total) : `${shown} of ${specWord(total)}`}{query.q ? ` matching “${query.q}”` : ''}</span>
+        {query.q || query.filters.length ? <Link href={listHref(path, { q: '', sort: query.sort, filters: [] })} className="underline hover:text-text-primary" data-testid="spec-list-clear">Clear</Link> : null}
+      </div>
+    </div>
   );
 }
 
@@ -320,7 +370,7 @@ function ImportedBatch({ group, actions, canConfirm }: { group: ImportedGroup; a
  * holding its own specs (masonry columns: one on a phone, two at md, three
  * at xl), possible areas as dashed cards holding theirs, Unfiled last.
  */
-export default function SpecIndex({ specs, options, workspaceId = null, canAct = true, canConfirm = false, actions: given }: {
+export default function SpecIndex({ specs, options, workspaceId = null, canAct = true, canConfirm = false, actions: given, query, total }: {
   specs: SpecIndexInput[];
   options?: SpecIndexOptions;
   /** For accepting a taxonomy proposal's area (organize is per workspace). */
@@ -330,6 +380,10 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
   /** The reader approves specs here (approve_specs): may confirm imports, and sees what waits for them. */
   canConfirm?: boolean;
   actions?: Partial<IndexActions>;
+  /** What the URL asked for. Given, the list shows search, chips and order; "recent" is one flat list, "tree" the outline. */
+  query?: ListQuery;
+  /** The workspace's specs before the query, for the count. */
+  total?: number;
 }) {
   const view = useMemo(() => specIndexView(specs, options), [specs, options]);
   const imported = useMemo(() => importedByArea(specs), [specs]);
@@ -337,6 +391,18 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
   const ctx: RowCtx = { actions, canAct };
   const [focus, setFocus] = useState<string | null>(null);
 
+  const path = workspaceId ? `/app/workspaces/${workspaceId}/specs` : '';
+  const controls = query && workspaceId ? <ListControls query={query} path={path} shown={specs.length} total={total ?? specs.length} /> : null;
+  const filtered = !!query && !!(query.q || query.filters.length);
+
+  if (specs.length === 0 && filtered) {
+    return (
+      <div className="flex flex-col gap-4" data-testid="spec-index">
+        {controls}
+        <Lede><span data-testid="spec-list-no-match">No specs match. Clear the search or a chip to see more.</span></Lede>
+      </div>
+    );
+  }
   if (specs.length === 0) {
     return (
       <Lede>
@@ -351,8 +417,21 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
     ? ` ${view.possible.length === 1 ? 'One group is suggested' : `${view.possible.length} groups are suggested`} below.` : '';
   const states = MIX_STATES.filter((st) => view.areas.some((a) => a.mix[st] > 0) || [...view.rowsById.values()].some((r) => r.state === st));
 
+  if (query?.sort === 'recent') {
+    const flat = specs.map((s) => ({ ...view.rowsById.get(s.id)!, children: [] as IndexRow[] }));
+    return (
+      <div className="flex flex-col gap-4" data-testid="spec-index">
+        {controls}
+        <Card padding="sm" data-testid="spec-index-recent">
+          <ul className="flex flex-col">{flat.map((r) => <Row key={r.id} row={r} ctx={ctx} />)}</ul>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-5" data-testid="spec-index">
+      {controls}
       <div className="flex flex-col gap-1.5">
         <p className="text-body text-text-secondary" data-testid="spec-index-line">
           {view.line.text}

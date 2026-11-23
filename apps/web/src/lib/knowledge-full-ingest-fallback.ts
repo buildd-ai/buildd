@@ -517,8 +517,14 @@ export async function defaultFallbackDeps(): Promise<FallbackDeps> {
     store: drizzleFallbackStore,
     github: githubApi,
     installationIdForRepo,
-    ingestBatch: (workspaceId, files) => ingestFileBatch(workspaceId, files),
-    sweep: sweepUnrefreshedFileChunks,
+    ingestBatch: async (workspaceId, files) =>
+      ingestFileBatch(workspaceId, files, [], {
+        codeIngest: await ingestSwitch.isKnowledgeCodeIngestEnabled(workspaceId),
+      }),
+    sweep: async (workspaceId, since) =>
+      sweepUnrefreshedFileChunks(workspaceId, since, {
+        codeIngest: await ingestSwitch.isKnowledgeCodeIngestEnabled(workspaceId),
+      }),
     ingestDisabledAmong: ingestSwitch.knowledgeIngestDisabledAmong,
     skipDisabled: job => ingestSwitch.closeIngestJobAsSkipped(job, 'fallback'),
   };

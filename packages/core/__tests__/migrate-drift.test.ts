@@ -18,6 +18,7 @@ import {
   type MigrationSource,
   type SnapshotMetaV1,
 } from '../db/migrate-drift';
+import { reconstructSchemaDdl } from '../db/snapshot-reconstruct';
 import { predictedFolderName, loadLegacyMap, LEGACY_MIGRATIONS_PATH, type LegacyMigration } from '../db/legacy-migrations';
 import { readMigrationTree } from '../db/migrate-tree';
 
@@ -235,15 +236,14 @@ describe('real snapshot coverage', () => {
    * a canary: a new migration written in a form the parser misses (a bare
    * multi-CREATE-TABLE file, a rename this does not follow) shows up here first.
    */
-  it('traces every snapshot object to a creating migration', () => {
+  it('traces every snapshot object to a creating migration', async () => {
     const sources = repoSources();
 
-    // The tip is the newest folder's v8 snapshot.
-    const tipFolder = readMigrationTree(REPO_DRIZZLE).at(-1)!.name;
-    const snapshotFile = `${tipFolder}/snapshot.json`;
-    const expectedFromSnapshot = expectedColumnsFromSnapshot(
-      JSON.parse(readFileSync(join(REPO_DRIZZLE, snapshotFile), 'utf8')),
-    );
+    // Format 10 snapshots are deltas over one base snapshot: drizzle-kit replays
+    // them, per leaf, and the schema is the union of the leaves.
+    const { snapshot, leaves } = await reconstructSchemaDdl(REPO_DRIZZLE);
+    const snapshotFile = leaves.join(' + ');
+    const expectedFromSnapshot = expectedColumnsFromSnapshot(snapshot);
 
     const result = classifyMissingSchemaObjects({
       sources,

@@ -63,6 +63,8 @@ const mockAccountWorkspacesFindFirst = mock(async (opts: any) => {
 
 // The worker a `?worker=` lookup finds; null unless a test sets one.
 let workerRow: any = null;
+// Workspaces the `?repo=` resolver sees (id, name, repo).
+let repoRows: any[] = [];
 
 const mockAuthenticateApiKey = mock(async () => ({ id: ACCOUNT_ID, level: 'worker', teamId: TEAM_A, authType: 'api' } as any));
 const mockHandleBuilddAction = mock(async (..._args: any[]) => ({ content: [{ type: 'text', text: '{}' }] }));
@@ -91,7 +93,7 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mock(async () => null) },
     },
     select: mock(() => ({
-      from: mock(() => ({ where: mock(() => ({ limit: mock(async () => []) })) })),
+      from: mock(() => ({ where: mock(() => Object.assign(Promise.resolve(repoRows), { limit: mock(async () => []) })) })),
     })),
   },
 }));
@@ -166,6 +168,41 @@ function recallRequest(query: string) {
     }),
   });
 }
+
+describe('/api/mcp ?repo= scope', () => {
+  beforeEach(() => {
+    mockHandleRecallAction.mockClear();
+    repoRows = [];
+  });
+
+  it('refuses an unresolvable ?repo= at connect instead of continuing unscoped', async () => {
+    const res = await POST(recallRequest('?repo=acme/missing'));
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain('?workspace=');
+    expect(mockHandleRecallAction).not.toHaveBeenCalled();
+  });
+
+  it('refuses an ambiguous bare name and lists owner/repo only', async () => {
+    repoRows = [
+      { id: OWN_WS, name: 'one', repo: 'https://github.com/acme/app' },
+      { id: SIBLING_WS, name: 'two', repo: 'https://github.com/beta/app' },
+    ];
+    const res = await POST(recallRequest('?repo=app'));
+    expect(res.status).toBe(403);
+    const body = await res.text();
+    expect(body).toContain('acme/app');
+    expect(body).not.toContain(OWN_WS);
+  });
+
+  it('binds the workspace from owner/repo so recall works for an oauth account', async () => {
+    mockAuthenticateApiKey.mockImplementationOnce(async () => ({ id: ACCOUNT_ID, level: 'worker', teamId: TEAM_A, authType: 'oauth' } as any));
+    repoRows = [{ id: OWN_WS, name: 'own', repo: 'https://github.com/acme/app' }];
+    const res = await POST(recallRequest('?repo=acme/app'));
+    expect(res.status).toBe(200);
+    const ctx = (mockHandleRecallAction.mock.calls[0] as any[])[2];
+    expect(ctx.workspaceId).toBe(OWN_WS);
+  });
+});
 
 describe('/api/mcp ?workspace= scope', () => {
   beforeEach(() => {

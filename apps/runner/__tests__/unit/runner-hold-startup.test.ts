@@ -204,6 +204,40 @@ describe('a runner that starts on hold', () => {
     expect(hold).toBeLessThan(firstManager);
   });
 
+  describe('idle-job polling gate', () => {
+    function polledFor(opts: { active: number; max?: number; singleTask?: boolean; ingestRunning?: boolean }): string[] {
+      const m = new WorkerManager(makeConfig({ pusherKey: undefined, pusherCluster: undefined, maxConcurrent: opts.max ?? 3, singleTask: opts.singleTask ?? false } as any));
+      const polled: string[] = [];
+      (m as any).knowledgeIngestPoller = { isRunning: !!opts.ingestRunning, poll: async () => { polled.push('ingest'); } };
+      (m as any).scoutHostPoller = { poll: async () => { polled.push('scout'); } };
+      (m as any).modelProbePoller = { poll: async () => { polled.push('probe'); } };
+      (m as any).pollIdleJobs(opts.active);
+      return polled.sort();
+    }
+
+    test('a busy runner with a free slot polls full ingest only', () => {
+      initRunnerHold(null);
+      expect(polledFor({ active: 1 })).toEqual(['ingest']);
+    });
+    test('a full runner does not poll', () => {
+      initRunnerHold(null);
+      expect(polledFor({ active: 3 })).toEqual([]);
+    });
+    test('a running ingest counts against capacity', () => {
+      initRunnerHold(null);
+      expect(polledFor({ active: 2, ingestRunning: true })).toEqual([]);
+    });
+    test('singleTask blocks', () => {
+      initRunnerHold(null);
+      expect(polledFor({ active: 0, singleTask: true })).toEqual([]);
+    });
+    test('a person hold blocks a busy runner too', () => {
+      initRunnerHold({ io: memoryHold({ since: new Date().toISOString(), until: null }), logger: quiet });
+      expect(polledFor({ active: 1 })).toEqual([]);
+      initRunnerHold(null);
+    });
+  });
+
   test('idle jobs (knowledge ingest, Scout, model probe) do not start while held', async () => {
     initRunnerHold({ io: memoryHold({ since: new Date().toISOString(), until: null }), logger: quiet });
     manager = new WorkerManager(makeConfig({ pusherKey: undefined, pusherCluster: undefined } as any));

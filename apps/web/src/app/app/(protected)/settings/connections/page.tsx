@@ -3,6 +3,8 @@ import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import ConnectionsSection from './ConnectionsSection';
 import RunnerKeysSection from './RunnerKeysSection';
+import T3CodeSection from './T3CodeSection';
+import { loadT3Runners } from '../_lib/t3-runners';
 import { listForeignRunners, listRunnerKeys } from '@/lib/runner-picks';
 
 export const dynamic = 'force-dynamic';
@@ -26,10 +28,12 @@ export default async function ConnectionsSettingsPage() {
     listRunnerKeys(user.id),
     listForeignRunners(user.id),
   ]);
+  const t3Runners = await loadT3Runners(runnerKeys.map((k) => k.id)).catch(() => []);
   return (
     <SettingsPage title="Apps signed in as you" description="Apps you signed in to buildd with.">
       <ConnectionsSection initial={{ connections, legacy, teams: consentTeams }} />
       <RunnerKeysSection keys={runnerKeys} foreign={foreignRunners} />
+      <T3CodeSection runners={t3Runners} />
     </SettingsPage>
   );
 }

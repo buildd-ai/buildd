@@ -29,7 +29,7 @@ export interface ClaimCandidateInput {
   forceClaim?: boolean;
   /** A verified interactive session. */
   interactiveSession?: boolean;
-  /** The account id, used only for an interactive explicit claim of its own reservation. */
+  /** The account id, used only for an explicit claim of its own reservation. */
   accountId?: string;
   /** An explicit claim of this task. */
   taskId?: string | null;
@@ -51,7 +51,10 @@ export function claimCandidateWhere(input: ClaimCandidateInput): { conditions: S
   if (!forceClaim) gates.missionHeld = missionNotHeld();
   if (!forceClaim && !explicitInteractive) gates.missionLocal = missionNotLocal();
   gates.taskHeld = taskNotHeld();
-  gates.taskReserved = taskNotReserved(explicitInteractive ? input.accountId : undefined);
+  // CG-7: the reserving account's own explicit claim of the task passes, from a
+  // session or from the runner that filed it reserved (the ACP bridge). A
+  // polling claim never does, the reserver included.
+  gates.taskReserved = taskNotReserved(taskId ? input.accountId : undefined);
   if (!forceClaim) gates.subject = subjectLivenessCondition();
   if (!forceClaim) gates.deps = depsGate();
   if (!forceClaim) gates.workspaceExecutor = workspaceExecutorGate(executor);

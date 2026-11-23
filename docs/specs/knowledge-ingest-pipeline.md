@@ -7,8 +7,8 @@ summary: Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row th
 domain: knowledge
 surfaces: [apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts, apps/web/src/lib/knowledge-ingest.ts, apps/web/src/lib/knowledge-full-ingest-fallback.ts, apps/web/src/lib/knowledge-ingest-switch.ts]
 related: [voyage-spend-guard, knowledge-store-retrieval, webhook-dataflow, external-cron-triggers, living-specs]
-keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash, knowledge_ingest, knowledgeIngest, ingest_disabled, purgeKnowledge]
-verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts, apps/web/src/lib/knowledge-full-ingest-fallback.test.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.test.ts, apps/web/src/lib/knowledge-ingest-stalls.test.ts, apps/web/src/lib/knowledge-ingest-switch.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/route.test.ts, apps/web/src/app/api/workspaces/route.test.ts, apps/web/src/app/api/workspaces/[id]/route.test.ts, packages/core/__tests__/voyage-embedder-batching.test.ts]
+keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash, knowledge_ingest, knowledgeIngest, ingest_disabled, purgeKnowledge, knowledge_code_ingest, knowledgeCodeIngest, codeIngest]
+verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts, apps/web/src/lib/knowledge-full-ingest-fallback.test.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.test.ts, apps/web/src/lib/knowledge-ingest-stalls.test.ts, apps/web/src/lib/knowledge-ingest-switch.test.ts, apps/web/src/lib/knowledge-ingest-batch.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/route.test.ts, apps/web/src/app/api/workspaces/route.test.ts, apps/web/src/app/api/workspaces/[id]/route.test.ts, packages/core/__tests__/voyage-embedder-batching.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -217,6 +217,25 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   namespaces (`purgeWorkspaceRepoKnowledge`) and returns `purgedChunks`. Both
   fields are workspace-admin settings. Switching back on queues a repo-link
   full ingest of the linked repo.
+- **A workspace chooses whether its code corpus is embedded, apart from the
+  rest.** `workspaces.knowledge_code_ingest` (boolean, column default `true`,
+  so every existing workspace keeps today's behaviour; a workspace created
+  through `POST /api/workspaces` gets `false` unless the body says
+  `knowledgeCodeIngest: true`). It gates the `code` corpus alone, under the
+  master switch (`knowledgeIngest = false` still stops everything). With it
+  off: no code file is fetched, chunked or embedded by any executor (diff job,
+  `/files` batch, serverless fallback, runner HTTP and local modes — the claim
+  route hands the runner `codeIngest: false`, which also skips the SCIP code
+  graph); docs, `spec` and `pr`-diff content ingest as usual; the first-index
+  backfill is not enqueued (it could only produce a code index); and nothing is
+  deleted — code deletions in a diff or batch are ignored, and the completion
+  sweep and the local-mode orphan prune leave `{ws}:code` alone. **No
+  lexical-only code index is kept**: lexical search reads the same chunk rows,
+  so keeping paths searchable would mean storing code chunks; agents get file
+  paths from the checkout. Purge stays explicit (`purgeKnowledge`).
+  `PATCH /api/workspaces/[id]` sets it (workspace-admin, boolean only);
+  turning it back on queues a repo-link full ingest. Re-embedding on change of
+  embedding provider is out of scope.
 - **`data_class` is independent of the switch.** A `sensitive` workspace with
   ingest on ingests its repo exactly as a `standard` one does; the switch
   module never reads `data_class`.
@@ -322,6 +341,23 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
 - AC-29: GIVEN `data_class = 'sensitive'` and ingest on WHEN a diff job runs
   THEN it ingests and embeds exactly as before.
 
+- AC-30: GIVEN a workspace with `knowledge_code_ingest = false` WHEN a diff job
+  runs for a PR touching a code file and a docs file THEN the code file is not
+  fetched from GitHub, no `{ws}:code` chunk is upserted or deleted, the docs
+  file is ingested, and no backfill job is enqueued.
+- AC-31: GIVEN the same workspace WHEN a runner claims its full job THEN the
+  job carries `codeIngest: false`, the runner reads and pushes no code file
+  (and runs no SCIP), and a batch that still contains code is skipped for code
+  at `/files`.
+- AC-32: GIVEN the same workspace WHEN a full job completes with `sweep: true`
+  THEN `{ws}:code` is not part of the prune.
+- AC-33: GIVEN `POST /api/workspaces` without `knowledgeCodeIngest` THEN the
+  row is stored with `knowledge_code_ingest = false`; GIVEN `PATCH
+  /api/workspaces/[id]` with a boolean `knowledgeCodeIngest` THEN it is stored
+  and nothing is purged (off), or a full ingest is queued (back on).
+- AC-34 (failure path): GIVEN a non-boolean `knowledgeCodeIngest` WHEN sent to
+  either route THEN it is refused with 400 and nothing is written.
+
 ## Code surface
 
 - Enqueue + list: `apps/web/src/app/api/knowledge/ingest-jobs/route.ts` — level
@@ -393,7 +429,7 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
 
 ## Other indexers (audit)
 
-The switch gates repo ingest only: the `code`, `docs` and `pr`-diff content
+The switches gate repo ingest only: the `code`, `docs` and `pr`-diff content
 that flows through `knowledge_ingest_jobs`. These indexers embed into the
 knowledge store too, are **not** gated by it, and keep running for a workspace
 with the switch off:

@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (89)
+## Active (90)
 
 ### auth (9)
 
@@ -97,8 +97,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-10-24
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (14)
+### runners (15)
 
+- [ACP Bridge](./acp-bridge.md) · @max — verified 2026-11-23
+  The `buildd acp` bridge MUST present this machine's runner workers as ACP threads, route each reply by worker state, file a new thread's task reserved for this runner, and say plainly when it cannot.
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-20
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST otherwise start a new attempt of the same task (never a new task) for a recorded, owner-visible reason.
 - [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-07

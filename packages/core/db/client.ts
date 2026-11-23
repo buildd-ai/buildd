@@ -8,6 +8,7 @@ import { capturePostgresErrorOnSpan } from './error-span';
 import { wrapNeonQuery } from './query-wrapper';
 import { installNeonQueryLabels } from './query-label';
 import { assertTestDatabaseSafe } from './test-guard';
+import { withRawTextTypes } from './neon-raw-text';
 
 // Lazy initialization to avoid errors during build
 let _sql: NeonQueryFunction<false, false> | null = null;
@@ -25,7 +26,8 @@ function getSql() {
     applyNeonLocalOverride({ ...process.env, DATABASE_URL: config.databaseUrl });
     // Name the loader and statement on every query's fetch span (query-label.ts).
     installNeonQueryLabels();
-    const baseSql = neon(config.databaseUrl);
+    // Raw rows keep timestamps/dates/intervals as text, as on drizzle rc.4 (./neon-raw-text).
+    const baseSql = withRawTextTypes(neon(config.databaseUrl));
     // Capture DB errors on the active span without forcing the lazy query to
     // run early — see query-wrapper.ts for why that broke every db.batch.
     wrapNeonQuery(baseSql, capturePostgresErrorOnSpan);

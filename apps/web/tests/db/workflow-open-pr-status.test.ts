@@ -34,22 +34,25 @@ const sweep = (w: World) => publishOpenPrStatuses({
 const shown = (w: World, sha: string) => githubReader(w.installationId).statusOf!(w.repo, sha, CONTEXT);
 
 describe('the open-PR status sweep', () => {
-  test('a dependency bot\'s PR no delivery owns gets pending "Review not requested"; a second pass writes nothing', async () => {
+  // A bot's PR buildd neither owns nor was asked to review carries no status at all, even when a
+  // stray worker row makes it look known: a dependency bot reuses one branch per package, and a
+  // pending status nobody clears holds its automerge forever.
+  test('a dependency bot\'s PR no delivery owns gets no Review approval status; a second pass writes nothing', async () => {
     w = await world();
     w.gh.createBranch(w.repo, 'renovate/lib-2.x', 'dev');
     const head = w.gh.push(w.repo, 'renovate/lib-2.x', { 'package.json': '{"lib":"2"}\n' }, { message: 'chore(deps): lib 2' });
     const prNumber = w.gh.openPr(w.repo, { head: 'renovate/lib-2.x', base: 'dev', user: 'renovate[bot]' });
     await w.deliver();
 
-    const first = await sweep(w);
-    expect(first).toMatchObject({ repos: 1, checked: 1, published: 1, errors: 0, coverage: { verdict: 'covered', missing: [] } });
-    expect(await shown(w, head)).toMatchObject({ state: 'pending', description: 'Review not requested: no buildd review covers ' + head.slice(0, 7) + ' yet' });
-    expect(await githubReader(w.installationId).statusOf!(w.repo, head, 'buildd/landing')).toBeNull();
-
     const writes = () => w.gh.calls.filter((c) => c.method === 'POST' && c.path === `/repos/${w.repo}/statuses/${head}`).length;
-    const before = writes();
-    expect(await sweep(w)).toMatchObject({ published: 0, unchanged: 1, coverage: { verdict: 'covered' } });
-    expect(writes()).toBe(before);
+    const first = await sweep(w);
+    expect(first).toMatchObject({ repos: 1, checked: 1, published: 0, skipped: 1, skipReasons: { foreign: 1 }, errors: 0, coverage: { verdict: 'covered', missing: [] } });
+    expect(await shown(w, head)).toBeNull();
+    expect(await githubReader(w.installationId).statusOf!(w.repo, head, 'buildd/landing')).toBeNull();
+    expect(writes()).toBe(0);
+
+    expect(await sweep(w)).toMatchObject({ published: 0, skipped: 1 });
+    expect(writes()).toBe(0);
     expect(prNumber).toBeGreaterThan(0);
   });
 

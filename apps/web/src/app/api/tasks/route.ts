@@ -10,7 +10,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, missionNotes } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
-import { isMissionLinkable } from '@/lib/mission-link-scope';
+import { isMissionLinkable, resolveMissionId } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
 import { listCallerKey, withChangeVersion } from '@/lib/change-version';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -55,6 +55,7 @@ import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
 import { isUuid } from '@/lib/uuid';
+import { withThreadTarget } from '@/lib/task-thread-target';
 import { resolveFiledAccess, resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
 import { checkDependencyReach, dependencyViewerOf, UNREACHABLE_DEPENDENCY_ERROR } from '@/lib/task-dependency-reach';
 import { ACCESS_NEEDS_CONTEXT_KEY, FILING_TARGETS_CONTEXT_KEY, parseFilingTargets, stampTaskAccess, withTaskAccess, type TaskDelegation } from '@buildd/core/token-delegation';
@@ -77,7 +78,6 @@ import { loadRequestCeiling, previewUnderCeiling, rejectOverCeiling } from '@/li
 import { terminalAuditFields } from './audit-fields';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
-import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
@@ -595,16 +595,19 @@ export async function POST(req: NextRequest) {
       // Explicit PR reach grant for coordination tasks (person only): explicit PR numbers or workspace-wide scope.
       prReachScope: rawPrReachScope,
     } = body;
-    // A reservation is only for a verified interactive session (the one the claim
-    // route lets claim its own reserved task). Refused before anything is filed, so
-    // create_task claim:true can never leave a task parked from every claimer.
-    const reserveVerified = rawReserve === true && !!apiAccount && !apiAccount.taskScope
-      && !!verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), apiAccount.id);
+    // A task is filed reserved by the account that will claim it by id next: an
+    // interactive session (create_task claim:true) or a runner's own key (the ACP
+    // bridge files a T3 thread's task and claims it on that runner; unreserved,
+    // another runner won the gap). The claim route passes that account's explicit
+    // claim (spec claim-gate-legibility CG-7), so the filer is never parked out; a
+    // filer that never claims parks the task until the 20-minute lease lapses.
+    // Never a per-task token: a worker does not claim tasks.
+    const reserveVerified = rawReserve === true && !!apiAccount && !apiAccount.taskScope;
     if (rawReserve !== undefined && typeof rawReserve !== 'boolean') {
       return NextResponse.json({ error: 'reserve must be true or false' }, { status: 400 });
     }
     if (rawReserve === true && !reserveVerified) {
-      return NextResponse.json({ error: 'A task is only filed reserved from your own interactive session, the one claim_task would run as.' }, { status: 403 });
+      return NextResponse.json({ error: 'A task is only filed reserved by the account that claims it next: your interactive session or your runner, not a per-task token.' }, { status: 403 });
     }
     let missionId: string | undefined = requestedMissionId;
 
@@ -638,7 +641,9 @@ export async function POST(req: NextRequest) {
     // release-candidate keys (context.releaseCandidateFix, releaseCandidateAmendPr),
     // which only the CI-retry path and the amendment write.
     const requestedSpecRepair = (rawIncomingContext as Record<string, unknown> | null | undefined)?.specRepair;
-    let incomingContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context))) as typeof rawIncomingContext;
+    // context.callbackTarget is a thread id and nothing else (lib/task-thread-target.ts): sanitized here.
+    const markerFreeContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)));
+    let incomingContext = (markerFreeContext && typeof markerFreeContext === 'object' ? withThreadTarget(markerFreeContext as Record<string, unknown>) : markerFreeContext) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -847,6 +852,11 @@ export async function POST(req: NextRequest) {
     });
     if (!targetWorkspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
+    }
+    if (missionId) {
+      const resolved = await resolveMissionId(missionId, targetWorkspace.teamId);
+      if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status });
+      missionId = resolved.id;
     }
     // A mission link must stay inside the workspace's team (see isMissionLinkable).
     // Checked before any write, including the friction-dedupe append below.
