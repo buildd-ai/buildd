@@ -74,10 +74,12 @@ mock.module('@buildd/core/knowledge-store', () => ({
 }));
 
 let ingestEnabled = true;
+let codeEnabled = true;
 let skippedClosed: string[] = [];
 mock.module('@/lib/knowledge-ingest-switch', () => ({
   INGEST_DISABLED: 'ingest_disabled',
   isKnowledgeIngestEnabled: async () => ingestEnabled,
+  isKnowledgeCodeIngestEnabled: async () => codeEnabled,
   closeIngestJobAsSkipped: async (job: { id: string }) => {
     skippedClosed.push(job.id);
     return true;
@@ -112,6 +114,7 @@ describe('POST /api/knowledge/ingest-jobs/[id]/files', () => {
     redisUp = false;
     redisKeys.clear();
     ingestEnabled = true;
+    codeEnabled = true;
     skippedClosed = [];
   });
 
@@ -124,6 +127,21 @@ describe('POST /api/knowledge/ingest-jobs/[id]/files', () => {
     expect(skippedClosed).toEqual([JOB_ID]);
     // No lease renewal for a job being closed.
     expect(updateCalls.some(c => c.set.leaseExpiresAt)).toBe(false);
+  });
+
+  it('code ingest off: code files and code deletions are skipped, docs still ingest, nothing is deleted', async () => {
+    codeEnabled = false;
+    const res = await POST(
+      createRequest({
+        files: [{ path: 'src/a.ts', content: 'export const a = 1;' }, { path: 'docs/guide.md', content: '# Guide' }],
+        deletions: ['src/old.ts'],
+      }),
+      params(),
+    );
+    expect(res.status).toBe(200);
+    expect(upsertCalls.some(c => c.namespace === 'ws-1:code')).toBe(false);
+    expect(upsertCalls.some(c => c.namespace === 'ws-1:docs')).toBe(true);
+    expect(deleteBySourceCalls.some(c => c.namespace.endsWith(':code'))).toBe(false);
   });
 
   it('C12: renews the lease on every accepted batch (heartbeat)', async () => {
