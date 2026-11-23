@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 assertions:
   - id: "early-release-mode-resolver"
     type: "symbol"
