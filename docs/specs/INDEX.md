@@ -99,7 +99,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### runners (15)
 
-- [ACP Bridge](./acp-bridge.md) · @max — verified 2026-11-22
+- [ACP Bridge](./acp-bridge.md) · @max — verified 2026-11-23
   The `buildd acp` bridge MUST present this machine's runner workers as ACP threads, route each reply by worker state, file a new thread's task reserved for this runner, and say plainly when it cannot.
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-20
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST otherwise start a new attempt of the same task (never a new task) for a recorded, owner-visible reason.

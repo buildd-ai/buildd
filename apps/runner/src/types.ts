@@ -439,6 +439,10 @@ export interface LocalWorker {
    * task_outcomes.actual_model reflects what really ran.
    */
   sessionModel?: string;
+  /** Role's display name, known at claim; reported to ACP clients. */
+  roleName?: string;
+  /** Model the claim resolved for this run, known at claim (before sessionModel is set). */
+  claimedModel?: string;
   /** Per-attempt model observation state (model-observation.ts): tool failures, VRAM peak. */
   observation?: import('./model-observation').WorkerObservationState;
   /** Model id the SDK reported on the init message, when it provides one. */

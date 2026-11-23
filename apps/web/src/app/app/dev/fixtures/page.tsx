@@ -30,6 +30,7 @@ import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import ConnectionsFixture from './ConnectionsFixture';
 import RunnerKeysFixture from './RunnerKeysFixture';
+import ConnectRepoFixture from './ConnectRepoFixture';
 import OperatorAccessFixture from './OperatorAccessFixture';
 import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
@@ -109,6 +110,7 @@ import {
     SPEC_PAGE_FIXTURE_STATE,
     SPEC_REVIEW_ALL_FIXTURE_STATE,
     RUNNER_KEYS_FIXTURE_STATE,
+    CONNECT_REPO_FIXTURE_STATE,
     MISSION_DELIVERIES_FIXTURE_STATE,
     DESIGN_PREVIEW_FIXTURE_STATE,
     STAGE_METER_FIXTURE_STATE,
@@ -332,6 +334,9 @@ export default function DevFixturesPage() {
     }
     if (state === RUNNER_KEYS_FIXTURE_STATE) {
         return <RunnerKeysFixture />;
+    }
+    if (state === CONNECT_REPO_FIXTURE_STATE) {
+        return <ConnectRepoFixture />;
     }
     if (state === INTERACTIVE_SESSIONS_FIXTURE_STATE) {
         return <InteractiveSessionsFixture />;

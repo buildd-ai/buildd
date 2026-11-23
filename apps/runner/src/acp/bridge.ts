@@ -15,6 +15,7 @@
  * the right place (answer / message / follow-up, translate.ts replyRoute).
  */
 import type { PublicWorker } from '../public-worker';
+import { DEFAULT_SERVER } from '../server-url';
 import {
   BRIDGE_COMMANDS,
   MessageCursor,
@@ -48,6 +49,8 @@ export interface RunnerPort {
   createTask(input:   { workspaceId: string; title: string; description: string; reserve?: boolean; context?: Record<string, unknown> } & BuilddTaskMeta): Promise<{ status: number; body: unknown }>;
   /** Claim a task onto this runner as a person would (`c` in top). */
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
+  /** The buildd server this runner talks to and its key's account id (`GET /api/config`), for links. */
+  runnerInfo?(): Promise<{ server: string; accountId: string | null } | null>;
 }
 
 /** `_meta.buildd` on `session/new` or the first `session/prompt`: where the thread's task is filed. */
@@ -59,7 +62,10 @@ export interface BuilddTaskMeta {
 }
 
 function taskMetaFrom(params: unknown): BuilddTaskMeta {
-  const raw = (params as { _meta?: { buildd?: Record<string, unknown> } } | null)?._meta?.buildd;
+  return taskMetaFromRaw((params as { _meta?: { buildd?: Record<string, unknown> } } | null)?._meta?.buildd);
+}
+
+function taskMetaFromRaw(raw: Record<string, unknown> | undefined): BuilddTaskMeta {
   if (!raw || typeof raw !== 'object') return {};
   const out: BuilddTaskMeta = {};
   if (typeof raw.missionId === 'string' && raw.missionId) out.missionId = raw.missionId;
@@ -105,6 +111,17 @@ export interface BridgeDeps {
    * open (a Windows client talking to a runner in WSL).
    */
   projectNamesOf(cwd: string): Promise<string[]>;
+  /**
+   * Whether the client's project folder exists on this machine's filesystem.
+   * Absent means "assume it does" (nothing changes). False marks a thread
+   * remote: the client runs elsewhere (T3 over `ssh host buildd acp`), so its
+   * checkout is not the one the task works in.
+   */
+  cwdExists?(cwd: string): boolean;
+  /** The project's GitHub repo (`owner/name` from `origin`), or null when origin is not on GitHub. */
+  githubRepoOf?(cwd: string): Promise<string | null>;
+  /** This runner's display name, for a remote thread's first message. */
+  runnerName?(): string;
   version: string;
   /** How long a reply may go unanswered by the runner before the turn ends anyway. */
   settleGraceMs?: number;
@@ -126,6 +143,8 @@ interface Session {
   workerId: string | null;
   /** The client's project folder: where a first message's task goes. */
   cwd: string | null;
+  /** The client's folder is not on this machine, so its checkout never sees the task's changes. */
+  remote?: boolean;
   cursor: MessageCursor;
   /** `_meta.buildd` the client gave this thread; passed to createTask. */
   taskMeta?: BuilddTaskMeta;
@@ -153,8 +172,55 @@ const CLIENT_ENVELOPE_BLOCKS = /<(t3_code_instructions|runtime_info|pull_request
  */
 export function userTextFrom(text: string): string {
   const request = /<user_request>([\s\S]*?)<\/user_request>/.exec(text);
-  if (request) return request[1].trim();
-  return text.replace(CLIENT_ENVELOPE_BLOCKS, '').trim();
+  const body = request ? request[1].trim() : text.replace(CLIENT_ENVELOPE_BLOCKS, '').trim();
+  return dropDelegationRoleLine(body);
+}
+
+/**
+ * Lines T3 puts in front of delegated text, each the whole first line:
+ * a same-environment child thread's role line, and the relay note on a child
+ * thread started in a linked environment. A new shape is one entry here.
+ */
+const T3_LEAD_LINES = [
+  /^Act as the \S+ sub-agent for this task\.[ \t]*$/,
+  /^\[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat\.\][ \t]*$/,
+];
+
+function dropDelegationRoleLine(text: string): string {
+  let body = text;
+  for (;;) {
+    const lines = body.split('\n');
+    const first = lines[0].trim();
+    if (!T3_LEAD_LINES.some(re => re.test(first))) return body;
+    body = lines.slice(1).join('\n').trim();
+  }
+}
+
+const DIRECTIVE_LINE = /^buildd:[ \t]+(\S.*)$/;
+
+/**
+ * An optional leading `buildd: mission=<id> role=<slug> priority=<n> kind=<kind>`
+ * line, for clients (T3's delegation) that cannot send `_meta.buildd`. Parsed
+ * with the same validation as `_meta.buildd`; the line is removed from the text.
+ * A first line that is not this exact shape leaves the text untouched.
+ */
+export function directiveFrom(text: string): { text: string; meta: BuilddTaskMeta } {
+  const lines = text.split('\n');
+  const first = DIRECTIVE_LINE.exec(lines[0].trim());
+  if (!first) return { text, meta: {} };
+  const raw: Record<string, unknown> = {};
+  for (const pair of first[1].split(/\s+/)) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) return { text, meta: {} };
+    const key = pair.slice(0, eq).toLowerCase();
+    const value = pair.slice(eq + 1);
+    if (key === 'mission' || key === 'missionid') raw.missionId = value;
+    else if (key === 'role' || key === 'roleslug') raw.roleSlug = value;
+    else if (key === 'priority') raw.priority = value === '' ? NaN : Number(value);
+    else if (key === 'kind') raw.kind = value;
+    else return { text, meta: {} };
+  }
+  return { text: lines.slice(1).join('\n').trim(), meta: taskMetaFromRaw(raw) };
 }
 
 /** First non-empty line, clipped: what the dashboard and queue show for the task. */
@@ -207,7 +273,8 @@ export class AcpBridge {
 
   private newSession(params: { cwd?: string }) {
     const sessionId = `new-${crypto.randomUUID()}`;
-    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, cursor: new MessageCursor(), taskMeta: taskMetaFrom(params) });
+    const remote = !!params.cwd && this.deps.cwdExists?.(params.cwd) === false;
+    this.sessions.set(sessionId, { workerId: null, cwd: params.cwd ?? null, ...(remote ? { remote } : {}), cursor: new MessageCursor(), taskMeta: taskMetaFrom(params) });
     return { sessionId };
   }
 
@@ -298,10 +365,13 @@ export class AcpBridge {
     const sessionId = params.sessionId;
     if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
     const session = this.sessions.get(sessionId) ?? this.adopt(sessionId);
-    const text = userTextFrom((params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'));
+    let text = userTextFrom((params.prompt ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'));
 
     if (!session.workerId) {
-      session.taskMeta = { ...session.taskMeta, ...taskMetaFrom(params) };
+      const directive = directiveFrom(text);
+      text = directive.text;
+      // `_meta.buildd` wins over the in-text directive.
+      session.taskMeta = { ...directive.meta, ...session.taskMeta, ...taskMetaFrom(params) };
       if (!text || parseCommand(text)) {
         this.emit(sessionId, textUpdate(NEW_THREAD_TEXT));
         return { stopReason: 'end_turn' };
@@ -361,9 +431,7 @@ export class AcpBridge {
     }
     const matches = workspaces.filter(ws =>
       names.includes(ws.name?.toLowerCase()) || (!!ws.repo && (names.includes(ws.repo.toLowerCase()) || names.includes(ws.repo.toLowerCase().split('/').pop()!))));
-    if (matches.length === 0) {
-      return end(`No buildd workspace matches this project (${names.join(', ') || 'no name'}). Connect the repo in buildd first.`);
-    }
+    if (matches.length === 0) return end(await this.noMatchText(session.cwd));
     let ws = matches[0];
     if (matches.length > 1) {
       const pick = this.canElicit ? await this.chooseWorkspace(sessionId, matches) : null;
@@ -396,8 +464,40 @@ export class AcpBridge {
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);
     session.cursor.skip(worker.messages);
-    this.emit(sessionId, textUpdate(`Started a buildd task in ${ws.name}: “${title}”.`));
+    const started = `Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}`;
+    if (session.remote) {
+      const name = this.deps.runnerName?.().trim();
+      const where = worker.branch ? `on branch ${worker.branch} and in its PR` : 'on its branch and in its PR';
+      this.emit(sessionId, textUpdate(`${started}, on runner ${name || 'this runner'}, not this machine. Changes will be ${where}, not in your checkout.`));
+    } else {
+      this.emit(sessionId, textUpdate(`${started}.`));
+    }
     return this.follow(session, sessionId, worker, { watching: true, alreadyMoving: true });
+  }
+
+  /**
+   * A project no workspace this runner reaches is for. The usual cause is not
+   * a missing workspace but a missing pick: a person picks workspaces per
+   * runner, and one created later is not picked on its own. So the message
+   * names the repo and links the page that sorts out either
+   * (/app/connect-repo, apps/web/src/lib/connect-repo.ts). The link is built
+   * here from what the runner already knows; nothing asks the server whether
+   * some other team has a workspace for the repo.
+   */
+  private async noMatchText(cwd: string): Promise<string> {
+    const repo = await this.deps.githubRepoOf?.(cwd).catch(() => null) ?? null;
+    if (!repo) {
+      return 'buildd works on GitHub repos, and this folder has no GitHub remote (origin), so buildd has no workspace for it. '
+        + "T3's own Claude or Codex threads work in this folder without buildd.";
+    }
+    const info = await this.deps.runner.runnerInfo?.().catch(() => null) ?? null;
+    const server = (info?.server || DEFAULT_SERVER).replace(/\/+$/, '');
+    if (!info?.accountId) {
+      return `This runner does not work on ${repo} yet. In buildd, connect ${repo} and pick it for this runner: ${server}/app/settings/connections`;
+    }
+    const url = `${server}/app/connect-repo?repo=${encodeURIComponent(repo)}&runner=${encodeURIComponent(info.accountId)}`;
+    return `This runner does not work on ${repo} yet. Open this to connect ${repo} to buildd and let this runner work on it: ${url}\n`
+      + 'Then send your message again here.';
   }
 
   private async chooseWorkspace(sessionId: string, options: BuilddWorkspace[]): Promise<BuilddWorkspace | null> {
@@ -470,9 +570,11 @@ export class AcpBridge {
             if (latest.status !== 'waiting' || waitKey(latest.waitingFor) !== key) return;
             const value = res?.action === 'accept' && typeof res.content?.answer === 'string' ? res.content.answer.trim() : '';
             if (!value) { finish('end_turn'); return; }
+            // Mark it answered before posting: the form is closed now, and a re-sent
+            // copy of this wait arriving while the post is in flight must not reopen it.
+            answered = key;
             const r = await this.deps.runner.act(session.workerId!, 'answer', value);
             if (r.status >= 400) { finish('end_turn', refusal(r)); return; }
-            answered = key;
           })
           .catch(() => { if (asking === key) asking = null; finish('end_turn'); });
       };
@@ -558,6 +660,15 @@ export class AcpBridge {
   private emit(sessionId: string, update: SessionUpdate) {
     this.deps.notify(sessionId, update);
   }
+}
+
+/** ` · Builder on <model>`; role only when the model is unknown, nothing when neither is. Never a guess. */
+function runsAs(w: PublicWorker): string {
+  const role = w.roleName?.trim();
+  const model = (w.claimedModel ?? w.sessionModel)?.trim();
+  if (role && model) return ` · ${role} on ${model}`;
+  if (role) return ` · ${role}`;
+  return '';
 }
 
 function label(ws: BuilddWorkspace): string {
