@@ -10,7 +10,7 @@
  */
 import type { PublicWorker } from '../public-worker';
 import { socketClient, type SocketClient } from '../top/client';
-import type { BuilddWorkspace, RunnerPort, WorkerActionName } from './bridge';
+import type { BuilddWorkspace, RunnerPort, ThreadNote, WorkerActionName } from './bridge';
 
 const RECONNECT_MS = 1_000;
 
@@ -69,6 +69,11 @@ export function socketRunnerPort(socketPath: string, client: SocketClient = sock
     },
     claim(taskId) {
       return client.post('/api/claim', { taskId });
+    },
+    async threadEvents(threadId) {
+      const r = await client.get<{ events?: ThreadNote[] }>(`/api/tasks/thread-events?threadId=${encodeURIComponent(threadId)}`);
+      if (r.status >= 400) throw new Error(`thread events refused (${r.status})`);
+      return r.body?.events ?? [];
     },
     async runnerInfo() {
       const r = await client.get<{ builddServer?: string; accountId?: string | null }>('/api/config');

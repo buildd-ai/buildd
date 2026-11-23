@@ -52,6 +52,17 @@ export interface RunnerPort {
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
   /** The buildd server this runner talks to and its key's account id (`GET /api/config`), for links. */
   runnerInfo?(): Promise<{ server: string; accountId: string | null } | null>;
+  /** The notes owed to a thread by tasks that remember it (`GET /api/tasks/thread-events`). */
+  threadEvents?(threadId: string): Promise<ThreadNote[]>;
+}
+
+/** One event a task filed from this thread has reached; `key` is `<taskId>:<event>`. */
+export interface ThreadNote { key: string; taskId: string; event: string; text: string }
+
+/** Which notes a thread has been shown (acp/notes.ts persists it). */
+export interface ShownNotes {
+  has(threadId: string, key: string): boolean;
+  add(threadId: string, key: string): void;
 }
 
 /** `_meta.buildd` on `session/new` or the first `session/prompt`: where the thread's task is filed. */
@@ -100,6 +111,8 @@ export interface SessionLinks {
 export interface BridgeDeps {
   runner: RunnerPort;
   links: SessionLinks;
+  /** Notes already shown; without it the bridge posts no thread notes. */
+  shownNotes?: ShownNotes;
   notify(sessionId: string, update: SessionUpdate): void;
   /** Send a request to the client and await its result (ACP `elicitation/create`). */
   request?(method: string, params: unknown): Promise<any>;
@@ -362,7 +375,36 @@ export class AcpBridge {
     return sessionId.startsWith('new-') ? null : sessionId;
   }
 
+  /**
+   * Notes first: what the thread's tasks did since it was last shown (started, a question,
+   * a PR, finished, failed). T3 has no way for a local process to post a passive message
+   * into a thread, so they ride the next turn. Notes this turn already showed live are
+   * marked shown afterwards, so they are not repeated.
+   */
   private async prompt(params: { sessionId?: string; _meta?: unknown; prompt?: Array<{ type: string; text?: string }> }) {
+    const sessionId = params.sessionId;
+    if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
+    await this.flushNotes(sessionId);
+    try {
+      return await this.promptTurn(params);
+    } finally {
+      await this.flushNotes(sessionId, { quiet: true });
+    }
+  }
+
+  private async flushNotes(sessionId: string, opts: { quiet?: boolean } = {}): Promise<void> {
+    const { shownNotes } = this.deps;
+    if (!shownNotes || !this.deps.runner.threadEvents) return;
+    try {
+      for (const n of await this.deps.runner.threadEvents(sessionId)) {
+        if (shownNotes.has(sessionId, n.key)) continue;
+        shownNotes.add(sessionId, n.key);
+        if (!opts.quiet) this.emit(sessionId, textUpdate(n.text));
+      }
+    } catch { /* a note we cannot fetch now is fetched next turn */ }
+  }
+
+  private async promptTurn(params: { sessionId?: string; _meta?: unknown; prompt?: Array<{ type: string; text?: string }> }) {
     const sessionId = params.sessionId;
     if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
     const session = this.sessions.get(sessionId) ?? this.adopt(sessionId);
@@ -447,7 +489,8 @@ export class AcpBridge {
     // can take it in the gap, or the thread would follow nothing (CG-7).
     const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true,
       // Origin marker the task page reads (context.client): the client names itself.
-      context: { client: { kind: 'acp', ...(this.clientName ? { name: this.clientName } : {}) } } });
+      // callbackTarget: the thread to send notes to (a thread id, not a secret).
+      context: { client: { kind: 'acp', ...(this.clientName ? { name: this.clientName } : {}) }, callbackTarget: { kind: 't3_thread', threadId: sessionId } } });
     const task = (created.body as { task?: { id?: string } } | null)?.task;
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 

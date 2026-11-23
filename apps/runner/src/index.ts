@@ -2415,6 +2415,15 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
+    if (path === '/api/tasks/thread-events' && req.method === 'GET') {
+      const threadId = url.searchParams.get('threadId') ?? '';
+      try {
+        return Response.json({ events: await buildd!.threadEvents(threadId) }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to load thread events', events: [] }, { status: 502, headers: corsHeaders });
+      }
+    }
+
     if (path === '/api/tasks' && req.method === 'POST') {
       const body = await parseBody(req);
       try {
