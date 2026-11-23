@@ -35,8 +35,12 @@ describe('isolationFixableByPolicy (connect-repo)', () => {
     expect(isolationFixableByPolicy({ ...shared, record: record(none) })).toBe(false);
   });
 
-  it('says nothing for a lone-member team, which already resolves to trusted local, open or not', () => {
-    expect(isolationFixableByPolicy({ ...shared, teamMemberCount: 1, record: record(none, { reducedOptIn: true }) })).toBe(false);
+  it('says nothing for a lone-member team on a restricted workspace, which already resolves to trusted local', () => {
+    expect(isolationFixableByPolicy({ ...shared, accessMode: 'restricted', teamMemberCount: 1, record: record(none, { reducedOptIn: true }) })).toBe(false);
+  });
+
+  it('flags a lone-member team on an open workspace, which stays protected', () => {
+    expect(isolationFixableByPolicy({ ...shared, accessMode: 'open', teamMemberCount: 1, record: record(none, { reducedOptIn: true }) })).toBe(true);
   });
 
   it('says nothing when the runner has reported no probe', () => {
