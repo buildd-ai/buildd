@@ -160,13 +160,24 @@ export function userTextFrom(text: string): string {
   return dropDelegationRoleLine(body);
 }
 
-/** T3's delegation prefix: `Act as the <role> sub-agent for this task.` as the whole first line. */
-const DELEGATION_ROLE_LINE = /^Act as the \S+ sub-agent for this task\.[ \t]*$/;
+/**
+ * Lines T3 puts in front of delegated text, each the whole first line:
+ * a same-environment child thread's role line, and the relay note on a child
+ * thread started in a linked environment. A new shape is one entry here.
+ */
+const T3_LEAD_LINES = [
+  /^Act as the \S+ sub-agent for this task\.[ \t]*$/,
+  /^\[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat\.\][ \t]*$/,
+];
 
 function dropDelegationRoleLine(text: string): string {
-  const lines = text.split('\n');
-  if (!DELEGATION_ROLE_LINE.test(lines[0].trim())) return text;
-  return lines.slice(1).join('\n').trim();
+  let body = text;
+  for (;;) {
+    const lines = body.split('\n');
+    const first = lines[0].trim();
+    if (!T3_LEAD_LINES.some(re => re.test(first))) return body;
+    body = lines.slice(1).join('\n').trim();
+  }
 }
 
 const DIRECTIVE_LINE = /^buildd:[ \t]+(\S.*)$/;

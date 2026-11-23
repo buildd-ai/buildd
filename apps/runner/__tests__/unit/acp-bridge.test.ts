@@ -795,7 +795,20 @@ describe('T3 delegation: role line and directive line', () => {
     expect(runner.created[0].description).toBe('Add a retry to the sync job\nwith backoff');
   });
 
+  test('the linked-environment relay line is not the title or in the description', async () => {
+    const RELAY = "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]";
+    const { runner } = await run(`${RELAY}\n\nCheck the runner hostname\nthen finish`);
+    expect(runner.created[0].title).toBe('Check the runner hostname');
+    expect(runner.created[0].description).toBe('Check the runner hostname\nthen finish');
+  });
+
+  test('the relay line and the role line together are both dropped', () => {
+    const RELAY = "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]";
+    expect(userTextFrom(`${RELAY}\n\n${ROLE}\n\nDo it`)).toBe('Do it');
+  });
+
   test('other first lines are kept', () => {
+    expect(userTextFrom('[T3 Code is great]\nGo')).toContain('[T3 Code is great]');
     expect(userTextFrom('Act as the reviewer for this task.\nGo')).toContain('Act as the reviewer');
   });
 
