@@ -181,12 +181,15 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, repoUrl, defaultBranch, gitConfig, githubRepo, githubInstallationId, accessMode, knowledgeIngest, teamId: requestedTeamId } = body;
+    const { name, repoUrl, defaultBranch, gitConfig, githubRepo, githubInstallationId, accessMode, knowledgeIngest, knowledgeCodeIngest, teamId: requestedTeamId } = body;
 
     // The knowledge ingest switch (default on). Strict boolean: a coerced
     // "false" string must not quietly leave ingest on.
     if (knowledgeIngest !== undefined && typeof knowledgeIngest !== 'boolean') {
       return NextResponse.json({ error: 'knowledgeIngest must be a boolean' }, { status: 400 });
+    }
+    if (knowledgeCodeIngest !== undefined && typeof knowledgeCodeIngest !== 'boolean') {
+      return NextResponse.json({ error: 'knowledgeCodeIngest must be a boolean' }, { status: 400 });
     }
     const ingestOn = knowledgeIngest !== false;
 
@@ -257,6 +260,7 @@ export async function POST(req: NextRequest) {
       githubInstallationId,
       accessMode,
       knowledgeIngest: ingestOn,
+      knowledgeCodeIngest: knowledgeCodeIngest === true,
       origin: req.nextUrl.origin,
       userId: user?.id ?? null,
     });

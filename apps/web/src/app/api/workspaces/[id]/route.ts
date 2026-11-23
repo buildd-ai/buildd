@@ -195,7 +195,7 @@ export async function PATCH(
     const body = await req.json();
     const {
       name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass,
-      gitConfig, connectorAdvisoryMode, webhookConfig, knowledgeIngest, purgeKnowledge,
+      gitConfig, connectorAdvisoryMode, webhookConfig, knowledgeIngest, knowledgeCodeIngest, purgeKnowledge,
     } = body;
 
     // A workspace changes team only through the checked move: POST
@@ -222,7 +222,7 @@ export async function PATCH(
     // the bearer token for it), so it is an admin setting too.
     // The knowledge ingest switch and the purge of indexed content decide what
     // of the repo is stored as embeddings, so they are admin settings too.
-    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig, knowledgeIngest, purgeKnowledge]
+    const touchesAdminSettings = [gitConfig, accessMode, dataClass, connectorAdvisoryMode, webhookConfig, knowledgeIngest, knowledgeCodeIngest, purgeKnowledge]
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
@@ -235,6 +235,9 @@ export async function PATCH(
 
     // Strict values: a coerced "false" must not leave ingest on, and a purge
     // happens only when asked for in so many words.
+    if (knowledgeCodeIngest !== undefined && typeof knowledgeCodeIngest !== 'boolean') {
+      return NextResponse.json({ error: 'knowledgeCodeIngest must be a boolean' }, { status: 400 });
+    }
     if (knowledgeIngest !== undefined && typeof knowledgeIngest !== 'boolean') {
       return NextResponse.json({ error: 'knowledgeIngest must be a boolean' }, { status: 400 });
     }
@@ -555,18 +558,22 @@ export async function PATCH(
     // Knowledge ingest switch. Turning it off deletes nothing (purgeKnowledge
     // does); turning it back on queues a full ingest of the linked repo.
     if (knowledgeIngest !== undefined) updates.knowledgeIngest = knowledgeIngest;
+    // Per-corpus: the code corpus alone. Off deletes nothing; on again queues a full ingest.
+    if (knowledgeCodeIngest !== undefined) updates.knowledgeCodeIngest = knowledgeCodeIngest;
 
     // Read current repo (and switch) before updating — needed to detect a repo
     // change, or the switch coming back on, for auto-ingestion.
     let previousRepo: string | null = null;
     let previousIngest = true;
-    if (repoValue !== undefined || knowledgeIngest === true) {
+    let previousCodeIngest = true;
+    if (repoValue !== undefined || knowledgeIngest === true || knowledgeCodeIngest === true) {
       const current = await db.query.workspaces.findFirst({
         where: sqlWhere(eq(workspaces.id, id)),
-        columns: { repo: true, knowledgeIngest: true },
+        columns: { repo: true, knowledgeIngest: true, knowledgeCodeIngest: true },
       });
       previousRepo = current?.repo ?? null;
       previousIngest = current?.knowledgeIngest !== false;
+      previousCodeIngest = current?.knowledgeCodeIngest !== false;
     }
 
     await db.update(workspaces).set(updates).where(eq(workspaces.id, id));
@@ -590,7 +597,8 @@ export async function PATCH(
     // §1.1), or when the knowledge ingest switch comes back on. Never while the
     // switch is off.
     const repoChanged = repoValue !== undefined && repoValue !== null && repoValue !== previousRepo;
-    const reEnabled = knowledgeIngest === true && !previousIngest;
+    const reEnabled =
+      (knowledgeIngest === true && !previousIngest) || (knowledgeCodeIngest === true && !previousCodeIngest);
     const ingestRepo = repoChanged ? repoValue : reEnabled ? previousRepo : null;
     const fullName = typeof ingestRepo === 'string' ? normalizeRepoFullName(ingestRepo) : null;
     if (fullName) {

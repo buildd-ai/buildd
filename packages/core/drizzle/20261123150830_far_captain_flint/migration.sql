@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "knowledge_code_ingest" boolean DEFAULT true NOT NULL;
