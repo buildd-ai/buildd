@@ -161,6 +161,7 @@ mock.module('@/lib/pr-review-request', () => ({ readPrReviewStatus: mockReadPrRe
 const mockFireGateEvent = mock((_input: any) => 'sig');
 mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mockFireGateEvent,
+  fireCoalescedGateEvent: mockFireGateEvent,
   GATE_SLUGS: {
     REVIEW_VERDICT: 'review_verdict',
     MERGE_BASE_FRESHNESS: 'merge_base_freshness',

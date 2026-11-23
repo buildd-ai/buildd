@@ -12,7 +12,7 @@
  */
 import { db } from '@buildd/core/db';
 import { gateEvents } from '@buildd/core/db/schema';
-import { and, desc, gte, inArray, ne } from 'drizzle-orm';
+import { and, desc, gte, inArray, ne, sql } from 'drizzle-orm';
 import {
   buildGateReasonFamily,
   computeGateAnalytics,
@@ -43,6 +43,8 @@ export async function fetchGateEventRows(
       taskId: gateEvents.taskId,
       callerOrigin: gateEvents.callerOrigin,
       occurredAt: gateEvents.occurredAt,
+      // Coalesced rows carry their repeat count in the payload.
+      repeats: sql<number | null>`nullif(coalesce(${gateEvents.detail}->>'consecutiveDeferrals', ${gateEvents.detail}->>'count'), '')::int`,
     })
     .from(gateEvents)
     .where(and(
@@ -67,6 +69,7 @@ export async function fetchGateEventRows(
     taskId: (r.taskId as string | null) ?? null,
     callerOrigin: (r.callerOrigin as string | null) ?? null,
     occurredAt: r.occurredAt instanceof Date ? r.occurredAt : new Date(r.occurredAt as string),
+    repeats: r.repeats == null ? null : Number(r.repeats),
   }));
 }
 
