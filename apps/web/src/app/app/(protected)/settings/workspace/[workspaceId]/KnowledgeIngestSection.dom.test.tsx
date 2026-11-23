@@ -77,4 +77,27 @@ describe('KnowledgeIngestSection', () => {
     expect(host.querySelector('[data-testid="knowledge-ingest-value"]')?.textContent).toBe('Off');
     expect(host.querySelector('[data-testid="knowledge-purge-button"]')).toBeNull();
   });
+
+  it('code switch: sends knowledgeCodeIngest alone, shows the cost hint, and leaves the main switch alone', async () => {
+    act(() => root.render(<KnowledgeIngestSection workspaceId="ws-1" initial={true} initialCode={true} canEdit={true} />));
+    const switches = host.querySelectorAll('[role="switch"]');
+    expect(switches).toHaveLength(2);
+    expect(host.querySelector('[data-testid="knowledge-code-ingest"]')?.textContent).toContain('most of the embedding cost');
+    await act(async () => { (switches[1] as HTMLButtonElement).click(); });
+    expect(body(0)).toEqual({ knowledgeCodeIngest: false });
+    expect(sw().getAttribute('aria-checked')).toBe('true');
+    expect((host.querySelectorAll('[role="switch"]')[1] as HTMLElement).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('code switch reverts on a failed save', async () => {
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ error: 'nope' }), { status: 403 }));
+    act(() => root.render(<KnowledgeIngestSection workspaceId="ws-1" initial={true} initialCode={true} canEdit={true} />));
+    await act(async () => { (host.querySelectorAll('[role="switch"]')[1] as HTMLButtonElement).click(); });
+    expect((host.querySelectorAll('[role="switch"]')[1] as HTMLElement).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('read-only shows the code state', () => {
+    act(() => root.render(<KnowledgeIngestSection workspaceId="ws-1" initial={true} initialCode={false} canEdit={false} />));
+    expect(host.querySelector('[data-testid="knowledge-code-ingest-value"]')?.textContent).toBe('Off');
+  });
 });

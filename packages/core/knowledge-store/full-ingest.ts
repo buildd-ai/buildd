@@ -9,7 +9,7 @@
 import * as childProcess from 'node:child_process';
 const { execFile } = childProcess;
 import { createHash } from 'crypto';
-import { capFullIngest, shouldIngestFile, MAX_FULL_INGEST_BYTES, MAX_FULL_INGEST_FILES, MAX_INGEST_FILE_BYTES, type IngestCeiling } from './ingest-filter';
+import { capFullIngest, classifyIngestCorpus, shouldIngestFile, MAX_FULL_INGEST_BYTES, MAX_FULL_INGEST_FILES, MAX_INGEST_FILE_BYTES, type IngestCeiling } from './ingest-filter';
 import type { ScipGraph } from './scip-parser';
 import { BuilddTransport } from '../buildd-transport';
 
@@ -23,6 +23,11 @@ export interface FullIngestJob {
   sha?: string | null;
   scope: string;
   trigger: string;
+  /**
+   * The workspace's code-corpus switch, set by the claim route. false = read,
+   * chunk and embed no code (docs still ingest). Absent (older server) = on.
+   */
+  codeIngest?: boolean;
 }
 
 export interface IngestFileEntry {
@@ -248,7 +253,10 @@ export async function runFullIngestJob(
   const startedAt = Date.now();
   try {
     const allPaths = await reader.listFiles();
-    const eligiblePaths = allPaths.filter(p => shouldIngestFile(p));
+    const codeIngest = job.codeIngest !== false;
+    const eligiblePaths = allPaths.filter(
+      p => shouldIngestFile(p) && (codeIngest || classifyIngestCorpus(p) !== 'code'),
+    );
     const ceiling = opts.ceiling ?? { maxFiles: MAX_FULL_INGEST_FILES, maxBytes: MAX_FULL_INGEST_BYTES };
     const keepPaths = eligiblePaths.slice(0, ceiling.maxFiles);
 
@@ -301,7 +309,8 @@ export async function runFullIngestJob(
     // Precise code-graph enrichment (SCIP). Runs after files are ingested so
     // its edges layer ADDITIVELY on top of the ast-grep graph. Best-effort:
     // a null/failed result never affects the 'done' status below.
-    const scipStats = await enrichWithScip(job, api, opts);
+    // Code graph is part of the code corpus: skipped with it.
+    const scipStats = codeIngest ? await enrichWithScip(job, api, opts) : undefined;
 
     const stats: Record<string, unknown> = {
       filesListed: allPaths.length,

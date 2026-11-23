@@ -198,6 +198,10 @@ class StatusesPermissionDeniedError extends Error {
   }
 }
 
+function isBotAuthor(pr: OpenPull): boolean {
+  return !!pr.user?.login?.toLowerCase().endsWith('[bot]');
+}
+
 /** Write `answer` on one open head (the sweep's and the webhooks' shared step): what GitHub shows now is compared first, so a repeat writes nothing. */
 async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha: string): Promise<HeadResult> {
   const { deps, exec, reviews } = run;
@@ -241,9 +245,11 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
   // A PR buildd has no record of and nobody asked buildd to review (auto-review off, or it did not take
   // this one: a draft, a bot's, another base): buildd puts no required status on it at all. One it did
   // take is adopted before this runs, so it is not foreign. Coverage counts the skip as answered.
+  // A bot's PR with no owner, review or candidate is treated the same whatever stray worker row says it is
+  // "known" (a dependency bot reuses one branch for every update): a pending status there blocks its automerge.
   if (!owner && !candidateLink && review === 'not_requested'
     && !links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts))
-    && await foreign(links, repoFullName, pr)) {
+    && (isBotAuthor(pr) || await foreign(links, repoFullName, pr))) {
     out.skippedForeign = true;
     out.shown = true;
     return out;
@@ -251,7 +257,7 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
   // No live delivery, no review asked for, not a bot's, a draft or a (possible) release candidate: a stale
   // ordinary PR nobody in buildd is working on. The floor leaves it alone rather than writing pending on it.
   if (run.skipUnowned && !owner && !candidateLink && review === 'not_requested' && !pr.draft
-    && !pr.user?.login?.toLowerCase().endsWith('[bot]') && !links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts))) {
+    && !isBotAuthor(pr) && !links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts))) {
     out.skippedNoDelivery = true;
     out.shown = true;
     return out;

@@ -52,6 +52,17 @@ export interface RunnerPort {
   claim(taskId: string): Promise<{ status: number; body: unknown }>;
   /** The buildd server this runner talks to and its key's account id (`GET /api/config`), for links. */
   runnerInfo?(): Promise<{ server: string; accountId: string | null } | null>;
+  /** The notes owed to a thread by tasks that remember it (`GET /api/tasks/thread-events`). */
+  threadEvents?(threadId: string): Promise<ThreadNote[]>;
+}
+
+/** One event a task filed from this thread has reached; `key` is `<taskId>:<event>`. */
+export interface ThreadNote { key: string; taskId: string; event: string; text: string }
+
+/** Which notes a thread has been shown (acp/notes.ts persists it). */
+export interface ShownNotes {
+  has(threadId: string, key: string): boolean;
+  add(threadId: string, key: string): void;
 }
 
 /** `_meta.buildd` on `session/new` or the first `session/prompt`: where the thread's task is filed. */
@@ -100,6 +111,8 @@ export interface SessionLinks {
 export interface BridgeDeps {
   runner: RunnerPort;
   links: SessionLinks;
+  /** Notes already shown; without it the bridge posts no thread notes. */
+  shownNotes?: ShownNotes;
   notify(sessionId: string, update: SessionUpdate): void;
   /** Send a request to the client and await its result (ACP `elicitation/create`). */
   request?(method: string, params: unknown): Promise<any>;
@@ -124,6 +137,10 @@ export interface BridgeDeps {
   /** This runner's display name, for a remote thread's first message. */
   runnerName?(): string;
   version: string;
+  /** The runner version installed on disk now; differs from `version` once the runner updated under this process. */
+  installedVersion?: () => string;
+  /** How long to look for this runner's own worker after a refused claim (default 20 x 500ms). */
+  ownWorkerWait?: { attempts: number; delayMs: number };
   /** How long a reply may go unanswered by the runner before the turn ends anyway. */
   settleGraceMs?: number;
 }
@@ -224,9 +241,25 @@ export function directiveFrom(text: string): { text: string; meta: BuilddTaskMet
   return { text: lines.slice(1).join('\n').trim(), meta: taskMetaFromRaw(raw) };
 }
 
-/** First non-empty line, clipped: what the dashboard and queue show for the task. */
+/**
+ * A line that says who wrote the text, not what it asks: a whole-line bracketed
+ * note naming the client and saying the message was not typed by the user
+ * (`[T3 Code: the agent in T3 thread "…" sent this message, not the user.]`),
+ * or a generic role opener. Matched by shape, so a reworded note still counts.
+ */
+function isAttributionLine(line: string): boolean {
+  return (/^\[[^\]\n]*\bnot\b[^\]\n]*\buser\b[^\]\n]*\]$/i.test(line))
+    || /^Act as the \S+ sub-agent for this task\.$/.test(line);
+}
+
+/**
+ * First meaningful line, clipped: what the dashboard and queue show for the task.
+ * A leading attribution note or generic opener is skipped (it stays in the
+ * description); if nothing else is left, the first non-empty line is used.
+ */
 export function taskTitleFrom(text: string): string {
-  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? text.trim();
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const line = lines.find(l => !isAttributionLine(l)) ?? lines[0] ?? text.trim();
   return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line;
 }
 
@@ -362,7 +395,41 @@ export class AcpBridge {
     return sessionId.startsWith('new-') ? null : sessionId;
   }
 
+  /**
+   * Notes first: what the thread's tasks did since it was last shown (started, a question,
+   * a PR, finished, failed). T3 has no way for a local process to post a passive message
+   * into a thread, so they ride the next turn. Notes this turn already showed live are
+   * marked shown afterwards, so they are not repeated.
+   */
   private async prompt(params: { sessionId?: string; _meta?: unknown; prompt?: Array<{ type: string; text?: string }> }) {
+    const sessionId = params.sessionId;
+    if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
+    await this.flushNotes(sessionId);
+    try {
+      return await this.promptTurn(params);
+    } finally {
+      // Only the task this turn followed live has shown its notes; a note for any other
+      // task stays unmarked, so the next turn's leading flush shows it.
+      const wid = this.sessions.get(sessionId)?.workerId;
+      const followed = wid ? (await this.findWorker(wid).catch(() => null))?.taskId : null;
+      if (followed) await this.flushNotes(sessionId, { quietTaskId: followed });
+    }
+  }
+
+  private async flushNotes(sessionId: string, opts: { quietTaskId?: string } = {}): Promise<void> {
+    const { shownNotes } = this.deps;
+    if (!shownNotes || !this.deps.runner.threadEvents) return;
+    try {
+      for (const n of await this.deps.runner.threadEvents(sessionId)) {
+        if (shownNotes.has(sessionId, n.key)) continue;
+        if (opts.quietTaskId !== undefined && n.taskId !== opts.quietTaskId) continue;
+        shownNotes.add(sessionId, n.key);
+        if (opts.quietTaskId === undefined) this.emit(sessionId, textUpdate(n.text));
+      }
+    } catch { /* a note we cannot fetch now is fetched next turn */ }
+  }
+
+  private async promptTurn(params: { sessionId?: string; _meta?: unknown; prompt?: Array<{ type: string; text?: string }> }) {
     const sessionId = params.sessionId;
     if (!sessionId) throw new RpcError(INVALID_PARAMS, 'sessionId required');
     const session = this.sessions.get(sessionId) ?? this.adopt(sessionId);
@@ -443,11 +510,15 @@ export class AcpBridge {
     }
 
     const title = taskTitleFrom(text);
+    const installed = this.deps.installedVersion?.();
+    const stale = !!installed && installed !== this.deps.version;
+    if (stale) console.error(`buildd acp ${this.deps.version} is older than the installed runner ${installed}; restart it to pick up the update.`);
     // Filed reserved for this runner's account, then claimed by id: no other runner
     // can take it in the gap, or the thread would follow nothing (CG-7).
     const created = await this.deps.runner.createTask({ workspaceId: ws.id, title, description: text, ...session.taskMeta, reserve: true,
       // Origin marker the task page reads (context.client): the client names itself.
-      context: { client: { kind: 'acp', ...(this.clientName ? { name: this.clientName } : {}) } } });
+      // callbackTarget: the thread to send notes to (a thread id, not a secret).
+      context: { client: { kind: 'acp', version: this.deps.version, ...(this.clientName ? { name: this.clientName } : {}), ...(stale ? { stale: true, installedVersion: installed } : {}) }, callbackTarget: { kind: 't3_thread', threadId: sessionId } } });
     const task = (created.body as { task?: { id?: string } } | null)?.task;
     if (created.status >= 400 || !task?.id) return end(`buildd did not create the task. ${refusal(created)}`);
 
@@ -460,12 +531,13 @@ export class AcpBridge {
       worker = await this.ownWorkerFor(task.id);
     }
     if (!worker?.id) {
-      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it: this runner could not take it now. ${await this.claimRefusalText(claimed, ws)}`);
+      return end(`Created the buildd task “${title}” in ${ws.name}. It is held for this runner for 20 minutes, then any runner can take it. This runner did not start it just now. ${await this.claimRefusalText(claimed, ws)}`);
     }
     session.workerId = worker.id;
     this.deps.links.set(sessionId, worker.id);
     session.cursor.skip(worker.messages);
-    const started = `Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}`;
+    const started = `Started a buildd task in ${ws.name}: “${title}”${runsAs(worker)}`
+      + (stale ? ` (this buildd acp process is ${this.deps.version}, older than the installed runner ${installed}: restart it)` : '');
     if (session.remote) {
       const name = this.deps.runnerName?.().trim();
       const where = worker.branch ? `on branch ${worker.branch} and in its PR` : 'on its branch and in its PR';
@@ -483,6 +555,10 @@ export class AcpBridge {
    */
   private async claimRefusalText(claimed: { status: number; body: unknown }, ws: { name: string; repo?: string | null }): Promise<string> {
     const b = (claimed.body && typeof claimed.body === 'object' ? claimed.body : {}) as { claimReason?: unknown; exclusion?: unknown; exclusionDetail?: unknown };
+    const said = typeof (claimed.body as { error?: unknown } | null)?.error === 'string' ? (claimed.body as { error: string }).error : '';
+    if (/no longer available|already claimed/i.test(said)) {
+      return 'Another claim got to it first, so it is most likely already starting; this is not a failure. Check its page in buildd before sending it again.';
+    }
     if (b.claimReason !== 'all_candidates_deferred') return refusal(claimed);
     const code = typeof b.exclusion === 'string' ? b.exclusion : null;
     if (code === 'isolation_unenforced') {
@@ -667,10 +743,11 @@ export class AcpBridge {
 
   /** A worker on this runner for the task, waiting briefly for a dispatch that is still landing. */
   private async ownWorkerFor(taskId: string): Promise<PublicWorker | undefined> {
-    for (let i = 0; i < 6; i++) {
+    const { attempts, delayMs } = this.deps.ownWorkerWait ?? { attempts: 20, delayMs: 500 };
+    for (let i = 0; i < attempts; i++) {
       const found = (await this.deps.runner.listWorkers().catch(() => [] as PublicWorker[])).find(w => w.taskId === taskId);
       if (found) return found;
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, delayMs));
     }
     return undefined;
   }

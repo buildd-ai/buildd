@@ -4,6 +4,7 @@
   "schedule": ["before 9am every weekday"],
   "timezone": "America/New_York",
   "platformAutomerge": false,
+  "ignorePaths": ["**/node_modules/**", "**/bower_components/**", "**/vendor/**", "**/examples/**", "**/__tests__/**", "**/test/**", "**/tests/**", "**/__fixtures__/**", "eval/**"],
   "packageRules": [
     {
       "matchUpdateTypes": ["patch", "minor", "digest"],

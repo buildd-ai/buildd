@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { AcpBridge, userTextFrom, type RunnerPort, type WorkerActionName } from '../../src/acp/bridge';
+import { AcpBridge, userTextFrom, taskTitleFrom, type RunnerPort, type WorkerActionName } from '../../src/acp/bridge';
 import { MessageCursor, toolKind, toolTitle, replyRoute, settledText, waitingText } from '../../src/acp/translate';
 import type { PublicWorker } from '../../src/public-worker';
 
@@ -59,7 +59,7 @@ class FakeRunner implements RunnerPort {
 
 function setup(
   workers: PublicWorker[] = [worker()],
-  opts: { cwdExists?: (cwd: string) => boolean; answer?: (params: any) => Promise<any>; links?: Map<string, string>; runner?: FakeRunner; githubRepoOf?: (cwd: string) => Promise<string | null> } = {},
+  opts: { cwdExists?: (cwd: string) => boolean; answer?: (params: any) => Promise<any>; links?: Map<string, string>; runner?: FakeRunner; githubRepoOf?: (cwd: string) => Promise<string | null>; installedVersion?: () => string } = {},
 ) {
   const runner = opts.runner ?? new FakeRunner();
   runner.workers = workers;
@@ -81,6 +81,8 @@ function setup(
     githubRepoOf: opts.githubRepoOf,
     runnerName: () => 'coder-box',
     version: '0.0.0-test',
+    installedVersion: opts.installedVersion,
+    ownWorkerWait: { attempts: 6, delayMs: 20 },
     settleGraceMs: 50,
   });
   return { runner, bridge, updates, requests, links };
@@ -401,7 +403,7 @@ describe('AcpBridge', () => {
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     void bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Say from Zed in the title' }] });
     await tick(); await tick();
-    expect(runner.created[0].context).toEqual({ client: { kind: 'acp', name: 'T3 Code' } });
+    expect((runner.created[0].context as any).client).toEqual({ kind: 'acp', name: 'T3 Code', version: '0.0.0-test' });
   });
 
   test('a new thread\'s first message becomes a buildd task on this runner, and the turn follows it', async () => {
@@ -410,7 +412,7 @@ describe('AcpBridge', () => {
     const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Fix the login redirect\n\nIt loops on Safari.' }] });
     await tick(); await tick();
     // Filed reserved, so no other runner takes it before this runner's claim.
-    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Fix the login redirect', description: 'Fix the login redirect\n\nIt loops on Safari.', reserve: true, context: { client: { kind: 'acp' } } }]);
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Fix the login redirect', description: 'Fix the login redirect\n\nIt loops on Safari.', reserve: true, context: { client: { kind: 'acp', version: '0.0.0-test' }, callbackTarget: { kind: 't3_thread', threadId: expect.any(String) } } }]);
     expect(texts(updates)).toContain('Started a buildd task in app');
 
     runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'working', messages: [{ type: 'text', content: 'On it', timestamp: 4 }] }));
@@ -454,7 +456,7 @@ Only targeting dev.`;
     const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
     const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrap(request) }] });
     await tick(); await tick();
-    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Count open PRs', description: request, reserve: true, context: { client: { kind: 'acp' } } }]);
+    expect(runner.created).toEqual([{ workspaceId: 'ws-app', title: 'Count open PRs', description: request, reserve: true, context: { client: { kind: 'acp', version: '0.0.0-test' }, callbackTarget: { kind: 't3_thread', threadId: expect.any(String) } } }]);
     runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done' }));
     await turn;
 
@@ -915,5 +917,144 @@ describe('T3 delegation: role line and directive line', () => {
   test('an unrecognised buildd: line stays as text', async () => {
     const { runner } = await run('buildd: is great\nDo it');
     expect(runner.created[0].title).toBe('buildd: is great');
+  });
+});
+
+describe('thread notes: a task remembers the thread that filed it', () => {
+  const notes = (runner: FakeRunner, ...texts: string[]) => {
+    (runner as any).threadEvents = async () => texts.map((text, i) => ({ key: `t1:e${i}`, taskId: 't1', event: `e${i}`, text }));
+  };
+  const withShown = () => {
+    const shown = new Set<string>();
+    return { shown, store: { has: (t: string, k: string) => shown.has(`${t}|${k}`), add: (t: string, k: string) => { shown.add(`${t}|${k}`); } } };
+  };
+  const mk = (runner: FakeRunner, store: any) => new AcpBridge({
+    runner, shownNotes: store, links: { get: () => 'w1', set: () => {} }, notify: (s, u) => sent.push({ s, u }),
+    repoRootOf: async () => null, projectNamesOf: async () => [], version: 't', settleGraceMs: 20,
+  });
+  let sent: Array<{ s: string; u: any }> = [];
+
+  test('a new thread files its task with a t3_thread callback target naming the thread', async () => {
+    const { runner, bridge } = setup([]);
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Do it' }] });
+    await tick(); await tick();
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await turn;
+    expect((runner.created[0].context as any).callbackTarget).toEqual({ kind: 't3_thread', threadId: sessionId });
+  });
+
+  test('unseen notes ride the next turn once, before the reply is handled', async () => {
+    sent = [];
+    const runner = new FakeRunner();
+    runner.workers = [worker({ id: 'w1', status: 'done' })];
+    notes(runner, 'buildd: started', 'buildd: opened a pull request');
+    const { store } = withShown();
+    const bridge = mk(runner, store);
+    await bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    const first = texts(sent.map(x => ({ update: x.u })));
+    expect(first).toContain('buildd: started');
+    expect(first).toContain('buildd: opened a pull request');
+    sent = [];
+    await bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    expect(texts(sent.map(x => ({ update: x.u })))).not.toContain('buildd: started');
+  });
+
+  test('a note for a different task arriving during a turn is shown on the next turn', async () => {
+    sent = [];
+    const runner = new FakeRunner();
+    runner.workers = [worker({ id: 'w1', taskId: 't1', status: 'done' })];
+    let phase = 0;
+    (runner as any).threadEvents = async () => phase === 0 ? [] : [{ key: 't2:failed', taskId: 't2', event: 'failed', text: 'buildd: other failed' }];
+    const bridge = mk(runner, withShown().store);
+    const orig = (bridge as any).promptTurn.bind(bridge);
+    (bridge as any).promptTurn = async (p: any) => { phase = 1; return orig(p); };
+    await bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    expect(texts(sent.map(x => ({ update: x.u })))).not.toContain('buildd: other failed');
+    sent = [];
+    (bridge as any).promptTurn = orig;
+    await bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    expect(texts(sent.map(x => ({ update: x.u })))).toContain('buildd: other failed');
+  });
+
+  test('a failing notes read never blocks the turn', async () => {
+    sent = [];
+    const runner = new FakeRunner();
+    runner.workers = [worker({ id: 'w1', status: 'done' })];
+    (runner as any).threadEvents = async () => { throw new Error('server down'); };
+    const bridge = mk(runner, withShown().store);
+    const res: any = await bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+    expect(res.stopReason).toBe('end_turn');
+  });
+});
+
+describe('delegated attribution line and race wording', () => {
+  const ATTR = '[T3 Code: the agent in T3 thread "abc-123" sent this message, not the user.]';
+  const ROLE = 'Act as the implementation sub-agent for this task.';
+
+  test('title skips a bracketed attribution line and a generic opener', () => {
+    expect(taskTitleFrom(`${ATTR}\n\n${ROLE}\n\nFix the sync job\nmore`)).toBe('Fix the sync job');
+    expect(taskTitleFrom(`${ATTR}\nFix it`)).toBe('Fix it');
+    expect(taskTitleFrom('[T3 Code: a note that was not written by the user]\nGo')).toBe('Go');
+  });
+  test('title keeps ordinary bracketed first lines and falls back when only attribution remains', () => {
+    expect(taskTitleFrom('[WIP] Fix it')).toBe('[WIP] Fix it');
+    expect(taskTitleFrom(ATTR)).toBe(ATTR);
+  });
+
+  const file = async (text: string, runner = new FakeRunner(), installedVersion?: () => string) => {
+    const { bridge, updates } = setup([], { runner, installedVersion });
+    const { sessionId }: any = await bridge.handle('session/new', { cwd: '/repos/app', mcpServers: [] });
+    const turn = bridge.handle('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+    return { runner, updates, turn };
+  };
+
+  test('the attribution stays in the description, out of the title', async () => {
+    const { runner, updates, turn } = await file(`${ATTR}\n\nAdd retries`);
+    await until(() => runner.created.length > 0);
+    expect(runner.created[0].title).toBe('Add retries');
+    expect(runner.created[0].description).toContain(ATTR);
+    await until(() => texts(updates).includes('Started'));
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await turn;
+  });
+
+  test('a worker that shows up a moment after the refused claim is still followed', async () => {
+    const runner = new FakeRunner();
+    runner.claimResult = { status: 400, body: { error: 'task is no longer available (may already be claimed or completed)' } };
+    const { updates, turn } = await file('Do it', runner);
+    await until(() => runner.created.length > 0);
+    setTimeout(() => { runner.workers = [worker({ id: 'w-t1', taskId: 't1', status: 'working', messages: [] })]; }, 50);
+    await until(() => texts(updates).includes('Started a buildd task'));
+    runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await turn;
+    expect(texts(updates)).not.toMatch(/could not|refused/);
+  });
+
+  test('a lost claim race that never shows a worker is not worded as a failure', async () => {
+    const runner = new FakeRunner();
+    runner.claimResult = { status: 400, body: { error: 'task is no longer available (may already be claimed or completed)' } };
+    const { updates, turn } = await file('Do it', runner);
+    await turn;
+    const t = texts(updates);
+    expect(t).toMatch(/not a failure/);
+    expect(t).not.toMatch(/refused|could not/);
+  });
+
+  test('the task context carries the bridge version, and flags a stale process', async () => {
+    const a = await file('Do it');
+    await until(() => a.runner.created.length > 0);
+    expect((a.runner.created[0].context as any).client.version).toBe('0.0.0-test');
+    expect((a.runner.created[0].context as any).client.stale).toBeUndefined();
+    await until(() => texts(a.updates).includes('Started'));
+    a.runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await a.turn;
+
+    const b = await file('Do it', new FakeRunner(), () => '9.9.9');
+    await until(() => b.runner.created.length > 0);
+    expect((b.runner.created[0].context as any).client).toMatchObject({ version: '0.0.0-test', stale: true, installedVersion: '9.9.9' });
+    await until(() => texts(b.updates).includes('restart it'));
+    b.runner.push(worker({ id: 'w-t1', taskId: 't1', status: 'done', messages: [] }));
+    await b.turn;
   });
 });

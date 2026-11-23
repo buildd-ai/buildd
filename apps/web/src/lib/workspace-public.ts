@@ -52,6 +52,7 @@ export const PUBLIC_WORKSPACE_FIELDS = [
   'accessMode',
   'dataClass',
   'knowledgeIngest',
+  'knowledgeCodeIngest',
   'gitConfig',
   'configStatus',
   'releaseConfig',

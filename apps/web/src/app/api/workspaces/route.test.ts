@@ -510,6 +510,28 @@ describe('POST /api/workspaces', () => {
       expect((await res.json()).knowledgeIngest).toBe(false);
     });
 
+    it('a NEW workspace starts with the code corpus off (docs, specs, PRs on)', async () => {
+      const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'r' }]) }));
+      mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+      const res = await POST(createMockPostRequest({ repoUrl: 'https://github.com/user/r' }));
+      expect(res.status).toBe(200);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ knowledgeIngest: true, knowledgeCodeIngest: false }));
+    });
+
+    it('knowledgeCodeIngest=true at create opts the code corpus in', async () => {
+      const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'r' }]) }));
+      mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+      await POST(createMockPostRequest({ repoUrl: 'https://github.com/user/r', knowledgeCodeIngest: true }));
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ knowledgeCodeIngest: true }));
+    });
+
+    it('refuses a non-boolean knowledgeCodeIngest before creating anything', async () => {
+      mockWorkspacesInsert.mockClear();
+      const res = await POST(createMockPostRequest({ name: 'x', knowledgeCodeIngest: 'yes' }));
+      expect(res.status).toBe(400);
+      expect(mockWorkspacesInsert).not.toHaveBeenCalled();
+    });
+
     it('refuses a non-boolean knowledgeIngest before creating anything', async () => {
       mockWorkspacesInsert.mockClear();
       const res = await POST(createMockPostRequest({ name: 'x', knowledgeIngest: 'false' }));

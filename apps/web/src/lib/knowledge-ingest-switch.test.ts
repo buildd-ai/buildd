@@ -49,6 +49,8 @@ import {
   closeIngestJobAsSkipped,
   purgeWorkspaceRepoKnowledge,
   INGEST_DISABLED,
+  isKnowledgeCodeIngestEnabled,
+  knowledgeCodeIngestOffAmong,
 } from './knowledge-ingest-switch';
 
 beforeEach(() => {
@@ -124,5 +126,39 @@ describe('purgeWorkspaceRepoKnowledge', () => {
     const n = await purgeWorkspaceRepoKnowledge('ws-1');
     expect(n).toBe(7);
     expect(executeSql[0]).toContain('DELETE FROM knowledge_chunks');
+  });
+});
+
+describe('knowledge code ingest (per-corpus: code)', () => {
+  it('is on for a row without the column (older cache / existing workspace)', async () => {
+    workspaceRows = [{ id: 'ws-1', knowledgeIngest: true }];
+    expect(await isKnowledgeCodeIngestEnabled('ws-1')).toBe(true);
+  });
+
+  it('is off when knowledgeCodeIngest is false, while the master switch stays on', async () => {
+    workspaceRows = [{ id: 'ws-1', knowledgeIngest: true, knowledgeCodeIngest: false }];
+    expect(await isKnowledgeCodeIngestEnabled('ws-1')).toBe(false);
+    expect(await isKnowledgeIngestEnabled('ws-1')).toBe(true);
+  });
+
+  it('is off when the master switch is off, whatever the code flag says', async () => {
+    workspaceRows = [{ id: 'ws-1', knowledgeIngest: false, knowledgeCodeIngest: true }];
+    expect(await isKnowledgeCodeIngestEnabled('ws-1')).toBe(false);
+  });
+
+  it('knowledgeCodeIngestOffAmong returns only ids with code off, in one query', async () => {
+    workspaceRows = [
+      { id: 'ws-1', knowledgeIngest: true, knowledgeCodeIngest: true },
+      { id: 'ws-2', knowledgeIngest: true, knowledgeCodeIngest: false },
+    ];
+    expect([...(await knowledgeCodeIngestOffAmong(['ws-1', 'ws-2']))]).toEqual(['ws-2']);
+    expect(selectCount).toBe(1);
+  });
+
+  it('treats a missing row as on and skips the query for an empty list', async () => {
+    expect(await isKnowledgeCodeIngestEnabled('ws-gone')).toBe(true);
+    selectCount = 0;
+    expect((await knowledgeCodeIngestOffAmong([])).size).toBe(0);
+    expect(selectCount).toBe(0);
   });
 });
