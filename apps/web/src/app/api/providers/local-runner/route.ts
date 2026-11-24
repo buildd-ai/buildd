@@ -3,7 +3,7 @@ import { eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { teams } from '@buildd/core/db/schema';
 import { POLICY_PERMISSION } from '@buildd/core/providers/manage';
-import { findTeamRunner, loadLocalRunnerPick, type LocalRunnerPick } from '@buildd/core/model-relay';
+import { findTeamRunner, lastRelaySuccessAt, listTeamLocalRunners, loadLocalRunnerPick, type LocalRunnerPick, type TeamLocalRunner } from '@buildd/core/model-relay';
 import { requestReembedForTeam } from '@buildd/core/knowledge-store';
 import { resetEmbeddingConfigCache } from '@buildd/core/knowledge-store/embedding-config';
 import {
@@ -22,7 +22,8 @@ import { TASK_TOKEN_READ_ONLY, resolveProvidersCaller } from '@/lib/providers/ca
  * which of its own runners serves embeddings and chat through the relay, and
  * with which models. Nothing is stored in `secrets`; there is no credential.
  *
- *   GET   ?teamId=  → { runnerId, chatModel, embedModel, runner: { online, models } | null }
+ *   GET   ?teamId=  → { runnerId, chatModel, embedModel, runner: { online, models } | null,
+ *                      runners[] (every team runner that advertised models), lastSuccessAt }
  *   PATCH { runnerId, chatModel?, embedModel?, teamId? } → the same, plus reembedQueued
  *         (an omitted model is left as stored; null clears it)
  *
@@ -33,25 +34,39 @@ import { TASK_TOKEN_READ_ONLY, resolveProvidersCaller } from '@/lib/providers/ca
  * UPDATE on `teams`. Models are checked against what the runner advertises, so
  * a size the store has no column for is refused here, never truncated later.
  *
- * Chat is routed to the runner by the `chat` assignment
- * (`/api/providers/assignments`), which this route does not change.
+ * Chat is routed to the runner by the `chat` assignment. Saving a chat model
+ * here sets `provider_assignments.chat = 'local_runner'` in the same UPDATE;
+ * clearing it (null) removes that assignment, only if it is `local_runner`.
+ * An omitted chatModel leaves the assignment alone.
  *
  * A changed embedding model or size queues every namespace of the team for
  * re-embedding (spec §5.3 D-3); until a row is re-embedded it is found by text.
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function view(pick: LocalRunnerPick | null, now = Date.now()): ProviderLocalRunnerResponse {
+const modelsOf = (r: { localModels: { models: Array<{ name: string; capabilities: readonly string[]; dimensions: number | null }> } | null }) =>
+  (r.localModels?.models ?? []).map(m => ({ name: m.name, capabilities: [...m.capabilities], dimensions: m.dimensions }));
+
+function view(pick: LocalRunnerPick | null, runners: TeamLocalRunner[] = [], lastSuccessAt: string | null = null, now = Date.now()): ProviderLocalRunnerResponse {
   const runner = pick?.runner ?? null;
   return {
+    runners: runners.map(r => ({ id: r.id, name: r.name, online: runnerOnlineNow(r.lastHeartbeatAt, r.presenceConnected, now), models: modelsOf(r) })),
+    lastSuccessAt,
     runnerId: pick?.runnerId ?? null,
     chatModel: pick?.chatModel ?? null,
     embedModel: pick?.embeddingModel ?? null,
     runner: runner ? {
       online: runnerOnlineNow(runner.lastHeartbeatAt, runner.presenceConnected, now),
-      models: (runner.localModels?.models ?? []).map(m => ({ name: m.name, capabilities: [...m.capabilities], dimensions: m.dimensions })),
+      models: modelsOf(runner),
     } : null,
   };
+}
+
+/** The pick plus what the card shows beside it: the team's runners and the last good call. */
+async function readView(teamId: string): Promise<ProviderLocalRunnerResponse> {
+  const [pick, runners] = await Promise.all([loadLocalRunnerPick(teamId), listTeamLocalRunners(teamId)]);
+  const last = pick?.runnerId ? await lastRelaySuccessAt(teamId, pick.runnerId).catch(() => null) : null;
+  return view(pick, runners, last);
 }
 
 export async function GET(req: NextRequest) {
@@ -59,7 +74,7 @@ export async function GET(req: NextRequest) {
   if (!r.ok) return r.response;
   if (r.caller.taskScope) return NextResponse.json({ error: TASK_TOKEN_READ_ONLY }, { status: 403 });
   try {
-    return NextResponse.json(view(await loadLocalRunnerPick(r.caller.teamId)), { headers: { 'Cache-Control': 'no-store' } });
+    return NextResponse.json(await readView(r.caller.teamId), { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     console.error('[providers/local-runner] read failed:', error);
     return NextResponse.json({ error: 'Failed to read the local runner pick' }, { status: 500 });
@@ -119,7 +134,12 @@ export async function PATCH(req: NextRequest) {
     }
 
     const localRunner: LocalRunnerConfig = { runnerId, chatModel };
-    const set: { localRunner: LocalRunnerConfig; updatedAt: Date; embeddingProvider?: 'local_runner' | SQL; embeddingModel?: string | SQL } = { localRunner, updatedAt: new Date() };
+    const set: { localRunner: LocalRunnerConfig; updatedAt: Date; embeddingProvider?: 'local_runner' | SQL; embeddingModel?: string | SQL; providerAssignments?: SQL } = { localRunner, updatedAt: new Date() };
+    if (chatModelSent !== undefined) {
+      set.providerAssignments = chatModel
+        ? sql`coalesce(${teams.providerAssignments}, '{}'::jsonb) || jsonb_build_object('chat'::text, 'local_runner'::text)`
+        : sql`CASE WHEN ${teams.providerAssignments}->>'chat' = 'local_runner' THEN coalesce(${teams.providerAssignments}, '{}'::jsonb) - 'chat' ELSE ${teams.providerAssignments} END`;
+    }
     if (embedModel) {
       set.embeddingProvider = 'local_runner';
       set.embeddingModel = embedModel;
@@ -145,7 +165,7 @@ export async function PATCH(req: NextRequest) {
         console.error('[providers/local-runner] re-embed request failed:', error);
       }
     }
-    const out = view(await loadLocalRunnerPick(caller.teamId));
+    const out = await readView(caller.teamId);
     return NextResponse.json(reembedQueued !== undefined ? { ...out, reembedQueued } : out);
   } catch (error) {
     console.error('[providers/local-runner] write failed:', error);

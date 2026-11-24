@@ -18,8 +18,10 @@ import type {
   ProviderShapeId,
   ProviderSurfaceId,
   ProviderEmbeddingResponse,
+  ProviderLocalRunnerResponse,
   ProviderWritePermission,
 } from '@buildd/shared';
+import { isSupportedEmbeddingDimension } from '@buildd/shared';
 import { EMBEDDING_PROVIDERS, type EmbeddingProviderId } from '@buildd/core/providers/embedding';
 
 export const SURFACE_ORDER: readonly ProviderSurfaceId[] = ['chat', 'agent-claude', 'agent-codex', 'cloud-egress'];
@@ -302,15 +304,17 @@ export interface EmbeddingRow {
  * with an embeddings endpoint. Null when there is nothing to choose and
  * nothing chosen. A stored pick whose key is gone stays shown, disabled.
  */
-export function embeddingView(res: Pick<ListProvidersResponse, 'providers'>, current: ProviderEmbeddingResponse): EmbeddingRow | null {
+export function embeddingView(res: Pick<ListProvidersResponse, 'providers'>, current: ProviderEmbeddingResponse, local: Pick<ProviderLocalRunnerResponse, 'runners'> | null = null): EmbeddingRow | null {
   const connected = new Set(connectedProviders(res).map((p) => p.id));
   const options: UsedForOption[] = [];
   for (const id of EMBEDDING_PROVIDERS) {
     const label = id === 'voyage' ? 'Voyage' : rowLabel(res.providers.find((p) => p.id === id) ?? { id, label: id });
     if (id === 'local_runner') {
       // Offered from a runner's advert (local-runner-provider §7.3), not from a
-      // stored key; until that picker ships a stored pick stays shown, disabled.
-      if (current.provider === id) options.push({ value: id, label, disabled: true, description: 'Needs a runner' });
+      // stored key: only while some runner advertises an embedding model. A
+      // stored pick with no such runner stays shown, disabled.
+      if (embeddingChoices(local).length > 0) options.push({ value: id, label, disabled: false });
+      else if (current.provider === id) options.push({ value: id, label, disabled: true, description: 'Needs a runner' });
       continue;
     }
     if (id === 'voyage' || connected.has(id)) options.push({ value: id, label, disabled: false });
@@ -328,3 +332,66 @@ export function embeddingView(res: Pick<ListProvidersResponse, 'providers'>, cur
 
 /** Under the row once the model changes: the vectors already stored came from the old one. */
 export const EMBEDDING_REINDEX_LINE = 'Knowledge embedded with the old model is found by keyword until it is indexed again.';
+
+
+// ── Local runner ─────────────────────────────────────────────────────────────
+
+type LocalRunnerEntry = ProviderLocalRunnerResponse['runners'][number];
+
+/** "Online" / "Offline": the same predicate as the runners page, decided server-side. */
+export function runnerStateWord(online: boolean): 'Online' | 'Offline' {
+  return online ? 'Online' : 'Offline';
+}
+
+/** "Last successful call 5m ago", or the plain fact that there has not been one. */
+export function lastCallLine(at: string | null | undefined, now: Date = new Date()): string {
+  if (!at) return 'No successful call';
+  const t = new Date(at).getTime();
+  if (!Number.isFinite(t)) return 'No successful call';
+  const s = Math.max(0, Math.round((now.getTime() - t) / 1000));
+  if (s < 60) return 'Last successful call just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `Last successful call ${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `Last successful call ${h}h ago`;
+  return `Last successful call ${Math.round(h / 24)}d ago`;
+}
+
+export interface LocalRunnerCardView {
+  /** No runner has advertised models: the card gives way to a one-line hint. */
+  empty: boolean;
+  /** The status word on the row: the pinned runner's state; null with no pick. */
+  state: { word: 'Online' | 'Offline' | 'Runner gone'; tone: 'success' | 'muted' | 'error' } | null;
+  runners: LocalRunnerEntry[];
+}
+
+export const LOCAL_RUNNER_HINT = 'Install the runner on a machine with Ollama to use its models for chat and search.';
+
+export function localRunnerCardView(res: ProviderLocalRunnerResponse): LocalRunnerCardView {
+  const empty = res.runners.length === 0 && !res.runnerId;
+  let state: LocalRunnerCardView['state'] = null;
+  if (res.runnerId) {
+    state = !res.runner ? { word: 'Runner gone', tone: 'error' }
+      : res.runner.online ? { word: 'Online', tone: 'success' } : { word: 'Offline', tone: 'muted' };
+  }
+  return { empty, state, runners: res.runners };
+}
+
+/** Models of one capability a runner advertises, as picker options. An unsupported vector size is disabled with the reason. */
+export function localModelOptions(runner: LocalRunnerEntry | undefined, capability: 'completion' | 'embedding'): UsedForOption[] {
+  return (runner?.models ?? [])
+    .filter((m) => m.capabilities.includes(capability))
+    .map((m) => {
+      const dims = m.dimensions;
+      if (capability === 'embedding') {
+        const ok = isSupportedEmbeddingDimension(dims);
+        return { value: m.name, label: dims ? `${m.name} · ${dims}` : m.name, disabled: !ok, description: ok ? undefined : 'Size not supported' };
+      }
+      return { value: m.name, label: m.name, disabled: false };
+    });
+}
+
+/** Runners that advertise at least one embedding model, with those models: the Embeddings row's choices. */
+export function embeddingChoices(local: Pick<ProviderLocalRunnerResponse, 'runners'> | null): LocalRunnerEntry[] {
+  return (local?.runners ?? []).filter((r) => localModelOptions(r, 'embedding').some((o) => !o.disabled));
+}

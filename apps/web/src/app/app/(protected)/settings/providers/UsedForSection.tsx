@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import type { ListProvidersResponse, ProviderAssignmentsResponse, ProviderEmbeddingResponse, ProviderSurfaceId } from '@buildd/shared';
+import type { ListProvidersResponse, ProviderAssignmentsResponse, ProviderEmbeddingResponse, ProviderLocalRunnerResponse, ProviderSurfaceId } from '@buildd/shared';
 import { Select } from '@/components/ui/Select';
 import Section from '@/components/ui/Section';
-import { AUTOMATIC, EMBEDDING_REINDEX_LINE, embeddingView, loneProviderLine, usedForView } from './providers-view';
+import { AUTOMATIC, EMBEDDING_REINDEX_LINE, embeddingChoices, embeddingView, loneProviderLine, localModelOptions, usedForView } from './providers-view';
 
 import { EMBEDDING_MODEL_PLACEHOLDER, type EmbeddingCredentialProvider } from '@buildd/core/providers/embedding';
 
@@ -23,10 +23,13 @@ const INPUT = 'w-full min-h-11 md:min-h-9 px-3 bg-surface-1 border-2 border-bord
  * provider with an embeddings endpoint is connected: Voyage, the default, or
  * that provider plus a model id. Its key is the provider's stored one.
  */
-export default function UsedForSection({ teamId, data, canManage, decisions, extra }: {
+export default function UsedForSection({ teamId, data, canManage, decisions, extra, local = null, onLocalChanged }: {
   teamId: string;
   data: ListProvidersResponse;
   canManage: boolean;
+  /** The team's runners and pick, for the Embeddings row's Local runner option. */
+  local?: ProviderLocalRunnerResponse | null;
+  onLocalChanged?: () => Promise<void> | void;
   decisions?: ReactNode;
   extra?: ReactNode;
 }) {
@@ -53,7 +56,7 @@ export default function UsedForSection({ teamId, data, canManage, decisions, ext
 
   const lone = loneProviderLine(data);
   const rows = assignments ? usedForView(data, assignments) : null;
-  const embeddingRow = embedding ? embeddingView(data, embedding) : null;
+  const embeddingRow = embedding ? embeddingView(data, embedding, local) : null;
 
   async function pick(surface: ProviderSurfaceId, provider: string) {
     setBusy(surface);
@@ -99,7 +102,7 @@ export default function UsedForSection({ teamId, data, canManage, decisions, ext
           </div>
         ))}
         {embeddingRow && embedding && (
-          <EmbeddingRowItem teamId={teamId} row={embeddingRow} canManage={canManage} onSaved={setEmbedding} />
+          <EmbeddingRowItem teamId={teamId} row={embeddingRow} canManage={canManage} onSaved={setEmbedding} local={local} onLocalChanged={onLocalChanged} />
         )}
         {decisions && <div className="py-2" data-testid="used-for-decisions">{decisions}</div>}
       </dl>
@@ -110,19 +113,49 @@ export default function UsedForSection({ teamId, data, canManage, decisions, ext
 }
 
 /** Embeddings: provider, and for anything but Voyage a model id with Save. */
-function EmbeddingRowItem({ teamId, row, canManage, onSaved }: {
+function EmbeddingRowItem({ teamId, row, canManage, onSaved, local, onLocalChanged }: {
   teamId: string;
   row: NonNullable<ReturnType<typeof embeddingView>>;
   canManage: boolean;
   onSaved: (next: ProviderEmbeddingResponse) => void;
+  local: ProviderLocalRunnerResponse | null;
+  onLocalChanged?: () => Promise<void> | void;
 }) {
   const [provider, setProvider] = useState<string>(row.value);
   const [model, setModel] = useState(row.model ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [changedModel, setChangedModel] = useState(false);
-  const needsModel = provider !== 'voyage';
-  const dirty = provider !== row.value || (needsModel && model.trim() !== (row.model ?? ''));
+  const onRunner = provider === 'local_runner';
+  const choices = embeddingChoices(local);
+  const [runnerId, setRunnerId] = useState<string>(local?.runnerId ?? '');
+  const [runnerModel, setRunnerModel] = useState<string>(row.value === 'local_runner' ? row.model ?? '' : '');
+  const [queued, setQueued] = useState<number | null>(null);
+  const needsModel = provider !== 'voyage' && !onRunner;
+  const runnerDirty = onRunner && (row.value !== 'local_runner' || runnerId !== (local?.runnerId ?? '') || runnerModel !== (row.model ?? ''));
+  const dirty = onRunner ? runnerDirty : provider !== row.value || (needsModel && model.trim() !== (row.model ?? ''));
+
+  async function saveRunner() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch('/api/providers/local-runner', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teamId, runnerId, embedModel: runnerModel }),
+      });
+      const body = (await res.json().catch(() => ({}))) as Partial<ProviderLocalRunnerResponse> & { error?: string };
+      if (!res.ok || body.runners === undefined) throw new Error(body.error ?? 'Could not save. Try again.');
+      setChangedModel(true);
+      setQueued(body.reembedQueued ?? null);
+      onSaved({ provider: 'local_runner', model: body.embedModel ?? runnerModel });
+      await onLocalChanged?.();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not save. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function save(nextProvider: string, nextModel: string) {
     setBusy(true);
@@ -164,6 +197,39 @@ function EmbeddingRowItem({ teamId, row, canManage, onSaved }: {
               options={row.options}
             />
           </div>
+          {onRunner && (
+            <>
+              <div className="w-full sm:w-auto sm:flex-1 sm:max-w-72">
+                <Select
+                  value={runnerId}
+                  onChange={(v) => { setRunnerId(v); setRunnerModel(''); setErr(null); }}
+                  disabled={!canManage || busy}
+                  aria-label="Runner"
+                  sheetTitle="Runner"
+                  testId="used-for-embedding-runner"
+                  placeholder="Choose a runner"
+                  options={choices.map((r) => ({ value: r.id, label: `${r.name} · ${r.online ? 'Online' : 'Offline'}`, disabled: false }))}
+                />
+              </div>
+              <div className="w-full sm:w-auto sm:flex-1 sm:max-w-72">
+                <Select
+                  value={runnerModel}
+                  onChange={(v) => { setRunnerModel(v); setErr(null); }}
+                  disabled={!canManage || busy || !runnerId}
+                  aria-label="Embedding model"
+                  sheetTitle="Embedding model"
+                  testId="used-for-embedding-runner-model"
+                  placeholder="Choose a model"
+                  options={localModelOptions(choices.find((r) => r.id === runnerId), 'embedding')}
+                />
+              </div>
+              {canManage && dirty && (
+                <button className="btn btn-primary" onClick={() => void saveRunner()} disabled={busy || !runnerId || !runnerModel} data-testid="used-for-embedding-runner-save">
+                  Save
+                </button>
+              )}
+            </>
+          )}
           {needsModel && (
             <>
               <input
@@ -185,7 +251,7 @@ function EmbeddingRowItem({ teamId, row, canManage, onSaved }: {
           )}
         </dd>
       </div>
-      {changedModel && !err && <p className="text-meta text-text-secondary mt-1.5" data-testid="used-for-embedding-reindex">{EMBEDDING_REINDEX_LINE}</p>}
+      {changedModel && !err && <p className="text-meta text-text-secondary mt-1.5" data-testid="used-for-embedding-reindex">{queued ? `${queued} ${queued === 1 ? 'index' : 'indexes'} will be embedded again. ` : ''}{EMBEDDING_REINDEX_LINE}</p>}
       {err && <p role="alert" className="text-meta text-status-error mt-1.5">{err}</p>}
     </div>
   );

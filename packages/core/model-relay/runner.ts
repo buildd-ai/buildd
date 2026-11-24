@@ -141,6 +141,51 @@ SELECT local_runner, embedding_provider, embedding_model, provider_assignments F
   return pick;
 }
 
+/** One of the team's runners that has advertised local models, for the picker. */
+export interface TeamLocalRunner extends RelayRunner {
+  /** The runner account's display name. */
+  name: string;
+}
+
+/**
+ * The team's runners that have ever advertised local models (§7.3: the card
+ * shows only then), newest heartbeat first. A runner that never reported an
+ * Ollama is not offered.
+ */
+export async function listTeamLocalRunners(teamId: string, exec: RelayExec = dbExec): Promise<TeamLocalRunner[]> {
+  const out: TeamLocalRunner[] = [];
+  for (const hb of rowsOf(await exec(sql`-- relay:list_runners
+SELECT h.id, h.account_id, a.name, h.last_heartbeat_at, h.presence_connected, h.local_models
+FROM worker_heartbeats h
+JOIN accounts a ON a.id = h.account_id
+WHERE a.team_id = ${teamId}::uuid AND h.local_models IS NOT NULL
+ORDER BY h.last_heartbeat_at DESC
+LIMIT 50`))) {
+    const localModels = parseLocalModelsAdvert(parseJson(hb.local_models));
+    if (!localModels) continue;
+    out.push({
+      id: String(hb.id),
+      accountId: String(hb.account_id),
+      name: typeof hb.name === 'string' && hb.name ? hb.name : 'Runner',
+      lastHeartbeatAt: hb.last_heartbeat_at as string | Date,
+      presenceConnected: hb.presence_connected == null ? null : hb.presence_connected === true,
+      localModels,
+    });
+  }
+  return out;
+}
+
+/** When the runner last finished a relay job successfully (ISO), or null if it never has. */
+export async function lastRelaySuccessAt(teamId: string, runnerId: string, exec: RelayExec = dbExec): Promise<string | null> {
+  const row = rowsOf(await exec(sql`-- relay:last_success
+SELECT max(finished_at) AS at FROM model_relay_jobs
+WHERE team_id = ${teamId}::uuid AND runner_id = ${runnerId}::uuid AND status = 'done'`))[0];
+  const at = row?.at;
+  if (!at) return null;
+  const d = at instanceof Date ? at : new Date(String(at));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 export type RelayAvailability =
   | { ok: true; runner: RelayRunner; model: LocalModelAdvert }
   | { ok: false; code: Extract<RelayErrorCode, 'runner_offline' | 'model_missing'>; message: string; runnerId: string | null };
