@@ -164,7 +164,14 @@ export async function recordOrCoalesceDeferral(input: RecordGateEventInput): Pro
     const [latest] = await db
       .select({ id: gateEvents.id, reason: gateEvents.reason, outcome: gateEvents.outcome, detail: gateEvents.detail })
       .from(gateEvents)
-      .where(eq(gateEvents.taskId, taskId))
+      // Newest row for (task, gate) regardless of outcome: a flip such as
+      // deferred -> stranded -> deferred must record the return as a new row,
+      // so coalescing happens only when the newest row's outcome AND reason
+      // both match the input.
+      .where(and(
+        eq(gateEvents.taskId, taskId),
+        eq(gateEvents.gate, input.gate),
+      ))
       .orderBy(desc(gateEvents.occurredAt))
       .limit(1);
 
@@ -184,7 +191,10 @@ export async function recordOrCoalesceDeferral(input: RecordGateEventInput): Pro
         .update(gateEvents)
         .set({
           occurredAt: new Date(),
-          detail: boundDetail({ ...priorDetail, ...(input.detail ?? {}), firstDeferredAt, consecutiveDeferrals: priorCount + 1 }),
+          detail: boundDetail({
+            ...priorDetail, ...(input.detail ?? {}), firstDeferredAt,
+            consecutiveDeferrals: priorCount + 1, lastSeenAt: new Date().toISOString(),
+          }),
         })
         .where(eq(gateEvents.id, latest.id));
       return latest.id;

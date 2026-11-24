@@ -45,6 +45,9 @@ const mockCleanupStuckWaitingInput = mock((_accountId: string) =>
 );
 const mockCleanupUnresumedAnswers = mock((_accountId: string) => Promise.resolve({ degraded: 0 }));
 const mockCleanupUnreadInteractiveAnswers = mock((_accountId: string) => Promise.resolve({ degraded: 0 }));
+const mockSweepInPlaceResumes = mock(() => Promise.resolve({ resumed: 0, fellBack: 0, cleared: 0 }));
+mock.module('@/lib/in-place-resume', () => ({ sweepInPlaceResumes: mockSweepInPlaceResumes }));
+
 mock.module('@/lib/stale-workers', () => ({
   cleanupStuckWaitingInput: mockCleanupStuckWaitingInput,
   cleanupUnresumedAnswers: mockCleanupUnresumedAnswers,

@@ -33,6 +33,7 @@ import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { and, eq, isNotNull, lt, or } from 'drizzle-orm';
 import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { sweepInPlaceResumes } from '@/lib/in-place-resume';
 import { cleanupStuckWaitingInput, cleanupUnreadInteractiveAnswers, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { INTERACTIVE_ANSWER_READ_DEADLINE_MS } from '@/lib/answer-resume';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
@@ -127,13 +128,24 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
   }
 
+  // Resumes in place that did not settle by themselves: a worker that parked
+  // before its intent was written is resumed, and a pause never reached by its
+  // deadline falls back to a new attempt (lib/in-place-resume.ts).
+  let inPlace = { resumed: 0, fellBack: 0, cleared: 0 };
+  try {
+    inPlace = await sweepInPlaceResumes();
+  } catch (err) {
+    errors++;
+    console.error('[Cron] waiting-input-sweep in-place resume sweep failed:', err);
+  }
+
   console.log(
-    `[Cron] waiting-input-sweep: orphansSettled=${orphansSettled} accounts=${accountIds.length} failedWorkers=${failedWorkers} retriedTasks=${retriedTasks} answerAccounts=${answerAccountIds.length} answersDegraded=${answersDegraded} errors=${errors}`,
+    `[Cron] waiting-input-sweep: orphansSettled=${orphansSettled} accounts=${accountIds.length} failedWorkers=${failedWorkers} retriedTasks=${retriedTasks} answerAccounts=${answerAccountIds.length} answersDegraded=${answersDegraded} inPlaceResumed=${inPlace.resumed} inPlaceFellBack=${inPlace.fellBack} errors=${errors}`,
   );
 
-  const result = { orphansSettled, accountsSwept: accountIds.length, failedWorkers, retriedTasks, answerAccountsSwept: answerAccountIds.length, answersDegraded, errors };
+  const result = { orphansSettled, accountsSwept: accountIds.length, failedWorkers, retriedTasks, answerAccountsSwept: answerAccountIds.length, answersDegraded, inPlaceResumed: inPlace.resumed, inPlaceFellBack: inPlace.fellBack, errors };
   // Nothing stuck is the normal, healthy state, so changed=0 with errors=0 is
   // fine. Reclaiming a worker, retrying a task or moving an answer is the real work.
-  report({ processed: accountIds.length + answerAccountIds.length, changed: orphansSettled + failedWorkers + retriedTasks + answersDegraded, errors, result });
+  report({ processed: accountIds.length + answerAccountIds.length, changed: orphansSettled + failedWorkers + retriedTasks + answersDegraded + inPlace.resumed + inPlace.fellBack, errors, result });
   return NextResponse.json(result);
 }

@@ -34,7 +34,16 @@ export interface GateEventRow {
   taskId: string | null;
   callerOrigin: string | null;
   occurredAt: Date;
+  /**
+   * How many times this row's (task, gate, outcome, reason) repeated: the
+   * writer coalesces repeats into one row (`detail.consecutiveDeferrals`).
+   * Absent or < 1 means a single occurrence.
+   */
+  repeats?: number | null;
 }
+
+const weightOf = (ev: GateEventRow): number =>
+  typeof ev.repeats === 'number' && Number.isFinite(ev.repeats) && ev.repeats >= 1 ? Math.floor(ev.repeats) : 1;
 
 export interface GateAnalyticsInput {
   window: GateWindow;
@@ -63,9 +72,9 @@ function emptyCounts(): GateOutcomeCounts {
   return { rejected: 0, deferred: 0, bypassed: 0, warned: 0, stranded: 0 };
 }
 
-function tally(counts: GateOutcomeCounts, outcome: string): void {
+function tally(counts: GateOutcomeCounts, outcome: string, n = 1): void {
   if (outcome === 'rejected' || outcome === 'deferred' || outcome === 'bypassed' || outcome === 'warned' || outcome === 'stranded') {
-    counts[outcome] += 1;
+    counts[outcome] += n;
   }
 }
 
@@ -116,7 +125,8 @@ export function computeGateAnalytics(input: GateAnalyticsInput): GateAnalytics {
   const byGate = new Map<string, GateAccumulator>();
 
   for (const ev of events) {
-    tally(totals, ev.outcome);
+    const w = weightOf(ev);
+    tally(totals, ev.outcome, w);
     const ts = ev.occurredAt.getTime();
 
     let acc = byGate.get(ev.gate);
@@ -134,8 +144,8 @@ export function computeGateAnalytics(input: GateAnalyticsInput): GateAnalytics {
       byGate.set(ev.gate, acc);
     }
     acc.surfaces.add(ev.surface);
-    acc.total += 1;
-    tally(acc.counts, ev.outcome);
+    acc.total += w;
+    tally(acc.counts, ev.outcome, w);
     if (ts < acc.firstSeen) acc.firstSeen = ts;
     if (ts > acc.lastSeen) acc.lastSeen = ts;
     if (!acc.exampleTaskId && ev.taskId) acc.exampleTaskId = ev.taskId;
@@ -145,8 +155,8 @@ export function computeGateAnalytics(input: GateAnalyticsInput): GateAnalytics {
       reason = { count: 0, counts: emptyCounts(), firstSeen: ts, lastSeen: ts };
       acc.byReason.set(ev.reason, reason);
     }
-    reason.count += 1;
-    tally(reason.counts, ev.outcome);
+    reason.count += w;
+    tally(reason.counts, ev.outcome, w);
     if (ts < reason.firstSeen) reason.firstSeen = ts;
     if (ts > reason.lastSeen) reason.lastSeen = ts;
   }
@@ -229,14 +239,15 @@ export function buildGateReasonFamily(events: GateEventRow[], prefix: string): G
   for (const ev of events) {
     if (ev.outcome === 'accepted') continue;
     if (!ev.reason.startsWith(prefix)) continue;
-    count += 1;
-    tally(counts, ev.outcome);
+    const w = weightOf(ev);
+    count += w;
+    tally(counts, ev.outcome, w);
     gates.add(ev.gate);
     const ts = ev.occurredAt.getTime();
     if (firstSeen === null || ts < firstSeen) firstSeen = ts;
     if (lastSeen === null || ts > lastSeen) lastSeen = ts;
     if (!exampleTaskId && ev.taskId) exampleTaskId = ev.taskId;
-    byReason.set(ev.reason, (byReason.get(ev.reason) ?? 0) + 1);
+    byReason.set(ev.reason, (byReason.get(ev.reason) ?? 0) + w);
   }
 
   return {
