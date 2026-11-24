@@ -229,3 +229,19 @@ it('excludes accepted path claims from gate friction totals and reason families'
   expect(report.gates[0].outcomes.bypassed).toBe(0);
   expect(buildGateReasonFamily([accepted], 'paths')).toMatchObject({ count: 0 });
 });
+
+describe('coalesced rows carry their repeat count', () => {
+  it('weights a row by repeats in totals, per-gate and per-reason counts', () => {
+    const base = {
+      id: 'a', gate: 'claim_loop_deferral', surface: 's', outcome: 'deferred', reason: 'r',
+      workspaceId: null, missionId: null, taskId: null, callerOrigin: null, occurredAt: new Date('2026-11-20T00:00:00Z'),
+    };
+    const out = computeGateAnalytics({
+      window: '7d', now: new Date('2026-11-23T00:00:00Z'),
+      events: [{ ...base, repeats: 40 }, { ...base, id: 'b', repeats: null }],
+    });
+    expect(out.gates[0].count).toBe(41);
+    expect(out.gates[0].outcomes.deferred).toBe(41);
+    expect(out.gates[0].topReasons[0].count).toBe(41);
+  });
+});

@@ -557,6 +557,7 @@ const mockFireGateEvent = mock((_input: any) => 'gate-event-1');
 mock.module('@/lib/gate-ledger', () => ({
   GATE_SLUGS: REAL_GATE_SLUGS,
   fireGateEvent: mockFireGateEvent,
+  fireCoalescedGateEvent: mockFireGateEvent,
   fireDeferralEvent: mock(() => {}),
   fireGateEventForWorkspaceRef: mock(() => 'gate-event-1'),
   gateCallerOrigin: () => 'system',
