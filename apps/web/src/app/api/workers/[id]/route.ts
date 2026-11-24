@@ -146,6 +146,7 @@ import { leadSummary } from '@/lib/capability-hold';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsAcknowledged, markInstructionsDelivered, pendingInstructionIds } from '@/lib/worker-instructions';
 import { pauseServed } from '@/lib/worker-pause-policy';
+import { loadTaskForResume, resumeAfterPause, settleOnReactivation } from '@/lib/in-place-resume';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
@@ -5963,10 +5964,36 @@ async function patchWorker(
       })
     : [];
 
+  // Resume in place (lib/in-place-resume.ts). A worker that parked because a
+  // tier/model change or a requeue asked for the pause is resumed here, with
+  // nobody pressing Resume; a runner resuming this worker's own session is
+  // handed the model the session continues on.
+  let sessionModelForRunner: string | undefined;
+  const parkedOnPause = body.status === 'waiting_input' && updated.status === 'waiting_input'
+    && (updated.waitingFor as { type?: unknown } | null)?.type === 'pause';
+  const resumingSession = body.status === 'running' && body.reactivate === true;
+  if (updated.taskId && (parkedOnPause || resumingSession)) {
+    try {
+      const resumeTask = await loadTaskForResume(updated.taskId);
+      if (resumeTask && parkedOnPause) {
+        await resumeAfterPause({ worker: { ...updated, workspace: resumeTask.workspace }, task: resumeTask });
+      } else if (resumeTask) {
+        sessionModelForRunner = (await settleOnReactivation({
+          worker: updated, task: resumeTask, runnerTakesModel: body.takesSessionModel === true,
+        })).sessionModel;
+      }
+    } catch (err) {
+      console.error(`[Worker ${id}] in-place resume step failed:`, err);
+    }
+  }
+
   // Return worker with any pending instructions, worker-to-worker messages, and output warnings
   return jsonResponse({
     ...updated,
     instructions: allInstructions,
+    // The model a session resumed in place continues on (a tier/model change
+    // made while it ran). The runner applies it before it resumes the session.
+    ...(sessionModelForRunner ? { sessionModel: sessionModelForRunner } : {}),
     // A person paused this run: the runner stops at its next safe point. Served
     // on every PATCH until the worker parks, so a missed push still lands.
     ...(pauseServed(updated) ? { pauseRequested: true } : {}),
