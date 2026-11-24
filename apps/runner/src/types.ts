@@ -86,7 +86,7 @@ export type Milestone =
       ts: number;
       // Structured tool-call fields (see tool-milestones.ts). The web task page
       // reads these exact names for the tool tape and "Touched files" list.
-      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash';
+      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash' | 'Skill';
       /** File path from the tool input, relative to the session cwd when under it. */
       path?: string;
       /** Lines added (multiset line diff for Edit/MultiEdit; content lines for Write). */
@@ -97,6 +97,8 @@ export type Milestone =
       cmd?: string;
       /** Read only: consecutive same-path Reads folded into this milestone. */
       count?: number;
+      /** Skill only: the invoked skill's slug. Never its arguments. */
+      skill?: string;
     };
 
 // Tool call tracking

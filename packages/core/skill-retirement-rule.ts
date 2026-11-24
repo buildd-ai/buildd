@@ -10,7 +10,7 @@ export const MIN_RETIREMENT_WINDOW_DAYS = 7;
 export const DEFAULT_STALE_DAYS = 30;
 export const DEFAULT_ARCHIVE_DAYS = 60;
 
-export type RetirementMode = 'recording' | 'acting';
+export type RetirementMode = 'off' | 'recording' | 'acting';
 
 export class RetirementWindowError extends Error {
   constructor(message: string) {
@@ -19,9 +19,41 @@ export class RetirementWindowError extends Error {
   }
 }
 
-/** Anything but the literal 'acting' records only. */
-export function resolveRetirementMode(raw: string | null | undefined): RetirementMode {
-  return raw?.trim().toLowerCase() === 'acting' ? 'acting' : 'recording';
+/**
+ * The one place a workspace's retirement mode is read (gitConfig.skillRetirement.mode).
+ * Absent or unrecognised resolves to 'recording': a typo must never start disabling skills.
+ */
+export function resolveRetirementMode(
+  gitConfig: { skillRetirement?: { mode?: unknown } | null } | null | undefined,
+): RetirementMode {
+  const mode = gitConfig?.skillRetirement?.mode;
+  return mode === 'off' || mode === 'acting' ? mode : 'recording';
+}
+
+/** Workspace ids the platform owner has allowed to act (SKILL_RETIREMENT_ACTING_WORKSPACES, comma separated). */
+export function parseActingAllowlist(raw: string | null | undefined): Set<string> {
+  return new Set((raw ?? '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean));
+}
+
+export interface ActingDecision {
+  mode: RetirementMode;
+  /** Set when 'acting' was requested but refused; the effective mode is then 'recording'. */
+  refusal?: 'not_allowlisted' | 'archive_window_not_elapsed';
+}
+
+/**
+ * Acting is set by the platform owner (allowlist) and refused until telemetry has
+ * run the full archive window, so the report has had its coverage before anything is disabled.
+ */
+export function gateActingMode(
+  requested: RetirementMode,
+  o: { workspaceId: string | null; allowlist: ReadonlySet<string>; now: Date; telemetryStartedAt: Date; archiveDays?: number },
+): ActingDecision {
+  if (requested !== 'acting') return { mode: requested };
+  if (!o.workspaceId || !o.allowlist.has(o.workspaceId.toLowerCase())) return { mode: 'recording', refusal: 'not_allowlisted' };
+  const days = (o.now.getTime() - o.telemetryStartedAt.getTime()) / DAY_MS;
+  if (days < (o.archiveDays ?? DEFAULT_ARCHIVE_DAYS)) return { mode: 'recording', refusal: 'archive_window_not_elapsed' };
+  return { mode: 'acting' };
 }
 
 export interface RetirementSkill {
@@ -52,7 +84,7 @@ export interface RetirementInput {
   skills: readonly RetirementSkill[];
   now: Date;
   telemetryStartedAt: Date;
-  mode: RetirementMode;
+  mode?: RetirementMode;
   defaultRoleSlugs: readonly string[];
   /** Slugs named by any schedule template (enabled or not). */
   scheduleSkillSlugs: readonly string[];
@@ -102,7 +134,7 @@ export function evaluateRetirement(input: RetirementInput): RetirementVerdict {
   }
 
   const report = telemetryReady
-    ? `${stale.length} stale, ${archivable.length} past ${archiveDays}d (${input.mode})`
-    : `telemetry has run ${Math.floor(telemetryDays)}d of the ${archiveDays}d needed: nothing archivable yet; ${stale.length} stale (${input.mode})`;
+    ? `${stale.length} stale, ${archivable.length} past ${archiveDays}d (${input.mode ?? 'recording'})`
+    : `telemetry has run ${Math.floor(telemetryDays)}d of the ${archiveDays}d needed: nothing archivable yet; ${stale.length} stale (${input.mode ?? 'recording'})`;
   return { stale, archivable, exempt, report };
 }

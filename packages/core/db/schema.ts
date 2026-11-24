@@ -898,6 +898,11 @@ export interface WorkspaceGitConfig {
   // the follow-up action policy.
   postSessionQuality?: import('../post-session-quality').PostSessionQualityConfig;
 
+  // Skill retirement sweep (R-16). Read only through resolveRetirementMode:
+  // absent or unrecognised => 'recording'. 'acting' also needs the platform
+  // owner's allowlist; see skill-lifecycle cron.
+  skillRetirement?: { mode?: 'off' | 'recording' | 'acting' };
+
   // Quality Scout probe declarations: verification command, test environment,
   // CLI/API journeys, UI routes, fixture setup, write constraints. Read only
   // through resolveScoutExtension() in scout-capabilities.ts. Absent ⇒ Scout
@@ -2198,12 +2203,13 @@ export type WorkerMilestone =
       type: 'action';
       label?: string;
       ts: number;
-      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash';
+      tool?: 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash' | 'Skill';
       path?: string;
       add?: number;
       rem?: number;
       cmd?: string;
       count?: number;
+      skill?: string;
     };
 
 export const workers = pgTable('workers', {
@@ -4198,13 +4204,16 @@ export const workspaceSkills = pgTable('workspace_skills', {
 
 // Record-only claim counter per skill (spec "Skill candidates, usage telemetry
 // and retirement"). One row per skill, raised by one each time a claim delivers
-// it; nothing reads it to act yet.
+// it. A ledger like memory_uses: skillId deliberately has NO foreign key, so
+// deleting a skill leaves its row (the telemetry history outlives the skill).
+// telemetryStartedAt is the team's first write, copied onto each new row and never moved.
 export const skillUsage = pgTable('skill_usage', {
-  skillId: uuid('skill_id').references(() => workspaceSkills.id, { onDelete: 'cascade' }).primaryKey(),
+  skillId: uuid('skill_id').primaryKey(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   claimCount: integer('claim_count').notNull().default(0),
   firstClaimedAt: timestamp('first_claimed_at', { withTimezone: true }).notNull().defaultNow(),
   lastClaimedAt: timestamp('last_claimed_at', { withTimezone: true }).notNull().defaultNow(),
+  telemetryStartedAt: timestamp('telemetry_started_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   teamIdx: index('skill_usage_team_idx').on(t.teamId),
 }));
