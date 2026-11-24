@@ -5,6 +5,7 @@ import {
   withThreadTarget,
   threadEventsFor,
   threadNote,
+  needsYouNote,
 } from './task-thread-target';
 
 describe('parseThreadTarget', () => {
@@ -58,5 +59,41 @@ describe('threadNote', () => {
     expect(threadNote('started', { title: 'Fix it' })).toContain('Fix it');
     expect(threadNote('waiting_input', { title: 'Fix it' }).length).toBeLessThan(200);
     expect(threadNote('failed', { title: 'Fix it' })).toMatch(/failed/i);
+  });
+
+  it('reads as a plain sentence: no "buildd:" or "Needs you:" label in front', () => {
+    for (const e of THREAD_EVENTS) expect(threadNote(e, { title: 'Fix it', prUrl: 'u' })).not.toMatch(/^(buildd|needs you):/i);
+    expect(threadNote('waiting_input', { title: 'Fix it' })).toContain('waiting for your input');
+  });
+});
+
+describe('needsYouNote (owner-only states)', () => {
+  const escalated = { needsYou: true, state: 'ESCALATED', stateReason: 'unsafe_other', prNumber: 6108, headline: 'Needs a person to merge: the migration drops a foreign key' };
+  const url = 'https://github.com/o/r/pull/6108';
+
+  it('says in a plain sentence that the PR waits for your input, what is needed, and carries the link', () => {
+    const n = needsYouNote({ delivery: escalated, prUrl: url })!;
+    expect(n.text).toStartWith('PR #6108 is waiting for your input.');
+    expect(n.text).toContain('foreign key');
+    expect(n.text).toContain(url);
+    expect(n.text.split('\n')).toHaveLength(1);
+  });
+
+  it('is silent for an ordinary wait', () => {
+    expect(needsYouNote({ delivery: { ...escalated, needsYou: false }, prUrl: url })).toBeNull();
+    expect(needsYouNote({ delivery: null, prUrl: null })).toBeNull();
+  });
+
+  it('dedupes: the same state keeps its key, a new state changes it', () => {
+    const a = needsYouNote({ delivery: escalated, prUrl: url })!;
+    const again = needsYouNote({ delivery: { ...escalated, headline: 'reworded' }, prUrl: url })!;
+    const moved = needsYouNote({ delivery: { ...escalated, state: 'NEEDS_HUMAN', stateReason: 'review' }, prUrl: url })!;
+    expect(again.reason).toBe(a.reason);
+    expect(moved.reason).not.toBe(a.reason);
+  });
+
+  it('a dependency waiting on an escalated PR is named as the cause', () => {
+    const n = needsYouNote({ delivery: null, prUrl: null, dependency: { delivery: escalated, prUrl: url } })!;
+    expect(n.text).toStartWith('This is waiting on PR #6108, which needs your input.');
   });
 });

@@ -1340,6 +1340,36 @@ describe('WorkerManager — state transitions', () => {
       }
     });
 
+    test('R-8: an agent another path continued while the server answered is continued, not a failed update (no rollback, live session kept)', async () => {
+      const { initUpdateCanary, emptyCanaryState } = await import('../../src/update-canary');
+      const canary = initUpdateCanary({ file: '/tmp/buildd-test-canary.json', config: { enabled: true, tripCount: 3, windowMs: 3_600_000 }, initialState: { ...emptyCanaryState(), lastBootCommit: 'a'.repeat(40) } });
+      canary.boot('b'.repeat(40));
+      const trips: any[] = [];
+      canary.setTripHandler((t) => trips.push(t));
+      try {
+        const worker = await restoredPaused('w-upd-race');
+        worker.resumeOnStart = 'update';
+        // While the server answers the "paused" report, the 10s sync drains a
+        // queued instruction into sendMessage: the agent resumes by that path.
+        mockUpdateWorker.mockImplementationOnce(async () => {
+          await manager.sendMessage('w-upd-race', 'a queued instruction');
+          return {} as any;
+        });
+
+        const out = await manager.continueRestoredAgents({ updateProbeMs: 50 });
+        await new Promise(r => setTimeout(r, 300));
+
+        expect(out.continued).toEqual(['w-upd-race']);
+        expect(trips).toEqual([]);
+        // Not re-paused under the live session for a rollback.
+        expect(worker.status).not.toBe('waiting');
+        expect(worker.resumeOnStart).toBeUndefined();
+        expect(worker.error ?? '').not.toMatch(/^paused: paused for a runner update/);
+      } finally {
+        initUpdateCanary({ file: '/tmp/buildd-test-canary-off.json', config: { enabled: false, tripCount: 3, windowMs: 1 } });
+      }
+    });
+
     test('R-8: one agent that continues means the new version runs them: no rollback', async () => {
       const { initUpdateCanary, emptyCanaryState } = await import('../../src/update-canary');
       const canary = initUpdateCanary({ file: '/tmp/buildd-test-canary.json', config: { enabled: true, tripCount: 3, windowMs: 3_600_000 }, initialState: { ...emptyCanaryState(), lastBootCommit: 'a'.repeat(40) } });
