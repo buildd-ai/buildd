@@ -21,12 +21,14 @@ export function buildSkillUsageUpsert(input: Pick<SkillUsageInput, 'teamId' | 's
   if (ids.length === 0) return null;
   const at = input.now.toISOString();
   const rows = sql.join(
-    ids.map(id => sql`(${id}::uuid, ${input.teamId}::uuid, 1, ${at}::timestamptz, ${at}::timestamptz)`),
+    ids.map(id => sql`(${id}::uuid, ${input.teamId}::uuid, 1, ${at}::timestamptz, ${at}::timestamptz,
+      COALESCE((SELECT min(t.telemetry_started_at) FROM skill_usage t WHERE t.team_id = ${input.teamId}::uuid), ${at}::timestamptz))`),
     sql`, `,
   );
-  return sql`INSERT INTO skill_usage (skill_id, team_id, claim_count, first_claimed_at, last_claimed_at)
+  return sql`INSERT INTO skill_usage (skill_id, team_id, claim_count, first_claimed_at, last_claimed_at, telemetry_started_at)
 VALUES ${rows}
-ON CONFLICT (skill_id) DO UPDATE SET claim_count = skill_usage.claim_count + 1, last_claimed_at = EXCLUDED.last_claimed_at`;
+ON CONFLICT (skill_id) DO UPDATE SET claim_count = skill_usage.claim_count + 1, last_claimed_at = EXCLUDED.last_claimed_at
+-- telemetry_started_at is never in the SET list: set once per team, never moved`;
 }
 
 export async function recordSkillUsage(input: SkillUsageInput): Promise<void> {

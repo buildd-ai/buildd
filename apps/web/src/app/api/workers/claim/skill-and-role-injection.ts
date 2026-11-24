@@ -274,11 +274,16 @@ export async function attachRoleConfig(
  * row) this claim delivered, one statement per team. Runs after
  * `attachSkillBundles` and role resolution; never refuses a claim.
  */
+export const SKILL_USAGE_CLAIM_BUDGET_MS = 250;
+
 export async function recordClaimedSkillUsage(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
+  budgetMs: number = SKILL_USAGE_CLAIM_BUDGET_MS,
 ): Promise<void> {
-  try {
+  // The write runs to completion in the background (errors caught); the claim
+  // waits at most `budgetMs` for it, so a hung or slow write never delays it (R-13).
+  const write = (async () => {
     const byTeam = new Map<string, Set<string>>();
     for (const cw of claimedWorkers) {
       const task = claimedTasks.find(t => t.id === cw.taskId);
@@ -289,10 +294,17 @@ export async function recordClaimedSkillUsage(
       byTeam.set(teamId, ids);
     }
     const now = new Date();
-    for (const [teamId, ids] of byTeam) {
-      await recordSkillUsage({ teamId, skillIds: [...ids], now });
-    }
-  } catch (err) {
+    await Promise.all(
+      [...byTeam].map(([teamId, ids]) => recordSkillUsage({ teamId, skillIds: [...ids], now })),
+    );
+  })().catch(err => {
     console.warn('[skill-usage] recording failed (claim unaffected):', err instanceof Error ? err.message : err);
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<void>(resolve => { timer = setTimeout(resolve, budgetMs); });
+  try {
+    await Promise.race([write, budget]);
+  } finally {
+    clearTimeout(timer);
   }
 }

@@ -45,6 +45,7 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['get_manifest_coverage', {}],
   ['get_path_claim_stats', {}],
   ['get_decision_stats', {}],
+  ['procedure_digest', {}],
   ['get_failure_analytics', {}],
   ['dispatch_health', {}],
   ['list_connectors', {}],

@@ -10,7 +10,7 @@
 
 import type { Milestone } from './types';
 
-export type ActionTool = 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash';
+export type ActionTool = 'Edit' | 'Write' | 'MultiEdit' | 'Read' | 'Bash' | 'Skill';
 export type ActionMilestone = Extract<Milestone, { type: 'action' }>;
 
 /** Total milestones kept per worker. */
@@ -84,6 +84,8 @@ export function truncateCmd(cmd: string, max = BASH_CMD_MAX): string {
   return oneLine.length > max ? oneLine.slice(0, max) + '…' : oneLine;
 }
 
+const SKILL_SLUG = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+
 /**
  * Build the action milestone for a tool call, or null when the call is not
  * milestone-worthy. `root` is the worker's session cwd (worktree), used to
@@ -123,6 +125,12 @@ export function toolActionMilestone(
       const cmd = typeof inp.command === 'string' ? inp.command : '';
       if (!isNotableBash(cmd)) return null;
       return { type: 'action', label: `Ran: ${cmd.slice(0, 50)}`, ts, tool: 'Bash', cmd: truncateCmd(cmd) };
+    }
+    case 'Skill': {
+      // Slug only — the tool's `args` can carry task text and never leave here.
+      const slug = typeof inp.skill === 'string' ? inp.skill.trim() : '';
+      if (!SKILL_SLUG.test(slug)) return null;
+      return { type: 'action', label: `Skill ${slug}`, ts, tool: 'Skill', skill: slug };
     }
     default:
       return null;
