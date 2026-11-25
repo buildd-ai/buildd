@@ -14,7 +14,7 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
 import { canWriteTeamConnectors } from '@/lib/connector-team-auth';
 import { hasBearer, SESSION_REQUIRED } from '@/lib/capability-grants-auth';
-import { parseToolPolicy } from '@/lib/connector-gateway';
+import { parseToolPolicy, withReadOnlyTool } from '@/lib/connector-gateway';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const refuseWrite = () => NextResponse.json(
@@ -114,6 +114,8 @@ export async function PATCH(
     assertionAudience?: string;
     assertionTokenEndpoint?: string;
     toolPolicy?: unknown;
+    /** One tool to treat as read-only, added to the saved toolPolicy (the gateway's one-step fix). */
+    markReadOnly?: unknown;
   };
   try {
     body = await req.json();
@@ -130,6 +132,13 @@ export async function PATCH(
     const parsed = parseToolPolicy(body.toolPolicy);
     if (!parsed) return NextResponse.json({ error: 'toolPolicy must be { readOnlyTools?: string[], denyTools?: string[] } with at most 200 exact tool names each' }, { status: 400 });
     toolPolicy = parsed;
+  }
+  if (body.markReadOnly !== undefined) {
+    if (auth.type === 'api' || hasBearer(req)) return NextResponse.json(SESSION_REQUIRED, { status: 403 });
+    if (body.toolPolicy !== undefined) return NextResponse.json({ error: 'Send toolPolicy or markReadOnly, not both' }, { status: 400 });
+    const merged = withReadOnlyTool(connector.discoveredMetadata, body.markReadOnly as string);
+    if (!merged) return NextResponse.json({ error: 'markReadOnly must be one exact tool name (no wildcards), with at most 200 read-only tools in all' }, { status: 400 });
+    toolPolicy = merged;
   }
 
   try {

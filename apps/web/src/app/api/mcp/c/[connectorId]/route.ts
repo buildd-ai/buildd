@@ -45,6 +45,9 @@ import {
   filterToolsList,
   methodAllowed,
   readToolOverrides,
+  readOnlyFixSteps,
+  unvettedWrite,
+  adminVettedRead,
   toolResource,
   upstreamToolError,
   type CallDecision,
@@ -365,13 +368,25 @@ async function toolsCall(
   const hash = argsHash(args);
   const resource = toolResource(g.connector.id, tool);
   const base = { principal, resource };
+  // Set when the tool was classed a write only because nothing says it reads.
+  let unvetted = false;
   const refuse = (code: CallRefusal, cls: ToolClass | null, extra: Record<string, unknown> = {}) => {
-    noteToolAudit({ ...base, capability: TOOL_CALL_CAPABILITY, decision: 'refused', reasonCode: code, sideEffect: { risk: cls, argsHash: hash, provider: g.run.connector.provider, ...extra } });
-    return rpcJson(deniedToolResult(msg.id, code, { tool, provider: g.run.connector.provider, ...(extra.grantReason ? { grantReason: extra.grantReason } : {}) }));
+    noteToolAudit({ ...base, capability: TOOL_CALL_CAPABILITY, decision: 'refused', reasonCode: code, sideEffect: { risk: cls, argsHash: hash, provider: g.run.connector.provider, ...extra, ...(unvetted ? { unvettedTool: true } : {}) } });
+    // A read grant or a read-only role refused only because the provider does
+    // not annotate the tool: name it and give an admin the one-step fix.
+    const fixable = unvetted && (code === 'role_ceiling' || code === 'unattended_ceiling'
+      || (code === 'capability_not_granted' && extra.grantReason === 'tool_risk_exceeds_grant'));
+    const fix = fixable ? readOnlyFixSteps(tool, g.connector.id) : null;
+    return rpcJson(deniedToolResult(msg.id, code, {
+      tool, provider: g.run.connector.provider,
+      ...(extra.grantReason ? { grantReason: extra.grantReason } : {}),
+      ...(fix?.extra ?? {}),
+    }, fix?.steps ?? []));
   };
 
   let cls: ToolClass;
   let decision: CallDecision;
+  let vettedRead = false;
   try {
     const limit = g.run.unattended ? RATE_LIMITS.unattended : RATE_LIMITS.attended;
     if (!connectorRefusal(g.run) && await recentCallCount(principal.workerId, g.connector.id) >= limit) return refuse('rate_limited', null);
@@ -380,7 +395,10 @@ async function toolsCall(
     } else {
       const hit = cachedAnnotations(g.connector.id, tool, Date.now());
       const annotations = hit ? hit.annotations : await annotationsFromProvider(g, req.headers, tool);
-      cls = classifyNativeTool(tool, annotations, readToolOverrides(g.connector.discoveredMetadata, g.run.connector.provider), args);
+      const overrides = readToolOverrides(g.connector.discoveredMetadata, g.run.connector.provider);
+      cls = classifyNativeTool(tool, annotations, overrides, args);
+      unvetted = cls === 'write' && unvettedWrite(tool, annotations, overrides);
+      vettedRead = cls === 'read' && adminVettedRead(tool, overrides);
     }
     const scope = callScope(args);
     // The gateway enforces; the decision is the configured PDP's (connector-pdp.ts).
@@ -390,6 +408,7 @@ async function toolsCall(
       grant: () => authorizeConnectorToolUse(principal, {
         provider: g.run.connector.provider, connectorId: g.connector.id, tool,
         resource: scope.resource, environment: scope.environment, risk: cls === 'denied' ? 'admin' : cls,
+        ...(vettedRead ? { vettedRead: true } : {}),
       }),
     })));
   } catch (err) {
