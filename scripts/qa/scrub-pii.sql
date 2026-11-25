@@ -732,6 +732,8 @@ UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence), criterion
 -- underived so the app derives them again from the placeholder bodies. The
 -- verdicts' wording hashes above name the old words too, so they read as
 -- recorded before wordings were kept.
+-- Owner questions hold spec titles, retirement reasons and who answered: wiped.
+DELETE FROM spec_owner_questions;
 DELETE FROM spec_criteria;
 DELETE FROM spec_revision_reviews;
 UPDATE spec_revisions SET criteria_count = NULL;

@@ -168,3 +168,26 @@ describe('Settings → Runners page order', () => {
     expect(t).not.toMatch(/fail/i);
   });
 });
+
+describe('FleetOverview ACP panel', () => {
+  const acp = { shimPath: '/h/.local/bin/buildd-acp', target: '/h/.buildd/apps/runner/src/acp/main.ts', pointsHere: true, version: '1.4.0', platform: 'linux', bunPath: '/usr/bin/bun', mainPath: '/h/.buildd/apps/runner/src/acp/main.ts' };
+  it('shows Ready and the three snippets with the shim path', () => {
+    const html = renderToStaticMarkup(<FleetOverview fleet={fleet([{ ...runner('a', 'box', 0, 2), acp }])} />);
+    expect(html).toContain('data-acp-state="ready"');
+    expect(html).toContain('/h/.local/bin/buildd-acp');
+    expect(html).toContain('ssh -T -o BatchMode=yes user@box buildd acp');
+    expect(html).toContain('/mnt/c/');
+    expect(html).toContain('no secret');
+    expect(html.match(/aria-label="Copy to clipboard"/g)?.length).toBe(3);
+  });
+  it('an older runner reads unknown, never no', () => {
+    const html = renderToStaticMarkup(<FleetOverview fleet={fleet([runner('a', 'old', 0, 2)])} />);
+    expect(html).toContain('data-acp-state="unknown"');
+    expect(text(html)).toContain('Unknown, update the runner');
+  });
+  it('a shim pointing elsewhere names the path', () => {
+    const html = renderToStaticMarkup(<FleetOverview fleet={fleet([{ ...runner('a', 'box', 0, 2), acp: { ...acp, pointsHere: false, target: '/tmp/buildd-ci/main.ts' } }])} />);
+    expect(html).toContain('data-acp-state="elsewhere"');
+    expect(html).toContain('/tmp/buildd-ci/main.ts');
+  });
+});

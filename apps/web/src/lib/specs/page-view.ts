@@ -7,7 +7,8 @@ import { readRound } from '@/lib/read-round';
 import { and, desc, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
 import type { HubWorkspace } from './hub';
 import { isUuid } from '@/lib/uuid';
-import { fail, importedRefusal, listSpecIndexRows, personReach, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
+import { applyListQuery, type ListQuery } from './list-query';
+import { fail, importedRefusal, listSpecIndexRows, searchSpecIds, personReach, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
 import { after } from 'next/server';
 import { TTLCache } from '@/lib/cache';
 import { commentsOnRevision, type CommentView } from './comments';
@@ -116,6 +117,9 @@ export type SpecListView =
     canAct: boolean;
     /** The reader may confirm imports here (approve_specs, §18 R-19). */
     canConfirm: boolean;
+    /** What the URL asked for, and how many specs the workspace has before it. */
+    query: ListQuery;
+    total: number;
     /** When the page was read, so relative times match between server and client. */
     now: number;
   };
@@ -155,7 +159,7 @@ const guessKey = (workspaceId: string, r: { id: string; title: string }) => `${w
 
 /** A row the index reads: the index listing, or a whole spec row. */
 type IndexInputRow = Pick<SpecRow, 'id' | 'title' | 'scope' | 'parentSpecId' | 'status' | 'approvedRevision' | 'headRevision' | 'updatedAt'>
-  & { repoSourceState?: string | null; repoSource?: SpecRow['repoSource'] };
+  & { repoSourceState?: string | null; repoSource?: SpecRow['repoSource']; changedAt?: Date | string | null };
 
 /**
  * The index rows (§19). Placement comes from `spec_filings` (§17): a filing
@@ -190,6 +194,7 @@ export async function specIndexInputs(workspaceId: string, rows: ReadonlyArray<I
     return {
       id: r.id, title: r.title, scope: r.scope, parentSpecId: r.parentSpecId, status: r.status,
       approvedRevision: r.approvedRevision, headRevision: r.headRevision, updatedAt: new Date(r.updatedAt).toISOString(),
+      changedAt: r.changedAt ? new Date(r.changedAt).toISOString() : null,
       imported: (r.repoSourceState ?? r.repoSource?.state) === 'imported',
       filedBy: facts.filedBy ?? null, filingId: facts.filingId ?? null,
       suggestion: facts.suggestion ?? guesses.get(r.id) ?? null,
@@ -221,23 +226,27 @@ async function coldStartProposals(caller: SpecCaller, workspaceId: string, rows:
   return r?.ok && r.result.mode === 'taxonomy' && r.result.dryRun ? proposalAreas(r.result.proposal, r.result.proposedBy.source) : [];
 }
 
-export async function specListView(userId: string, workspaceId: string): Promise<SpecListView> {
+export async function specListView(userId: string, workspaceId: string, query: ListQuery = { q: '', sort: 'recent', filters: [] }): Promise<SpecListView> {
   const caller: SpecCaller = { kind: 'user', userId };
   // A person's reach, once for the request: the workspace's name comes with it.
   const ws = await personReach(userId, workspaceId);
   if (!ws) return { state: 'not_found' };
   const r = await listSpecIndexRows(caller, workspaceId);
   if (!r.ok) return { state: 'not_found' };
+  const found = query.q ? await searchSpecIds(caller, workspaceId, query.q) : null;
+  if (found && !found.ok) return { state: 'not_found' };
+  const matched = found?.ok ? found.ids : null;
   // The approver confirms imports and sees what waits for their approval first.
   // For a person, write reach is the read reach above (workspace-access.ts).
   const canAct = true;
-  const [index, approver] = await Promise.all([
+  const [all, approver] = await Promise.all([
     specIndexInputs(workspaceId, r.specs),
     specApprover(caller, workspaceId).catch(() => null),
   ]);
-  const proposals = canAct ? await coldStartProposals(caller, workspaceId, r.specs) : [];
+  const index = applyListQuery(all, query, matched);
+  const proposals = canAct && query.sort === 'tree' && !query.q && !query.filters.length ? await coldStartProposals(caller, workspaceId, r.specs) : [];
   const unrequested = await listProposals(workspaceId).catch(() => []);
-  return { state: 'ok', workspace: ws, index, proposals, unrequested, canAct, canConfirm: !!approver, now: Date.now() };
+  return { state: 'ok', workspace: ws, index, proposals, unrequested, canAct, canConfirm: !!approver, now: Date.now(), query, total: all.length };
 }
 
 /**
@@ -280,7 +289,9 @@ export interface SpecRevisionLine {
    */
   approvedByCheck?: SpecAutoApprovalEvidence;
   /** How a person approved it, as recorded (`dashboard`, `mcp`, `chat`, `conversation`); absent before it was recorded. */
-  approvedVia?: 'dashboard' | 'mcp' | 'chat' | 'conversation';
+  approvedVia?: 'dashboard' | 'mcp' | 'chat' | 'conversation' | 'import-check';
+  /** `import-check`: the repo head the file's checks passed at (R-370). */
+  approvedAtHead?: string;
   /** For `conversation`: the owner's message that approved it, and when it was written. */
   approvedConversation?: { conversationId: string; messageId: string; messageAt: string };
   createdAt: string;
@@ -525,6 +536,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
       approvedBy: specRevisions.approvedBy, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
       approvedByCheck: sql<SpecAutoApprovalEvidence | null>`${specRevisions.approval}->'check'->'evidence'`,
       approvedVia: sql<string | null>`${specRevisions.approval}->>'via'`,
+      approvedHead: sql<string | null>`${specRevisions.approval}->'importCheck'->>'headSha'`,
       approvalConversationId: specRevisions.approvalConversationId, approvalMessageId: specRevisions.approvalMessageId, approvalMessageAt: specRevisions.approvalMessageAt,
     }).from(specRevisions).where(eq(specRevisions.specId, specId)).orderBy(desc(specRevisions.revision)),
     // Parent, siblings and children only from the same workspace (a parent is always there, §1).
@@ -636,9 +648,10 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     const byCheck = r.approvedAt && r.approvedBy === NO_CRITERIA_CHANGE_CHECK && r.approvedByCheck ? r.approvedByCheck : null;
     return {
       revision: r.revision, author: r.authorKind === 'user' ? 'person' : 'agent', changeSummary: r.changeSummary,
-      approvedBy: r.approvedAt ? (byCheck ? NO_CRITERIA_CHANGE_CHECK : (pid && names.get(pid)) || 'a person') : null,
+      approvedBy: r.approvedAt ? (byCheck ? NO_CRITERIA_CHANGE_CHECK : r.approvedVia === 'import-check' ? 'its checks (import check)' : (pid && names.get(pid)) || 'a person') : null,
       ...(byCheck ? { approvedByCheck: byCheck } : {}),
-      ...(r.approvedAt && !byCheck && (r.approvedVia === 'dashboard' || r.approvedVia === 'mcp' || r.approvedVia === 'chat' || r.approvedVia === 'conversation') ? { approvedVia: r.approvedVia } : {}),
+      ...(r.approvedAt && !byCheck && (r.approvedVia === 'dashboard' || r.approvedVia === 'mcp' || r.approvedVia === 'chat' || r.approvedVia === 'conversation' || r.approvedVia === 'import-check') ? { approvedVia: r.approvedVia } : {}),
+      ...(r.approvedAt && r.approvedVia === 'import-check' && r.approvedHead ? { approvedAtHead: r.approvedHead } : {}),
       ...(r.approvedAt && r.approvedVia === 'conversation' && r.approvalConversationId && r.approvalMessageId && r.approvalMessageAt
         ? { approvedConversation: { conversationId: r.approvalConversationId, messageId: r.approvalMessageId, messageAt: new Date(r.approvalMessageAt).toISOString() } } : {}),
       approvedAt: r.approvedAt ? new Date(r.approvedAt).toISOString() : null,

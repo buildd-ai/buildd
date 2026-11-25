@@ -33,7 +33,7 @@ describe('kernelOwnedDeliveryStates', () => {
 // 92a439a6: the owner loop's read of its own delivery.
 describe('kernelOwnerDeliveryFacts', () => {
   test('the newest kernel delivery of the task, with its PR and merge time; none for a released or missing one', async () => {
-    expect(await kernelOwnerDeliveryFacts(t.repairing)).toEqual({ state: 'REPAIRING', prNumber: null, mergedAt: null });
+    expect(await kernelOwnerDeliveryFacts(t.repairing)).toEqual({ state: 'REPAIRING', prNumber: null, mergedAt: null, prStatus: null });
     expect(await kernelOwnerDeliveryFacts(t.released)).toBeNull();
     expect(await kernelOwnerDeliveryFacts(t.none)).toBeNull();
   });

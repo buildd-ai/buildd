@@ -12,6 +12,7 @@ import type { ReactNode } from 'react';
 import { TERMS, slotsInUse, type FleetRunner, type FleetSnapshot } from '@buildd/shared';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
 import { fleetLabel, runnerBusyLine, type HeadlinePart } from '@/lib/fleet-view';
+import RunnerAcpPanel from './RunnerAcpPanel';
 import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
 import { ZonedTime } from '@/components/DisplayTimezone';
@@ -54,7 +55,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
       data-online={runner.online ? 'true' : 'false'}
       data-held={hold ? 'true' : undefined}
       data-elastic={runner.elastic ? 'true' : undefined}
-      className="flex min-h-14 items-center gap-3 px-4 py-2.5"
+      className="flex min-h-14 flex-wrap items-center gap-3 px-4 py-2.5"
     >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2.5">
@@ -95,6 +96,8 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
           <SlotMeter live={busy} max={runner.maxSlots} />
         </div>
       )}
+      {/* Host runners only: an elastic cloud group has no shim to point at. */}
+      {!runner.elastic && <RunnerAcpPanel name={runner.name} acp={runner.acp} />}
     </li>
   );
 }

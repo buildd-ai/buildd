@@ -482,7 +482,18 @@ export async function handleCriterionCheckOutcome(
     ? await recordMissionVerdict!(p.missionId, { ...input, recordedBy: `check:${task.id}` })
     : await recordCheckVerdict(marker.subjectTaskId, input);
   if (!r.ok) return { recorded: false, reason: r.error };
+  await settleImportCheckSafe(marker.specRevisionId);
   return { recorded: true, verdict };
+}
+
+/** An imported spec whose checks all passed is confirmed here (R-370); never fails the verdict. */
+async function settleImportCheckSafe(specRevisionId: string): Promise<void> {
+  try {
+    const { settleImportCheck } = await import('./import-check-store');
+    await settleImportCheck(specRevisionId);
+  } catch (err) {
+    console.error('[spec-checks] import auto-confirm failed:', err);
+  }
 }
 
 /** Finished runs settled per call: the work is a few GitHub reads per run, and what records drops out of the next call. */
@@ -621,6 +632,7 @@ async function handleBatchOutcome(
     const kinds = [...new Set(decided.map((d) => (d.result.outcome === 'failed' ? `exit ${String(d.result.exitCode)}` : String(d.result.outcome))))].join(', ');
     await fault('all_inconclusive', `${decided.length} of ${decided.length} criteria inconclusive (${kinds})`);
   }
+  if (recorded > 0) await settleImportCheckSafe(marker.specRevisionId);
   return {
     recorded: recorded > 0, verdicts,
     ...(allInconclusive ? { checkerFault: 'all_inconclusive' as const } : {}),
