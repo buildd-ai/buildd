@@ -59,7 +59,7 @@ class FakeRunner implements RunnerPort {
 
 function setup(
   workers: PublicWorker[] = [worker()],
-  opts: { cwdExists?: (cwd: string) => boolean; answer?: (params: any) => Promise<any>; links?: Map<string, string>; runner?: FakeRunner; githubRepoOf?: (cwd: string) => Promise<string | null>; installedVersion?: () => string } = {},
+  opts: { cwdExists?: (cwd: string) => boolean; answer?: (params: any) => Promise<any>; links?: Map<string, string>; runner?: FakeRunner; githubRepoOf?: (cwd: string) => Promise<string | null>; installedVersion?: () => string; updateFollowMs?: number; updateErrorGraceMs?: number } = {},
 ) {
   const runner = opts.runner ?? new FakeRunner();
   runner.workers = workers;
@@ -84,6 +84,8 @@ function setup(
     installedVersion: opts.installedVersion,
     ownWorkerWait: { attempts: 6, delayMs: 20 },
     settleGraceMs: 50,
+    updateFollowMs: opts.updateFollowMs,
+    updateErrorGraceMs: opts.updateErrorGraceMs,
   });
   return { runner, bridge, updates, requests, links };
 }
@@ -389,6 +391,89 @@ describe('AcpBridge', () => {
     const res: any = await turn;
     expect(res.stopReason).toBe('cancelled');
     expect(runner.actions).toEqual([{ workerId: 'w1', action: 'pause' }]);
+  });
+
+  describe('a run paused for a runner update', () => {
+    const updatePause = (over: Partial<PublicWorker> = {}) => worker({
+      status: 'waiting',
+      resumeOnStart: 'update',
+      waitingFor: { type: 'pause', prompt: 'Paused', context: 'Paused for update: the runner paused this run to apply an update.', options: [{ label: 'Resume' }] },
+      ...over,
+    });
+
+    test('its notice does not ask for a reply', () => {
+      const text = settledText(updatePause())!;
+      expect(text).not.toMatch(/reply here to resume/i);
+      expect(text).toMatch(/continues on its own/);
+      // A person's pause still asks for one.
+      expect(settledText(worker({ status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused' } }))).toMatch(/Reply here to resume it/);
+    });
+
+    test('a reply is queued as a message, not an answer that races the runner\'s own continue', () => {
+      expect(replyRoute(updatePause())).toBe('message');
+      expect(replyRoute(updatePause({ resumeOnStart: undefined, pauseRequestedFor: 'update' }))).toBe('message');
+      expect(replyRoute(worker({ status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused' } }))).toBe('answer');
+    });
+
+    test('a turn following the run does not end on the update pause; it follows the run to its result', async () => {
+      const { bridge, runner, updates } = setup([worker({ status: 'working' })]);
+      const turn = bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+      await tick();
+      runner.push(updatePause());
+      let ended = false;
+      void turn.then(() => { ended = true; });
+      await new Promise(r => setTimeout(r, 20));
+      expect(ended).toBe(false);
+      expect(texts(updates)).not.toMatch(/reply here to resume/i);
+      runner.push(worker({ status: 'working', messages: [{ type: 'text', content: 'rebasing onto origin/dev', timestamp: 7 }] }));
+      runner.push(worker({ status: 'done', prUrl: 'https://github.com/o/r/pull/9', messages: [{ type: 'text', content: 'rebasing onto origin/dev', timestamp: 7 }] }));
+      const res: any = await turn;
+      expect(res.stopReason).toBe('end_turn');
+      expect(texts(updates)).toContain('rebasing onto origin/dev');
+      expect(texts(updates)).toContain('https://github.com/o/r/pull/9');
+      expect(runner.actions).toEqual([]);
+    });
+
+    test('a reply to a run still paused for the update is queued and the turn follows it once it continues', async () => {
+      const { bridge, runner, updates } = setup([updatePause()]);
+      const turn = bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: 'carry on' }] });
+      await tick();
+      expect(runner.actions).toEqual([{ workerId: 'w1', action: 'message', message: 'carry on' }]);
+      runner.push(worker({ status: 'working' }));
+      runner.push(worker({ status: 'done' }));
+      const res: any = await turn;
+      expect(res.stopReason).toBe('end_turn');
+      expect(texts(updates)).toMatch(/Finished/);
+    });
+
+    test('an error right after the update waits for the runner\'s re-pause before ending the turn', async () => {
+      const { bridge, runner, updates } = setup([updatePause()]);
+      const turn = bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+      await tick();
+      runner.push(worker({ status: 'error', error: 'Task failed on server' }));
+      await new Promise(r => setTimeout(r, 20));
+      runner.push(worker({ status: 'working' }));
+      runner.push(worker({ status: 'done' }));
+      await turn;
+      expect(texts(updates)).not.toMatch(/Stopped with an error/);
+      expect(texts(updates)).toMatch(/Finished/);
+    });
+
+    test('an error that stands past the grace still ends the turn', async () => {
+      const { bridge, runner, updates } = setup([updatePause()], { updateErrorGraceMs: 30 });
+      const turn = bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+      await tick();
+      runner.push(worker({ status: 'error', error: 'boom' }));
+      await turn;
+      expect(texts(updates)).toMatch(/Stopped with an error: boom/);
+    });
+
+    test('a run that stays paused past the follow window ends the turn on the notice', async () => {
+      const { bridge, updates } = setup([updatePause()], { updateFollowMs: 30 });
+      const res: any = await bridge.handle('session/prompt', { sessionId: 'w1', prompt: [{ type: 'text', text: '/watch' }] });
+      expect(res.stopReason).toBe('end_turn');
+      expect(texts(updates)).toMatch(/continues on its own/);
+    });
   });
 
   test('/stop stops the worker', async () => {

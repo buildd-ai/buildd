@@ -22,6 +22,7 @@ import {
   MessageCursor,
   isSettled,
   parseCommand,
+  pausedForUpdate,
   replyRoute,
   settledText,
   textUpdate,
@@ -143,6 +144,10 @@ export interface BridgeDeps {
   ownWorkerWait?: { attempts: number; delayMs: number };
   /** How long a reply may go unanswered by the runner before the turn ends anyway. */
   settleGraceMs?: number;
+  /** How long a turn keeps following a run paused for a runner update before it ends anyway (default 30 min). */
+  updateFollowMs?: number;
+  /** After an update pause, how long an error may stand before the turn ends on it (default 90s): the runner re-pauses a run that could not continue on the new version. */
+  updateErrorGraceMs?: number;
 }
 
 export class RpcError extends Error {
@@ -169,6 +174,8 @@ interface Session {
   /** Set while a prompt turn is open; calling it ends the turn as cancelled. */
   cancelTurn?: () => void;
 }
+
+const UPDATE_FOLLOW_TEXT = 'The runner paused this run to apply an update. It continues on its own afterwards, in the same session; this thread keeps following it. A message you send meanwhile is queued for it.';
 
 const NEW_THREAD_TEXT = [
   'This thread has no buildd task yet. Describe the work and send it: that becomes a buildd task',
@@ -266,6 +273,8 @@ export function taskTitleFrom(text: string): string {
 export class AcpBridge {
   private sessions = new Map<string, Session>();
   private grace: number;
+  private updateFollow: number;
+  private updateErrorGrace: number;
   /** The client renders ACP form elicitations (T3 Code shows them as its own question UI). */
   private canElicit = false;
   /** The client's own name from `initialize` clientInfo, kept to say who filed a task. */
@@ -273,6 +282,8 @@ export class AcpBridge {
 
   constructor(private deps: BridgeDeps) {
     this.grace = deps.settleGraceMs ?? 30_000;
+    this.updateFollow = deps.updateFollowMs ?? 30 * 60_000;
+    this.updateErrorGrace = deps.updateErrorGraceMs ?? 90_000;
   }
 
   async handle(method: string, params: any): Promise<unknown> {
@@ -636,6 +647,10 @@ export class AcpBridge {
       let moving = opts.alreadyMoving;
       let done = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      /** This turn saw the run paused for a runner update; it keeps following through it. */
+      let throughUpdate = false;
+      let updateTimer: ReturnType<typeof setTimeout> | null = null;
+      let errorTimer: ReturnType<typeof setTimeout> | null = null;
       /** The wait a form is open for, and the last wait this turn answered. */
       let asking: string | null = null;
       let answered: string | null = opts.answered ?? null;
@@ -645,6 +660,8 @@ export class AcpBridge {
         done = true;
         unsubscribe();
         if (timer) clearTimeout(timer);
+        if (updateTimer) clearTimeout(updateTimer);
+        if (errorTimer) clearTimeout(errorTimer);
         session.cancelTurn = undefined;
         for (const u of session.cursor.closeOpenTool()) this.emit(sessionId, u);
         const line = note ?? (stopReason === 'end_turn' ? settledText(latest) : null);
@@ -678,12 +695,48 @@ export class AcpBridge {
           .catch(() => { if (asking === key) asking = null; finish('end_turn'); });
       };
 
+      /**
+       * A run the runner paused for its own update is not settled: the runner
+       * continues it after the update, and ending the turn here left the thread
+       * asking for a reply the run did not need and losing track of it (its
+       * result never reached the thread). Follow it through instead, for up to
+       * `updateFollowMs`.
+       */
+      const holdForUpdate = (w: PublicWorker): boolean => {
+        if (!pausedForUpdate(w)) {
+          if (updateTimer) { clearTimeout(updateTimer); updateTimer = null; }
+          return false;
+        }
+        moving = true;
+        if (!throughUpdate) {
+          throughUpdate = true;
+          this.emit(sessionId, textUpdate(UPDATE_FOLLOW_TEXT));
+        }
+        updateTimer ??= setTimeout(() => finish('end_turn'), this.updateFollow);
+        return true;
+      };
+
+      /**
+       * Right after an update an error can be undone: a run that cannot continue
+       * on the new version is paused again for a rollback (workers.ts
+       * watchUpdateContinues). Give that a moment before ending on the error.
+       */
+      const holdErrorAfterUpdate = (w: PublicWorker): boolean => {
+        if (!throughUpdate || w.status !== 'error') {
+          if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+          return false;
+        }
+        errorTimer ??= setTimeout(() => finish('end_turn'), this.updateErrorGrace);
+        return true;
+      };
+
       const onWorker = (w: PublicWorker) => {
         if (done || w.id !== session.workerId) return;
         latest = w;
         const updates = session.cursor.next(w.messages, { live: true });
         for (const u of updates) this.emit(sessionId, u);
         if (w.status === 'working' || updates.length > 0) moving = true;
+        if (holdForUpdate(w) || holdErrorAfterUpdate(w)) return;
         if (w.status === 'waiting') {
           const key = waitKey(w.waitingFor);
           // Still showing the wait this turn just answered: the runner has not caught up.
@@ -715,6 +768,7 @@ export class AcpBridge {
         finish('cancelled', 'Pausing the run. Reply to resume it.');
       };
 
+      if (holdForUpdate(initial)) return;
       if (opts.watching) {
         if (initial.status === 'waiting' && this.canElicit && initial.waitingFor && waitingForm(initial.waitingFor)) {
           moving = true;
