@@ -44,7 +44,7 @@ export default function SpecOwnerQuestions({ workspaceId, canAnswer }: { workspa
     setBusy(null);
     if (res?.ok) {
       const skipped = (body as { skipped?: Array<{ title: string; error: string }> }).skipped ?? [];
-      if (skipped.length) setError(`These could not be retired yet: ${skipped.map((s) => s.title).join(', ')}. Open each one to see why.`);
+      if (skipped.length) setError(`${skipped.map((s) => s.title).join(", ")} stayed in place. Open each spec to see why.`);
       else setQuestions((qs) => qs.filter((x) => x.id !== q.id));
     } else setError((body as { error?: string }).error ?? 'That did not work. Try again.');
   }
