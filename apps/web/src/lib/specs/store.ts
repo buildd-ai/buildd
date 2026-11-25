@@ -213,9 +213,9 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   if (isError(repoRefs)) return repoRefs;
   const explained = parseExplanation(input.explanation);
   if (!explained.ok) return fail(400, explained.error);
-  const prov = await resolveDraftProvenance(input.provenance);
-  if (!prov.ok) return prov;
   if (!(await reach(caller, workspaceId, true))) return fail(404, 'Workspace not found');
+  const prov = await resolveDraftProvenance(input.provenance, { workspaceId, userId: caller.kind === 'user' ? caller.userId : undefined });
+  if (!prov.ok) return prov;
   const roleRefusal = await acceptanceRoleRefusal(caller);
   if (roleRefusal) return roleRefusal;
   if (parentSpecId !== undefined && parentSpecId !== null) {
@@ -318,11 +318,11 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   if (replacesInput && 'error' in replacesInput) return fail(400, replacesInput.error);
   const explained = parseExplanation(input.explanation);
   if (!explained.ok) return fail(400, explained.error);
-  const prov = await resolveDraftProvenance(input.provenance);
-  if (!prov.ok) return prov;
-  const provenanceJson = prov.provenance ? JSON.stringify(prov.provenance) : null;
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
+  const prov = await resolveDraftProvenance(input.provenance, { workspaceId: spec.workspaceId, userId: caller.kind === 'user' ? caller.userId : undefined });
+  if (!prov.ok) return prov;
+  const provenanceJson = prov.provenance ? JSON.stringify(prov.provenance) : null;
   const roleRefusal = await acceptanceRoleRefusal(caller);
   if (roleRefusal) return roleRefusal;
   if (spec.status === 'retired' || spec.status === 'superseded') return fail(409, `A ${spec.status} spec is not revised`);

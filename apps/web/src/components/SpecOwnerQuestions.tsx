@@ -44,7 +44,7 @@ export default function SpecOwnerQuestions({ workspaceId, canAnswer }: { workspa
     setBusy(null);
     if (res?.ok) {
       const skipped = (body as { skipped?: Array<{ title: string; error: string }> }).skipped ?? [];
-      if (skipped.length) setError(`Still open: ${skipped.map((s) => `${s.title} (${s.error})`).join('; ')}`);
+      if (skipped.length) setError(`These could not be retired yet: ${skipped.map((s) => s.title).join(', ')}. Open each one to see why.`);
       else setQuestions((qs) => qs.filter((x) => x.id !== q.id));
     } else setError((body as { error?: string }).error ?? 'That did not work. Try again.');
   }
@@ -52,14 +52,14 @@ export default function SpecOwnerQuestions({ workspaceId, canAnswer }: { workspa
   if (!questions.length) return null;
   return (
     <section className="flex flex-col gap-2" data-testid="spec-owner-questions">
-      <h2 className="text-body font-semibold text-text-primary">{questions.length} {questions.length === 1 ? 'question' : 'questions'} for you</h2>
+      <h2 className="text-body font-semibold text-text-primary">{questions.length === 1 ? 'One question' : `${questions.length} questions`} for you</h2>
       {error ? <p role="alert" className="text-meta text-status-error">{error}</p> : null}
       <ul className="flex flex-col gap-3">
         {questions.map((q) => (
           <li key={q.id}>
             <Card className="flex flex-col gap-2 p-3">
               <p className="text-body text-text-primary" data-testid="spec-owner-question">{q.text}</p>
-              <p className="text-meta text-text-secondary">Suggested: {q.recommended}</p>
+              <p className="text-meta text-text-secondary">Our suggestion: {q.recommended}</p>
               {q.items?.length ? (
                 <ul className="list-disc pl-5 text-meta text-text-secondary" data-testid="spec-owner-question-items">
                   {q.items.map((i) => (
@@ -73,7 +73,7 @@ export default function SpecOwnerQuestions({ workspaceId, canAnswer }: { workspa
               {q.kind === 'retire_batch' && canAnswer ? (
                 <div>
                   <button type="button" disabled={busy === q.id} onClick={() => answer(q)} className="min-h-11 rounded-[var(--radius-cell)] px-3 text-body font-medium underline" data-testid="spec-owner-retire-all">
-                    Yes, retire these {q.items?.length ?? ''}
+                    {q.items?.length ? `Yes, retire these ${q.items.length}` : 'Yes, retire these'}
                   </button>
                 </div>
               ) : null}

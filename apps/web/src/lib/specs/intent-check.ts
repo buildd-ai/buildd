@@ -185,8 +185,12 @@ export async function answerIntentQuestion(
     ...q, answeredAt: new Date().toISOString(), answeredBy: caller.userId,
     answer: typeof input.answer === 'string' ? input.answer.trim() : q.recommended,
   };
-  const next = row.questions.map((x) => (x.id === q.id ? answered : x));
-  const upd = await db.update(specIntentChecks).set({ questions: next })
+  // Replace only this question inside the stored array, in SQL, so a concurrent answer to a
+  // different question is kept rather than overwritten by a stale copy of the whole array.
+  const answeredJson = JSON.stringify(answered);
+  const upd = await db.update(specIntentChecks).set({
+    questions: sql`(SELECT COALESCE(jsonb_agg(CASE WHEN t.e->>'id' = ${q.id} THEN ${answeredJson}::jsonb ELSE t.e END ORDER BY t.ord), '[]'::jsonb) FROM jsonb_array_elements(${specIntentChecks.questions}) WITH ORDINALITY AS t(e, ord))`,
+  })
     .where(and(eq(specIntentChecks.id, row.id), sql`NOT EXISTS (SELECT 1 FROM jsonb_array_elements(${specIntentChecks.questions}) e WHERE e->>'id' = ${q.id} AND e->>'answeredAt' IS NOT NULL)`))
     .returning({ id: specIntentChecks.id });
   if (!upd.length) return fail(409, 'That question is already answered.', { code: 'already_answered' });

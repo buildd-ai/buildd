@@ -46,18 +46,24 @@ describe('parseCriterionSources', () => {
 });
 
 describe('resolveDraftProvenance (what a revision stores so its intent check can run)', () => {
+  const SC = { workspaceId: 'w', userId: 'u' };
   const C2 = '11111111-1111-4111-8111-111111111111';
   const M2 = '22222222-2222-4222-8222-222222222222';
-  const row = (over: Partial<{ role: string; authorUserId: string | null; messageConversationId: string }> = {}) => async () => ({
+  const row = (over: Partial<{ role: string; authorUserId: string | null; messageConversationId: string; conversationWorkspaceId: string | null }> = {}) => async () => ({
     conversationOwnerId: 'u', messageConversationId: C2, role: 'user', authorUserId: 'u', createdAt: new Date('2026-01-01T00:00:00Z'), ...over,
   });
   it('stores the cited person message with its time; none cited is none stored', async () => {
-    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, row())).toEqual({ ok: true, provenance: { conversationId: C2, messageId: M2, messageAt: '2026-01-01T00:00:00.000Z' } });
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, SC, row())).toEqual({ ok: true, provenance: { conversationId: C2, messageId: M2, messageAt: '2026-01-01T00:00:00.000Z' } });
     expect(await resolveDraftProvenance(undefined)).toEqual({ ok: true, provenance: null });
   });
+  it('refuses another person\'s message, or a chat pinned to another workspace', async () => {
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, SC, row({ authorUserId: 'other' }))).toMatchObject({ ok: false, status: 403 });
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, SC, row({ conversationWorkspaceId: 'w2' }))).toMatchObject({ ok: false, status: 403 });
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, { workspaceId: 'w' }, row())).toMatchObject({ ok: true });
+  });
   it('refuses an agent message, a missing message or a malformed ref', async () => {
-    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, row({ role: 'assistant' }))).toMatchObject({ ok: false, status: 400 });
-    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, async () => null)).toMatchObject({ ok: false, status: 400 });
-    expect(await resolveDraftProvenance({ conversationId: 'x' }, row())).toMatchObject({ ok: false, status: 400 });
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, SC, row({ role: 'assistant' }))).toMatchObject({ ok: false, status: 400 });
+    expect(await resolveDraftProvenance({ conversationId: C2, messageId: M2 }, SC, async () => null)).toMatchObject({ ok: false, status: 400 });
+    expect(await resolveDraftProvenance({ conversationId: 'x' }, SC, row())).toMatchObject({ ok: false, status: 400 });
   });
 });

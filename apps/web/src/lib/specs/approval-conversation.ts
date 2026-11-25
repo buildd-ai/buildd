@@ -15,6 +15,8 @@ import { fail, type SpecError } from './store';
  */
 export interface ConversationMessageRow {
   conversationOwnerId: string;
+  /** null: the conversation is team-wide, not pinned to one workspace. */
+  conversationWorkspaceId?: string | null;
   messageConversationId: string;
   role: string;
   authorUserId: string | null;
@@ -28,6 +30,7 @@ export type LoadMessage = (conversationId: string, messageId: string) => Promise
 export const loadConversationMessage: LoadMessage = async (conversationId, messageId) => {
   const [row] = await db.select({
     conversationOwnerId: conversations.createdByUserId,
+    conversationWorkspaceId: conversations.workspaceId,
     messageConversationId: conversationMessages.conversationId,
     role: conversationMessages.role,
     authorUserId: conversationMessages.authorUserId,
@@ -88,11 +91,12 @@ export function parseCriterionSources(v: unknown): { ok: true; sources: Record<s
 /**
  * The conversation a draft is written from (R-350): the cited message must exist
  * in that conversation and be a person's own message, never an agent's. Stored
- * with the revision; it is what routes the revision to the independent intent
+ * with the revision, only if the message is the owner's own in this workspace; it is what routes the revision to the independent intent
  * check and then to the owner as questions only (R-363).
  */
 export async function resolveDraftProvenance(
   v: unknown,
+  scope: { workspaceId: string; userId?: string },
   load: LoadMessage = loadConversationMessage,
 ): Promise<{ ok: true; provenance: { conversationId: string; messageId: string; messageAt: string } | null } | SpecError> {
   if (v === undefined || v === null) return { ok: true, provenance: null };
@@ -103,6 +107,14 @@ export async function resolveDraftProvenance(
   const row = await load(ref.conversationId, ref.messageId);
   if (!row || row.messageConversationId !== ref.conversationId || row.role !== 'user' || !row.authorUserId) {
     return fail(400, 'provenance must cite a person\'s message in that conversation');
+  }
+  // The cited message must be its conversation owner's own, in this spec's workspace, and the
+  // signed-in caller's own when a person writes the draft: a draft cannot borrow someone else's
+  // words, and an unrelated chat cannot attach an intent check to a spec.
+  if (row.authorUserId !== row.conversationOwnerId
+    || (scope.userId !== undefined && row.authorUserId !== scope.userId)
+    || (row.conversationWorkspaceId && row.conversationWorkspaceId !== scope.workspaceId)) {
+    return fail(403, REFUSED, { code: 'message_not_yours' });
   }
   return { ok: true, provenance: { conversationId: ref.conversationId, messageId: ref.messageId, messageAt: row.createdAt.toISOString() } };
 }
