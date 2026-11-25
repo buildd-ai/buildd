@@ -206,6 +206,29 @@ describe('MissionGrid portfolio', () => {
     expect(wrap).not.toMatch(/(^|\s)flex-1(\s|$)/);
   });
 
+  it('at 320pt the tabs shorten to "Waiting" plus its count; the full label returns from 360px', () => {
+    const tab = html.match(/<span[^>]*data-filter="needs"[^>]*>([\s\S]*?)<\/span><\/button>/)![1];
+    expect(tab).toMatch(/<span class="min-\[360px\]:hidden">Waiting<\/span>/);
+    expect(tab).toMatch(/<span class="hidden min-\[360px\]:inline">Waiting on you<\/span>/);
+    // The count stays visible at every width.
+    expect(tab).toMatch(/<span class="ml-1 font-mono[^"]*">\d+<\/span>/);
+  });
+
+  it('at 320pt "All groups" collapses to an icon; a chosen group keeps its name', () => {
+    const grouped = open.map((r, i) => ({ ...r, groupId: i % 2 ? 'g1' : 'g2', groupName: i % 2 ? 'Mobile' : 'Billing' }));
+    const all = renderToStaticMarkup(<MissionGrid rows={grouped} slots={{ live: 1, max: 4 }} now={NOW} />);
+    const trigger = all.match(/<button[^>]*data-testid="portfolio-group"[\s\S]*?<\/button>/)![0];
+    expect(trigger).toContain('data-testid="portfolio-group-icon"');
+    expect(trigger).toMatch(/<span class="[^"]*hidden min-\[360px\]:inline[^"]*">All groups<\/span>/);
+    expect(trigger).toContain('aria-label="Group"');
+    // A chosen group is state: never hidden (hiding it would drop the only sign a filter is on).
+    const chosen = renderToStaticMarkup(<MissionGrid rows={grouped} initialGroup="g1" slots={{ live: 1, max: 4 }} now={NOW} />);
+    const t2 = chosen.match(/<button[^>]*data-testid="portfolio-group"[\s\S]*?<\/button>/)![0];
+    const name = t2.match(/<span class="([^"]*)">Mobile \(\d+\)<\/span>/)![1];
+    expect(name).not.toMatch(/(^|\s)hidden(\s|$)/);
+    expect(name).toContain('truncate');
+  });
+
   it('carries the page doors on the stats line, phones only', () => {
     const out = renderToStaticMarkup(<MissionGrid rows={open} slots={{ live: 1, max: 4 }} now={NOW} doors={<a href="/app/specs">Specs</a>} />);
     const doors = out.match(/<div[^>]*data-testid="portfolio-doors"[^>]*>/)![0];

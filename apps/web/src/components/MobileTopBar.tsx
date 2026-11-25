@@ -42,7 +42,9 @@ export default function MobileTopBar({
     <div ref={barRef} data-testid="mobile-page-header" className={`md:hidden ${MOBILE_TOP_BAR_CLASS}`}>
       {children ?? (
         <>
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] font-normal">{leading}</div>
+          {/* pr-1 reserves the 4px a -mx-1 trigger (TeamSwitcher) overhangs, so the
+              bar's 8px gap to the right-hand controls is never eaten at 320pt. */}
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-1 text-[13px] font-normal">{leading}</div>
           {trailing && <div className={MOBILE_TOP_BAR_CONTROLS_CLASS}>{trailing}</div>}
         </>
       )}

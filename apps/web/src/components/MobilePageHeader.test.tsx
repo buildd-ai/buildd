@@ -100,6 +100,17 @@ describe('MobilePageHeader', () => {
     }
   });
 
+  it('keeps a visible gap between the team switcher chevron and the right-hand controls at 320pt', () => {
+    const html = render({ teams: TEAMS, currentTeamId: 't1', userInitial: 'M' });
+    // The switcher's trigger widens its tap target with -mx-1, so it overhangs its
+    // box by 4px on the right; the title cluster reserves that overhang (pr-1) so
+    // the bar's 8px gap to "+" is never eaten.
+    expect(html).toMatch(/class="-mx-1[^"]*"|class="[^"]*\s-mx-1\s[^"]*"/);
+    const leading = html.match(/<div[^>]*data-testid="mobile-page-header"[^>]*><div class="([^"]*)"/)![1];
+    expect(leading).toMatch(/(^|\s)flex-1(\s|$)/);
+    expect(leading).toMatch(/(^|\s)pr-1(\s|$)/);
+  });
+
   it('maintains layout hierarchy at 320pt: left cluster before right cluster', () => {
     const html = render({
       teams: TEAMS,
