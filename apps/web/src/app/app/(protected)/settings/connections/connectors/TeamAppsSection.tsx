@@ -38,6 +38,7 @@ import {
 } from '@/lib/team-apps-view';
 import AddConnectionModal from './AddConnectionModal';
 import AddTeamEntryForm from './AddTeamEntryForm';
+import ConnectorToolsPanel from './ConnectorToolsPanel';
 import SharingDialog from './SharingDialog';
 
 export interface TeamAppsData {
@@ -100,6 +101,7 @@ export default function TeamAppsSection({
   errorMsg,
   initial,
   initiallyOpen = null,
+  focusConnectorId = null,
 }: {
   teamId?: string | null;
   /** The team's workspaces: where an app can be turned on. */
@@ -113,6 +115,8 @@ export default function TeamAppsSection({
   initial?: TeamAppsData;
   /** Fixture only: a row to show open. */
   initiallyOpen?: string | null;
+  /** `?tools=<connectorId>` (Home's tool review card): open that connector's row on its tools. */
+  focusConnectorId?: string | null;
 }) {
   const [data, setData] = useState<TeamAppsData | null>(initial ?? null);
   const [open, setOpen] = useState<string | null>(initiallyOpen);
@@ -137,6 +141,9 @@ export default function TeamAppsSection({
   }, [initial, teamId, workspaces]);
 
   useEffect(() => { void reload(); }, [reload]);
+  // Open the row a tool review card linked to, once the data names it.
+  const focusedKey = focusConnectorId && data ? buildTeamApps(data.entries, data.connectors).find(a => a.connector?.id === focusConnectorId)?.key ?? null : null;
+  useEffect(() => { if (focusedKey) setOpen(focusedKey); }, [focusedKey]);
 
   if (!data) return null;
   const { canManage } = data;
@@ -237,6 +244,7 @@ export default function TeamAppsSection({
 
   return (
     <Section
+      id="team-apps"
       title="Team apps"
       count={apps.length || undefined}
       action={canManage ? (
@@ -493,6 +501,8 @@ function TeamAppRow({
                 {POLICY_FACT[app.entry.policy] && <p className="text-meta text-text-muted">{POLICY_FACT[app.entry.policy]}</p>}
               </div>
             )}
+
+            {c && !c.shared && <ConnectorToolsPanel connectorId={c.id} appName={app.name} />}
 
             <p className="break-all font-mono text-meta text-text-muted">{app.url}</p>
 

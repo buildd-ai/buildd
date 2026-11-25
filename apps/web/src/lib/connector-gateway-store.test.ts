@@ -22,7 +22,11 @@ mock.module('@buildd/core/secrets', () => ({
 const mockRefresh = mock(async (_id: string) => 'locked' as string);
 mock.module('./mcp-connector-refresh', () => ({ refreshMcpConnectorCredential: mockRefresh }));
 
-mock.module('@buildd/core/db', () => ({ db: {} }));
+const snapshotWrites: unknown[] = [];
+const fakeDb = {
+  update: () => ({ set: (v: unknown) => ({ where: () => { snapshotWrites.push(v); return Promise.resolve(); } }) }),
+};
+mock.module('@buildd/core/db', () => ({ db: fakeDb }));
 
 // The assertion grant: mint (buildd signs) then exchange (the provider's token endpoint).
 const mockMint = mock(async (_i: any) => ({ assertion: 'signed.jwt', expiresAt: new Date(Date.now() + 300_000) }) as any);
@@ -30,7 +34,7 @@ let exchangeSeq = 0;
 const mockExchange = mock(async (_endpoint: string, _assertion: string) => ({ accessToken: `minted-${++exchangeSeq}`, expiresAt: Date.now() + 600_000 }));
 mock.module('./connector-assertion', () => ({ mintConnectorAssertion: mockMint, exchangeAssertion: mockExchange }));
 
-const { refreshAfterRejection, providerAuthHeader, markCredentialRejected, credentialStateFor, __resetAssertionTokens } = await import('./connector-gateway-store');
+const { refreshAfterRejection, providerAuthHeader, markCredentialRejected, credentialStateFor, __resetAssertionTokens, noteToolSnapshot, __resetSnapshotWrites } = await import('./connector-gateway-store');
 
 const blob = (access_token: string) => JSON.stringify({ access_token, refresh_token: 'rt' });
 const bearer = (t: string) => ({ name: 'Authorization', value: `Bearer ${t}` });
@@ -165,5 +169,27 @@ describe('credentialStateFor', () => {
     // stdio auth is env-only (authMode none), but there is no remote server to proxy to.
     expect(credentialStateFor({ authMode: 'none', transport: 'stdio' }, null)).toBe('missing');
     expect(credentialStateFor({ authMode: 'none', transport: 'http' }, null)).toBe('ok');
+  });
+});
+
+describe('noteToolSnapshot', () => {
+  beforeEach(() => { snapshotWrites.length = 0; __resetSnapshotWrites(); });
+  const tools = (ro: boolean) => new Map([['list-things', { readOnlyHint: ro }], ['otel-x', null]]);
+
+  it('writes once per changed list, not on every tools/list', () => {
+    const t0 = Date.parse('2026-11-25T00:00:00Z');
+    noteToolSnapshot('c1', tools(true), t0);
+    noteToolSnapshot('c1', tools(true), t0 + 60_000);
+    expect(snapshotWrites).toHaveLength(1);
+    noteToolSnapshot('c1', tools(false), t0 + 120_000);
+    expect(snapshotWrites).toHaveLength(2);
+    // An unchanged list is refreshed after a few hours, so the row's time stays meaningful.
+    noteToolSnapshot('c1', tools(false), t0 + 7 * 3_600_000);
+    expect(snapshotWrites).toHaveLength(3);
+  });
+
+  it('writes nothing for an empty list', () => {
+    noteToolSnapshot('c1', new Map(), Date.now());
+    expect(snapshotWrites).toHaveLength(0);
   });
 });

@@ -49,6 +49,7 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   const ci = item.actionType === 'fix' && q?.ciGate?.kind === 'blocked' && q.prNumber != null && !!q.workspaceId;
   const rerun = ci && q?.ciGate?.kind === 'blocked' && q.ciGate.red?.primary === 'rerun';
   const access = q?.chip === 'ACCESS' && !!q.accessRequestId;
+  const toolFix = q?.chip === 'ACCESS' ? q.accessToolFix : undefined;
   const move = q?.chip === 'SCHEDULE_MOVE' ? q.scheduleMove : undefined;
   const blocked = merge ? q?.missionMergeBlockedReason : item.strand?.blockedReason;
   const recordStrand = (label: string) => {
@@ -103,6 +104,21 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
     } catch { setError('Could not reach the server.'); }
     finally { setBusy(false); }
   }
+  // A tool the gateway refused only because buildd does not know it reads
+  // (lib/connector-tool-review.ts): treat it as read-only, or keep it blocked
+  // so the card does not come back. Both are the connector's session-only PATCH.
+  async function decideTool(choice: 'read' | 'keep') {
+    if (busy || !toolFix) return;
+    setBusy(true); setBusyAction(choice); setError(null);
+    try {
+      const body = choice === 'read' ? { markReadOnly: toolFix.tool } : { keepBlocked: toolFix.tool };
+      const res = await fetch(`/api/connectors/${encodeURIComponent(toolFix.connectorId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await res.json().catch(() => ({})) as { error?: string; message?: string };
+      if (res.ok) { onDone(item.key, choice === 'read' ? 'treated as read-only' : 'kept blocked'); router.refresh(); return; }
+      setError(data.message || data.error || 'Could not save the decision.');
+    } catch { setError('Could not reach the server.'); }
+    finally { setBusy(false); setBusyAction(null); }
+  }
   // A schedule move is answered in place: Accept moves it from the next run, Keep leaves it where it is,
   // and Accept + read keeps the old home readable. The server checks the person again.
   async function decideMove(decision: 'accept' | 'keep', grantOldHome = false) {
@@ -118,6 +134,7 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   }
   let actions: ReactNode;
   if (move) actions = <><button className={primary} disabled={busy} onClick={() => void decideMove('accept')}>{busy ? 'Saving…' : 'Accept'}</button><button className={secondary} disabled={busy} onClick={() => void decideMove('keep')}>Keep</button><button className={secondary} disabled={busy} onClick={() => void decideMove('accept', true)}>Accept + read {move.fromWorkspaceName}</button><Link className={secondary} href={item.primary?.href ?? item.href}>Schedule</Link></>;
+  else if (toolFix) actions = <><button className={primary} disabled={busy} onClick={() => void decideTool('read')}>{busyAction === 'read' ? 'Saving…' : 'Treat as read-only'}</button><button className={secondary} disabled={busy} onClick={() => void decideTool('keep')}>{busyAction === 'keep' ? 'Saving…' : 'Keep blocked'}</button><Link className={secondary} href={item.primary?.href ?? item.href}>Tools</Link></>;
   else if (access && closed) actions = null;
   else if (access) actions = <><button className={primary} disabled={busy} onClick={() => void decideAccess('approve')}>{busy ? 'Saving…' : q!.accessApproveLabel ?? 'Approve'}</button><button className={secondary} disabled={busy} onClick={() => void decideAccess('deny')}>Deny</button><Link className={secondary} href={item.primary?.href ?? item.href}>Details</Link></>;
   else if (merge) actions = <><button className={primary} disabled={busy || !!blocked || !retrySafe} onClick={() => confirm ? void act(`/api/prs/${q.prNumber}/merge`, { workspaceId: q.workspaceId }, 'merged') : setConfirm(true)}>{busy ? 'Merging…' : confirm ? 'Confirm merge' : 'Merge'}</button>{confirm ? <button className={secondary} onClick={() => setConfirm(false)}>Cancel</button> : <Link href={q.prUrl ?? item.href} className={secondary}>{q.docFixTaskId ? 'Claims' : 'Review PR'}</Link>}</>;
