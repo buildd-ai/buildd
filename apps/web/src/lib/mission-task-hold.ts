@@ -36,6 +36,7 @@
 import { laneLabel, ordinal, queueLimitLabel, type QueueLimit, type QueueWait } from '@buildd/shared';
 import { BROWSER_RUNNER_MISSING, claimHoldPhrase } from './claim-hold-phrase';
 import { formatDuration } from './mission-duration';
+import { ledgerDelegationIsPersons } from '@buildd/core/token-delegation';
 import { HIDDEN_TASK_WORDS } from './hidden-task-words';
 
 export type PendingHoldKind =
@@ -157,6 +158,7 @@ const LIMIT_HOLD_KEY: Record<QueueLimit, string> = {
   local_session: 'mission_local',
   pr_closed: 'subject_dead',
   access: 'access_unmet',
+  delegation: 'delegation_unmet',
 };
 const BUDGET_LIMITS: ReadonlySet<QueueLimit> = new Set<QueueLimit>(['mission_budget', 'budget', 'plan']);
 const NO_RUNNER_REASONS = new Set([
@@ -247,9 +249,17 @@ function noRunnerReason(reason: string, detail: Record<string, unknown>): string
 
 /** Held for access a person has not approved: the person's turn, never a queue. */
 function accessHold(sinceMs: number | null, ageLabel: string | null, approve: string | null): PendingTaskHold {
+  return personHold(sinceMs, ageLabel, `approve ${approve || 'provider access'}`, 'access_unmet');
+}
+
+/** Held for a delegation a person has not granted: the person's turn, never a queue. */
+function delegationHold(sinceMs: number | null, ageLabel: string | null, grant: string | null): PendingTaskHold {
+  return personHold(sinceMs, ageLabel, `grant ${grant || 'access to another workspace'}`, 'delegation_unmet');
+}
+
+function personHold(sinceMs: number | null, ageLabel: string | null, cause: string, holdKey: string): PendingTaskHold {
   const word = 'Waiting on you';
-  const cause = `approve ${approve || 'provider access'}`;
-  return { kind: 'hold', word, cause, sinceMs, ageLabel, holder: null, holdKey: 'access_unmet', row: `${word}: ${cause}${ageLabel ? ` (${ageLabel})` : ''}` };
+  return { kind: 'hold', word, cause, sinceMs, ageLabel, holder: null, holdKey, row: `${word}: ${cause}${ageLabel ? ` (${ageLabel})` : ''}` };
 }
 
 export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskHold {
@@ -296,6 +306,7 @@ function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHol
         h ? { id: h.id, title: h.title ?? null, note: after!.note } : null);
     }
     if (wait.kind === 'limit' && wait.limit === 'access') return accessHold(sinceMs, ageLabel, wait.approve ?? null);
+    if (wait.kind === 'limit' && wait.limit === 'delegation') return delegationHold(sinceMs, ageLabel, wait.approve ?? null);
     if (wait.kind === 'limit') {
       const limit = wait.limit ?? 'mission_cap';
       const label = queueLimitLabel(limit);
@@ -358,6 +369,10 @@ function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHol
     const approve = gaps.map(g => `${str(g.provider) ?? 'provider'} ${str(g.access) ?? 'read'}`).join(', ');
     return accessHold(sinceMs, ageLabel, approve ? approve.replace(/^./, c => c.toUpperCase()) : null);
   }
+
+  // 2c. A delegation nobody granted: a person's to grant. A gap only the claiming
+  // runner's account has (out_of_token_reach) stays "no runner can take it" below.
+  if (reason === 'delegation_unmet' && ledgerDelegationIsPersons(detail)) return delegationHold(sinceMs, ageLabel, null);
 
   // 3. No runner able to take it: the gate's reason, else no browser runner, else none online.
   // A pin is not a missing capability: name the one runner it waits for.

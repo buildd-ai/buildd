@@ -31,6 +31,7 @@ import { GATE_SLUGS } from '@buildd/core/gate-events';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { accessReasons, loadAccessGap } from '@/lib/access-wait-reason';
+import { delegationReasons, loadDelegationGap } from '@/lib/delegation-wait-reason';
 
 /**
  * `ordered_behind` is written once per (task, blocker), never refreshed, so
@@ -107,15 +108,17 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
       now,
       lanes: laneRead ? { views: laneRead.lanes.get(task.workspaceId) ?? new Map(), releasedTaskIds: laneRead.releasedTaskIds } : null,
     });
-    const [depReasons, localReason, accessGap] = await Promise.all([
+    const [depReasons, localReason, accessGap, delegationGap] = await Promise.all([
       dependencyReasons(task),
       opts.skipMissionLocal ? Promise.resolve(null) : missionLocalReason(task),
       loadAccessGap(task),
+      loadDelegationGap({ ...task, scheduleId: typeof task.scheduleId === 'string' ? task.scheduleId : null }),
     ]);
     return await withTaskLabels(orderWaitingReasons([
       ...(localReason ? [localReason] : []),
       ...depReasons,
       ...accessReasons(task.id, accessGap),
+      ...delegationReasons(task.id, delegationGap),
       ...reasons,
     ]));
   } catch (err) {
