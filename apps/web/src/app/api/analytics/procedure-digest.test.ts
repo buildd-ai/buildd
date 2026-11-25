@@ -1,6 +1,6 @@
 /** Spec "Skill candidates, usage telemetry and retirement" r1: AC-9 (R-3). */
 import { describe, expect, it } from 'bun:test';
-import { procedureDigest } from './procedure-digest';
+import { procedureDigest, digestSourceFromMilestones } from './procedure-digest';
 
 describe('procedure_digest', () => {
   it('AC-9: rows carry only short id, role, basis, tool names and registered skill slugs', async () => {
@@ -26,5 +26,18 @@ describe('procedure_digest', () => {
       workspaceId: 'w1', callerWorkspaceIds: ['w2'], window: '30d', limit: 10,
       load: async () => [], registeredSkillSlugs: [],
     })).rejects.toThrow(/forbidden|refused/i);
+  });
+
+  it('a runner Skill action milestone becomes a registered slug in skills[]', async () => {
+    const src = digestSourceFromMilestones([
+      { type: 'action', label: 'Skill: known', ts: 1, tool: 'Skill', skill: 'known' },
+      { type: 'action', label: 'Skill: other', ts: 2, tool: 'Skill', skill: 'other' },
+    ]);
+    const rows = await procedureDigest({
+      workspaceId: 'w1', callerWorkspaceIds: ['w1'], window: '30d', limit: 10,
+      load: async () => [{ id: 'e3666436-f997-439e-8236-5a4b58d2ca10', roleSlug: 'builder', verifiedBasis: 'pr_merged', ...src }],
+      registeredSkillSlugs: ['known'],
+    });
+    expect(rows[0].skills).toEqual(['known']);
   });
 });

@@ -835,7 +835,9 @@ export interface ChatTurnEntry {
 export type ChatUnavailableReason =
   | 'no_key'
   | 'budget_exhausted'
-  | 'rate_limited';
+  | 'rate_limited'
+  /** Chat is assigned to the team's own runner and it is offline or not serving the model (503). Never retried on another provider. */
+  | 'local_runner_unavailable';
 
 export interface ChatUnavailableResponse {
   error: ChatUnavailableReason;
@@ -845,6 +847,10 @@ export interface ChatUnavailableResponse {
   retryAfterSeconds?: number;
   /** For budget_exhausted: the team's daily budget ran out, or this person's share of it. */
   scope?: 'team' | 'user';
+  /** For local_runner_unavailable: the pinned runner (a heartbeat id), so the UI can link to it. */
+  runnerId?: string | null;
+  /** For local_runner_unavailable: why, in the relay's words (the model server's message on its error). */
+  reason?: string;
 }
 
 /**

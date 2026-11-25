@@ -75,6 +75,14 @@
       "method": "GET"
     },
     {
+      "$comment": "Re-embeds knowledge for namespaces whose embedding model or size changed (apps/web/src/lib/knowledge-reembed.ts). Bounded by its own time budget; nothing to re-embed -> one cheap query.",
+      "title": "Buildd: Knowledge Re-embed",
+      "profile": "module:knowledge",
+      "path": "/api/cron/knowledge-reembed",
+      "schedule": "30 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Post-session quality loop (apps/web/src/lib/post-session-loop.ts): collect and triage recently terminal workers, then analyse the selected runs, record findings and apply the action policy per workspace mode (off / shadow / propose, absent = shadow). Out of band: nothing in completion, review, merge or release waits on it. Hourly at :00, inside the wake window the schedules tick already opens: findings are read in aggregate, not within minutes of a session. Each pass is capped by a time budget and per-stage limits; leftovers are reported as deferred and taken next hour. Nothing terminal since the last pass -> a few cheap queries.",
       "title": "Buildd: Post-Session Quality",
       "profile": "module:health",
@@ -243,7 +251,7 @@
       "method": "GET"
     },
     {
-      "$comment": "Skill retirement sweep. Daily at 04:30 EST. Defaults to recording: only writes skill_lifecycle_events and never changes a skill; SKILL_RETIREMENT_MODE=acting disables (never deletes) skills unclaimed past the archive window, and nothing is archivable until skill_usage telemetry has run that long.",
+      "$comment": "Skill retirement sweep. Daily at 04:30 EST. Defaults to recording: only writes skill_lifecycle_events and never changes a skill; Mode is per workspace (gitConfig.skillRetirement.mode: off|recording|acting); acting also needs the workspace in SKILL_RETIREMENT_ACTING_WORKSPACES and refuses until skill_usage telemetry has run the archive window. It disables (never deletes).",
       "title": "Buildd: Skill Lifecycle",
       "profile": "module:knowledge",
       "path": "/api/cron/skill-lifecycle",

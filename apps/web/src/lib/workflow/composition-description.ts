@@ -22,6 +22,8 @@ export interface CompositionBlockInput {
   attestation: CompositionAttestation;
   /** Why each non-constituent commit counted as novel. */
   novelCommits?: Array<{ sha: string; reason: string; paths: string[] }>;
+  /** Dependency-bot PRs covered as the bot's own change (no review owed). */
+  dependencyBotPrs?: Array<{ sha: string; prNumber: number; author: string }>;
   /** Review of the uncovered delta: not owed, owed (queued/running) or decided. */
   deltaReview?: 'not_owed' | 'pending' | 'approved' | 'changes_requested';
   /** Verification that could not decide, or was rejected by the kernel; a full review is owed instead. */
@@ -40,6 +42,9 @@ export function compositionBlock(i: CompositionBlockInput): string {
   if (a.constituents.length === 0) lines.push('None proved. This PR gets a full review.');
   for (const c of a.constituents) {
     lines.push(`- #${c.prNumber}: approved at \`${sh(c.reviewedHeadSha)}\`, landed as \`${sh(c.landedSha)}\``);
+  }
+  for (const b of i.dependencyBotPrs ?? []) {
+    lines.push(`- #${b.prNumber}: ${b.author}'s own change, which needs no review, landed as \`${sh(b.sha)}\``);
   }
   lines.push('');
 

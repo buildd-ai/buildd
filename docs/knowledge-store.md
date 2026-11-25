@@ -74,6 +74,8 @@ never fails on it. API: `GET|PATCH /api/providers/embedding`
 (`{ provider, model }`, owner/admin to change; stored on `teams.embedding_provider`
 and `teams.embedding_model`).
 
+A team can also embed on one of its own runners' Ollama (**Local runner**, no key): see `docs/local-runner-setup.md` and `docs/specs/local-runner-provider.md`.
+
 The old `embedding_endpoint` secret is no longer accepted by `POST /api/secrets`.
 A row stored before still applies, read-only and with a deprecation warning,
 to a team that has not picked a provider; delete it once the team has.

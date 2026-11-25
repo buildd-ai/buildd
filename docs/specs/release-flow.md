@@ -175,9 +175,16 @@ path escalation or the migration inspector.
 - Composition review of a candidate looks up constituent PRs merged into
   `sourceBranch` (never into the candidate branch), and proves each landed
   patch equals its approved reviewed head. The single release-only commit
-  (version bump + CHANGELOG) is a release artifact. Anything else (a
+  (version bump + CHANGELOG) is a release artifact. A dependency bot's own PR
+  (Renovate, Dependabot: opened by the bot, every commit the bot's, no review
+  run on it) merges on `sourceBranch` without a review by policy, so it is
+  covered too and listed as such in the composition block. Anything else (a
   release-only change, an unapproved PR, a direct commit) is a novel delta
   that gets its own review.
+- AC-32: GIVEN a candidate whose only unreviewed constituent is a Renovate PR
+  every commit of which `renovate[bot]` wrote THEN no reviewer is dispatched;
+  GIVEN a person also committed to that PR, or its commits cannot be read,
+  THEN it is a novel delta like any unreviewed PR.
 - A release candidate gets **no aggregate review**. Since it has no kernel
   delivery, the landing gate attests its composition at its exact head before
   any reviewer is asked (`candidateReviewScope`). Its review scope is only the

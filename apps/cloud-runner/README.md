@@ -679,6 +679,17 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
   `buildd-once --resume-worker <id>`, which restores the warm snapshot and then
   the bundle, re-attaches (`POST /api/workers/[id]/reattach`) and drains the
   answer into the old transcript.
+- **Tier or model change, and requeue.** Changing a running task's tier or
+  model, or setting it back to `pending`, pauses the run as above instead of
+  ending it, and buildd then resumes it by itself: the worker PATCH that
+  reports the pause queues the resume message and sends `task.resume`, with
+  nobody pressing Resume. A worker that is already parked is resumed at once.
+  The resumed runner's first call (`status: running, reactivate: true,
+  takesSessionModel: true`) is answered with `sessionModel` when the model
+  changed, and the old transcript continues on that model (the prompt cache is
+  rebuilt). With `RESUMABLE_RUNS` off the pause is refused, so the change
+  applies to a new attempt once the pause deadline passes; a Codex run keeps
+  its model. See `docs/specs/in-place-resume.md`.
 - **Orphan park.** A container still running when the agent restarts gets
   `buildd-once --park-orphan <id>`, and the agent marks the park and resumes it
   at once.

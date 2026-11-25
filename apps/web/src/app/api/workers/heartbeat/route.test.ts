@@ -1718,3 +1718,100 @@ describe('POST /api/workers/heartbeat — concurrency 0 and Pause set on buildd.
     expect(data.desiredPause).toBeNull();
   });
 });
+
+// docs/specs/local-runner-provider.md §2.3, §6.2, §6.3: the advert a runner
+// sends is stored strictly parsed, and the reply tells such a runner its own
+// heartbeat id and whether its team pins it as the relay host.
+let relayHostAnswer: { heartbeatId: string; host: boolean } | null = null;
+let relayHostCalls: Array<[string, string]> = [];
+let relayHostThrows = false;
+mock.module('@buildd/core/model-relay', () => ({
+  relayHostForRunner: async (accountId: string, localUiUrl: string) => {
+    relayHostCalls.push([accountId, localUiUrl]);
+    if (relayHostThrows) throw new Error('db blip');
+    return relayHostAnswer;
+  },
+}));
+
+describe('POST /api/workers/heartbeat — local models and the relay', () => {
+  const HEARTBEAT_ID = '22222222-2222-4222-8222-222222222222';
+  const advert = {
+    server: { kind: 'ollama', version: '0.5.1', reachable: true, checkedAt: '2026-11-14T12:00:00.000Z', url: 'http://127.0.0.1:11434' },
+    models: [
+      { name: 'nomic-embed-text', capabilities: ['embedding'], dimensions: 768, endpoint: 'http://10.0.0.5:11434' },
+      { name: 'http://evil.example/model', capabilities: ['embedding'], dimensions: 768 },
+    ],
+  };
+  let conflictSet: any;
+  let insertValues: any;
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockHeartbeatsFindFirst.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+    relayHostAnswer = null;
+    relayHostCalls = [];
+    relayHostThrows = false;
+    conflictSet = undefined;
+    insertValues = undefined;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        insertValues = vals;
+        return { onConflictDoUpdate: mock((opts: any) => { conflictSet = opts.set; return Promise.resolve(); }) };
+      }),
+    });
+  });
+
+  const send = (body: Record<string, unknown>) => POST(createMockRequest({
+    headers: { Authorization: 'Bearer bld_test' },
+    body: { localUiUrl: 'http://localhost:8766', ...body },
+  }));
+
+  it('stores the advert strictly parsed (no URL field, no URL-named model) and stamps when it was reported', async () => {
+    const res = await send({ localModels: advert });
+    expect(res.status).toBe(200);
+    for (const written of [insertValues, conflictSet]) {
+      expect(written.localModels.models.map((m: any) => m.name)).toEqual(['nomic-embed-text']);
+      expect(JSON.stringify(written.localModels)).not.toContain('http');
+      expect(written.localModelsAt).toBeInstanceOf(Date);
+    }
+  });
+
+  it('a runner that sends no advert (older build, or opted out) leaves the stored one alone and gets no relay block', async () => {
+    const res = await send({});
+    const data = await res.json();
+    expect('localModels' in conflictSet).toBe(false);
+    expect('localModelsAt' in conflictSet).toBe(false);
+    expect(data.heartbeatId).toBeUndefined();
+    expect(data.relay).toBeUndefined();
+    expect(relayHostCalls).toEqual([]);
+  });
+
+  it('something that is not an advert is dropped and the beat still succeeds', async () => {
+    const res = await send({ localModels: { server: { kind: 'lmstudio' }, models: [] } });
+    expect(res.status).toBe(200);
+    expect('localModels' in conflictSet).toBe(false);
+  });
+
+  it('the pinned relay host is told its heartbeat id and to poll', async () => {
+    relayHostAnswer = { heartbeatId: HEARTBEAT_ID, host: true };
+    const data = await (await send({ localModels: advert })).json();
+    expect(data.heartbeatId).toBe(HEARTBEAT_ID);
+    expect(data.relay).toEqual({ host: true, pollAfterMs: 15_000 });
+    expect(relayHostCalls).toEqual([['account-1', 'http://localhost:8766']]);
+  });
+
+  it('AC-28: a runner the team does not pin is told host: false and to stop polling', async () => {
+    relayHostAnswer = { heartbeatId: HEARTBEAT_ID, host: false };
+    const data = await (await send({ localModels: advert })).json();
+    expect(data.relay).toEqual({ host: false, pollAfterMs: 0 });
+  });
+
+  it('a failed relay lookup never fails the beat', async () => {
+    relayHostThrows = true;
+    const res = await send({ localModels: advert });
+    expect(res.status).toBe(200);
+    expect((await res.json()).ok).toBe(true);
+  });
+});

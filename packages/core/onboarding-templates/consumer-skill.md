@@ -132,6 +132,21 @@ A mission outside your team, or a missing one, files nothing and the thread
 says why. For background work nobody needs to watch, use
 `buildd action=create_task`.
 
+### In T3 Code: `delegate_task`
+
+Only when your session has T3's `delegate_task` and a buildd provider:
+
+1. **Work the person will want to watch** goes to `delegate_task` on a buildd
+   provider, not `create_task`. Prefer the runner machine's own T3 environment:
+   `target.environmentId` from `t3_environment_links`, its `buildd` provider and
+   the project whose repo matches the workspace. With no linked environment, use
+   a local buildd provider that runs the bridge over SSH.
+2. **The task text is self-contained**: the child gets no conversation history.
+   The first line is the title. When the work belongs to a mission, add
+   `buildd: mission=<id> role=<slug>` as its own line.
+3. **Background work nobody watches**: `create_task` as today.
+4. **Report the child's result** to the person when it arrives; do not poll.
+
 ## Friction
 
 When a platform action errors unexpectedly, a tool limit forces a detour or

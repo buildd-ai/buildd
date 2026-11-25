@@ -220,6 +220,9 @@ const NOT_AN_ACTION = new Set([
   'needs_input',
   // Claude Code's Bash tool parameter, how the skill says to run waitCommand.
   'run_in_background',
+  // T3 Code's own tool and table, outside the buildd MCP.
+  'delegate_task',
+  't3_environment_links',
 ]);
 
 async function knownActions(): Promise<{ topLevel: Set<string>; known: Set<string> }> {

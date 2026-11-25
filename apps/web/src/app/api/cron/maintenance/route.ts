@@ -26,6 +26,9 @@
  *      spec b7fc9316 R-21): `check:no-criteria-change` over the specs already
  *      waiting for approval. A revise runs it as it writes; this catches what
  *      waited before that, and any revise whose check did not run.
+ *   8. Relay queue expiry and retention (@buildd/core/model-relay
+ *      `sweepRelayJobs`): a runner's claim sweeps too, but an idle team's
+ *      rows would otherwise linger past their deadline and retention.
  *
  * They live here so a deployment that schedules only the `core` cron profile
  * keeps them (cron-manifest.json, `cron:sync --profile core,ops`). On
@@ -49,6 +52,7 @@ import { removeDetachedTeamFiles } from '@/lib/artifact-team-files';
 import { isStorageConfigured } from '@/lib/storage';
 import { sweepNoCriteriaChange } from '@/lib/specs/auto-approve';
 import { expireOverdueRequests } from '@/lib/capability-hold-store';
+import { sweepRelayJobs } from '@buildd/core/model-relay';
 
 export async function GET(req: NextRequest) {
   return withCronRun('maintenance', req, report => runCronJob(report));
@@ -89,9 +93,15 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
   //    (lib/capability-hold-store.ts): expired, never "task ended", and the
   //    waiting worker is told to complete with blockedByCapability.
   const accessRequestsExpired = (await expireOverdueRequests({ now })).length;
-  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, laneTasksSynced, uploads, chatAttachments, teamFiles, oauthClientsPruned, specsAutoApproved, accessRequestsExpired };
+  // 9. Relay jobs past their deadline, lapsed leases and day-old terminal rows
+  //    (docs/specs/local-runner-provider.md §3.5).
+  const relayJobs = await sweepRelayJobs().catch((err) => {
+    console.error('[maintenance] relay job sweep failed', err instanceof Error ? err.message : err);
+    return { expired: 0, requeued: 0, lost: 0, pruned: 0 };
+  });
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, laneTasksSynced, uploads, chatAttachments, teamFiles, oauthClientsPruned, specsAutoApproved, accessRequestsExpired, relayJobs };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
   // Every sweep logs and swallows its own failures, so errors stays 0 here.
-  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned + specsAutoApproved.approved + accessRequestsExpired, errors: 0, result });
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned + specsAutoApproved.approved + accessRequestsExpired + relayJobs.expired + relayJobs.requeued + relayJobs.lost + relayJobs.pruned, errors: 0, result });
   return NextResponse.json(result);
 }

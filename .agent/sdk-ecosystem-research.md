@@ -1,10 +1,35 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-11-16
-**Previous scan**: 2026-11-09
-**Current SDK version in Buildd**: `^0.3.325` (apps/runner, bun.lock resolves 0.3.325 = npm latest; no lag). Not declared in packages/core.
+**Last updated**: 2026-11-23
+**Previous scan**: 2026-11-16
+**Current SDK version in Buildd**: `^0.3.330` (apps/runner, bun.lock resolves 0.3.330 = npm latest; no lag). Not declared in packages/core.
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
+
+---
+
+## Nov 23 scan (Nov 17 – Nov 23)
+
+TypeScript SDK 0.3.326–0.3.330 (npm latest 0.3.330, Nov 20). Source: SDK CHANGELOG + npm publish times. Community repos not re-scanned. Buildd is already on 0.3.330.
+
+| Version | Change |
+|---------|--------|
+| 0.3.330 | `settings_not_in_effect` informational warning (invalid `settings`/settings file); **`query()` now throws if `settings` is an unparseable JSON string**; fix SDK MCP tool result lost/swapped on reconnect overlap; fix `CLAUDE_ENV_FILE` vars not reaching Bash with `continue` |
+| 0.3.329 | `managed_hooks_not_loaded` warning; `permissions.workingDirectoriesExclude` setting; idle sessions release large tool-result data after 30s; macOS Keychain save failure now `invalid_request`/null status instead of 401 `authentication_failed` |
+| 0.3.328 | **`onFailure: "block"` on `mcp_tool` hooks** (fail-closed); inline `agents` override same-named agents; `CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME` |
+| 0.3.327 | **Breaking**: `query()/startup()/prewarm()` refuse unserializable options (circular/BigInt); hook options must be arrays. **Deprecated**: `createSdkMcpServer()` inside an agent's `mcpServers` (ignored with warning). SDK MCP request ids back to number; 0.3.326 reconnect fix reverted |
+| 0.3.326 | `mcpServersDelivery: 'initialize'` (default `'argv'` deprecated, will flip); `getSessionInfo()` in `/core`; `managed_mcp_arrived` warning |
+
+### Verified against code
+- No `createSdkMcpServer` use under apps/ or packages/, and no `mcpServersDelivery` use: the 0.3.327 deprecation and 0.3.326 default flip do not affect the runner today.
+- Pin and lockfile already at 0.3.330.
+
+### Recommendations
+1. **Settings strings**: 0.3.330 throws on an unparseable JSON `settings` string; confirm any runner path passing `settings` as a string is wrapped in the worker error path. Low.
+2. **Watch the `mcpServersDelivery` default flip** (argv -> initialize); pin explicitly if the bundled CLI is ever older than the SDK. Low.
+3. **Fail-closed hooks**: `onFailure: "block"` now exists for `mcp_tool` hooks as well as matchers; still the open candidate for path guards. Medium.
+4. **Surface new `system/informational` warnings** (`settings_not_in_effect`, `managed_hooks_not_loaded`, `hook_no_verdict`) in worker logs. Low-medium.
+5. Carried open items from Nov 16 remain open.
 
 ---
 

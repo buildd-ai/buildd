@@ -36,6 +36,8 @@ import { initHistory, searchSessions, getSession, getArchivedData, getStats as g
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
+import { HeartbeatWatchdog, HEARTBEAT_WATCHDOG_INTERVAL_MS } from './heartbeat-watchdog';
+import { logError } from './log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { getPusherConfirmedAt } from './pusher-manager';
@@ -228,7 +230,14 @@ if (process.argv.includes('--doctor')) {
   // Find the runner the way `buildd top` does: through its socket.
   const { probeRunnerSocket: probe, runnerSocketPath: socketPathFor, runnerProcessFromProbe } = await import('./runner-socket');
   const socketPath = socketPathFor(BUILDD_DIR);
-  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath, doctor.isRunnerNeverStarted()) });
+  // The local model server, looked at from here: whether this runner is the
+  // pinned relay host is only known inside the running runner (its /api/doctor).
+  const { LocalModelServer, resolveLocalModelServer } = await import('./local-model-server');
+  const localTarget = resolveLocalModelServer(process.env);
+  const localServer = localTarget ? new LocalModelServer({ origin: localTarget.origin }) : null;
+  await localServer?.probe();
+  const localModels = doctor.checkLocalModels({ enabled: !!localTarget, advert: localServer?.advert() ?? null, host: null });
+  const report = doctor.runDiagnostics({ localModels, runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath, doctor.isRunnerNeverStarted()) });
 
   const RED = '\x1b[31m';
   const GREEN = '\x1b[32m';
@@ -2413,6 +2422,15 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       return Response.json({ ok: true }, { headers: corsHeaders });
     }
 
+    if (path === '/api/tasks/thread-events' && req.method === 'GET') {
+      const threadId = url.searchParams.get('threadId') ?? '';
+      try {
+        return Response.json({ events: await buildd!.threadEvents(threadId) }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to load thread events', events: [] }, { status: 502, headers: corsHeaders });
+      }
+    }
+
     if (path === '/api/tasks' && req.method === 'POST') {
       const body = await parseBody(req);
       try {
@@ -3180,9 +3198,10 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // Doctor — self-diagnostics and auto-fix
     if (path === '/api/doctor' && req.method === 'GET') {
-      const { runDiagnostics } = await import('./doctor');
+      const { runDiagnostics, checkLocalModels } = await import('./doctor');
+      const localModels = workerManager?.localModelsStatus ? checkLocalModels(workerManager.localModelsStatus()) : undefined;
       // This process's own isolation record, the one its heartbeat carries.
-      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck() }));
+      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck(), localModels }));
       return Response.json(report, { headers: corsHeaders });
     }
 
@@ -3748,3 +3767,20 @@ setInterval(() => {
   const { degraded, reason } = heartbeatState(getLastServerContactAt(), Date.now(), undefined, getPusherConfirmedAt());
   emitHeartbeatTick(degraded, reason);
 }, 60_000);
+
+// Heartbeat watchdog (2026-11-22: a runner stopped heartbeating with the process
+// still up and nothing logged, so the server showed it offline and it never took
+// the next update). When the liveness timer stops firing, a beat hangs, or no beat
+// lands for HEARTBEAT_STALE_MS on a transport fault, log an error and restart the
+// way an update does: agents pause and continue on the next start, and exit 75 is
+// non-zero, so the launcher loop and a service manager both start the runner again.
+// A server that answers with a refusal gets an error line instead: a restart would
+// not fix it. See heartbeat-watchdog.ts.
+const heartbeatWatchdog = new HeartbeatWatchdog();
+setInterval(() => {
+  if (!workerManager || config.serverless || updateState.updating) return;
+  const decision = heartbeatWatchdog.check(workerManager.getHeartbeatTracker());
+  if (!decision) return;
+  logError(decision.message);
+  if (decision.action === 'restart') scheduleGracefulRestart('heartbeat watchdog');
+}, HEARTBEAT_WATCHDOG_INTERVAL_MS);

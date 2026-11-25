@@ -14,7 +14,7 @@ const okTask = () => mock(() => Promise.resolve({
 }));
 
 describe('update_task tier / model pin', () => {
-  it('patches tier and says it applies at the next claim or retry', async () => {
+  it('patches tier and says it applies at the next claim when no agent is running', async () => {
     const api = okTask();
     const result = await handleBuilddAction(api as unknown as ApiFn, 'update_task', {
       taskId: TASK_ID, tier: 'premium',
@@ -22,7 +22,7 @@ describe('update_task tier / model pin', () => {
 
     expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ tier: 'premium' });
     expect(result.content[0].text).toContain('Tier: premium');
-    expect(result.content[0].text).toMatch(/next claim or retry/);
+    expect(result.content[0].text).toMatch(/no agent is running this task, so it takes effect on the next claim/);
   });
 
   it('re-tiering a task with a live worker warns which tier that worker is still running at', async () => {
@@ -39,6 +39,34 @@ describe('update_task tier / model pin', () => {
     expect(text).toContain('Tier: premium');
     expect(text).toContain(`WARNING: ${message}`);
     expect(text).not.toMatch(/Note: takes effect/);
+  });
+
+  it('re-tiering a task whose session resumes in place says so, without a warning', async () => {
+    const message = 'Resuming in place: worker w-1 pauses at its next safe point and continues the same session on claude-opus-5-5 (it was at standard, claude-sonnet-5-5).';
+    const api = mock(() => Promise.resolve({
+      id: TASK_ID, title: 'Pin me', status: 'in_progress', priority: 5,
+      modelChange: { appliesTo: 'resume_in_place', workerId: 'w-1', workerStatus: 'running', targetModel: 'claude-opus-5-5', message },
+    }));
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'update_task', { taskId: TASK_ID, tier: 'premium' }, ctx);
+    const text = result.content[0].text;
+    expect(text).toContain(message);
+    expect(text).not.toContain('WARNING');
+  });
+
+  it('a requeue says whether the session was kept or a new attempt started', async () => {
+    const kept = mock(() => Promise.resolve({
+      id: TASK_ID, title: 'Pin me', status: 'in_progress', priority: 5,
+      requeue: { outcome: 'resumed_in_place', workerId: 'w-1', message: 'Pausing the agent at its next safe point, then resuming the same session.' },
+    }));
+    const a = await handleBuilddAction(kept as unknown as ApiFn, 'update_task', { taskId: TASK_ID, status: 'pending' }, ctx);
+    expect(a.content[0].text).toContain('Restart: Pausing the agent at its next safe point, then resuming the same session.');
+
+    const fresh = mock(() => Promise.resolve({
+      id: TASK_ID, title: 'Pin me', status: 'pending', priority: 5,
+      requeue: { outcome: 'new_attempt', workerId: 'w-1', reasonCode: 'runner_not_reporting', message: 'New attempt: the task starts again from its last pushed commit, because the runner holding the session stopped reporting and nothing was parked.' },
+    }));
+    const b = await handleBuilddAction(fresh as unknown as ApiFn, 'update_task', { taskId: TASK_ID, status: 'pending' }, ctx);
+    expect(b.content[0].text).toContain('Restart: New attempt: the task starts again from its last pushed commit, because');
   });
 
   it('patches a model id', async () => {

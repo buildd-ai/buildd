@@ -381,6 +381,35 @@ describe('PATCH /api/workspaces/[id]', () => {
       expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith({ workspaceId: 'ws-1', repo: 'org/repo', trigger: 'repo_link' });
     });
 
+    it('knowledgeCodeIngest: false turns the code corpus off without purging or enqueueing', async () => {
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { knowledgeCodeIngest: false } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates).toHaveProperty('knowledgeCodeIngest', false);
+      expect(capturedUpdates).not.toHaveProperty('knowledgeIngest');
+      expect(mockPurge).not.toHaveBeenCalled();
+      expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+    });
+
+    it('knowledgeCodeIngest: true after off queues a full ingest of the linked repo', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ repo: 'org/repo', knowledgeIngest: true, knowledgeCodeIngest: false });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { knowledgeCodeIngest: true } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates).toHaveProperty('knowledgeCodeIngest', true);
+      expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith({ workspaceId: 'ws-1', repo: 'org/repo', trigger: 'repo_link' });
+    });
+
+    it('re-sending knowledgeCodeIngest: true on an already-on workspace queues nothing', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ repo: 'org/repo', knowledgeIngest: true, knowledgeCodeIngest: true });
+      await PATCH(createMockRequest({ method: 'PATCH', body: { knowledgeCodeIngest: true } }), { params: mockParams });
+      expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+    });
+
+    it('refuses a non-boolean knowledgeCodeIngest', async () => {
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { knowledgeCodeIngest: 'off' } }), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect(capturedUpdates).not.toHaveProperty('knowledgeCodeIngest');
+    });
+
     it('re-sending true on an already-on workspace queues nothing', async () => {
       mockWorkspacesFindFirst.mockResolvedValue({ repo: 'org/repo', knowledgeIngest: true });
       await PATCH(createMockRequest({ method: 'PATCH', body: { knowledgeIngest: true } }), { params: mockParams });
@@ -1076,6 +1105,7 @@ describe('PATCH /api/workspaces/[id] — privilege gates', () => {
     ['webhookConfig', { webhookConfig: { url: 'https://runner.example/dispatch', token: 't', enabled: true } }],
     ['webhookConfig (clear)', { webhookConfig: null }],
     ['knowledgeIngest', { knowledgeIngest: false }],
+    ['knowledgeCodeIngest', { knowledgeCodeIngest: true }],
     ['purgeKnowledge', { purgeKnowledge: true }],
   ];
 

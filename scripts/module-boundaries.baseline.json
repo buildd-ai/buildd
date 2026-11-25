@@ -239,9 +239,6 @@
     "apps/web/src/app/api/workspaces/[id]/settings/route.ts": {
       "apps/web/src/lib/early-release-mode.ts": "releases"
     },
-    "apps/web/src/app/api/workspaces/route.ts": {
-      "apps/web/src/lib/knowledge-ingest.ts": "knowledge"
-    },
     "apps/web/src/app/app/(protected)/home/home-view.ts": {
       "apps/web/src/lib/action-queue.ts": "missions"
     },

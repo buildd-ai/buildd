@@ -4,10 +4,13 @@
 // retirement"). Reads claim telemetry (skill_usage), applies the pure rule in
 // @buildd/core/skill-retirement-rule and writes skill_lifecycle_events.
 //
-// Recording mode (the default; SKILL_RETIREMENT_MODE unset or anything but
-// "acting") only writes events: it never changes a skill. Acting mode disables
-// an archivable skill (enabled=false, never a delete) and writes an audit row.
-// Nothing is archivable until telemetry has run the full archive window.
+// Mode is per workspace (gitConfig.skillRetirement.mode: off | recording | acting;
+// unrecognised or absent = recording). "off" skips the workspace. Recording only
+// writes events. Acting disables an archivable skill (enabled=false, never a
+// delete) and writes an audit row, but only for workspaces on the platform
+// owner's SKILL_RETIREMENT_ACTING_WORKSPACES allowlist and only once telemetry
+// has run the full archive window; otherwise it is refused, recorded as
+// recording, and listed under "refusals" in the response.
 //
 // Auth: Bearer token matching CRON_SECRET. Recommended schedule: daily.
 
@@ -17,7 +20,8 @@ import { sql } from 'drizzle-orm';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { DEFAULT_ROLES } from '@/lib/default-roles';
 import {
-  evaluateRetirement, resolveRetirementMode, type RetirementSkill,
+  evaluateRetirement, resolveRetirementMode, gateActingMode, parseActingAllowlist,
+  DEFAULT_ARCHIVE_DAYS, type RetirementSkill,
 } from '@buildd/core/skill-retirement-rule';
 import { archiveSkill, type LifecycleEvent } from '@buildd/core/skill-lifecycle-events';
 import { proposeLinkRetirements } from '@buildd/core/skill-spec-links';
@@ -43,19 +47,20 @@ function templateSlugs(template: unknown): string[] {
 
 async function run(report: CronReport): Promise<NextResponse> {
   const now = new Date();
-  const mode = resolveRetirementMode(process.env.SKILL_RETIREMENT_MODE);
+  const allowlist = parseActingAllowlist(process.env.SKILL_RETIREMENT_ACTING_WORKSPACES);
 
-  const [skillRes, telemetryRes, scheduleRes, activeRes] = await Promise.all([
+  const [skillRes, telemetryRes, scheduleRes, activeRes, metricsRes] = await Promise.all([
     db.execute(sql`
-      SELECT s.id, s.team_id, s.slug, s.enabled, s.is_role, s.content, s.content_hash, s.created_at,
+      SELECT s.id, s.team_id, s.workspace_id, w.git_config, s.slug, s.enabled, s.is_role, s.content, s.content_hash, s.created_at,
              COALESCE((s.metadata->>'pinned') = 'true', false) AS pinned,
-             u.last_claimed_at,
+             u.last_claimed_at, (u.skill_id IS NOT NULL) AS has_usage,
              (SELECT max(e.created_at) FROM skill_lifecycle_events e
                WHERE e.skill_id = s.id AND e.action = 'restored') AS last_restored_at
       FROM workspace_skills s
       LEFT JOIN skill_usage u ON u.skill_id = s.id
+      LEFT JOIN workspaces w ON w.id = s.workspace_id
       WHERE s.enabled = true`),
-    db.execute(sql`SELECT min(first_claimed_at) AS started FROM skill_usage`),
+    db.execute(sql`SELECT team_id, min(telemetry_started_at) AS started FROM skill_usage GROUP BY team_id`),
     // Every schedule template counts, enabled or not: a paused schedule resumes.
     db.execute(sql`SELECT task_template FROM task_schedules`),
     db.execute(sql`
@@ -63,29 +68,81 @@ async function run(report: CronReport): Promise<NextResponse> {
       FROM tasks
       WHERE status IN ('pending', 'assigned', 'in_progress')
         AND jsonb_typeof(context->'skillSlugs') = 'array'`),
+    // R-19 metrics from the event log. would_archive: events per week over the last 4 weeks.
+    // Restored: archived events (acting) followed by a restore of the same skill within 30 days.
+    db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM skill_lifecycle_events
+          WHERE action = 'would_archive' AND created_at > now() - interval '28 days') AS would_archive_28d,
+        (SELECT count(*) FROM skill_lifecycle_events a
+          WHERE a.action = 'archived' AND a.mode = 'acting') AS archived_total,
+        (SELECT count(*) FROM skill_lifecycle_events a
+          WHERE a.action = 'archived' AND a.mode = 'acting' AND EXISTS (
+            SELECT 1 FROM skill_lifecycle_events r
+            WHERE r.skill_id = a.skill_id AND r.action = 'restored'
+              AND r.created_at >= a.created_at AND r.created_at <= a.created_at + interval '30 days')) AS restored_within_30d`),
   ]);
 
+  // Telemetry start is per team: a team with no counted claim has not started, so it starts now.
+  const startedByTeam = new Map<string, Date>();
+  for (const r of rowsOf(telemetryRes)) if (r.started) startedByTeam.set(String(r.team_id), new Date(r.started));
+  const startOf = (teamId: string) => startedByTeam.get(teamId) ?? now;
+
   const byId = new Map<string, Row>();
-  const skills: RetirementSkill[] = rowsOf(skillRes).map(r => {
+  const modeOf = new Map<string, 'recording' | 'acting'>();
+  const refusals: Array<{ workspaceId: string | null; refusal: string; telemetryDays: number; archiveDays: number }> = [];
+  const refused = new Set<string>();
+  const skills: Array<RetirementSkill & { teamId: string }> = rowsOf(skillRes).flatMap(r => {
+    const requested = resolveRetirementMode(r.git_config);
+    if (requested === 'off') return [];
+    const telemetryStartedAt = startOf(String(r.team_id));
+    const telemetryDays = Math.floor((now.getTime() - telemetryStartedAt.getTime()) / 86_400_000);
+    const d = gateActingMode(requested, { workspaceId: r.workspace_id ?? null, allowlist, now, telemetryStartedAt });
+    modeOf.set(r.id, d.mode as 'recording' | 'acting');
+    if (d.refusal) {
+      const key = `${r.workspace_id}:${d.refusal}`;
+      if (!refused.has(key)) {
+        refused.add(key);
+        refusals.push({ workspaceId: r.workspace_id ?? null, refusal: d.refusal, telemetryDays, archiveDays: DEFAULT_ARCHIVE_DAYS });
+      }
+    }
+    return [r];
+  }).map(r => {
     byId.set(r.id, r);
     return {
-      id: r.id, slug: r.slug, enabled: r.enabled, isRole: !!r.is_role, pinned: !!r.pinned,
+      id: r.id, teamId: String(r.team_id), slug: r.slug, enabled: r.enabled, isRole: !!r.is_role, pinned: !!r.pinned,
       createdAt: new Date(r.created_at),
       lastClaimedAt: r.last_claimed_at ? new Date(r.last_claimed_at) : null,
       lastRestoredAt: r.last_restored_at ? new Date(r.last_restored_at) : null,
     };
   });
 
-  // No claim has ever been counted: telemetry has not started, so it starts now.
-  const started = rowsOf(telemetryRes)[0]?.started;
-  const telemetryStartedAt = started ? new Date(started) : now;
-
-  const verdict = evaluateRetirement({
-    skills, now, telemetryStartedAt, mode,
-    defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug),
-    scheduleSkillSlugs: rowsOf(scheduleRes).flatMap(r => templateSlugs(r.task_template)),
-    activeTaskSkillSlugs: rowsOf(activeRes).map(r => String(r.slug)),
-  });
+  // The rule takes one telemetry start, so evaluate each team on its own clock.
+  const scheduleSkillSlugs = rowsOf(scheduleRes).flatMap(r => templateSlugs(r.task_template));
+  const activeTaskSkillSlugs = rowsOf(activeRes).map(r => String(r.slug));
+  const teamIds = [...new Set(skills.map(s => s.teamId))];
+  const verdicts = teamIds.map(teamId => evaluateRetirement({
+    skills: skills.filter(s => s.teamId === teamId), now, telemetryStartedAt: startOf(teamId),
+    defaultRoleSlugs: DEFAULT_ROLES.map(r => r.slug), scheduleSkillSlugs, activeTaskSkillSlugs,
+  }));
+  // R-19: share of enabled (non-off) skills that have a skill_usage row. Null when there are none.
+  const withUsage = rowsOf(skillRes).filter(r => byId.has(r.id) && r.has_usage).length;
+  const usageRowCoverage = skills.length > 0 ? withUsage / skills.length : null;
+  const m = rowsOf(metricsRes)[0] ?? {};
+  const archivedTotal = Number(m.archived_total ?? 0);
+  const metrics = {
+    usageRowCoverage,
+    wouldArchivePerWeek: Number(m.would_archive_28d ?? 0) / 4,
+    archivedTotal,
+    restoredWithin30d: Number(m.restored_within_30d ?? 0),
+  };
+  const coverageText = usageRowCoverage === null ? 'no enabled skills' : `${Math.round(usageRowCoverage * 100)}% of enabled skills have a usage row`;
+  const verdict = {
+    stale: verdicts.flatMap(v => v.stale),
+    archivable: verdicts.flatMap(v => v.archivable),
+    // The recording report is what gates acting (R-16), so coverage travels with it.
+    report: [...verdicts.map(v => v.report), `usage-row coverage: ${coverageText}`].join('; '),
+  };
 
   const archivableIds = new Set(verdict.archivable.map(s => s.id));
   const events: LifecycleEvent[] = [];
@@ -94,6 +151,7 @@ async function run(report: CronReport): Promise<NextResponse> {
   for (const s of verdict.stale) {
     if (archivableIds.has(s.id)) continue;
     const r = byId.get(s.id)!;
+    const mode = modeOf.get(s.id)!;
     events.push({
       skillId: s.id, teamId: r.team_id, action: 'stale', mode, reason: 'unclaimed past the stale window',
       previousEnabled: true, previousContentHash: r.content_hash, createdAt: now,
@@ -101,6 +159,7 @@ async function run(report: CronReport): Promise<NextResponse> {
   }
   for (const s of verdict.archivable) {
     const r = byId.get(s.id)!;
+    const mode = modeOf.get(s.id)!;
     const row = { id: s.id, teamId: r.team_id, enabled: true, content: r.content, contentHash: r.content_hash };
     const out = archiveSkill(row, { mode, reason: 'unclaimed past the archive window', now });
     if (mode === 'acting') {
@@ -145,9 +204,9 @@ async function run(report: CronReport): Promise<NextResponse> {
           AND e.created_at > now() - make_interval(days => ${REFLAG_AFTER_DAYS}))`);
   }
 
-  report({ processed: skills.length, changed: archived, result: { mode, stale: verdict.stale.length, archivable: verdict.archivable.length, archived } });
+  report({ processed: skills.length, changed: archived, result: { refusals: refusals.length, stale: verdict.stale.length, archivable: verdict.archivable.length, archived, ...metrics } });
   return NextResponse.json({
-    ok: true, mode, archived,
-    stale: verdict.stale.length, archivable: verdict.archivable.length, report: verdict.report,
+    ok: true, archived, refusals,
+    stale: verdict.stale.length, archivable: verdict.archivable.length, report: verdict.report, metrics,
   });
 }

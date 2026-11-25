@@ -2,10 +2,10 @@
 title: ACP Bridge
 status: active
 owner: max
-last_verified: 2026-11-22
+last_verified: 2026-11-23
 summary: The `buildd acp` bridge MUST present this machine's runner workers as ACP threads, route each reply by worker state, file a new thread's task reserved for this runner, and say plainly when it cannot.
 domain: runners
-surfaces: [apps/runner/src/acp/bridge.ts, apps/runner/src/acp/translate.ts, apps/runner/src/acp/runner-port.ts, apps/runner/src/acp/links.ts]
+surfaces: [apps/runner/src/acp/bridge.ts, apps/runner/src/acp/translate.ts, apps/runner/src/acp/runner-port.ts, apps/runner/src/acp/links.ts, apps/runner/src/acp/notes.ts, apps/web/src/lib/task-thread-target.ts, apps/web/src/app/api/tasks/thread-events/route.ts]
 related: [claim-gate-legibility]
 keywords: [T3 Code, ACP, buildd-acp, Local ACP command, session/prompt, user_request, acp-sessions.json]
 verified_by: [apps/runner/__tests__/unit/acp-bridge.test.ts, apps/runner/__tests__/unit/acp-e2e.test.ts, apps/runner/__tests__/unit/acp-shim.test.ts, apps/runner/__tests__/unit/acp-transport.test.ts]
@@ -100,6 +100,19 @@ The first message of a client-started thread files a buildd task in the matching
 - If the claim is refused, the thread MUST say the task is queued and why, and the task stays held for this runner until the lease lapses, then is free for any runner.
 - **Pending #6136**: the code on dev today files the task unreserved (title and description only) and claims it afterwards, so another runner can win the gap. #6136 adds `reserve: true` to the `/api/tasks` create and updates the refused-claim message to name the 20-minute hold. Until it merges, treat the reservation requirement and the refused-claim wording below as not yet in force.
 - On a successful claim the bridge stores the link, says "Started a buildd task in <workspace>: “<title>”.", and follows the run.
+- **Two setups.** *Linked environments (preferred):* the orchestrator starts the child thread in the runner machine's own T3 environment, so T3's project, diffs and paths match the run. *Not linked:* the client runs the bridge over SSH (`ssh <host> ... buildd acp`); T3 then shows the thread under the person's local environment and project while the work runs elsewhere, and its diff panel shows a local checkout the task never touched.
+- **Remote session.** On `session/new`, when the client's `cwd` does not exist on the runner's filesystem (after the WSL `C:\` → `/mnt/c` mapping), the session is marked remote. Its first message then reads "Started a buildd task in <workspace>: “<title>” · <role> on <model>, on runner <runner name>, not this machine. Changes will be on branch <branch> and in its PR, not in your checkout." The closing message keeps the PR link. When `cwd` exists locally nothing changes. The workspace is still matched by repo names alone; the foreign `cwd` is used for nothing else.
+
+### Thread notes: a task remembers the thread that filed it
+
+A client thread has no address buildd can call (unlike `callbackUrl`), so the task remembers the thread and the bridge, which holds it, pulls the notes.
+
+- **Target.** The bridge files the task with `context.callbackTarget = { kind: 't3_thread', threadId: <session id> }`. It is a kind and a thread id, never a secret; `POST /api/tasks` drops any other shape or extra field (`withThreadTarget`). It sits beside the plain `context.callback` URL; the two are independent and a task may carry both.
+- **Deviation from the callback/outbox path.** The task asked for delivery through the existing callback/outbox with retries. A thread has no address to POST to, so push delivery would need a new endpoint on the runner machine plus its own retry loop. Pull instead: events are derived from task state on read, nothing is queued, and a missed poll is repaired by the next one.
+- **Events**, oldest first: `started` (a worker exists), `waiting_input` (only while the worker waits; an answered question is not replayed), `pr_opened`, `completed`, `failed`. A later state implies the earlier ones. They are derived from the task's current state on read (`threadEventsFor`), so there is no delivery loop to keep alive, and a missed poll is repaired by the next one. PR checks and reviews after the PR opens are out of scope: T3 watches the PR.
+- **Payload.** `GET /api/tasks/thread-events?threadId=<id>` (runner key or session, only tasks in workspaces the caller reaches, newest 50 tasks) returns `{ events: [{ key: "<taskId>:<event>", taskId, event, text, dashboardUrl }] }`. `text` is one short line naming the task, plus the PR link for `pr_opened`. It is a plain sentence in the thread's own voice ("Working on “<title>”.", "“<title>” is waiting for your input.", "PR #<n> is waiting for your input. <what is needed>. <url>"). There's no `buildd:` or `Needs you:` label in front, and a wait on the person is called "input", T3's own word (`threadNote`, `needsYouNote`). The runner relays it as `GET /api/tasks/thread-events` on its socket.
+- **Receiving end.** T3's local CLI can send a message to a thread, but that is a user message that starts an agent turn, not a passive note, and the bridge has no other way to post into a thread outside a turn. So the bridge emits unseen notes as agent messages at the start of the thread's **next** prompt, then marks the notes of that turn shown. Limitation: a thread nobody writes to again shows no note until it is.
+- **Shown notes** are kept by key in `<BUILDD_HOME>/acp-notes.json` (keys only, newest 2,000), so a restart repeats nothing. A failing read never blocks the turn.
 
 ### Failure messages
 
@@ -107,7 +120,8 @@ The first message of a client-started thread files a buildd task in the matching
 |---|---|---|
 | Runner not running / socket refused | `/api/workers` or `/api/workspaces` fail: "runner refused /api/workers (<status>): <reason>", "Could not read your buildd workspaces: <reason>"; the connection error itself surfaces from the socket client | Start the runner on this machine (the bridge only talks to it), then retry |
 | New thread, no folder | "This thread has no project folder, so buildd cannot tell which workspace the task is for." | Open the thread inside a project folder |
-| No matching workspace | "No buildd workspace matches this project (<names>). Connect the repo in buildd first." | Connect the repo as a buildd workspace |
+| No matching workspace, GitHub `origin` | "This runner does not work on <owner/name> yet. Open this to connect <owner/name> to buildd and let this runner work on it: <server>/app/connect-repo?repo=<owner/name>&runner=<account id>" then "Then send your message again here." The link is built from the runner's own config (`GET /api/config`); the bridge MUST NOT ask the server whether another team has a workspace for the repo. With no account id known it names `<server>/app/settings/connections` instead | Open the link signed in: the page picks this runner for the repo's workspace, or creates the workspace and picks it, or says it is already fine (`apps/web/src/lib/connect-repo.ts`, session only). Resend; no restart |
+| No matching workspace, no GitHub `origin` | "buildd works on GitHub repos, and this folder has no GitHub remote (origin), so buildd has no workspace for it. T3's own Claude or Codex threads work in this folder without buildd." | Use a T3 Claude/Codex thread, or add a GitHub remote |
 | Several workspaces match | "This folder matches more than one buildd workspace (<list>). No workspace was chosen; send the message again to choose one." (or "Start this task from buildd for now." when the client has no forms) | Resend and pick one, or start the task from buildd |
 | Task not created | "buildd did not create the task. The runner refused that (<status>): <reason>." | Fix the cause named, resend |
 | Claim refused (current) | "Created the buildd task “<title>” in <workspace>. It is queued: this runner could not take it now. The runner refused that (<status>): <reason>." | Free a slot or fix the limit named; the task stays queued. Pending #6136: it names the 20-minute hold for this runner |
@@ -128,6 +142,8 @@ A client may open a thread with `_meta.buildd` = `{ missionId?, roleSlug?, prior
 
 - Without `_meta.buildd` nothing changes.
 - A mission the server refuses (outside the runner's team, or missing) files **no task**: the thread gets one agent message naming the server's error and the turn ends with `end_turn`.
+- **Directive line.** A client that cannot send `_meta` (T3's delegation) may begin the first message with `buildd: mission=<id or short id> role=<slug> priority=<n> kind=<kind>` (any subset, `key=value` pairs). It is parsed like `_meta.buildd` (same validation, same refusal), removed from the title and description, and loses to `_meta.buildd` when both are present. A first line of any other shape stays text.
+- T3's delegation role line (`Act as the <role> sub-agent for this task.` as the first line) is dropped before the title is taken, so the title is the first line of the delegated text.
 - Which mission a T3 project maps to, and persisting that mapping beside `acp-sessions.json`, remain unspecified; the client supplies `missionId` per thread.
 
 ### Acceptance criteria
@@ -142,10 +158,12 @@ A client may open a thread with `_meta.buildd` = `{ missionId?, roleSlug?, prior
 - AC-8: [GIVEN an unsupported method] WHEN called THEN the bridge answers `-32601`.
 - AC-9: [pending #6136] [GIVEN a new thread's first message] WHEN the task is filed THEN it is reserved for the filing account (CG-7) before the claim by id.
 - AC-10: [GIVEN `_meta.buildd` on a new thread] WHEN the first message is sent THEN the task is filed with those fields; WHEN the server refuses the mission THEN no task is filed and the thread says why, ending `end_turn`.
+- AC-11: [GIVEN a new thread's first message] WHEN the task is filed THEN it carries a `t3_thread` callback target naming the thread, and an invalid target on `POST /api/tasks` is dropped.
+- AC-12: [GIVEN a task with a thread target that started, opened a PR or finished] WHEN the thread's next prompt arrives THEN each note is emitted once, before the reply is handled; WHEN the notes read fails THEN the turn proceeds.
 
 ### Code surface
 
-`apps/runner/src/acp/bridge.ts` (methods, `userTextFrom`, `taskTitleFrom`, `NEW_THREAD_TEXT`, `chooseWorkspace`), `translate.ts` (`replyRoute`, `BRIDGE_COMMANDS`, `waitingForm`, `settledText`), `runner-port.ts` (socket actions answer/message/pause/stop/followup, `createTask`, `claim`), `links.ts`, `shim.ts`, `main.ts`.
+`apps/runner/src/acp/bridge.ts` (methods, `userTextFrom`, `taskTitleFrom`, `NEW_THREAD_TEXT`, `chooseWorkspace`), `translate.ts` (`replyRoute`, `BRIDGE_COMMANDS`, `waitingForm`, `settledText`), `runner-port.ts` (socket actions answer/message/pause/stop/followup, `createTask`, `claim`), `links.ts`, `notes.ts`, `shim.ts`, `main.ts`; server: `apps/web/src/lib/task-thread-target.ts` (target, events, notes) and `apps/web/src/app/api/tasks/thread-events/route.ts`.
 
 ### Out of scope
 

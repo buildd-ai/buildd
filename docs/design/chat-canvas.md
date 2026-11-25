@@ -1,5 +1,14 @@
 ---
 general_rules: "[Voice and hard objects](design-system.md#11-voice-and-hard-objects)"
+assertions:
+  - id: "chat-canvas-route"
+    type: "route"
+    method: "GET"
+    path: "/api/chat/canvas"
+    file: "apps/web/src/app/api/chat/canvas/route.ts"
+  - id: "chat-canvas-component-tests"
+    type: "test_file"
+    path: "apps/web/src/components/chat/ChatCanvas.dom.test.tsx"
 ---
 
 # chat-canvas

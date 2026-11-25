@@ -191,3 +191,82 @@ describe('planReparent', () => {
     expect(Object.keys(JSON.parse(text))).toEqual(['version', 'dialect', 'id', 'prevIds', 'ddl', 'renames']);
   });
 });
+
+describe('planReparent on format-10 diff snapshots (drizzle-kit rc.6+)', () => {
+  // A footprint as the kit writes one: the parts a statement writes and reads.
+  const addColumn = (t: string, c: string) => ({
+    statementType: 'add_column',
+    statementTarget: ['column', 'public', t, c],
+    writes: [`s|col|public.${t}.${c}`, `n|col|public.${t}.${c}`, `e|col|public.${t}.${c}`],
+    reads: [`n|tbl|public.${t}`, 'n|sch|public'],
+  });
+  const createTable = (t: string) => ({
+    statementType: 'create_table',
+    statementTarget: ['table', 'public', t],
+    writes: [`s|tbl|public.${t}`, `n|tbl|public.${t}`, `e|tbl|public.${t}`],
+    reads: ['n|sch|public'],
+  });
+  const diff = (id: string, prevId: string, footprints: unknown[], deltas: unknown[] = [{ op: 'create', row: column('t0', id) }]): V1Snapshot =>
+    ({ type: 'diff', version: '10', dialect: 'postgres', id, prevIds: [prevId], footprints, deltas }) as V1Snapshot;
+  const diffBase = { type: 'base', version: '10', dialect: 'postgres', id: 's0', prevIds: [ROOT], footprints: [], ddl: BASE_DDL } as V1Snapshot;
+  const at = (folder: string, snapshot: V1Snapshot) => ({ folder, snapshot });
+  const nowMs = Date.UTC(2026, 10, 23, 12, 0, 0);
+  const input = (trunk: V1Snapshot[], mission: V1Snapshot[]) => ({
+    base: diffBase,
+    trunk: trunk.map((s, i) => at(`2026112310000${i}_trunk_${i}`, s)),
+    mission: mission.map((s, i) => at(`2026112309000${i}_mission_${i}`, s)),
+    existingFolders: ['20261123100009_trunk_last'],
+    nowMs,
+  });
+
+  it('re-parents a chain unchanged but for id and prevIds, folders after everything', () => {
+    const m1 = diff('m1', 's0', [addColumn('t0', 'a')]);
+    const m2 = diff('m2', 'm1', [createTable('m')]);
+    const plan = planReparent(input([diff('t1', 's0', [addColumn('t0', 'b')])], [m2, m1]));
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.trunkLeaf.snapshot.id).toBe('t1');
+    const [f1, f2] = plan.folders;
+    expect(f1!.snapshot.prevIds).toEqual(['t1']);
+    expect(f2!.snapshot.prevIds).toEqual([f1!.snapshot.id]);
+    expect(f1!.snapshot.id).toBe(reparentedId('t1', 'm1'));
+    expect(f1!.snapshot.deltas).toBe(m1.deltas);
+    expect(f1!.snapshot.footprints).toBe(m1.footprints);
+    expect(f1!.snapshot.ddl).toBeUndefined();
+    expect(f1!.to > '20261123100009_trunk_last' && f2!.to > f1!.to).toBe(true);
+    // m1 is listed second, so its folder is mission_1: the slug follows the snapshot, not the list order.
+    expect(f1!.to.endsWith('_mission_1') && V1_FOLDER.test(f1!.to)).toBe(true);
+    // Serialised in the kit's key order, with nothing a format-8 snapshot carries added.
+    expect(Object.keys(JSON.parse(serializeSnapshot(f1!.snapshot)))).toEqual(['type', 'version', 'dialect', 'id', 'prevIds', 'footprints', 'deltas']);
+  });
+
+  it('refuses when both sides write the same part (overlap)', () => {
+    const plan = planReparent(input([diff('t1', 's0', [addColumn('t0', 'a')])], [diff('m1', 's0', [addColumn('t0', 'a')])]));
+    expect(plan).toMatchObject({ ok: false, reason: 'overlap' });
+  });
+
+  it('refuses when one side reads a part the other writes (reference)', () => {
+    // Trunk creates table m; the mission adds a column to it.
+    const plan = planReparent(input([diff('t1', 's0', [createTable('m')])], [diff('m1', 's0', [addColumn('m', 'k')])]));
+    expect(plan).toMatchObject({ ok: false, reason: 'reference' });
+    const reverse = planReparent(input([diff('t1', 's0', [addColumn('m', 'k')])], [diff('m1', 's0', [createTable('m')])]));
+    expect(reverse).toMatchObject({ ok: false, reason: 'reference' });
+  });
+
+  it('refuses a rename delta on either side', () => {
+    const renamed = diff('m1', 's0', [addColumn('t0', 'a')], [{ op: 'rename', key: 'tables', set: { name: 'x' } }]);
+    expect(planReparent(input([diff('t1', 's0', [addColumn('t0', 'b')])], [renamed]))).toMatchObject({ ok: false, reason: 'renames' });
+  });
+
+  it('refuses a format-8 snapshot on a format-10 fork point, and the reverse', () => {
+    const v8 = snap('m1', 's0', BASE_DDL);
+    expect(planReparent(input([diff('t1', 's0', [addColumn('t0', 'b')])], [v8]))).toMatchObject({ ok: false, reason: 'format' });
+    const onV8 = planReparent({ ...input([], []), base, trunk: [at('20261123100000_t', diff('t1', 's0', []))], mission: [at('20261123090000_m', snap('m1', 's0', BASE_DDL))] });
+    expect(onV8).toMatchObject({ ok: false, reason: 'format' });
+  });
+
+  it('refuses a side that is not one linear chain from the fork point', () => {
+    const plan = planReparent(input([diff('t1', 's0', [addColumn('t0', 'b')])], [diff('m1', 'elsewhere', [addColumn('t0', 'a')])]));
+    expect(plan).toMatchObject({ ok: false, reason: 'chain' });
+  });
+});

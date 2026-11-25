@@ -76,6 +76,7 @@ const mockTasksUpdateWhere = mock(() => Promise.resolve());
 const mockTasksUpdateSet = mock(() => ({ where: mockTasksUpdateWhere }));
 const mockTasksUpdate = mock(() => ({ set: mockTasksUpdateSet }));
 const mockMissionsFindFirst = mock(() => null as any);
+const mockMissionsFindMany = mock(async (..._a: any[]): Promise<any[]> => []);
 // db.select(...).from(table).where(pred).groupBy(col): the task list's two
 // aggregates (mission done/total, merged PRs). Each call is recorded with its
 // table and predicate so a test can assert the query's scope, not just its rows.
@@ -262,7 +263,7 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany, findFirst: mockAccountWorkspacesFindFirst },
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
       tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
-      missions: { findFirst: mockMissionsFindFirst },
+      missions: { findFirst: mockMissionsFindFirst, findMany: mockMissionsFindMany },
       workers: { findFirst: mockWorkersFindFirst },
       workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst, findMany: mockWorkspaceSkillsFindMany },
       // Team roles, for manage_connectors (lib/permissions.ts can()).
@@ -277,6 +278,7 @@ mock.module('@buildd/core/db', () => ({
 
 // Mock drizzle-orm
 mock.module('drizzle-orm', () => ({
+  ilike: (field: any, pattern: any) => ({ field, pattern, type: 'ilike' }),
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   asc: (field: any) => ({ field, type: 'asc' }),
@@ -1548,6 +1550,19 @@ describe('POST /api/tasks', () => {
       expect(seen.values.context).not.toHaveProperty('prReach');
     });
 
+    it('context.callbackTarget is sanitized: extra fields and invalid kinds are dropped', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      let seen = capture();
+      const file = (callbackTarget: unknown) => POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Do it', context: { callbackTarget } } }));
+      expect((await file({ kind: 't3_thread', threadId: 'th-1', token: 'secret' })).status).toBe(200);
+      expect(seen.values.context.callbackTarget).toEqual({ kind: 't3_thread', threadId: 'th-1' });
+      seen = capture();
+      expect((await file({ kind: 'slack', threadId: 'th-1' })).status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('callbackTarget');
+    });
+
     const agentFiling = () => {
       mockGetCurrentUser.mockResolvedValue(null);
       mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
@@ -2359,6 +2374,55 @@ describe('POST /api/tasks', () => {
     return () => capturedValues;
   }
 
+  it('resolves a unique short mission id prefix inside the team', async () => {
+    const captured = backendCase();
+    mockMissionsFindMany.mockResolvedValue([{ id: '11111111-1111-4111-8111-111111111111' }]);
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
+    const res = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }));
+    expect(res.status).toBe(200);
+    expect(captured().missionId).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
+  it('answers 404 naming a short mission id that matches nothing', async () => {
+    backendCase();
+    mockMissionsFindMany.mockResolvedValue([]);
+    const res = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'eb37c545', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }));
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('eb37c545');
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 naming an ambiguous short mission id', async () => {
+    backendCase();
+    mockMissionsFindMany.mockResolvedValue([{ id: 'a' }, { id: 'b' }]);
+    const res = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'eb37', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('eb37');
+  });
+
+  it('answers 400 naming a missionId that is neither a UUID nor a hex prefix', async () => {
+    backendCase();
+    const res = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'my mission', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('my mission');
+  });
+
   it("rejects a missionId owned by another team with 404 and creates nothing", async () => {
     backendCase();
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-2' });
@@ -2366,7 +2430,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     const res = await POST(request);
     expect(res.status).toBe(404);
@@ -2382,7 +2446,7 @@ describe('POST /api/tasks', () => {
       await POST(createMockRequest({
         method: 'POST',
         headers: { Authorization: 'Bearer bld_xxx' },
-        body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+        body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
       }));
     } finally {
       openAcceptanceId = null;
@@ -2397,7 +2461,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     const res = await POST(request);
     expect(res.status).toBe(404);
@@ -2412,10 +2476,10 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
-    expect(captured().missionId).toBe('m-1');
+    expect(captured().missionId).toBe('11111111-1111-4111-8111-111111111111');
   });
 
   it("refuses a roleSlug naming another member's private role (400)", async () => {
@@ -2554,7 +2618,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
     expect(captured().backend).toBe('codex');
@@ -2568,7 +2632,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', roleSlug: 'builder', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111-1111-4111-8111-111111111111', roleSlug: 'builder', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
     expect(captured().backend).toBe('codex');
@@ -2581,7 +2645,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', backend: 'claude', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111-1111-4111-8111-111111111111', backend: 'claude', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
     expect(captured().backend).toBe('claude');
@@ -2595,7 +2659,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', roleSlug: 'builder', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: '11111111-1111-4111-8111-111111111111', roleSlug: 'builder', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
     expect(captured().backend).toBe('codex');
@@ -2661,7 +2725,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
 
@@ -2700,7 +2764,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1', outputRequirement: 'none' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: '11111111-1111-4111-8111-111111111111', outputRequirement: 'none' },
     });
     await POST(request);
 
@@ -2740,7 +2804,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
 
@@ -3632,7 +3696,7 @@ describe('POST /api/tasks', () => {
     const response = await POST(createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1' },
+      body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: '11111111-1111-4111-8111-111111111111' },
     }));
 
     expect(response.status).toBe(200);
@@ -3649,7 +3713,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Build feature X',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         pathManifest: ['apps/web/src/lib/feature.ts'],
       },
     }));
@@ -3686,7 +3750,7 @@ describe('POST /api/tasks', () => {
     const response = await POST(createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: 'mission-1' },
+      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: '11111111-1111-4111-8111-111111111111' },
     }));
 
     expect(response.status).toBe(200);
@@ -3709,7 +3773,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Mission task B',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         pathManifest: ['apps/web/src/lib/shared.ts'],
       },
     }));
@@ -3731,7 +3795,7 @@ describe('POST /api/tasks', () => {
     const response = await POST(createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Mission task C', missionId: 'mission-1' },
+      body: { workspaceId: 'ws-1', title: 'Mission task C', missionId: '11111111-1111-4111-8111-111111111111' },
     }));
 
     expect(response.status).toBe(200);
@@ -3756,7 +3820,7 @@ describe('POST /api/tasks', () => {
     const response = await POST(createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: 'mission-1', pathManifest: [...manifest] },
+      body: { workspaceId: 'ws-1', title: 'Mission task B', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: [...manifest] },
     }));
 
     expect(response.status).toBe(200);
@@ -3779,7 +3843,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Mission task B',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         dependsOn: [explicitDepId],
         pathManifest: ['apps/web/src/lib/shared.ts'],
       },
@@ -3808,7 +3872,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Mission task B',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         dependsOn: [explicitDepId],
       },
     }));
@@ -3980,7 +4044,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Build feature X',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         outputRequirement: 'pr_required',
       },
     }));
@@ -4000,7 +4064,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Build feature X',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         outputRequirement: 'pr_required',
         pathManifest: ['**'],
       },
@@ -4020,7 +4084,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: '[friction] observed a papercut, no code change intended',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
       },
     }));
 
@@ -4041,7 +4105,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Build feature X',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         outputRequirement: 'pr_required',
       },
     }));
@@ -4062,7 +4126,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Build feature X',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         outputRequirement: 'pr_required',
         pathManifest: ['apps/**'],
       },
@@ -4081,7 +4145,7 @@ describe('POST /api/tasks', () => {
       const response = await POST(createMockRequest({
         method: 'POST',
         headers: { Authorization: 'Bearer bld_xxx' },
-        body: { workspaceId: 'ws-1', title: 'Build feature X', description: 'Do it', missionId: 'mission-1' },
+        body: { workspaceId: 'ws-1', title: 'Build feature X', description: 'Do it', missionId: '11111111-1111-4111-8111-111111111111' },
       }));
       expect(response.status).toBe(200);
       expect(captured().pathManifest).toEqual(['**']);
@@ -4091,7 +4155,7 @@ describe('POST /api/tasks', () => {
       expect(row).toMatchObject({
         id: captured().id,
         workspaceId: 'ws-1',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         title: 'Build feature X',
         description: 'Do it',
         pathManifest: ['**'],
@@ -4106,7 +4170,7 @@ describe('POST /api/tasks', () => {
       const response = await POST(createMockRequest({
         method: 'POST',
         headers: { Authorization: 'Bearer bld_xxx' },
-        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/feature.ts'] },
+        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/feature.ts'] },
       }));
       expect(response.status).toBe(200);
       const [row] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
@@ -4116,7 +4180,7 @@ describe('POST /api/tasks', () => {
     it('shadow leaves the manifest_required rejection byte-for-byte unchanged and schedules nothing', async () => {
       missionPathManifestSetup();
       mockTasksFindMany.mockResolvedValue([]);
-      const body = { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1', outputRequirement: 'pr_required' };
+      const body = { workspaceId: 'ws-1', title: 'Build feature X', missionId: '11111111-1111-4111-8111-111111111111', outputRequirement: 'pr_required' };
       const response = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body }));
       expect(response.status).toBe(400);
       const json = await response.json();
@@ -4136,7 +4200,7 @@ describe('POST /api/tasks', () => {
       const response = await POST(createMockRequest({
         method: 'POST',
         headers: { Authorization: 'Bearer bld_xxx' },
-        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1' },
+        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: '11111111-1111-4111-8111-111111111111' },
       }));
       expect(response.status).toBe(200);
       expect(captured().pathManifest).toEqual(['**']);
@@ -4148,7 +4212,7 @@ describe('POST /api/tasks', () => {
       await POST(createMockRequest({
         method: 'POST',
         headers: { Authorization: 'Bearer bld_xxx' },
-        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1' },
+        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: '11111111-1111-4111-8111-111111111111' },
       }));
       expect(captured().dependsOn ?? []).toEqual([]);
     });
@@ -4164,7 +4228,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Build feature X',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         outputRequirement: 'pr_required',
         pathManifest: ['apps/web/src/lib/feature.ts'],
       },
@@ -4184,7 +4248,7 @@ describe('POST /api/tasks', () => {
       body: {
         workspaceId: 'ws-1',
         title: 'Write the report',
-        missionId: 'mission-1',
+        missionId: '11111111-1111-4111-8111-111111111111',
         outputRequirement: 'artifact_required',
       },
     }));
@@ -4926,7 +4990,7 @@ describe('POST /api/tasks', () => {
           title: 'Spec: something',
           emitsPlan: true,
           pathManifest: ['docs/design/something.md'],
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
         },
       }));
 
@@ -5157,21 +5221,21 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultOutputRequirement: null });
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({
-        returning: mock(() => [{ id: 'task-1', workspaceId: 'ws-1', title: 'Task', missionId: 'mission-1', status: 'pending' }]),
+        returning: mock(() => [{ id: 'task-1', workspaceId: 'ws-1', title: 'Task', missionId: '11111111-1111-4111-8111-111111111111', status: 'pending' }]),
       })),
     });
 
     const response = await POST(createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Task', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      body: { workspaceId: 'ws-1', title: 'Task', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] },
     }));
     expect(response.status).toBe(200);
 
     await settleFireAndForget(() => resolveCriteriaEscalationCalls.length > 0);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(1);
-    expect(resolveCriteriaEscalationCalls[0].missionId).toBe('mission-1');
+    expect(resolveCriteriaEscalationCalls[0].missionId).toBe('11111111-1111-4111-8111-111111111111');
     expect(resolveCriteriaEscalationCalls[0].reason).toBe('work_filed');
   });
 
@@ -5236,7 +5300,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
           ? null
           : {
               id: 'organizer-task-1',
-              missionId: 'mission-1',
+              missionId: '11111111-1111-4111-8111-111111111111',
               mode: 'planning',
               creationSource: 'orchestrator',
               createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -5255,7 +5319,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'Decomposed build task',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'worker-organizer',
         },
       }));
@@ -5287,7 +5351,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'Second decomposed build task',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'worker-organizer',
         },
       }));
@@ -5305,7 +5369,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'Organizer decomposed task',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'worker-organizer',
         },
       }));
@@ -5338,7 +5402,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);
       mockTasksInsert.mockReturnValue({
         values: mock(() => ({
-          returning: mock(() => [{ id: 'retry-task', workspaceId: 'ws-1', title: 'Retry failed build', missionId: 'mission-1' }]),
+          returning: mock(() => [{ id: 'retry-task', workspaceId: 'ws-1', title: 'Retry failed build', missionId: '11111111-1111-4111-8111-111111111111' }]),
         })),
       });
 
@@ -5348,7 +5412,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'Retry failed build',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'worker-organizer',
           parentTaskId: 'failed-task-1',
         },
@@ -5366,7 +5430,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);
       mockTasksInsert.mockReturnValue({
         values: mock(() => ({
-          returning: mock(() => [{ id: 'creator-task-2', workspaceId: 'ws-1', title: 'Second pre-filed task', missionId: 'mission-1' }]),
+          returning: mock(() => [{ id: 'creator-task-2', workspaceId: 'ws-1', title: 'Second pre-filed task', missionId: '11111111-1111-4111-8111-111111111111' }]),
         })),
       });
 
@@ -5376,7 +5440,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'Second pre-filed task',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'creator-worker',
         },
       }));
@@ -5390,7 +5454,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);
       mockTasksInsert.mockReturnValue({
         values: mock(() => ({
-          returning: mock(() => [{ id: 'manual-task', workspaceId: 'ws-1', title: 'Manual mission task', missionId: 'mission-1' }]),
+          returning: mock(() => [{ id: 'manual-task', workspaceId: 'ws-1', title: 'Manual mission task', missionId: '11111111-1111-4111-8111-111111111111' }]),
         })),
       });
 
@@ -5400,7 +5464,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'Manual mission task',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'worker-organizer',
         },
       }));
@@ -5414,7 +5478,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       mockTasksFindMany.mockResolvedValue([]);
       mockTasksInsert.mockReturnValue({
         values: mock(() => ({
-          returning: mock(() => [{ id: 'first-build-task', workspaceId: 'ws-1', title: 'First build task', missionId: 'mission-1' }]),
+          returning: mock(() => [{ id: 'first-build-task', workspaceId: 'ws-1', title: 'First build task', missionId: '11111111-1111-4111-8111-111111111111' }]),
         })),
       });
 
@@ -5424,7 +5488,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'First build task',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'worker-organizer',
         },
       }));
@@ -5461,7 +5525,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       organizerCallSetup();
       mockTasksInsert.mockReturnValue({
         values: mock(() => ({
-          returning: mock(() => [{ id: 'build-task-1', workspaceId: 'ws-1', title: 'First build task', missionId: 'mission-1' }]),
+          returning: mock(() => [{ id: 'build-task-1', workspaceId: 'ws-1', title: 'First build task', missionId: '11111111-1111-4111-8111-111111111111' }]),
         })),
       });
       mockTasksFindMany.mockResolvedValue([]);
@@ -5472,7 +5536,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'First build task',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'worker-organizer',
         },
       }));
@@ -5490,7 +5554,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       });
       mockTasksInsert.mockReturnValue({
         values: mock(() => ({
-          returning: mock(() => [{ id: 'build-task-2', workspaceId: 'ws-1', title: 'Second build task', missionId: 'mission-1' }]),
+          returning: mock(() => [{ id: 'build-task-2', workspaceId: 'ws-1', title: 'Second build task', missionId: '11111111-1111-4111-8111-111111111111' }]),
         })),
       });
 
@@ -5500,7 +5564,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
         body: {
           workspaceId: 'ws-1',
           title: 'Second build task',
-          missionId: 'mission-1',
+          missionId: '11111111-1111-4111-8111-111111111111',
           createdByWorkerId: 'worker-organizer',
         },
       }));
@@ -5550,8 +5614,8 @@ describe('POST /api/tasks — post-commit side effects (characterization)', () =
   }));
 
   it('a mission task: category look first, then feed post, reopen, escalation resolve, with these args', async () => {
-    insertReturns({ id: 'task-1', missionId: 'mission-1', status: 'pending' });
-    const response = await post({ title: 'Fix crash on save', description: 'Throws.', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/foo.ts'] });
+    insertReturns({ id: 'task-1', missionId: '11111111-1111-4111-8111-111111111111', status: 'pending' });
+    const response = await post({ title: 'Fix crash on save', description: 'Throws.', missionId: '11111111-1111-4111-8111-111111111111', pathManifest: ['apps/web/src/lib/foo.ts'] });
     expect(response.status).toBe(200);
     // The category look is scheduled before the response returns.
     expect(log[0]?.[0]).toBe('scheduleTaskCategorize');
@@ -5564,17 +5628,17 @@ describe('POST /api/tasks — post-commit side effects (characterization)', () =
       }, 'function'],
       ['resolveFeedActor', { user: null, apiAccount: { id: 'account-123', apiKey: 'bld_xxx' }, actorWorkerId: null }],
       ['postMissionFeedEvent', {
-        missionId: 'mission-1', type: 'update', title: 'Task created: Fix crash on save', body: 'Task task-1', actor, taskId: 'task-1',
+        missionId: '11111111-1111-4111-8111-111111111111', type: 'update', title: 'Task created: Fix crash on save', body: 'Task task-1', actor, taskId: 'task-1',
       }],
-      ['reopenCompletedMission', 'mission-1', actor],
-      ['resolveCriteriaEscalation', 'mission-1', 'work_filed', actor],
+      ['reopenCompletedMission', '11111111-1111-4111-8111-111111111111', actor],
+      ['resolveCriteriaEscalation', '11111111-1111-4111-8111-111111111111', 'work_filed', actor],
     ]);
   });
 
   it('a reopen failure does not stop the escalation resolve', async () => {
-    insertReturns({ id: 'task-1', missionId: 'mission-1', status: 'pending' });
+    insertReturns({ id: 'task-1', missionId: '11111111-1111-4111-8111-111111111111', status: 'pending' });
     mockReopenCompletedMission.mockImplementation(async () => { log.push(['reopenCompletedMission']); throw new Error('boom'); });
-    expect((await post({ title: 'Quarterly thing', missionId: 'mission-1' })).status).toBe(200);
+    expect((await post({ title: 'Quarterly thing', missionId: '11111111-1111-4111-8111-111111111111' })).status).toBe(200);
     await settleFireAndForget(() => log.some(l => l[0] === 'resolveCriteriaEscalation'));
     expect(log.map(l => l[0])).toEqual([
       'scheduleTaskCategorize', 'resolveFeedActor', 'postMissionFeedEvent', 'reopenCompletedMission', 'resolveCriteriaEscalation',
@@ -5582,9 +5646,9 @@ describe('POST /api/tasks — post-commit side effects (characterization)', () =
   });
 
   it('a mission-feed failure neither fails the request nor reaches reopen', async () => {
-    insertReturns({ id: 'task-1', missionId: 'mission-1', status: 'pending' });
+    insertReturns({ id: 'task-1', missionId: '11111111-1111-4111-8111-111111111111', status: 'pending' });
     mockPostMissionFeedEvent.mockImplementation(async () => { log.push(['postMissionFeedEvent']); throw new Error('boom'); });
-    expect((await post({ title: 'Quarterly thing', missionId: 'mission-1' })).status).toBe(200);
+    expect((await post({ title: 'Quarterly thing', missionId: '11111111-1111-4111-8111-111111111111' })).status).toBe(200);
     await settleFireAndForget();
     expect(log.map(l => l[0])).toEqual(['scheduleTaskCategorize', 'resolveFeedActor', 'postMissionFeedEvent']);
   });
@@ -5598,13 +5662,13 @@ describe('POST /api/tasks — post-commit side effects (characterization)', () =
 
   it('an attached intake: no category look, but the mission chain still runs for the canonical task', async () => {
     intakeOverride = async () => ({
-      task: { id: 'canon-1', workspaceId: 'ws-1', title: 'Canonical', missionId: 'mission-1', status: 'pending' },
+      task: { id: 'canon-1', workspaceId: 'ws-1', title: 'Canonical', missionId: '11111111-1111-4111-8111-111111111111', status: 'pending' },
       outcome: { action: 'attached', taskId: 'canon-1', reportId: 'r-1' },
     });
-    await post({ title: 'Duplicate', missionId: 'mission-1' });
+    await post({ title: 'Duplicate', missionId: '11111111-1111-4111-8111-111111111111' });
     await settleFireAndForget(() => log.some(l => l[0] === 'resolveCriteriaEscalation'));
     expect(log.map(l => l[0])).toEqual(['resolveFeedActor', 'postMissionFeedEvent', 'reopenCompletedMission', 'resolveCriteriaEscalation']);
-    expect(log[1][1]).toMatchObject({ missionId: 'mission-1', title: 'Task created: Canonical', body: 'Task canon-1', taskId: 'canon-1' });
+    expect(log[1][1]).toMatchObject({ missionId: '11111111-1111-4111-8111-111111111111', title: 'Task created: Canonical', body: 'Task canon-1', taskId: 'canon-1' });
   });
 });
 

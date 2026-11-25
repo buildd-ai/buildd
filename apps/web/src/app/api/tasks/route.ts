@@ -10,7 +10,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, missionNotes } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
-import { isMissionLinkable } from '@/lib/mission-link-scope';
+import { isMissionLinkable, resolveMissionId } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
 import { listCallerKey, withChangeVersion } from '@/lib/change-version';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -55,6 +55,7 @@ import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
 import { isUuid } from '@/lib/uuid';
+import { withThreadTarget } from '@/lib/task-thread-target';
 import { resolveFiledAccess, resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
 import { checkDependencyReach, dependencyViewerOf, UNREACHABLE_DEPENDENCY_ERROR } from '@/lib/task-dependency-reach';
 import { ACCESS_NEEDS_CONTEXT_KEY, FILING_TARGETS_CONTEXT_KEY, parseFilingTargets, stampTaskAccess, withTaskAccess, type TaskDelegation } from '@buildd/core/token-delegation';
@@ -640,7 +641,9 @@ export async function POST(req: NextRequest) {
     // release-candidate keys (context.releaseCandidateFix, releaseCandidateAmendPr),
     // which only the CI-retry path and the amendment write.
     const requestedSpecRepair = (rawIncomingContext as Record<string, unknown> | null | undefined)?.specRepair;
-    let incomingContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context))) as typeof rawIncomingContext;
+    // context.callbackTarget is a thread id and nothing else (lib/task-thread-target.ts): sanitized here.
+    const markerFreeContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)));
+    let incomingContext = (markerFreeContext && typeof markerFreeContext === 'object' ? withThreadTarget(markerFreeContext as Record<string, unknown>) : markerFreeContext) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -849,6 +852,11 @@ export async function POST(req: NextRequest) {
     });
     if (!targetWorkspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
+    }
+    if (missionId) {
+      const resolved = await resolveMissionId(missionId, targetWorkspace.teamId);
+      if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status });
+      missionId = resolved.id;
     }
     // A mission link must stay inside the workspace's team (see isMissionLinkable).
     // Checked before any write, including the friction-dedupe append below.

@@ -23,18 +23,29 @@ import { openRouterModelId } from './openrouter-id';
 import { resolveLiteLLMGateway, type LiteLLMGateway } from '@buildd/core/litellm-gateway';
 import { gatewayModel } from '@buildd/ai-kit/models';
 import { createPublicGatewayFetcher } from '@buildd/core/net/fetch-public-gateway';
+import { loadLocalRunnerPick, relayAvailability, type LocalRunnerPick } from '@buildd/core/model-relay';
+import type { RelayErrorCode } from '@buildd/shared';
+import { localRunnerLanguageModel } from './local-runner-model';
 
 export type ChatTier = Extract<Tier, 'budget' | 'standard' | 'premium'>;
 
 export type ResolvedChatModel =
   | {
-    ok: true; model: LanguageModel; provider: ChatProvider; modelId: string; tier: ChatTier; keyScope: InferenceKeyScope;
-    /** Set when the team's LiteLLM gateway serves the turn; `modelId` stays the planned model, for pricing. */
-    via?: 'litellm';
+    ok: true; model: LanguageModel; provider: ChatProvider | 'local_runner'; modelId: string; tier: ChatTier; keyScope: InferenceKeyScope;
+    /**
+     * `litellm`: the team's LiteLLM gateway serves the turn; `modelId` stays the planned model, for pricing.
+     * `local_runner`: the team's own runner serves it through the relay; `modelId` is its model tag and the turn costs nothing.
+     */
+    via?: 'litellm' | 'local_runner';
     /** Set when the tier's chat pool enrolled this turn (knowledge-base: buildd/design/tier-model-pools.md). */
     pool?: ChatPoolDraw;
   }
-  | { ok: false; reason: 'no_key' | 'unsupported_provider'; provider: string; tier: ChatTier };
+  | { ok: false; reason: 'no_key' | 'unsupported_provider'; provider: string; tier: ChatTier }
+  /**
+   * Chat is assigned to the team's own runner and it cannot serve the turn.
+   * Final: the caller refuses the turn and tries no other tier, key or provider.
+   */
+  | { ok: false; reason: 'local_runner_unavailable'; provider: 'local_runner'; tier: ChatTier; runnerId: string | null; code: RelayErrorCode; detail: string };
 
 export function languageModelFor(provider: ChatProvider, modelId: string, apiKey: string): LanguageModel {
   switch (provider) {
@@ -68,6 +79,9 @@ interface ResolveDeps {
   resolveInferenceCredential: typeof resolveInferenceCredential;
   drawChatPoolArm?: typeof drawChatPoolArm;
   resolveLiteLLMGateway?: typeof resolveLiteLLMGateway;
+  /** The team's `local_runner` pick. Absent (a caller with its own deps): chat is never on the relay. */
+  loadLocalRunnerPick?: (teamId: string) => Promise<LocalRunnerPick | null>;
+  now?: () => number;
 }
 
 /**
@@ -92,11 +106,52 @@ export async function resolveChatModel(
     userId: string;
     pool?: ChatPoolContext;
   },
-  deps: ResolveDeps = { resolveTierEntry, resolveInferenceCredential, drawChatPoolArm, resolveLiteLLMGateway },
+  deps: ResolveDeps = { resolveTierEntry, resolveInferenceCredential, drawChatPoolArm, resolveLiteLLMGateway, loadLocalRunnerPick },
 ): Promise<ResolvedChatModel> {
+  const local = await resolveLocalRunnerChat(opts, deps);
+  if (local) return local;
   const incumbent = await resolveIncumbentChatModel(opts, deps);
   if (!incumbent.ok || !opts.pool || !deps.drawChatPoolArm) return incumbent;
   return withChatPool(incumbent, opts, opts.pool, deps);
+}
+
+/**
+ * Chat assigned to `local_runner` (docs/specs/local-runner-provider.md §7.2).
+ * The assignment is exclusive: the turn is served by the pinned runner's chat
+ * model through the relay or refused. The tier, the tier pool, every stored
+ * key and the gateway are skipped, so a team that chose its own runner is
+ * never billed by a provider it did not choose. Null: chat is not assigned to
+ * the local runner (or the assignment could not be read) and the usual
+ * resolution applies.
+ */
+async function resolveLocalRunnerChat(
+  opts: { tier: ChatTier; teamId: string; workspaceId: string | null },
+  deps: ResolveDeps,
+): Promise<ResolvedChatModel | null> {
+  if (!deps.loadLocalRunnerPick) return null;
+  let pick: LocalRunnerPick | null;
+  try {
+    pick = await deps.loadLocalRunnerPick(opts.teamId);
+  } catch (err) {
+    console.warn('[chat] local runner pick lookup failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
+  if (!pick?.chatAssigned) return null;
+  const refused = (code: RelayErrorCode, detail: string): ResolvedChatModel => (
+    { ok: false, reason: 'local_runner_unavailable', provider: 'local_runner', tier: opts.tier, runnerId: pick.runnerId, code, detail }
+  );
+  if (!pick.chatModel) return refused('model_missing', 'No chat model is chosen for the local runner.');
+  const available = relayAvailability(pick, pick.chatModel, 'completion', (deps.now ?? Date.now)());
+  if (!available.ok) return refused(available.code, available.message);
+  return {
+    ok: true,
+    model: localRunnerLanguageModel({ teamId: opts.teamId, workspaceId: opts.workspaceId, modelId: pick.chatModel }),
+    provider: 'local_runner',
+    modelId: pick.chatModel,
+    tier: opts.tier,
+    keyScope: 'team',
+    via: 'local_runner',
+  };
 }
 
 /**

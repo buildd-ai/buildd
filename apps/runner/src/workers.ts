@@ -1,3 +1,4 @@
+import { adoptServerSessionModel, takesSessionModel } from './session-model-switch';
 import { canonicalToolName, decideTaskIsolation, isolationRefusalError, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, readTaskIsolationStamp, type TaskIsolationDecision } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -22,6 +23,8 @@ import { emitPhase } from './phase-lines';
 import { ClaimHandoffTracker } from './claim-handoff';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS, fallbackPingDelayMs, DEFAULT_LOGIN_MODE, type LoginMode, type RunnerLoginUse } from '@buildd/shared';
 import { loginUseFor } from './runner-logins';
+import { HeartbeatTracker } from './heartbeat-watchdog';
+import { logInfo as logHeartbeatInfo, logWarn as logHeartbeatWarn } from './log';
 import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -140,6 +143,7 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath, resolveClaudeCliVersion } from './sdk-binary-path';
 import { ModelProbePoller, createModelProbeHttpApi, sdkProbe } from './model-probe';
+import { createRelayPoller, type RelayPoller } from './relay-poller';
 import { BudgetWallProber, describeBudgetProbeRun, type BudgetProbeTrigger } from './budget-wall-probe';
 import { HookFactory } from './hook-factory';
 import { permissionPromptMode } from './local-tool-policy';
@@ -814,6 +818,8 @@ export class WorkerManager {
   private terminalWorktreeSweepRunning = false;
   private heartbeatInterval?: Timer;
   private livenessInterval?: Timer;
+  /** Every beat's outcome, read by the heartbeat watchdog (heartbeat-watchdog.ts). */
+  private heartbeatTracker = new HeartbeatTracker();
   /** Content of the last heartbeat sent, and when the fallback ping next falls due (liveness tick). */
   private lastBeatFingerprint?: string;
   private nextFallbackBeatAt = 0;
@@ -878,6 +884,8 @@ export class WorkerManager {
   // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
   private scoutHostPoller: ScoutHostPoller;
   private modelProbePoller: ModelProbePoller;
+  /** Serves the team's embeddings and chat from this machine's local model server when the team pins this runner (relay-poller.ts). No worker slot. */
+  private relayPoller: RelayPoller;
   /** Probes a held provider wall on an interval, on `buildd budget reset` and on a server request (budget-wall-probe.ts). */
   private budgetWallProber: BudgetWallProber;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
@@ -920,6 +928,7 @@ export class WorkerManager {
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
       recover: (workerId, mode) => this.recover(workerId, mode),
       sendHeartbeat: () => this.sendHeartbeat(),
+      relayNudge: (data) => this.relayPoller?.nudge(data),
       claimPendingTasks: () => this.claimPendingTasks(),
       claimAndStart: (task, opts) => this.claimAndStart(task, opts),
       getProbedWorkers: () => this.probedWorkers,
@@ -1070,6 +1079,18 @@ export class WorkerManager {
       enabled: process.env.BUILDD_MODEL_PROBE !== '0',
     });
 
+    // Local model relay (docs/specs/local-runner-provider.md §6): advertise what
+    // the loopback model server serves and, when the team pins this runner,
+    // claim its embed and chat jobs. BUILDD_LOCAL_MODEL_RELAY=0 opts out; a
+    // one-task or serverless runner never hosts.
+    this.relayPoller = createRelayPoller({
+      builddServer: config.builddServer,
+      apiKey: config.apiKey,
+      held: () => claimsHeldByPerson(),
+      enabled: !config.serverless && !config.singleTask,
+      onAdvertChanged: () => { void this.sendHeartbeat(); },
+    });
+
     this.budgetWallProber = new BudgetWallProber({
       probe: () => sdkProbe(process.env.BUILDD_BUDGET_PROBE_MODEL || 'haiku'),
       report: (r) => this.buildd.reportBudgetWall({
@@ -1087,6 +1108,8 @@ export class WorkerManager {
     if (!config.serverless) {
       // Startup hits (one-time, before the aligned loop kicks in).
       this.sendHeartbeat();
+      // Probes the local model server; a change in what it serves sends its own beat.
+      this.relayPoller.start();
       void this.advertiseAfterFirstScan();
       this.reconcileLocalWorkers().catch(err => {
         console.warn('[Reconcile] Startup reconciliation failed:', err instanceof Error ? err.message : err);
@@ -1116,8 +1139,10 @@ export class WorkerManager {
       // not a presence member (older server, no Pusher) or holds workers (their leases
       // renew on the beat) keeps the 60s cadence.
       this.livenessInterval = setInterval(() => {
+        this.heartbeatTracker.noteTick();
         this.sendHeartbeat({ onlyIfDue: true });
       }, LIVENESS_PING_INTERVAL_MS);
+      this.heartbeatTracker.arm();
     }
 
     // Initialize Pusher if configured
@@ -1354,6 +1379,11 @@ export class WorkerManager {
     return (this.claimHandoff ??= new ClaimHandoffTracker());
   }
 
+  /** The heartbeat tracker the watchdog reads (index.ts, heartbeat-watchdog.ts). */
+  getHeartbeatTracker(): HeartbeatTracker {
+    return this.heartbeatTracker;
+  }
+
   /** Push a heartbeat right away (e.g. so a canary trip reaches the server before a restart). */
   async sendHeartbeatNow(): Promise<void> {
     await this.sendHeartbeat();
@@ -1493,16 +1523,28 @@ export class WorkerManager {
 
   // Send heartbeat to server announcing this runner instance is alive and ready
   /**
-   * Idle runners pick up full knowledge-ingest jobs, Scout runs and model
-   * probes (fire-and-forget; each poller serializes itself and never throws).
-   * None starts while a person holds this runner: "nothing new starts" (R-32).
+   * Full knowledge-ingest jobs poll whenever a worker slot is free, so an
+   * always-busy runner still serves the repos it holds. A running ingest
+   * counts as one slot against maxConcurrent (the poller also serialises to
+   * one at a time). Scout runs and model probes are cheap to defer and keep
+   * the strict idle gate (no active worker). Nothing starts while a person
+   * holds this runner: "nothing new starts" (R-32); singleTask never polls.
    */
   private pollIdleJobs(active: number): void {
-    if (active !== 0 || this.config.singleTask || claimsHeldByPerson()) return;
-    this.knowledgeIngestPoller.poll().catch(() => {});
-    // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
+    if (this.config.singleTask || claimsHeldByPerson()) return;
+    const ingestSlot = this.knowledgeIngestPoller.isRunning ? 1 : 0;
+    if (active + ingestSlot < this.config.maxConcurrent) {
+      this.knowledgeIngestPoller.poll().catch(() => {});
+    }
+    if (active !== 0) return;
+    // Scout runs: one at a time, no worker slot, re-checks busy before checkout.
     this.scoutHostPoller.poll().catch(() => {});
     this.modelProbePoller.poll().catch(() => {});
+  }
+
+  /** What `buildd doctor` says about the local model server: the last advert and whether this runner is the relay host. */
+  localModelsStatus(): { enabled: boolean; advert: import('@buildd/shared').LocalModelsAdvert | null; host: boolean } {
+    return { enabled: this.relayPoller.isEnabled(), advert: this.relayPoller.advert(), host: this.relayPoller.isHost() };
   }
 
   /** `buildd budget reset`: probe the held wall now. Resolves the line to print. */
@@ -1512,6 +1554,7 @@ export class WorkerManager {
 
   private async sendHeartbeat(opts: { onlyIfDue?: boolean } = {}) {
     let fingerprint: string | undefined;
+    let beatToken: number | undefined;
     try {
       // A paused worker holds no slot (pause.ts), nor a question whose session
       // ended; one asked inside a live session still does.
@@ -1539,12 +1582,24 @@ export class WorkerManager {
       const slots = this.config.singleTask ? undefined : this.config.maxConcurrent;
       const slotsChangedAt = this.config.singleTask ? undefined : this.config.slotsChangedAt;
       const holdChangedAt = this.config.singleTask ? undefined : getRunnerHold()?.changeMeta()?.changedAt;
+      // What the local model server serves and the relay's last hour; null when there is none or it is opted out.
+      const localModels = this.relayPoller.advert();
+      // A change in the models or in the relay's counts is a change worth a beat; the probe time and the percentiles are not.
+      const localModelsMark = localModels
+        ? [localModels.server.kind, localModels.server.version, localModels.server.reachable, localModels.models, localModels.relayStats?.jobs, localModels.relayStats?.errors, localModels.relayStats?.lastErrorCode]
+        : null;
       // What the server stores from a beat. The claim handoff is left out: the server leaves it out of its own fingerprint.
-      fingerprint = JSON.stringify([activeCount, activeWorkerIds, environment, redactions, sandboxEnabled, probeAt, runnerCommit, RUNNER_VERSION, updateSnapshot, modelAuth, slots, slotsChangedAt, holdChangedAt]);
+      fingerprint = JSON.stringify([activeCount, activeWorkerIds, environment, redactions, sandboxEnabled, probeAt, runnerCommit, RUNNER_VERSION, updateSnapshot, modelAuth, slots, slotsChangedAt, holdChangedAt, localModelsMark]);
       if (opts.onlyIfDue && !this.heartbeatDue(fingerprint, activeWorkerIds.length, Date.now())) return;
       this.lastBeatFingerprint = fingerprint;
       this.nextFallbackBeatAt = Date.now() + fallbackPingDelayMs();
-      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots, desiredPause } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, environment, redactions, sandboxEnabled, probeAt, activeWorkerIds, runnerCommit, RUNNER_VERSION, updateSnapshot, this.handoff().snapshot(), modelAuth, slots, slotsChangedAt, holdChangedAt);
+      beatToken = this.heartbeatTracker.begin();
+      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots, desiredPause, heartbeatId, relay } = (await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, environment, redactions, sandboxEnabled, probeAt, activeWorkerIds, runnerCommit, RUNNER_VERSION, updateSnapshot, this.handoff().snapshot(), modelAuth, slots, slotsChangedAt, holdChangedAt, localModels)) ?? {};
+      // Whether the team pins this runner as its relay host; starts or stops the relay poll.
+      this.relayPoller.noteHeartbeat({ heartbeatId, relay });
+      const recovered = this.heartbeatTracker.succeed(beatToken);
+      beatToken = undefined;
+      if (recovered) logHeartbeatInfo(recovered);
       // A slot change made on buildd.dev, newer than this runner's own (spec 34a48877 R-20).
       if (!this.config.singleTask) this.applyServerSlots(desiredSlots);
       if (!this.config.singleTask) this.applyServerHold(desiredPause);
@@ -1570,8 +1625,17 @@ export class WorkerManager {
           this.claimPendingTasks().catch(() => {});
         }
       }
-    } catch {
+    } catch (err) {
       // Non-fatal - heartbeat is best-effort. A beat that did not land is owed again on the next tick.
+      // Logged (rate limited) and counted: a heartbeat that fails silently leaves a runner
+      // up but invisible, and the watchdog restarts a runner whose beats stop landing.
+      if (beatToken !== undefined) {
+        const line = this.heartbeatTracker.fail(beatToken, err);
+        if (line) logHeartbeatWarn(line);
+      } else {
+        // Failed before the request (building the payload) or after it landed (handling the reply).
+        logHeartbeatWarn(`[heartbeat] beat handling failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       if (fingerprint !== undefined && this.lastBeatFingerprint === fingerprint) this.lastBeatFingerprint = undefined;
     }
   }
@@ -2209,8 +2273,14 @@ export class WorkerManager {
         out.ended.push(w.id);
         return;
       }
-      // The other pass may have continued it while the server was answering.
-      if (w.status !== 'waiting' || !w.resumeOnStart) return;
+      // Another path may have continued it while the server was answering (the
+      // sync draining a queued instruction into sendMessage). That is a
+      // continue: counting it as not sent made the update watch call the new
+      // version broken, roll the runner back and re-pause a live session.
+      if (w.status !== 'waiting' || !w.resumeOnStart) {
+        if (w.status === 'working') out.continued.push(w.id);
+        return;
+      }
       if (claimsHeldByPerson()) {
         out.held.push(w.id);
         return;
@@ -2997,6 +3067,9 @@ export class WorkerManager {
       taskId: fullTask.id,
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
+      // What the run will use, named to the person who started it (ACP bridge's first message).
+      roleName: claimedWorker.roleInstructions?.name?.trim() || claimedWorker.roleInstructions?.slug || fullTask.roleSlug || undefined,
+      claimedModel: resolveSessionModel(fullTask.context, this.config.model)?.trim() || undefined,
       parentTaskId: fullTask.parentTaskId ?? null,
       missionId: fullTask.missionId ?? null,
       attemptKind: fullTask.ciRetryPrNumber != null && (fullTask.context as any)?.driftDiagnosis !== true ? 'ci'
@@ -8122,11 +8195,21 @@ export class WorkerManager {
       // possibly-terminal worker, as opposed to the periodic keepalive sync
       // (which sends the same status:'running' and must never resurrect a
       // completed worker — see the reactivation guard in the worker PATCH route).
-      await this.buildd.updateWorker(worker.id, {
+      // The reply may carry the model the session continues on: the task's
+      // tier or model was changed while this session existed (resume in
+      // place, session-model-switch.ts). Adopted before the resume below.
+      const reactivated = await this.buildd.updateWorker(worker.id, {
         status: 'running',
         currentAction: 'Processing follow-up...',
         reactivate: true,
+        ...(takesSessionModel() ? { takesSessionModel: true } : {}),
       });
+      const modelSwitch = adoptServerSessionModel(worker, reactivated);
+      if (modelSwitch) {
+        console.log(`[Worker ${worker.id}] Resuming the same session on ${modelSwitch.to} (was ${modelSwitch.from ?? 'the runner default'})`);
+        this.addMilestone(worker, { type: 'status', label: `Model changed: ${modelSwitch.from ?? 'default'} → ${modelSwitch.to} (same session)`, ts: Date.now() });
+        storeSaveWorker(worker);
+      }
 
       // Get workspace path. A follow-up in the first seconds after start
       // waits for the first repo scan rather than scanning synchronously.
@@ -8260,6 +8343,7 @@ export class WorkerManager {
     if (this.livenessInterval) {
       clearInterval(this.livenessInterval);
     }
+    this.relayPoller?.stop();
     if (this.evictionInterval) {
       clearInterval(this.evictionInterval);
     }

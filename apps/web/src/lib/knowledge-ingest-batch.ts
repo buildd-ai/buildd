@@ -44,7 +44,11 @@ export async function ingestFileBatch(
   workspaceId: string,
   files: IngestBatchFile[],
   deletions: string[] = [],
+  opts: { codeIngest?: boolean } = {},
 ): Promise<IngestBatchResult> {
+  // Code corpus off for this workspace: no code file is read, chunked or
+  // embedded, and no code chunk is deleted (turning it off deletes nothing).
+  const codeIngest = opts.codeIngest !== false;
   // Dynamic import keeps importers light for route tests (the store pulls in
   // drizzle/pgvector machinery at load time) — same as knowledge-ingest.ts.
   const { PgVectorStore, getVoyageEmbedder, buildNamespace, ingestFiles } =
@@ -54,7 +58,7 @@ export async function ingestFileBatch(
   let filesDeleted = 0;
   for (const path of deletions) {
     const corpus = classifyIngestCorpus(path);
-    if (!corpus) continue;
+    if (!corpus || (corpus === 'code' && !codeIngest)) continue;
     await store.deleteBySource(buildNamespace(workspaceId, corpus), { sourcePath: path });
     filesDeleted++;
   }
@@ -70,7 +74,7 @@ export async function ingestFileBatch(
       continue;
     }
     const corpus = classifyIngestCorpus(file.path);
-    if (!corpus) {
+    if (!corpus || (corpus === 'code' && !codeIngest)) {
       filesSkipped++;
       continue;
     }
@@ -130,17 +134,30 @@ export async function ingestFileBatch(
 }
 
 /**
+ * The namespaces a completion sweep may prune. With code ingest off the code
+ * namespace is left alone: the run never refreshed it, so every code chunk would
+ * look stale, and turning code off deletes nothing.
+ */
+export function sweepNamespaces(workspaceId: string, codeIngest: boolean): string[] {
+  return codeIngest ? [`${workspaceId}:code`, `${workspaceId}:docs`] : [`${workspaceId}:docs`];
+}
+
+/**
  * After a successful full run: prune file-derived chunks in the workspace's
  * code/docs namespaces that the run did not refresh. Every upsert (and every
  * hash-skip) bumps updated_at, so anything older than `runStartedAt` belongs to
  * a file that no longer exists at the ingested sha. Returns the count deleted.
  */
-export async function sweepUnrefreshedFileChunks(workspaceId: string, runStartedAt: Date): Promise<number> {
+export async function sweepUnrefreshedFileChunks(
+  workspaceId: string,
+  runStartedAt: Date,
+  opts: { codeIngest?: boolean } = {},
+): Promise<number> {
   const pruned = await db
     .delete(knowledgeChunks)
     .where(
       and(
-        inArray(knowledgeChunks.namespace, [`${workspaceId}:code`, `${workspaceId}:docs`]),
+        inArray(knowledgeChunks.namespace, sweepNamespaces(workspaceId, opts.codeIngest !== false)),
         isNotNull(knowledgeChunks.sourcePath),
         lt(knowledgeChunks.updatedAt, runStartedAt),
       ),

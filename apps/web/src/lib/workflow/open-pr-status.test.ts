@@ -72,8 +72,8 @@ function approvedView(id: string, sha: string, version = 5): KernelView {
 }
 
 describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', () => {
-  test('a PR no delivery owns (a dependency bot\'s, a draft): pending, never success', async () => {
-    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }, { number: 8, sha: H(8), draft: true }] });
+  test('a PR no delivery owns (a draft): pending, never success', async () => {
+    const h = harness({ pulls: [{ number: 7, sha: H(7), draft: true }, { number: 8, sha: H(8), draft: true }] });
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.writes.map((w) => [w.sha.slice(0, 1), w.context, w.state])).toEqual([
       ['7', CONTEXT, 'pending'], ['8', CONTEXT, 'pending'],
@@ -83,7 +83,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
   });
 
   test('a second pass writes nothing (idempotent: GitHub already shows the answer)', async () => {
-    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }] });
+    const h = harness({ pulls: [{ number: 7, sha: H(7), draft: true }] });
     await publishOpenPrStatuses(h.deps);
     const before = h.writes.length;
     expect(before).toBe(1);
@@ -175,7 +175,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
   });
 
   test('one repo failing to list does not stop the others, and counts as an error', async () => {
-    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }] });
+    const h = harness({ pulls: [{ number: 7, sha: H(7), draft: true }] });
     const repos = await h.deps.repos!();
     h.deps.repos = async () => [{ ...repos[0]!, repoFullName: 'acme/broken' }, ...repos];
     const list = h.deps.listOpenPulls!;
@@ -186,7 +186,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
 
   test('a repo without statuses:write permission (403) skips all its PRs with a reason, not an error', async () => {
     // Use bot PRs so they don't get skipped as noDelivery; permission error happens during publish
-    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }] });
+    const h = harness({ pulls: [{ number: 7, sha: H(7), draft: true }, { number: 8, sha: H(8), draft: true }] });
     h.deps.publish = async (i, p) => {
       const error = new Error('GitHub API error: 403 Forbidden - Resource not accessible');
       throw error;
@@ -250,7 +250,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
 
   test('a rate-limit 403 is an error, not skipped (and subsequent PRs still run)', async () => {
     const h = harness({
-      pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }],
+      pulls: [{ number: 7, sha: H(7), draft: true }, { number: 8, sha: H(8), draft: true }],
     });
     let callCount = 0;
     h.deps.publish = async (i, p) => {
@@ -275,7 +275,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
 
   test('a 403 from review reads does not skip the repo (is an error)', async () => {
     const h = harness({
-      pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }],
+      pulls: [{ number: 7, sha: H(7), draft: true }, { number: 8, sha: H(8), draft: true }],
     });
     let callCount = 0;
     h.deps.reviews = async () => {
@@ -305,7 +305,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
 
   test('a 500 whose body contains "403" is an error, not skipped', async () => {
     const h = harness({
-      pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }],
+      pulls: [{ number: 7, sha: H(7), draft: true }, { number: 8, sha: H(8), draft: true }],
     });
     let callCount = 0;
     h.deps.publish = async (i, p) => {
@@ -329,7 +329,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
 
   test('an ordinary publish failure is an error, not skipped (and subsequent PRs still run)', async () => {
     const h = harness({
-      pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }],
+      pulls: [{ number: 7, sha: H(7), draft: true }, { number: 8, sha: H(8), draft: true }],
     });
     let callCount = 0;
     h.deps.publish = async (i, p) => {
@@ -384,6 +384,13 @@ describe('a foreign PR (buildd has no record of it) and mergePolicy.autoReviewUn
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.writes).toEqual([]);
     expect(s).toMatchObject({ checked: 3, published: 0, skipped: 3, skipReasons: { foreign: 3 }, errors: 0, coverage: { verdict: 'covered', missing: [] } });
+  });
+
+  test('a bot PR with no owner, review or candidate gets no status even when "known" to the foreign check', async () => {
+    const h = harness({ gitConfig: ON, foreign: [], pulls: [{ number: 9, sha: H(9), author: 'renovate[bot]' }] });
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(h.writes).toEqual([]);
+    expect(s).toMatchObject({ published: 0, skipped: 1, skipReasons: { foreign: 1 }, errors: 0 });
   });
 
   test('setting off (the default for a tier other than agent-review): same', async () => {

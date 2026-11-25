@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (90)
+## Active (91)
 
 ### auth (9)
 
@@ -97,9 +97,9 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-10-24
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (15)
+### runners (16)
 
-- [ACP Bridge](./acp-bridge.md) · @max — verified 2026-11-22
+- [ACP Bridge](./acp-bridge.md) · @max — verified 2026-11-23
   The `buildd acp` bridge MUST present this machine's runner workers as ACP threads, route each reply by worker state, file a new thread's task reserved for this runner, and say plainly when it cannot.
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-20
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST otherwise start a new attempt of the same task (never a new task) for a recorded, owner-visible reason.
@@ -109,6 +109,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The cloud egress handler MUST refuse a direct GitHub PR merge, a push to a protected branch, and (under an allow-list) any ref move outside the task's own branch, before attaching its token.
 - [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-10-20
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
+- [In-Place Resume](./in-place-resume.md) · @max — verified 2026-11-23
+  A tier or model change, or a requeue, of a running task MUST pause its agent and resume the same session when it can be resumed, and MUST otherwise take a new attempt for a recorded, owner-visible reason.
 - [Live Sibling Conflict Probe](./live-sibling-conflict-probe.md) · @max — verified 2026-10-24
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
 - [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-21
@@ -216,7 +218,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
-## Draft (12)
+## Draft (13)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
@@ -226,6 +228,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Each harness change MUST name its success as a relative change on a baseline delivery metric, and none is called adopted until its owner agrees the measure.
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-15
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
+- [Local Runner Provider](./local-runner-provider.md) · @max — verified 2026-11-14
+  A team MUST be able to serve embeddings and chat from one of its own runners' Ollama through a runner-polled relay with no secret, no mixed vector spaces and never a paid fallback.
 - [Local Tool Call Trace](./local-tool-call-trace.md) · @max — verified 2026-11-08
   The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
 - [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-11-11

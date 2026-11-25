@@ -6,7 +6,7 @@ last_verified: 2026-11-11
 summary: The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 domain: knowledge
 surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/types.ts, packages/core/mcp-tools.ts, packages/core/eval/retrieval-baseline.json]
-related: [knowledge-store-retrieval, knowledge-ingest-pipeline, byo-evidence-storage]
+related: [knowledge-store-retrieval, knowledge-ingest-pipeline, byo-evidence-storage, local-runner-provider]
 keywords: [turbopuffer, pgvector, embedding endpoint, embedding provider, openai_compat, EMBEDDING_PROVIDER, embedding_model, index backend, dual-write, shadow read, outbox, dataClass, iterative_scan, recall@40, KNOWLEDGE_STORE]
 supersedes: []
 assertions:
@@ -368,7 +368,9 @@ skipped as today when absent). Code: `knowledge-store/embedding-config.ts`,
   `embedding_model` equals the query embedder's model. Other rows reach results
   only through the lexical leg. A caller-supplied vector with no embedder
   configured has no known model and is not filtered.
-- E-6 Dimensions. The column is a fixed `vector(1024)`. Fewer than 1024: a
+- E-6 Dimensions. The column is a fixed `vector(1024)` (amended by
+  `local-runner-provider` section 5 once its Phase 2 ships: a column per
+  supported size with the dimension recorded per namespace). Fewer than 1024: a
   clear error and no vector stored. More than 1024: truncated to 1024 and
   L2-normalised only when `EMBEDDING_MATRYOSHKA` is on, otherwise refused
   with a clear error. A refusal is the lexical-only path of E-8, not a throw.

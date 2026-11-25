@@ -29,7 +29,9 @@ function catalogEntryFor(catalog: readonly CatalogEntry[], provider: ChatProvide
   return catalog.find(e => e.provider === provider && (e.id.toLowerCase() === id || e.canonicalId?.toLowerCase() === id));
 }
 
-export function modelInputs(provider: ChatProvider, modelId: string, catalog: readonly CatalogEntry[] = []): ModelInputs {
+export function modelInputs(provider: ChatProvider | 'local_runner', modelId: string, catalog: readonly CatalogEntry[] = []): ModelInputs {
+  // A local runner's model is sent text only (the relay carries no files).
+  if (provider === 'local_runner') return { images: false, pdf: false };
   const known = catalogEntryFor(catalog, provider, modelId)?.inputModalities;
   const mapped = familyInputs(provider, modelId);
   if (!known) return mapped;

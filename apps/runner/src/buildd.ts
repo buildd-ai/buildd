@@ -278,6 +278,12 @@ export class BuilddClient {
     return { teams: Array.isArray(data?.teams) ? data.teams : [], truncated: !!data?.truncated };
   }
 
+  /** Notes owed to a client thread by tasks that remember it (server: GET /api/tasks/thread-events). */
+  async threadEvents(threadId: string): Promise<Array<{ key: string; taskId: string; event: string; text: string }>> {
+    const res = await this.fetch(`/api/tasks/thread-events?threadId=${encodeURIComponent(threadId)}`);
+    return Array.isArray(res?.events) ? res.events : [];
+  }
+
   async getTask(id: string): Promise<BuilddTask | null> {
     try {
       // The whole row: the claim path and park restore read context and the workspace config.
@@ -510,6 +516,8 @@ export class BuilddClient {
      * deriving it from resultMeta.
      */
     actualModel?: string;
+    /** On a resume call: this runner adopts a `sessionModel` the reply carries (session-model-switch.ts). */
+    takesSessionModel?: boolean;
     /** Per-attempt model configuration (no content, no URLs); whitelisted again server-side. */
     modelObservation?: Record<string, unknown>;
     // SDK result metadata
@@ -1288,7 +1296,14 @@ export class BuilddClient {
     slotsChangedAt?: number,
     /** Epoch ms of the last hold or resume (config.json `holdChangedAt`): Pause on buildd.dev follows the same rule (spec 97b1bd0b R-18). */
     holdChangedAt?: number,
-  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null; desiredSlots?: { slots: number; setBy: string | null; setAt: number } | null; desiredPause?: { paused: boolean; setBy: string | null; setAt: number } | null }> {
+    /**
+     * What this machine's local model server serves, plus the last hour of
+     * relay figures (relay-poller.ts `advert()`): names, capabilities and
+     * sizes, never a URL. Omitted when no server was ever seen or the relay is
+     * opted out (BUILDD_LOCAL_MODEL_RELAY=0); the server then keeps what it has.
+     */
+    localModels?: import('@buildd/shared').LocalModelsAdvert | null,
+  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null; desiredSlots?: { slots: number; setBy: string | null; setAt: number } | null; desiredPause?: { paused: boolean; setBy: string | null; setAt: number } | null; /** This runner's heartbeat row: the `runnerId` of every relay call. */ heartbeatId?: string; /** Whether the team pins this runner as its relay host, and how often to poll. */ relay?: { host: boolean; pollAfterMs: number } }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
       activeWorkerCount,
@@ -1335,11 +1350,12 @@ export class BuilddClient {
     if (typeof maxConcurrent === 'number' && Number.isInteger(maxConcurrent) && maxConcurrent >= 0) payload.maxConcurrent = maxConcurrent;
     if (typeof slotsChangedAt === 'number' && Number.isFinite(slotsChangedAt) && slotsChangedAt > 0) payload.slotsChangedAt = slotsChangedAt;
     if (typeof holdChangedAt === 'number' && Number.isFinite(holdChangedAt) && holdChangedAt > 0) payload.holdChangedAt = holdChangedAt;
+    if (localModels) payload.localModels = localModels;
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt, desiredSlots: data.desiredSlots ?? null, desiredPause: data.desiredPause ?? null };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt, desiredSlots: data.desiredSlots ?? null, desiredPause: data.desiredPause ?? null, heartbeatId: typeof data.heartbeatId === 'string' ? data.heartbeatId : undefined, relay: data.relay && typeof data.relay === 'object' ? { host: data.relay.host === true, pollAfterMs: Number(data.relay.pollAfterMs) || 0 } : undefined };
   }
 
   /** Report a provider-wall probe result (budget-wall-probe.ts); the server clears or keeps the wall. */

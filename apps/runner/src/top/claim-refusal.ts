@@ -17,6 +17,8 @@ export interface ClaimRefusalBody {
   claimReason?: string;
   /** The gate that excluded this task, when the server named one. */
   exclusion?: string;
+  /** The server's sentence for that exclusion, when it gave one. */
+  exclusionDetail?: string;
   /** The server's HTTP status when it refused the request itself (429 at the account limit). */
   serverStatus?: number;
   /** The refusal body's machine code, e.g. max_concurrent_workers. */
@@ -30,6 +32,7 @@ export function claimRefusalBody(err: any): ClaimRefusalBody {
   const body: ClaimRefusalBody = { error: (err?.message as string) || 'Failed to claim' };
   if (typeof err?.claimReason === 'string') body.claimReason = err.claimReason;
   if (typeof err?.claimTaskExclusionCode === 'string') body.exclusion = err.claimTaskExclusionCode;
+  if (typeof err?.claimTaskExclusionDetail === 'string') body.exclusionDetail = err.claimTaskExclusionDetail;
   if (typeof err?.status === 'number') body.serverStatus = err.status;
   if (typeof err?.raw === 'string') {
     try {

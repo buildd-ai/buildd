@@ -11,11 +11,17 @@
  *   (lib/specs/knowledge.ts). Contained: it never throws. The approval emits
  *   this after its response (lib/specs/approval.ts), so the index adds no
  *   latency to Approve.
+ * - `workspace.created` → queue a full ingest of the linked repo, unless the
+ *   workspace was created with knowledge ingest off (then the skip is
+ *   logged). Not awaited, as when the create route did it inline: a failed
+ *   enqueue is logged and never fails the create.
  */
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
 import { persistTaskEvidence } from '@/lib/task-evidence-store';
 import { scheduleMemoryUseLabels, shouldLabelMemoryUses } from '@/lib/memory-decisions';
 import { indexApprovedSpec } from '@/lib/specs/knowledge';
+import { enqueueFullIngestJob, logIngestSkip } from '@/lib/knowledge-ingest';
+import { normalizeRepoFullName } from '@/lib/repo-scope';
 
 export const knowledgeSubscribers: readonly AnySubscriber[] = [
   subscriber('knowledge', 'task.terminal', 'task-evidence', async e => {
@@ -33,5 +39,17 @@ export const knowledgeSubscribers: readonly AnySubscriber[] = [
   }),
   subscriber('knowledge', 'spec.approved', 'living-spec-index', async e => {
     await indexApprovedSpec(e.specId);
+  }),
+  subscriber('knowledge', 'workspace.created', 'repo-link-ingest', e => {
+    if (!e.repoUrl) return;
+    if (!e.knowledgeIngest) {
+      logIngestSkip('workspace_create', { workspaceId: e.workspaceId });
+      return;
+    }
+    const repo = normalizeRepoFullName(e.repoUrl);
+    if (!repo) return;
+    enqueueFullIngestJob({ workspaceId: e.workspaceId, repo, trigger: 'repo_link' }).catch(err =>
+      console.error(`[knowledge-ingest] repo-link enqueue failed for new workspace ${e.workspaceId}:`, err)
+    );
   }),
 ];

@@ -352,6 +352,12 @@ export interface Workspace {
    * claimed or run; stored chunks stay until a PATCH with purgeKnowledge: true.
    */
   knowledgeIngest?: boolean;
+  /**
+   * Whether the `code` corpus is chunked and embedded (docs, specs and PR diffs
+   * are governed by knowledgeIngest alone). New workspaces start false; existing
+   * ones are true. false deletes nothing.
+   */
+  knowledgeCodeIngest?: boolean;
   createdAt: Date;
   updatedAt: Date;
   taskCount?: number;

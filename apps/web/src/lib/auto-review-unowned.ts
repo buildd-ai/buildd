@@ -37,7 +37,7 @@
  * one the open-PR status reads its review from), so a repo linked from several
  * workspaces is reviewed once.
  */
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -87,7 +87,7 @@ export interface AutoReviewPr {
 export interface ForeignPrDeps {
   kernelOwned?: (workspaceId: string, repoFullName: string, prNumber: number) => Promise<boolean>;
   /** A worker row in one of these workspaces mapped to the PR number or to its head branch. */
-  knownWorker?: (workspaceIds: string[], prNumber: number, headRef: string | null) => Promise<unknown | null>;
+  knownWorker?: (workspaceIds: string[], prNumber: number, headRef: string | null, repoFullName?: string) => Promise<unknown | null>;
   reviewTask?: (workspaceId: string, prNumber: number) => Promise<unknown | null>;
 }
 
@@ -120,10 +120,30 @@ ORDER BY gr.full_name, w.created_at, w.id`)) as unknown as { rows?: Array<Record
   }));
 }
 
+/**
+ * The worker rows that make PR `n` known: one that recorded this PR number, or
+ * one on its head branch that has recorded no PR yet (a task whose PR is about
+ * to open). A worker on the same branch that recorded a *different* PR does not
+ * count: a dependency bot reuses one branch per package for every update, so
+ * that row is an earlier PR's, and matching it left every later PR on the
+ * branch "known" and holding a pending status nobody would clear.
+ */
+export function knownWorkerWhere(workspaceIds: string[], n: number, headRef: string | null, repoFullName?: string) {
+  // Workers carry no repo column, only the PR's URL: a same-number PR in another repo is not this one.
+  const inRepo = repoFullName
+    ? or(isNull(workers.prUrl), sql`lower(${workers.prUrl}) LIKE ${`%/${repoFullName.toLowerCase().replace(/[\\%_]/g, '\\$&')}/pull/%`}`)
+    : undefined;
+  const byNumber = and(eq(workers.prNumber, n), inRepo)!;
+  return and(
+    inArray(workers.workspaceId, workspaceIds),
+    headRef ? or(byNumber, and(eq(workers.branch, headRef), isNull(workers.prNumber))) : byNumber,
+  )!;
+}
+
 const foreignLiveDeps = (): Required<ForeignPrDeps> => ({
   kernelOwned: async (w, r, n) => !!(await (await import('@/lib/workflow/authority')).kernelDeliveryForPr(w, r, n)),
-  knownWorker: async (ids, n, headRef) => (ids.length ? (await db.query.workers.findFirst({
-    where: sqlWhere(and(inArray(workers.workspaceId, ids), headRef ? or(eq(workers.prNumber, n), eq(workers.branch, headRef)) : eq(workers.prNumber, n))),
+  knownWorker: async (ids, n, headRef, repo) => (ids.length ? (await db.query.workers.findFirst({
+    where: sqlWhere(knownWorkerWhere(ids, n, headRef, repo)),
     columns: { id: true },
   })) ?? null : null),
   reviewTask: async (w, n) => (await import('@/lib/pr-review-request')).findReviewTaskForPr(w, n),
@@ -151,7 +171,7 @@ export async function isForeignPr(
   const d = { ...foreignLiveDeps(), ...deps };
   if (isBuilddBranch(p.headRef, p.workspaces.map((w) => w.gitConfig))) return false;
   const ids = p.workspaces.map((w) => w.id);
-  if (await d.knownWorker(ids, p.prNumber, p.headRef ?? null)) return false;
+  if (await d.knownWorker(ids, p.prNumber, p.headRef ?? null, p.repoFullName)) return false;
   for (const id of ids) {
     if (await d.kernelOwned(id, p.repoFullName, p.prNumber)) return false;
     if (await d.reviewTask(id, p.prNumber)) return false;

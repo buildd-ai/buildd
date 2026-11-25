@@ -348,6 +348,9 @@ describe('assertion coverage over the real migration corpus', () => {
     //  - *_spec_revision_explanation_immutable: one plpgsql function and its
     //    trigger refusing an UPDATE of spec_revisions.explanation; the column
     //    is in the migration before it.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(5);
+    //  - *_skill_usage_telemetry_backfill: idempotent UPDATE setting each
+    //    team's skill_usage.telemetry_started_at; the column is in the
+    //    migration before it.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(6);
   });
 });

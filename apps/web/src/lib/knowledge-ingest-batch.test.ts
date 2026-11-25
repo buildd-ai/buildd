@@ -34,7 +34,7 @@ mock.module('@buildd/core/knowledge-store', () => ({
   },
 }));
 
-const { ingestFileBatch } = await import('./knowledge-ingest-batch');
+const { ingestFileBatch, sweepNamespaces } = await import('./knowledge-ingest-batch');
 
 beforeEach(() => {
   refuseDocs = new Set();
@@ -73,5 +73,27 @@ describe('ingestFileBatch — plan knowledge-base cap', () => {
     expect(res.filesIngested).toBe(2);
     expect(res.filesRefusedByPlan).toBe(1);
     expect(res.planLimitMessage).toContain('Settings → Billing');
+  });
+});
+
+describe('ingestFileBatch — code ingest off', () => {
+  it('writes no code chunks, deletes no code chunks, still writes docs; code files count as skipped', async () => {
+    const res = await ingestFileBatch('ws-1', files, ['src/gone.ts', 'docs/gone.md'], { codeIngest: false });
+    expect(written).toEqual([{ corpus: 'docs', paths: ['docs/kept.md', 'docs/new.md'] }]);
+    expect(deleted).toEqual(['docs/gone.md']);
+    expect(res.filesSkipped).toBe(1);
+    expect(res.filesIngested).toBe(2);
+  });
+
+  it('defaults to ingesting code when the option is absent', async () => {
+    await ingestFileBatch('ws-1', files);
+    expect(written.some(w => w.corpus === 'code')).toBe(true);
+  });
+});
+
+describe('completion sweep with code ingest off', () => {
+  it('never prunes the code namespace (turning code off deletes nothing)', () => {
+    expect(sweepNamespaces('ws-1', false)).toEqual(['ws-1:docs']);
+    expect(sweepNamespaces('ws-1', true)).toEqual(['ws-1:code', 'ws-1:docs']);
   });
 });
