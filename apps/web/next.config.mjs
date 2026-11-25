@@ -1,17 +1,25 @@
 /**
  * Whether `next build` may skip its own TypeScript check.
  *
- * Only in GitHub Actions, and only when the workflow says the check already ran
- * elsewhere (CI_TYPECHECK_DONE=1): Build & Test runs `next typegen` + `tsc
- * --noEmit` on this same tsconfig in a parallel job that gates `build`, so
- * repeating it here only lengthens the critical path. Local builds and Vercel
- * (which sets CI but not GITHUB_ACTIONS) keep type-checking.
+ * In GitHub Actions when the workflow says the check already ran elsewhere
+ * (CI_TYPECHECK_DONE=1): Build & Test runs `next typegen` + `tsc --noEmit` on
+ * this same tsconfig in a parallel job that gates `build`, so repeating it here
+ * only lengthens the critical path.
+ *
+ * And in Vercel production builds (VERCEL=1, VERCEL_ENV=production). Vercel
+ * builds only production (the project's ignored-build step skips every other
+ * environment), production builds only `main`, and nothing reaches `main`
+ * without a PR whose Build & Test run type-checked it. The check there took
+ * about 3 min of every deploy and repeated a gate that had already passed.
+ *
+ * Local builds and Vercel preview builds keep type-checking.
  * Guarded by src/lib/next-config-typecheck.test.ts.
  *
  * @param {Record<string, string | undefined>} env
  */
 export function buildSkipsTypecheck(env) {
-  return env.GITHUB_ACTIONS === 'true' && env.CI_TYPECHECK_DONE === '1';
+  if (env.GITHUB_ACTIONS === 'true' && env.CI_TYPECHECK_DONE === '1') return true;
+  return env.VERCEL === '1' && env.VERCEL_ENV === 'production';
 }
 
 /** Pages that show an attached design besides /app/artifacts/[id]; each carries artifactPageCsp. */
@@ -130,7 +138,21 @@ const nextConfig = {
   // Production source maps substantially increase Turbopack's native output
   // memory and cache size. Keep maps in next dev; production stack traces
   // refer to generated chunks instead. Next sets NODE_ENV for build/dev.
-  experimental: { turbopackSourceMaps: process.env.NODE_ENV !== 'production' },
+  //
+  // No persistent Turbopack cache for `next build` (Next 16.3 turns it on by
+  // default). Vercel restores the previous deployment's .next/cache into every
+  // build, and the cache only grows: each build appends the new versions of
+  // changed modules and compaction keeps the old ones. Building on a restored
+  // cache costs more memory than building cold (a release built on its
+  // predecessor's cache peaked about a quarter higher), which pushed builds
+  // past the 16 GB builder's limit; a failed build saves nothing, so every
+  // retry hit the same wall. A release changes too much for the cache to save
+  // time anyway, and writing plus compacting it cost about 1.5 min a build.
+  // `next dev` keeps its cache.
+  experimental: {
+    turbopackSourceMaps: process.env.NODE_ENV !== 'production',
+    turbopackFileSystemCacheForBuild: false,
+  },
   // @aws-sdk/client-s3 is on Next's default server-external list. Left
   // external, Turbopack loads it in `bun --bun next dev` through a hashed alias
   // (`@aws-sdk/client-s3-<hash>`) that Bun's resolver can't find, so every page
