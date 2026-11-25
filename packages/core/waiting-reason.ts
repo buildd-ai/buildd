@@ -31,6 +31,8 @@ export type WaitingKind =
   | 'subject_dead'
   /** Provider access declared at filing that no person has granted: a person's approval starts it. */
   | 'access_unmet'
+  /** Cross-workspace reach (a delegation) the task needs and no person granted: a person's grant starts it. */
+  | 'delegation_unmet'
   /** A serial lane (schema, migrations, a hard surface): held by another task, or someone came first. Carries `lane`. */
   | 'lane'
   | 'lease_stale'
@@ -188,6 +190,7 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: assessForce(), prefilterLift: 'declared_assess' },
   subject_dead: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Closed subject PR', releasesWhen: { event: 'never', text: 'never: its subject PR is gone' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   access_unmet: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Access to approve', releasesWhen: { event: 'access.granted', text: 'a person approves the access on the task page' }, owner: 'human', force: null },
+  delegation_unmet: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Delegation to grant', releasesWhen: { event: 'delegation.granted', text: 'a person who reaches the workspace grants the delegation' }, owner: 'human', force: null },
   lane: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serial lane', releasesWhen: { event: 'pr.closed', text: 'the task holding the lane merges or closes its PR, or ends, and the tasks ahead of it in line go first' }, owner: 'system', force: null },
   lease_stale: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'Stale file claim', releasesWhen: { event: 'sweep.hourly', text: 'the hourly sweep releases the stale claim' }, owner: 'system', force: null },
   ordered_behind: { class: 'coordination', strength: 'soft', intent: 'intentional', gateName: 'Planner order', releasesWhen: { event: 'task.claimed', text: 'the task ahead of it is claimed or finishes' }, owner: 'system', force: null },
@@ -325,6 +328,7 @@ const QUEUE_SHAPE: Record<WaitingKind, { kind: QueueWait['kind']; limit?: QueueL
   dep_declared: { kind: 'declared' },
   subject_dead: { kind: 'limit', limit: 'pr_closed' },
   access_unmet: { kind: 'limit', limit: 'access' },
+  delegation_unmet: { kind: 'limit', limit: 'delegation' },
   lane: { kind: 'lane' },
   lease_stale: { kind: 'lane' },
   ordered_behind: null,
@@ -353,7 +357,7 @@ const QUEUE_SHAPE: Record<WaitingKind, { kind: QueueWait['kind']; limit?: QueueL
  * claim loop's limits in the order it checks them.
  */
 const QUEUE_PRECEDENCE: WaitingKind[] = [
-  'start_deferred', 'task_held', 'mission_held', 'mission_local', 'subject_dead', 'dep_declared', 'access_unmet', 'workspace_paused',
+  'start_deferred', 'task_held', 'mission_held', 'mission_local', 'subject_dead', 'dep_declared', 'delegation_unmet', 'access_unmet', 'workspace_paused',
   'lane', 'serialized_surface', 'lease_stale',
   'mission_budget', 'mission_concurrent',
   'budget_paused', 'managed_entitlement', 'account_slots', 'codex_single_flight',
@@ -404,6 +408,7 @@ export function queueWaitOf(reasons: readonly WaitingReason[]): QueueWait {
       };
     }
     if (kind === 'access_unmet') return { kind: 'limit', limit: 'access', liftsAt: null, forceable: false, approve: r.blocker?.label ?? undefined };
+    if (kind === 'delegation_unmet') return { kind: 'limit', limit: 'delegation', liftsAt: null, forceable: false, approve: r.blocker?.label ?? undefined };
     return { kind: 'limit', limit: shape.limit!, liftsAt: r.liftsAt ?? null, forceable: isStartForceable(kind) };
   }
   const noRunner = reasons.find(r => r.strength === 'hard' && QUEUE_SHAPE[r.kind]?.kind === 'slot' && r.kind !== 'eligible_no_runner');
@@ -413,7 +418,7 @@ export function queueWaitOf(reasons: readonly WaitingReason[]): QueueWait {
 const LIMIT_KIND: Record<QueueLimit, WaitingKind> = {
   mission_cap: 'mission_concurrent', workspace_paused: 'workspace_paused',
   mission_budget: 'mission_budget', budget: 'budget_paused', plan: 'managed_entitlement', seats: 'account_slots',
-  task_paused: 'task_held', mission_paused: 'mission_held', local_session: 'mission_local', pr_closed: 'subject_dead', access: 'access_unmet',
+  task_paused: 'task_held', mission_paused: 'mission_held', local_session: 'mission_local', pr_closed: 'subject_dead', access: 'access_unmet', delegation: 'delegation_unmet',
 };
 
 /** The waiting kind a queue wait is (for surfaces keyed by kind, e.g. the terms catalog); null for a slot wait. */
