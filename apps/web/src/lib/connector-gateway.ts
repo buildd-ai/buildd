@@ -11,8 +11,9 @@
  *      with `isError: true` and a structured `{code, …, nextSteps}`, so the
  *      model reads it and can ask for access (`request_capability`).
  *
- * A tool's risk comes from the provider's own MCP annotations, overridden by
- * an admin's per-connector lists, and fails closed: a tool not annotated
+ * A tool's risk comes from the provider's own MCP annotations, then the
+ * catalog's vetted reads for that provider, then an admin's per-connector
+ * lists, and fails closed: a tool not annotated
  * read-only is a write (an admin verb is admin), so a read-only run never sees
  * or calls a mutation (Axiom monitors/dashboards/notifiers, Vercel project
  * settings, deploys) whatever scopes the provider's OAuth grant carries.
@@ -88,21 +89,26 @@ export interface ToolOverrides {
   denyTools: ReadonlySet<string>;
   /** From the catalog (`readOnlyUnlessArgs`): tool → the arguments that make a call a write. */
   readOnlyUnless?: ReadonlyMap<string, readonly string[]>;
+  /** From the catalog (`readOnlyTools`): the provider's documented reads, used when it sends no `readOnlyHint`. */
+  vettedReadTools?: ReadonlySet<string>;
 }
 
 export const NO_OVERRIDES: ToolOverrides = { readOnlyTools: new Set(), denyTools: new Set() };
 
 /**
  * The admin's overrides from `discoveredMetadata.toolPolicy`, plus, when the
- * provider slug is given, the catalog's argument-gated reads for it.
+ * provider slug is given, the catalog's argument-gated and vetted reads for it.
  */
 export function readToolOverrides(discoveredMetadata: unknown, provider?: string | null): ToolOverrides {
-  const gated = provider ? CONNECTOR_CATALOG.find(e => e.slug === provider)?.readOnlyUnlessArgs : undefined;
-  const readOnlyUnless = gated ? new Map(Object.entries(gated)) : undefined;
+  const entry = provider ? CONNECTOR_CATALOG.find(e => e.slug === provider) : undefined;
+  const catalog: Pick<ToolOverrides, 'readOnlyUnless' | 'vettedReadTools'> = {
+    ...(entry?.readOnlyUnlessArgs ? { readOnlyUnless: new Map(Object.entries(entry.readOnlyUnlessArgs)) } : {}),
+    ...(entry?.readOnlyTools?.length ? { vettedReadTools: new Set(entry.readOnlyTools) } : {}),
+  };
   const p = (discoveredMetadata as { toolPolicy?: unknown } | null | undefined)?.toolPolicy as Record<string, unknown> | undefined;
-  if (!p || typeof p !== 'object') return readOnlyUnless ? { ...NO_OVERRIDES, readOnlyUnless } : NO_OVERRIDES;
+  if (!p || typeof p !== 'object') return { ...NO_OVERRIDES, ...catalog };
   const names = (v: unknown) => new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 160) : []);
-  return { readOnlyTools: names(p.readOnlyTools), denyTools: names(p.denyTools), ...(readOnlyUnless ? { readOnlyUnless } : {}) };
+  return { readOnlyTools: names(p.readOnlyTools), denyTools: names(p.denyTools), ...catalog };
 }
 
 /** Does this call set any of the arguments that make it a write? Anything but absent, null or false counts. */
@@ -132,6 +138,19 @@ export function parseToolPolicy(v: unknown): { readOnlyTools: string[]; denyTool
   return { readOnlyTools, denyTools };
 }
 
+/**
+ * The admin's policy with one more read-only tool: what "treat <tool> as
+ * read-only" saves. Keeps the rest and every deny (a deny still wins). Null
+ * for a name that is not an exact tool name.
+ */
+export function withReadOnlyTool(discoveredMetadata: unknown, tool: string): { readOnlyTools: string[]; denyTools: string[] } | null {
+  if (typeof tool !== 'string' || !TOOL_NAME_RE.test(tool)) return null;
+  const o = readToolOverrides(discoveredMetadata);
+  const readOnlyTools = [...new Set([...o.readOnlyTools, tool])].sort();
+  if (readOnlyTools.length > MAX_OVERRIDE_NAMES) return null;
+  return { readOnlyTools, denyTools: [...o.denyTools].sort() };
+}
+
 export type ToolClass = CapabilityRisk | 'denied';
 
 /**
@@ -139,9 +158,11 @@ export type ToolClass = CapabilityRisk | 'denied';
  * admin; an admin's read-only mark or the provider's `readOnlyHint` is read,
  * unless the name is an admin verb (a contradiction fails closed); anything
  * else, including no annotations at all, is a write (admin for admin verbs).
- * A catalog argument-gated read (`readOnlyUnless`) is a read unless the call
- * sets one of its write arguments; with no `args` (listing) it is a read, and
- * every call is classified again with its own arguments.
+ * A catalog vetted read (`vettedReadTools`) is a read when the provider sends
+ * no `readOnlyHint: false`. A catalog argument-gated read (`readOnlyUnless`)
+ * is a read unless the call sets one of its write arguments; with no `args`
+ * (listing) it is a read, and every call is classified again with its own
+ * arguments.
  */
 export function classifyNativeTool(
   name: string,
@@ -155,9 +176,29 @@ export function classifyNativeTool(
   if (overrides.readOnlyTools.has(name)) return 'read';
   if (annotations?.readOnlyHint === true) return byName === 'admin' ? 'admin' : 'read';
   if (byName === 'admin') return 'admin';
+  if (overrides.vettedReadTools?.has(name) && annotations?.readOnlyHint !== false) return 'read';
   const writeArgs = overrides.readOnlyUnless?.get(name);
   if (writeArgs) return args !== undefined && setsWriteArg(args, writeArgs) ? 'write' : 'read';
   return 'write';
+}
+
+/**
+ * Was this tool classed a write only because nothing says it reads? True for
+ * a tool with no `readOnlyHint` and no destructive hint, whose name is no
+ * admin verb, and which neither the catalog nor the admin lists. A tool the
+ * provider marks `readOnlyHint: false`, or a gated read whose arguments make
+ * it a write, is a real write and is false. This is when an admin's
+ * "treat as read-only" can help.
+ */
+export function unvettedWrite(name: string, annotations: ToolAnnotations | null | undefined, overrides: ToolOverrides): boolean {
+  if (annotations?.readOnlyHint === false || annotations?.destructiveHint === true) return false;
+  if (overrides.readOnlyUnless?.has(name)) return false;
+  return classifyNativeTool(name, annotations, overrides) === 'write';
+}
+
+/** Is this call's read class one buildd vetted (an admin's read-only mark)? Passed to the grant check. */
+export function adminVettedRead(name: string, overrides: ToolOverrides): boolean {
+  return overrides.readOnlyTools.has(name) && !overrides.denyTools.has(name);
 }
 
 // ── Run context ──────────────────────────────────────────────────────────────
@@ -351,12 +392,30 @@ const NEXT_STEPS: Record<CallRefusal, string> = {
 };
 
 /** A JSON-RPC result carrying an MCP tool error. Never a credential, never the provider's raw error. */
-export function deniedToolResult(rpcId: unknown, code: CallRefusal, extra: Record<string, unknown> = {}) {
-  const body = { code, ...extra, nextSteps: [NEXT_STEPS[code]] };
+export function deniedToolResult(rpcId: unknown, code: CallRefusal, extra: Record<string, unknown> = {}, extraSteps: readonly string[] = []) {
+  const body = { code, ...extra, nextSteps: [NEXT_STEPS[code], ...extraSteps] };
   return {
     jsonrpc: '2.0' as const,
     id: rpcId ?? null,
     result: { content: [{ type: 'text', text: JSON.stringify(body) }], isError: true, structuredContent: body },
+  };
+}
+
+/**
+ * What a refusal adds when the tool was classed a write only because the
+ * provider does not annotate it (`unvettedWrite`): the tool's name and the
+ * one step a signed-in team admin takes to treat it as read-only. An agent's
+ * key cannot take that step (PATCH answers 403 `session_required`).
+ */
+export function readOnlyFixSteps(tool: string, connectorId: string) {
+  const path = `/api/connectors/${connectorId}`;
+  return {
+    extra: { unvettedTool: tool, readOnlyFix: { method: 'PATCH', path, body: { markReadOnly: tool }, requires: 'session' } },
+    steps: [
+      `"${tool}" carries no read-only annotation from the provider, so buildd counts it as a write and a read grant does not cover it. ` +
+      `If it only reads, a signed-in team admin can treat it as read-only in one step (PATCH ${path} with {"markReadOnly":"${tool}"}); say so in a note. ` +
+      'If it changes something, ask for write access with request_capability instead. Do not retry the call until one of those is done.',
+    ],
   };
 }
 
