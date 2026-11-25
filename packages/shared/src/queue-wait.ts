@@ -35,7 +35,9 @@ export type QueueLimit =
   | 'task_paused'
   | 'mission_paused'
   | 'local_session'
-  | 'pr_closed';
+  | 'pr_closed'
+  /** A person has to approve provider access the task declared when it was filed. */
+  | 'access';
 
 export interface QueueWait {
   kind: QueueWaitKind;
@@ -55,6 +57,8 @@ export interface QueueWait {
   limit?: QueueLimit;
   liftsAt?: string | null;
   forceable?: boolean;
+  /** limit access: what to approve, as a person reads it (`Axiom read`). */
+  approve?: string;
   /** start_time: its start time. */
   startAt?: string | null;
   /** slot: why no runner can take it, when one cannot. */
@@ -76,6 +80,7 @@ const LIMIT_LABEL: Record<QueueLimit, string> = {
   mission_paused: 'Mission not running',
   local_session: 'Runs from a session',
   pr_closed: 'Its PR is closed',
+  access: 'Needs your approval',
 };
 
 /** `1st`, `2nd`, `3rd`, `4th`, `11th`, `21st`. */
@@ -118,6 +123,11 @@ export function queueWaitBadge(w: QueueWait | null | undefined): QueueBadge | nu
 /** The limit's label: `Mission pacing`. */
 export function queueLimitLabel(limit: QueueLimit): string {
   return LIMIT_LABEL[limit];
+}
+
+/** `Waiting on you: approve Axiom read`. */
+export function accessWords(w: Pick<QueueWait, 'approve'>): string {
+  return `Waiting on you: approve ${w.approve?.trim() || 'provider access'}`;
 }
 
 function blockerName(w: QueueWait): string {
@@ -164,6 +174,7 @@ export function queueWaitHeadline(w: QueueWait, now: number = Date.now()): strin
       return w.position != null && w.position > 0 ? `In the ${lane.toLowerCase()}, ${ordinal(w.position)} in line` : `In the ${lane.toLowerCase()}`;
     }
     case 'limit': {
+      if (w.limit === 'access') return accessWords(w);
       const label = LIMIT_LABEL[w.limit ?? 'mission_cap'];
       return `Waiting: ${label.charAt(0).toLowerCase()}${label.slice(1)}${w.liftsAt ? `, lifts ${queueWhen(w.liftsAt, now)}` : ''}`;
     }
@@ -189,6 +200,7 @@ export function queueWaitShort(w: QueueWait, now: number = Date.now()): string |
       return w.position != null && w.position > 0 ? `${lane}, ${ordinal(w.position)}${stuck}` : `${lane}${stuck}`;
     }
     case 'limit': {
+      if (w.limit === 'access') return accessWords(w).replace(/^Waiting on you: /, 'you: ');
       const label = LIMIT_LABEL[w.limit ?? 'mission_cap'].toLowerCase();
       return w.liftsAt ? `${label}, ${queueWhen(w.liftsAt, now)}` : label;
     }
