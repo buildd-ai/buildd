@@ -1,0 +1,907 @@
+{
+  "type": "diff",
+  "version": "10",
+  "dialect": "postgres",
+  "id": "7fcf8bab-1744-4123-9823-1bbccec3605d",
+  "prevIds": [
+    "f36e2ed6-f7a9-401f-ac16-cf93970e5e79"
+  ],
+  "footprints": [
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "public",
+        "spec_intent_checks"
+      ],
+      "writes": [
+        "s|tbl|public.spec_intent_checks",
+        "n|tbl|public.spec_intent_checks",
+        "e|tbl|public.spec_intent_checks",
+        "n|rel|public.spec_intent_checks",
+        "n|type|public.spec_intent_checks",
+        "n|rel|public.spec_intent_checks_pkey"
+      ],
+      "reads": [
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "public",
+        "spec_owner_questions"
+      ],
+      "writes": [
+        "s|tbl|public.spec_owner_questions",
+        "n|tbl|public.spec_owner_questions",
+        "e|tbl|public.spec_owner_questions",
+        "n|rel|public.spec_owner_questions",
+        "n|type|public.spec_owner_questions",
+        "n|rel|public.spec_owner_questions_pkey"
+      ],
+      "reads": [
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "spec_revisions",
+        "approval_conversation_id"
+      ],
+      "writes": [
+        "s|col|public.spec_revisions.approval_conversation_id",
+        "n|col|public.spec_revisions.approval_conversation_id",
+        "e|col|public.spec_revisions.approval_conversation_id"
+      ],
+      "reads": [
+        "n|tbl|public.spec_revisions",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "spec_revisions",
+        "approval_message_id"
+      ],
+      "writes": [
+        "s|col|public.spec_revisions.approval_message_id",
+        "n|col|public.spec_revisions.approval_message_id",
+        "e|col|public.spec_revisions.approval_message_id"
+      ],
+      "reads": [
+        "n|tbl|public.spec_revisions",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "spec_revisions",
+        "approval_message_at"
+      ],
+      "writes": [
+        "s|col|public.spec_revisions.approval_message_at",
+        "n|col|public.spec_revisions.approval_message_at",
+        "e|col|public.spec_revisions.approval_message_at"
+      ],
+      "reads": [
+        "n|tbl|public.spec_revisions",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "spec_revisions",
+        "criterion_sources"
+      ],
+      "writes": [
+        "s|col|public.spec_revisions.criterion_sources",
+        "n|col|public.spec_revisions.criterion_sources",
+        "e|col|public.spec_revisions.criterion_sources"
+      ],
+      "reads": [
+        "n|tbl|public.spec_revisions",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "add_column",
+      "statementTarget": [
+        "column",
+        "public",
+        "spec_revisions",
+        "provenance"
+      ],
+      "writes": [
+        "s|col|public.spec_revisions.provenance",
+        "n|col|public.spec_revisions.provenance",
+        "e|col|public.spec_revisions.provenance"
+      ],
+      "reads": [
+        "n|tbl|public.spec_revisions",
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "spec_intent_checks",
+        "spec_intent_checks_spec_revision_idx"
+      ],
+      "writes": [
+        "s|idx|public.spec_intent_checks_spec_revision_idx",
+        "n|idx|public.spec_intent_checks_spec_revision_idx",
+        "e|idx|public.spec_intent_checks_spec_revision_idx",
+        "n|rel|public.spec_intent_checks_spec_revision_idx"
+      ],
+      "reads": [
+        "n|tbl|public.spec_intent_checks",
+        "n|sch|public",
+        "n|col|public.spec_intent_checks.spec_id",
+        "n|col|public.spec_intent_checks.revision"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "spec_owner_questions",
+        "spec_owner_questions_workspace_open_idx"
+      ],
+      "writes": [
+        "s|idx|public.spec_owner_questions_workspace_open_idx",
+        "n|idx|public.spec_owner_questions_workspace_open_idx",
+        "e|idx|public.spec_owner_questions_workspace_open_idx",
+        "n|rel|public.spec_owner_questions_workspace_open_idx"
+      ],
+      "reads": [
+        "n|tbl|public.spec_owner_questions",
+        "n|sch|public",
+        "n|col|public.spec_owner_questions.workspace_id",
+        "n|col|public.spec_owner_questions.status"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "spec_owner_questions",
+        "spec_owner_questions_one_open_mismatch_idx"
+      ],
+      "writes": [
+        "s|idx|public.spec_owner_questions_one_open_mismatch_idx",
+        "n|idx|public.spec_owner_questions_one_open_mismatch_idx",
+        "e|idx|public.spec_owner_questions_one_open_mismatch_idx",
+        "n|rel|public.spec_owner_questions_one_open_mismatch_idx"
+      ],
+      "reads": [
+        "n|tbl|public.spec_owner_questions",
+        "n|sch|public",
+        "n|col|public.spec_owner_questions.spec_id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "public",
+        "spec_intent_checks"
+      ],
+      "writes": [
+        "s|fk|public.spec_intent_checks.spec_intent_checks_spec_id_specs_id_fkey",
+        "n|fk|public.spec_intent_checks.spec_intent_checks_spec_id_specs_id_fkey",
+        "e|fk|public.spec_intent_checks.spec_intent_checks_spec_id_specs_id_fkey",
+        "n|con|public.spec_intent_checks.spec_intent_checks_spec_id_specs_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.spec_intent_checks",
+        "n|sch|public",
+        "n|tbl|public.specs",
+        "n|sch|public",
+        "n|col|public.spec_intent_checks.spec_id",
+        "n|col|public.specs.id",
+        "e|uniqueness|public.specs.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "public",
+        "spec_owner_questions"
+      ],
+      "writes": [
+        "s|fk|public.spec_owner_questions.spec_owner_questions_workspace_id_workspaces_id_fkey",
+        "n|fk|public.spec_owner_questions.spec_owner_questions_workspace_id_workspaces_id_fkey",
+        "e|fk|public.spec_owner_questions.spec_owner_questions_workspace_id_workspaces_id_fkey",
+        "n|con|public.spec_owner_questions.spec_owner_questions_workspace_id_workspaces_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.spec_owner_questions",
+        "n|sch|public",
+        "n|tbl|public.workspaces",
+        "n|sch|public",
+        "n|col|public.spec_owner_questions.workspace_id",
+        "n|col|public.workspaces.id",
+        "e|uniqueness|public.workspaces.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "public",
+        "spec_owner_questions"
+      ],
+      "writes": [
+        "s|fk|public.spec_owner_questions.spec_owner_questions_spec_id_specs_id_fkey",
+        "n|fk|public.spec_owner_questions.spec_owner_questions_spec_id_specs_id_fkey",
+        "e|fk|public.spec_owner_questions.spec_owner_questions_spec_id_specs_id_fkey",
+        "n|con|public.spec_owner_questions.spec_owner_questions_spec_id_specs_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.spec_owner_questions",
+        "n|sch|public",
+        "n|tbl|public.specs",
+        "n|sch|public",
+        "n|col|public.spec_owner_questions.spec_id",
+        "n|col|public.specs.id",
+        "e|uniqueness|public.specs.id"
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "spec_intent_checks",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "spec_owner_questions",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "gen_random_uuid()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "spec_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "revision",
+        "type": "integer",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "content_hash",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "conversation_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "message_ids",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "checker_account_id",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "checker_task_id",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "questions",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "gen_random_uuid()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "workspace_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "kind",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "spec_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "status",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "'open'",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "text",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "recommended",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "payload",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "created_by",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "answered_by",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "answered_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "answer",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_revisions",
+        "name": "approval_conversation_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_revisions",
+        "name": "approval_message_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_revisions",
+        "name": "approval_message_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_revisions",
+        "name": "criterion_sources",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_revisions",
+        "name": "provenance",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "spec_intent_checks_spec_revision_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "spec_id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "revision",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": true,
+        "where": null,
+        "with": "",
+        "method": "btree",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "spec_owner_questions_workspace_open_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "workspace_id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "status",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": false,
+        "where": null,
+        "with": "",
+        "method": "btree",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "spec_owner_questions_one_open_mismatch_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "spec_id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": true,
+        "where": "kind = 'import_mismatch' AND status = 'open'",
+        "with": "",
+        "method": "btree",
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "spec_intent_checks_spec_id_specs_id_fkey",
+        "nameExplicit": false,
+        "columns": [
+          "spec_id"
+        ],
+        "schemaTo": "public",
+        "tableTo": "specs",
+        "columnsTo": [
+          "id"
+        ],
+        "onUpdate": "NO ACTION",
+        "onDelete": "CASCADE",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "spec_owner_questions_workspace_id_workspaces_id_fkey",
+        "nameExplicit": false,
+        "columns": [
+          "workspace_id"
+        ],
+        "schemaTo": "public",
+        "tableTo": "workspaces",
+        "columnsTo": [
+          "id"
+        ],
+        "onUpdate": "NO ACTION",
+        "onDelete": "CASCADE",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "spec_owner_questions_spec_id_specs_id_fkey",
+        "nameExplicit": false,
+        "columns": [
+          "spec_id"
+        ],
+        "schemaTo": "public",
+        "tableTo": "specs",
+        "columnsTo": [
+          "id"
+        ],
+        "onUpdate": "NO ACTION",
+        "onDelete": "CASCADE",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_intent_checks",
+        "name": "spec_intent_checks_pkey",
+        "columns": [
+          "id"
+        ],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "spec_owner_questions",
+        "name": "spec_owner_questions_pkey",
+        "columns": [
+          "id"
+        ],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    }
+  ]
+}
