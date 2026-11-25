@@ -77,7 +77,7 @@ export default function ConnectorToolsPanel({ connectorId, appName, initial }: {
         <span className="text-body font-medium text-text-primary">Tools</span>
         <p className="text-meta text-text-muted">
           {data.tools.length === 0
-            ? 'No tools seen yet. They appear after an agent first lists them.'
+            ? 'No tools listed.'
             : 'A read grant covers read tools only. Anything not annotated counts as a write until you mark it read-only.'}
         </p>
       </div>
