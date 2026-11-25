@@ -35,6 +35,13 @@ export interface ConnectorCatalogEntry {
    * client. Verified against the live provider; see the entry's comment.
    */
   clientSupport?: ConnectorClientSupport;
+  /**
+   * Tools the provider documents as reads but leaves without `readOnlyHint`
+   * because one argument makes them store something. Tool name to argument
+   * names: a call with none of them set is a read, otherwise a write. Taken
+   * from the provider's own tool reference; exact names only.
+   */
+  readOnlyUnlessArgs?: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface ConnectorClientSupport {
@@ -65,7 +72,10 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
   { slug: 'supabase', name: 'Supabase', url: 'https://mcp.supabase.com/mcp', authMode: 'oauth', category: 'database',
     description: 'Postgres, auth, storage and edge functions.', iconUrl: 'https://supabase.com/favicon/favicon.ico' },
   { slug: 'axiom', name: 'Axiom', url: 'https://mcp.axiom.co/mcp', authMode: 'oauth', category: 'observability',
-    description: 'Query logs, traces and events with APL.', iconUrl: 'https://axiom.co/favicon.ico' },
+    description: 'Query logs, traces and events with APL.', iconUrl: 'https://axiom.co/favicon.ico',
+    // Axiom's MCP tool reference lists queryDataset as Read; `saveResults: true`
+    // stores the results for a share link, so the tool carries no readOnlyHint.
+    readOnlyUnlessArgs: { queryDataset: ['saveResults'] } },
   { slug: 'sentry', name: 'Sentry', url: 'https://mcp.sentry.dev/mcp', authMode: 'oauth', category: 'observability',
     description: 'Issues, errors, stack traces and releases.', iconUrl: 'https://sentry.io/favicon.ico' },
   { slug: 'posthog', name: 'PostHog', url: 'https://mcp.posthog.com/mcp', authMode: 'oauth', category: 'analytics',

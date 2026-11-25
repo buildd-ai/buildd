@@ -74,6 +74,49 @@ describe('classifyNativeTool — the provider annotations decide, and fail close
     expect(classifyNativeTool('queryApl', { readOnlyHint: true }, o)).toBe('denied');
   });
 
+  describe('a read that writes only when one argument says so (Axiom queryDataset saveResults)', () => {
+    // Axiom documents queryDataset as a read, but leaves readOnlyHint off
+    // because `saveResults: true` stores the results.
+    const axiom = readToolOverrides(null, 'axiom');
+
+    it('is a read for a call without the argument, or with it off', () => {
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: "['buildd-traces'] | take 5" })).toBe('read');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: false })).toBe('read');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: null })).toBe('read');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, {})).toBe('read');
+    });
+
+    it('is a write when the argument is set to anything but off (fail closed)', () => {
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: true })).toBe('write');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: 'true' })).toBe('write');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: 0 })).toBe('write');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, ['not', 'an', 'object'])).toBe('write');
+    });
+
+    it('is listed as a read (each call is re-classified with its arguments)', () => {
+      expect(classifyNativeTool('queryDataset', undefined, axiom)).toBe('read');
+      const out = filterToolsList({ tools: [{ name: 'queryDataset', inputSchema: { type: 'object' } }] }, run({ roleCeiling: 'read' }), axiom);
+      expect((out.result as { tools: unknown[] }).tools).toHaveLength(1);
+    });
+
+    it('never lowers a destructive hint, an admin verb or a deny', () => {
+      expect(classifyNativeTool('queryDataset', { destructiveHint: true }, axiom, {})).toBe('admin');
+      const denied = readToolOverrides({ toolPolicy: { denyTools: ['queryDataset'] } }, 'axiom');
+      expect(classifyNativeTool('queryDataset', undefined, denied, {})).toBe('denied');
+    });
+
+    it('applies only to the provider that documents it', () => {
+      expect(classifyNativeTool('queryDataset', undefined, readToolOverrides(null, 'vercel'), {})).toBe('write');
+      expect(classifyNativeTool('queryDataset', undefined, readToolOverrides(null), {})).toBe('write');
+    });
+
+    it("keeps the admin's own overrides alongside the provider's", () => {
+      const o = readToolOverrides({ toolPolicy: { readOnlyTools: ['updateDashboard'] } }, 'axiom');
+      expect(classifyNativeTool('updateDashboard', undefined, o, {})).toBe('read');
+      expect(classifyNativeTool('queryDataset', undefined, o, { saveResults: true })).toBe('write');
+    });
+  });
+
   it('a destructive hint beats an admin read-only mark', () => {
     const o = readToolOverrides({ toolPolicy: { readOnlyTools: ['deleteNotifier'] } });
     expect(classifyNativeTool('deleteNotifier', { destructiveHint: true }, o)).toBe('admin');
