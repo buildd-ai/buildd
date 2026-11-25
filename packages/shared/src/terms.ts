@@ -218,8 +218,8 @@ const TERM_LIST: Term[] = [
     means: 'The PR closed and its change did not merge.',
     from: [k('CLOSED_UNMERGED'), k('ABANDONED'), sk('not_landed'), ...wk('subject_dead')] },
   { key: 'decision.approval_required', word: 'Approval required', short: 'approval required', tone: 'dec', glyph: '!',
-    means: 'A policy gate only a person can clear: a migration, a human merge or an escalation.', liftedBy: 'Approve or decline it',
-    from: [] },
+    means: 'A policy gate only a person can clear: a migration, a human merge, an escalation or access the task was filed needing.', liftedBy: 'Approve or decline it',
+    from: wk('access_unmet') },
   { key: 'decision.waiting_on_you', word: 'Waiting on you', short: 'waiting on you', tone: 'dec', glyph: '!',
     means: 'A decision only a person can make.', liftedBy: 'Answer the decision', from: [k('ESCALATED'), sk('needs_you')] },
   // The task row's word for the same state (Navigation R-14): the mission's task list and its summary line.

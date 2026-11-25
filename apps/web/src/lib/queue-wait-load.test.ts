@@ -173,7 +173,7 @@ describe('2026-10-22 regressions', () => {
 });
 
 describe('access nobody granted: the wait is a person\'s, not a slot', () => {
-  const gap = { gaps: [{ provider: 'axiom', access: 'read' as const, reason: null }], detail: 'axiom read: declared when the task was filed, not granted yet' };
+  const gap = { gaps: [{ provider: 'axiom', access: 'read' as const, reason: null }], detail: 'axiom read: declared when the task was filed, not granted yet', label: 'Axiom read', href: '/app/tasks/t1#task-filed-access' };
 
   it('an unmet access need leads the wait: limit access, naming what to approve', () => {
     const { wait } = queueWaitFor(task(), facts({ accessGap: gap }), NOW);
