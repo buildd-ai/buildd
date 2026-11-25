@@ -42,6 +42,16 @@ export interface ConnectorCatalogEntry {
    * from the provider's own tool reference; exact names only.
    */
   readOnlyUnlessArgs?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Vetted defaults: tools the provider's own tool reference documents as
+   * reads, which buildd treats as reads when the provider sends no
+   * `readOnlyHint`. Exact names, checked against that reference (see the
+   * entry's comment). Never lifts a tool the provider marks
+   * `readOnlyHint: false` or destructive, an admin-verb name, or an admin
+   * deny; an admin's `toolPolicy` sits on top. Anything not listed stays a
+   * write. Leave out reads that hand back credentials or run arbitrary SQL.
+   */
+  readOnlyTools?: readonly string[];
 }
 
 export interface ConnectorClientSupport {
@@ -61,6 +71,10 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
   // no loopback to offer.
   { slug: 'vercel', name: 'Vercel', url: 'https://mcp.vercel.com', authMode: 'oauth', category: 'deploy',
     description: 'Deployments, build logs, projects and domains.', iconUrl: 'https://vercel.com/favicon.ico',
+    // Reads from Vercel's MCP tool reference (vercel.com/docs/agent-resources/
+    // vercel-mcp/tools, checked 2026-11-25). web_fetch_vercel_url is left out:
+    // it fetches protected deployments, so it stays a write until vetted.
+    readOnlyTools: ['list_teams', 'list_projects', 'get_project', 'list_deployments', 'get_deployment', 'get_runtime_logs', 'get_runtime_errors'],
     clientSupport: {
       status: 'needs_approved_client',
       detail: 'Vercel only lets MCP clients it has reviewed sign in, and buildd is not on its list yet, so agents cannot use Vercel through buildd.',
@@ -68,14 +82,35 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
       actionUrl: 'https://vercel.com/docs/agent-resources/vercel-mcp#connecting-to-vercel-mcp',
     } },
   { slug: 'neon', name: 'Neon', url: 'https://mcp.neon.tech/mcp', authMode: 'oauth', category: 'database',
-    description: 'Serverless Postgres: projects, branches, SQL and migrations.', iconUrl: 'https://neon.com/favicon/favicon.ico' },
+    description: 'Serverless Postgres: projects, branches, SQL and migrations.', iconUrl: 'https://neon.com/favicon/favicon.ico',
+    // Reads from Neon's MCP server docs (neon.com/docs/ai/neon-mcp-server,
+    // checked 2026-11-25). run_sql/run_sql_transaction run any SQL and
+    // get_connection_string, the role and secret tools hand back credentials,
+    // so none of them is here.
+    readOnlyTools: ['list_projects', 'search_api', 'inspect_database', 'list_incidents'] },
   { slug: 'supabase', name: 'Supabase', url: 'https://mcp.supabase.com/mcp', authMode: 'oauth', category: 'database',
     description: 'Postgres, auth, storage and edge functions.', iconUrl: 'https://supabase.com/favicon/favicon.ico' },
   { slug: 'axiom', name: 'Axiom', url: 'https://mcp.axiom.co/mcp', authMode: 'oauth', category: 'observability',
     description: 'Query logs, traces and events with APL.', iconUrl: 'https://axiom.co/favicon.ico',
     // Axiom's MCP tool reference lists queryDataset as Read; `saveResults: true`
     // stores the results for a share link, so the tool carries no readOnlyHint.
-    readOnlyUnlessArgs: { queryDataset: ['saveResults'] } },
+    readOnlyUnlessArgs: { queryDataset: ['saveResults'] },
+    // Every tool Axiom's MCP tool reference (axiom.co/docs/console/intelligence/
+    // mcp-server/tools, checked 2026-11-25) marks Read, except the two token
+    // tools (listTokens, prepareApiToken). Its writes (create*, update*,
+    // delete*, replace*, manage*, setLabels, sendFeedback) stay writes.
+    readOnlyTools: [
+      'listOrganizations', 'getSavedQueries', 'listDatasets', 'getDatasetFields',
+      'listMetrics', 'listMetricTags', 'getMetricTagValues', 'searchMetrics', 'queryMetrics', 'getMetricsSpec',
+      'getAnnotations', 'listDashboards', 'getDashboard',
+      'checkMonitors', 'getMonitor', 'getMonitorHistory', 'listNotifiers', 'listLabels',
+      'services-getMap', 'services-getChanges', 'services-getEdgeHistory',
+      'otel-listServices', 'otel-listOperations', 'otel-getErrorBreakdown', 'otel-getServiceMetrics', 'otel-getOperationMetrics',
+      'otel-getTraceSpans', 'otel-findTraces', 'otel-findSimilarTraces', 'otel-getTraceCriticalPath', 'otel-findTraceAnomalies',
+      'genai-getOverview', 'genai-analyzeTokenUsage', 'genai-getModelPerformance', 'genai-analyzeCosts',
+      'genai-findErrors', 'genai-compareModels', 'genai-analyzeToolUsage', 'genai-getCapabilityMetrics',
+      'searchAxiomDocs', 'readAxiomDoc',
+    ] },
   { slug: 'sentry', name: 'Sentry', url: 'https://mcp.sentry.dev/mcp', authMode: 'oauth', category: 'observability',
     description: 'Issues, errors, stack traces and releases.', iconUrl: 'https://sentry.io/favicon.ico' },
   { slug: 'posthog', name: 'PostHog', url: 'https://mcp.posthog.com/mcp', authMode: 'oauth', category: 'analytics',
@@ -153,4 +188,11 @@ export function catalogEntryForUrl(url: string): ConnectorCatalogEntry | null {
 
 export function catalogEntryBySlug(slug: string): ConnectorCatalogEntry | null {
   return CONNECTOR_CATALOG.find(e => e.slug === slug) ?? null;
+}
+
+const VETTED_READS = new Map(CONNECTOR_CATALOG.map(e => [e.slug, new Set(e.readOnlyTools ?? [])]));
+
+/** Is `tool` one of this built-in provider's vetted reads (`readOnlyTools`)? Exact names only. */
+export function catalogReadOnlyTool(provider: string | null | undefined, tool: string): boolean {
+  return !!provider && (VETTED_READS.get(provider)?.has(tool) ?? false);
 }

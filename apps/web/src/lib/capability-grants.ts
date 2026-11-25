@@ -29,6 +29,7 @@
  * Spec: docs/specs/capability-requests.md
  */
 import { runClosure } from './open-ask';
+import { catalogReadOnlyTool } from './connector-catalog';
 import type { CapabilityCandidate, CapabilityResolution } from './connector-capabilities';
 import {
   MODEL_INFERENCE_CAPABILITY,
@@ -106,6 +107,19 @@ export function classifyToolRisk(tool: string): CapabilityRisk {
   if (ADMIN_VERBS.test(lower)) return 'admin';
   if (READ_VERBS.test(lower)) return 'read';
   return 'write';
+}
+
+/**
+ * A tool's risk from its name, for one provider. A read the catalog vets for
+ * that provider (`readOnlyTools`), or one the caller vetted (an admin's
+ * read-only mark the gateway applied), is not raised by a name that starts
+ * with no read verb (Axiom `otel-getTraceSpans`); an admin verb still is.
+ * Anything else is `classifyToolRisk`.
+ */
+export function toolNameRisk(tool: string, provider: string | null | undefined, vettedRead = false): CapabilityRisk {
+  const byName = classifyToolRisk(tool);
+  if (byName === 'admin') return 'admin';
+  return vettedRead || catalogReadOnlyTool(provider, tool) ? 'read' : byName;
 }
 
 // ── Request parsing ──────────────────────────────────────────────────────────
@@ -293,7 +307,7 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
   if (!access) return { ok: false, error: 'access is required: read or write' };
   if (b.models !== undefined || b.operations !== undefined || b.budget !== undefined) return { ok: false, error: 'models/operations/budget are for model.inference only' };
   const t = val(tool);
-  const risk = maxRisk(access, declared ?? access, t ? classifyToolRisk(t) : access);
+  const risk = maxRisk(access, declared ?? access, t ? toolNameRisk(t, p) : access);
   return {
     ok: true,
     request: {
@@ -671,6 +685,12 @@ export interface CapabilityUse {
    * the name's risk: the higher of the two is checked.
    */
   risk?: CapabilityRisk;
+  /**
+   * The caller classed this tool read from a source buildd vets (an admin's
+   * read-only mark), so its name does not raise it unless it is an admin
+   * verb. The catalog's vetted reads need no flag (`toolNameRisk`).
+   */
+  vettedRead?: boolean;
 }
 
 /** Live facts read fresh for every use; nothing here is cached from grant time. */
@@ -703,7 +723,7 @@ export function checkGrantUse(g: GrantRecord, use: CapabilityUse, ctx: UseContex
   if (ended) return ended;
   if ((g.roleSlug ?? null) !== (p.roleSlug ?? null)) return 'role_changed';
   if (g.capability !== use.capability || g.provider !== use.provider || (g.connectorId ?? null) !== (use.connectorId ?? null)) return 'target_mismatch';
-  const useRisk = use.tool ? maxRisk(classifyToolRisk(use.tool), use.risk ?? 'read') : use.risk ?? null;
+  const useRisk = use.tool ? maxRisk(toolNameRisk(use.tool, use.provider, use.vettedRead === true), use.risk ?? 'read') : use.risk ?? null;
   if (g.tool) {
     if (use.tool !== g.tool) return 'tool_not_granted';
     // An exact-tool grant still holds only up to the risk it was granted at.

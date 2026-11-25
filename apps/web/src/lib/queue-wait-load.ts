@@ -41,6 +41,7 @@ import { missionTaskHref } from '@/lib/mission-task-href';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import type { LaneRead } from '@/lib/serial-lanes-store';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { accessReasons, loadAccessGap, type AccessGap } from '@/lib/access-wait-reason';
 
 /** The runner-independent claim gates a queue wait reads, each TRUE when the task passes. */
 export const QUEUE_WAIT_GATES = ['startAt', 'taskHeld', 'missionHeld', 'missionLocal', 'subject', 'deps', 'workspacePaused'] as const satisfies readonly ClaimGateName[];
@@ -60,6 +61,8 @@ export interface QueueWaitTask {
   category?: unknown;
   context?: unknown;
   outputRequirement?: unknown;
+  roleSlug?: string | null;
+  delegation?: unknown;
   taskClass?: string | null;
   conflictRetryPrNumber?: number | null;
   ciRetryPrNumber?: number | null;
@@ -98,6 +101,8 @@ export interface QueueWaitFacts {
   missionBudgetExhausted: boolean;
   /** The task's newest claim-loop refusal, when fresh enough to still be an observation. */
   ledger: LedgerHold | null;
+  /** Declared access nobody granted, from the claim gate's own check (`checkAccessGate`). */
+  accessGap?: AccessGap | null;
 }
 
 const iso = (v: Date | string | null | undefined): string | null => {
@@ -156,7 +161,8 @@ const LEDGER_LIMITS: Readonly<Record<string, WaitingKind>> = {
 };
 const LEDGER_NO_RUNNER = new Set([
   'runner_capability', 'isolation_unenforced', 'connector_mismatch', 'role_env_unsatisfied', 'no_personal_credential',
-  'provider_unavailable', 'delegation_unmet', 'access_unmet', 'provider_not_allowed', 'tier_policy',
+  // access_unmet is read live (`accessGap`), not from a row that may be stale or already granted.
+  'provider_unavailable', 'delegation_unmet', 'provider_not_allowed', 'tier_policy',
 ]);
 
 export function ledgerLimitReasons(hold: LedgerHold | null, now: Date): WaitingReason[] {
@@ -178,6 +184,7 @@ export function assembleQueueReasons(t: QueueWaitTask, f: QueueWaitFacts, now: D
   const out = [
     ...sqlGateReasons(t, f.unmetDependencies),
     ...f.coordination,
+    ...accessReasons(t.id, f.accessGap),
     ...(f.missionBudgetExhausted && t.missionId
       ? [makeWaitingReason('mission_budget', { because: "the mission's budget is spent", blocker: { type: 'mission', id: t.missionId, label: 'the mission budget', href: `/app/missions/${t.missionId}` }, provenance: prov("missions.status='budget_exhausted' (claim loop)") })]
       : []),
@@ -231,6 +238,8 @@ async function readTasks(taskIds: string[], now: Date, limit: number): Promise<Q
       category: tasks.category,
       context: tasks.context,
       outputRequirement: tasks.outputRequirement,
+      roleSlug: tasks.roleSlug,
+      delegation: tasks.delegation,
       taskClass: tasks.taskClass,
       conflictRetryPrNumber: tasks.conflictRetryPrNumber,
       ciRetryPrNumber: tasks.ciRetryPrNumber,
@@ -256,6 +265,8 @@ async function readTasks(taskIds: string[], now: Date, limit: number): Promise<Q
       category: r.category,
       context: r.context,
       outputRequirement: r.outputRequirement,
+      roleSlug: (r.roleSlug as string | null) ?? null,
+      delegation: r.delegation,
       taskClass: (r.taskClass as string | null) ?? null,
       conflictRetryPrNumber: (r.conflictRetryPrNumber as number | null) ?? null,
       ciRetryPrNumber: (r.ciRetryPrNumber as number | null) ?? null,
@@ -404,7 +415,10 @@ export async function loadQueueWaits(taskIds: readonly string[], now: Date = new
         now,
         lanes: coord.lanes ? { views: coord.lanes.lanes.get(t.workspaceId) ?? new Map(), releasedTaskIds: coord.lanes.releasedTaskIds } : null,
       });
+      // The claim gate's own check, so the page cannot disagree with it. A failed read says nothing.
+      const accessGap = await loadAccessGap(t);
       out.set(t.id, queueWaitFor(t, {
+        accessGap,
         unmetDependencies: deps.get(t.id) ?? [],
         coordination,
         missionBudgetExhausted: mission?.status === 'budget_exhausted' && !bypassesMissionBudget(t.context),
