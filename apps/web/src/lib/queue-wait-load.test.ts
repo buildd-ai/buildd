@@ -171,3 +171,27 @@ describe('2026-10-22 regressions', () => {
     expect(isNextInLine(wait)).toBe(false);
   });
 });
+
+describe('access nobody granted: the wait is a person\'s, not a slot', () => {
+  const gap = { gaps: [{ provider: 'axiom', access: 'read' as const, reason: null }], detail: 'axiom read: declared when the task was filed, not granted yet' };
+
+  it('an unmet access need leads the wait: limit access, naming what to approve', () => {
+    const { wait } = queueWaitFor(task(), facts({ accessGap: gap }), NOW);
+    expect(wait.kind).toBe('limit');
+    expect(wait.limit).toBe('access');
+    expect(wait.approve).toBe('Axiom read');
+    expect(isNextInLine(wait)).toBe(false);
+    expect(queueWaitHeadline(wait)).toBe('Waiting on you: approve Axiom read');
+  });
+
+  it('beats a stale ledger access_unmet row (the live gate is the source)', () => {
+    const { wait } = queueWaitFor(task(), facts({ accessGap: gap, ledger: ledger('access_unmet') }), NOW);
+    expect(wait.limit).toBe('access');
+  });
+
+  it('once granted (no gap), a stale access_unmet ledger row no longer holds it', () => {
+    const { wait } = queueWaitFor(task(), facts({ ledger: ledger('access_unmet') }), NOW);
+    expect(wait.kind).toBe('slot');
+    expect(wait.noRunnerReason ?? null).toBeNull();
+  });
+});
