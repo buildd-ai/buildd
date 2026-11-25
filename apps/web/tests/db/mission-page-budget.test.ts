@@ -80,7 +80,8 @@ beforeAll(async () => {
   // one role (task number mod 4), and the board draws a mission's build work only,
   // so a mission of organizer or researcher tasks renders an empty board. Tied
   // missions would otherwise be picked by random uuid, and the test would pass
-  // or fail with the draw. The seed also gives every task of a mission one status
+  // or fail with the draw. A mission with running workers is passed over: the
+  // page reads their heartbeats, and that load is not what R-3 budgets. The seed also gives every task of a mission one status
   // (task number mod 500 fixes it), and the board names only tasks that are live
   // or need a person: a mission of landed tasks is counted, not titled. So a
   // mission with live or failed builder tasks comes first.
@@ -88,7 +89,8 @@ beforeAll(async () => {
     SELECT m.id FROM missions m JOIN tasks t ON t.mission_id = m.id AND t.role_slug = 'builder'
     WHERE m.team_id = ${team.teamId}::uuid AND m.status = 'active'
     GROUP BY m.id
-    ORDER BY count(*) FILTER (WHERE t.status IN ('failed', 'in_progress', 'pending', 'review')) DESC, count(*) DESC, m.id
+    ORDER BY count(*) FILTER (WHERE t.status = 'in_progress') > 0,
+             count(*) FILTER (WHERE t.status IN ('failed', 'review', 'pending')) DESC, count(*) DESC, m.id
     LIMIT 1`);
   busiest = row.id;
 }, 900_000);
