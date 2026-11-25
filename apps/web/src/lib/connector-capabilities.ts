@@ -55,6 +55,11 @@ interface ProviderProfile {
   compatibilityNote?: string;
   /** Said when the provider covers the domain but not the verb asked for. */
   partialNote?: Partial<Record<CapabilityDomain, string>>;
+  /**
+   * For a provider with no write tools: what its account config is and where
+   * the owner changes it, so an agent hands that to a person and stops looking.
+   */
+  ownerManaged?: string;
 }
 
 /**
@@ -67,6 +72,9 @@ const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
     writeToolsExposed: false,
     compatibility: 'documented',
     compatibilityNote: 'Axiom documents its hosted MCP for Claude Code and Codex over OAuth.',
+    ownerManaged: 'Monitors, notifiers, dashboards, datasets and API tokens are owner-managed in the Axiom UI '
+      + '(app.axiom.co); Axiom\'s hosted MCP has no tools to create, edit, disable or delete them. '
+      + 'Ask the owner to make the change there.',
   },
   vercel: {
     serves: { deployment: ['read', 'write'], observability: ['read'] },
@@ -154,7 +162,13 @@ export interface CapabilityCandidate {
   health: CandidateHealth;
   roles: { evaluated: { slug: string; mounts: boolean } | null; withAccess: string[]; nativeToolsListed?: string[] };
   compatibility: { status: ProviderCompatibility; note?: string };
-  risk: { requested: 'read' | 'write'; writeToolsExposed: boolean | 'unknown'; note: string };
+  risk: {
+    requested: 'read' | 'write';
+    writeToolsExposed: boolean | 'unknown';
+    note: string;
+    /** Set when the provider has no write tools: who changes its config, and where. */
+    ownerManaged?: string;
+  };
   runtimeNeeds: { kind: 'binary'; name: string }[];
 }
 
@@ -270,13 +284,16 @@ function resolveWith(input: DiscoveryInput, spec: ResolveSpec): CapabilityResolu
   function riskOf(profile: ProviderProfile | null): CapabilityCandidate['risk'] {
     const exposed = profile ? profile.writeToolsExposed : 'unknown';
     const note = requested === 'write'
-      ? 'A write need: native write tools act on the provider account.'
+      ? exposed === false
+        ? 'The provider lists no write tools, so no grant makes a write possible through this connector.'
+        : 'A write need: native write tools act on the provider account.'
       : exposed === true
         ? 'Mounting this connector exposes every native tool, writes included; a read need does not narrow it.'
         : exposed === false
           ? 'The provider lists read tools only.'
           : 'Not recorded whether this provider exposes write tools; treat as read/write.';
-    return { requested, writeToolsExposed: exposed, note };
+    const ownerManaged = exposed === false ? profile?.ownerManaged : undefined;
+    return { requested, writeToolsExposed: exposed, note, ...(ownerManaged ? { ownerManaged } : {}) };
   }
 
   const candidates: CapabilityCandidate[] = [];
@@ -336,6 +353,12 @@ function resolveWith(input: DiscoveryInput, spec: ResolveSpec): CapabilityResolu
       nextSteps.push(`A team admin adds ${c.name} to a role's connectors.`);
     }
 
+    const risk = riskOf(m.profile);
+    if (requested === 'write' && risk.writeToolsExposed === false) {
+      reasons.push('no_write_tools');
+      nextSteps.unshift(risk.ownerManaged ?? `${entry.name} lists no write tools; a person makes this change in ${entry.name} itself.`);
+    }
+
     const compat = m.profile?.compatibility ?? 'not_recorded';
     if (health === 'expired') reasons.push('token_refresh_pending');
     if (health === 'unchecked') reasons.push('health_unchecked');
@@ -367,7 +390,7 @@ function resolveWith(input: DiscoveryInput, spec: ResolveSpec): CapabilityResolu
         ...(nativeToolsListed ? { nativeToolsListed } : {}),
       },
       compatibility: { status: compat, ...(m.profile?.compatibilityNote ? { note: m.profile.compatibilityNote } : {}) },
-      risk: riskOf(m.profile),
+      risk,
       runtimeNeeds: c.transport === 'stdio' && c.command ? [{ kind: 'binary', name: c.command }] : [],
     });
   }
