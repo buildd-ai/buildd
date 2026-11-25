@@ -97,9 +97,10 @@ export function sortPortfolio(rows: readonly PortfolioRow[], sort: PortfolioSort
 /** The list's filters are its sections, so a chip shows exactly one section. */
 export type PortfolioStatusFilter = 'all' | MissionSectionKey;
 
-export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilter; label: string; title: string }> = [
+/** `short`: the label below 360px, where the full one does not fit beside the group select (320pt phones). */
+export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilter; label: string; short?: string; title: string }> = [
   { key: 'all', label: 'All', title: 'Every open mission' },
-  { key: 'needs', label: 'Waiting on you', title: 'A decision only a person can make' },
+  { key: 'needs', label: 'Waiting on you', short: 'Waiting', title: 'A decision only a person can make' },
   { key: 'motion', label: 'In progress', title: 'buildd is building, checking, fixing or merging it' },
   { key: 'waiting', label: 'Not started', title: 'Waiting for capacity, earlier work, a start or a plan' },
   { key: 'landed', label: 'Checks pending', title: 'Every task is done. A goal criterion hasn’t passed.' },
