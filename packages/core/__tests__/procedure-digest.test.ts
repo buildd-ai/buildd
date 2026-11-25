@@ -44,15 +44,15 @@ describe('buildProcedureSkeleton', () => {
 
 describe('procedure_digest action', () => {
   const ctx: ActionContext = { authType: 'api', getLevel: async () => 'worker', getWorkspaceId: async () => 'ws' };
-  it('reads the task route and returns the skeleton', async () => {
+  it('reads the workspace-scoped analytics route', async () => {
     const calls: string[] = [];
-    const api = (async (p: string) => { calls.push(p); return { steps: [{ name: 'Read', count: 2 }], totalCalls: 2, truncated: false }; }) as ApiFn;
-    const r = await handleBuilddAction(api, 'procedure_digest', { taskId: 'abcd1234' }, ctx);
-    expect(calls).toEqual(['/api/tasks/abcd1234/procedure-digest']);
+    const api = (async (p: string) => { calls.push(p); return { rows: [{ taskId: 'abcd1234', tools: ['Read'] }] }; }) as ApiFn;
+    const r = await handleBuilddAction(api, 'procedure_digest', { workspaceId: '11111111-1111-4111-8111-111111111111', window: '7d' }, ctx);
+    expect(calls.some(c => c.startsWith('/api/analytics/procedure-digest?') && c.includes('window=7d'))).toBe(true);
     expect(r.isError).not.toBe(true);
     expect(r.content[0].text).toContain('Read');
   });
-  it('requires taskId', async () => {
+  it('requires workspaceId', async () => {
     const api = (async () => { throw new Error('no fetch'); }) as ApiFn;
     const r = await handleBuilddAction(api, 'procedure_digest', {}, ctx);
     expect(r.isError).toBe(true);
