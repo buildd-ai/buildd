@@ -92,8 +92,8 @@ beforeAll(async () => {
     SELECT m.id FROM missions m JOIN tasks t ON t.mission_id = m.id AND t.role_slug = 'builder'
     WHERE m.team_id = ${team.teamId}::uuid AND m.status = 'active'
     GROUP BY m.id
-    ORDER BY count(*) FILTER (WHERE t.status = 'in_progress') > 0,
-             count(*) FILTER (WHERE t.status IN ('failed', 'review', 'pending')) DESC, count(*) DESC, count(*) FILTER (WHERE t.status = 'pending') > 0, m.title
+    ORDER BY count(*) FILTER (WHERE t.status IN ('in_progress', 'pending', 'review')) > 0,
+             count(*) FILTER (WHERE t.status = 'failed') DESC, count(*) DESC, m.title
     LIMIT 1`);
   busiest = row.id;
 }, 900_000);
