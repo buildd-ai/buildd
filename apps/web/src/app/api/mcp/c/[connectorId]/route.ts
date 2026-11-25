@@ -338,7 +338,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ con
   if (msg.method === 'tools/list' && up.res.status < 400) {
     const parsed = parseRpcBody(up.res.headers.get('content-type') ?? '', up.body);
     if (!parsed) return rpcError(msg.id, -32603, 'Provider answered tools/list with something that is not JSON-RPC', { code: 'provider_bad_response' }, 502);
-    const overrides = readToolOverrides(g.connector.discoveredMetadata);
+    const overrides = readToolOverrides(g.connector.discoveredMetadata, g.run.connector.provider);
     const seen = new Map<string, Annotations>();
     const filtered = parsed.messages.map(m => {
       const mm = m as { id?: unknown; result?: unknown } | undefined;
@@ -380,7 +380,7 @@ async function toolsCall(
     } else {
       const hit = cachedAnnotations(g.connector.id, tool, Date.now());
       const annotations = hit ? hit.annotations : await annotationsFromProvider(g, req.headers, tool);
-      cls = classifyNativeTool(tool, annotations, readToolOverrides(g.connector.discoveredMetadata));
+      cls = classifyNativeTool(tool, annotations, readToolOverrides(g.connector.discoveredMetadata, g.run.connector.provider), args);
     }
     const scope = callScope(args);
     // The gateway enforces; the decision is the configured PDP's (connector-pdp.ts).

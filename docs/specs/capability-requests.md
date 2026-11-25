@@ -503,7 +503,13 @@ agent's prompt, argv, env, logs, artifacts or disk.
   anything else, unannotated included, is write. An admin's
   `discoveredMetadata.toolPolicy` (`readOnlyTools`, `denyTools`; exact names)
   corrects it; only a signed-in person may change it (any bearer gets 403
-  `session_required`). Only the provider's annotations are cached (per
+  `session_required`). A catalog entry's `readOnlyUnlessArgs` names tools the
+  provider documents as reads but leaves unannotated because one argument
+  stores something (Axiom `queryDataset` with `saveResults`): such a call is a
+  read unless it sets one of those arguments to anything but absent, `null` or
+  `false`, so a read grant covers the query and the saving form needs a write.
+  It is listed as a read; a destructive hint, an admin verb or a deny still
+  wins. Only the provider's annotations are cached (per
   instance, 10 minutes); the class, overrides included, is recomputed on every
   call, so a new deny or a removed read-only mark applies to the next call. An
   uncached tool's annotations come from a fresh provider `tools/list`; if that

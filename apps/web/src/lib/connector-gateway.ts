@@ -20,6 +20,7 @@
  * Spec: docs/specs/capability-requests.md §Connector gateway.
  */
 import { createHash } from 'crypto';
+import { CONNECTOR_CATALOG } from './connector-catalog';
 import { isLiveWorkerStatus, isOpenTaskStatus } from '@buildd/shared';
 import {
   CAPABILITY_RISKS,
@@ -85,15 +86,30 @@ export interface ToolAnnotations {
 export interface ToolOverrides {
   readOnlyTools: ReadonlySet<string>;
   denyTools: ReadonlySet<string>;
+  /** From the catalog (`readOnlyUnlessArgs`): tool → the arguments that make a call a write. */
+  readOnlyUnless?: ReadonlyMap<string, readonly string[]>;
 }
 
 export const NO_OVERRIDES: ToolOverrides = { readOnlyTools: new Set(), denyTools: new Set() };
 
-export function readToolOverrides(discoveredMetadata: unknown): ToolOverrides {
+/**
+ * The admin's overrides from `discoveredMetadata.toolPolicy`, plus, when the
+ * provider slug is given, the catalog's argument-gated reads for it.
+ */
+export function readToolOverrides(discoveredMetadata: unknown, provider?: string | null): ToolOverrides {
+  const gated = provider ? CONNECTOR_CATALOG.find(e => e.slug === provider)?.readOnlyUnlessArgs : undefined;
+  const readOnlyUnless = gated ? new Map(Object.entries(gated)) : undefined;
   const p = (discoveredMetadata as { toolPolicy?: unknown } | null | undefined)?.toolPolicy as Record<string, unknown> | undefined;
-  if (!p || typeof p !== 'object') return NO_OVERRIDES;
+  if (!p || typeof p !== 'object') return readOnlyUnless ? { ...NO_OVERRIDES, readOnlyUnless } : NO_OVERRIDES;
   const names = (v: unknown) => new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 160) : []);
-  return { readOnlyTools: names(p.readOnlyTools), denyTools: names(p.denyTools) };
+  return { readOnlyTools: names(p.readOnlyTools), denyTools: names(p.denyTools), ...(readOnlyUnless ? { readOnlyUnless } : {}) };
+}
+
+/** Does this call set any of the arguments that make it a write? Anything but absent, null or false counts. */
+function setsWriteArg(args: unknown, keys: readonly string[]): boolean {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return true;
+  const a = args as Record<string, unknown>;
+  return keys.some(k => a[k] !== undefined && a[k] !== null && a[k] !== false);
 }
 
 const TOOL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
@@ -123,14 +139,25 @@ export type ToolClass = CapabilityRisk | 'denied';
  * admin; an admin's read-only mark or the provider's `readOnlyHint` is read,
  * unless the name is an admin verb (a contradiction fails closed); anything
  * else, including no annotations at all, is a write (admin for admin verbs).
+ * A catalog argument-gated read (`readOnlyUnless`) is a read unless the call
+ * sets one of its write arguments; with no `args` (listing) it is a read, and
+ * every call is classified again with its own arguments.
  */
-export function classifyNativeTool(name: string, annotations: ToolAnnotations | null | undefined, overrides: ToolOverrides = NO_OVERRIDES): ToolClass {
+export function classifyNativeTool(
+  name: string,
+  annotations: ToolAnnotations | null | undefined,
+  overrides: ToolOverrides = NO_OVERRIDES,
+  args?: unknown,
+): ToolClass {
   if (overrides.denyTools.has(name)) return 'denied';
   const byName = classifyToolRisk(name);
   if (annotations?.destructiveHint === true) return 'admin';
   if (overrides.readOnlyTools.has(name)) return 'read';
   if (annotations?.readOnlyHint === true) return byName === 'admin' ? 'admin' : 'read';
-  return byName === 'admin' ? 'admin' : 'write';
+  if (byName === 'admin') return 'admin';
+  const writeArgs = overrides.readOnlyUnless?.get(name);
+  if (writeArgs) return args !== undefined && setsWriteArg(args, writeArgs) ? 'write' : 'read';
+  return 'write';
 }
 
 // ── Run context ──────────────────────────────────────────────────────────────

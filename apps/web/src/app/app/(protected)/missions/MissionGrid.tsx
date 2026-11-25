@@ -33,6 +33,14 @@ import { shortDuration } from '@/lib/mission-list-card';
 export type { PortfolioRow } from '@/lib/mission-portfolio';
 
 const ALL_GROUPS = '__all__';
+
+function FunnelIcon() {
+  return (
+    <svg data-testid="portfolio-group-icon" aria-hidden="true" className="h-4 w-4 shrink-0 text-text-muted min-[360px]:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z" />
+    </svg>
+  );
+}
 /** Done rows listed while open work exists; the rest are one tap away (Surface IA AC-62). */
 export const DONE_WHILE_OPEN = 5;
 
@@ -131,7 +139,9 @@ export function MissionGrid({
                 value: f.key,
                 label: (
                   <span title={f.title} data-filter={f.key} className="whitespace-nowrap">
-                    {f.label}
+                    {f.short
+                      ? <><span className="min-[360px]:hidden">{f.short}</span><span className="hidden min-[360px]:inline">{f.label}</span></>
+                      : f.label}
                     {f.key !== 'all' && <span className="ml-1 font-mono text-meta text-text-muted">{filterCounts[f.key]}</span>}
                   </span>
                 ),
@@ -156,6 +166,14 @@ export function MissionGrid({
               ...groups.map(g => ({ value: g.id, label: `${g.name} (${g.count})` })),
             ]}
             size="sm"
+            // Below 360px "All groups" is a funnel glyph: the label would squeeze the
+            // tabs at 320pt. A chosen group is the filter's state, so its name stays.
+            renderValue={opt => (
+              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                {!group && <FunnelIcon />}
+                <span className={`min-w-0 truncate${group ? '' : ' hidden min-[360px]:inline'}`}>{opt?.label ?? 'All groups'}</span>
+              </span>
+            )}
             className="w-auto max-w-[40%] shrink-0 md:max-w-none md:min-w-[180px]"
           />
         )}

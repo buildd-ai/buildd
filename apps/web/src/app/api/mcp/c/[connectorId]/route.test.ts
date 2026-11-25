@@ -251,6 +251,23 @@ describe('tools/call — decided per call', () => {
     expect(mockAuthorizeTool.mock.calls[0][1]).toMatchObject({ connectorId: CONN, provider: 'axiom', tool: 'createMonitor', risk: 'write', resource: 'p1', environment: 'production' });
   });
 
+  it('Axiom queryDataset (no readOnlyHint) is checked as a read unless it sets saveResults', async () => {
+    // The connector is not role-mounted, so every call goes through a grant:
+    // a read grant must cover a query that stores nothing.
+    currentLoaded = loaded({ run: { roleMounts: false } });
+    mockAuthorizeTool.mockImplementation(async (_p: unknown, use: any) =>
+      use.risk === 'read' ? { allowed: true, grantId: 'g-read' } : { allowed: false, reasonCode: 'tool_risk_exceeds_grant' });
+
+    const ok = await POST(req(call('queryDataset', { apl: "['traces'] | take 5", saveResults: false })), ctx());
+    expect((await ok.json()).result.content[0].text).toBe('ok');
+    expect(mockAuthorizeTool.mock.calls.at(-1)![1]).toMatchObject({ tool: 'queryDataset', risk: 'read' });
+
+    const saved = await toolError(await POST(req(call('queryDataset', { apl: "['traces'] | take 5", saveResults: true }, 2)), ctx()));
+    expect(saved.code).toBe('capability_not_granted');
+    expect(mockAuthorizeTool.mock.calls.at(-1)![1]).toMatchObject({ tool: 'queryDataset', risk: 'write' });
+    expect(upstreamCalls.filter(c => c.body?.method === 'tools/call')).toHaveLength(1);
+  });
+
   it('a destructive tool is checked as admin', async () => {
     mockAuthorizeTool.mockResolvedValue({ allowed: false, reasonCode: 'tool_risk_exceeds_grant' });
     currentLoaded = loaded({ run: { roleCeiling: 'admin' } });
