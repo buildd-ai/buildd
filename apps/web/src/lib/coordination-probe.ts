@@ -30,7 +30,8 @@ import { ORDERED_BEHIND_REASON } from '@/app/api/workers/claim/claim-plan-store'
 import { GATE_SLUGS } from '@buildd/core/gate-events';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { accessReasons, loadAccessGap } from '@/lib/access-wait-reason';
+import { ACCESS_WAIT } from '@/modules';
+import { accessReasons } from '@/lib/access-wait-reason';
 
 /**
  * `ordered_behind` is written once per (task, blocker), never refreshed, so
@@ -110,7 +111,7 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
     const [depReasons, localReason, accessGap] = await Promise.all([
       dependencyReasons(task),
       opts.skipMissionLocal ? Promise.resolve(null) : missionLocalReason(task),
-      loadAccessGap(task),
+      ACCESS_WAIT.loadGap(task),
     ]);
     return await withTaskLabels(orderWaitingReasons([
       ...(localReason ? [localReason] : []),

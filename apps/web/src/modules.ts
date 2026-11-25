@@ -355,6 +355,12 @@ export const FILED_ACCESS = {
   needsYou: async (...a: Parameters<FiledAccess['filedAccessNeedsYouRead']>) => (await import('@/lib/capability-grants-filed')).filedAccessNeedsYouRead(...a),
 };
 
+/** Declared access nobody granted, as a WaitingReason (lib/capability-grants-access-wait.ts). */
+type AccessWait = typeof import('@/lib/capability-grants-access-wait');
+export const ACCESS_WAIT = {
+  loadGap: async (...a: Parameters<AccessWait['loadAccessGap']>) => (await import('@/lib/capability-grants-access-wait')).loadAccessGap(...a),
+};
+
 /** Open schedule move proposals, for the people who may answer them (lib/schedule-move-needs-you.ts). */
 export const SCHEDULE_MOVE_NEEDS_YOU = async (workspaceIds: readonly string[]) =>
   (await import('@/lib/schedule-move-needs-you')).scheduleMoveNeedsYouRead(workspaceIds);

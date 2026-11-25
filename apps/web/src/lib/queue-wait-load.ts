@@ -41,7 +41,8 @@ import { missionTaskHref } from '@/lib/mission-task-href';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import type { LaneRead } from '@/lib/serial-lanes-store';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { accessReasons, loadAccessGap, type AccessGap } from '@/lib/access-wait-reason';
+import { ACCESS_WAIT } from '@/modules';
+import { accessReasons, type AccessGap } from '@/lib/access-wait-reason';
 
 /** The runner-independent claim gates a queue wait reads, each TRUE when the task passes. */
 export const QUEUE_WAIT_GATES = ['startAt', 'taskHeld', 'missionHeld', 'missionLocal', 'subject', 'deps', 'workspacePaused'] as const satisfies readonly ClaimGateName[];
@@ -416,7 +417,7 @@ export async function loadQueueWaits(taskIds: readonly string[], now: Date = new
         lanes: coord.lanes ? { views: coord.lanes.lanes.get(t.workspaceId) ?? new Map(), releasedTaskIds: coord.lanes.releasedTaskIds } : null,
       });
       // The claim gate's own check, so the page cannot disagree with it. A failed read says nothing.
-      const accessGap = await loadAccessGap(t);
+      const accessGap = await ACCESS_WAIT.loadGap(t);
       out.set(t.id, queueWaitFor(t, {
         accessGap,
         unmetDependencies: deps.get(t.id) ?? [],

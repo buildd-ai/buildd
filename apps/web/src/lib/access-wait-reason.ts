@@ -1,32 +1,23 @@
 /**
  * Declared access nobody granted, as the one `WaitingReason` every surface
  * reads (queue wait, Start probe). The need is decided by the claim gate's own
- * check (`checkAccessGate`), so a page cannot disagree with the gate: this
- * file only words it and points at the grant UI.
+ * check (`checkAccessGate`, loaded through the composition root), so a page
+ * cannot disagree with the gate: this file only words it and points at the
+ * grant UI. No module imports: core stays pure.
  */
 import { makeWaitingReason, type WaitingReason } from '@buildd/core/waiting-reason';
-import { readAccessNeeds, type TaskAccessNeed } from '@buildd/core/token-delegation';
-import { providerName } from '@/lib/capability-grants-view';
-import { checkAccessGate, filedAccessHref } from '@/lib/capability-grants-filed';
+import type { TaskAccessNeed } from '@buildd/core/token-delegation';
 
-export interface AccessGap { gaps: TaskAccessNeed[]; detail: string }
+/** `label` is the display name the loader worked out ("Axiom read, ..."); absent, provider ids are used. */
+export interface AccessGap { gaps: TaskAccessNeed[]; detail: string; label?: string }
 
 /** One reason for the access needs nobody granted: a person approves it on the task page. Pure. */
 export function accessReasons(taskId: string, gap: AccessGap | null | undefined): WaitingReason[] {
   if (!gap || gap.gaps.length === 0) return [];
-  const label = gap.gaps.map(g => `${providerName(g.provider)} ${g.access}`).join(', ');
+  const label = gap.label ?? gap.gaps.map(g => `${g.provider} ${g.access}`).join(', ');
   return [makeWaitingReason('access_unmet', {
     because: `it was filed needing ${label} and nobody has approved it`,
-    blocker: { type: 'provider', id: taskId, label, href: filedAccessHref(taskId) },
+    blocker: { type: 'provider', id: taskId, label, href: `/app/tasks/${encodeURIComponent(taskId)}#task-filed-access` },
     provenance: { source: 'probe', derivedFrom: 'checkAccessGate (claim loop)' },
   })];
-}
-
-/** The gate's verdict for one task, or null when it declares no access, is covered, or the read failed. */
-export async function loadAccessGap(task: { id: string; workspaceId: string; roleSlug?: unknown; delegation?: unknown; context?: unknown }): Promise<AccessGap | null> {
-  if (readAccessNeeds(task.context).length === 0) return null;
-  return checkAccessGate({
-    id: task.id, workspaceId: task.workspaceId, roleSlug: typeof task.roleSlug === 'string' ? task.roleSlug : null,
-    delegation: task.delegation, context: task.context,
-  }).catch(() => null);
 }
