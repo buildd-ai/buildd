@@ -49,7 +49,7 @@ export default async function SpecApprovalsPage({ searchParams }: { searchParams
             {n > 1 ? (
               <>
                 {' '}
-                <Link href={SPEC_REVIEW_ALL_PATH} className="text-accent-text underline-offset-2 hover:underline" data-testid="spec-approvals-review-all">Review all {n} on one page</Link>
+                <Link href={SPEC_REVIEW_ALL_PATH} className="text-accent-text underline-offset-2 hover:underline" data-testid="spec-approvals-review-all">Review all on one page</Link>
               </>
             ) : null}
           </span>
