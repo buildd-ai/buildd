@@ -118,7 +118,8 @@ function setsWriteArg(args: unknown, keys: readonly string[]): boolean {
   return keys.some(k => a[k] !== undefined && a[k] !== null && a[k] !== false);
 }
 
-const TOOL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
+/** One exact tool name, as an admin's lists and the review cards hold it. */
+export const TOOL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
 const MAX_OVERRIDE_NAMES = 200;
 
 /** Validate an admin's `toolPolicy` edit. Exact names only: `*` is never a wildcard. Null when malformed. */

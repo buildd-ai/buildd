@@ -62,6 +62,7 @@ import {
   loadGatewayRun,
   markCredentialRejected,
   noteToolAudit,
+  noteToolSnapshot,
   providerAuthHeader,
   recentCallCount,
   refreshAfterRejection,
@@ -286,6 +287,7 @@ async function annotationsFromProvider(g: LoadedGateway, reqHeaders: Headers, to
     cursor = msg.result.nextCursor;
   }
   if (seen.size) rememberAnnotations(g.connector.id, seen, now, true);
+  if (seen.size) noteToolSnapshot(g.connector.id, seen);
   return seen.get(tool) ?? null;
 }
 
@@ -350,7 +352,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ con
       for (const [k, v] of f.annotations) seen.set(k, v);
       return { ...mm, result: f.result };
     });
-    rememberAnnotations(g.connector.id, seen, Date.now(), !!(msg.params as { cursor?: unknown } | undefined)?.cursor);
+    const paged = !!(msg.params as { cursor?: unknown } | undefined)?.cursor;
+    rememberAnnotations(g.connector.id, seen, Date.now(), paged);
+    // What Settings › Team › Apps lists for this connector: the first page only, so a later page never replaces it.
+    if (!paged && seen.size) noteToolSnapshot(g.connector.id, seen);
     return respond(up, parsed.serialize(filtered));
   }
   return respond(up);
@@ -371,11 +376,17 @@ async function toolsCall(
   // Set when the tool was classed a write only because nothing says it reads.
   let unvetted = false;
   const refuse = (code: CallRefusal, cls: ToolClass | null, extra: Record<string, unknown> = {}) => {
-    noteToolAudit({ ...base, capability: TOOL_CALL_CAPABILITY, decision: 'refused', reasonCode: code, sideEffect: { risk: cls, argsHash: hash, provider: g.run.connector.provider, ...extra, ...(unvetted ? { unvettedTool: true } : {}) } });
     // A read grant or a read-only role refused only because the provider does
-    // not annotate the tool: name it and give an admin the one-step fix.
+    // not annotate the tool: name it and give an admin the one-step fix. The
+    // audit row says so too (`readOnlyFix`), which is what puts one tool
+    // review card per (connector, tool) on Home (lib/connector-tool-review.ts).
     const fixable = unvetted && (code === 'role_ceiling' || code === 'unattended_ceiling'
       || (code === 'capability_not_granted' && extra.grantReason === 'tool_risk_exceeds_grant'));
+    noteToolAudit({ ...base, capability: TOOL_CALL_CAPABILITY, decision: 'refused', reasonCode: code, sideEffect: {
+      risk: cls, argsHash: hash, provider: g.run.connector.provider, ...extra,
+      ...(unvetted ? { unvettedTool: true } : {}),
+      ...(fixable ? { readOnlyFix: true, connectorId: g.connector.id, tool } : {}),
+    } });
     const fix = fixable ? readOnlyFixSteps(tool, g.connector.id) : null;
     return rpcJson(deniedToolResult(msg.id, code, {
       tool, provider: g.run.connector.provider,

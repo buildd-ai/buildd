@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-11-25
 summary: An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
-surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/capability-grants-filed.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts, apps/web/src/lib/capability-hold.ts, apps/web/src/lib/capability-hold-store.ts]
+surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/capability-grants-filed.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts, apps/web/src/lib/capability-hold.ts, apps/web/src/lib/capability-hold-store.ts, apps/web/src/lib/connector-tool-review.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
-keywords: [access declared at filing, access_unmet, accessNeeds, role policy, connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, readOnlyTools, readOnlyUnlessArgs, markReadOnly, unvettedTool, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard, hold, wait window, withdraw, blockedByCapability, proceededWithout]
-verified_by: [packages/core/__tests__/provider-access-ask.test.ts, packages/core/__tests__/task-access.test.ts, apps/web/src/lib/capability-grants-filed.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskFiledAccess.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/connector-catalog.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts, apps/web/src/lib/capability-path-guidance.test.ts, apps/web/src/lib/capability-hold.test.ts, apps/web/src/lib/capability-hold-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/withdraw/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts]
+keywords: [access declared at filing, access_unmet, accessNeeds, role policy, connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, readOnlyTools, readOnlyUnlessArgs, markReadOnly, unvettedTool, keepBlocked, tool review, toolSnapshot, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard, hold, wait window, withdraw, blockedByCapability, proceededWithout]
+verified_by: [packages/core/__tests__/provider-access-ask.test.ts, packages/core/__tests__/task-access.test.ts, apps/web/src/lib/capability-grants-filed.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskFiledAccess.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/connector-catalog.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts, apps/web/src/lib/capability-path-guidance.test.ts, apps/web/src/lib/capability-hold.test.ts, apps/web/src/lib/capability-hold-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/withdraw/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/lib/connector-tool-review.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.tool-review.dom.test.tsx, apps/web/src/app/api/connectors/[id]/tools/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectorToolsPanel.dom.test.tsx]
 supersedes: []
 assertions:
   - id: agent-reach-tests
@@ -524,7 +524,26 @@ agent's prompt, argv, env, logs, artifacts or disk.
   caused only by a missing annotation carries `unvettedTool`, a
   `readOnlyFix` (`PATCH /api/connectors/<id>` with `{ markReadOnly: <tool> }`,
   signed-in session only, which adds the tool to `toolPolicy.readOnlyTools`
-  and keeps its denies) and a next step naming the tool. Only the provider's annotations are cached (per
+  and keeps its denies) and a next step naming the tool. Its audit row carries
+  `readOnlyFix: true` with the connector id and tool, and that row is what a
+  person sees (`connector-tool-review.ts`): Home's Needs You shows viewers with
+  `manage_connectors` one tool review card per (connector, tool) refused that
+  way in the last 7 days, "<agent> was refused <provider> <tool> because
+  buildd doesn't know it's read-only", with "Treat as read-only"
+  (`markReadOnly`) and "Keep blocked" (`{ keepBlocked: <tool> }`, session only,
+  stored as `discoveredMetadata.toolReview.keptBlocked`). A tool that is now
+  read-only, denied, catalog-vetted or kept blocked gets no card. The refused
+  run is not woken or re-queued; the agent's next step tells it not to retry
+  until a person acts. Settings › Team › Apps lists a connector's tools
+  (`GET /api/connectors/<id>/tools`, signed-in team member) with each tool's
+  class and where it came from (provider annotation, catalog-vetted, admin
+  override, tool name, not annotated), and an admin's read-only and deny
+  toggles save `toolPolicy`. The tools come from the last first-page
+  `tools/list` the gateway saw (`discoveredMetadata.toolSnapshot`, only the
+  read-only and destructive hints, merged into the row in one statement and
+  rewritten when it changes), the admin's lists, the catalog's vetted reads and
+  recent fixable refusals. Rediscovery keeps `toolPolicy`, `toolSnapshot` and
+  `toolReview`. Only the provider's annotations are cached (per
   instance, 10 minutes); the class, overrides included, is recomputed on every
   call, so a new deny or a removed read-only mark applies to the next call. An
   uncached tool's annotations come from a fresh provider `tools/list`; if that

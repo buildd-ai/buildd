@@ -15,6 +15,7 @@ import { isUuid } from '@/lib/uuid';
 import { canWriteTeamConnectors } from '@/lib/connector-team-auth';
 import { hasBearer, SESSION_REQUIRED } from '@/lib/capability-grants-auth';
 import { parseToolPolicy, withReadOnlyTool } from '@/lib/connector-gateway';
+import { withKeptBlocked } from '@/lib/connector-tool-review';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const refuseWrite = () => NextResponse.json(
@@ -116,6 +117,8 @@ export async function PATCH(
     toolPolicy?: unknown;
     /** One tool to treat as read-only, added to the saved toolPolicy (the gateway's one-step fix). */
     markReadOnly?: unknown;
+    /** One tool a person chose to keep blocked from Home's tool review card: no card for it again. */
+    keepBlocked?: unknown;
   };
   try {
     body = await req.json();
@@ -140,6 +143,13 @@ export async function PATCH(
     if (!merged) return NextResponse.json({ error: 'markReadOnly must be one exact tool name (no wildcards), with at most 200 read-only tools in all' }, { status: 400 });
     toolPolicy = merged;
   }
+  let toolReview: { keptBlocked: string[] } | undefined;
+  if (body.keepBlocked !== undefined) {
+    if (auth.type === 'api' || hasBearer(req)) return NextResponse.json(SESSION_REQUIRED, { status: 403 });
+    const kept = withKeptBlocked(connector.discoveredMetadata, body.keepBlocked);
+    if (!kept) return NextResponse.json({ error: 'keepBlocked must be one exact tool name (no wildcards), with at most 200 kept blocked in all' }, { status: 400 });
+    toolReview = kept;
+  }
 
   try {
     const updates: Partial<typeof connectors.$inferInsert> = {
@@ -158,12 +168,12 @@ export async function PATCH(
     if (body.rediscover || body.url) {
       const discovered = await discoverOAuthMetadata(targetUrl);
       if (discovered.authMode === 'oauth') {
-        // Re-discovery replaces the OAuth metadata, never an admin's tool overrides.
-        const keptPolicy = (connector.discoveredMetadata as Record<string, unknown> | null)?.toolPolicy;
-        updates.discoveredMetadata = {
-          ...(discovered as unknown as Record<string, unknown>),
-          ...(keptPolicy !== undefined ? { toolPolicy: keptPolicy } : {}),
-        };
+        // Re-discovery replaces the OAuth metadata, never an admin's tool
+        // overrides, the tools the gateway last saw, or the tools kept blocked.
+        const prev = (connector.discoveredMetadata as Record<string, unknown> | null) ?? {};
+        const kept = Object.fromEntries((['toolPolicy', 'toolSnapshot', 'toolReview'] as const)
+          .filter(k => prev[k] !== undefined).map(k => [k, prev[k]]));
+        updates.discoveredMetadata = { ...(discovered as unknown as Record<string, unknown>), ...kept };
         if (!body.clientId && !connector.clientId && discovered.authorizationServer.registration_endpoint) {
           let dcrResult;
           try {
@@ -186,10 +196,11 @@ export async function PATCH(
       }
     }
 
-    if (toolPolicy) {
+    if (toolPolicy || toolReview) {
       updates.discoveredMetadata = {
         ...((updates.discoveredMetadata ?? connector.discoveredMetadata ?? {}) as Record<string, unknown>),
-        toolPolicy,
+        ...(toolPolicy ? { toolPolicy } : {}),
+        ...(toolReview ? { toolReview } : {}),
       };
     }
 

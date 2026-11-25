@@ -267,6 +267,9 @@ export interface ScheduleMoveCard {
   origin: 'task' | 'auto';
 }
 
+/** An unannotated connector tool a run was refused, and the app it belongs to. */
+export interface AccessToolFix { connectorId: string; tool: string; appName: string }
+
 export interface WaitingOnYouRawItem {
   kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'access' | 'schedule_move' | 'spec_provisional';
   /** kind === 'schedule_move' — a task of a schedule proposed moving it to another workspace. */
@@ -292,6 +295,8 @@ export interface WaitingOnYouRawItem {
   accessRequestId?: string;
   /** kind === 'access' without a request: the task held on access declared when it was filed. */
   accessFiledTaskId?: string;
+  /** kind === 'access' without a request: a tool the connector gateway refused only because buildd does not know it reads (lib/connector-tool-review.ts). */
+  accessToolFix?: AccessToolFix;
   /** kind === 'access' — what the agent asked to do, in plain words ("Query Axiom · production"). */
   accessAsk?: string;
   /** kind === 'access' — the lease the agent asked for; approval can only narrow it. */
@@ -611,6 +616,8 @@ export interface ActionQueueItem {
   scheduleMove?: ScheduleMoveCard;
   /** Set when chip === 'ACCESS' — the capability request, the ask, the lease asked for and, for a database read, what it intends to run. */
   accessRequestId?: string;
+  /** Set when chip === 'ACCESS' for an unannotated tool the gateway refused: answered with "Treat as read-only" or "Keep blocked". */
+  accessToolFix?: AccessToolFix;
   accessAsk?: string;
   accessTtlSeconds?: number;
   accessApproveLabel?: string;
@@ -1607,12 +1614,16 @@ export function buildActionQueue(
       // One card per request: the store already keeps one open row per (worker, target, exact ask).
       // A task held at claim on access declared when it was filed has no request
       // yet (lib/capability-grants-filed.ts): one card per task, granted on its page.
-      const key = item.accessRequestId ? `access:${item.accessRequestId}` : `access-filed:${item.accessFiledTaskId}`;
-      if ((item.accessRequestId || item.accessFiledTaskId) && !map.has(key)) {
+      // A tool refused for want of a read-only mark is one card per (connector, tool), however often it was refused.
+      const key = item.accessRequestId ? `access:${item.accessRequestId}`
+        : item.accessToolFix ? `access-tool:${item.accessToolFix.connectorId}/${item.accessToolFix.tool}`
+        : `access-filed:${item.accessFiledTaskId}`;
+      if ((item.accessRequestId || item.accessFiledTaskId || item.accessToolFix) && !map.has(key)) {
         map.set(key, {
           subjectKey: key,
           chip: 'ACCESS',
           accessRequestId: item.accessRequestId,
+          ...(item.accessToolFix ? { accessToolFix: item.accessToolFix } : {}),
           accessAsk: item.accessAsk,
           accessTtlSeconds: item.accessTtlSeconds,
           accessApproveLabel: item.accessApproveLabel,
