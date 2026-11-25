@@ -84,13 +84,16 @@ beforeAll(async () => {
   // page reads their heartbeats, and that load is not what R-3 budgets. The seed also gives every task of a mission one status
   // (task number mod 500 fixes it), and the board names only tasks that are live
   // or need a person: a mission of landed tasks is counted, not titled. So a
-  // mission with live or failed builder tasks comes first.
+  // mission with live or failed builder tasks comes first. Missions still tie on
+  // that count (all-failed vs half pending), and a pending task adds queries and
+  // payload the budget does not cover, so all-failed wins and the title breaks
+  // the rest: never the random uuid.
   const [row] = await q<{ id: string }>(sql`
     SELECT m.id FROM missions m JOIN tasks t ON t.mission_id = m.id AND t.role_slug = 'builder'
     WHERE m.team_id = ${team.teamId}::uuid AND m.status = 'active'
     GROUP BY m.id
     ORDER BY count(*) FILTER (WHERE t.status = 'in_progress') > 0,
-             count(*) FILTER (WHERE t.status IN ('failed', 'review', 'pending')) DESC, count(*) DESC, m.id
+             count(*) FILTER (WHERE t.status IN ('failed', 'review', 'pending')) DESC, count(*) DESC, count(*) FILTER (WHERE t.status = 'pending') > 0, m.title
     LIMIT 1`);
   busiest = row.id;
 }, 900_000);
