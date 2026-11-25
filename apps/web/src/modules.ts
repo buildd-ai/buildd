@@ -358,6 +358,14 @@ export const FILED_ACCESS = {
   providerName: async (slug: string) => (await import('@/lib/capability-grants-view')).providerName(slug),
 };
 
+/**
+ * The connectors module's tool review for Home (lib/connector-tool-review.ts):
+ * one card per (connector, tool) the gateway refused only because buildd does
+ * not know the tool reads. Same viewers as the access cards. Lazy; reads only.
+ */
+export const UNVETTED_TOOL_NEEDS_YOU = async (teamId: string, workspaceIds: readonly string[]) =>
+  (await import('@/lib/connector-tool-review')).unvettedToolNeedsYouRead(teamId, workspaceIds);
+
 /** Open schedule move proposals, for the people who may answer them (lib/schedule-move-needs-you.ts). */
 export const SCHEDULE_MOVE_NEEDS_YOU = async (workspaceIds: readonly string[]) =>
   (await import('@/lib/schedule-move-needs-you')).scheduleMoveNeedsYouRead(workspaceIds);

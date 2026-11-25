@@ -64,6 +64,8 @@ const mockWriteAudit = mock(async (row: any) => {
   if (row.sideEffect?.callKey && row.decision === 'allowed' && row.capability === 'connector.tool_call') seenKeys.add(row.sideEffect.callKey);
 });
 const mockNoteAudit = mock((row: any) => { audit.push(row); events.push(`note:${row.capability}:${row.decision}`); });
+const snapshots: { connectorId: string; tools: Map<string, unknown> }[] = [];
+const mockNoteSnapshot = mock((connectorId: string, tools: Map<string, unknown>) => { snapshots.push({ connectorId, tools }); });
 mock.module('@/lib/connector-gateway-store', () => ({
   TOOL_CALL_CAPABILITY: 'connector.tool_call',
   TOOL_RESULT_CAPABILITY: 'connector.tool_result',
@@ -75,6 +77,7 @@ mock.module('@/lib/connector-gateway-store', () => ({
   isReplayedCall: mockIsReplay,
   writeToolAudit: mockWriteAudit,
   noteToolAudit: mockNoteAudit,
+  noteToolSnapshot: mockNoteSnapshot,
 }));
 
 // ── the provider's native MCP (mocked at fetch) ──────────────────────────────
@@ -133,6 +136,7 @@ beforeEach(() => {
   upstreamQueue = [];
   upstreamCalls.length = 0;
   audit.length = 0;
+  snapshots.length = 0;
   events.length = 0;
   seenKeys.clear();
   auditFails = false;
@@ -190,6 +194,14 @@ describe('tools/list — native, subset-filtered', () => {
     expect(res.headers.get('mcp-session-id')).toBe('up-sess');
     expect(res.headers.get('www-authenticate')).toBeNull();
     expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('hands the tools the provider listed, with their annotations, to the settings snapshot', async () => {
+    await POST(req({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), ctx());
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].connectorId).toBe(CONN);
+    expect([...snapshots[0].tools.keys()]).toEqual(['queryApl', 'createMonitor', 'deleteDashboard']);
+    expect(snapshots[0].tools.get('queryApl')).toEqual({ readOnlyHint: true });
   });
 
   it('filters an SSE answer the same way', async () => {
@@ -288,6 +300,18 @@ describe('tools/call — decided per call', () => {
     // A destructive tool is a real write: no read-only fix is offered.
     const destructive = await toolError(await POST(req(call('deleteDashboard', {}, 2)), ctx()));
     expect(destructive.readOnlyFix).toBeUndefined();
+  });
+
+  it('a refusal the read-only fix would avoid is audited for Home, naming connector and tool', async () => {
+    currentLoaded = loaded({ run: { roleMounts: false } });
+    mockAuthorizeTool.mockResolvedValue({ allowed: false, reasonCode: 'tool_risk_exceeds_grant' });
+    await POST(req(call('createMonitor')), ctx());
+    const row = audit.find(a => a.capability === 'connector.tool_call' && a.decision === 'refused')!;
+    expect(row.sideEffect).toMatchObject({ readOnlyFix: true, connectorId: CONN, tool: 'createMonitor', provider: 'axiom' });
+    // A real write (destructive) is no card: nothing to treat as read-only.
+    audit.length = 0;
+    await POST(req(call('deleteDashboard', {}, 2)), ctx());
+    expect(audit.find(a => a.decision === 'refused')!.sideEffect.readOnlyFix).toBeUndefined();
   });
 
   it("an admin's read-only mark reaches the grant check as a vetted read", async () => {
