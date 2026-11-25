@@ -130,11 +130,6 @@ export function accessWords(w: Pick<QueueWait, 'approve'>): string {
   return `Waiting on you: approve ${w.approve?.trim() || 'provider access'}`;
 }
 
-/** True when a person has to act before the task can start. */
-export function queueWaitNeedsYou(w: QueueWait | null | undefined): boolean {
-  return !!w && w.kind === 'limit' && w.limit === 'access';
-}
-
 function blockerName(w: QueueWait): string {
   const name = w.blockerTitle?.trim() || (w.blockerId ? `task ${w.blockerId.slice(0, 8)}` : 'another task');
   const more = (w.count ?? 1) > 1 ? ` and ${(w.count ?? 1) - 1} more` : '';
