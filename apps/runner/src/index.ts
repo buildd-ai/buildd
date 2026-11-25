@@ -230,7 +230,14 @@ if (process.argv.includes('--doctor')) {
   // Find the runner the way `buildd top` does: through its socket.
   const { probeRunnerSocket: probe, runnerSocketPath: socketPathFor, runnerProcessFromProbe } = await import('./runner-socket');
   const socketPath = socketPathFor(BUILDD_DIR);
-  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath, doctor.isRunnerNeverStarted()) });
+  // The local model server, looked at from here: whether this runner is the
+  // pinned relay host is only known inside the running runner (its /api/doctor).
+  const { LocalModelServer, resolveLocalModelServer } = await import('./local-model-server');
+  const localTarget = resolveLocalModelServer(process.env);
+  const localServer = localTarget ? new LocalModelServer({ origin: localTarget.origin }) : null;
+  await localServer?.probe();
+  const localModels = doctor.checkLocalModels({ enabled: !!localTarget, advert: localServer?.advert() ?? null, host: null });
+  const report = doctor.runDiagnostics({ localModels, runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath, doctor.isRunnerNeverStarted()) });
 
   const RED = '\x1b[31m';
   const GREEN = '\x1b[32m';
@@ -3191,9 +3198,10 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // Doctor — self-diagnostics and auto-fix
     if (path === '/api/doctor' && req.method === 'GET') {
-      const { runDiagnostics } = await import('./doctor');
+      const { runDiagnostics, checkLocalModels } = await import('./doctor');
+      const localModels = workerManager?.localModelsStatus ? checkLocalModels(workerManager.localModelsStatus()) : undefined;
       // This process's own isolation record, the one its heartbeat carries.
-      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck() }));
+      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck(), localModels }));
       return Response.json(report, { headers: corsHeaders });
     }
 

@@ -218,7 +218,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
-## Draft (12)
+## Draft (13)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
@@ -228,6 +228,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Each harness change MUST name its success as a relative change on a baseline delivery metric, and none is called adopted until its owner agrees the measure.
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-15
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
+- [Local Runner Provider](./local-runner-provider.md) · @max — verified 2026-11-14
+  A team MUST be able to serve embeddings and chat from one of its own runners' Ollama through a runner-polled relay with no secret, no mixed vector spaces and never a paid fallback.
 - [Local Tool Call Trace](./local-tool-call-trace.md) · @max — verified 2026-11-08
   The runner MUST keep a bounded, versioned, local-only trace of each tool call and its observed result, flag repeats after file changes, and send the platform only enum counts, never raw text.
 - [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-11-11

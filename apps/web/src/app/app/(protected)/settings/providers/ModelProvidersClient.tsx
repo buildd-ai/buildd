@@ -9,6 +9,7 @@ import Section from '@/components/ui/Section';
 import Notice from '@/components/ui/Notice';
 import StoredPolicyNotice from './StoredPolicyNotice';
 import ProviderRow from './ProviderCard';
+import LocalRunnerRow, { useLocalRunner } from './LocalRunnerCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import ProviderRoutingToggle from './ProviderRoutingToggle';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
@@ -70,6 +71,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
   // One row open at a time, across both lists: `<scope>:<row>`.
   const [openRow, setOpenRow] = useState<string | null>(null);
   const [routingOpen, setRoutingOpen] = useState(false);
+  const localRunner = useLocalRunner(teamId);
 
   const load = useCallback(async () => {
     try {
@@ -126,6 +128,15 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
               />
             );
           })}
+          {rowScope === 'team' && (
+            <LocalRunnerRow
+              teamId={teamId}
+              canManage={data.caller.can.manage_team_settings}
+              open={openRow === 'team:local-runner'}
+              onToggle={(o) => setOpenRow(o ? 'team:local-runner' : null)}
+              local={localRunner}
+            />
+          )}
         </ul>
       )
       : !error && <p className="text-body text-text-muted">Loading…</p>
@@ -212,6 +223,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
           teamId={teamId}
           data={data}
           canManage={data.caller.can.manage_team_settings}
+          local={localRunner.data}
+          onLocalChanged={localRunner.reload}
           decisions={operator ? <DecisionModelPicker teamId={teamId} canManage={data.caller.can.manage_team_settings} rev={gatewayRev} embedded fixture={qaDecisions} /> : undefined}
           extra={bothBackends(data) && workspaces[0] ? (
             <div className="border-y border-border-default">

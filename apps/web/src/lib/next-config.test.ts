@@ -22,10 +22,17 @@ describe('next.config', () => {
     for (const [nodeEnv, expected] of [['production', false], ['development', true]] as const) {
       const loaded = Bun.spawnSync([process.execPath, '--eval',
         `import config from ${JSON.stringify(configUrl)}; console.log(JSON.stringify({ maps: config.experimental?.turbopackSourceMaps, checks: config.typescript?.ignoreBuildErrors }));`,
-      ], { env: { ...process.env, NODE_ENV: nodeEnv, GITHUB_ACTIONS: '', CI_TYPECHECK_DONE: '' } });
+      ], { env: { ...process.env, NODE_ENV: nodeEnv, GITHUB_ACTIONS: '', CI_TYPECHECK_DONE: '', VERCEL: '', VERCEL_ENV: '' } });
       expect(loaded.exitCode).toBe(0);
       expect(JSON.parse(loaded.stdout.toString())).toEqual({ maps: expected, checks: false });
     }
+  });
+
+  // Vercel restores the previous deployment's .next/cache into every build and
+  // Turbopack's build cache only grows; building on it pushed production builds
+  // past the 16 GB builder (v0.409-v0.412 OOM-killed). Next 16.3 defaults it on.
+  it('keeps the persistent Turbopack cache out of next build', () => {
+    expect(nextConfig.experimental?.turbopackFileSystemCacheForBuild).toBe(false);
   });
 
   it('bundles every direct dependency Next would auto-externalize', () => {

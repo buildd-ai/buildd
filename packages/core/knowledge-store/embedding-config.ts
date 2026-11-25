@@ -14,6 +14,9 @@ import type { Corpus, Embedder } from './types';
 import type { EmbeddingProvider } from '../voyage-budget';
 import { getCodeEmbedder, isCodeCorpus } from './voyage-embedder';
 import { OpenAICompatibleEmbedder } from './openai-compatible-embedder';
+import { LocalRunnerEmbedder } from './local-runner-embedder';
+import { isSupportedEmbeddingDimension, SUPPORTED_EMBEDDING_DIMENSIONS } from '@buildd/shared';
+import type { LocalRunnerPick } from '../model-relay/runner';
 import {
   embeddingRouteBaseUrl,
   parseEmbeddingChoice,
@@ -48,8 +51,14 @@ export interface EmbeddingConfig {
   maxBatch: number | null;
   /** Where the config came from. `secret`: a deprecated `embedding_endpoint` row. */
   source: 'env' | 'secret' | 'team';
-  /** The team's pick cannot be used (no key): why. The namespace runs lexical-only. */
+  /** The team's pick cannot be used (no key, no runner): why. The namespace runs lexical-only. */
   unavailable?: string | null;
+  /**
+   * `local_runner` only: the pinned runner and the size its advert gives the
+   * model. Whether that runner is online is not part of the config: the relay
+   * asks per call, so a namespace's space does not flap with the runner.
+   */
+  localRunner?: { teamId: string; workspaceId: string | null; runnerId: string; dimensions: number; /** Overrides the relay's per-surface wait (a cron-driven re-embed must fit its tick). */ deadlineMs?: number } | null;
 }
 
 const TRUE = new Set(['1', 'true', 'on', 'yes']);
@@ -144,6 +153,7 @@ export function parseEmbeddingEndpoint(raw: string): { ok: true; value: Embeddin
 // ── Embedder for a corpus ────────────────────────────────────────────────────
 
 const endpointEmbedders = new Map<string, OpenAICompatibleEmbedder>();
+const runnerEmbedders = new Map<string, LocalRunnerEmbedder>();
 const ENDPOINT_EMBEDDERS_MAX = 100;
 const warnedMisconfigured = new Set<string>();
 
@@ -167,6 +177,22 @@ export function getEmbedderForCorpus(corpus: Corpus, cfg: EmbeddingConfig, fallb
       console.warn(`[embedding-config] ${cfg.unavailable}`);
     }
     return null;
+  }
+  // A local runner is never an OpenAI-compatible endpoint and never Voyage:
+  // its embedder goes through the relay queue to the team's own runner
+  // (docs/specs/local-runner-provider.md §7.1). `fallback` is never used for
+  // it: with no runner the namespace is lexical-only, and no vendor is called.
+  if (cfg.provider === 'local_runner') {
+    if (!cfg.localRunner || !cfg.model) return null;
+    const lr = cfg.localRunner;
+    const key = JSON.stringify(['local_runner', lr.teamId, lr.workspaceId, lr.runnerId, cfg.model, lr.dimensions, lr.deadlineMs ?? null]);
+    let embedder = runnerEmbedders.get(key);
+    if (!embedder) {
+      embedder = new LocalRunnerEmbedder({ teamId: lr.teamId, workspaceId: lr.workspaceId, runnerId: lr.runnerId, model: cfg.model, dimensions: lr.dimensions, deadlineMs: lr.deadlineMs });
+      if (runnerEmbedders.size >= ENDPOINT_EMBEDDERS_MAX) runnerEmbedders.delete(runnerEmbedders.keys().next().value as string);
+      runnerEmbedders.set(key, embedder);
+    }
+    return embedder;
   }
   if (!cfg.baseUrl || !cfg.model) {
     const key = `${cfg.source}:${cfg.baseUrl}:${cfg.model}`;
@@ -250,8 +276,10 @@ async function teamConfig(
   choice: EmbeddingChoice,
   setting: OwnerEmbeddingSetting,
   resolveCredential: NonNullable<ResolveEmbeddingConfigDeps['resolveCredential']>,
+  loadPick: NonNullable<ResolveEmbeddingConfigDeps['loadLocalRunnerPick']>,
 ): Promise<EmbeddingConfig> {
   if (choice.provider === 'voyage') return voyageConfig('team');
+  if (choice.provider === 'local_runner') return localRunnerConfig(choice.model!, setting, loadPick);
   const provider = choice.provider;
   const base: EmbeddingConfig = {
     provider: 'openai_compat', baseUrl: null, model: choice.model, apiKey: null, queryPrefix: '', docPrefix: '',
@@ -268,6 +296,43 @@ async function teamConfig(
     return { ...base, unavailable: `${EMBEDDING_PROVIDER_LABEL[provider]} is chosen for embeddings but has no usable key for this team or workspace; knowledge runs lexical-only.` };
   }
   return { ...base, baseUrl, apiKey: cred.apiKey };
+}
+
+/**
+ * A `local_runner` pick as a config (docs/specs/local-runner-provider.md §7.1).
+ * No credential and no base URL: the relay reaches the runner. The size comes
+ * from the runner's advert for the model, so the namespace is stored in the
+ * model's own column. Without a runner, an advert, the model or a supported
+ * size the pick is `unavailable` and the namespace runs lexical-only. Nothing
+ * here, and nothing downstream of it, falls back to another provider.
+ */
+async function localRunnerConfig(
+  model: string,
+  setting: OwnerEmbeddingSetting,
+  loadPick: NonNullable<ResolveEmbeddingConfigDeps['loadLocalRunnerPick']>,
+): Promise<EmbeddingConfig> {
+  const base: EmbeddingConfig = {
+    provider: 'local_runner', baseUrl: null, model, apiKey: null, queryPrefix: '', docPrefix: '',
+    matryoshka: false, pricePerMTokens: null, unmetered: true, timeoutMs: null, maxBatch: null, source: 'team',
+    unavailable: null, localRunner: null,
+  };
+  const off = (why: string): EmbeddingConfig => ({ ...base, unavailable: `${why} Knowledge runs lexical-only; no other provider is used.` });
+  let pick: LocalRunnerPick | null;
+  try {
+    pick = await loadPick(setting.teamId);
+  } catch (err) {
+    return off(`The local runner pick could not be read (${err instanceof Error ? err.message : String(err)}).`);
+  }
+  if (!pick?.runnerId) return off('The local runner is chosen for embeddings but no runner is chosen.');
+  if (!pick.runner) return off(`The runner chosen for embeddings (${pick.runnerId}) is gone; pick a runner again in Settings › Providers.`);
+  if (!pick.runner.localModels) return off(`The runner chosen for embeddings (${pick.runnerId}) has not reported its local models.`);
+  const advert = pick.runner.localModels.models.find(m => m.name === model && m.capabilities.includes('embedding'));
+  if (!advert) return off(`The runner chosen for embeddings (${pick.runnerId}) does not serve ${model} as an embedding model.`);
+  if (advert.dimensions === null) return off(`The runner chosen for embeddings (${pick.runnerId}) did not report the size of ${model}.`);
+  if (!isSupportedEmbeddingDimension(advert.dimensions)) {
+    return off(`${model} returns ${advert.dimensions} dimensions; size ${advert.dimensions} is not supported (${SUPPORTED_EMBEDDING_DIMENSIONS.join(', ')}).`);
+  }
+  return { ...base, localRunner: { teamId: setting.teamId, workspaceId: setting.workspaceId, runnerId: pick.runner.id, dimensions: advert.dimensions } };
 }
 
 const EMBEDDING_PROVIDER_LABEL: Record<EmbeddingCredentialProvider, string> = {
@@ -307,6 +372,13 @@ export interface ResolveEmbeddingConfigDeps {
   loadSetting?: (ownerId: string) => Promise<OwnerEmbeddingSetting | null>;
   resolveCredential?: (provider: EmbeddingCredentialProvider, scope: { teamId: string; workspaceId: string | null }) => Promise<EmbeddingCredential | null>;
   loadLegacySecret?: (ownerId: string) => Promise<string | null>;
+  /** The team's `local_runner` pick with its runner's advert (default: `loadLocalRunnerPick`). */
+  loadLocalRunnerPick?: (teamId: string) => Promise<LocalRunnerPick | null>;
+}
+
+async function loadPickFromDb(teamId: string): Promise<LocalRunnerPick | null> {
+  const { loadLocalRunnerPick } = await import('../model-relay/runner');
+  return loadLocalRunnerPick(teamId);
 }
 
 /**
@@ -320,7 +392,7 @@ export function resolveEmbeddingConfig(ownerId: string, deps: ResolveEmbeddingCo
   const env = deps.env ?? process.env;
   const fromEnv = embeddingConfigFromEnv(env);
   if (!UUID_RE.test(ownerId)) return Promise.resolve(fromEnv);
-  const injected = !!(deps.loadSetting || deps.resolveCredential || deps.loadLegacySecret);
+  const injected = !!(deps.loadSetting || deps.resolveCredential || deps.loadLegacySecret || deps.loadLocalRunnerPick);
   const now = Date.now();
   const cached = injected ? undefined : configCache.get(ownerId);
   if (cached && now - cached.at < CONFIG_CACHE_TTL_MS) return cached.cfg;
@@ -328,7 +400,7 @@ export function resolveEmbeddingConfig(ownerId: string, deps: ResolveEmbeddingCo
     try {
       const setting = await (deps.loadSetting ?? loadOwnerSetting)(ownerId);
       const choice = setting ? parseEmbeddingChoice(setting.provider, setting.model) : null;
-      if (setting && choice) return teamConfig(choice, setting, deps.resolveCredential ?? resolveProviderEmbeddingCredential);
+      if (setting && choice) return teamConfig(choice, setting, deps.resolveCredential ?? resolveProviderEmbeddingCredential, deps.loadLocalRunnerPick ?? loadPickFromDb);
     } catch (err) {
       console.warn(`[embedding-config] embedding setting lookup failed for ${ownerId}; using env:`, err instanceof Error ? err.message : err);
       return fromEnv;

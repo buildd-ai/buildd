@@ -168,7 +168,9 @@ const SAFE: Record<string, string[]> = {
   skill_spec_links: ['confirmed_by'],
   voyage_usage_monthly: ['month'],
   voyage_usage_daily: ['model', 'corpus', 'caller'],
-  teams: ['subscription_wall_fallback', // a choice id and a dollar cap (packages/core/wall-fallback.ts)
+  model_relay_usage_daily: ['kind', 'model'], // code-defined job kind and an Ollama tag
+  teams: ['local_runner', // { runner id, Ollama tag } (LocalRunnerConfig), never a URL or key
+    'subscription_wall_fallback', // a choice id and a dollar cap (packages/core/wall-fallback.ts)
     'timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model', 'provider_assignments',
     'embedding_provider', 'embedding_model', // a provider id and a model id (packages/core/providers/embedding.ts)
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
@@ -247,6 +249,7 @@ const SAFE: Record<string, string[]> = {
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
   // github_repos.default_branch.
   worker_heartbeats: [
+    'local_models', // advertised model tags, capabilities and sizes; never a URL or token (spec local-runner-provider §6.2)
     'workspace_ids', 'runner_commit', 'runner_version', 'current_commit', 'disk_commit',
     'tracked_branch',
     // desired_slots_origin, desired_pause_origin: dashboard | machine.

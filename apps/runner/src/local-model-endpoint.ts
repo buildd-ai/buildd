@@ -34,7 +34,7 @@ export interface LocalModelEndpoint {
   contextWindow?: number;
 }
 
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
   return h === 'localhost' || h === '::1' || /^127(\.\d{1,3}){3}$/.test(h);
 }

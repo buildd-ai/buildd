@@ -234,4 +234,6 @@ export const events = {
   RELEASE_UPDATED: 'release:updated',
   // A runner's slots or Pause were set on the dashboard: heartbeat now to pick the value up.
   RUNNER_SLOTS: 'runner:slots',
+  // A relay job was queued for one of this account's runners: claim now instead of on the next poll. Ids only.
+  RELAY_JOB_QUEUED: 'relay:job_queued',
 } as const;

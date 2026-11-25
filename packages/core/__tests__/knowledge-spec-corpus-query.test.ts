@@ -55,7 +55,7 @@ const { PgVectorStore } = await import('../knowledge-store/pg-vector-store');
 
 let embedCalls: string[][] = [];
 const embedder = {
-  model: 'mock', dimensions: 4,
+  model: 'mock', dimensions: 1024,
   async embed(texts: string[]) { embedCalls.push(texts); return texts.map(() => [0.1, 0.2, 0.3, 0.4]); },
 };
 const base = { useGraph: false, trackHits: false, recencyAuthority: false } as const;
