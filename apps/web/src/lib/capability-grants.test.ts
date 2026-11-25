@@ -337,6 +337,41 @@ describe('checkGrantUse', () => {
     expect(checkGrantUse(grant(), { ...USE, tool: 'listDatasets', risk: 'read' }, useCtx())).toBeNull();
   });
 
+  describe("a catalog-vetted read is not raised by its name (Axiom otel-*, friction 874aba8a)", () => {
+    // Axiom documents otel-getTraceSpans as a read; its name starts with
+    // `otel`, not a read verb, so the name alone would class it a write.
+    const TRACE = { ...USE, tool: 'otel-getTraceSpans' };
+
+    it('a read grant covers a vetted read tool the gateway classed read', () => {
+      expect(checkGrantUse(grant(), { ...TRACE, risk: 'read' }, useCtx())).toBeNull();
+      expect(checkGrantUse(grant({ tool: 'otel-getTraceSpans', risk: 'read' }), { ...TRACE, risk: 'read' }, useCtx())).toBeNull();
+    });
+
+    it("the caller's risk still raises it (fail closed when the gateway says write)", () => {
+      expect(checkGrantUse(grant(), { ...TRACE, risk: 'write' }, useCtx())).toBe('tool_risk_exceeds_grant');
+    });
+
+    it('only for the provider that vets it; an unvetted non-verb name stays a write', () => {
+      expect(checkGrantUse(grant({ provider: 'vercel', capability: 'vercel:read' }), { ...TRACE, capability: 'vercel:read', provider: 'vercel', risk: 'read' }, useCtx())).toBe('tool_risk_exceeds_grant');
+      expect(checkGrantUse(grant(), { ...USE, tool: 'otel-somethingNew', risk: 'read' }, useCtx())).toBe('tool_risk_exceeds_grant');
+    });
+
+    it('a request for a vetted read tool is filed at read', () => {
+      const r = parseCapabilityRequest({ provider: 'axiom', access: 'read', tool: 'otel-getTraceSpans' });
+      expect(r.ok && r.request.risk).toBe('read');
+      const w = parseCapabilityRequest({ provider: 'axiom', access: 'read', tool: 'otel-somethingNew' });
+      expect(w.ok && w.request.risk).toBe('write');
+    });
+  });
+
+  describe("an admin's read-only mark (vetted by the caller) is not raised by the name", () => {
+    it('a read grant covers it; an admin verb still floors at admin', () => {
+      expect(checkGrantUse(grant(), { ...USE, tool: 'runReport', risk: 'read', vettedRead: true }, useCtx())).toBeNull();
+      expect(checkGrantUse(grant(), { ...USE, tool: 'runReport', risk: 'read' }, useCtx())).toBe('tool_risk_exceeds_grant');
+      expect(checkGrantUse(grant(), { ...USE, tool: 'deleteNotifier', risk: 'read', vettedRead: true }, useCtx())).toBe('tool_risk_exceeds_grant');
+    });
+  });
+
   it('exact resource and environment', () => {
     const g = grant({ resource: 'traces', environment: 'production' });
     expect(checkGrantUse(g, { ...USE, resource: 'traces', environment: 'production' }, useCtx())).toBeNull();
