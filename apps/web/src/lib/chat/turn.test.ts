@@ -171,6 +171,51 @@ describe('nothing changes without a key', () => {
   });
 });
 
+// docs/specs/local-runner-provider.md §7.2, AC-26: chat on the team's own runner
+// is refused when the runner cannot serve it, and nothing else is tried.
+describe('chat assigned to the local runner', () => {
+  const RUNNER = '22222222-2222-4222-8222-222222222222';
+
+  it('runner offline ⇒ 503 local_runner_unavailable naming the runner; no fallback tier, no model call, nothing saved', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('hi') as any });
+    const asked: string[] = [];
+    const { turn } = harness({
+      model,
+      route: async () => ({ tier: 'premium' as const, allowWrites: true, source: 'fallback' as const }),
+      extraDeps: {
+        resolveModel: async (o: any) => {
+          asked.push(o.tier);
+          return { ok: false as const, reason: 'local_runner_unavailable' as const, provider: 'local_runner' as const, tier: o.tier, runnerId: RUNNER, code: 'runner_offline' as const, detail: `The chosen runner (${RUNNER}) is offline.` };
+        },
+      },
+    });
+    const { res, text } = await turn(userMsg('what is in flight?'));
+    expect(res.status).toBe(503);
+    const body = JSON.parse(text);
+    expect(body).toMatchObject({ error: 'local_runner_unavailable', runnerId: RUNNER, code: 'runner_offline', reason: `The chosen runner (${RUNNER}) is offline.` });
+    expect(body.message).toContain('Settings › Providers');
+    // One resolution at the routed tier: the FALLBACK_TIER retry is skipped.
+    expect(asked).toEqual(['premium']);
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(messages).toHaveLength(0);
+  });
+
+  it('runner online ⇒ the turn streams from the local model and is recorded at zero cost', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('Two tasks.') as any });
+    const { turn } = harness({
+      model,
+      extraDeps: {
+        resolveModel: async (o: any) => ({ ok: true as const, model, provider: 'local_runner' as const, modelId: 'llama3.1:8b', tier: o.tier, keyScope: 'team' as const, via: 'local_runner' as const }),
+      },
+    });
+    const { res } = await turn(userMsg('what is in flight?'));
+    expect(res.status).toBe(200);
+    expect(lastAssistant().model).toBe('llama3.1:8b');
+    // An unknown model id would otherwise be priced from the default table.
+    expect(lastAssistant().usage.costUsd).toBe(0);
+  });
+});
+
 describe('a read-only question', () => {
   it('streams, runs the read tool straight away, and saves tool parts with object refs', async () => {
     const model = new MockLanguageModelV4({

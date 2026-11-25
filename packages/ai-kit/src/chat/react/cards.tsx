@@ -780,6 +780,7 @@ const SETUP_TITLE: Record<ChatUnavailableReason, string> = {
   no_key: 'Chat needs a key',
   budget_exhausted: 'Chat budget used up',
   rate_limited: 'Slow down a moment',
+  local_runner_unavailable: 'Local runner offline',
 };
 
 /** Shown when a turn is refused before any model call. Keep the draft in the composer. */

@@ -749,9 +749,9 @@ export interface UpdateToolPermissionRequest {
  * Why a turn was refused before any model call, returned as JSON with a 4xx
  * status instead of a stream. `no_key` ⇒ show the setup card, keeping the draft.
  */
-export type ChatUnavailableReason = 'no_key' | 'budget_exhausted' | 'rate_limited';
+export type ChatUnavailableReason = 'no_key' | 'budget_exhausted' | 'rate_limited' | 'local_runner_unavailable';
 
-const UNAVAILABLE_REASONS: readonly ChatUnavailableReason[] = ['no_key', 'budget_exhausted', 'rate_limited'];
+const UNAVAILABLE_REASONS: readonly ChatUnavailableReason[] = ['no_key', 'budget_exhausted', 'rate_limited', 'local_runner_unavailable'];
 
 /**
  * Read a refusal back out of a client-side error. `useChat` surfaces a 4xx
@@ -777,6 +777,7 @@ export interface ChatErrorLines {
   no_key: string;
   budget_exhausted: string;
   rate_limited: string;
+  local_runner_unavailable: string;
   /** Anything else: a dropped stream, a 500. */
   failed: string;
 }
@@ -785,6 +786,7 @@ export const DEFAULT_CHAT_ERROR_LINES: ChatErrorLines = {
   no_key: 'Chat is unavailable.',
   budget_exhausted: 'Today’s chat budget is used up.',
   rate_limited: 'Too many turns in a short time. Try again in a moment.',
+  local_runner_unavailable: 'Your local runner is offline or is not serving this model.',
   failed: 'The turn didn’t finish. Your message is kept, so send it again.',
 };
 

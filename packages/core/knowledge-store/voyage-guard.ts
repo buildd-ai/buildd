@@ -164,8 +164,9 @@ export function createVoyageGuard(deps: VoyageGuardDeps): VoyageGuard {
       // key or switch applies. Every call is still traced, and attributed to the
       // team in the daily rows (keySource `endpoint`, or `unmetered` when free),
       // so get_embedding_usage shows it. The monthly Voyage counter is not touched.
-      if (provider === 'openai_compat') {
-        const keySource: VoyageKeySource = request.unmetered ? 'unmetered' : 'endpoint';
+      if (provider !== 'voyage') {
+        // A local runner is always free: its runs are attributed, never metered.
+        const keySource: VoyageKeySource = request.unmetered || provider === 'local_runner' ? 'unmetered' : 'endpoint';
         const team = await teamOf(owner);
         return {
           settle(raw) {

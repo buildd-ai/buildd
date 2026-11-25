@@ -13,11 +13,16 @@
  */
 import { ROUTES } from '@buildd/ai-kit/models/routes';
 
-/** Voyage first: the default. The rest are providers on the Providers page with an OpenAI-compatible `/embeddings`. */
-export const EMBEDDING_PROVIDERS = ['voyage', 'openrouter', 'openai', 'litellm'] as const;
+/**
+ * Voyage first: the default. Then providers on the Providers page with an
+ * OpenAI-compatible `/embeddings`, and `local_runner`: the team's own runner's
+ * Ollama through the relay queue (docs/specs/local-runner-provider.md), which
+ * has no credential and is never a paid fallback.
+ */
+export const EMBEDDING_PROVIDERS = ['voyage', 'openrouter', 'openai', 'litellm', 'local_runner'] as const;
 export type EmbeddingProviderId = (typeof EMBEDDING_PROVIDERS)[number];
-/** A provider reached through a stored credential: everything but Voyage. */
-export type EmbeddingCredentialProvider = Exclude<EmbeddingProviderId, 'voyage'>;
+/** A provider reached through a stored credential: everything but Voyage and the local runner. */
+export type EmbeddingCredentialProvider = Exclude<EmbeddingProviderId, 'voyage' | 'local_runner'>;
 
 export const DEFAULT_EMBEDDING_PROVIDER: EmbeddingProviderId = 'voyage';
 export const EMBEDDING_MODEL_MAX = 200;

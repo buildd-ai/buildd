@@ -67,6 +67,8 @@ mock.module('../../src/env-scan', () => ({
 process.env.KNOWLEDGE_INGEST_JOBS = '0';
 process.env.BUILDD_SCOUT_HOST = '0';
 process.env.BUILDD_MODEL_PROBE = '0';
+// The local model relay looks at this machine's own loopback, not at buildd; it has its own tests.
+process.env.BUILDD_LOCAL_MODEL_RELAY = '0';
 
 const { WorkerManager } = await import('../../src/workers');
 

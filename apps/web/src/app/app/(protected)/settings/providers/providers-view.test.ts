@@ -11,6 +11,10 @@ import {
   loneProviderLine,
   usedForView,
   embeddingView,
+  embeddingChoices,
+  lastCallLine,
+  localModelOptions,
+  localRunnerCardView,
   providerRows,
   keyRuleLine,
   maskedValue,
@@ -291,5 +295,55 @@ describe('embeddings row', () => {
     const row = embeddingView(fixtureResponse({}), { provider: 'openrouter', model: 'm' })!;
     expect(row.value).toBe('openrouter');
     expect(row.options.find((o) => o.value === 'openrouter')).toMatchObject({ disabled: true, description: 'Needs a key' });
+  });
+});
+
+const RUNNERS = [{
+  id: 'r1', name: 'studio', online: true,
+  models: [
+    { name: 'nomic-embed-text', capabilities: ['embedding'], dimensions: 768 },
+    { name: 'all-minilm', capabilities: ['embedding'], dimensions: 384 },
+    { name: 'llama3.1:8b', capabilities: ['completion'], dimensions: null },
+  ],
+}];
+const PICK = { runnerId: null, chatModel: null, embedModel: null, runner: null, runners: RUNNERS, lastSuccessAt: null };
+
+describe('local runner card', () => {
+  it('no runner has advertised models: empty, so a hint and no card', () => {
+    expect(localRunnerCardView({ ...PICK, runners: [] }).empty).toBe(true);
+    expect(localRunnerCardView(PICK).empty).toBe(false);
+  });
+
+  it('the row word is the pinned runner\'s state', () => {
+    expect(localRunnerCardView(PICK).state).toBeNull();
+    expect(localRunnerCardView({ ...PICK, runnerId: 'r1', runner: { online: true, models: [] } }).state).toEqual({ word: 'Online', tone: 'success' });
+    expect(localRunnerCardView({ ...PICK, runnerId: 'r1', runner: { online: false, models: [] } }).state).toEqual({ word: 'Offline', tone: 'muted' });
+    expect(localRunnerCardView({ ...PICK, runnerId: 'r1', runner: null }).state).toEqual({ word: 'Runner gone', tone: 'error' });
+  });
+
+  it('last successful call reads as an age, or says there has been none', () => {
+    const now = new Date('2026-11-23T12:00:00Z');
+    expect(lastCallLine(null, now)).toBe('No successful call');
+    expect(lastCallLine('2026-11-23T11:55:00Z', now)).toBe('Last successful call 5m ago');
+    expect(lastCallLine('2026-11-23T09:00:00Z', now)).toBe('Last successful call 3h ago');
+    expect(lastCallLine('2026-11-20T12:00:00Z', now)).toBe('Last successful call 3d ago');
+  });
+
+  it('model options: embedding shows the size and disables one the store has no column for', () => {
+    const opts = localModelOptions(RUNNERS[0], 'embedding');
+    expect(opts.map((o) => [o.value, o.label, o.disabled])).toEqual([
+      ['nomic-embed-text', 'nomic-embed-text · 768', false],
+      ['all-minilm', 'all-minilm · 384', true],
+    ]);
+    expect(localModelOptions(RUNNERS[0], 'completion').map((o) => o.value)).toEqual(['llama3.1:8b']);
+  });
+
+  it('Embeddings offers Local runner only while a runner advertises a usable embedding model', () => {
+    const res = fixtureResponse({});
+    expect(embeddingView(res, { provider: null, model: null }, { runners: RUNNERS })!.options.map((o) => o.value)).toEqual(['voyage', 'local_runner']);
+    expect(embeddingView(res, { provider: null, model: null }, { runners: [] })).toBeNull();
+    expect(embeddingChoices({ runners: [{ ...RUNNERS[0], models: [RUNNERS[0].models[1]] }] })).toEqual([]);
+    const stored = embeddingView(res, { provider: 'local_runner', model: 'nomic-embed-text' }, { runners: [] })!;
+    expect(stored.options.find((o) => o.value === 'local_runner')).toMatchObject({ disabled: true, description: 'Needs a runner' });
   });
 });

@@ -11,6 +11,13 @@ export async function register() {
     // missing table or row leaves every prompt on its public default.
     const { startPrompts } = await import('@buildd/core/prompts-source');
     await Promise.all([startPolicyOverrides(), startPrompts()]);
+    // The relay queue's nudge to a team's own runner (lib/relay-nudge.ts).
+    try {
+      const { registerRelayNudge } = await import('./lib/relay-nudge');
+      registerRelayNudge();
+    } catch (err) {
+      console.warn('[instrumentation] relay nudge not registered:', (err as Error)?.message ?? err);
+    }
     // Living Spec neighbours: the knowledge module answers `similar` (lib/specs/neighbours.ts).
     try {
       const { SPEC_SIMILARITY } = await import('./modules');
