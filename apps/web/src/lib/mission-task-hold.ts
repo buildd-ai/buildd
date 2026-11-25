@@ -156,6 +156,7 @@ const LIMIT_HOLD_KEY: Record<QueueLimit, string> = {
   mission_paused: 'mission_held',
   local_session: 'mission_local',
   pr_closed: 'subject_dead',
+  access: 'access_unmet',
 };
 const BUDGET_LIMITS: ReadonlySet<QueueLimit> = new Set<QueueLimit>(['mission_budget', 'budget', 'plan']);
 const NO_RUNNER_REASONS = new Set([
@@ -244,6 +245,13 @@ function noRunnerReason(reason: string, detail: Record<string, unknown>): string
   return claimHoldPhrase(reason);
 }
 
+/** Held for access a person has not approved: the person's turn, never a queue. */
+function accessHold(sinceMs: number | null, ageLabel: string | null, approve: string | null): PendingTaskHold {
+  const word = 'Waiting on you';
+  const cause = `approve ${approve || 'provider access'}`;
+  return { kind: 'hold', word, cause, sinceMs, ageLabel, holder: null, holdKey: 'access_unmet', row: `${word}: ${cause}${ageLabel ? ` (${ageLabel})` : ''}` };
+}
+
 export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskHold {
   const h = derivePendingTaskHoldInner(input);
   return input.wait ? { ...h, fromClaimGates: true } : h;
@@ -287,6 +295,7 @@ function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHol
       return queued('overlap', `${after ? `${place}: runs after ${after.text}` : place}${stuck}`, 'lane',
         h ? { id: h.id, title: h.title ?? null, note: after!.note } : null);
     }
+    if (wait.kind === 'limit' && wait.limit === 'access') return accessHold(sinceMs, ageLabel, wait.approve ?? null);
     if (wait.kind === 'limit') {
       const limit = wait.limit ?? 'mission_cap';
       const label = queueLimitLabel(limit);
@@ -341,6 +350,13 @@ function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHol
     const pr = typeof detail.prNumber === 'number' ? detail.prNumber : null;
     if (pr != null) return queued('overlap', `held: runs after #${pr}`, reason);
     return queued('overlap', 'held: runs after another task on the same files', reason);
+  }
+
+  // 2b. Declared access nobody granted: a person's to approve, not a runner's to take.
+  if (reason === 'access_unmet') {
+    const gaps = Array.isArray(detail.gaps) ? (detail.gaps as Array<Record<string, unknown>>) : [];
+    const approve = gaps.map(g => `${str(g.provider) ?? 'provider'} ${str(g.access) ?? 'read'}`).join(', ');
+    return accessHold(sinceMs, ageLabel, approve ? approve.replace(/^./, c => c.toUpperCase()) : null);
   }
 
   // 3. No runner able to take it: the gate's reason, else no browser runner, else none online.

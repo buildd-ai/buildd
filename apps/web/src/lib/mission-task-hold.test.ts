@@ -325,3 +325,20 @@ describe('derivePendingTaskHold: a cross-workspace upstream', () => {
     expect(h.cause).toBe("held: runs after a task in a workspace you can't see");
   });
 });
+
+describe('a task held for access nobody granted', () => {
+  const wait = { kind: 'limit' as const, limit: 'access' as const, approve: 'Axiom read' };
+  it('says it waits on a person, never queued for a slot', () => {
+    const h = derivePendingTaskHold({ now: NOW, createdAt: new Date(NOW - 2 * H), wait });
+    expect(h.holdKey).toBe('access_unmet');
+    expect(h.word).toBe('Waiting on you');
+    expect(h.row).toContain('approve Axiom read');
+    expect(h.row).not.toContain('next in line');
+  });
+  it('a recorded access_unmet refusal reads the same, not "no runner can take it"', () => {
+    const h = derivePendingTaskHold({ now: NOW, deferral: { reason: 'access_unmet', detail: { gaps: [{ provider: 'axiom', access: 'read' }] } } });
+    expect(h.holdKey).toBe('access_unmet');
+    expect(h.row).toContain('approve Axiom read');
+    expect(h.kind).not.toBe('no_runner');
+  });
+});

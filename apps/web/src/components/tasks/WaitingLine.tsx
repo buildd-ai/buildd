@@ -60,7 +60,7 @@ export default function WaitingLine({ reasons, children }: { reasons: WaitingRea
       <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-meta">
         <span className={`border px-1.5 py-0.5 text-chip font-semibold ${CHIP_TONE[chip]}`}>{chip === 'held' && head.kind === 'task_held' ? 'Paused' : CHIP_LABEL[chip]}</span>
         <span data-testid="task-waiting-headline" className="font-medium text-text-primary [overflow-wrap:anywhere]">
-          {summarised ? summary.headline : <>Waiting on <BlockerLink r={head} /></>}
+          {summarised ? summary.headline : head.kind === 'access_unmet' ? <>Waiting on you: approve <BlockerLink r={head} /></> : <>Waiting on <BlockerLink r={head} /></>}
         </span>
       </p>
       <p className="font-mono text-eyebrow leading-relaxed text-text-secondary [overflow-wrap:anywhere]">

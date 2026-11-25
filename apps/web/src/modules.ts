@@ -353,6 +353,9 @@ export const FILED_ACCESS = {
   checkGate: async (...a: Parameters<FiledAccess['checkAccessGate']>) => (await import('@/lib/capability-grants-filed')).checkAccessGate(...a),
   set: async (...a: Parameters<FiledAccess['setTaskFiledAccess']>) => (await import('@/lib/capability-grants-filed')).setTaskFiledAccess(...a),
   needsYou: async (...a: Parameters<FiledAccess['filedAccessNeedsYouRead']>) => (await import('@/lib/capability-grants-filed')).filedAccessNeedsYouRead(...a),
+  /** The grant UI on the task page, and a provider's display name, for the queue wait's wording (lib/access-wait-reason.ts). */
+  href: async (taskId: string) => (await import('@/lib/capability-grants-filed')).filedAccessHref(taskId),
+  providerName: async (slug: string) => (await import('@/lib/capability-grants-view')).providerName(slug),
 };
 
 /** Open schedule move proposals, for the people who may answer them (lib/schedule-move-needs-you.ts). */
