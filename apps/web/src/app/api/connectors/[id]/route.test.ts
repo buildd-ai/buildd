@@ -243,6 +243,53 @@ describe('PATCH /api/connectors/[id]', () => {
     expect(mockConnectorsUpdate).not.toHaveBeenCalled();
   });
 
+  it('markReadOnly adds one tool to the existing policy, keeping its denies', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ ...CONNECTOR, discoveredMetadata: { authorizationServer: { issuer: 'x' }, toolPolicy: { readOnlyTools: ['b'], denyTools: ['d'] } } });
+    let captured: any;
+    mockConnectorsUpdate.mockReturnValue({
+      set: mock((v: any) => { captured = v; return { where: mock(() => ({ returning: mock(() => [CONNECTOR]) })) }; }),
+    });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { markReadOnly: 'otel-x' }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(captured.discoveredMetadata).toEqual({ authorizationServer: { issuer: 'x' }, toolPolicy: { readOnlyTools: ['b', 'otel-x'], denyTools: ['d'] } });
+  });
+
+  it('markReadOnly needs a signed-in person, a valid name, and not toolPolicy beside it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    const key = await PATCH(makeReq('PATCH', { 'content-type': 'application/json', authorization: 'Bearer bld_admin' }, { markReadOnly: 'otel-x' }), { params: PARAMS });
+    expect(key.status).toBe(403);
+    expect((await key.json()).error).toBe('session_required');
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    expect((await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { markReadOnly: '*' }), { params: PARAMS })).status).toBe(400);
+    expect((await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { markReadOnly: 'a', toolPolicy: { readOnlyTools: [] } }), { params: PARAMS })).status).toBe(400);
+    expect(mockConnectorsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('keepBlocked records the tool under toolReview and leaves toolPolicy alone', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockConnectorsFindFirst.mockResolvedValue({ ...CONNECTOR, discoveredMetadata: { toolPolicy: { readOnlyTools: ['b'], denyTools: [] }, toolReview: { keptBlocked: ['z'] } } });
+    let captured: any;
+    mockConnectorsUpdate.mockReturnValue({
+      set: mock((v: any) => { captured = v; return { where: mock(() => ({ returning: mock(() => [CONNECTOR]) })) }; }),
+    });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { keepBlocked: 'otel-x' }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(captured.discoveredMetadata).toEqual({ toolPolicy: { readOnlyTools: ['b'], denyTools: [] }, toolReview: { keptBlocked: ['otel-x', 'z'] } });
+  });
+
+  it('keepBlocked needs a signed-in person and one exact name', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    const key = await PATCH(makeReq('PATCH', { 'content-type': 'application/json', authorization: 'Bearer bld_admin' }, { keepBlocked: 'otel-x' }), { params: PARAMS });
+    expect(key.status).toBe(403);
+    expect((await key.json()).error).toBe('session_required');
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    expect((await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { keepBlocked: '*' }), { params: PARAMS })).status).toBe(400);
+    expect(mockConnectorsUpdate).not.toHaveBeenCalled();
+  });
+
   it('a malformed toolPolicy (wildcard) is refused 400', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { toolPolicy: { readOnlyTools: ['*'] } }), { params: PARAMS });
@@ -260,6 +307,22 @@ describe('PATCH /api/connectors/[id]', () => {
     const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { rediscover: true }), { params: PARAMS });
     expect(res.status).toBe(200);
     expect(captured.discoveredMetadata.toolPolicy).toEqual({ readOnlyTools: ['a'], denyTools: [] });
+  });
+
+  it('rediscovery keeps the tool snapshot and kept-blocked review too', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const toolSnapshot = { at: '2026-11-25T00:00:00.000Z', tools: { a: { r: true } } };
+    const toolReview = { keptBlocked: ['x'] };
+    mockConnectorsFindFirst.mockResolvedValue({ ...CONNECTOR, clientId: 'c1', discoveredMetadata: { toolSnapshot, toolReview } });
+    mockDiscoverOAuthMetadata.mockResolvedValue({ authMode: 'oauth', authorizationServer: {} } as any);
+    let captured: any;
+    mockConnectorsUpdate.mockReturnValue({
+      set: mock((v: any) => { captured = v; return { where: mock(() => ({ returning: mock(() => [CONNECTOR]) })) }; }),
+    });
+    const res = await PATCH(makeReq('PATCH', { 'content-type': 'application/json' }, { rediscover: true }), { params: PARAMS });
+    expect(res.status).toBe(200);
+    expect(captured.discoveredMetadata.toolSnapshot).toEqual(toolSnapshot);
+    expect(captured.discoveredMetadata.toolReview).toEqual(toolReview);
   });
 });
 

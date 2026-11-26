@@ -12,9 +12,12 @@ import {
   gatewayMode,
   methodAllowed,
   parseToolPolicy,
+  readOnlyFixSteps,
   readRoleCeiling,
   readToolOverrides,
   toolVisible,
+  unvettedWrite,
+  withReadOnlyTool,
   usesGateway,
   type GatewayRun,
 } from './connector-gateway';
@@ -49,6 +52,7 @@ function run(over: Partial<GatewayRun> & { connector?: Partial<GatewayRun['conne
   };
 }
 
+const NO_OVERRIDES_FOR_TEST = readToolOverrides(null);
 const noGrant = mock(async () => ({ allowed: false as const, reasonCode: 'no_grant' }));
 const yesGrant = mock(async () => ({ allowed: true as const, grantId: 'g-1' }));
 
@@ -72,6 +76,106 @@ describe('classifyNativeTool — the provider annotations decide, and fail close
     const o = readToolOverrides({ toolPolicy: { readOnlyTools: ['updateDashboard'], denyTools: ['queryApl'] } });
     expect(classifyNativeTool('updateDashboard', undefined, o)).toBe('read');
     expect(classifyNativeTool('queryApl', { readOnlyHint: true }, o)).toBe('denied');
+  });
+
+  describe('a read that writes only when one argument says so (Axiom queryDataset saveResults)', () => {
+    // Axiom documents queryDataset as a read, but leaves readOnlyHint off
+    // because `saveResults: true` stores the results.
+    const axiom = readToolOverrides(null, 'axiom');
+
+    it('is a read for a call without the argument, or with it off', () => {
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: "['buildd-traces'] | take 5" })).toBe('read');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: false })).toBe('read');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: null })).toBe('read');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, {})).toBe('read');
+    });
+
+    it('is a write when the argument is set to anything but off (fail closed)', () => {
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: true })).toBe('write');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: 'true' })).toBe('write');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, { apl: 'x', saveResults: 0 })).toBe('write');
+      expect(classifyNativeTool('queryDataset', undefined, axiom, ['not', 'an', 'object'])).toBe('write');
+    });
+
+    it('is listed as a read (each call is re-classified with its arguments)', () => {
+      expect(classifyNativeTool('queryDataset', undefined, axiom)).toBe('read');
+      const out = filterToolsList({ tools: [{ name: 'queryDataset', inputSchema: { type: 'object' } }] }, run({ roleCeiling: 'read' }), axiom);
+      expect((out.result as { tools: unknown[] }).tools).toHaveLength(1);
+    });
+
+    it('never lowers a destructive hint, an admin verb or a deny', () => {
+      expect(classifyNativeTool('queryDataset', { destructiveHint: true }, axiom, {})).toBe('admin');
+      const denied = readToolOverrides({ toolPolicy: { denyTools: ['queryDataset'] } }, 'axiom');
+      expect(classifyNativeTool('queryDataset', undefined, denied, {})).toBe('denied');
+    });
+
+    it('applies only to the provider that documents it', () => {
+      expect(classifyNativeTool('queryDataset', undefined, readToolOverrides(null, 'vercel'), {})).toBe('write');
+      expect(classifyNativeTool('queryDataset', undefined, readToolOverrides(null), {})).toBe('write');
+    });
+
+    it("keeps the admin's own overrides alongside the provider's", () => {
+      const o = readToolOverrides({ toolPolicy: { readOnlyTools: ['updateDashboard'] } }, 'axiom');
+      expect(classifyNativeTool('updateDashboard', undefined, o, {})).toBe('read');
+      expect(classifyNativeTool('queryDataset', undefined, o, { saveResults: true })).toBe('write');
+    });
+  });
+
+  describe("the catalog's vetted reads (Axiom otel-*), merged under the admin's policy", () => {
+    const axiom = readToolOverrides(null, 'axiom');
+
+    it('an unannotated vetted read is a read, and is listed to a read-only run', () => {
+      expect(classifyNativeTool('otel-getTraceSpans', undefined, axiom, { traceId: 'x' })).toBe('read');
+      expect(classifyNativeTool('listDatasets', {}, axiom)).toBe('read');
+      const out = filterToolsList({ tools: [{ name: 'otel-findTraces', inputSchema: { type: 'object' } }] }, run({ roleCeiling: 'read' }), axiom);
+      expect((out.result as { tools: unknown[] }).tools).toHaveLength(1);
+    });
+
+    it("the provider's own readOnlyHint:false or destructive hint wins over the catalog", () => {
+      expect(classifyNativeTool('otel-getTraceSpans', { readOnlyHint: false }, axiom)).toBe('write');
+      expect(classifyNativeTool('otel-getTraceSpans', { destructiveHint: true }, axiom)).toBe('admin');
+    });
+
+    it('an admin deny wins; an unknown tool on the same provider is still a write', () => {
+      const denied = readToolOverrides({ toolPolicy: { denyTools: ['otel-getTraceSpans'] } }, 'axiom');
+      expect(classifyNativeTool('otel-getTraceSpans', undefined, denied)).toBe('denied');
+      expect(classifyNativeTool('otel-somethingNew', undefined, axiom)).toBe('write');
+      expect(classifyNativeTool('createMonitor', undefined, axiom)).toBe('write');
+    });
+
+    it('applies only to the provider that vets it', () => {
+      expect(classifyNativeTool('otel-getTraceSpans', undefined, readToolOverrides(null, 'vercel'))).toBe('write');
+      expect(classifyNativeTool('otel-getTraceSpans', undefined, readToolOverrides(null))).toBe('write');
+    });
+  });
+
+  describe('unvettedWrite — refused only because nobody marked it read', () => {
+    const axiom = readToolOverrides(null, 'axiom');
+    it('is true for an unannotated tool nothing vets', () => {
+      expect(unvettedWrite('otel-somethingNew', undefined, axiom)).toBe(true);
+      expect(unvettedWrite('runReport', {}, NO_OVERRIDES_FOR_TEST)).toBe(true);
+    });
+    it('is false for a declared write, a destructive or admin-verb tool, a vetted read, or a write by its arguments', () => {
+      expect(unvettedWrite('createMonitor', { readOnlyHint: false }, axiom)).toBe(false);
+      expect(unvettedWrite('deleteNotifier', undefined, axiom)).toBe(false);
+      expect(unvettedWrite('x', { destructiveHint: true }, axiom)).toBe(false);
+      expect(unvettedWrite('otel-getTraceSpans', undefined, axiom)).toBe(false);
+      expect(unvettedWrite('queryDataset', undefined, axiom)).toBe(false);
+    });
+  });
+
+  describe('withReadOnlyTool — the one-step "treat as read-only"', () => {
+    it('adds the name, keeps the rest and the denies, and is idempotent', () => {
+      const p = withReadOnlyTool({ toolPolicy: { readOnlyTools: ['b'], denyTools: ['d'] } }, 'a');
+      expect(p).toEqual({ readOnlyTools: ['a', 'b'], denyTools: ['d'] });
+      expect(withReadOnlyTool({ toolPolicy: p }, 'a')).toEqual(p);
+      expect(withReadOnlyTool(null, 'a')).toEqual({ readOnlyTools: ['a'], denyTools: [] });
+    });
+    it('refuses a wildcard or malformed name', () => {
+      expect(withReadOnlyTool(null, '*')).toBeNull();
+      expect(withReadOnlyTool(null, '')).toBeNull();
+      expect(withReadOnlyTool(null, 'a b')).toBeNull();
+    });
   });
 
   it('a destructive hint beats an admin read-only mark', () => {
@@ -203,6 +307,19 @@ describe('call identity, scope and denial shape', () => {
     expect(r.result.isError).toBe(true);
     expect(r.result.structuredContent).toMatchObject({ code: 'capability_not_granted', tool: 'createMonitor' });
     expect(r.result.content[0].text).toContain('request_capability');
+  });
+
+  it('a denial can carry extra next steps after the code\'s own', () => {
+    const r = deniedToolResult(4, 'capability_not_granted', { tool: 'otel-x', unvettedTool: 'otel-x' }, ['mark it read-only']);
+    expect(r.result.structuredContent.nextSteps).toHaveLength(2);
+    expect(r.result.structuredContent.nextSteps[1]).toBe('mark it read-only');
+  });
+
+  it('readOnlyFixSteps names the tool and the session-only one-step fix', () => {
+    const f = readOnlyFixSteps('otel-x', 'conn-1');
+    expect(f.extra).toEqual({ unvettedTool: 'otel-x', readOnlyFix: { method: 'PATCH', path: '/api/connectors/conn-1', body: { markReadOnly: 'otel-x' }, requires: 'session' } });
+    expect(f.steps[0]).toContain('otel-x');
+    expect(f.steps[0]).toContain('request_capability');
   });
 
   it('only known MCP methods are forwarded', () => {

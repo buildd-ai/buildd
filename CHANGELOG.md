@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Connectors: see and decide unvetted tool refusals from Home and Settings (#6222)
+
+### Fixed
+
+- ACP: follow a run through a runner update instead of asking for a reply (#6223)
+- Queue: read the delegation claim gate live; a person's grant, not a runner slot (#6221)
+- Capabilities: say Axiom monitors are owner-managed, and that a write to a read-only provider is impossible (#6219)
+
 ## [0.408.0] - 2026-11-23
 
 ### Added

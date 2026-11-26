@@ -2,13 +2,20 @@
  * Production alert for a page over its speed budget (spec 3ef37387 R-31).
  *
  * Reads the same table as the 10x budget tests (./page-budgets.ts, R-40). A
- * page wrapped in `withPageBudget` counts its own Neon round trips and bytes;
- * a load over budget leaves one short-lived `system_cache` row naming the page
- * and its heaviest loader (the `withLoaderLabel` label, or the first app frame,
- * from packages/core/db/query-label.ts). An hourly cron (`/api/cron/page-budget-health`)
+ * page wrapped in `withPageBudget` counts its own Neon round trips and bytes
+ * and times its server load; a load over any of its ready time, queries or
+ * data budget leaves one short-lived `system_cache` row naming the page and
+ * the loader responsible (the `withLoaderLabel` label, or the first app frame,
+ * from packages/core/db/query-label.ts): the one with the most database time
+ * for a slow load, else the one that returned the most data. An hourly cron (`/api/cron/page-budget-health`)
  * reads the trailing hour: a page with `MIN_OVER_LOADS` or more over-budget
  * loads in it is over budget "for an hour", and the operator is told which page
  * and which loader (R-42), at most once a day per page.
+ *
+ * This is the only page-speed alert. The Axiom monitor "Pages over their speed
+ * budget (p90, last hour)" alerted on one slow p90 hour with no daily limit and
+ * kept its own copy of the ready times, so it was retired in favour of this
+ * (docs/observability-and-notifications.md, "Page speed alert").
  *
  * Rows hold counts, a page name and a loader label, never a user, team, URL or
  * query text. Recording is never load-bearing: a failure here cannot fail a page.
@@ -30,13 +37,27 @@ export interface OverLoad {
   page: PageName;
   queries: number;
   bytes: number;
-  /** Heaviest loader in the load: most bytes, then most round trips. */
+  /** Server load time. Absent on rows written before ready time was measured. */
+  ms?: number;
+  /** The loader responsible: most database time if slow, else most bytes. */
   loader: string;
   at: number;
 }
 
-export function isOverBudget(m: { queries: number; bytes: number }, budget: Budget): boolean {
-  return m.queries > budget.queries || m.bytes > budget.bytes;
+export function isOverBudget(m: { queries: number; bytes: number; ms?: number }, budget: Budget): boolean {
+  return m.queries > budget.queries || m.bytes > budget.bytes || isSlow(m, budget);
+}
+
+function isSlow(m: { ms?: number }, budget: Budget): boolean {
+  return m.ms != null && budget.readyMs != null && m.ms > budget.readyMs;
+}
+
+/** The loader that spent the most time waiting on Neon in one load. */
+export function slowestLoader(queries: ReadonlyArray<{ label: string; durationMs: number }>): string {
+  const byLabel = new Map<string, number>();
+  for (const q of queries) byLabel.set(q.label, (byLabel.get(q.label) ?? 0) + q.durationMs);
+  if (!byLabel.size) return 'unlabelled';
+  return [...byLabel.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
 export function heaviestLoader(byLabel: Record<string, { count: number; bytes: number }>): string {
@@ -57,9 +78,14 @@ export function withPageBudget<A extends unknown[], R>(
 ): (...args: A) => Promise<R> {
   return async (...args: A) => {
     if (isRecordingNeonQueries()) return load(...args);
+    const started = performance.now();
     const rec = await recordNeonQueries(() => load(...args));
-    if (isOverBudget({ queries: rec.count, bytes: rec.bytes }, PAGE_BUDGETS[page])) {
-      void noteOverBudgetLoad({ page, queries: rec.count, bytes: rec.bytes, loader: heaviestLoader(rec.byLabel), at: Date.now() });
+    const m = { queries: rec.count, bytes: rec.bytes, ms: Math.round(performance.now() - started) };
+    const budget = PAGE_BUDGETS[page];
+    if (isOverBudget(m, budget)) {
+      const overOnData = m.queries > budget.queries || m.bytes > budget.bytes;
+      const loader = overOnData ? heaviestLoader(rec.byLabel) : slowestLoader(rec.queries);
+      void noteOverBudgetLoad({ page, ...m, loader, at: Date.now() });
     }
     return rec.result;
   };
@@ -70,7 +96,7 @@ export async function noteOverBudgetLoad(load: OverLoad): Promise<void> {
     const key = `${OVER_KEY_PREFIX}${load.page}:${load.at}:${Math.random().toString(36).slice(2, 8)}`;
     await db.insert(systemCache).values({
       key,
-      value: { queries: load.queries, bytes: load.bytes, loader: load.loader },
+      value: { queries: load.queries, bytes: load.bytes, ms: load.ms, loader: load.loader },
       expiresAt: new Date(load.at + ROW_TTL_MS),
     }).onConflictDoNothing();
   } catch (err) {
@@ -84,6 +110,8 @@ export interface PageBudgetAlert {
   loader: string;
   worstQueries: number;
   worstBytes: number;
+  /** Slowest load in the hour, when any row carried a time. */
+  worstMs: number | null;
   budget: Budget;
 }
 
@@ -112,6 +140,7 @@ export function planPageBudgetAlerts(
       loader,
       worstQueries: Math.max(...rows.map(r => r.queries)),
       worstBytes: Math.max(...rows.map(r => r.bytes)),
+      worstMs: rows.some(r => r.ms != null) ? Math.max(...rows.map(r => r.ms ?? 0)) : null,
       budget: PAGE_BUDGETS[page],
     });
   }
@@ -120,12 +149,15 @@ export function planPageBudgetAlerts(
 
 export function formatPageBudgetAlert(a: PageBudgetAlert): { title: string; message: string } {
   const kb = (n: number) => `${Math.round(n / 1024)} KB`;
+  const s = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+  const time = a.worstMs != null && a.budget.readyMs != null ? `${s(a.worstMs)} / ` : '';
+  const timeBudget = a.worstMs != null && a.budget.readyMs != null ? `${s(a.budget.readyMs)} / ` : '';
   return {
     title: `Page over its speed budget: ${a.page}`,
     message:
       `${a.loads} loads of ${a.page} in the last hour went over budget ` +
-      `(worst ${a.worstQueries} queries / ${kb(a.worstBytes)}; budget ${a.budget.queries} / ${kb(a.budget.bytes)}). ` +
-      `Heaviest loader: ${a.loader}.`,
+      `(worst ${time}${a.worstQueries} queries / ${kb(a.worstBytes)}; budget ${timeBudget}${a.budget.queries} / ${kb(a.budget.bytes)}). ` +
+      `Loader responsible: ${a.loader}.`,
   };
 }
 
@@ -138,7 +170,7 @@ export async function readOverBudgetLoads(now: number): Promise<OverLoad[]> {
     const [page, at] = r.key.slice(OVER_KEY_PREFIX.length).split(':');
     const v = r.value && typeof r.value === 'object' ? (r.value as Record<string, unknown>) : {};
     if (!(page in PAGE_BUDGETS) || !Number(at)) continue;
-    out.push({ page: page as PageName, at: Number(at), queries: Number(v.queries) || 0, bytes: Number(v.bytes) || 0, loader: typeof v.loader === 'string' ? v.loader : 'unlabelled' });
+    out.push({ page: page as PageName, at: Number(at), queries: Number(v.queries) || 0, bytes: Number(v.bytes) || 0, ms: typeof v.ms === 'number' ? v.ms : undefined, loader: typeof v.loader === 'string' ? v.loader : 'unlabelled' });
   }
   return out.filter(l => l.at >= now - WINDOW_MS);
 }

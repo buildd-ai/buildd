@@ -36,7 +36,8 @@ import { loadTeamCatalog } from './connector-catalog-store';
 import { checkConnectorBlocked } from './connector-access-policy';
 import { refreshMcpConnectorCredential, type McpRefreshResult } from './mcp-connector-refresh';
 import { loadPolicyRules } from './capability-grants-store';
-import { readRoleCeiling, type CredentialState, type GatewayRun } from './connector-gateway';
+import { readRoleCeiling, type CredentialState, type GatewayRun, type ToolAnnotations } from './connector-gateway';
+import { snapshotSignature, toolSnapshotOf } from './connector-tool-review';
 import { exchangeAssertion, mintConnectorAssertion } from './connector-assertion';
 import type { AgentPrincipal } from './agent-capabilities/principal';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -378,4 +379,38 @@ export function noteToolAudit(row: ToolAuditRow): void {
   void writeToolAudit(row).catch((err: unknown) => {
     console.warn(`[connector-gateway] audit ${row.capability} ${row.decision} not recorded: ${err instanceof Error ? err.message.slice(0, 120) : 'unknown error'}`);
   });
+}
+
+// ── Tool snapshot (what Settings › Team › Apps lists) ────────────────────────
+
+const SNAPSHOT_REWRITE_MS = 6 * 60 * 60 * 1000;
+/** connector id → the signature last written from this instance, and when. */
+const snapshotWrites = new Map<string, { sig: string; at: number }>();
+
+/** Test-only. */
+export function __resetSnapshotWrites() { snapshotWrites.clear(); }
+
+/**
+ * Keep the tools the provider listed, with only the hints that decide a class
+ * (connector-tool-review.ts), on the connector row as
+ * `discoveredMetadata.toolSnapshot`. Merged in one statement so an admin's
+ * toolPolicy saved at the same moment is never overwritten. Written when the
+ * list changed, else at most every few hours per instance. Fire-and-forget:
+ * never blocks or fails the request.
+ */
+export function noteToolSnapshot(connectorId: string, tools: ReadonlyMap<string, ToolAnnotations | null>, now = Date.now()): void {
+  const snap = toolSnapshotOf(tools, new Date(now));
+  if (!snap) return;
+  const sig = snapshotSignature(snap);
+  const prev = snapshotWrites.get(connectorId);
+  if (prev && prev.sig === sig && now - prev.at < SNAPSHOT_REWRITE_MS) return;
+  snapshotWrites.set(connectorId, { sig, at: now });
+  if (snapshotWrites.size > 500) snapshotWrites.delete(snapshotWrites.keys().next().value!);
+  void db.update(connectors)
+    .set({ discoveredMetadata: sql`coalesce(${connectors.discoveredMetadata}, '{}'::jsonb) || jsonb_build_object('toolSnapshot', ${JSON.stringify(snap)}::jsonb)` })
+    .where(eq(connectors.id, connectorId))
+    .catch((err: unknown) => {
+      snapshotWrites.delete(connectorId);
+      console.warn(`[connector-gateway] tool snapshot not saved: ${err instanceof Error ? err.message.slice(0, 120) : 'unknown error'}`);
+    });
 }

@@ -39,7 +39,7 @@ shorten the word, never re-word it.
 | `pr.merged` | ■ Merged | `merged` | The PR is merged into its target branch. |  | `kernel:MERGED`, `task.status:completed` (hasMergedPr), `strip:landed` |
 | `pr.merged_elsewhere` | ■ Merged in another PR | `merged in #N` | The change reached the branch through another PR. |  | `kernel:SUPERSEDED` |
 | `pr.closed` | ✕ Closed without merging | `closed` | The PR closed and its change did not merge. |  | `kernel:CLOSED_UNMERGED`, `kernel:ABANDONED`, `strip:not_landed`, `waiting:subject_dead` |
-| `decision.approval_required` | ! Approval required | `approval required` | A policy gate only a person can clear: a migration, a human merge or an escalation. | Approve or decline it |  |
+| `decision.approval_required` | ! Approval required | `approval required` | A policy gate only a person can clear: a migration, a human merge, an escalation, access the task was filed needing or reach into another workspace it needs. | Approve or decline it | `waiting:access_unmet`, `waiting:delegation_unmet` |
 | `decision.waiting_on_you` | ! Waiting on you | `waiting on you` | A decision only a person can make. | Answer the decision | `kernel:ESCALATED`, `strip:needs_you` |
 | `decision.your_decision` | ! Your decision | `your decision` | An agent asked a question only a person can answer; the work waits for the answer. | Answer the question |  |
 | `wait.scheduled` | Scheduled | `scheduled` | Starts by itself at its start time. | starts at its start time | `waiting:start_deferred`, `waiting:workspace_paused` |

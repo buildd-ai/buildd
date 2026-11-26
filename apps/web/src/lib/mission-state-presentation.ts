@@ -118,6 +118,7 @@ function classifyTask(d: Extract<WaitingOnDescriptor, { kind: 'task' }>): Classi
     return { state: 'verifying', cause: 'verification', causeText: d.visualRunning ? 'visual review running' : d.visualBlocked ? 'visual review cannot run' : 'visual review queued' };
   }
   if (d.noRunner) return { state: 'queued', cause: 'queue', causeText: 'no runner is online' };
+  if (d.hold && (d.holdKey === 'access_unmet' || d.holdKey === 'delegation_unmet')) return { state: 'needs_you', cause: 'human_approval', causeText: d.hold };
   if (d.hold) {
     const cause = causeOfHold(d.holdKey);
     return { state: 'queued', cause, causeText: d.hold };

@@ -41,6 +41,8 @@ import { missionTaskHref } from '@/lib/mission-task-href';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import type { LaneRead } from '@/lib/serial-lanes-store';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { accessReasons, loadAccessGap, type AccessGap } from '@/lib/access-wait-reason';
+import { delegationReasons, ledgerDelegationIsPersons, loadDelegationGap, type DelegationGapView } from '@/lib/delegation-wait-reason';
 
 /** The runner-independent claim gates a queue wait reads, each TRUE when the task passes. */
 export const QUEUE_WAIT_GATES = ['startAt', 'taskHeld', 'missionHeld', 'missionLocal', 'subject', 'deps', 'workspacePaused'] as const satisfies readonly ClaimGateName[];
@@ -60,6 +62,9 @@ export interface QueueWaitTask {
   category?: unknown;
   context?: unknown;
   outputRequirement?: unknown;
+  roleSlug?: string | null;
+  delegation?: unknown;
+  scheduleId?: string | null;
   taskClass?: string | null;
   conflictRetryPrNumber?: number | null;
   ciRetryPrNumber?: number | null;
@@ -98,6 +103,10 @@ export interface QueueWaitFacts {
   missionBudgetExhausted: boolean;
   /** The task's newest claim-loop refusal, when fresh enough to still be an observation. */
   ledger: LedgerHold | null;
+  /** Declared access nobody granted, from the claim gate's own check (`checkAccessGate`). */
+  accessGap?: AccessGap | null;
+  /** Cross-workspace reach only a person can grant, from the claim gate's own rules (`personDelegationGaps`). */
+  delegationGap?: DelegationGapView | null;
 }
 
 const iso = (v: Date | string | null | undefined): string | null => {
@@ -156,7 +165,8 @@ const LEDGER_LIMITS: Readonly<Record<string, WaitingKind>> = {
 };
 const LEDGER_NO_RUNNER = new Set([
   'runner_capability', 'isolation_unenforced', 'connector_mismatch', 'role_env_unsatisfied', 'no_personal_credential',
-  'provider_unavailable', 'delegation_unmet', 'access_unmet', 'provider_not_allowed', 'tier_policy',
+  // access_unmet is read live (`accessGap`), not from a row that may be stale or already granted.
+  'provider_unavailable', 'delegation_unmet', 'provider_not_allowed', 'tier_policy',
 ]);
 
 export function ledgerLimitReasons(hold: LedgerHold | null, now: Date): WaitingReason[] {
@@ -169,6 +179,8 @@ export function ledgerLimitReasons(hold: LedgerHold | null, now: Date): WaitingR
   const provenance = { source: 'ledger' as const, derivedFrom: `gate_events#claim_loop_deferral/${hold.reason}`, ...(firstSeenAt ? { firstSeenAt } : {}) };
   const kind = LEDGER_LIMITS[hold.reason];
   if (kind) return [makeWaitingReason(kind, { because: claimHoldPhrase(hold.reason) ?? hold.reason, liftsAt: resets && Date.parse(resets) > now.getTime() ? resets : null, provenance })];
+  // A person's delegation gap is read live (`delegationGap`); only a gap the claiming runner has stays an observation.
+  if (hold.reason === 'delegation_unmet' && ledgerDelegationIsPersons(detail)) return [];
   if (LEDGER_NO_RUNNER.has(hold.reason)) return [makeWaitingReason('capability_mismatch', { because: claimHoldPhrase(hold.reason) ?? 'no runner has what it needs', provenance })];
   return [];
 }
@@ -178,6 +190,8 @@ export function assembleQueueReasons(t: QueueWaitTask, f: QueueWaitFacts, now: D
   const out = [
     ...sqlGateReasons(t, f.unmetDependencies),
     ...f.coordination,
+    ...accessReasons(t.id, f.accessGap),
+    ...delegationReasons(t.id, f.delegationGap),
     ...(f.missionBudgetExhausted && t.missionId
       ? [makeWaitingReason('mission_budget', { because: "the mission's budget is spent", blocker: { type: 'mission', id: t.missionId, label: 'the mission budget', href: `/app/missions/${t.missionId}` }, provenance: prov("missions.status='budget_exhausted' (claim loop)") })]
       : []),
@@ -231,6 +245,9 @@ async function readTasks(taskIds: string[], now: Date, limit: number): Promise<Q
       category: tasks.category,
       context: tasks.context,
       outputRequirement: tasks.outputRequirement,
+      roleSlug: tasks.roleSlug,
+      delegation: tasks.delegation,
+      scheduleId: tasks.scheduleId,
       taskClass: tasks.taskClass,
       conflictRetryPrNumber: tasks.conflictRetryPrNumber,
       ciRetryPrNumber: tasks.ciRetryPrNumber,
@@ -256,6 +273,9 @@ async function readTasks(taskIds: string[], now: Date, limit: number): Promise<Q
       category: r.category,
       context: r.context,
       outputRequirement: r.outputRequirement,
+      roleSlug: (r.roleSlug as string | null) ?? null,
+      delegation: r.delegation,
+      scheduleId: (r.scheduleId as string | null) ?? null,
       taskClass: (r.taskClass as string | null) ?? null,
       conflictRetryPrNumber: (r.conflictRetryPrNumber as number | null) ?? null,
       ciRetryPrNumber: (r.ciRetryPrNumber as number | null) ?? null,
@@ -404,7 +424,11 @@ export async function loadQueueWaits(taskIds: readonly string[], now: Date = new
         now,
         lanes: coord.lanes ? { views: coord.lanes.lanes.get(t.workspaceId) ?? new Map(), releasedTaskIds: coord.lanes.releasedTaskIds } : null,
       });
+      // The claim gate's own check, so the page cannot disagree with it. A failed read says nothing.
+      const [accessGap, delegationGap] = await Promise.all([loadAccessGap(t), loadDelegationGap(t)]);
       out.set(t.id, queueWaitFor(t, {
+        accessGap,
+        delegationGap,
         unmetDependencies: deps.get(t.id) ?? [],
         coordination,
         missionBudgetExhausted: mission?.status === 'budget_exhausted' && !bypassesMissionBudget(t.context),

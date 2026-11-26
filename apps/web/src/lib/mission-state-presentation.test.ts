@@ -156,3 +156,29 @@ describe('mission state presentation — scenario matrix', () => {
     expect(presentMissionState.length).toBe(1);
   });
 });
+
+describe('access_unmet hold needs a person', () => {
+  const present = (holdReason: string) =>
+    presentMissionState(deriveMissionStateView({ ...stalled, runnerOnline: true, openTasks: [{ id: 'a', status: 'pending', holdReason }] }));
+
+  it('an unmet access need is needs_you, not queued behind a runner', () => {
+    const p = present('access_unmet');
+    expect(p.state).toBe('needs_you');
+    expect(p.needsYou).toBe(true);
+    expect(p.causeText ?? '').not.toMatch(/queued|next in line/i);
+  });
+
+  it('another hold key stays queued and does not need you', () => {
+    const p = present('mission_concurrent');
+    expect(p.state).toBe('queued');
+    expect(p.needsYou).toBe(false);
+  });
+});
+
+describe('delegation_unmet hold needs a person', () => {
+  it('an ungranted delegation is needs_you, not queued behind a runner', () => {
+    const p = presentMissionState(deriveMissionStateView({ ...stalled, runnerOnline: true, openTasks: [{ id: 'a', status: 'pending', holdReason: 'delegation_unmet' }] }));
+    expect(p.state).toBe('needs_you');
+    expect(p.needsYou).toBe(true);
+  });
+});

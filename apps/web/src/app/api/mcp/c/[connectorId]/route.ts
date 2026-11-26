@@ -45,6 +45,9 @@ import {
   filterToolsList,
   methodAllowed,
   readToolOverrides,
+  readOnlyFixSteps,
+  unvettedWrite,
+  adminVettedRead,
   toolResource,
   upstreamToolError,
   type CallDecision,
@@ -59,6 +62,7 @@ import {
   loadGatewayRun,
   markCredentialRejected,
   noteToolAudit,
+  noteToolSnapshot,
   providerAuthHeader,
   recentCallCount,
   refreshAfterRejection,
@@ -283,6 +287,7 @@ async function annotationsFromProvider(g: LoadedGateway, reqHeaders: Headers, to
     cursor = msg.result.nextCursor;
   }
   if (seen.size) rememberAnnotations(g.connector.id, seen, now, true);
+  if (seen.size) noteToolSnapshot(g.connector.id, seen);
   return seen.get(tool) ?? null;
 }
 
@@ -338,7 +343,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ con
   if (msg.method === 'tools/list' && up.res.status < 400) {
     const parsed = parseRpcBody(up.res.headers.get('content-type') ?? '', up.body);
     if (!parsed) return rpcError(msg.id, -32603, 'Provider answered tools/list with something that is not JSON-RPC', { code: 'provider_bad_response' }, 502);
-    const overrides = readToolOverrides(g.connector.discoveredMetadata);
+    const overrides = readToolOverrides(g.connector.discoveredMetadata, g.run.connector.provider);
     const seen = new Map<string, Annotations>();
     const filtered = parsed.messages.map(m => {
       const mm = m as { id?: unknown; result?: unknown } | undefined;
@@ -347,7 +352,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ con
       for (const [k, v] of f.annotations) seen.set(k, v);
       return { ...mm, result: f.result };
     });
-    rememberAnnotations(g.connector.id, seen, Date.now(), !!(msg.params as { cursor?: unknown } | undefined)?.cursor);
+    const paged = !!(msg.params as { cursor?: unknown } | undefined)?.cursor;
+    rememberAnnotations(g.connector.id, seen, Date.now(), paged);
+    // What Settings › Team › Apps lists for this connector: the first page only, so a later page never replaces it.
+    if (!paged && seen.size) noteToolSnapshot(g.connector.id, seen);
     return respond(up, parsed.serialize(filtered));
   }
   return respond(up);
@@ -365,13 +373,31 @@ async function toolsCall(
   const hash = argsHash(args);
   const resource = toolResource(g.connector.id, tool);
   const base = { principal, resource };
+  // Set when the tool was classed a write only because nothing says it reads.
+  let unvetted = false;
   const refuse = (code: CallRefusal, cls: ToolClass | null, extra: Record<string, unknown> = {}) => {
-    noteToolAudit({ ...base, capability: TOOL_CALL_CAPABILITY, decision: 'refused', reasonCode: code, sideEffect: { risk: cls, argsHash: hash, provider: g.run.connector.provider, ...extra } });
-    return rpcJson(deniedToolResult(msg.id, code, { tool, provider: g.run.connector.provider, ...(extra.grantReason ? { grantReason: extra.grantReason } : {}) }));
+    // A read grant or a read-only role refused only because the provider does
+    // not annotate the tool: name it and give an admin the one-step fix. The
+    // audit row says so too (`readOnlyFix`), which is what puts one tool
+    // review card per (connector, tool) on Home (lib/connector-tool-review.ts).
+    const fixable = unvetted && (code === 'role_ceiling' || code === 'unattended_ceiling'
+      || (code === 'capability_not_granted' && extra.grantReason === 'tool_risk_exceeds_grant'));
+    noteToolAudit({ ...base, capability: TOOL_CALL_CAPABILITY, decision: 'refused', reasonCode: code, sideEffect: {
+      risk: cls, argsHash: hash, provider: g.run.connector.provider, ...extra,
+      ...(unvetted ? { unvettedTool: true } : {}),
+      ...(fixable ? { readOnlyFix: true, connectorId: g.connector.id, tool } : {}),
+    } });
+    const fix = fixable ? readOnlyFixSteps(tool, g.connector.id) : null;
+    return rpcJson(deniedToolResult(msg.id, code, {
+      tool, provider: g.run.connector.provider,
+      ...(extra.grantReason ? { grantReason: extra.grantReason } : {}),
+      ...(fix?.extra ?? {}),
+    }, fix?.steps ?? []));
   };
 
   let cls: ToolClass;
   let decision: CallDecision;
+  let vettedRead = false;
   try {
     const limit = g.run.unattended ? RATE_LIMITS.unattended : RATE_LIMITS.attended;
     if (!connectorRefusal(g.run) && await recentCallCount(principal.workerId, g.connector.id) >= limit) return refuse('rate_limited', null);
@@ -380,7 +406,10 @@ async function toolsCall(
     } else {
       const hit = cachedAnnotations(g.connector.id, tool, Date.now());
       const annotations = hit ? hit.annotations : await annotationsFromProvider(g, req.headers, tool);
-      cls = classifyNativeTool(tool, annotations, readToolOverrides(g.connector.discoveredMetadata));
+      const overrides = readToolOverrides(g.connector.discoveredMetadata, g.run.connector.provider);
+      cls = classifyNativeTool(tool, annotations, overrides, args);
+      unvetted = cls === 'write' && unvettedWrite(tool, annotations, overrides);
+      vettedRead = cls === 'read' && adminVettedRead(tool, overrides);
     }
     const scope = callScope(args);
     // The gateway enforces; the decision is the configured PDP's (connector-pdp.ts).
@@ -390,6 +419,7 @@ async function toolsCall(
       grant: () => authorizeConnectorToolUse(principal, {
         provider: g.run.connector.provider, connectorId: g.connector.id, tool,
         resource: scope.resource, environment: scope.environment, risk: cls === 'denied' ? 'admin' : cls,
+        ...(vettedRead ? { vettedRead: true } : {}),
       }),
     })));
   } catch (err) {

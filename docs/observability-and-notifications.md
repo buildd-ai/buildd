@@ -230,6 +230,12 @@ The owner is paged when Neon sends out more than 1 GB in an hour (Living Spec "F
 
 The field names for the Neon span (`http.url`, `http.response_content_length_uncompressed`) come from the existing trace runbook, not from a live query. Check them with `getDatasetFields` when creating the monitor.
 
+## Page speed alert
+
+The owner is told when a page is over its budget for an hour, at most once a day per page (Living Spec "Fast at any size", R-31, R-42). There is one alert for this, in code: `withPageBudget` (`apps/web/src/lib/page-budget-watch.ts`) checks every load of a wrapped page against its ready time, queries and data from `PAGE_BUDGETS` (`apps/web/src/lib/page-budgets.ts`, the table the budget tests read too, R-40). The hourly cron `/api/cron/page-budget-health` sends a Pushover alert when a page has at least 3 over-budget loads in the trailing hour. The alert names the page and the loader responsible: the one with the most database time for a slow load, else the one that returned the most data.
+
+**Do not recreate an Axiom monitor for page speed.** The Axiom monitor "Pages over their speed budget (p90, last hour)" was retired for three reasons. It fired whenever one hour's p90 was over budget, which with 5 loads is a single slow load. Axiom threshold monitors notify again every time they re-open, so there was no daily limit. And it hard-coded its own copy of the ready times, which breaks R-40. To dig into a page the alert names, group that page's Neon spans by `['attributes.custom']['buildd.db.loader']`, as in `NEON_EGRESS_BY_LOADER` above.
+
 ---
 
 ## Diagnostic plane (dashboard, not phone)
