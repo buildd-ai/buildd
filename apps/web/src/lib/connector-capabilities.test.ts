@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   parseCapability,
   resolveCapability,
+  resolveProviderAccess,
   listCapabilities,
   type DiscoveryInput,
   type DiscoveryConnector,
@@ -113,6 +114,25 @@ describe('resolveCapability: provider compatibility and risk', () => {
   it('Axiom read is reported as a read-only tool surface', () => {
     const r = ok(resolveCapability(input({ roleSlug: 'builder' }), 'observability:query'));
     expect(r.candidates[0].risk.writeToolsExposed).toBe(false);
+  });
+
+  it('Axiom says monitors and other account config are owner-managed in the Axiom UI', () => {
+    const r = ok(resolveCapability(input({ roleSlug: 'builder' }), 'observability:query'));
+    expect(r.candidates[0].risk.ownerManaged).toMatch(/monitors/i);
+    expect(r.candidates[0].risk.ownerManaged).toMatch(/Axiom UI/);
+  });
+
+  it('a write request to a read-only provider says no tool can write and who does it instead', () => {
+    const ax = resolveProviderAccess(input({ roleSlug: 'builder' }), 'axiom', 'write').candidates[0];
+    expect(ax.risk).toMatchObject({ requested: 'write', writeToolsExposed: false });
+    expect(ax.risk.note).toMatch(/no write tools/i);
+    expect(ax.risk.note).not.toMatch(/act on the provider account/);
+    expect(ax.nextSteps.join(' ')).toMatch(/monitors/i);
+  });
+
+  it('providers that expose write tools carry no owner-managed statement', () => {
+    const r = ok(resolveCapability(input({ roleSlug: 'builder' }), 'deployment:write'));
+    expect(r.candidates[0].risk.ownerManaged).toBeUndefined();
   });
 
   it('role allowedTools that name native tools are reported as a narrowing, tool names untouched', () => {

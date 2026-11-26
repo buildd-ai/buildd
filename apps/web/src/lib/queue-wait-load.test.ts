@@ -195,3 +195,33 @@ describe('access nobody granted: the wait is a person\'s, not a slot', () => {
     expect(wait.noRunnerReason ?? null).toBeNull();
   });
 });
+
+describe('delegation nobody granted: the wait is a person\'s, read live, not from the ledger', () => {
+  const gap = {
+    gaps: [{ workspaceId: 'ws-b', capability: 'tasks:create' as const, reason: 'not_granted' as const }],
+    detail: 'tasks:create on workspace ws-b: not granted', label: 'filing tasks in web', href: '/app/tasks/t1',
+  };
+
+  it('an ungranted delegation leads the wait: limit delegation, naming what to grant', () => {
+    const { wait } = queueWaitFor(task(), facts({ delegationGap: gap }), NOW);
+    expect(wait.kind).toBe('limit');
+    expect(wait.limit).toBe('delegation');
+    expect(wait.approve).toBe('filing tasks in web');
+    expect(isNextInLine(wait)).toBe(false);
+    expect(queueWaitHeadline(wait)).toBe('Waiting on you: grant filing tasks in web');
+  });
+
+  it('once granted (no live gap), a stale not_granted ledger row no longer holds it', () => {
+    const row = ledger('delegation_unmet', 1, { gaps: [{ workspaceId: 'ws-b', capability: 'tasks:create', reason: 'not_granted' }] });
+    const { wait } = queueWaitFor(task(), facts({ ledger: row }), NOW);
+    expect(wait.kind).toBe('slot');
+    expect(wait.noRunnerReason ?? null).toBeNull();
+  });
+
+  it('a ledger row for a gap only the claiming runner has (out_of_token_reach) still reads as no runner', () => {
+    const row = ledger('delegation_unmet', 1, { gaps: [{ workspaceId: 'ws-b', capability: 'tasks:create', reason: 'out_of_token_reach' }] });
+    const { wait } = queueWaitFor(task(), facts({ ledger: row }), NOW);
+    expect(wait.kind).toBe('slot');
+    expect(wait.noRunnerReason ?? '').not.toBe('');
+  });
+});

@@ -27,6 +27,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       workers: { findMany: async () => [] },
       tasks: { findMany: async () => depStatuses },
+      workspaces: { findMany: async () => [] },
     },
   },
 }));
@@ -40,12 +41,15 @@ mock.module('@buildd/core/path-claim', () => ({ getActiveClaimsByWorkspace: asyn
 let local = false;
 mock.module('@/app/api/workers/claim/held-gate', () => ({ checkMissionLocal: async () => local }));
 
+let personGaps: Array<{ workspaceId: string; capability: string; reason: string }> = [];
+mock.module('@/lib/task-delegation-checks', () => ({ personDelegationGaps: async () => personGaps }));
+
 const { probeCoordination } = await import('./coordination-probe');
 
 const base = { id: 'task-1', workspaceId: 'ws', missionId: null as string | null, pathManifest: ['packages/core/db/schema.ts'], context: {}, status: 'pending' };
 
 beforeEach(() => {
-  depRow = {}; depStatuses = []; local = false; softGateRows = [];
+  depRow = {}; depStatuses = []; local = false; softGateRows = []; personGaps = [];
 });
 
 describe('probeCoordination: dependencies, local missions', () => {
@@ -81,5 +85,26 @@ describe('probeCoordination: dependencies, local missions', () => {
 
   it('no dependencies, no overlaps, not local: nothing holds it', async () => {
     expect(await probeCoordination({ ...base, dependsOn: [] } as any)).toEqual([]);
+  });
+});
+
+const WS_B = '00000000-0000-4000-8000-00000000000b';
+
+describe('probeCoordination: a delegation nobody granted', () => {
+  it('reads the claim gate\'s person-side check and says it waits on you to grant it', async () => {
+    personGaps = [{ workspaceId: WS_B, capability: 'tasks:create', reason: 'not_granted' }];
+    const task = { ...base, pathManifest: [], dependsOn: [], context: { filingTargets: [WS_B] } };
+    const reasons = (await probeCoordination(task as any))!;
+    const r = reasons.find(x => x.kind === 'delegation_unmet');
+    expect(r).toBeDefined();
+    expect(r!.action.owner).toBe('human');
+    expect(r!.blocker?.label).toBe('filing tasks in another workspace');
+    expect(r!.blocker?.href).toBe('/app/tasks/task-1');
+  });
+
+  it('once granted (the check finds no gap), nothing holds it', async () => {
+    personGaps = [];
+    const task = { ...base, pathManifest: [], dependsOn: [], context: { filingTargets: [WS_B] } };
+    expect(await probeCoordination(task as any)).toEqual([]);
   });
 });

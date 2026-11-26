@@ -63,6 +63,28 @@ export async function preflightTaskDelegation(
   });
 }
 
+/**
+ * The claim pre-flight's gaps that no runner can close: what a person must
+ * grant (`not_granted`) or take back (`cross_team`). The same rules as
+ * `preflightTaskDelegation` with the claiming account left out, so the queue
+ * wait and the Start probe agree with the gate whoever claims next. A gap only
+ * one account has (`out_of_token_reach`) is the claiming runner's, not a
+ * person's: it stays a ledger observation (lib/queue-wait-load.ts).
+ */
+export async function personDelegationGaps(task: DelegatedTaskRow & { context?: unknown }): Promise<DelegationGap[]> {
+  const filingTargets = readFilingTargets(task.context).filter(t => t !== task.workspaceId);
+  const grants = await loadRawTaskGrants(task);
+  if (!grants.length && !filingTargets.length) return [];
+  const teams = await teamsOf([task.workspaceId, ...grants.map(g => g.workspaceId)]);
+  return findDelegationGaps({
+    grants,
+    filingTargets,
+    ownTeamId: teams.get(task.workspaceId) ?? null,
+    teamOf: ws => teams.get(ws),
+    accountReaches: () => true,
+  });
+}
+
 export type DelegationWrite =
   | { ok: true; value: TaskDelegation | null }
   | { ok: false; status: number; error: string };

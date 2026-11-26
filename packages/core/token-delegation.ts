@@ -437,6 +437,17 @@ const GAP_TEXT: Record<DelegationGapReason, string> = {
   out_of_token_reach: 'the runner account that would mint its token does not itself reach that workspace',
 };
 
+/**
+ * A recorded `delegation_unmet` refusal (its ledger `detail.gaps`) a person can
+ * act on: no gap is the claiming runner's own (`out_of_token_reach`), and the
+ * pre-flight ran (an empty list means it could not, and is retried). Pure.
+ */
+export function ledgerDelegationIsPersons(detail: Record<string, unknown> | null | undefined): boolean {
+  const gaps = Array.isArray(detail?.gaps) ? (detail!.gaps as Array<Record<string, unknown>>) : [];
+  if (gaps.length === 0) return false;
+  return !gaps.some(g => g?.reason === 'out_of_token_reach');
+}
+
 /** One plain sentence per gap, for the claim refusal and the gate ledger. */
 export function describeDelegationGaps(gaps: readonly DelegationGap[]): string {
   return gaps

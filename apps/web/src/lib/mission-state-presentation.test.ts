@@ -174,3 +174,11 @@ describe('access_unmet hold needs a person', () => {
     expect(p.needsYou).toBe(false);
   });
 });
+
+describe('delegation_unmet hold needs a person', () => {
+  it('an ungranted delegation is needs_you, not queued behind a runner', () => {
+    const p = presentMissionState(deriveMissionStateView({ ...stalled, runnerOnline: true, openTasks: [{ id: 'a', status: 'pending', holdReason: 'delegation_unmet' }] }));
+    expect(p.state).toBe('needs_you');
+    expect(p.needsYou).toBe(true);
+  });
+});

@@ -21,6 +21,12 @@ describe('WaitingLine headline', () => {
     expect(html).toContain('Axiom read');
   });
 
+  it('delegation_unmet says the wait is on you to grant it', () => {
+    const html = renderToStaticMarkup(<WaitingLine reasons={[reason('delegation_unmet', 'filing tasks in web')]} />);
+    expect(html).toContain('Waiting on you: grant');
+    expect(html).toContain('filing tasks in web');
+  });
+
   it('other kinds keep the plain headline', () => {
     const html = renderToStaticMarkup(<WaitingLine reasons={[reason('task_held', 'Another task')]} />);
     expect(html).not.toContain('Waiting on you');

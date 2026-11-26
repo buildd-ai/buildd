@@ -194,7 +194,25 @@ export class MessageCursor {
 /** Where a person's reply to this worker goes. */
 export type ReplyRoute = 'answer' | 'message' | 'followup';
 
-export function replyRoute(worker: Pick<PublicWorker, 'status'>): ReplyRoute {
+type PauseFields = Pick<PublicWorker, 'status' | 'waitingFor' | 'resumeOnStart' | 'pauseRequestedFor'>;
+
+/**
+ * Paused by the runner so an update could apply. The runner continues it in
+ * its own session once the update is on (workers.ts continueRestoredAgents),
+ * so nobody needs to reply to it, and a reply that answered the pause would
+ * race that continue.
+ */
+export function pausedForUpdate(w: Partial<PauseFields>): boolean {
+  return w.status === 'waiting' && w.waitingFor?.type === 'pause'
+    && (w.resumeOnStart === 'update' || w.pauseRequestedFor === 'update');
+}
+
+export const UPDATE_PAUSE_TEXT = 'Paused for a runner update. It continues on its own in the same session once the update is applied, with its worktree and work kept; you do not need to reply. Send /watch to follow it.';
+
+export function replyRoute(worker: Partial<PauseFields>): ReplyRoute {
+  // A message is queued and handed to the run when it continues; an answer
+  // would resume it a second time alongside the runner's own continue.
+  if (pausedForUpdate(worker)) return 'message';
   if (worker.status === 'waiting') return 'answer';
   if (worker.status === 'working') return 'message';
   return 'followup';
@@ -243,6 +261,7 @@ function unsaidSummary(messages: ChatMessage[] | undefined): string | null {
 
 /** The line a turn ends on, when the worker's state says something. */
 export function settledText(worker: PublicWorker): string | null {
+  if (pausedForUpdate(worker)) return UPDATE_PAUSE_TEXT;
   if (worker.status === 'waiting' && worker.waitingFor) return waitingText(worker.waitingFor);
   const cost = spendText(worker.spend);
   const tail = cost ? ` · ${cost}` : '';
