@@ -16,6 +16,7 @@ import type { SpecApprovalRecord, SpecGateResult } from '@buildd/core/db/schema'
 import { users } from '@buildd/core/db/schema';
 import { specApprovalInboxUrl, specPageUrl } from './approval-inbox';
 import { checkSpecPresence } from '@/lib/passkeys/guard';
+import { parseCriterionSources, verifyOwnerMessage, type ConversationProvenance } from './approval-conversation';
 
 /** What a request tells the approver: the confirm page's address and the gate's verdict. */
 export interface ApprovalRequestedNotice {
@@ -181,6 +182,8 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   importConfirmation?: { note: string };
   /** The caller already passed the presence check for a batch that holds this approval (an import confirm). */
   presenceChecked?: boolean;
+  /** Approval by recorded intent: the verified owner message, written with the stamp. */
+  conversation?: { provenance: ConversationProvenance; criterionSources: Record<string, string> | null };
 } = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | { ok: true; spec: SpecRow; pending: PendingSpecApproval } | SpecError> {
   if (!Number.isInteger(input.revision)) return fail(400, 'revision (the spec revision you read and are approving) is required');
   const loaded = await loadForDecision(caller, specId, input.expectedVersion);
@@ -248,7 +251,11 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   const rows = await db.execute(sql`
     WITH stamp AS (
       UPDATE spec_revisions SET approved_by = ${label}, approved_at = now(), approval = ${recordJson}::jsonb,
-        approved_attachments = ${approvedAttachmentsSql(specId, n)}
+        approved_attachments = ${approvedAttachmentsSql(specId, n)},
+        approval_conversation_id = ${opts.conversation?.provenance.conversationId ?? null}::uuid,
+        approval_message_id = ${opts.conversation?.provenance.messageId ?? null}::uuid,
+        approval_message_at = ${opts.conversation?.provenance.messageAt.toISOString() ?? null}::timestamptz,
+        criterion_sources = ${opts.conversation?.criterionSources ? JSON.stringify(opts.conversation.criterionSources) : null}::jsonb
       WHERE spec_id = ${specId}::uuid AND revision = ${n} AND approved_at IS NULL
         AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n}
           AND (${confirmJson}::jsonb IS NULL OR repo_source->>'state' = 'imported'))
@@ -372,6 +379,8 @@ async function approvePinned(
     retire?: unknown;
     /** A passkey assertion, checked by the stamp when the team requires one (R-20). */
     presence?: unknown;
+    /** Set by approveFromConversation: the verified message this approval is recorded against. */
+    conversation?: { provenance: ConversationProvenance; criterionSources: Record<string, string> | null };
   },
 ): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
@@ -399,8 +408,44 @@ async function approvePinned(
     if (reason.length > MAX_OVERRIDE_REASON) return fail(400, `The reason is at most ${MAX_OVERRIDE_REASON} characters.`);
   }
   const record: SpecApprovalRecord = { via: opts.via, gate, ...(!gate.passed ? { overrideReason: reason } : {}) };
-  const r = await approveSpecRevision(caller, specId, { revision: pin.revision, expectedVersion: pin.expectedVersion, retire: opts.retire, presence: opts.presence }, { record });
+  const r = await approveSpecRevision(caller, specId, { revision: pin.revision, expectedVersion: pin.expectedVersion, retire: opts.retire, presence: opts.presence }, { record, conversation: opts.conversation });
   if (!r.ok) return r.status === 409 && !r.presence ? { ...r, code: opts.staleCode } : r;
   if ('pending' in r) return fail(403, notAPerson(specId));
   return { ok: true, already: false, spec: r.spec, revision: r.revision, retirements: r.retirements };
+}
+
+/**
+ * Approve by recorded intent (Living Spec 65ed7fa3, D-18): the owner's own
+ * session cites the message in which they approved. Only a person's session
+ * qualifies (an agent, task or API token is a 403, whatever ref it forges), the
+ * cited message must be that person's own, in their own conversation, written
+ * after the revision existed, and the revision must still be the head at the
+ * version read. Recorded as via 'conversation' with the link.
+ */
+export async function approveFromConversation(caller: SpecCaller, specId: string, input: {
+  revision?: unknown; expectedVersion?: unknown; conversationId?: unknown; messageId?: unknown;
+  criterionSources?: unknown; overrideReason?: unknown; retire?: unknown; presence?: unknown;
+}, load?: Parameters<typeof verifyOwnerMessage>[3]): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
+  if (caller.kind !== 'user') return fail(403, 'Approving in a conversation is the owner\'s own act from their signed-in session. An agent run, task or API key cannot.', { code: 'not_a_person' });
+  if (!isUuid(specId)) return fail(404, 'Spec not found');
+  if (!Number.isInteger(input.revision) || !Number.isInteger(input.expectedVersion)) return fail(400, 'revision and expectedVersion (as you read them) are required');
+  const sources = parseCriterionSources(input.criterionSources);
+  if (!sources.ok) return sources;
+  const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  if (!spec) return fail(404, 'Spec not found');
+  const { reached, approver } = await reachAndApprover(caller, spec.workspaceId);
+  if (!reached) return fail(404, 'Spec not found');
+  if (!approver) return fail(403, notAPerson(specId));
+  const [rev] = await db.select().from(specRevisions)
+    .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, input.revision as number))).limit(1);
+  if (!rev || spec.version !== input.expectedVersion || spec.headRevision !== input.revision) {
+    return fail(409, 'The spec changed since you read it. Read the latest revision, then approve it.', { code: 'stale', currentVersion: spec.version, headRevision: spec.headRevision });
+  }
+  const verified = await verifyOwnerMessage(caller.userId, { conversationId: input.conversationId, messageId: input.messageId }, rev.createdAt, load);
+  if (!verified.ok) return verified;
+  return approvePinned(caller, specId, { revision: rev.revision, expectedVersion: spec.version, contentHash: rev.contentHash }, {
+    via: 'conversation', staleCode: 'stale', staleText: 'The spec changed since you read it. Read the latest revision, then approve it.',
+    overrideReason: input.overrideReason, retire: input.retire, presence: input.presence,
+    conversation: { provenance: verified.provenance, criterionSources: sources.sources },
+  });
 }

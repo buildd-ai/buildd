@@ -3202,10 +3202,12 @@ export interface SpecAutoApprovalEvidence {
  * `check:no-criteria-change` did, with its evidence in `check`.
  */
 export interface SpecApprovalRecord {
-  via: 'mcp' | 'chat' | 'dashboard' | 'check';
+  via: 'mcp' | 'chat' | 'dashboard' | 'check' | 'conversation' | 'import-check';
   gate: SpecGateResult | null;
   overrideReason?: string;
   check?: { name: 'check:no-criteria-change'; evidence: SpecAutoApprovalEvidence };
+  /** `via: 'import-check'` (R-370): the repo head the checks ran at and each check's result. */
+  importCheck?: { headSha: string; results: Array<{ criterionId: string; outcome: 'pass' | 'fail' | 'error' }> };
 }
 
 export const specRevisions = pgTable('spec_revisions', {
@@ -3254,9 +3256,86 @@ export const specRevisions = pgTable('spec_revisions', {
   // gate's result and the reason a person overrode a refusal. NULL: approved
   // before this was recorded.
   approval: jsonb('approval').$type<SpecApprovalRecord>(),
+  // Approval by recorded intent (Living Spec 65ed7fa3, D-18): set with
+  // approved_at only when approval.via is 'conversation'. The conversation and
+  // the owner's message that approved, and that message's time. The message is
+  // kept as a plain id (no FK) so deleting a chat never rewrites an approval.
+  approvalConversationId: uuid('approval_conversation_id'),
+  approvalMessageId: uuid('approval_message_id'),
+  approvalMessageAt: timestamp('approval_message_at', { withTimezone: true }),
+  // Where each criterion came from in that conversation: criterion id → a
+  // short source reference. NULL: none recorded.
+  criterionSources: jsonb('criterion_sources').$type<Record<string, string>>(),
+  // The conversation this draft was written from (Living Spec 65ed7fa3 R-350):
+  // thread, the owner's message and its time. Fixed with the revision. NULL: none,
+  // so the revision keeps the document approve flow (R-363).
+  provenance: jsonb('provenance').$type<{ conversationId: string; messageId: string; messageAt: string }>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/** One question the independent intent check raises for the owner (R-361): one sentence and a recommended answer. */
+export interface SpecIntentQuestion {
+  id: string;
+  kind: 'mismatch' | 'gap';
+  /** One sentence, in the owner's terms. */
+  text: string;
+  /** The answer the owner accepts with one action. */
+  recommended: string;
+  criterionId?: string;
+  /** Set only by the owner's own act (R-364). */
+  answeredAt?: string;
+  answeredBy?: string;
+  answer?: string;
+}
+
+/**
+ * The independent intent check of a revision that carries provenance (Living
+ * Spec 65ed7fa3 R-360 to R-362): who ran it and what it read, and the
+ * questions it raised. One per (spec, revision, hash). A clean check has no
+ * questions and puts nothing in the owner's inbox.
+ */
+export const specIntentChecks = pgTable('spec_intent_checks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  contentHash: text('content_hash').notNull(),
+  conversationId: uuid('conversation_id').notNull(),
+  messageIds: jsonb('message_ids').notNull().$type<string[]>(),
+  // Who ran it: an agent account (with its task when task-scoped), never the drafter or a pinned task.
+  checkerAccountId: text('checker_account_id').notNull(),
+  checkerTaskId: text('checker_task_id'),
+  questions: jsonb('questions').notNull().$type<SpecIntentQuestion[]>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specRevisionIdx: uniqueIndex('spec_intent_checks_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * A question for the owner that no revision's intent check raised (Living Spec
+ * 65ed7fa3 R-371, R-372): `import_mismatch` is one open question per imported
+ * spec whose checks fail at the repo head; `retire_batch` is one agent
+ * proposal to retire several specs, `payload.items` listing each with its
+ * reason. Only a person's session answers (answeredBy is always a person).
+ */
+export const specOwnerQuestions = pgTable('spec_owner_questions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'import_mismatch' | 'retire_batch'>(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }),
+  status: text('status').notNull().default('open').$type<'open' | 'answered'>(),
+  text: text('text').notNull(),
+  recommended: text('recommended').notNull(),
+  payload: jsonb('payload').notNull().$type<Record<string, unknown>>(),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  answeredBy: text('answered_by'),
+  answeredAt: timestamp('answered_at', { withTimezone: true }),
+  answer: jsonb('answer').$type<Record<string, unknown>>(),
+}, (t) => ({
+  workspaceOpenIdx: index('spec_owner_questions_workspace_open_idx').on(t.workspaceId, t.status),
+  oneOpenMismatchIdx: uniqueIndex('spec_owner_questions_one_open_mismatch_idx').on(t.specId).where(sql`kind = 'import_mismatch' AND status = 'open'`),
 }));
 
 /**

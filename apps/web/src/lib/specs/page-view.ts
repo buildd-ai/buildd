@@ -288,6 +288,12 @@ export interface SpecRevisionLine {
    * person's approval.
    */
   approvedByCheck?: SpecAutoApprovalEvidence;
+  /** How a person approved it, as recorded (`dashboard`, `mcp`, `chat`, `conversation`); absent before it was recorded. */
+  approvedVia?: 'dashboard' | 'mcp' | 'chat' | 'conversation' | 'import-check';
+  /** `import-check`: the repo head the file's checks passed at (R-370). */
+  approvedAtHead?: string;
+  /** For `conversation`: the owner's message that approved it, and when it was written. */
+  approvedConversation?: { conversationId: string; messageId: string; messageAt: string };
   createdAt: string;
   /** createdAt and approvedAt in words. */
   createdAgo: string;
@@ -529,6 +535,9 @@ export async function specPageView(userId: string, specId: string, opts: { revis
       id: specRevisions.id, revision: specRevisions.revision, authorKind: specRevisions.authorKind, changeSummary: specRevisions.changeSummary,
       approvedBy: specRevisions.approvedBy, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
       approvedByCheck: sql<SpecAutoApprovalEvidence | null>`${specRevisions.approval}->'check'->'evidence'`,
+      approvedVia: sql<string | null>`${specRevisions.approval}->>'via'`,
+      approvedHead: sql<string | null>`${specRevisions.approval}->'importCheck'->>'headSha'`,
+      approvalConversationId: specRevisions.approvalConversationId, approvalMessageId: specRevisions.approvalMessageId, approvalMessageAt: specRevisions.approvalMessageAt,
     }).from(specRevisions).where(eq(specRevisions.specId, specId)).orderBy(desc(specRevisions.revision)),
     // Parent, siblings and children only from the same workspace (a parent is always there, §1).
     parent: spec.parentSpecId
@@ -639,8 +648,12 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     const byCheck = r.approvedAt && r.approvedBy === NO_CRITERIA_CHANGE_CHECK && r.approvedByCheck ? r.approvedByCheck : null;
     return {
       revision: r.revision, author: r.authorKind === 'user' ? 'person' : 'agent', changeSummary: r.changeSummary,
-      approvedBy: r.approvedAt ? (byCheck ? NO_CRITERIA_CHANGE_CHECK : (pid && names.get(pid)) || 'a person') : null,
+      approvedBy: r.approvedAt ? (byCheck ? NO_CRITERIA_CHANGE_CHECK : r.approvedVia === 'import-check' ? 'its checks (import check)' : (pid && names.get(pid)) || 'a person') : null,
       ...(byCheck ? { approvedByCheck: byCheck } : {}),
+      ...(r.approvedAt && !byCheck && (r.approvedVia === 'dashboard' || r.approvedVia === 'mcp' || r.approvedVia === 'chat' || r.approvedVia === 'conversation' || r.approvedVia === 'import-check') ? { approvedVia: r.approvedVia } : {}),
+      ...(r.approvedAt && r.approvedVia === 'import-check' && r.approvedHead ? { approvedAtHead: r.approvedHead } : {}),
+      ...(r.approvedAt && r.approvedVia === 'conversation' && r.approvalConversationId && r.approvalMessageId && r.approvalMessageAt
+        ? { approvedConversation: { conversationId: r.approvalConversationId, messageId: r.approvalMessageId, messageAt: new Date(r.approvalMessageAt).toISOString() } } : {}),
       approvedAt: r.approvedAt ? new Date(r.approvedAt).toISOString() : null,
       createdAt: new Date(r.createdAt).toISOString(),
       createdAgo: ago(r.createdAt), approvedAgo: r.approvedAt ? ago(r.approvedAt) : null,

@@ -33,11 +33,13 @@ export const SPEC_REVIEW_ALL_PATH = '/app/specs/review-all';
 export const specApprovalInboxUrl = () => `${appBaseUrl()}${SPEC_APPROVAL_INBOX_PATH}`;
 export const specPageUrl = (specId: string) => `${appBaseUrl()}/app/specs/${encodeURIComponent(specId)}`;
 
-/** A specs row that waits on a decision: live, a head newer than what is approved, not an unconfirmed import, not a proposal (./proposals.ts: an unrequested draft waits on a mission or a task first). */
+/** A specs row that waits on a decision: live, a head that is not conversation-drafted AND already checked (a conversation-drafted head reaches the owner only as questions once its independent check is in, intent-check.ts, R-363; until then it stays listed, so it is never invisible), a head newer than what is approved, not an unconfirmed import, not a proposal (./proposals.ts: an unrequested draft waits on a mission or a task first). */
 export const awaitingApprovalWhere = () => sql`${specs.status} NOT IN ('retired', 'superseded')
   AND (${specs.approvedRevision} IS NULL OR ${specs.headRevision} > ${specs.approvedRevision})
   AND coalesce(${specs.repoSource}->>'state', '') <> 'imported'
-  AND NOT (${proposalWhere()})`;
+  AND NOT (${proposalWhere()})
+  AND NOT EXISTS (SELECT 1 FROM spec_revisions pr WHERE pr.spec_id = ${specs.id} AND pr.revision = ${specs.headRevision} AND pr.provenance IS NOT NULL
+    AND EXISTS (SELECT 1 FROM spec_intent_checks ic WHERE ic.spec_id = ${specs.id} AND ic.revision = ${specs.headRevision}))`;
 
 /**
  * Waiting specs per workspace, as an un-run query (Home reads it in its first

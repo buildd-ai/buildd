@@ -525,10 +525,13 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       const rows = await (deps.measurements ?? (() => loadMeasurementsSafe()))().catch(() => [] as readonly StoredMeasurement[]);
       const m = measurementFor(rows, { kind: decision.id, answeringModel: answeredModel, fingerprint: decision.promptVersion });
       const policy = decision.policyOf(question);
-      const answer = outcome.answer as { probabilities?: Record<string, number> };
+      const answer = outcome.answer as { probabilities?: unknown };
+      const probabilities = answer.probabilities && typeof answer.probabilities === 'object'
+        ? (answer.probabilities as Record<string, number>)
+        : null;
       const gate = gateOnMeasurement(
         m,
-        { choice: suggested, confidence: outcome.confidence, probabilities: answer.probabilities ?? null },
+        { choice: suggested, confidence: outcome.confidence, probabilities },
         policy.minConfidence ?? (policy.mode === 'live' ? 0 : Infinity),
       );
       if (!m.measured) reason = 'non_jev';

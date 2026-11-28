@@ -234,7 +234,9 @@ const SAFE: Record<string, string[]> = {
   artifact_links: ['subject_kind', 'relation'],
   // Closed vocabularies (SPEC_SCOPES / SPEC_STATUSES) and a sha256 of a body scrubbed elsewhere.
   specs: ['scope', 'status'],
-  spec_revisions: ['content_hash', 'repo_refs', 'replaces'], // repo paths pinned to commit SHAs; replaces is spec ids
+  spec_revisions: ['content_hash', 'repo_refs', 'replaces', 'provenance'], // repo paths pinned to commit SHAs; replaces is spec ids
+  // Intent check: a revision hash, owner-conversation message ids and account/task ids (not prose); questions are scrubbed.
+  spec_intent_checks: ['content_hash', 'message_ids', 'checker_account_id', 'checker_task_id'],
   // A criterion id from the spec body (R-1, AC-2) and a git SHA.
   spec_outcome_verdicts: ['criterion_id', 'head_sha'],
   spec_verdict_sources: ['criterion_id'], // a criterion id from the spec body; source is a test|review literal union

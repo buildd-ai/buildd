@@ -25,6 +25,7 @@ import { parseExplanation } from '@buildd/spec-contract/explanation';
 import { draftRefusal } from './proposals';
 import { explanationRefusalText } from './explanation-check';
 import type { AutoApproval } from './auto-approve';
+import { resolveDraftProvenance } from './approval-conversation';
 
 /**
  * Living Specs store (G1): create a draft, revise it under a version check,
@@ -191,6 +192,8 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   supersedes?: unknown; distinctBecause?: unknown;
   /** R-76: the live specs of this workspace this draft replaces. */
   replaces?: unknown;
+  /** 65ed7fa3 R-350: { conversationId, messageId }, the owner's conversation this draft is written from. */
+  provenance?: unknown;
 }, opts: {
   duplicates?: DuplicateCheckDeps | false;
   /** Written by an import (§18, R-18, ./import.ts): revision 1 is this repo file, and the repo stays the source until confirmed. */
@@ -211,6 +214,8 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   const explained = parseExplanation(input.explanation);
   if (!explained.ok) return fail(400, explained.error);
   if (!(await reach(caller, workspaceId, true))) return fail(404, 'Workspace not found');
+  const prov = await resolveDraftProvenance(input.provenance, { workspaceId, userId: caller.kind === 'user' ? caller.userId : undefined });
+  if (!prov.ok) return prov;
   const roleRefusal = await acceptanceRoleRefusal(caller);
   if (roleRefusal) return roleRefusal;
   if (parentSpecId !== undefined && parentSpecId !== null) {
@@ -277,6 +282,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
     imported: opts.imported ? importOf(opts.imported) : null,
     replaces: replaces ?? null,
     explanation: explained.explanation,
+    provenance: prov.provenance,
   }).returning();
   await afterRevisionWritten(spec, revision, body);
   // Specify → Build (§20, R-81): the writing task names the spec, so the task that builds it can inherit it.
@@ -290,6 +296,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   replaces?: unknown;
   /** b7fc9316 R-15: the new revision's explanation. Never carried forward, never set on a revision already written. */
   explanation?: unknown;
+  /** 65ed7fa3 R-350: { conversationId, messageId } the revision is written from; omitted: none (the revision keeps the ordinary approval). */
+  provenance?: unknown;
 }, opts: {
   /** A re-import of a changed repo file (R-18, ./import.ts): the new revision is that file, still imported. */
   imported?: SpecRevisionImport & { importedAt: string };
@@ -312,6 +320,9 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   if (!explained.ok) return fail(400, explained.error);
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
+  const prov = await resolveDraftProvenance(input.provenance, { workspaceId: spec.workspaceId, userId: caller.kind === 'user' ? caller.userId : undefined });
+  if (!prov.ok) return prov;
+  const provenanceJson = prov.provenance ? JSON.stringify(prov.provenance) : null;
   const roleRefusal = await acceptanceRoleRefusal(caller);
   if (roleRefusal) return roleRefusal;
   if (spec.status === 'retired' || spec.status === 'superseded') return fail(409, `A ${spec.status} spec is not revised`);
@@ -389,8 +400,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
       WHERE id = ${specId}::uuid AND version = ${spec.version}
       RETURNING id, head_revision
     )
-    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported, replaces, explanation)
-    SELECT up.id, up.head_revision, ${head.artifactRevision}, ${head.contentHash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb, ${replacesJson}::jsonb, ${explanationJson}::jsonb FROM up
+    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported, replaces, explanation, provenance)
+    SELECT up.id, up.head_revision, ${head.artifactRevision}, ${head.contentHash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb, ${replacesJson}::jsonb, ${explanationJson}::jsonb, ${provenanceJson}::jsonb FROM up
     RETURNING id`) : await db.execute(sql`
     WITH body AS (
       UPDATE artifacts SET content = ${body}, content_author = ${who.label}, updated_at = now()
@@ -403,8 +414,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
       WHERE id = ${specId}::uuid AND version = ${spec.version} AND EXISTS (SELECT 1 FROM body)
       RETURNING id, head_revision
     )
-    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported, replaces, explanation)
-    SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb, ${replacesJson}::jsonb, ${explanationJson}::jsonb FROM up, body
+    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported, replaces, explanation, provenance)
+    SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb, ${replacesJson}::jsonb, ${explanationJson}::jsonb, ${provenanceJson}::jsonb FROM up, body
     RETURNING id`);
   const inserted = ((rows as { rows?: Array<Record<string, unknown>> }).rows ?? [])[0] as { id: string } | undefined;
   if (!inserted) {
